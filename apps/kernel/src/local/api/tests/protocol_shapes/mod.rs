@@ -40,6 +40,7 @@ mod display_resumption;
 mod event_publication;
 mod extension_apps;
 mod files_watch;
+mod folded_answer;
 mod fresh_remote_relay_inventory;
 mod handoff_config;
 mod job_held_machine;

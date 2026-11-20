@@ -196,8 +196,8 @@ pub(crate) use prompt_signals::{
     provider_retry_status, text_reports_resource_limit, PROVIDER_CONNECTION_RETRY_MERGE_KEY,
 };
 pub use prompt_signals::{
-    ProviderAssistantCompletion, ProviderOwnTurnSignal, ProviderPromptChunk,
-    ProviderPromptSignalBatch,
+    ProviderAssistantCompletion, ProviderBackgroundNotification, ProviderOwnTurnSignal,
+    ProviderPromptChunk, ProviderPromptSignalBatch,
 };
 pub use registry::{AgentEndpointAdapter, ProviderRegistry};
 pub(crate) use run_actor::{
@@ -220,7 +220,7 @@ pub(crate) use termination::{
     sanitize_provider_diagnostic,
 };
 pub use termination::{ProviderRunTermination, ProviderRunTerminationCategory};
-pub use turn_outcome::{TurnOutcome, TurnOutcomeKind};
+pub use turn_outcome::{AnsweredTurnReceipt, TurnOutcome, TurnOutcomeKind};
 pub(crate) use types::provider_workspace_live_sync_mode_for_session;
 pub use types::{
     AgentEndpointMode, ControlCapability, ControlCapabilityMode, ControlOperation,

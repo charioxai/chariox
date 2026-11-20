@@ -201,6 +201,7 @@ async fn completed_remote_cancellation_recovers_after_active_run_was_cleared() {
                     notices: Vec::new(),
                     completions: vec![crate::transport::relay_peer::RelayProjectedCompletion {
                         model_usage: Vec::new(),
+                        background_notifications: Vec::new(),
                         message_id: "completed-cancel-recovery".into(),
                         completed_at_ms: 1,
                         home_prompt_id: Some(prompt_id.clone()),

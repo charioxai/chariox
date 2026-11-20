@@ -46,7 +46,7 @@ pub(super) struct HeldRelease {
     agent_id: String,
     provider_run_id: String,
     prompt_id: String,
-    folded_prompt: Option<Box<crate::session::PromptQueueItem>>,
+    resume_prompt: Option<Box<crate::session::PromptQueueItem>>,
 }
 
 impl KernelRuntimeState {
@@ -172,10 +172,15 @@ impl KernelRuntimeState {
             OwnTurnBinding::Held { prompt_id } => Some(HeldRelease {
                 agent_id: agent_id.to_string(),
                 provider_run_id: pending_run,
-                prompt_id,
-                folded_prompt: match output {
+                prompt_id: prompt_id.clone(),
+                resume_prompt: match output {
                     PendingTurnOutput::Folded { into, .. } => Some(into),
-                    PendingTurnOutput::BehindPrompt | PendingTurnOutput::HeldSegment => None,
+                    PendingTurnOutput::HeldSegment => owned
+                        .prompt_state_owner
+                        .active_prompt_for_agent(&session, agent_id)
+                        .filter(|prompt| prompt.id() != prompt_id)
+                        .map(Box::new),
+                    PendingTurnOutput::BehindPrompt => None,
                 },
             }),
             OwnTurnBinding::Fresh => None,
@@ -190,9 +195,9 @@ impl KernelRuntimeState {
         session_id: &str,
         release: HeldRelease,
     ) -> Result<(), DaemonError> {
-        if let Some(prompt) = release.folded_prompt {
-            // The steering boundary kept the notification inside the held answer. Its ending
-            // batch is now in history; a resumed boundary gives later output to this prompt alone.
+        if let Some(prompt) = release.resume_prompt {
+            // The notification's ending batch is now in its held segment. Restore the prompt
+            // written before or during it, so the following answer belongs to that prompt alone.
             self.owned.append_resumed_prompt_history(
                 session_id,
                 prompt.source_attachment_id(),

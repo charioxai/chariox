@@ -1482,6 +1482,16 @@ impl KernelRuntimeState {
             ..
         } = &event;
         let worker_provider_run_id = worker_provider_run_id.clone();
+        let background_notifications = completions
+            .iter()
+            .filter(|completion| !completion.is_notification_end())
+            .filter_map(|completion| {
+                completion
+                    .home_prompt_id
+                    .as_ref()
+                    .map(|prompt| (prompt.clone(), completion.background_notifications.clone()))
+            })
+            .collect::<Vec<_>>();
 
         let provider_auth_observation = provider_run.as_ref().and_then(|run| {
             remote_provider_auth_observation(
@@ -1511,6 +1521,25 @@ impl KernelRuntimeState {
             .ok()
             .and_then(|agent| agent.remote_execution().map(|r| r.leased_agent_id.clone()))
         {
+            let projected_run = crate::provider::projected_leased_provider_run_id(
+                &leased_agent_id,
+                &worker_provider_run_id,
+            );
+            // Only a completion accepted for this home prompt can carry its native consumption.
+            for completion in &outcome.completions {
+                let notifications = background_notifications
+                    .iter()
+                    .filter(|(prompt, _)| prompt == completion.completed.id())
+                    .flat_map(|(_, notifications)| notifications.iter().cloned())
+                    .collect::<Vec<_>>();
+                self.owned.record_background_answer_turn(
+                    &session_id,
+                    &agent_id,
+                    &projected_run,
+                    &completion.completed,
+                    &notifications,
+                )?;
+            }
             self.settle_held_tasks_after_projection(
                 &session_id,
                 &agent_id,

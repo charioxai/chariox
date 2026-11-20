@@ -624,4 +624,5 @@ pub use workspace::*;
 /// Provider account profiles carry recovery errors and Inbox notices can offer sign-in on the target kernel.
 /// 1013 moves finished Room tasks to pages and machine samples to a Machine resource. Room views
 /// publish the connection count and workflow inventory alongside current activity.
+/// 1013 links a folded notification outcome to its answering turn.
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1013;

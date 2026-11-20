@@ -52,7 +52,7 @@ fn prints(batch: &crate::provider::ProviderPromptSignalBatch, text: &str) -> boo
 }
 
 #[test]
-fn a_notification_turn_result_does_not_complete_the_prompt_written_behind_it() {
+fn a_notification_turn_after_a_prompt_write_remains_own_until_its_result() {
     let worktree = crate::test_support::TestWorktree::new("claude-notification-turn");
     let run = RuntimeProviderRun::new(
         "notification-turn-run",
@@ -109,11 +109,18 @@ fn a_notification_turn_result_does_not_complete_the_prompt_written_behind_it() {
         .any(|batch| prints(batch, "answer to the prompt")));
     assert!(binding.state.active_turn_id.is_none());
     assert!(
-        notification_turn
-            .iter()
-            .chain(&prompt_turn)
-            .all(|batch| batch.provider_own_turn == ProviderOwnTurnSignal::None),
-        "a turn that carries a written prompt is not Claude's own"
+        notification_turn.iter().any(|batch| matches!(
+            batch.provider_own_turn,
+            ProviderOwnTurnSignal::Running | ProviderOwnTurnSignal::StartedAndEnded
+        )),
+        "the notification's init names no user message: a prompt write cannot make its output that prompt's answer"
+    );
+    assert!(
+        notification_turn.iter().any(|batch| matches!(
+            batch.provider_own_turn,
+            ProviderOwnTurnSignal::Ended | ProviderOwnTurnSignal::StartedAndEnded
+        )),
+        "the notification's own result must end its logical turn before the prompt's answer"
     );
 }
 
@@ -390,4 +397,109 @@ IFS= read -r end
         .iter()
         .all(|b| b.provider_own_turn == ProviderOwnTurnSignal::None));
     assert!(binding.state.active_turn_id.is_none());
+}
+
+#[test]
+fn ordinary_prompt_init_is_not_a_notification_turn() {
+    for status in [None, Some("running")] {
+        let (mut state, mut batch) = super::tests::parser_state();
+        state.active_prompt_message = Some(json!({"uuid": "person-prompt"}));
+        if let Some(status) = status {
+            apply_claude_message(
+                "run",
+                &mut state,
+                json!({"type": "system", "subtype": "task_notification", "task_id": "bg1", "status": status}),
+                &mut batch,
+            );
+        }
+        apply_claude_message(
+            "run",
+            &mut state,
+            json!({"type": "system", "subtype": "init", "session_id": "s1"}),
+            &mut batch,
+        );
+        assert!(
+            !state.own_turn,
+            "an ordinary init must keep the prompt's ownership"
+        );
+        assert!(matches!(
+            batch.provider_own_turn,
+            ProviderOwnTurnSignal::None
+        ));
+        apply_claude_message(
+            "run",
+            &mut state,
+            json!({"type": "result", "subtype": "success", "user_message_uuids": ["person-prompt"]}),
+            &mut batch,
+        );
+        assert!(batch.prompt_completed);
+    }
+}
+
+#[test]
+fn a_named_prompt_init_does_not_consume_a_pending_notification() {
+    let (mut state, mut batch) = super::tests::parser_state();
+    state.active_prompt_message = Some(json!({"uuid": "person-prompt"}));
+    for message in [
+        json!({"type": "system", "subtype": "task_notification", "task_id": "bg1", "status": "completed"}),
+        json!({"type": "system", "subtype": "init", "user_message_uuids": ["person-prompt"]}),
+        json!({"type": "result", "subtype": "success", "user_message_uuids": ["person-prompt"]}),
+    ] {
+        apply_claude_message("run", &mut state, message, &mut batch);
+    }
+    assert!(batch.prompt_completed);
+    assert!(matches!(
+        batch.provider_own_turn,
+        ProviderOwnTurnSignal::None
+    ));
+    batch = Default::default();
+    apply_claude_message(
+        "run",
+        &mut state,
+        json!({"type": "system", "subtype": "init"}),
+        &mut batch,
+    );
+    assert!(matches!(
+        batch.provider_own_turn,
+        ProviderOwnTurnSignal::Running
+    ));
+    assert!(!state.background_notification_pending);
+}
+
+#[test]
+fn a_native_notification_consumed_inside_a_prompt_keeps_its_provider_boundary() {
+    let (mut state, mut batch) = super::tests::parser_state();
+    state.active_prompt_message = Some(json!({"uuid":"person-prompt"}));
+    apply_claude_message(
+        "run",
+        &mut state,
+        json!({"type":"system", "subtype":"task_notification", "task_id":"b1", "tool_use_id":"toolu_bg", "status":"completed"}),
+        &mut batch,
+    );
+    assert!(
+        batch.background_notifications.is_empty(),
+        "a command ending does not mean its notification was consumed"
+    );
+    apply_claude_message(
+        "run",
+        &mut state,
+        json!({"type":"user", "message":{"content":"<task-notification><task-id>b1</task-id><tool-use-id>toolu_bg</tool-use-id><status>completed</status></task-notification>"}}),
+        &mut batch,
+    );
+    assert_eq!(
+        batch.background_notifications,
+        vec![crate::provider::ProviderBackgroundNotification {
+            task_id: Some("b1".into()),
+            tool_use_id: Some("toolu_bg".into())
+        }]
+    );
+    assert!(!state.own_turn);
+    apply_claude_message(
+        "run",
+        &mut state,
+        json!({"type":"result", "subtype":"success", "user_message_uuids":["person-prompt"]}),
+        &mut batch,
+    );
+    assert!(batch.prompt_completed);
+    assert_eq!(batch.provider_own_turn, ProviderOwnTurnSignal::None);
 }

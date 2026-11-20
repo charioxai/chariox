@@ -1556,6 +1556,7 @@ async fn dispatching_cancellation_waits_for_exact_receipt_without_replay() {
                     notices: Vec::new(),
                     completions: vec![crate::transport::relay_peer::RelayProjectedCompletion {
                         model_usage: Vec::new(),
+                        background_notifications: Vec::new(),
                         failure: None,
                         message_id: "cancel-ack-completion".to_string(),
                         completed_at_ms: 1,

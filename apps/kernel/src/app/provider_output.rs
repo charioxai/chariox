@@ -830,6 +830,20 @@ impl<'a> ProviderOutputPumpContext<'a> {
         self.provider_store
             .apply_structured_output_metadata(provider_run_id, &poll_result)?;
         let provider_run = self.ensure_provider_run_in_session(session_id, provider_run_id)?;
+        if let Some(agent) = provider_run.agent_instance_id() {
+            if let Some(prompt) = self
+                .app
+                .prompt_owner_active_prompt_for_agent(session_id, agent)?
+            {
+                self.app
+                    .durable_state_store()
+                    .record_provider_background_notifications(
+                        provider_run_id,
+                        prompt.id(),
+                        &poll_result.background_notifications,
+                    )?;
+            }
+        }
         self.mark_resolved_external_provider_session_attached(&provider_run);
         self.app
             .update_provider_run_projection(provider_run.clone());

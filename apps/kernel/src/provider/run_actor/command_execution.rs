@@ -492,6 +492,7 @@ pub(super) fn execute_output_poll_command(
             .collect();
         return Ok(Some(ProviderPromptSignalBatch {
             provider_own_turn: ProviderOwnTurnSignal::None,
+            background_notifications: Vec::new(),
             process_memory_limit_bytes: None,
             process_outside_ended: false,
             turn_outcome: None,
@@ -597,6 +598,7 @@ pub(super) fn execute_output_poll_command(
         .collect();
     Ok(Some(ProviderPromptSignalBatch {
         provider_own_turn: ProviderOwnTurnSignal::None,
+        background_notifications: Vec::new(),
         process_memory_limit_bytes: None,
         process_outside_ended: false,
         turn_outcome: None,

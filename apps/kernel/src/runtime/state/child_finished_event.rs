@@ -85,7 +85,10 @@ impl KernelRuntimeState {
                 "child_agent_id": child.id(),
                 "child_alias": child.alias(),
                 "child_task_id": task.task_id,
-                "success": outcome.kind == crate::provider::TurnOutcomeKind::Completed,
+                "success": matches!(
+                    outcome.kind,
+                    crate::provider::TurnOutcomeKind::Completed | crate::provider::TurnOutcomeKind::AnsweredInTurn
+                ),
                 "outcome": outcome,
                 "finished_at_ms": finished_at_ms,
                 "deadline_reached": deadline_reached,
@@ -183,8 +186,16 @@ impl KernelRuntimeOwnedState {
     ) -> TurnOutcome {
         if task.state == ExecutionState::Done {
             failure
-                .filter(|outcome| outcome.is_error())
+                .filter(|outcome| {
+                    outcome.is_error()
+                        || outcome.kind == crate::provider::TurnOutcomeKind::AnsweredInTurn
+                })
                 .cloned()
+                .or_else(|| {
+                    self.recorded_turn_outcome(task).filter(|outcome| {
+                        outcome.kind == crate::provider::TurnOutcomeKind::AnsweredInTurn
+                    })
+                })
                 .unwrap_or_else(TurnOutcome::completed)
         } else {
             // A task that did not finish its work ended cancelled or failed, whatever its turn recorded.

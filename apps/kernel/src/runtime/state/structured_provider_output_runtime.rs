@@ -689,6 +689,17 @@ impl KernelRuntimeState {
         } else {
             None
         };
+        if let (Some(agent_id), Some(prompt)) =
+            (provider_run.agent_instance_id(), active_prompt.as_ref())
+        {
+            owned.record_background_answer_turn(
+                session_id,
+                agent_id,
+                provider_run_id,
+                prompt,
+                &poll_result.background_notifications,
+            )?;
+        }
         owned.note_output_of_held_run(
             provider_run_id,
             active_prompt.as_ref().map(|prompt| prompt.id()),

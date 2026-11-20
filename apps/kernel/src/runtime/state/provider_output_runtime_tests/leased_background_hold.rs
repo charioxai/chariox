@@ -14,6 +14,121 @@ use crate::transport::relay_peer::{
 const WORKER: &str = "worker-kernel-1";
 const LEASED_AGENT: &str = "leased-child";
 
+#[tokio::test]
+async fn a_leased_merged_notification_points_to_its_home_answer_receipt() {
+    let leased = child_with_a_call_running("leased-folded-answer-receipt").await;
+    let team = &leased.team;
+    let owned = &team.runtime.owned;
+    let prepared = crate::app::KernelPreparedPromptSubmission {
+        session_id: team.room.clone(),
+        prompt: crate::session::PromptQueueItem::new(
+            "home-answer-q",
+            team.child_prompt.source_attachment_id(),
+            &team.child,
+            "Report status while the background job finishes",
+            crate::session::PromptStatus::Queued,
+        ),
+        force_queue: false,
+        refresh_projection: true,
+    };
+    let submission = owned
+        .submit_remote_prepared_prompt(&prepared)
+        .unwrap()
+        .unwrap();
+    let crate::session::PromptSubmissionOutcome::Started { prompt } = submission.outcome else {
+        panic!("the independent home prompt starts")
+    };
+    let projected =
+        crate::provider::projected_leased_provider_run_id(LEASED_AGENT, &leased.worker_run);
+    owned
+        .ensure_agent_task(&team.room, &team.child, &prompt, Some(&projected))
+        .unwrap();
+    let mut binding = owned
+        .agent_store
+        .get_agent(&team.child)
+        .unwrap()
+        .remote_execution()
+        .cloned()
+        .unwrap();
+    binding.active_worker_provider_run_id = Some(leased.worker_run.clone());
+    owned
+        .agent_store
+        .bind_remote_execution(&team.child, binding)
+        .unwrap();
+    owned
+        .mark_active_prompt_delivery(
+            &team.room,
+            &team.child,
+            prompt.id(),
+            crate::session::DurablePromptDeliveryPhase::Delivered,
+            Some(leased.worker_run.clone()),
+            None,
+        )
+        .unwrap();
+    let mut ended = lifecycle("claude_background_finished");
+    ended["finished_at_ms"] = crate::session::unix_epoch_ms().into();
+    let event = RelayPeerEvent::LeasedRuntimeProjection {
+        home_session_id: team.room.clone(),
+        home_agent_id: team.child.clone(),
+        provider_run_id: leased.worker_run.clone(),
+        provider_run: None,
+        prompts: Vec::new(),
+        output_chunks: vec![tool(&ended), text("the one combined answer")],
+        notices: Vec::new(),
+        completions: vec![completion("answer-q", Some(prompt.id()))],
+    };
+    // The wire boundary must retain this typed native control, independently of answer text.
+    let mut wire = serde_json::to_value(event).unwrap();
+    wire["completions"][0]["background_notifications"] =
+        serde_json::json!([{"tool_use_id":"toolu_bg","task_id":"b1"}]);
+    team.runtime
+        .project_remote_runtime_projection_event(
+            authority(&leased, Some(prompt.id()), false),
+            serde_json::from_value(wire).unwrap(),
+        )
+        .await
+        .unwrap();
+    team.runtime
+        .sweep_agent_lifecycle_at_for_test(crate::session::unix_epoch_ms() + 120_000)
+        .await
+        .unwrap();
+    let events = child_finished(team);
+    let held = events
+        .iter()
+        .filter(|event| event.payload["child_task_id"] == team.task.task_id)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        held.len(),
+        1,
+        "the leased held delivery settles once: {events:?}"
+    );
+    let answer = owned
+        .durable_state_store
+        .agent_turn_task(&team.room, &team.child, prompt.id())
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        held[0].payload["outcome"]["kind"], "answered_in_turn",
+        "{events:?}"
+    );
+    assert_eq!(
+        held[0].payload["outcome"]["answered_in_turn"]["task_id"],
+        answer.task_id
+    );
+    assert_eq!(
+        held[0].payload["outcome"]["answered_in_turn"]["prompt_id"],
+        prompt.id()
+    );
+    assert!(held[0].payload["public_answer"].is_null());
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.payload["child_task_id"] == answer.task_id)
+            .count(),
+        1
+    );
+}
+
 /// A child whose agent runs on `WORKER`; the fixture's run stands for the worker's run.
 struct Leased {
     team: Team,
@@ -108,6 +223,7 @@ fn tool(payload: &serde_json::Value) -> RelayProjectedOutputChunk {
 fn completion(message_id: &str, home_prompt_id: Option<&str>) -> RelayProjectedCompletion {
     RelayProjectedCompletion {
         model_usage: Vec::new(),
+        background_notifications: Vec::new(),
         message_id: message_id.into(),
         completed_at_ms: crate::session::unix_epoch_ms(),
         home_prompt_id: home_prompt_id.map(str::to_owned),

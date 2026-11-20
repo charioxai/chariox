@@ -37,6 +37,8 @@ pub struct ProviderPromptSignalBatch {
     pub hook_context_delivered: bool,
     /// Claude streamed these native compactions, by the ID its transcript observer uses.
     pub native_compactions: Vec<String>,
+    /// Native notifications consumed inside the current provider turn, without a new turn boundary.
+    pub background_notifications: Vec<ProviderBackgroundNotification>,
     pub chunks: Vec<ProviderPromptChunk>,
     pub completions: Vec<ProviderAssistantCompletion>,
     pub prompt_completed: bool,
@@ -66,6 +68,12 @@ pub struct ProviderPromptSignalBatch {
     pub provider_own_turn: ProviderOwnTurnSignal,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ProviderBackgroundNotification {
+    pub tool_use_id: Option<String>,
+    pub task_id: Option<String>,
+}
+
 /// A batch's report of the provider's own turn: its start edge as well as its level, so a turn
 /// that starts and ends within one batch is still seen.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -85,6 +93,7 @@ impl ProviderPromptSignalBatch {
     /// The provider wrote something: text, a finished message or a notice.
     pub(crate) fn has_output(&self) -> bool {
         !self.chunks.is_empty()
+            || !self.background_notifications.is_empty()
             || !self.completions.is_empty()
             || !self.notices.is_empty()
             || self.prompt_completed

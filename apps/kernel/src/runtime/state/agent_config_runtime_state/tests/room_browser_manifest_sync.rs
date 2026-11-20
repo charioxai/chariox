@@ -330,6 +330,7 @@ async fn ordinary_completion_dispatches_workflow_head_after_projection() {
                         notices: Vec::new(),
                         completions: vec![crate::transport::relay_peer::RelayProjectedCompletion {
                             model_usage: Vec::new(),
+                            background_notifications: Vec::new(),
                             failure: None,
                             message_id: "ordinary-completes-before-workflow".to_string(),
                             completed_at_ms: crate::session::unix_epoch_ms(),
@@ -723,6 +724,7 @@ async fn project_completion_answering_harvest(
                         notices: Vec::new(),
                         completions: vec![crate::transport::relay_peer::RelayProjectedCompletion {
                             model_usage: Vec::new(),
+                            background_notifications: Vec::new(),
                             failure: None,
                             message_id,
                             completed_at_ms: crate::session::unix_epoch_ms(),

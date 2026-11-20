@@ -601,6 +601,7 @@ mod tests {
                     notices: Vec::new(),
                     completions: vec![crate::transport::relay_peer::RelayProjectedCompletion {
                         model_usage: Vec::new(),
+                        background_notifications: Vec::new(),
                         message_id: format!("completion-{home_prompt_id}"),
                         completed_at_ms: crate::session::unix_epoch_ms(),
                         home_prompt_id: Some(home_prompt_id.into()),
@@ -835,6 +836,7 @@ mod tests {
                         notices: Vec::new(),
                         completions: vec![crate::transport::relay_peer::RelayProjectedCompletion {
                             model_usage: Vec::new(),
+                            background_notifications: Vec::new(),
                             message_id: format!("completion-{id}"),
                             completed_at_ms: crate::session::unix_epoch_ms(),
                             home_prompt_id: Some(id.into()),
