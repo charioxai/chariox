@@ -2,8 +2,9 @@
 use super::runtime_vault_unlock_state::{expand_vault_path, vault_unlock_request_lock};
 use super::*;
 use crate::provider_account_copy::{
-    failure, ProviderAccountCopyBinding, ProviderAccountCopyCredential, ProviderAccountCopyReceipt,
-    PROVIDER_ACCOUNT_COPY_CAPABILITY,
+    failure, native_copy_credential_path, ProviderAccountCopyBinding,
+    ProviderAccountCopyCredential, ProviderAccountCopyReceipt, PROVIDER_ACCOUNT_COPY_CAPABILITY,
+    PROVIDER_ACCOUNT_NATIVE_COPY_CAPABILITY,
 };
 
 fn unlocked(config: &crate::config::DaemonConfig) -> Result<(), DaemonError> {
@@ -62,6 +63,7 @@ impl KernelRuntimeState {
             replace: request.replace,
         };
         binding.validate()?;
+        let native_path = native_copy_credential_path(&binding.provider);
         let owner = self.provider_account_authority_owner_user_id(caller);
         let profile = self
             .provider_account_profile_registry()
@@ -69,12 +71,13 @@ impl KernelRuntimeState {
             .map_err(|_| failure("provider_account_copy_profile"))?;
         if profile.profile_id != binding.source_profile_id
             || profile.auth_state != crate::account_profile::ProviderAccountAuthState::Authenticated
-            || !crate::provider::provider_account_credential_uses_vault(
-                &owner,
-                &binding.provider,
-                &profile.profile_id,
-            )
-            .map_err(|_| failure("provider_account_copy_profile"))?
+            || (native_path.is_none()
+                && !crate::provider::provider_account_credential_uses_vault(
+                    &owner,
+                    &binding.provider,
+                    &profile.profile_id,
+                )
+                .map_err(|_| failure("provider_account_copy_profile"))?)
         {
             return Err(failure("provider_account_copy_profile"));
         }
@@ -102,11 +105,12 @@ impl KernelRuntimeState {
         {
             return Err(failure("provider_account_copy_unauthorized"));
         }
-        if !peer
-            .capabilities
-            .iter()
-            .any(|c| c == PROVIDER_ACCOUNT_COPY_CAPABILITY)
-        {
+        let capability = if native_path.is_some() {
+            PROVIDER_ACCOUNT_NATIVE_COPY_CAPABILITY
+        } else {
+            PROVIDER_ACCOUNT_COPY_CAPABILITY
+        };
+        if !peer.capabilities.iter().any(|c| c == capability) {
             return Err(failure("provider_account_copy_unsupported"));
         }
         let target = ClientTarget {
@@ -122,7 +126,22 @@ impl KernelRuntimeState {
         {
             return Err(failure("provider_account_copy_unsupported"));
         }
-        let credential = {
+        let credential = if let Some(path) = native_path {
+            let materialization = self
+                .provider_account_profile_registry()
+                .export_managed_context_materialization(
+                    &owner,
+                    &binding.provider,
+                    &profile.profile_id,
+                )
+                .map_err(|_| failure("provider_account_copy_profile"))?;
+            let file = materialization
+                .files
+                .into_iter()
+                .find(|file| file.relative_path == path)
+                .ok_or_else(|| failure("provider_account_copy_profile"))?;
+            ProviderAccountCopyCredential::new(file.contents_base64)
+        } else {
             let _unlock = vault_unlock_request_lock(&expand_vault_path(
                 &config.user_config.credential_vault.path,
             ))
@@ -212,11 +231,48 @@ impl KernelRuntimeState {
         {
             return Err(failure("provider_account_copy_unauthorized"));
         }
-        if credential.value().is_empty() || credential.value().len() > 16 * 1024 {
+        let native = native_copy_credential_path(&binding.provider).is_some();
+        if credential.value().is_empty() || (!native && credential.value().len() > 16 * 1024) {
             return Err(failure("invalid_request"));
         }
         let owner = self.provider_account_authority_owner_user_id(&profile.user_id);
         let profiles = self.provider_account_profile_registry().clone();
+        if native {
+            if binding.replace
+                && profiles
+                    .get(&owner, &binding.provider, &binding.target_profile_id())
+                    .is_ok()
+            {
+                crate::runtime::provider_account_control::ensure_profile_idle(
+                    self,
+                    &profiles,
+                    &owner,
+                    &binding.provider,
+                    &binding.target_profile_id(),
+                )
+                .map_err(|_| failure("provider_account_copy_conflict"))?;
+            }
+            let receipt = tokio::task::spawn_blocking(move || {
+                let receipt =
+                    profiles.install_account_copy(&config, &owner, &binding, &credential)?;
+                // As with a managed-machine import, the native provider owns
+                // validation. A missing executable does not undo the copy.
+                let _ = crate::local::provider_requests::observe_provider_auth_status(
+                    &profiles,
+                    &owner,
+                    &receipt.provider,
+                    &receipt.account_profile,
+                    &config,
+                );
+                Ok::<_, DaemonError>(receipt)
+            })
+            .await
+            .map_err(|_| failure("provider_account_copy_install_failed"))??;
+            self.with_app_side_effect(|app| app.invalidate_provider_catalog_cache())
+                .await;
+            self.record_room_list_change();
+            return Ok(receipt);
+        }
         let unlock = vault_unlock_request_lock(&expand_vault_path(
             &config.user_config.credential_vault.path,
         ))

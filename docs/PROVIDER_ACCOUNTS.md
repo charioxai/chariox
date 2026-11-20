@@ -113,7 +113,7 @@ MP-08 / MP-11: `claude`, `claude-p`, and `claude-headless` share one account cre
 
 ## Explicit account copy to another kernel
 
-MP-08 / MP-09 / MP-10 / MP-11: `CopyProviderAccountToKernel` copies one authenticated Vault-backed Claude account to an enrolled same-owner kernel over the encrypted peer channel. Ordinary owner Copy stays credential-free. The target verifies with official Claude and owns an independent managed profile and provider-only Vault handle. See [the account-copy drill](drills/PROVIDER_ACCOUNT_COPY.md) for the request, conflict/retry rules and real acceptance requirements.
+`CopyProviderAccountToKernel` copies an authenticated provider account to an enrolled same-owner kernel over the encrypted peer channel. OpenCode and Codex carry their existing native auth file into an independent managed profile. Claude setup tokens use the target’s provider-only Vault handle and official Claude verification. Ordinary owner Copy stays credential-free. See [the account-copy drill](drills/PROVIDER_ACCOUNT_COPY.md) for conflict and retry rules and acceptance cases.
 
 ## Signing in from a Vault entry
 

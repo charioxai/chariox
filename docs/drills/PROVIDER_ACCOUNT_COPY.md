@@ -1,8 +1,10 @@
 # MP-08 / MP-09 / MP-10 / MP-11 — independent provider account copy
 
-`CopyProviderAccountToKernel` is an explicit source-kernel operation. It is separate from credential-free owner Copy and copies exactly one authenticated Vault-backed Claude profile. The request contains `provider`, exact `account_profile`, stable `operation_id`, enrolled `target_kernel_id`, pinned `target_key_thumbprint`, and `replace` (false by default). The source caller must be its local or enrolled Cloud owner under existing kernel access authority.
+`CopyProviderAccountToKernel` is an explicit source-kernel operation for one authenticated profile. Supported profiles include native OpenCode and Codex logins and Vault-backed Claude setup tokens. The request contains `provider`, exact `account_profile`, stable `operation_id`, enrolled `target_kernel_id`, pinned `target_key_thumbprint`, and `replace` (false by default). The source caller must be its local or enrolled Cloud owner under existing kernel access authority.
 
-The source checks the existing authenticated Cloud owner-peer directory, live relay key, advertised `provider_account_copy_v1` capability and peer protocol >=215 before resolving the selected Vault credential. The protected encrypted peer payload binds provider/profile, source/destination identities and keys, operation ID and replacement choice. No local response carries the credential. The target validates relay-bound owner/realm/key claims and its own enrollment, then verifies using official Claude. It stores under its own canonical provider-only Vault handle before atomically publishing the managed profile and safe receipt. No credential enters native profile files. Target and source remain independent.
+The source checks the authenticated Cloud owner-peer directory, live relay key, advertised copy capability and peer protocol >=215 before resolving the selected login. The encrypted peer payload binds the account profile, source and destination identities and keys, operation ID and replacement choice. Local responses contain metadata only.
+
+For OpenCode and Codex, the source uses the same credential-only file export as managed-machine context transfer. The receiver advertises `provider_account_native_copy_v1`. The original bytes of OpenCode's `data/opencode/auth.json` or Codex's `auth.json` cross the encrypted peer channel and land in the receiving managed profile's native file. The receiver then asks the native provider for status. For Claude setup tokens, official Claude verifies the credential and the receiver stores it under its own provider-only Vault handle. Each kernel owns its later sign-in, refresh and logout state independently.
 
 The target derives a stable copy profile ID from source kernel/key/provider/profile and destination kernel. Existing profiles need a new operation with explicit replacement. Successful exact-operation retries return the saved receipt. Interrupted publication can retry after recovery; an orphan Vault handle is not a selectable authenticated profile. Verification failure leaves the previous profile and credential intact. Unlock Vaults through existing product controls; this operation does not solicit or accept passkeys or raw credentials.
 
@@ -24,7 +26,7 @@ MP-08 / MP-09 / MP-10 / MP-11: verification releases the profile registry lock a
 
 MP-08 / MP-09 / MP-10 / MP-11: local protocol 710 and peer protocol 274 add
 `ListProviderAccountCopyOffers` and `CopyProviderAccountFromKernel`. Offers are
-metadata for authenticated, Vault-backed Claude profiles on live, same-owner
+metadata for authenticated, native OpenCode, native Codex and Vault-backed Claude profiles on live, same-owner
 enrolled peers with pinned keys and `provider_account_copy_pull_v1`. They are
 separate from the receiving kernel's selectable local profile inventory. The relay metadata
 uses an explicit `copyable` flag; native authentication type retains its meaning.
