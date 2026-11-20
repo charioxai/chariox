@@ -1147,7 +1147,17 @@ impl RuntimeSession {
         }
     }
 
-    pub fn add_active_interaction(&mut self, interaction: RuntimeInteraction) {
+    /// Insert a card admitted by the kernel registry.
+    pub(crate) fn add_active_interaction(&mut self, card: crate::runtime::state::LiveRoomCard) {
+        self.insert_interaction(card.into_presentation());
+    }
+
+    #[cfg(test)]
+    pub(crate) fn add_interaction_fixture(&mut self, interaction: RuntimeInteraction) {
+        self.insert_interaction(interaction);
+    }
+
+    fn insert_interaction(&mut self, interaction: RuntimeInteraction) {
         self.active_interactions.retain(|existing| {
             existing.id() != interaction.id()
                 && (existing.subject() != interaction.subject()
@@ -1159,16 +1169,27 @@ impl RuntimeSession {
             .sort_by_key(|left| (left.asking_task_id().is_some(), left.requested_at_ms()));
     }
 
-    /// Swaps the content of an open card for a fresh question with the same id, in the same place.
-    pub(crate) fn replace_active_interaction(&mut self, interaction: RuntimeInteraction) -> bool {
+    /// Refresh an existing presentation without changing its admission identity.
+    pub(crate) fn update_active_interaction(
+        &mut self,
+        id: &str,
+        update: impl FnOnce(RuntimeInteraction) -> RuntimeInteraction,
+    ) -> bool {
         let Some(open) = self
             .active_interactions
             .iter_mut()
-            .find(|open| open.id() == interaction.id())
+            .find(|open| open.id() == id)
         else {
             return false;
         };
-        *open = interaction;
+        let refreshed = update(open.clone());
+        if refreshed.id() != open.id()
+            || refreshed.subject() != open.subject()
+            || refreshed.kind() != open.kind()
+        {
+            return false;
+        }
+        *open = refreshed;
         true
     }
 

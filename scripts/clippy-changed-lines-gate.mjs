@@ -107,6 +107,10 @@ async function main() {
   const explicitBase = process.argv[2]?.trim()
   const base = clippyComparisonBase(explicitBase, process.env)
   const repositoryRoot = runGit(["rev-parse", "--show-toplevel"])
+  const cards = spawnSync(process.execPath, ["scripts/checks/run.mjs", "--only", "runtime-card-registry"], {
+    cwd: repositoryRoot, stdio: "inherit", env: { ...process.env, CHARIOX_BOUNDARY_BASE: base },
+  })
+  if (cards.status !== 0) throw new Error("Kernel card registry check failed")
   // The baseline checkout may carry an older pin; compare both with HEAD's compiler.
   const active = spawnSync("rustup", ["show", "active-toolchain"], {
     cwd: repositoryRoot, encoding: "utf8",

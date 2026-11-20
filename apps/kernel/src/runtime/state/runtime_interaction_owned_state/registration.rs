@@ -3,13 +3,14 @@ use super::*;
 impl KernelRuntimeOwnedState {
     pub(in crate::runtime::state) fn register_runtime_interaction(
         &self,
+        request: super::card_registry::CardRequest,
         session_id: &str,
-        interaction: crate::session::RuntimeInteraction,
         responder: tokio::sync::oneshot::Sender<super::super::PendingInteractionResolution>,
         kernel_operation_owner: Option<&str>,
         forwarding: Option<&crate::transport::relay_peer::RemoteNativeInteractionContext>,
         terminal_credential_owner: Option<&str>,
     ) -> Result<(), DaemonError> {
+        let super::card_registry::CardRequest(kind, interaction) = request;
         let _admission = self.begin_managed_activity_admission()?;
         self.sweep_stale_task_owner_interactions()?;
         let _mutation = self
@@ -46,6 +47,7 @@ impl KernelRuntimeOwnedState {
                 return Err(interaction_error("Invalid unattached decision authority"));
             }
             return self.register_user_domain_interaction(
+                kind,
                 interaction,
                 responder,
                 kernel_operation_owner,
@@ -57,6 +59,7 @@ impl KernelRuntimeOwnedState {
                 .is_some_and(|id| id.starts_with(crate::runtime::state::VAULT_SECRET_OPERATION))
             {
                 return self.register_kernel_wide_secret_interaction(
+                    kind,
                     interaction,
                     responder,
                     kernel_operation_owner,
@@ -65,6 +68,7 @@ impl KernelRuntimeOwnedState {
                 );
             }
             return self.register_kernel_wide_access_interaction(
+                kind,
                 interaction,
                 responder,
                 kernel_operation_owner,
@@ -435,7 +439,8 @@ impl KernelRuntimeOwnedState {
         let worker_live = pending.agent_lifetime.as_ref().is_none_or(|lifetime| {
             self.worker_interaction_binding_is_live(lifetime, remote_binding.as_ref(), &session)
         });
-        if !worker_live || !self.agent_interaction_turn_is_live(&pending, &session) {
+        let Ok(card) = self.admit_room_card(kind, interaction, &pending, &session, worker_live)
+        else {
             if let Some(sender) = pending
                 .responder
                 .lock()
@@ -449,23 +454,25 @@ impl KernelRuntimeOwnedState {
                 });
             }
             return Ok(());
-        }
+        };
+        let interaction = super::card_registry::card_presentation(&card);
         if pending.terminal_credential_owner.is_none() && pending.kernel_operation_owner.is_none() {
             pending.goal_approval = self.begin_goal_native_approval(
                 session_id,
-                &interaction,
+                interaction,
                 pending.agent_lifetime.as_ref(),
             )?;
         }
         if let Err(error) = self.publish_outside_interaction(
             session_id,
-            &interaction,
+            interaction,
             InteractionPhase::Pending(&pending),
         ) {
             self.answer_goal_native_approval(pending.goal_approval.as_ref())?;
             return Err(error);
         }
-        session.add_active_interaction(interaction.clone());
+        let interaction = interaction.clone();
+        session.add_active_interaction(card);
         let identity = pending.responder.clone();
         if passkey_prompt.is_some() {
             self.passkey_prompts

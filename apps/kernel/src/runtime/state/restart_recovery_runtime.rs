@@ -3366,7 +3366,11 @@ mod tests {
         )
         .with_native_origin(Some(origin));
         let _pending = runtime
-            .create_runtime_interaction(&session_id, popup)
+            .create_runtime_interaction(
+                crate::runtime::state::CardKind::NativePermissionInput,
+                &session_id,
+                popup,
+            )
             .await
             .expect("the popup is pending when the kernel stops");
         runtime

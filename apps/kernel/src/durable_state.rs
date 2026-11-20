@@ -68,6 +68,7 @@ pub(crate) use event_connection_imports::{
 };
 mod event_reader;
 mod owner;
+pub(crate) mod owner_handoff;
 mod retired_sessions;
 pub(crate) mod room_environment;
 pub(crate) mod skill_reset;

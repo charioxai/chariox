@@ -38,10 +38,10 @@ async fn async_popup_browser_region_preserves_equal_timestamp_card_order() {
         let second = session.remove_active_interaction(second_id).unwrap();
         let mut second = serde_json::to_value(second).unwrap();
         second["requested_at_ms"] = first.requested_at_ms().into();
-        session.add_active_interaction(first.with_view(crate::session::RuntimeInteractionView {
+        session.add_interaction_fixture(first.with_view(crate::session::RuntimeInteractionView {
             browser_region: region.clone(),
         }));
-        session.add_active_interaction(serde_json::from_value(second).unwrap());
+        session.add_interaction_fixture(serde_json::from_value(second).unwrap());
         sessions.restore_session(session);
     }
     let mut moved = region.clone();
@@ -124,7 +124,7 @@ async fn async_popup_browser_region_projects_movement_and_closes_exactly_once_on
         let mut sessions = f.runtime.owned.session_store.write();
         let mut session = sessions.get_session(&f.room).unwrap();
         let card = session.remove_active_interaction(id).unwrap();
-        session.add_active_interaction(card.with_view(crate::session::RuntimeInteractionView {
+        session.add_interaction_fixture(card.with_view(crate::session::RuntimeInteractionView {
             browser_region: initial.clone(),
         }));
         sessions.restore_session(session);
@@ -184,7 +184,7 @@ async fn a_browser_region_card_is_raised_answered_by_the_owner_and_closed() {
         let mut sessions = f.runtime.owned.session_store.write();
         let mut session = sessions.get_session(&f.room).unwrap();
         let card = session.remove_active_interaction(id).unwrap();
-        session.add_active_interaction(card.with_view(crate::session::RuntimeInteractionView {
+        session.add_interaction_fixture(card.with_view(crate::session::RuntimeInteractionView {
             browser_region: browser_region(),
         }));
         sessions.restore_session(session);
@@ -673,7 +673,11 @@ async fn async_popup_keeps_multiple_questions_and_prioritizes_a_blocking_card() 
     );
     let receiver = f
         .runtime
-        .create_runtime_interaction(&f.room, blocking)
+        .create_runtime_interaction(
+            crate::runtime::state::CardKind::NativePermissionInput,
+            &f.room,
+            blocking,
+        )
         .await
         .unwrap();
     let session = f.runtime.owned.session_store.get_session(&f.room).unwrap();
@@ -1428,7 +1432,11 @@ async fn answering_a_card_on_a_managed_kernel_does_not_wait_for_itself() {
     );
     let receiver = f
         .runtime
-        .create_runtime_interaction(&f.room, card)
+        .create_runtime_interaction(
+            crate::runtime::state::CardKind::NativePermissionInput,
+            &f.room,
+            card,
+        )
         .await
         .unwrap();
     let runtime = f.runtime.clone();
@@ -1472,7 +1480,7 @@ async fn async_popup_browser_verification_requires_this_cards_positive_receipt()
         let mut sessions = f.runtime.owned.session_store.write();
         let mut session = sessions.get_session(&f.room).unwrap();
         let card = session.remove_active_interaction(id).unwrap();
-        session.add_active_interaction(card.with_view(crate::session::RuntimeInteractionView {
+        session.add_interaction_fixture(card.with_view(crate::session::RuntimeInteractionView {
             browser_region: region.clone(),
         }));
         sessions.restore_session(session);

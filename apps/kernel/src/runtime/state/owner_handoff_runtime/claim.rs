@@ -81,11 +81,11 @@ impl KernelRuntimeOwnedState {
         let activity_mutation = self.begin_managed_activity_mutation();
         let mut sessions = self.session_store.write();
         let mut session = sessions.get_session(session_id)?.clone();
-        let handoff = session
-            .active_interactions()
-            .iter()
-            .find(|i| i.id() == interaction_id)
-            .and_then(|i| i.handoff().cloned())
+        let handoff = self
+            .durable_state_store
+            .owner_handoff(interaction_id)?
+            .filter(|record| record.room == session_id)
+            .map(|record| record.handoff)
             .ok_or_else(|| handoff_error("hand-off is not pending"))?;
         if crate::session::unix_epoch_ms() >= handoff.expires_at_ms {
             return Err(handoff_error("hand-off expired"));
