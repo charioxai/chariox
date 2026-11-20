@@ -4,8 +4,8 @@
 //! profile), Vault, credentials, machine identity, relay pairing and history.
 //! What is the agent's own stays: the paths its launch names (working folder,
 //! provider profile, scratch folder, program) are mounted back, and the
-//! chariox CLI keeps the kernel registry and local sign-in token it reads to
-//! reach this kernel, read-only.
+//! chariox CLI keeps the kernel registry read-only. The provider receives its
+//! own CLI credential in its launch environment.
 //!
 //! Secrets live in folders of their own, and exactly those folders are
 //! covered, matched by path component: a folder that only shares a name prefix
@@ -382,12 +382,9 @@ fn secrets() -> Secrets {
 
 /// What the chariox CLI reads to reach this kernel.
 fn cli_paths() -> Vec<PathBuf> {
-    vec![
-        crate::config::default_state_dir().join("kernel-local-auth"),
-        crate::config::default_config_dir()
-            .join("kernels")
-            .join("active"),
-    ]
+    vec![crate::config::default_config_dir()
+        .join("kernels")
+        .join("active")]
 }
 
 fn existing_canonical(paths: Vec<PathBuf>) -> Vec<PathBuf> {

@@ -386,6 +386,15 @@ impl DaemonConfig {
         format!("{}/kernel", self.kernel_websocket_origin())
     }
 
+    pub(crate) fn agent_cli_endpoint(&self) -> String {
+        let host = if self.kernel_websocket_host.contains(':') {
+            "[::1]"
+        } else {
+            "127.0.0.1"
+        };
+        format!("ws://{host}:{}", self.kernel_websocket_port)
+    }
+
     /// The endpoint kernel clients connect to: without a path, which is what a
     /// credential read from the environment is bound to.
     pub fn kernel_websocket_origin(&self) -> String {

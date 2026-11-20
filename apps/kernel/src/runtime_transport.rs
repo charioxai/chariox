@@ -34,6 +34,7 @@ use crate::transport::kernel_protocol::{
     KernelTransportError, ROOM_LIST_SENTINEL_ID, ROOM_LIST_SUBSCRIPTION_SCOPE,
 };
 
+pub(crate) mod agent_cli;
 mod local_auth;
 mod local_presence;
 pub(crate) mod unix_access;
@@ -910,6 +911,7 @@ async fn handle_kernel_connection(
         &router.kernel_local_socket_path(),
     );
     let mut local_credential = None;
+    let mut agent_run_id = None;
     let socket = accept_hdr_async(
         stream,
         |request: &tokio_tungstenite::tungstenite::handshake::server::Request, response| {
@@ -919,7 +921,16 @@ async fn handle_kernel_connection(
                 *error.status_mut() = StatusCode::FORBIDDEN;
                 return Err(error);
             }
-            let Some(credential) = local_auth.admit(request.headers().get("authorization")) else {
+            let authorization = request.headers().get("authorization");
+            if peer_addr.is_some_and(|address| address.ip().is_loopback()) {
+                agent_run_id = authorization
+                    .and_then(|header| header.to_str().ok())
+                    .and_then(|authorization| agent_cli::admit(&router, authorization));
+                if agent_run_id.is_some() {
+                    return Ok(response);
+                }
+            }
+            let Some(credential) = local_auth.admit(authorization) else {
                 local_auth.record(
                     if request.headers().contains_key("authorization") {
                         local_auth::KernelLocalCredential::Wrong
@@ -945,7 +956,7 @@ async fn handle_kernel_connection(
         local_auth.record(credential, peer_addr);
     }
     let connection_class = local_credential.map_or(
-        KernelConnectionClass::Unauthenticated,
+        KernelConnectionClass::KernelAgent,
         local_auth::KernelLocalCredential::connection_class,
     );
     serve_kernel_socket(
@@ -955,6 +966,7 @@ async fn handle_kernel_connection(
         socket,
         connection_class,
         None,
+        agent_run_id,
     )
     .await
 }
@@ -977,6 +989,7 @@ where
         socket,
         KernelConnectionClass::Terminal,
         None,
+        None,
     )
     .await
 }
@@ -988,6 +1001,7 @@ async fn serve_kernel_socket<S>(
     socket: tokio_tungstenite::WebSocketStream<S>,
     connection_class: KernelConnectionClass,
     peer: Option<crate::runtime::kernel_access::process::ProcessIdentity>,
+    agent_run_id: Option<String>,
 ) -> Result<(), DaemonError>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
@@ -1117,6 +1131,9 @@ where
             message = reader.next() => match message { Some(message) => message, None => break },
             _ = access_tick.tick(), if peer.is_some() => {
                 router.runtime_state().pump_kernel_access();
+                if agent_run_id.as_deref().is_some_and(|id| router.active_agent_cli_run(id).is_none()) {
+                    break;
+                }
                 if !unix_access::delivery_live(&router.runtime_state(), peer.as_ref(), &bound_grant)
                     && connection_state.lock().await.outside_wait_requests.is_empty() { break; }
                 continue;
@@ -1147,6 +1164,7 @@ where
                         close_requested: &close_requested,
                         connection_class,
                         peer: peer.as_ref(),
+                        agent_run_id: agent_run_id.as_deref(),
                         bound_grant: &bound_grant,
                     },
                     payload.as_bytes(),
@@ -1166,6 +1184,7 @@ where
                         close_requested: &close_requested,
                         connection_class,
                         peer: peer.as_ref(),
+                        agent_run_id: agent_run_id.as_deref(),
                         bound_grant: &bound_grant,
                     },
                     &payload,
@@ -1335,6 +1354,7 @@ struct IncomingConnection<'a> {
     close_requested: &'a Arc<AtomicBool>,
     connection_class: KernelConnectionClass,
     peer: Option<&'a crate::runtime::kernel_access::process::ProcessIdentity>,
+    agent_run_id: Option<&'a str>,
     bound_grant: &'a Arc<std::sync::Mutex<Option<String>>>,
 }
 
@@ -1350,6 +1370,7 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
         close_requested,
         connection_class,
         peer,
+        agent_run_id,
         ..
     } = connection;
 
@@ -1358,6 +1379,19 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
     if close_requested.load(Ordering::SeqCst) {
         return;
     }
+
+    let agent_run = match agent_run_id {
+        Some(run_id) => match router.active_agent_cli_run(run_id) {
+            Some(run) => Some(run),
+            None => {
+                let _ = close_tx.send(ConnectionCloseCommand {
+                    reason: "agent CLI credential expired".into(),
+                });
+                return;
+            }
+        },
+        None => None,
+    };
 
     let frame = match serde_json::from_slice::<KernelIncomingFrame>(payload) {
         Ok(mut frame) => {
@@ -1455,15 +1489,16 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
                 }
                 return;
             }
-            let caller = match external_caller {
-                Some(caller) => caller,
-                None if connection_class == KernelConnectionClass::Terminal => {
+            let caller = match (external_caller, &agent_run) {
+                (Some(caller), _) => caller,
+                (None, Some(run)) => agent_cli::caller(run),
+                (None, None) if connection_class == KernelConnectionClass::Terminal => {
                     let connection_id = connection_state.lock().await.local_terminal_id.clone();
                     router
                         .local_terminal_caller(KernelCommandSource::LocalCli, &connection_id)
                         .await
                 }
-                None => {
+                (None, None) => {
                     router
                         .local_command_caller(KernelCommandSource::LocalCli, connection_class)
                         .await
@@ -1481,6 +1516,27 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
                 causation_id.clone(),
                 &request,
             );
+            if let Some(run) = &agent_run {
+                command.provider_run_id = Some(run.id().to_string());
+                let targeted_session = command.session_id.clone().or_else(|| {
+                    command
+                        .attachment_id
+                        .as_deref()
+                        .and_then(|id| router.session_id_for_attachment_access(id))
+                });
+                if targeted_session.is_some_and(|session| session != run.session_id()) {
+                    let _ = try_send_outgoing_frame(
+                        outgoing_tx,
+                        close_tx,
+                        close_requested,
+                        &runtime.transport_health,
+                        agent_cli::room_refusal(request_id),
+                        None,
+                        None,
+                    );
+                    return;
+                }
+            }
             command.terminal_lifetime =
                 Some(connection_state.lock().await.terminal_lifetime.clone());
             if peer.is_some() && matches!(&request, crate::local::LocalDaemonRequest::WaitEvents(_))
@@ -1509,7 +1565,10 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
             // any receipt lookup. Reconnects from that same authority share a
             // reservation; another peer or grant has a separate command scope.
             let cache_command_id = peer.map_or_else(
-                || command.command_id.clone(),
+                || match &agent_run {
+                    Some(run) => format!("agent:{}:{}", run.id(), command.command_id),
+                    None => format!("local:{}", command.command_id),
+                },
                 |peer| unix_access::command_cache_id(peer, &command),
             );
             let browser_revision = match router
@@ -1834,6 +1893,20 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
                 }
             };
             let scope = kernel_subscription_scope(subscription_scope.as_deref());
+            if agent_run.as_ref().is_some_and(|run| {
+                session_id != run.session_id() || scope == KernelSubscriptionScope::RoomList
+            }) {
+                let _ = try_send_outgoing_frame(
+                    outgoing_tx,
+                    close_tx,
+                    close_requested,
+                    &runtime.transport_health,
+                    agent_cli::room_refusal(request_id),
+                    None,
+                    None,
+                );
+                return;
+            }
             if scope == KernelSubscriptionScope::KernelResources {
                 refuse(KernelTransportError {
                     code: "kernel_resources_relay_only".into(),

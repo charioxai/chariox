@@ -95,8 +95,7 @@ impl DummyKernelHome {
              echo written > '{profile}/settings.json' && echo profile-writable\n\
              echo written > '{workspace}/file' && echo workspace-writable\n\
              echo written > \"$TMPDIR/file\" && echo scratch-writable\n\
-             cat '{home}/state/kernel-local-auth/7000.token' && echo\n\
-             echo x 2>/dev/null > '{home}/state/kernel-local-auth/7000.token' || echo local-auth-read-only\n\
+             test ! -r '{home}/state/kernel-local-auth/7000.token' && echo local-auth-hidden\n\
              cat '{home}/config.toml' && echo\n",
             state = self.home.join("state").display(),
             profile = self.profile.display(),
@@ -119,13 +118,12 @@ impl DummyKernelHome {
             "a secret reached the agent:\n{output}"
         );
         for reachable in [
-            "state: kernel-local-auth provider-accounts",
+            "state: provider-accounts",
             "own-login",
             "profile-writable",
             "workspace-writable",
             "scratch-writable",
-            "local-token",
-            "local-auth-read-only",
+            "local-auth-hidden",
             "# settings",
         ] {
             assert!(

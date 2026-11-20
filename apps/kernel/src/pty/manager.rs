@@ -656,7 +656,7 @@ impl PtyManager {
             message: "provider run does not define a managed PTY program".to_string(),
         })?;
 
-        let mut env = run.pty_env().clone();
+        let mut env = run.process_environment();
         crate::provider::apply_opencode_discovery_environment(run, &mut env)?;
         if run.read_only_discovery() {
             for name in crate::provider::managed_provider_parent_credential_env_remove() {

@@ -90,7 +90,7 @@ pub(crate) fn initialize_claude_runtime_with_credentials(
     if run.resume_state().claude_session_id().is_none() {
         args.extend(["--session-id".to_string(), session_id.clone()]);
     }
-    let env = run.pty_env().clone();
+    let env = run.process_environment();
     let context_file = env.get("CHARIOX_CLAUDE_NATIVE_CONTEXT").map(PathBuf::from);
     let settings_file = env.get("CHARIOX_CLAUDE_SETTINGS_FILE").map(PathBuf::from);
     let usage_file = env.get("CHARIOX_CLAUDE_USAGE_FILE").map(PathBuf::from);
@@ -635,7 +635,7 @@ fn claude_runtime_selection_changed(run: &RuntimeProviderRun, state: &ClaudeRunt
         || state.active_variant.as_deref() != run.variant()
         || state.active_execution_mode != run.execution_mode()
         || state.active_permission_level != run.permission_level()
-        || state.env != *run.pty_env()
+        || state.env != run.process_environment()
         || state.env_remove != claude_env_remove(run)
         || state.working_directory.as_ref() != run.working_directory()
 }
@@ -722,7 +722,7 @@ fn restart_claude_runtime(
     {
         args.extend([argument.to_string(), session_id.to_string()]);
     }
-    let env = run.pty_env().clone();
+    let env = run.process_environment();
     let env_remove = claude_env_remove(run);
     let working_directory = run.working_directory().cloned();
     let output_notifier = state.output_notifier.clone();
