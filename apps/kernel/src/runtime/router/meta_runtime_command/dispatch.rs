@@ -819,7 +819,7 @@ impl CommandRouter {
             (spawn.deadline, &response)
         {
             if let Err(error) = self
-                .arm_child_deadline(provider_run, session, metaagent, agent, after)
+                .arm_child_deadline(provider_run, metaagent, agent, after)
                 .await
             {
                 return Ok(meta_command_failure_result(command, error));

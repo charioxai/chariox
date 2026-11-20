@@ -275,6 +275,7 @@ impl KernelRuntimeState {
             local: Default::default(),
             remote_requested: Default::default(),
             owner_stops: Default::default(),
+            agent_cancels: Default::default(),
             remote_samples: Default::default(),
             remote_origins: Default::default(),
             return_grants: Default::default(),

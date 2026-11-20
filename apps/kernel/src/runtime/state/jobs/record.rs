@@ -70,7 +70,9 @@ impl JobDriver {
     pub(super) fn read(&self, id: &str) -> Result<Record, DaemonError> {
         let bytes = std::fs::read(self.path(id)?).map_err(|error| {
             if error.kind() == std::io::ErrorKind::NotFound {
-                ledger::error("job result is missing")
+                ledger::error(format!(
+                    "no saved result for {id}: the job never started, or its agent's time limit ended before it saved one. chariox.jobs.list shows the jobs of your own agent"
+                ))
             } else {
                 ledger::error("job result cannot be read")
             }

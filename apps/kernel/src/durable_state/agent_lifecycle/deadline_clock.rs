@@ -60,9 +60,6 @@ pub(super) fn resume_after_kernel_start(db: &Connection, now: u64) -> Result<(),
             .map_err(sql)?;
             deadline.deadline_ms = shifted(deadline.deadline_ms, down_ms)?;
             deadlines::save(db, &deadline)?;
-            deadlines::move_intent(db, &deadline.session_id, &deadline.agent_id, |intent| {
-                shifted(intent, down_ms)
-            })?;
         }
     }
     beat(db, now)
@@ -142,12 +139,8 @@ pub(super) fn worker_kept_held(
     if let Some(mut deadline) = deadlines::get(db, room, agent)?
         .filter(|deadline| deadline.state == AgentDeadlineState::Armed)
     {
-        let given_back = deadline.deadline_ms.saturating_sub(held);
         deadline.deadline_ms = held;
         deadlines::save(db, &deadline)?;
-        deadlines::move_intent(db, room, agent, |intent| {
-            Ok(intent.saturating_sub(given_back))
-        })?;
     }
     Ok(())
 }

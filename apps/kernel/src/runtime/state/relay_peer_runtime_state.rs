@@ -449,7 +449,6 @@ impl KernelRuntimeState {
                 room: backing.0,
                 agent: backing.1,
                 deadline: deadline_ms,
-                inherited: Vec::new(),
             },
         )?;
         Ok(())

@@ -304,7 +304,6 @@ async fn a_child_stopped_by_its_deadline_says_so() {
             room: team.room.clone(),
             agent: team.child.clone(),
             deadline: Some(deadline_ms),
-            inherited: Vec::new(),
         })
         .unwrap();
     store
@@ -536,7 +535,6 @@ async fn a_deadline_that_stops_a_working_child_tells_the_parent() {
             room: team.room.clone(),
             agent: team.child.clone(),
             deadline: Some(deadline_ms),
-            inherited: Vec::new(),
         })
         .unwrap();
     tokio::time::sleep(std::time::Duration::from_millis(80)).await;
@@ -551,9 +549,9 @@ async fn a_deadline_that_stops_a_working_child_tells_the_parent() {
     assert!(events[0].urgent);
 }
 
-// A4: the parent's deadline ends the sub-agents below it.
+// TL4: a parent's limit ends the parent only; the sub-agent below it keeps working.
 #[tokio::test]
-async fn a_parents_deadline_stops_the_working_sub_agent_below_it() {
+async fn a_parents_deadline_leaves_the_working_sub_agent_running() {
     let team = team_with("child-finished-parent-deadline", None, false).await;
     team.runtime
         .owned
@@ -562,7 +560,6 @@ async fn a_parents_deadline_stops_the_working_sub_agent_below_it() {
             room: team.room.clone(),
             agent: team.parent.clone(),
             deadline: Some(crate::session::unix_epoch_ms() + 30),
-            inherited: Vec::new(),
         })
         .unwrap();
     tokio::time::sleep(std::time::Duration::from_millis(80)).await;
@@ -570,7 +567,7 @@ async fn a_parents_deadline_stops_the_working_sub_agent_below_it() {
         .tick_agent_deadlines(crate::session::unix_epoch_ms())
         .await
         .unwrap();
-    assert_eq!(
+    assert_ne!(
         team.runtime
             .owned
             .provider_store
@@ -578,7 +575,7 @@ async fn a_parents_deadline_stops_the_working_sub_agent_below_it() {
             .unwrap()
             .state(),
         crate::provider::ProviderRunState::Ended,
-        "the child's run ended with its parent's deadline"
+        "the child's run goes on after its parent's limit ended"
     );
     assert!(
         team.runtime
@@ -587,8 +584,18 @@ async fn a_parents_deadline_stops_the_working_sub_agent_below_it() {
             .agent_tasks(Some(&team.room), Some(&team.child))
             .unwrap()
             .iter()
-            .all(|task| task.state
-                == crate::durable_state::agent_lifecycle::ExecutionState::Cancelled)
+            .any(|task| task.state
+                != crate::durable_state::agent_lifecycle::ExecutionState::Cancelled),
+        "the child's task was not cancelled"
+    );
+    assert!(
+        team.runtime
+            .owned
+            .durable_state_store
+            .agent_deadline(&team.room, &team.child)
+            .unwrap()
+            .is_none(),
+        "the child has no limit of its own"
     );
 }
 

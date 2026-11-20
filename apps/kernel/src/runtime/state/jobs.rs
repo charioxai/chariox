@@ -73,6 +73,9 @@ pub(super) struct JobDriver {
     local: Arc<local::LocalJobs>,
     remote_requested: std::sync::Mutex<BTreeSet<String>>,
     owner_stops: std::sync::Mutex<BTreeSet<String>>,
+    /// Jobs their agent cancelled itself with `chariox.jobs.cancel`, so a later time limit is not
+    /// named as the cause. Kept for this run of the kernel.
+    agent_cancels: std::sync::Mutex<BTreeSet<String>>,
     remote_samples:
         std::sync::Mutex<BTreeMap<String, Vec<crate::runtime::process_resources::SessionProcess>>>,
     remote_origins: std::sync::Mutex<BTreeMap<String, crate::runtime::kernel_gateway::Origin>>,

@@ -209,29 +209,17 @@ impl CommandRouter {
         })
     }
 
-    /// Sets the child's deadline to `after` from now, never later than the
-    /// parent's own. A child that cannot be bounded is not left running.
+    /// Sets the child's own deadline to `after` from now. The parent's limit does not bound it.
+    /// A child that cannot be bounded is not left running.
     pub(super) async fn arm_child_deadline(
         &self,
         provider_run: Option<&crate::provider::RuntimeProviderRun>,
-        session: &crate::session::RuntimeSession,
         parent: &crate::agent::AgentInstance,
         child: &crate::agent::AgentInstance,
         after: std::time::Duration,
     ) -> Result<(), DaemonError> {
-        let mut deadline_ms = crate::session::unix_epoch_ms()
+        let deadline_ms = crate::session::unix_epoch_ms()
             .saturating_add(u64::try_from(after.as_millis()).unwrap_or(u64::MAX));
-        if let LocalDaemonResponse::AgentDeadline {
-            deadline: Some(parent_deadline),
-        } = self
-            .runtime_state
-            .get_agent_deadline(crate::local::GetAgentDeadlineRequest {
-                session_id: session.id().to_string(),
-                agent_id: parent.id().to_string(),
-            })?
-        {
-            deadline_ms = deadline_ms.min(parent_deadline.deadline_ms);
-        }
         // A retried spawn finds its child already bounded; keep the earlier limit on a spawn retry.
         if let LocalDaemonResponse::AgentDeadline {
             deadline: Some(current),

@@ -464,7 +464,6 @@ async fn a_deadline_keeps_the_hold_until_it_fires_and_then_says_the_call_still_r
             room: team.room.clone(),
             agent: team.child.clone(),
             deadline: Some(deadline_ms),
-            inherited: Vec::new(),
         })
         .unwrap();
     sweep(&team).await;
@@ -479,7 +478,12 @@ async fn a_deadline_keeps_the_hold_until_it_fires_and_then_says_the_call_still_r
         .tick_agent_deadlines(crate::session::unix_epoch_ms())
         .await
         .unwrap();
-    let events = child_finished(&team);
+    // The child was also warned of its limit, which is a short turn of its own: look at the task
+    // that held the call.
+    let events = child_finished(&team)
+        .into_iter()
+        .filter(|event| event.payload["child_task_id"] == team.task.task_id.as_str())
+        .collect::<Vec<_>>();
     assert_eq!(events.len(), 1, "{events:?}");
     assert_eq!(events[0].payload["deadline_reached"], true);
     assert_eq!(events[0].payload["success"], false);
