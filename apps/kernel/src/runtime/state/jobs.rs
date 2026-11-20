@@ -28,9 +28,12 @@ mod never_fit_tests;
 #[cfg(test)]
 mod off_tests;
 mod pending_return;
+mod placed;
+mod placed_worker;
 mod projection;
 mod query;
 mod record;
+pub(super) mod refusal;
 mod remote;
 mod requests;
 #[cfg(test)]

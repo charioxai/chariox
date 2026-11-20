@@ -234,7 +234,8 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// skill delivery (Agent Move no longer lists skills and the per-agent skill grants are gone).
 /// The receiving agent’s deadline refusal is carried in the encrypted peer response.
 /// A peer spawn carries the starter's display name.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 449;
+/// Peer 452 carries placed job launch requests and their durable worker status.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 452;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
 pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = RELAY_PEER_PROTOCOL_VERSION;
@@ -268,6 +269,8 @@ pub enum LeasedWatchedProcessAction {
         wake: crate::durable_state::agent_lifecycle::AgentWake,
         binding: crate::durable_state::agent_lifecycle::LeasedProcessBinding,
         cwd: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        job: Option<Box<crate::local::RunJobRequest>>,
     },
     Query {
         wake_id: String,

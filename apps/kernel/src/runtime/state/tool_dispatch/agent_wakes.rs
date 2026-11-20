@@ -167,6 +167,7 @@ impl KernelRuntimeState {
                         .start_home_leased_process(
                             wake,
                             args["cwd"].as_str().map(str::to_string),
+                            None,
                             &task.task_id,
                             &task.prompt_id,
                         )

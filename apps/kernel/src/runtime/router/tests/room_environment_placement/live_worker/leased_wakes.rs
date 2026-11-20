@@ -2481,3 +2481,77 @@ mod process_requests;
 
 #[cfg(target_os = "linux")]
 mod watched_process_fences;
+
+#[test]
+fn placed_agent_jobs_use_the_worker_run() {
+    run_test(placed_agent_jobs);
+}
+
+async fn placed_agent_jobs() {
+    let _tools = with_room_tools();
+    let mut fixture = LiveWorker::start().await;
+    let worker = start_agent_worker(&fixture, agent_worker_state(&fixture)).await;
+    let room = fixture.rooms[0].clone();
+    let attachment = owner_attachment(&fixture, &room).await;
+    let agent =
+        spawn_on_agent_worker_with_model(&mut fixture, &room, "controlled-cancel-idle").await;
+    run_turn(&fixture, &room, &attachment, &agent, "placed jobs").await;
+    let store = store(&fixture).await;
+    let task = store
+        .agent_tasks(Some(&room), Some(&agent))
+        .unwrap()
+        .pop()
+        .unwrap();
+    let run = worker.run_for(&fixture, &agent, &task.prompt_id).await;
+    let token = run.runtime_mcp_auth_token().unwrap();
+    let call = |name, args: serde_json::Value| {
+        let mut args = args;
+        args["task_id"] = json!(task.task_id);
+        args["origin_prompt_id"] = json!(task.prompt_id);
+        worker
+            .router
+            .dispatch_authenticated_runtime_tool_call(token, name, args)
+    };
+    let workspace = run.working_directory().unwrap();
+    let marker = workspace.join("placed-job-marker");
+    let started = call("chariox.jobs.run", json!({
+        "command": ["/bin/sh", "-c", "printf placed > placed-job-marker; printf 'placed-result\\n'"],
+        "wait_s": 5
+    })).await;
+    if let Ok(result) = &started {
+        assert!(result.ok, "{result:?}");
+        let id = result.payload["job_id"].as_str().expect("job ID");
+        let status = call("chariox.jobs.status", json!({"job_id": id}))
+            .await
+            .unwrap();
+        assert_eq!(status.payload["result"]["exit_code"], 0);
+        assert_eq!(status.payload["result"]["output_tail"], "placed-result\n");
+        let list = call("chariox.jobs.list", json!({})).await.unwrap();
+        assert!(list.payload["jobs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|job| job["job_id"] == id));
+        assert_eq!(std::fs::read_to_string(marker).unwrap(), "placed");
+        let refused = call(
+            "chariox.jobs.run",
+            json!({
+                "command": ["/bin/true"], "cwd": "no-such-directory"
+            }),
+        )
+        .await
+        .unwrap();
+        assert!(!refused.ok, "{refused:?}");
+        assert_eq!(refused.payload["retryable"], false);
+        assert!(
+            refused.payload["error"]
+                .as_str()
+                .unwrap()
+                .contains("directory"),
+            "{refused:?}"
+        );
+    }
+    worker.stop().await;
+    fixture.stop().await;
+    assert!(started.is_ok(), "{started:?}");
+}

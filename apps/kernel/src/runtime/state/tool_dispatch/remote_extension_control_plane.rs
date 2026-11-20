@@ -138,13 +138,18 @@ impl KernelRuntimeState {
             return Ok(None);
         };
         // Event tools may wait at home for an owner decision.
-        let min_response_timeout =
-            if crate::transport::runtime_tools::canonical_agent_event_tool_name(tool_name).is_some()
-            {
-                OWNER_DECISION_FORWARD_TIMEOUT
-            } else {
-                Default::default()
-            };
+        let min_response_timeout = if tool_name == "chariox.jobs.run" {
+            OWNER_DECISION_FORWARD_TIMEOUT
+                + std::time::Duration::from_secs(
+                    arguments["wait_s"].as_u64().unwrap_or_default().min(600),
+                )
+        } else if crate::transport::runtime_tools::canonical_agent_event_tool_name(tool_name)
+            .is_some()
+        {
+            OWNER_DECISION_FORWARD_TIMEOUT
+        } else {
+            Default::default()
+        };
         self.forward_meta_runtime_tool(remote_context, tool_name, arguments, min_response_timeout)
             .await
             .map(Some)

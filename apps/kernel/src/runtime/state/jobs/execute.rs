@@ -182,7 +182,7 @@ impl Output {
     }
 }
 
-fn selected_environment(
+pub(super) fn selected_environment(
     state: &KernelRuntimeState,
     record: &Record,
 ) -> Result<BTreeMap<String, Zeroizing<String>>, DaemonError> {
@@ -279,6 +279,13 @@ impl KernelRuntimeState {
         } else {
             match selected_environment(self, &record) {
                 Err(error) => Err(error),
+                Ok(_) if record.runs_for_lease(&wake) && *cancelled.borrow() => {
+                    Ok(cancelled_result(&record))
+                }
+                Ok(environment) if record.runs_for_lease(&wake) => {
+                    self.run_local_job(&mut record, &environment, &mut output, &mut cancelled)
+                        .await
+                }
                 Ok(environment) => {
                     self.run_job(
                         &mut record,
@@ -905,7 +912,7 @@ pub(super) fn cancelled_result(record: &Record) -> JobResult {
     result.outcome = JobOutcome::Cancelled;
     result
 }
-fn failed(record: &Record, message: String) -> JobResult {
+pub(super) fn failed(record: &Record, message: String) -> JobResult {
     JobResult {
         exit_code: None,
         output_tail: message,
