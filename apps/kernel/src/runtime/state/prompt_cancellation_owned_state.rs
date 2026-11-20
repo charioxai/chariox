@@ -454,6 +454,55 @@ impl KernelRuntimeOwnedState {
         provider_run_id: Option<&str>,
         ending: PromptEnding,
     ) {
+        let (status, failure) = match ending {
+            PromptEnding::Cancelled => (
+                crate::git_observer::CompletedTurnSettlementStatus::Cancelled,
+                None,
+            ),
+            PromptEnding::InterruptedByRestart(_) => (
+                crate::git_observer::CompletedTurnSettlementStatus::Failed,
+                Some(ending.outcome()),
+            ),
+        };
+        self.record_prompt_settlement(
+            session_id,
+            agent_id,
+            prompt,
+            provider_run_id,
+            status,
+            failure,
+        );
+    }
+
+    /// A prompt the kernel could not deliver ends as a failed turn that says why,
+    /// not as a cancelled one with no reason.
+    pub(super) fn record_failed_prompt_settlement(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        prompt: &crate::session::PromptQueueItem,
+        provider_run_id: Option<&str>,
+        failure: crate::provider::TurnOutcome,
+    ) {
+        self.record_prompt_settlement(
+            session_id,
+            agent_id,
+            prompt,
+            provider_run_id,
+            crate::git_observer::CompletedTurnSettlementStatus::Failed,
+            Some(failure),
+        );
+    }
+
+    fn record_prompt_settlement(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        prompt: &crate::session::PromptQueueItem,
+        provider_run_id: Option<&str>,
+        status: crate::git_observer::CompletedTurnSettlementStatus,
+        failure: Option<crate::provider::TurnOutcome>,
+    ) {
         if let Some(run) = provider_run_id.and_then(|id| self.provider_store.get_run(id).ok()) {
             crate::app::clear_claude_context_delivery_for_settled_prompt(&run, prompt.id());
         }
@@ -481,16 +530,6 @@ impl KernelRuntimeOwnedState {
             .archive
             .mode
             == crate::config::HistoryArchiveMode::External;
-        let (status, failure) = match ending {
-            PromptEnding::Cancelled => (
-                crate::git_observer::CompletedTurnSettlementStatus::Cancelled,
-                None,
-            ),
-            PromptEnding::InterruptedByRestart(_) => (
-                crate::git_observer::CompletedTurnSettlementStatus::Failed,
-                Some(ending.outcome()),
-            ),
-        };
         self.operational_history_store.record_prompt_settlement(
             archive_enabled,
             session_id,
