@@ -124,6 +124,17 @@ pub(super) fn save(
     )
 }
 
+pub(super) fn remove(state: &KernelRuntimeState, record: &Record) -> Result<(), DaemonError> {
+    let path = directory(state, &record.room_id)
+        .join(&record.agent_id)
+        .join(format!("{}.json", record.job_id));
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(ledger::error(error.to_string())),
+    }
+}
+
 pub(super) fn read(state: &KernelRuntimeState, room: &str) -> Vec<Summary> {
     let Ok(entries) = std::fs::read_dir(directory(state, room)) else {
         return vec![];

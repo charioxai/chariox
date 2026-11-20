@@ -8,10 +8,7 @@ impl KernelRuntimeState {
         args: &serde_json::Value,
         task: &AgentTaskExecution,
     ) -> Result<serde_json::Value, DaemonError> {
-        let driver = self
-            .job_wake_driver
-            .as_ref()
-            .ok_or_else(|| ledger::error("job service unavailable"))?;
+        let driver = self.job_driver()?;
         if name == "chariox.jobs.list" {
             return Ok(self.own_job_list(task));
         }
@@ -111,18 +108,12 @@ impl KernelRuntimeState {
             }
             return Ok(value);
         }
-        let run =
-            run.ok_or_else(|| ledger::error("jobs require the home agent's active build run"))?;
-        let run = self.watched_process_run(run.id())?;
-        let mut arguments = args.clone();
-        let object = arguments
-            .as_object_mut()
-            .ok_or_else(|| ledger::error("job arguments must be an object"))?;
-        object.remove("task_id");
-        object.remove("origin_prompt_id");
-        let mut request: RunJobRequest = serde_json::from_value(arguments)
-            .map_err(|e| ledger::error(format!("Invalid job request: {e}")))?;
-        let command = validate(&request)?;
+        let mut request = parse_request(args)?;
+        let wake = new_job_wake(task, &request)?;
+        let Some(run) = run else {
+            return self.start_placed_job(task, wake, request).await;
+        };
+        let run = self.job_build_run(run.id())?;
         let machine = match &mut request.machine {
             Some(JobMachineTarget::Allocation(allocation)) => {
                 Some(self.held_machine_for_run(&run, allocation).await?)
@@ -138,62 +129,12 @@ impl KernelRuntimeState {
             }
             None => None,
         };
-        let workspace = run
-            .working_directory()
-            .ok_or_else(|| ledger::error("job workspace missing"))?
-            .canonicalize()
-            .map_err(|e| ledger::error(e.to_string()))?;
-        let cwd = match request.target_directory() {
-            Some(directory) => Path::new(directory).join(request.cwd.as_deref().unwrap_or("")),
-            None => super::agent_process_watch::workspace_cwd(&run, request.cwd.as_deref())?,
-        };
-        let mut wake = super::tool_dispatch::agent_wakes::new_wake(
-            task,
-            KIND,
-            super::agent_process_output::sanitize(
-                crate::runtime::process_resources::command_line(&command).as_bytes(),
-            )
-            .chars()
-            .take(200)
-            .collect(),
-            crate::session::unix_epoch_ms(),
-        );
-        wake.state = "starting".into();
-        wake.command = command;
+        let (workspace, cwd) = job_workspace(&run, &request)?;
         self.approve_agent_process(&run, &wake, &cwd, &task.prompt_id)
             .await?;
         self.authorize_current_external_command()?;
-        let id = format!("job-{:032x}", rand::random::<u128>());
-        let mut record = Record {
-            job_id: id.clone(),
-            wake_id: wake.id.clone(),
-            registration_id: wake.registration_id.clone(),
-            room_id: task.room_id.clone(),
-            agent_id: task.agent_id.clone(),
-            request: request.clone(),
-            workspace,
-            cwd,
-            placement: JobPlacement::Local,
-            started_at_ms: crate::session::unix_epoch_ms(),
-            running_at_ms: None,
-            state: "starting".into(),
-            allocation_ref: None,
-            capability_revision: None,
-            machine_label: None,
-            held_kernel_id: None,
-            address: None,
-            result: None,
-            exec_id: None,
-            class_id: None,
-            rate_per_minute: None,
-            estimate_micros: None,
-            deleted: false,
-            remote_available: false,
-            remote_refusal: None,
-            estimated_minutes: None,
-            memory_mib: None,
-            remote: RemoteStage::Idle,
-        };
+        let mut record = Record::new(&wake, request.clone(), workspace, cwd);
+        let id = record.job_id.clone();
         if let Some(machine) = &machine {
             record.placement = JobPlacement::Remote;
             record.machine_label = Some(machine.machine_label.clone());
@@ -240,7 +181,6 @@ impl KernelRuntimeState {
         if remote {
             record.placement = JobPlacement::Remote;
         }
-        wake.detail = serde_json::json!({"job_id":id});
         driver.save(&record)?;
         driver.pending.lock().expect("job pending").insert(
             wake.id.clone(),
@@ -254,15 +194,84 @@ impl KernelRuntimeState {
             return Err(error);
         }
         self.refresh_wake_projection(&task.room_id);
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(request.wait_s);
+        self.wait_for_job(&id, request.wait_s).await
+    }
+
+    pub(super) fn job_driver(&self) -> Result<&JobDriver, DaemonError> {
+        self.job_wake_driver
+            .as_deref()
+            .ok_or_else(|| ledger::error("job service unavailable"))
+    }
+
+    pub(super) fn job_build_run(
+        &self,
+        id: &str,
+    ) -> Result<crate::provider::RuntimeProviderRun, DaemonError> {
+        self.watched_process_run(id).map_err(|_| {
+            ledger::error("Jobs require an active unrestricted Build turn on the execution kernel")
+        })
+    }
+
+    pub(super) async fn wait_for_job(
+        &self,
+        id: &str,
+        wait_s: u64,
+    ) -> Result<serde_json::Value, DaemonError> {
+        let driver = self.job_driver()?;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(wait_s);
         loop {
-            let record = driver.read(&id)?;
+            let record = driver.read(id)?;
             if record.state == "finished" || tokio::time::Instant::now() >= deadline {
                 return self.job_response(record);
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     }
+}
+
+fn parse_request(args: &serde_json::Value) -> Result<RunJobRequest, DaemonError> {
+    let mut arguments = args.clone();
+    let object = arguments
+        .as_object_mut()
+        .ok_or_else(|| ledger::error("job arguments must be an object"))?;
+    object.remove("task_id");
+    object.remove("origin_prompt_id");
+    serde_json::from_value(arguments)
+        .map_err(|error| ledger::error(format!("Invalid job request: {error}")))
+}
+
+fn new_job_wake(
+    task: &AgentTaskExecution,
+    request: &RunJobRequest,
+) -> Result<AgentWake, DaemonError> {
+    let command = validate(request)?;
+    let mut wake = super::super::tool_dispatch::agent_wakes::new_wake(
+        task,
+        KIND,
+        super::super::agent_process_output::sanitize(
+            crate::runtime::process_resources::command_line(&command).as_bytes(),
+        )
+        .chars()
+        .take(200)
+        .collect(),
+        crate::session::unix_epoch_ms(),
+    );
+    wake.state = "starting".into();
+    wake.command = command;
+    wake.detail = serde_json::json!({"job_id": format!("job-{:032x}", rand::random::<u128>())});
+    Ok(wake)
+}
+
+pub(super) fn job_workspace(
+    run: &crate::provider::RuntimeProviderRun,
+    request: &RunJobRequest,
+) -> Result<(PathBuf, PathBuf), DaemonError> {
+    let workspace = super::super::agent_process_watch::workspace_cwd(run, None)?;
+    let cwd = match request.target_directory() {
+        Some(directory) => Path::new(directory).join(request.cwd.as_deref().unwrap_or("")),
+        None => super::super::agent_process_watch::workspace_cwd(run, request.cwd.as_deref())?,
+    };
+    Ok((workspace, cwd))
 }
 
 pub(super) fn validate(request: &RunJobRequest) -> Result<Vec<String>, DaemonError> {

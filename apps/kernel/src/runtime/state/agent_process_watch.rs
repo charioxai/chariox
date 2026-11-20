@@ -1413,6 +1413,7 @@ mod tests {
             })).unwrap();
             if rig.leased {
                 let receipt = crate::durable_state::agent_lifecycle::LeasedProcessReceipt {
+                    job: None,
                     binding: crate::durable_state::agent_lifecycle::LeasedProcessBinding {
                         worker_kernel_id: "worker".into(),
                         worker_machine_id: "machine".into(),

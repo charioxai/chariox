@@ -23,8 +23,10 @@ impl KernelRuntimeState {
         if current_run.id() != run.id() {
             return Err(ledger::error("stale provider tool authority"));
         }
-        self.dispatch_agent_event_tool_for(run.session_id(), actor, Some(run), name, args)
-            .await
+        let reply = self
+            .dispatch_agent_event_tool_for(run.session_id(), actor, Some(run), name, args)
+            .await;
+        super::super::jobs::refusal::tool_reply(name, reply)
     }
     /// A10: a leased agent's event tools reach the home ledger, which owns
     /// its waiting state and wake ordering. The forwarded context must name
@@ -44,8 +46,10 @@ impl KernelRuntimeState {
             ));
         }
         let agent = self.authorize_forwarded_workspace_context(context)?;
-        self.dispatch_agent_event_tool_for(&context.home_session_id, agent.id(), None, name, args)
-            .await
+        let reply = self
+            .dispatch_agent_event_tool_for(&context.home_session_id, agent.id(), None, name, args)
+            .await;
+        super::super::jobs::refusal::tool_reply(name, reply)
     }
     /// A10-S02: a message turn that interrupted a waiting task tends to reuse
     /// that task's ids to wait again. Name this turn's own ids, and say that
