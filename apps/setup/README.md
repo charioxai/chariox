@@ -18,6 +18,19 @@ Agents run inside Bubblewrap, so Linux Setup also checks that `bwrap` can make a
 mount namespace: run as root it installs the `bubblewrap` package with apt-get or
 dnf, otherwise it stops with the administrator command, before consuming an
 enrollment code.
+A fresh Linux installation provisions Claude Code, Codex CLI (including its
+code-mode host, rg and bwrap), and OpenCode before starting the kernel. Setup
+uses an explicit provider executable selection first, then the first match in
+the invoking user's PATH, then standard user and system locations. It prints the
+selected path and version and records the path in the kernel's user service.
+An existing executable stays where it is. If its version is older than Chariox's
+tested version, Setup shows how to update that installation through the
+provider. Missing CLIs are installed under `~/.local/share/chariox/providers`
+from the official platform packages pinned in the toolchain lockfile. Setup
+does not sign in to providers or change their configuration or account files.
+The Codex package's bwrap is for Codex. The kernel still needs the host's
+Bubblewrap and namespace support for its own agent confinement.
+
 The Linux executable carries its JavaScript runtime (no Node/Bun install); its
 libc floor is the build target's. CI also packages an unsigned amd64 `.deb`
 for Linux (libc 2.35+); it contains only the generic executable and metadata,
@@ -97,8 +110,47 @@ executing any downloaded binary. The existing Path-1 verifier/bootstrap and root
 App-runtime installer remain unchanged. Per-user setup doesn't enroll privileged
 App helpers or configure Docker/system services.
 
-The unsigned CI artifact is **not** ready for download. On the owner's signing
-machine, codesign/notarize/staple macOS artifacts first, then:
+### Publish Linux Setup
+
+Prepare the Linux x86_64 `bin/` tree from the release commit with the standalone
+`chariox`, `chariox-kernel`, `chariox-relay`, `chariox-app-package`, and
+`chariox-app-wasm-worker` executables. Use the Linux build instructions in
+[`release-bundle.yml`](../../.github/workflows/release-bundle.yml), including the
+Ubuntu 22.04 build for the supported glibc baseline.
+
+Miguel runs this once from the same release checkout on his signing machine,
+with Bun, GitHub CLI access to the public repository, the approved public pin,
+and his user-only Ed25519 PEM:
+
+```sh
+./scripts/publish-linux-setup.mjs --version "$VERSION" \
+  --public-key "$RELEASE_PUBLIC_HEX" --signing-key "$RELEASE_PRIVATE_PEM_PATH" \
+  --executables "$UNSIGNED_LINUX_DIRECTORY"
+```
+
+The command compiles Setup with the public pin, signs and verifies both the
+Linux bundle and standalone Setup, then uploads the six assets in one GitHub
+release. It prints the versioned HTTPS installer URL. A pre-existing tag must
+point at the release checkout. The signing key stays on the signing machine.
+
+Set Cloud's `CHARIOX_SETUP_INSTALL_URL` to the printed URL after the release is
+public. The published Linux installer with no arguments starts the device-code
+approval flow:
+
+```sh
+curl -fsSL "https://github.com/charioxai/chariox/releases/download/v$VERSION/install.sh" | sh
+```
+
+The Add this machine command passes `--enroll` and supplies a browser-issued code
+on stdin. Both forms install and start the kernel. Use `--install-only --login`
+explicitly for the separate terminal login flow.
+
+### Publish macOS Setup
+
+macOS publication is blocked on Miguel's Developer ID Application certificate
+and Apple notary credentials. The Linux command above can publish while those
+are pending. Once available, codesign/notarize/staple the macOS executable before
+computing its detached release signature:
 
 ```sh
 node scripts/sign-chariox-setup.mjs --artifact /path/to/final/executable \
@@ -106,12 +158,8 @@ node scripts/sign-chariox-setup.mjs --artifact /path/to/final/executable \
   --signer /absolute/owner-signing-hook
 ```
 
-The hook signs exact final bytes and writes their Ed25519 signature as lowercase
-hex. It keeps all private-key handling outside builders/source. The helper checks
-against the approved public pin before reporting success. CI produces generic
-unsigned Linux/macOS artifacts and the macOS app skeleton; the release-bundle
-workflow includes Setup in the signed CLI/kernel inventory. No CI is invoked by
-this lane, and no signing/private key is provisioned here.
+The owner hook signs the final bytes and writes their Ed25519 signature as
+lowercase hex. The helper verifies it against the approved public pin.
 
 ## MP-08 / MP-11 single-use browser codes
 

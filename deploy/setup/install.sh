@@ -7,7 +7,7 @@ release_key='@RELEASE_PUBLIC_KEY@'
 base='@RELEASE_BASE@'
 case "$(uname -s):$(uname -m)" in
   Linux:x86_64) platform=linux-x64 ;;
-  Darwin:arm64) platform=darwin-arm64 ;;
+  Darwin:arm64) @DARWIN_SETUP@ ;;
   *) printf '%s\n' 'MP-07/MP-08/MP-11: unsupported Setup platform' >&2; exit 1 ;;
 esac
 # No argument may carry a code. --enroll takes no value; Setup reads stdin or prompts once.
@@ -55,4 +55,4 @@ if ! openssl pkeyutl -verify -pubin -inkey "$stage/public.pem" -rawin -in "$stag
   printf '%s\n' 'MP-07/MP-11: Setup signature refused' >&2; exit 1
 fi
 chmod 700 "$stage/chariox-setup"
-"$stage/chariox-setup" --install-only --login "$@"
+"$stage/chariox-setup" "$@"
