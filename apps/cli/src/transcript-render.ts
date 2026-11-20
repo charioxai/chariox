@@ -252,6 +252,7 @@ function buildQueuedPromptTranscriptContent(
   actions.add(new TextRenderable(renderer, {
     content: ` ${queuedPromptMetaLabel({
       status: entry.queuedPrompt?.status,
+      launchWait: entry.queuedPrompt?.launchWait,
       attachmentCount: entry.queuedPrompt?.attachmentCount,
     })} `,
     fg: theme.textMuted,

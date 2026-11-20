@@ -8496,3 +8496,14 @@ Room session state omits `max_agents`. Kernel user configuration omits
 `workflow.session_default_max_agents`, and a remote peer spawn no longer
 returns `room_full`. Spawn and placement preserve the parent's authority and
 reject cycles.
+
+### Provider turns waiting for memory — local 1014 / relay peer 451
+
+A queued prompt can include `launch_wait`, the reason it is waiting to start.
+The kernel persists this reason with the prompt and promotes a person's queued
+turn ahead of queued automated turns when memory becomes available.
+
+A worker under memory pressure records `waiting_for_memory` for the home prompt
+and execution lease before reporting `provider_memory_wait` to the home kernel.
+The receipt carries no worker provider run. The home kernel can recover a lost
+response by querying this receipt, then return the same prompt to its queue.

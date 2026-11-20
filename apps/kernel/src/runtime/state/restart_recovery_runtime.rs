@@ -596,7 +596,7 @@ impl KernelRuntimeState {
                                 session_id == session.id() && queued_agent_id == agent_id
                             },
                         );
-                        (!held && !publication)
+                        (!held && !publication && prompt.launch_wait().is_none())
                             .then(|| (session.id().to_string(), agent_id.to_string()))
                     })
                     .collect::<Vec<_>>()
@@ -1076,6 +1076,12 @@ impl KernelRuntimeState {
         }
         let agent = self.owned.agent_store.get_agent(agent_id)?;
         if agent.remote_execution().is_some() {
+            return Ok(None);
+        }
+        if self
+            .owned
+            .hold_queued_provider_turn(&session, agent_id, &prompt)?
+        {
             return Ok(None);
         }
 

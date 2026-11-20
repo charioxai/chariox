@@ -779,6 +779,7 @@ pub struct LeasedSudoGrant {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LeasedPromptReceiptPhase {
+    WaitingForMemory,
     Active,
     Completed,
     SteerDispatching,
@@ -2300,6 +2301,10 @@ mod tests {
         );
 
         for (phase, phase_wire) in [
+            (
+                LeasedPromptReceiptPhase::WaitingForMemory,
+                "waiting_for_memory",
+            ),
             (
                 LeasedPromptReceiptPhase::SteerDispatching,
                 "steer_dispatching",

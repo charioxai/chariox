@@ -604,14 +604,19 @@ impl KernelRuntimeOwnedState {
             crate::session::unix_epoch_ms(),
         )?;
         let session = self.session_store.get_session(session_id)?;
-        if self
+        let Some(next) = self
             .prompt_state_owner
             .peek_next_queued_prompt(&session, agent_id)
-            .is_none_or(|prompt| prompt.remote_steer_reserved())
+            .filter(|prompt| !prompt.remote_steer_reserved())
+        else {
+            return Ok(None);
+        };
+        let agent = self.agent_store.get_agent(agent_id)?;
+        if agent.remote_execution().is_none()
+            && self.hold_queued_provider_turn(&session, agent_id, &next)?
         {
             return Ok(None);
         }
-        let agent = self.agent_store.get_agent(agent_id)?;
         if !self.provider_account_allows_queued_prompt_advance(
             session_id,
             &agent,
@@ -686,6 +691,9 @@ impl KernelRuntimeOwnedState {
             if next_prompt.remote_steer_reserved()
                 || expected_queue_id.is_some_and(|id| id != next_prompt.id())
             {
+                return Ok(None);
+            }
+            if self.hold_queued_provider_turn(&session, agent_id, &next_prompt)? {
                 return Ok(None);
             }
             let workflow_is_runnable =

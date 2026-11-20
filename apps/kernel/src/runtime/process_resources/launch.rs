@@ -172,6 +172,12 @@ impl LaunchAdmission {
         self.0.capacity()
     }
 
+    /// Provider turns have no declared memory request. Hold a new turn only
+    /// while the same physical-memory guard used by command admission is active.
+    pub(crate) fn provider_memory_is_short(&self) -> bool {
+        self.0.protection().memory && self.0.memory_emergency()
+    }
+
     pub(crate) fn expected_memory(&self, argv: &[String], cwd: &Path) -> Option<u64> {
         let seen = admission::seen_argv(0, argv, Some(cwd.to_path_buf()));
         self.0

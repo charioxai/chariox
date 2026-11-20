@@ -1018,7 +1018,7 @@ mod tests {
         };
         assert!(runtime
             .owned
-            .submit_local_prepared_prompt_for_provider_run(&prompt, Some(completed.id()))
+            .submit_local_prepared_prompt_for_provider_run(&prompt, Some(completed.id()), None)
             .expect("next prompt must use the completed home run's account authority")
             .is_some());
         let completed_agent = runtime.owned.agent_store.get_agent(agent.id()).unwrap();
@@ -1170,7 +1170,7 @@ mod tests {
         assert!(
             runtime
                 .owned
-                .submit_local_prepared_prompt_for_provider_run(&prompt, Some(completed.id()))
+                .submit_local_prepared_prompt_for_provider_run(&prompt, Some(completed.id()), None)
                 .is_err(),
             "authenticated replica must never rescue an expired home run"
         );

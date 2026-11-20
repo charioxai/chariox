@@ -55,6 +55,7 @@ fn leased_prompt_admission_receipt_projection(
     receipt: &WorkerPromptReceiptRecord,
 ) -> LeasedPromptReceipt {
     let phase = match receipt.receipt.phase {
+        WorkerPromptReceiptPhase::WaitingForMemory => LeasedPromptReceiptPhase::WaitingForMemory,
         WorkerPromptReceiptPhase::Dispatching => LeasedPromptReceiptPhase::SteerDispatching,
         WorkerPromptReceiptPhase::Accepted => LeasedPromptReceiptPhase::Active,
         WorkerPromptReceiptPhase::Rejected => LeasedPromptReceiptPhase::SteerRejected,
@@ -95,6 +96,32 @@ impl<'a> RemoteLeaseRuntime<'a> {
         leased_agent_id: &str,
         home_prompt_id: &str,
     ) -> Result<Option<WorkerPromptReceiptRecord>, DaemonError> {
+        self.start_leased_prompt_receipt(
+            leased_agent_id,
+            home_prompt_id,
+            WorkerPromptReceiptPhase::Dispatching,
+        )
+    }
+
+    pub(crate) fn wait_for_leased_prompt_memory(
+        &mut self,
+        leased_agent_id: &str,
+        home_prompt_id: &str,
+    ) -> Result<(), DaemonError> {
+        self.start_leased_prompt_receipt(
+            leased_agent_id,
+            home_prompt_id,
+            WorkerPromptReceiptPhase::WaitingForMemory,
+        )?;
+        Ok(())
+    }
+
+    fn start_leased_prompt_receipt(
+        &mut self,
+        leased_agent_id: &str,
+        home_prompt_id: &str,
+        phase: WorkerPromptReceiptPhase,
+    ) -> Result<Option<WorkerPromptReceiptRecord>, DaemonError> {
         if home_prompt_id.trim().is_empty() {
             return Ok(None);
         }
@@ -128,7 +155,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 home_prompt_id: home_prompt_id.to_string(),
                 worker_provider_run_id: None,
                 execution_lease_id: leased_agent.lease_id,
-                phase: WorkerPromptReceiptPhase::Dispatching,
+                phase,
             },
             caller,
             backing_prompt_id: None,

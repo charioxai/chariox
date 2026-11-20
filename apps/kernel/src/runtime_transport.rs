@@ -757,6 +757,12 @@ where
         .runtime_state()
         .spawn_managed_kernel_quiescence(quiescence_shutdown_rx);
     router.runtime_state().bind_job_recovery(&router);
+    let launch_admission_state = router.runtime_state();
+    launch_admission_state.sample_provider_turn_pressure(
+        &crate::runtime::process_resources::LaunchAdmission::default(),
+    );
+    let launch_admission_task =
+        tokio::spawn(async move { launch_admission_state.run_provider_turn_admission().await });
     let _restart_recovery_task = router.runtime_state().spawn_durable_restart_recovery();
     router.runtime_state().resume_file_transfers();
     let wake_state = router.runtime_state();
@@ -777,6 +783,7 @@ where
                     task.abort();
                 }
                 drop(_restart_recovery_task);
+                launch_admission_task.abort();
                 wake_scheduler_task.abort();
                 contended_claim_task.abort();
                 created_peer_release_task.abort();

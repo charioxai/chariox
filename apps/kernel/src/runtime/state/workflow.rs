@@ -380,7 +380,10 @@ impl KernelRuntimeOwnedState {
         let target_agent = self
             .agent_store
             .get_agent(prepared.prompt.target_agent_id())?;
-        let workflow_provider_run_id = if target_agent.remote_execution().is_none() {
+        let launch_wait = self.prompt_state_owner.provider_launch_wait();
+        let workflow_provider_run_id = if target_agent.remote_execution().is_none()
+            && launch_wait.is_none()
+        {
             let fresh_context = self.workflow_prompt_requires_fresh_provider_context(
                 &prepared.session_id,
                 prepared.prompt.target_agent_id(),
@@ -408,6 +411,7 @@ impl KernelRuntimeOwnedState {
         let mut submission = match self.submit_local_prepared_prompt_for_provider_run(
             prepared,
             workflow_provider_run_id.as_deref(),
+            launch_wait,
         )? {
             Some(submission) => submission,
             None => match self.submit_remote_prepared_prompt(prepared)? {

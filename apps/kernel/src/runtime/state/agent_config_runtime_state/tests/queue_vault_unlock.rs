@@ -73,6 +73,81 @@ fn queue_prompts(
         .unwrap();
 }
 
+#[tokio::test]
+async fn held_provider_queues_resume_independently_of_a_vault_unlock() {
+    use crate::session::{PromptQueueItem, PromptStatus, SessionAgentDefaults};
+
+    let (_root, app, runtime, blocked_session, blocked_agent) =
+        agent_behind_a_locked_vault("held-queue-vault-independence").await;
+    let worktree = crate::test_support::TestWorktree::new("held-queue-without-vault");
+    let (ready_session, ready_agent) =
+        crate::app::KernelSessionService::new(&mut *app.lock().await)
+            .create_session(
+                worktree
+                    .session_request()
+                    .with_agent_defaults(SessionAgentDefaults::new("dev-stub")),
+            )
+            .unwrap();
+    for (session, agent, source) in [
+        (
+            blocked_session.as_str(),
+            blocked_agent.as_str(),
+            "terminal:owner",
+        ),
+        (ready_session.id(), ready_agent.id(), "agent:fixture"),
+    ] {
+        let mut prompt = PromptQueueItem::new(
+            "held",
+            "attachment-1",
+            agent,
+            "queued turn",
+            PromptStatus::Queued,
+        )
+        .with_source_attribution(source, crate::session::DEFAULT_LOCAL_USER_ID);
+        prompt.set_launch_wait(Some("Waiting for memory on builder".into()));
+        queue_prompts(&runtime, session, agent, vec![prompt]);
+    }
+    let state = runtime.clone();
+    let scheduler = tokio::spawn(async move { state.run_provider_turn_admission().await });
+    let result = tokio::time::timeout(std::time::Duration::from_secs(6), async {
+        loop {
+            let locked = runtime
+                .owned
+                .session_store
+                .get_session(&blocked_session)
+                .unwrap();
+            let ready = runtime
+                .owned
+                .session_store
+                .get_session(ready_session.id())
+                .unwrap();
+            if locked
+                .active_interactions()
+                .iter()
+                .any(|card| card.id().starts_with("vault-unlock-"))
+                && runtime
+                    .owned
+                    .provider_store
+                    .get_run_for_agent(ready.id(), ready_agent.id())
+                    .is_some()
+                && runtime
+                    .owned
+                    .prompt_state_owner
+                    .peek_next_queued_prompt(&ready, ready_agent.id())
+                    .is_none()
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+    })
+    .await;
+    scheduler.abort();
+    result.expect(
+        "the independent queue must start while the first Room is still waiting on its Vault card",
+    );
+}
+
 /// An agent with two queued prompts whose launch needs a locked Vault.
 async fn two_queued_prompts_behind_a_locked_vault(
     label: &str,
