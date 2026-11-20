@@ -39,6 +39,7 @@ pub(super) fn map_relay_error(error: &DaemonError) -> RelayError {
         | DaemonError::AgentNotFound { .. }
         | DaemonError::NoActivePrompt { .. }
         | DaemonError::ProviderPromptSteerRejected { .. }
+        | DaemonError::OpenCodeSteerConflict
         | DaemonError::LocalTransport {
             operation: "steer active prompt" | "resolve account profile",
             ..

@@ -528,8 +528,10 @@ fn submit_opencode_prompt_with_policy(
             client
         }
     };
-    if let Ok(messages) = client.recent_messages(state.session_id()) {
-        state.baseline_existing_messages(&messages);
+    if !envelope.steering {
+        if let Ok(messages) = client.recent_messages(state.session_id()) {
+            state.baseline_existing_messages(&messages);
+        }
     }
     let message_id = next_opencode_message_id();
     client.submit_prompt(
@@ -543,9 +545,14 @@ fn submit_opencode_prompt_with_policy(
         run.execution_mode(),
         policy.is_read_only_discovery() || opencode_prompt_should_disable_native_writes(run),
         !policy.is_read_only_discovery() && opencode_prompt_should_allow_native_bash(run),
+        envelope.steering,
     )?;
-    state.note_prompt_submitted(message_id);
-    state.live_text_from_start = true;
+    if envelope.steering {
+        state.note_steer_submitted(message_id);
+    } else {
+        state.note_prompt_submitted(message_id);
+        state.live_text_from_start = true;
+    }
     Ok(())
 }
 

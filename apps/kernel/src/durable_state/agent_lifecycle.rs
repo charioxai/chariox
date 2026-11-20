@@ -1750,6 +1750,9 @@ pub(crate) fn delivery_attempt_receipt_state(
     result: &Result<bool, DaemonError>,
     structured: bool,
 ) -> &'static str {
+    if matches!(result, Err(DaemonError::OpenCodeSteerConflict)) {
+        return "failed";
+    }
     let refused_before_sending = result.as_ref().err().is_some_and(|error| {
         !bound_to_provider_io || crate::provider::failed_to_start_before_prompt(error)
     });
@@ -1836,6 +1839,13 @@ pub(crate) fn receipt_notice(event: &InboxEvent) -> String {
     }
 }
 
+pub(crate) fn opencode_steer_conflict_notice(sequence: u64) -> String {
+    format!(
+        "Agent inbox: event {sequence} delivery failed: {}",
+        DaemonError::OpenCodeSteerConflict
+    )
+}
+
 /// MP-08/MP-10/MP-11: both existing provider reapers settle the exact inbox intent.
 /// An enqueue ACK or a changed/ended run cannot substitute for this receipt.
 pub(crate) struct EventSubmitReceipt {
@@ -1883,6 +1893,7 @@ pub(crate) fn finish_provider_event_submit(
     }
     let state = match &finished.result {
         Ok(_) => "accepted",
+        Err(DaemonError::OpenCodeSteerConflict) => "failed",
         Err(DaemonError::ProviderPromptSteerRejected { .. }) => "rejected",
         Err(error) if crate::provider::failed_to_start_before_prompt(error) => "rejected",
         Err(_) => "uncertain",
@@ -1897,7 +1908,11 @@ pub(crate) fn finish_provider_event_submit(
         Outcome::Event(settled) => Ok(Some(EventSubmitReceipt {
             steered,
             stale: false,
-            notice: Some(receipt_notice(&settled)),
+            notice: Some(if state == "failed" {
+                opencode_steer_conflict_notice(settled.sequence)
+            } else {
+                receipt_notice(&settled)
+            }),
             refused: (settled.state == "pending").then_some(settled),
         })),
         _ => Err(error("receipt outcome mismatch")),

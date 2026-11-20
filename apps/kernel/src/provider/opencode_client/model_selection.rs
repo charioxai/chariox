@@ -167,6 +167,7 @@ mod tests {
                     AgentExecutionMode::Build,
                     false,
                     false,
+                    false,
                 )
                 .unwrap();
         }
@@ -181,6 +182,7 @@ mod tests {
                 Some("available"),
                 None,
                 AgentExecutionMode::Build,
+                false,
                 false,
                 false,
             )
@@ -203,6 +205,7 @@ mod tests {
                 Some(model),
                 None,
                 AgentExecutionMode::Build,
+                false,
                 false,
                 false,
             )

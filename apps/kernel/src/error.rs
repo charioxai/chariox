@@ -425,6 +425,9 @@ pub enum DaemonError {
     #[error("idle provider process for run `{provider_run_id}` exited before prompt submission")]
     IdleProviderProcessExited { provider_run_id: String },
 
+    #[error("OpenCode rejected the steering prompt with HTTP 409 Conflict")]
+    OpenCodeSteerConflict,
+
     /// Internal proof that a steer was not submitted or was explicitly rejected.
     /// Unclassified errors may follow a provider write and cannot authorize replay.
     #[error("provider did not accept steering: {source}")]
