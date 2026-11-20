@@ -127,6 +127,7 @@ mod machine_acquisition;
 mod machine_files_runtime;
 pub(crate) use file_watch_runtime::{FileWatchPermit, RemoteFileWatch};
 mod machine_files_tools;
+mod provider_login_vault;
 mod remote_jobs;
 mod sudo;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
