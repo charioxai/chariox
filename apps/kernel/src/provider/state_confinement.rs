@@ -330,9 +330,6 @@ fn confine_command_with_read_only(
     let own = existing_canonical(named.into_iter().map(|(_, path)| path).collect());
     let mut shared = existing_canonical(cli_paths());
     shared.retain(|path| secrets.cover(path));
-    shared.extend(existing_canonical(vec![
-        crate::config::DaemonConfig::workflow_instruction_mount(),
-    ]));
     for path in read_only {
         shared.push(path.canonicalize().map_err(|error| {
             confinement_error(format!(

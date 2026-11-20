@@ -8,6 +8,7 @@ use serde_json::json;
 
 #[path = "support/real_kernel.rs"]
 mod real_kernel;
+#[allow(dead_code)]
 #[path = "../src/test_temp_dir.rs"]
 mod test_temp_dir;
 use real_kernel::{connect, create_session, request, Socket};
@@ -146,6 +147,7 @@ async fn cancelled_and_completed_workflow_runs_remove_their_instructions() {
             "workflow instruction lifecycle witness"
         );
         if expected == "Stopped" {
+            wait_for_status(&mut socket, &session, &run, "Running").await;
             request(
                 &mut socket,
                 json!({"CancelWorkflowRun": {
@@ -177,6 +179,7 @@ async fn cold_start_removes_instructions_left_after_a_terminal_commit() {
     let (session, run, node) = invoke(&mut socket, &first, "workflow-test-idle").await;
     let file = instruction_file(&home, &session, &run, &node);
     wait_for_file(&file).await;
+    wait_for_status(&mut socket, &session, &run, "Running").await;
     request(
         &mut socket,
         json!({"CancelWorkflowRun": {
