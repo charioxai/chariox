@@ -1095,6 +1095,7 @@ fn a_long_utility_does_not_lock_other_provider_runs() {
                 crate::prompt_assembly::PromptAssemblyMode::UtilityTurn,
                 None,
                 false,
+                None,
             )
             .unwrap();
         tx.send(()).unwrap();

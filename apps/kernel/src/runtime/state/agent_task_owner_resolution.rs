@@ -6,6 +6,7 @@ use crate::durable_state::agent_lifecycle::{AgentTaskExecution, Operation, Outco
 pub(super) enum OwnerTaskAction {
     Cancel,
     Resume,
+    StartFreshAgent,
     /// The owner's answer to an agent's question.
     Reply(String),
 }
@@ -27,7 +28,13 @@ impl KernelRuntimeState {
         task: &AgentTaskExecution,
         action: OwnerTaskAction,
     ) -> Result<(), DaemonError> {
-        let resume = action != OwnerTaskAction::Cancel;
+        let resume = matches!(action, OwnerTaskAction::Resume | OwnerTaskAction::Reply(_));
+        if action == OwnerTaskAction::StartFreshAgent {
+            if let Err(error) = self.start_fresh_agent_for_switch(task).await {
+                self.record_agent_task_owner_failure(task, &error);
+                return Err(error);
+            }
+        }
         // An answer is only meant for a question the agent asked; a stale one is dropped like any stale decision.
         if matches!(action, OwnerTaskAction::Reply(_))
             && task.owner_action
@@ -142,6 +149,72 @@ impl KernelRuntimeState {
         let _ = self.owned.session_snapshot(&next.room_id);
         outcome
     }
+    async fn start_fresh_agent_for_switch(
+        &self,
+        task: &AgentTaskExecution,
+    ) -> Result<(), DaemonError> {
+        use crate::durable_state::agent_lifecycle::ExecutionState;
+        let current = self.owned.durable_state_store.agent_task(&task.task_id)?;
+        if !current.is_some_and(|current| {
+            current.state == ExecutionState::Blocked
+                && current.blocked_revision == task.blocked_revision
+                && crate::provider::switch_turn::needs_fresh_agent(&current.reason)
+        }) {
+            return Err(crate::durable_state::agent_lifecycle::error(
+                "This task's recovery decision has changed",
+            ));
+        }
+        let source = self.owned.agent_store.get_agent(&task.agent_id)?;
+        let brief = self.owned.fresh_agent_switch_brief(task)?;
+        let spawn_key = format!("switch-recovery:{}:{}", task.task_id, task.blocked_revision);
+        let agent = match self
+            .owned
+            .agent_store
+            .get_session_agents(&task.room_id)
+            .into_iter()
+            .find(|agent| agent.spawn_key() == Some(spawn_key.as_str()))
+        {
+            Some(agent) => agent,
+            None => {
+                let mut request = crate::agent::CreateAgentRequest {
+                    model: source.model().map(str::to_string),
+                    effort: source.effort().map(str::to_string),
+                    account_profile: source.account_profile().map(str::to_string),
+                    max_context_tokens: source.max_context_tokens(),
+                    execution_mode_override: source.execution_mode_override(),
+                    permission_level_override: source.permission_level_override(),
+                    worktree_id: source.worktree_id().map(str::to_string),
+                    ..crate::agent::CreateAgentRequest::new(&task.room_id, source.provider())
+                        .with_owner_user_id(source.owner_user_id())
+                        .with_spawn_key(&spawn_key)
+                };
+                if let Some(parent) = source.parent_agent_id() {
+                    request = request.with_parent(&self.owned.agent_store.get_agent(parent)?);
+                }
+                self.spawn_agent(request).await?
+            }
+        };
+        let attachment = self.ensure_agent_message_attachment(&task.room_id, &agent)?;
+        let prompt = crate::session::PromptQueueItem::new(
+            self.owned.session_store.reserve_prompt_id(),
+            &attachment,
+            agent.id(),
+            brief,
+            crate::session::PromptStatus::Queued,
+        )
+        .with_durable_operation(&spawn_key, &spawn_key);
+        Box::pin(
+            self.submit_prepared_prompt(crate::app::KernelPreparedPromptSubmission {
+                session_id: task.room_id.clone(),
+                prompt,
+                force_queue: false,
+                refresh_projection: true,
+            }),
+        )
+        .await?;
+        Ok(())
+    }
+
     /// The person and the agent read why the answer did not take, and the kernel log keeps it.
     fn record_agent_task_owner_failure(&self, task: &AgentTaskExecution, error: &DaemonError) {
         let error = crate::secret_redaction::redact_secrets(&error.to_string()).into_owned();

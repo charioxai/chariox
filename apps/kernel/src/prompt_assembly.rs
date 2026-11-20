@@ -121,6 +121,8 @@ pub(crate) struct PromptEnvelope {
     /// Clients/peers cannot deserialize provider skill paths into an envelope.
     #[serde(skip)]
     pub(crate) skill_delivery: Option<crate::provider::skill_delivery::ProviderSkillDelivery>,
+    #[serde(skip)]
+    pub(crate) switch_skill_budget: Option<crate::provider::switch_turn::SwitchSkillBudget>,
 }
 
 impl PromptEnvelope {
@@ -140,6 +142,7 @@ impl PromptEnvelope {
             assessment_only: false,
             private_assessment_evidence: None,
             skill_delivery: None,
+            switch_skill_budget: None,
         }
     }
 
