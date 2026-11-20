@@ -37,7 +37,7 @@ use crate::runtime::state::ManagedKernelQuiescenceGate;
 pub(crate) use buffer::JobExecBuffer;
 pub(crate) use buffer::OUTPUT_LOSS_NOTICE;
 #[cfg(unix)]
-pub(crate) use job_handover::{JobExecGuard, JobExecHandover};
+pub(crate) use job_handover::{FrozenJobExec, JobExecGuard, JobExecHandover};
 pub(crate) use place_command::{
     destinations, offer_placement, run_on_kernel, Placement, Requester,
 };
