@@ -80,6 +80,7 @@ fn local_daemon_protocol_room_list_git_credentials_shape_is_versioned() {
                 configured: true,
                 connected: true,
                 relay_url: Some("wss://relay.example.test".to_string()),
+                registration_refused: None,
                 relay_token_configured: true,
                 daemon_id: "kernel-1".to_string(),
                 machine_id: "machine-1".to_string(),

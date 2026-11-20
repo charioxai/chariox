@@ -73,7 +73,7 @@ fn registration(
         accepting_remote_leases: false,
         leased_agent_count: 0,
         local_session_count: 0,
-        local_protocol: None,
+        local_protocol: Some(chariox_relay::protocol::MINIMUM_KERNEL_REGISTRATION_PROTOCOL),
     }
 }
 
