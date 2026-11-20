@@ -749,6 +749,56 @@ async fn metaagent_workflow_code_validate_rejects_unauthorized_existing_agent_bi
         );
     }
 
+    use crate::durable_state::agent_lifecycle::Operation;
+    let original_workflow_ids = {
+        let app = router.app.lock().await;
+        let deadline = crate::session::unix_epoch_ms() - 1;
+        let store = app.durable_state_store();
+        store
+            .agent_lifecycle(Operation::SetDeadline {
+                room: session.id().into(),
+                agent: owned_worker.id().into(),
+                deadline: Some(deadline),
+                inherited: vec![],
+            })
+            .unwrap();
+        app.sessions()
+            .get_session(session.id())
+            .unwrap()
+            .workflows()
+            .iter()
+            .map(|workflow| workflow.id().to_owned())
+            .collect::<Vec<_>>()
+    };
+    let refused = router
+        .runtime_state
+        .dispatch_meta_runtime_tool_call_for_agent(
+            session.id(),
+            metaagent.id(),
+            crate::transport::runtime_tools::META_WORKFLOW_CODE_RUN_TOOL,
+            serde_json::json!({ "source": owned_source, "endpoint": "entry", "prompt": "expired" }),
+        )
+        .await
+        .expect_err("a workflow must refuse an entry agent after its deadline");
+    assert!(crate::error::is_agent_deadline_refusal(&refused));
+    assert!(refused
+        .to_string()
+        .contains("Start a new agent for new work"));
+    {
+        let app = router.app.lock().await;
+        let current = app.sessions().get_session(session.id()).unwrap();
+        assert_eq!(
+            current
+                .workflows()
+                .iter()
+                .map(|workflow| workflow.id())
+                .collect::<Vec<_>>(),
+            original_workflow_ids
+        );
+        assert!(current.workflow_queued_prompts().is_empty());
+        assert_eq!(current.workflow_runs().len(), 1);
+    }
+
     let peer_source = workflow_code_existing_agent_source(peer_worker.id());
     let peer_validated = router
         .runtime_state

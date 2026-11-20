@@ -13,14 +13,23 @@ impl KernelRuntimeState {
         request: crate::local::InvokeWorkflowEndpointRequest,
         caller_user_id: &str,
         caller_agent_id: Option<&str>,
+        new_workflow_code: Option<&crate::workflow_code::WorkflowCodeCompileAndApplyResult>,
     ) -> (
         Result<LocalDaemonResponse, DaemonError>,
         Option<crate::session::RuntimeSession>,
     ) {
-        if let Err(error) = self.authorize_current_external_command() {
-            return (Err(error), None);
-        }
         let owned = &self.owned;
+        let before_admission_error = |error| {
+            owned.workflow_code_dispatch_refusal(
+                &request.session_id,
+                new_workflow_code,
+                None,
+                error,
+            )
+        };
+        if let Err(error) = self.authorize_current_external_command() {
+            return (Err(before_admission_error(error)), None);
+        }
         let result = match owned.ensure_workflow_endpoint_owner(
             &request.session_id,
             &request.workflow_ref,
@@ -44,7 +53,7 @@ impl KernelRuntimeState {
                     .transpose()
                 {
                     Ok(id) => id.flatten(),
-                    Err(error) => return (Err(error), None),
+                    Err(error) => return (Err(before_admission_error(error)), None),
                 };
                 let (outcome, dispatches) = match owned
                     .workflow_enqueue_prompt_by_agent_and_maybe_start(
@@ -57,6 +66,7 @@ impl KernelRuntimeState {
                         caller_agent_id,
                         caller_agent_id.is_none().then_some(caller_user_id),
                         obligation.as_deref(),
+                        new_workflow_code,
                     ) {
                     Ok(outcome) => outcome,
                     Err(error) => return (Err(error), None),
@@ -155,10 +165,10 @@ impl KernelRuntimeState {
                     }),
                 }
             }
-            Err(error @ DaemonError::OwnershipAccessDenied { .. }) => {
-                Err(self.report_workflow_start_refusal(&request, caller_user_id, error))
-            }
-            Err(error) => Err(error),
+            Err(error @ DaemonError::OwnershipAccessDenied { .. }) => Err(before_admission_error(
+                self.report_workflow_start_refusal(&request, caller_user_id, error),
+            )),
+            Err(error) => Err(before_admission_error(error)),
         };
         let session = result.as_ref().ok().and_then(workflow_response_session);
         (result, session)

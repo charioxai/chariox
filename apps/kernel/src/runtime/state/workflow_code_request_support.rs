@@ -32,6 +32,163 @@ impl KernelRuntimeState {
     }
 }
 
+impl KernelRuntimeOwnedState {
+    pub(super) fn workflow_code_dispatch_refusal(
+        &self,
+        session_id: &str,
+        code: Option<&crate::workflow_code::WorkflowCodeCompileAndApplyResult>,
+        error: DaemonError,
+    ) -> DaemonError {
+        let Some(code) = code else {
+            return error;
+        };
+        match self.rollback_workflow_code_run(session_id, code, None) {
+            Ok(true) => workflow_code_refusal(error),
+            Ok(false) => error,
+            Err(rollback) => workflow_code_rollback_failed(error, rollback),
+        }
+    }
+
+    pub(super) fn rollback_workflow_code_run(
+        &self,
+        session_id: &str,
+        code: &crate::workflow_code::WorkflowCodeCompileAndApplyResult,
+        queued_prompt_id: Option<&str>,
+    ) -> Result<bool, DaemonError> {
+        let workflow_id = &code.apply.workflow_id;
+        let mutation = self.begin_managed_activity_mutation();
+        let rolled_back = self
+            .durable_state_store
+            .with_workflow_runtime_transition_lock(|| {
+                self.durable_state_store.require_writer_healthy()?;
+                let mut sessions = self.session_store.write();
+                let mut session = sessions.get_session(session_id)?;
+                let Some(workflow) = session.workflow(workflow_id) else {
+                    return Ok(None);
+                };
+                // Another invocation or an accepted gate entry can already own this workflow.
+                if session.workflow_queued_prompts().iter().any(|prompt| {
+                    prompt.workflow_id() == workflow_id && Some(prompt.id()) != queued_prompt_id
+                }) || (workflow.gate().is_some()
+                    && !self
+                        .durable_state_store
+                        .gate_entries(session.owner_user_id(), session_id, workflow_id, None, 1)?
+                        .0
+                        .is_empty())
+                {
+                    return Ok(None);
+                }
+                let mut runs = session
+                    .workflow_runs()
+                    .iter()
+                    .filter(|run| run.workflow_id() == workflow_id);
+                let claim = if let Some(run) = runs.next() {
+                    if runs.next().is_some()
+                        || queued_prompt_id.is_none()
+                        || run.queue_item_id() != queued_prompt_id
+                    {
+                        return Ok(None);
+                    }
+                    let Some(claim) = self.workflow_entry_claims.try_claim(session_id, run.id())
+                    else {
+                        return Ok(None);
+                    };
+                    if !self
+                        .workflow_entry_intent(session_id, run.id())?
+                        .is_some_and(|intent| !intent.submitted)
+                    {
+                        return Ok(None);
+                    }
+                    Some(claim)
+                } else {
+                    None
+                };
+                // The caller owns this newly applied graph and has proved that no prompt was submitted.
+                let generated_agents = code
+                    .compile
+                    .definition
+                    .nodes
+                    .iter()
+                    .filter_map(|node| {
+                        if matches!(
+                            &node.agent,
+                            crate::workflow_code::WorkflowCodeAgentBinding::Create(_)
+                        ) {
+                            code.apply.agent_ids.get(&node.handle)
+                        } else {
+                            None
+                        }
+                    })
+                    .filter(|agent| {
+                        !session
+                            .workflows()
+                            .iter()
+                            .filter(|workflow| workflow.id() != workflow_id)
+                            .any(|workflow| {
+                                workflow
+                                    .nodes()
+                                    .iter()
+                                    .any(|node| node.agent_id() == agent.as_str())
+                            })
+                            && session.active_prompt_for_agent(agent).is_none()
+                            && !session
+                                .queued_prompts()
+                                .iter()
+                                .any(|prompt| prompt.target_agent_id() == agent.as_str())
+                    })
+                    .collect::<Vec<_>>();
+                session.discard_unadmitted_workflow(workflow_id);
+                self.durable_state_store
+                    .persist_workflow_runtime_transition(
+                        &session,
+                        "workflow_code_dispatch_refused",
+                    )?;
+                sessions.restore_session(session);
+                drop(claim);
+                Ok(Some(generated_agents))
+            })?;
+        let Some(generated_agents) = rolled_back else {
+            return Ok(false);
+        };
+        mutation.record();
+        for agent_id in generated_agents {
+            let agent = self.agent_store.get_agent(agent_id)?;
+            let destroyed = self.destroy_agent(agent_id, agent.owner_user_id())?;
+            self.durable_state_store.append_event(
+                "agent.deleted",
+                Some(agent_id.clone()),
+                serde_json::json!({ "agent": destroyed }),
+            )?;
+        }
+        self.session_snapshot(session_id)?;
+        Ok(true)
+    }
+}
+
+pub(super) fn workflow_code_refusal(error: DaemonError) -> DaemonError {
+    if crate::error::is_agent_deadline_refusal(&error) {
+        return error;
+    }
+    DaemonError::LocalTransport {
+        operation: "workflow_code.run",
+        message: format!(
+            "Dispatch refused. {error}. No workflow or run was created. Resolve the dispatch error and retry."
+        ),
+    }
+}
+
+pub(super) fn workflow_code_rollback_failed(
+    error: DaemonError,
+    rollback: DaemonError,
+) -> DaemonError {
+    DaemonError::LocalTransport {
+        operation: "workflow_code.run",
+        message: format!(
+            "Dispatch did not complete. {error}. Cleanup could not be confirmed: {rollback}. Check the room before retrying."
+        ),
+    }
+}
+
 pub(super) fn workflow_code_registry_for_session(
     app: &crate::app::DaemonApp,
     session_id: &str,
@@ -292,7 +449,7 @@ pub(super) fn workflow_registry_apply_result(
 pub(super) fn workflow_code_artifact_apply_result(
     app: &mut crate::app::DaemonApp,
     artifact_name: &str,
-    history_action: crate::workflow_code::WorkflowCodeArtifactHistoryAction,
+    history_action: Option<crate::workflow_code::WorkflowCodeArtifactHistoryAction>,
     context: WorkflowApplyContext<'_>,
 ) -> Result<crate::workflow_code::WorkflowCodeCompileAndApplyResult, DaemonError> {
     let WorkflowApplyContext {
@@ -345,6 +502,7 @@ pub(super) fn workflow_code_artifact_apply_result(
     }
     if let Some(endpoint) = run_endpoint {
         workflow_code_run_endpoint_preflight(&definition, endpoint, operation)?;
+        workflow_code_run_entry_deadline(app, session_id, &definition, endpoint)?;
     }
     workflow_code_run_queue_preflight(&definition, run_queue, operation)?;
     let apply = crate::app::KernelSessionService::with_authorization(app, authorize)
@@ -355,37 +513,17 @@ pub(super) fn workflow_code_artifact_apply_result(
             caller_user_id.clone(),
             controlled_by_metaagent_id.clone(),
         )?;
-    let actor =
-        workflow_code_artifact_actor(&caller_user_id, controlled_by_metaagent_id.as_deref());
-    authorize()?;
-    let registry = workflow_code_registry_for_session(app, session_id)?;
-    let may_record_history = match metaagent_id {
-        Some(id)
-            if app.config().room_agent_tools
-                && history_action
-                    == crate::workflow_code::WorkflowCodeArtifactHistoryAction::Run =>
-        {
-            let caller = app.agents().get_agent(id)?;
-            // Public source can create a caller-owned definition/run, without editing
-            // peer source provenance. Recheck the current object at the history fence.
-            registry.get(artifact_name)?.is_some_and(|current| {
-                current.metadata == artifact.metadata
-                    && crate::runtime::room_tool_admission::owns_object(
-                        &caller,
-                        current
-                            .metadata
-                            .provenance
-                            .created_by
-                            .metaagent_id
-                            .as_deref(),
-                        &app.agents().get_session_agents(session_id),
-                    )
-            })
-        }
-        _ => true,
-    };
-    if may_record_history {
-        registry.record_apply_history(artifact_name, actor, history_action, &apply)?;
+    if let Some(action) = history_action {
+        authorize()?;
+        record_workflow_code_artifact_apply_history(
+            app,
+            session_id,
+            artifact_name,
+            &artifact.metadata.source_sha256,
+            workflow_code_artifact_actor(&caller_user_id, metaagent_id),
+            action,
+            &apply,
+        )?;
     }
     Ok(crate::workflow_code::WorkflowCodeCompileAndApplyResult {
         compile: crate::workflow_code::WorkflowCodeCompileResult {
@@ -397,6 +535,46 @@ pub(super) fn workflow_code_artifact_apply_result(
         },
         apply,
     })
+}
+
+pub(super) fn record_workflow_code_artifact_apply_history(
+    app: &crate::app::DaemonApp,
+    session_id: &str,
+    artifact_name: &str,
+    source_sha256: &str,
+    actor: crate::workflow_code::WorkflowCodeArtifactActor,
+    action: crate::workflow_code::WorkflowCodeArtifactHistoryAction,
+    apply: &crate::workflow_code::WorkflowCodeApplyReport,
+) -> Result<(), DaemonError> {
+    let registry = workflow_code_registry_for_session(app, session_id)?;
+    let Some(current) = registry.get(artifact_name)? else {
+        return Ok(());
+    };
+    if current.metadata.source_sha256 != source_sha256 {
+        return Ok(());
+    }
+    if let Some(id) = actor.metaagent_id.as_deref() {
+        if app.config().room_agent_tools
+            && action == crate::workflow_code::WorkflowCodeArtifactHistoryAction::Run
+        {
+            let caller = app.agents().get_agent(id)?;
+            // Running public source may create a caller-owned workflow without editing peer provenance.
+            if !crate::runtime::room_tool_admission::owns_object(
+                &caller,
+                current
+                    .metadata
+                    .provenance
+                    .created_by
+                    .metaagent_id
+                    .as_deref(),
+                &app.agents().get_session_agents(session_id),
+            ) {
+                return Ok(());
+            }
+        }
+    }
+    registry.record_apply_history(artifact_name, actor, action, apply)?;
+    Ok(())
 }
 
 pub(super) fn workflow_code_artifact_actor(
@@ -487,6 +665,35 @@ pub(super) fn workflow_code_run_endpoint_preflight(
             definition.endpoints.len()
         ),
     })
+}
+
+pub(super) fn workflow_code_run_entry_deadline(
+    app: &crate::app::DaemonApp,
+    session_id: &str,
+    definition: &crate::workflow_code::WorkflowCodeDefinition,
+    endpoint: Option<&str>,
+) -> Result<(), DaemonError> {
+    if definition.workflow.gate.is_some() {
+        // A gate chooses its routes later, so there is no entry agent yet.
+        return Ok(());
+    }
+    let entry = definition
+        .endpoints
+        .iter()
+        .find(|candidate| endpoint.is_none_or(|handle| candidate.handle == handle))
+        .and_then(|endpoint| {
+            definition
+                .nodes
+                .iter()
+                .find(|node| node.handle == endpoint.entry_node)
+        });
+    if let Some(crate::workflow_code::WorkflowCodeAgentBinding::Existing(agent)) =
+        entry.map(|node| &node.agent)
+    {
+        app.durable_state_store()
+            .ensure_agent_before_deadline(session_id, &agent.agent_ref)?;
+    }
+    Ok(())
 }
 
 pub(super) fn workflow_code_run_queue_preflight(

@@ -65,6 +65,7 @@ async fn invoke_append_failure_rolls_back_before_snapshot_and_retries_once() {
             request.clone(),
             crate::session::DEFAULT_LOCAL_USER_ID,
             None,
+            None,
         )
         .await;
     assert!(failed
@@ -98,6 +99,7 @@ async fn invoke_append_failure_rolls_back_before_snapshot_and_retries_once() {
         .execute_workflow_invoke_endpoint_request(
             request,
             crate::session::DEFAULT_LOCAL_USER_ID,
+            None,
             None,
         )
         .await;
@@ -2137,6 +2139,7 @@ fn room_admission_concurrent_workflow_nodes_record_invoking_creator() {
                 Some(actor.id()),
                 None,
                 None,
+                None,
             )
             .unwrap();
     }
@@ -2259,6 +2262,7 @@ async fn gated_manual_entry_waits_for_worker_decision(room_owner: &str) {
                 publication_invocation: None,
             },
             crate::session::DEFAULT_LOCAL_USER_ID,
+            None,
             None,
         )
         .await;
