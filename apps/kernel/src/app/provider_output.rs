@@ -33,10 +33,12 @@ pub(crate) struct ProviderOutputPumpRequest<'a> {
 
 pub(crate) fn should_project_pty_output(
     has_active_prompt: bool,
-    terminal_failure: Option<&str>,
+    has_terminal_diagnostic: bool,
     uses_transient_native_terminal: bool,
 ) -> bool {
-    has_active_prompt || terminal_failure.is_some() || uses_transient_native_terminal
+    // A diagnostic can arrive a poll before the exit that settles the turn.
+    // Keep it out of assistant history while settlement determines the reason.
+    uses_transient_native_terminal || (has_active_prompt && !has_terminal_diagnostic)
 }
 
 pub(crate) fn pump_terminal_output_for_attachment(
@@ -153,17 +155,18 @@ impl<'a> ProviderOutputPump<'a> {
                 return Err(error);
             }
         };
-        let terminal_failure = classify_provider_terminal_failure_output_text(
-            provider_run.adapter_key(),
-            &chunks
-                .iter()
-                .map(|chunk| String::from_utf8_lossy(&chunk.bytes))
-                .collect::<String>(),
-        );
+        let pty_output = chunks
+            .iter()
+            .map(|chunk| String::from_utf8_lossy(&chunk.bytes))
+            .collect::<String>();
+        let terminal_failure =
+            classify_provider_terminal_failure_output_text(provider_run.adapter_key(), &pty_output);
         let has_active_prompt = self
             .context
             .provider_run_has_active_prompt(request.session_id, &provider_run)?;
-        if !should_project_pty_output(has_active_prompt, terminal_failure.as_deref(), false) {
+        let has_terminal_diagnostic = terminal_failure.is_some()
+            || crate::provider::provider_error_frame(&pty_output).is_some();
+        if !should_project_pty_output(has_active_prompt, has_terminal_diagnostic, false) {
             chunks.clear();
         }
         if !chunks.is_empty() {

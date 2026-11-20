@@ -164,6 +164,13 @@ pub(crate) fn classify_provider_terminal_failure_output_text(
     adapter_key: &str,
     text: &str,
 ) -> Option<String> {
+    find_provider_terminal_failure_output(adapter_key, text).map(|(_, message)| message)
+}
+
+pub(crate) fn find_provider_terminal_failure_output<'a>(
+    adapter_key: &str,
+    text: &'a str,
+) -> Option<(&'a str, String)> {
     text.lines().find_map(|line| {
         let normalized = line.trim().to_lowercase();
         let exact_provider_dialog = adapter_key == "claude"
@@ -174,22 +181,25 @@ pub(crate) fn classify_provider_terminal_failure_output_text(
         if !provider_normalized_text_has_error_frame(&normalized) && !exact_provider_dialog {
             return None;
         }
-        classify_provider_terminal_failure_text(adapter_key, line)
+        classify_provider_terminal_failure_text(adapter_key, line).map(|message| (line, message))
     })
 }
 
 /// A final error frame from a process that exited. Ordinary PTY output can
 /// contain the conversation and must stay out of the turn's failure reason.
 pub(crate) fn provider_exit_error_message(output: &str) -> Option<String> {
+    provider_error_frame(output)
+        .map(|message| super::termination::sanitize_provider_failure_message(&message))
+}
+
+pub(crate) fn provider_error_frame(output: &str) -> Option<String> {
     let output = super::termination::strip_terminal_sequences(output);
-    let message = output
+    output
         .lines()
         .rev()
         .map(str::trim)
-        .find(|line| provider_normalized_text_has_error_frame(&line.to_ascii_lowercase()))?;
-    Some(super::termination::sanitize_provider_failure_message(
-        message,
-    ))
+        .find(|line| provider_normalized_text_has_error_frame(&line.to_ascii_lowercase()))
+        .map(str::to_owned)
 }
 
 fn provider_normalized_text_has_error_frame(normalized: &str) -> bool {
