@@ -296,6 +296,15 @@ mod tests {
         assert_eq!(answer.ticket_id, "tk_synthetic");
         assert!(!answer.ticket.is_empty());
         assert!(chrono::DateTime::parse_from_rfc3339(&answer.expires_at).is_ok());
+        // The contract answer names the installer a configured Cloud returns with every ticket.
+        let url = answer
+            .setup_install_url
+            .as_deref()
+            .expect("the contract answer carries the installer address");
+        assert!(
+            installer_command(url, &answer.ticket, "https://api.example.test").is_ok(),
+            "the contract installer address must stay usable: {url}"
+        );
     }
 
     fn ticket_body(install_url: Option<&str>) -> String {
