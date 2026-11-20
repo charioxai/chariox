@@ -76,6 +76,7 @@ pub(super) fn dev_stub_pty_env(request: &LaunchProviderRequest) -> BTreeMap<Stri
     if matches!(
         request.model.as_str(),
         "runtime-mcp-fixture"
+            | "trace"
             | "workflow-intermediate-node"
             | "workflow-delayed-output"
             | "workflow-dashboard-producer-node"

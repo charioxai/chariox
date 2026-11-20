@@ -538,7 +538,7 @@ fn submit_opencode_prompt_with_policy(
         &envelope.visible_user_prompt,
         &envelope.attachments,
         Some(&envelope.hidden_system_context),
-        Some(run.model()),
+        (!super::is_dev_trace(run.adapter_key(), run.model())).then(|| run.model()),
         run.variant(),
         run.execution_mode(),
         policy.is_read_only_discovery() || opencode_prompt_should_disable_native_writes(run),
@@ -719,6 +719,9 @@ fn resolve_initial_selection(
     run: &RuntimeProviderRun,
     client: &OpenCodeClient,
 ) -> Result<OpenCodeRunSelection, DaemonError> {
+    if super::is_dev_trace(run.adapter_key(), run.model()) {
+        return Ok(OpenCodeRunSelection::default());
+    }
     let resolved = if run.model() != "default" && run.variant().is_some() {
         OpenCodeConfiguredDefaults::default()
     } else {

@@ -9,6 +9,7 @@ use crate::provider::{
 use super::AgentEndpointAdapter;
 
 mod scripts;
+mod trace_launch;
 
 use scripts::{dev_stub_pty_args, dev_stub_pty_env};
 
@@ -36,6 +37,9 @@ impl AgentEndpointAdapter for DevStubAdapter {
         &self,
         request: &LaunchProviderRequest,
     ) -> Result<ProviderLaunchResult, DaemonError> {
+        if crate::provider::is_dev_trace(request.adapter_key.as_str(), request.model.as_str()) {
+            return trace_launch::plan(request);
+        }
         let pty_args = dev_stub_pty_args(request.model.as_str());
         let pty_env = dev_stub_pty_env(request);
         let pty_target = if request.model == DISTRIBUTED_SCALE_SHARED_PTY_MODEL {

@@ -104,7 +104,7 @@ pub(super) fn execute_submit_command(
         runtime_registry.restore_claude_runtime_if_live(&run_id, &slot, state);
         return result.map(|_| ProviderPromptSubmitAcknowledgement { resume_state });
     }
-    if run.adapter_key() != "opencode" {
+    if !crate::provider::provider_run_uses_opencode_io(&run) {
         return Ok(ProviderPromptSubmitAcknowledgement {
             resume_state: run.resume_state().clone(),
         });
@@ -156,7 +156,7 @@ pub(super) fn execute_abort_command(
         runtime_registry.restore_claude_runtime_if_live(&run_id, &slot, state);
         return result;
     }
-    if run.adapter_key() != "opencode" {
+    if !crate::provider::provider_run_uses_opencode_io(&run) {
         return Ok(());
     }
 
@@ -389,7 +389,7 @@ pub(super) fn execute_terminate_command(
             }
         }
     }
-    if run.adapter_key() == "opencode"
+    if crate::provider::provider_run_uses_opencode_io(&run)
         && runtime_registry.runtime_slot_missing_or_empty_opencode(&run_id)
     {
         return Ok(());
@@ -554,7 +554,7 @@ pub(super) fn execute_output_poll_command(
         runtime_registry.restore_claude_runtime_if_live(run_id, &slot, state);
         return drain.map(Some);
     }
-    if run.adapter_key() != "opencode" {
+    if !crate::provider::provider_run_uses_opencode_io(run) {
         return Ok(None);
     }
     // MP-08 / MP-10: separate actor/HTTP time from pump and app-lock time.
