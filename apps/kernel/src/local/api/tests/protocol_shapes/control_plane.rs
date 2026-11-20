@@ -48,7 +48,9 @@ fn machine_options_1011_shapes_and_hash() {
             {"ControlPlane": {"action": "acquire", "capability_revision": "revision", "request_id": "one"}},
             {"ControlPlane": {"action": "acquire", "capability_revision": "revision", "request_id": "two", "class_id": "small", "region": "auto"}}
         ],
-        "responses": [{"ControlPlane": {"result": {"kind": "capabilities", "machine_allocation": {
+        "responses": [
+            {"ControlPlane": {"result": {"kind": "acquisition_waiting", "registration_id": "completion-machine", "expires_at_ms": 300000}}},
+            {"ControlPlane": {"result": {"kind": "capabilities", "machine_allocation": {
             "revision": "revision", "actions": ["acquire"], "offer": null,
             "offers": [
                 {"class_id": "small", "region": "auto", "vcpu": 2, "ram_gb": 4.0, "disk_gb": 51,
@@ -71,7 +73,7 @@ fn machine_options_1011_shapes_and_hash() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "d999f9d6271b3bb85cd3daa20c866b240873d5ceaa471e5a5c75779cfc183f27"
+        "5edd56de24fb4f5156b9bfe6be3ec6e697fb8f91c0644b707018a2d459813912"
     );
     assert!(serde_json::from_value::<LocalDaemonRequest>(
         serde_json::json!({"ControlPlane":{"action":"acquire","capability_revision":"r","request_id":"i","price":1}})
