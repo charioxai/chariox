@@ -124,6 +124,7 @@ async fn waiting_children() {
     assert!(inspected.ok, "{inspected:?}");
     assert_eq!(inspected.payload["agent"]["state"], "waiting");
     let detail = &inspected.payload["agent"]["liveness"]["waiting_on"];
-    assert_eq!(detail["kind"], waiting["kind"]);
-    assert_eq!(detail["since_ms"], waiting["since_ms"]);
+    // The list row is the short form of what the agent's own liveness says in full.
+    assert_eq!(detail["kind"], "timer");
+    assert_eq!(detail["since_ms"], armed_at_ms);
 }
