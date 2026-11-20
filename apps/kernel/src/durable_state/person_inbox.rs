@@ -10,6 +10,11 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 const NOTICE: &str = "person_inbox.notice";
+const WORKFLOW_START_REFUSED: &str = "person_inbox.workflow_start_refused";
+const WORKFLOW_STARTED: &str = "person_inbox.workflow_started";
+pub(crate) const WORKFLOW_START_NOTICE_PREFIX: &str = "workflow-start:";
+pub(crate) const WORKFLOW_RELINK_ORIGIN: &str = "kernel";
+const WORKFLOW_START_NOTICE_PATTERN: &str = "workflow-start:*";
 const CARD_STATE: &str = "person_inbox.card_state";
 const MUTE: &str = "person_inbox.mute";
 /// The kernel's existing retention for finished records.
@@ -36,6 +41,16 @@ pub(crate) struct StoredNotice {
     /// 0 for one notice; n when this card stands for n notices sent past the rate limit, the
     /// latest one in `title`/`body`/`link`.
     pub(crate) folded: u32,
+}
+
+impl StoredNotice {
+    pub(crate) fn is_workflow_start_refusal(&self) -> bool {
+        self.card_id.starts_with(WORKFLOW_START_NOTICE_PREFIX)
+    }
+
+    pub(crate) fn is_workflow_relink(&self) -> bool {
+        self.is_workflow_start_refusal() && self.agent_id == WORKFLOW_RELINK_ORIGIN
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -93,17 +108,22 @@ pub(super) fn apply_event(tx: &Transaction<'_>, kind: &str, payload: &str) -> ru
     let decode =
         |error: serde_json::Error| rusqlite::Error::ToSqlConversionFailure(Box::new(error));
     match kind {
-        NOTICE => {
+        NOTICE | WORKFLOW_START_REFUSED => {
             let notice: StoredNotice = serde_json::from_str(payload).map_err(decode)?;
-            if notice.folded > 0 {
+            let repeat = if kind == WORKFLOW_START_REFUSED {
+                1
+            } else {
+                notice.folded
+            };
+            if repeat > 0 {
                 let updated = tx.execute(
-                    "UPDATE person_inbox_notices SET folded = folded + ?2, title = ?3, body = ?4,
+                    "UPDATE person_inbox_notices SET folded = min(folded + ?2, 4294967295), title = ?3, body = ?4,
                         link = ?5, created_at_ms = ?6, read = ?7,
                         priority = CASE WHEN priority = 'high' OR ?8 = 'high' THEN 'high' ELSE 'normal' END
                     WHERE card_id = ?1",
                     params![
                         notice.card_id,
-                        notice.folded,
+                        repeat,
                         notice.title,
                         notice.body,
                         notice.link,
@@ -135,6 +155,18 @@ pub(super) fn apply_event(tx: &Transaction<'_>, kind: &str, payload: &str) -> ru
                 ],
             )?;
             prune(tx, &notice.owner_user_id, notice.created_at_ms)
+        }
+        WORKFLOW_STARTED => {
+            let pattern: String = serde_json::from_str(payload).map_err(decode)?;
+            tx.execute(
+                "DELETE FROM person_inbox_snoozes WHERE card_id GLOB ?1",
+                [&pattern],
+            )?;
+            tx.execute(
+                "DELETE FROM person_inbox_notices WHERE card_id GLOB ?1",
+                [&pattern],
+            )?;
+            Ok(())
         }
         CARD_STATE => {
             let state: CardState = serde_json::from_str(payload).map_err(decode)?;
@@ -182,11 +214,17 @@ pub(super) fn apply_event(tx: &Transaction<'_>, kind: &str, payload: &str) -> ru
     }
 }
 
-/// Drops what is past retention, snoozes that have ended, and notices past the owner's limit.
+/// Drops expired and excess notices. A refused workflow start stays active until another
+/// start succeeds or its Room is removed.
 fn prune(tx: &Transaction<'_>, owner_user_id: &str, now_ms: u64) -> rusqlite::Result<()> {
     tx.execute(
-        "DELETE FROM person_inbox_notices WHERE owner_user_id = ?1 AND created_at_ms < ?2",
-        params![owner_user_id, now_ms.saturating_sub(RETENTION_MS) as i64],
+        "DELETE FROM person_inbox_notices
+         WHERE owner_user_id = ?1 AND created_at_ms < ?2 AND card_id NOT GLOB ?3",
+        params![
+            owner_user_id,
+            now_ms.saturating_sub(RETENTION_MS) as i64,
+            WORKFLOW_START_NOTICE_PATTERN
+        ],
     )?;
     tx.execute(
         "DELETE FROM person_inbox_snoozes WHERE owner_user_id = ?1 AND until_ms <= ?2",
@@ -194,11 +232,11 @@ fn prune(tx: &Transaction<'_>, owner_user_id: &str, now_ms: u64) -> rusqlite::Re
     )?;
     tx.execute(
         "DELETE FROM person_inbox_notices WHERE card_id IN (
-            SELECT card_id FROM person_inbox_notices WHERE owner_user_id = ?1
+            SELECT card_id FROM person_inbox_notices WHERE owner_user_id = ?1 AND card_id NOT GLOB ?3
             ORDER BY read DESC, created_at_ms ASC, card_id ASC
-            LIMIT max(0, (SELECT count(*) FROM person_inbox_notices WHERE owner_user_id = ?1) - ?2)
+            LIMIT max(0, (SELECT count(*) FROM person_inbox_notices WHERE owner_user_id = ?1 AND card_id NOT GLOB ?3) - ?2)
         )",
-        params![owner_user_id, NOTICES_PER_OWNER],
+        params![owner_user_id, NOTICES_PER_OWNER, WORKFLOW_START_NOTICE_PATTERN],
     )?;
     Ok(())
 }
@@ -225,7 +263,8 @@ impl DurableKernelStateStore {
         notice.read = state.mutes.contains(&origin);
         let window_start = notice.created_at_ms.saturating_sub(NOTICE_WINDOW_MS);
         let mut recent = state.notices.iter().filter(|stored| {
-            stored.session_id == notice.session_id
+            !stored.is_workflow_start_refusal()
+                && stored.session_id == notice.session_id
                 && stored.agent_id == notice.agent_id
                 && stored.created_at_ms > window_start
         });
@@ -237,6 +276,34 @@ impl DurableKernelStateStore {
         }
         self.append_event(NOTICE, Some(notice.card_id.clone()), to_payload(&notice)?)?;
         Ok(notice)
+    }
+
+    pub(crate) fn record_workflow_start_refusal(
+        &self,
+        notice: StoredNotice,
+    ) -> Result<(), DaemonError> {
+        self.append_event(
+            WORKFLOW_START_REFUSED,
+            Some(notice.card_id.clone()),
+            to_payload(&notice)?,
+        )?;
+        Ok(())
+    }
+
+    pub(crate) fn clear_workflow_start_refusals(&self, prefix: &str) -> Result<bool, DaemonError> {
+        let pattern = format!("{prefix}*");
+        let present: bool = self
+            .lock_connection("person_inbox.workflow_start")?
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM person_inbox_notices WHERE card_id GLOB ?1)",
+                [&pattern],
+                |row| row.get(0),
+            )
+            .map_err(|error| error_for(error.to_string()))?;
+        if present {
+            self.append_event(WORKFLOW_STARTED, None, to_payload(&pattern)?)?;
+        }
+        Ok(present)
     }
 
     pub(crate) fn set_person_inbox_card_state(
@@ -282,12 +349,16 @@ impl DurableKernelStateStore {
             let mut notices = connection.prepare(
                 "SELECT card_id, session_id, agent_id, title, body, link, priority, created_at_ms, read,
                     folded
-                FROM person_inbox_notices WHERE owner_user_id = ?1 AND created_at_ms >= ?2
+                FROM person_inbox_notices WHERE owner_user_id = ?1 AND (created_at_ms >= ?2 OR card_id GLOB ?3)
                 ORDER BY created_at_ms DESC, card_id ASC",
             )?;
             let notices = notices
                 .query_map(
-                    params![owner_user_id, now_ms.saturating_sub(RETENTION_MS) as i64],
+                    params![
+                        owner_user_id,
+                        now_ms.saturating_sub(RETENTION_MS) as i64,
+                        WORKFLOW_START_NOTICE_PATTERN
+                    ],
                     |row| {
                         Ok(StoredNotice {
                             card_id: row.get(0)?,
@@ -369,6 +440,56 @@ mod tests {
             read: false,
             folded: 0,
         }
+    }
+
+    #[test]
+    fn workflow_refusals_fold_by_caller_and_clear_only_the_accepted_endpoint() {
+        let dir = crate::test_support::TestWorktree::new("workflow-start-notice");
+        let path = dir.path().join("state.sqlite3");
+        let key = "workflow-start:one:";
+        let caller = "workflow-start:one:local";
+        let other_caller = "workflow-start:one:other";
+        let other_endpoint = "workflow-start:two:local";
+        let now = 2 * RETENTION_MS;
+        {
+            let store = DurableKernelStateStore::open(path.clone()).unwrap();
+            for card in [caller, other_caller, other_endpoint, caller] {
+                store
+                    .record_workflow_start_refusal(notice(card, now))
+                    .unwrap();
+            }
+            store
+                .set_person_inbox_card_state(
+                    "owner",
+                    vec![caller.into(), other_endpoint.into()],
+                    InboxCardChange::Snooze {
+                        until_ms: Some(now + 3 * RETENTION_MS),
+                    },
+                    now,
+                )
+                .unwrap();
+        }
+        let store = DurableKernelStateStore::open(path).unwrap();
+        let state = store
+            .person_inbox_state("owner", now + 2 * RETENTION_MS)
+            .unwrap();
+        assert_eq!(state.notices.len(), 3);
+        assert_eq!(
+            state
+                .notices
+                .iter()
+                .find(|n| n.card_id == caller)
+                .unwrap()
+                .folded,
+            1
+        );
+        assert!(store.clear_workflow_start_refusals(key).unwrap());
+        assert!(!store.clear_workflow_start_refusals(key).unwrap());
+        let state = store.person_inbox_state("owner", now).unwrap();
+        assert_eq!(state.notices[0].card_id, other_endpoint);
+        assert_eq!(state.notices.len(), 1);
+        assert!(!state.snoozes.contains_key(caller));
+        assert!(state.snoozes.contains_key(other_endpoint));
     }
 
     #[test]

@@ -504,21 +504,21 @@ impl CommandRouter {
             LocalDaemonRequest::GetPersonInbox(_) => boxed_handler(|| async move {
                 crate::runtime::person_inbox::execute_person_inbox_request(
                     &self.runtime_state,
-                    &command_caller_user_id(&command),
+                    &command.caller,
                 )
             }),
             LocalDaemonRequest::SetInboxCardState(request) => boxed_handler(|| async move {
                 crate::runtime::person_inbox::execute_set_inbox_card_state(
                     &self.runtime_state,
                     request,
-                    &command_caller_user_id(&command),
+                    &command.caller,
                 )
             }),
             LocalDaemonRequest::SetInboxMute(request) => boxed_handler(|| async move {
                 crate::runtime::person_inbox::execute_set_inbox_mute(
                     &self.runtime_state,
                     request,
-                    &command_caller_user_id(&command),
+                    &command.caller,
                 )
             }),
             LocalDaemonRequest::ListNotificationSubscriptions(_) => boxed_handler(|| async move {

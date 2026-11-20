@@ -61,7 +61,9 @@ mod created_resources;
 mod decision_holders;
 mod person_inbox;
 pub(crate) use decision_holders::StoredDecisionHolder;
-pub(crate) use person_inbox::{PersonInboxState, StoredNotice};
+pub(crate) use person_inbox::{
+    PersonInboxState, StoredNotice, WORKFLOW_RELINK_ORIGIN, WORKFLOW_START_NOTICE_PREFIX,
+};
 mod event_connection_imports;
 pub(crate) use event_connection_imports::{
     EventConnectionImportChange, EventConnectionImportClaims, IMPORTED_BY_TRANSFER_ID,

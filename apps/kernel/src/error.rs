@@ -379,6 +379,11 @@ pub enum DaemonError {
         resource: String,
         operation: &'static str,
     },
+    #[error("{source}. {action}")]
+    WorkflowStartRefused {
+        source: Box<DaemonError>,
+        action: &'static str,
+    },
     #[error("session-scoped request `{operation}` requires authenticated user identity")]
     MissingSessionCallerIdentity { operation: String },
     #[error("session `{session_id}` has no active prompt")]
