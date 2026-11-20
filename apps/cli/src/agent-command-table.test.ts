@@ -20,7 +20,7 @@ test("sudo refusal and expiry have separate typed CLI outcomes", () => {
 
 test("the guide mentions exactly the commands and flags the parser knows", () => {
   const guide = guideText()
-  const names = [...guide.matchAll(/chariox ([a-z]+)(?: ([a-z]+))?/g)]
+  const names = [...guide.matchAll(/chariox ([a-z-]+)(?: ([a-z]+))?/g)]
     .map(([, first, second]) => COMMANDS.some(spec => spec.name === `${first} ${second}`) ? `${first} ${second}` : first)
   for (const name of names) assert.ok(COMMANDS.some(spec => spec.name === name), `guide mentions unknown command ${name}`)
   for (const spec of COMMANDS) assert.ok(names.includes(spec.name), `guide omits command ${spec.name}`)

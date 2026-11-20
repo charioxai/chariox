@@ -4,6 +4,7 @@ pub mod account_profile;
 pub mod agent;
 pub(crate) mod agent_file_copy;
 pub mod agent_move;
+mod agent_release_notes;
 pub(crate) mod agent_temp;
 pub mod app;
 pub mod artifacts;

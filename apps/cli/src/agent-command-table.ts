@@ -4,7 +4,7 @@ import {
 } from "./ipc-requests.js"
 
 type Flag = { name: string; value?: string; required?: true; repeat?: true }
-type CommandSpec = { name: string; flags: readonly Flag[]; args?: readonly string[]; summary: string; note?: string }
+type CommandSpec = { name: string; flags: readonly Flag[]; args?: readonly string[]; summary: string; brief?: string; note?: string }
 
 const SOCKET: Flag = { name: "--socket", value: "PATH" }
 const HOLDER: Flag = { name: "--holder-pid", value: "PID" }
@@ -17,92 +17,145 @@ const TERMINAL: Flag = { name: "--terminal", value: "TERMINAL_ID" }
 const HOST_AGENT: Flag = { name: "--host-agent", value: "AGENT_ID" }
 
 export const COMMANDS: readonly CommandSpec[] = [
-  { name: "agent deadline", flags: [KERNEL, SESSION, SOCKET], args: ["AGENT", "DURATION|none"], summary: "extend, shorten or clear an agent deadline; duration starts now (90s, 30m, 2h, 1d)" },
-  { name: "exec", flags: [KERNEL, SESSION, { name: "--workspace", value: "PATH" }, DIRECTORY, HOST_AGENT, TIMEOUT, SOCKET],
+  { name: "agent deadline", brief: "Change or clear an agent deadline", flags: [KERNEL, SESSION, SOCKET], args: ["AGENT", "DURATION|none"], summary: "extend, shorten or clear an agent deadline; duration starts now (90s, 30m, 2h, 1d)" },
+  { name: "exec", brief: "Run a command on this kernel, another kernel, or in a Room", flags: [KERNEL, SESSION, { name: "--workspace", value: "PATH" }, DIRECTORY, HOST_AGENT, TIMEOUT, SOCKET],
     summary: "run argv after --. With no --session and no --workspace it runs on the kernel itself, in no Room, in a terminal of the kernel (stdout and stderr in one stream; --directory PATH, default the kernel user's home; --timeout SECONDS to wait); with --session it runs in that Room and with --workspace in a temporary Room, without a PTY, streaming binary stdin/stdout/stderr live. Returns the command exit code" },
   {
-    name: "exec place",
+    name: "exec place", brief: "Move a queued command to another kernel",
     flags: [SESSION, { name: "--kernel", value: "NAME", required: true }, { name: "--directory", value: "PATH" }, SOCKET],
     args: ["EXEC_ID"],
     summary: "run a command exec still holds (queued) on another of your kernels; a started command cannot move",
   },
-  { name: "guide", flags: [], summary: "print this guide" },
+  { name: "whats-new", flags: [KERNEL, SOCKET], summary: "Read this kernel’s agent release note" },
+  { name: "guide", brief: "Read the full agent command guide", flags: [], summary: "print this guide" },
   {
-    name: "access request",
+    name: "access request", brief: "Request permission to use the kernel",
     flags: [{ name: "--until-exit" }, { name: "--minutes", value: "N" }, { name: "--no-wait" }, HOLDER, SOCKET],
     summary: "ask the user to approve access for you; prints the grant. In a shell with a command timeout use --no-wait, then poll access status until granted. The kernel picks your harness as holder (--holder-pid takes a host pid); in a sandbox, make the kernel socket's directory writable",
   },
-  { name: "access status", flags: [HOLDER, SOCKET], summary: "granted, pending, ended (with the reason) or not_requested" },
+  { name: "access status", brief: "Check whether your kernel access is active", flags: [HOLDER, SOCKET], summary: "granted, pending, ended (with the reason) or not_requested" },
   {
-    name: "access cover",
+    name: "access cover", brief: "Extend your grant to a background process",
     flags: [{ name: "--pid", value: "PID", required: true }, SOCKET],
     summary: "a background process you start (nohup tool &) loses your access when its parent exits: run this with $! right after starting it, or from the process itself; not for a process that forks twice (its pid changes)",
   },
   {
-    name: "secret request",
+    name: "secret request", brief: "Ask the owner to save a secret in the Vault",
     flags: [{ name: "--label", value: "TEXT", required: true }, { name: "--host", value: "HOST", required: true, repeat: true }, OVERWRITE, { name: "--no-wait" }, TIMEOUT, SOCKET],
     args: ["CREDENTIAL_ID"],
     summary: "ask the user for a value that goes straight into their Vault under CREDENTIAL_ID; prints the link as its first line, then waits for stored, cancelled or timed_out (--no-wait: exit 6)",
     note: "Name the host(s) that will receive the key with --host (repeat it, for example api.example.com or localhost:8080); the owner sees them before typing, and the handle works for no other host. Show the link to the user verbatim and do not open it. Never ask for the value in chat and never type it yourself: you do not receive it. Use the stored value only through its credential handle.",
   },
-  { name: "interaction list", flags: [KERNEL, SOCKET], summary: "the open cards of the person you work for, in all their Rooms; person_only says why only the person answers a card" },
+  { name: "interaction list", brief: "List the owner’s open cards", flags: [KERNEL, SOCKET], summary: "the open cards of the person you work for, in all their Rooms; person_only says why only the person answers a card" },
   {
-    name: "interaction answer",
+    name: "interaction answer", brief: "Answer a card for the owner",
     flags: [{ name: "--reply", value: "TEXT" }, KERNEL, SOCKET],
     args: ["INTERACTION_ID", "CHOICE_ID"],
     summary: "answer one of those cards for the person; --reply TEXT with the card's reply_choice_id. Secret entry, Vault unlock, passkeys and payments stay the person's own"
   },
-  { name: "secret status", flags: [SOCKET], args: ["INTERACTION_ID"], summary: "pending, stored, cancelled or timed_out for a secret request you made" },
-  { name: "kernels", flags: [SOCKET], summary: "list the kernels this kernel can reach" },
+  { name: "secret status", brief: "Check a pending secret request", flags: [SOCKET], args: ["INTERACTION_ID"], summary: "pending, stored, cancelled or timed_out for a secret request you made" },
+  { name: "kernels", brief: "List reachable kernels", flags: [SOCKET], summary: "list the kernels this kernel can reach" },
   {
-    name: "request",
+    name: "request", brief: "Send a JSON request to a kernel",
     flags: [KERNEL, { name: "--command-id", value: "ID" }, { name: "--no-subscribe" }, TIMEOUT, SOCKET],
     summary: "send the one JSON request on stdin; prints the JSON response. --timeout SECONDS (default 30) is how long to wait: a RunShellCommand with timeout_ms needs timeout_ms/1000 + 30",
   },
   {
     name: "watch",
+    brief: "Follow a Room’s events on another kernel",
     // watch follows another kernel's events; a local session is read with `request`.
     flags: [{ ...KERNEL, required: true }, { name: "--session", value: "SESSION_ID", required: true }, { name: "--attachment", value: "ATTACHMENT_ID", required: true }, { name: "--from", value: "EVENT_ID" }, SOCKET],
     summary: "print one JSON line per event of that machine's session until the connection is lost",
   },
   {
-    name: "terminal open",
+    name: "terminal open", brief: "Open a persistent terminal or run a command in one",
     flags: [KERNEL, SESSION, HOST_AGENT, DIRECTORY, { name: "--cols", value: "N" }, { name: "--rows", value: "N" }, { name: "--title", value: "TITLE" }, TIMEOUT, SOCKET],
     summary: "open a terminal in that Room (a login shell, or the argv after --); prints terminal.terminal_id; it keeps running when you disconnect. Without --session the terminal is the kernel's own, in no Room, starting in --directory (default the kernel user's home); only the owner and an agent the owner granted access use it",
   },
-  { name: "terminal list", flags: [KERNEL, SESSION, TIMEOUT, SOCKET], summary: "the Room's terminals (the kernel's own without --session) with their output offsets; a terminal that shows host_agent runs on that agent's machine: pass that id as --host-agent to send, read, wait and close" },
+  { name: "terminal list", brief: "List terminals and their output offsets", flags: [KERNEL, SESSION, TIMEOUT, SOCKET], summary: "the Room's terminals (the kernel's own without --session) with their output offsets; a terminal that shows host_agent runs on that agent's machine: pass that id as --host-agent to send, read, wait and close" },
   {
-    name: "terminal send",
+    name: "terminal send", brief: "Type into a terminal",
     flags: [KERNEL, SESSION, TERMINAL, HOST_AGENT, { name: "--no-enter" }, { name: "--since", value: "OFFSET" }, { name: "--wait-ms", value: "MS" }, TIMEOUT, SOCKET],
     args: ["TEXT"],
     summary: "type TEXT and Enter; prints after_offset, the offset to read from. With --wait-ms it also waits for the output (as read does) in the same call; pass --since (the next_offset of your last read) to make that one round trip",
   },
   {
-    name: "terminal read",
+    name: "terminal read", brief: "Read a terminal’s output",
     flags: [KERNEL, SESSION, TERMINAL, HOST_AGENT, { name: "--since", value: "OFFSET" }, { name: "--wait-ms", value: "MS" }, SOCKET],
     summary: "the output after OFFSET as text and next_offset; gap true means it scrolled out: use list for a fresh offset",
   },
   {
-    name: "terminal wait",
+    name: "terminal wait", brief: "Wait for a terminal condition",
     flags: [KERNEL, SESSION, TERMINAL, HOST_AGENT, { name: "--for", value: "finished|waiting_for_input|output_contains=TEXT" }, { name: "--since", value: "OFFSET" }, TIMEOUT, SOCKET],
     summary: "block until that happens or --timeout seconds pass (default 60); prints fired (null on timeout) and the screen. Only output after OFFSET counts: pass send's after_offset as --since",
   },
-  { name: "terminal close", flags: [KERNEL, SESSION, TERMINAL, HOST_AGENT, TIMEOUT, SOCKET], summary: "end the terminal and everything running in it" },
-  { name: "files stat", flags: [KERNEL, { name: "--sha256" }, TIMEOUT, SOCKET], args: ["PATH"], summary: "kind, size, modified time and optionally sha256 of a file; partial_size is an unfinished upload" },
-  { name: "files ls", flags: [KERNEL, TIMEOUT, SOCKET], args: ["PATH"], summary: "list a directory" },
-  { name: "files get", flags: [KERNEL, OVERWRITE, TIMEOUT, SOCKET], args: ["REMOTE_PATH", "LOCAL_PATH"], summary: "download a file, verified by sha256; prints size, bytes received and resumed_from" },
-  { name: "files put", flags: [KERNEL, OVERWRITE, TIMEOUT, SOCKET], args: ["LOCAL_PATH", "REMOTE_PATH"], summary: "upload a file, verified by sha256; prints size, bytes sent and resumed_from" },
-  { name: "events subscribe", flags: [KERNEL, SESSION, { name: "--agent", value: "AGENT_ID" }, { name: "--source", value: "SOURCE" }, { name: "--like", value: "GRANT_ID" }, SOCKET], summary: "follow a session or one agent (--kernel and --session), one notification source on this kernel (--source ID or display name), or take over the targets an earlier live grant of yours follows (--like GRANT_ID), in the durable event inbox" },
-  { name: "events unsubscribe", flags: [KERNEL, { name: "--session", value: "SESSION_ID" }, { name: "--agent", value: "AGENT_ID" }, { name: "--source", value: "SOURCE" }, { name: "--all" }, SOCKET], summary: "remove targets or one followed source (--source ID, or all), or end the subscription with --all" },
-  { name: "events subscription", flags: [SOCKET], summary: "show followed targets, followed sources and per-kernel health" },
-  { name: "events sources", flags: [SOCKET], summary: "list the notification sources your grant can follow on this kernel (workflow exits and \"Agent needs your action\"); an occurrence arrives once as a notification record" },
-  { name: "events list", flags: [{ name: "--since", value: "CURSOR" }, { name: "--limit", value: "N" }, SOCKET], summary: "read pending records, oldest first; save next_cursor" },
-  { name: "events wait", flags: [{ name: "--since", value: "CURSOR" }, { name: "--limit", value: "N" }, TIMEOUT, SOCKET], summary: "wait for pending records (default 540 s, at most 540 s: a longer --timeout is refused at once); exit 5 on timeout; a grant that follows nothing is refused at once (exit 3) with how to follow" },
-  { name: "events watch", flags: [{ name: "--since", value: "CURSOR" }, SOCKET], summary: "print one JSON line per record until interrupted or the subscription ends" },
-  { name: "events ack", flags: [SOCKET], args: ["CURSOR"], summary: "acknowledge all records through CURSOR" },
-  { name: "events mcp", flags: [SOCKET], summary: "MCP server over stdio for a harness that supports elicitation: its tool chariox_next_choice shows the next pending question in the harness's own chooser and sends the answer" },
+  { name: "terminal close", brief: "Close a terminal", flags: [KERNEL, SESSION, TERMINAL, HOST_AGENT, TIMEOUT, SOCKET], summary: "end the terminal and everything running in it" },
+  { name: "files stat", brief: "Read file metadata", flags: [KERNEL, { name: "--sha256" }, TIMEOUT, SOCKET], args: ["PATH"], summary: "kind, size, modified time and optionally sha256 of a file; partial_size is an unfinished upload" },
+  { name: "files ls", brief: "List a directory", flags: [KERNEL, TIMEOUT, SOCKET], args: ["PATH"], summary: "list a directory" },
+  { name: "files get", brief: "Download a file", flags: [KERNEL, OVERWRITE, TIMEOUT, SOCKET], args: ["REMOTE_PATH", "LOCAL_PATH"], summary: "download a file, verified by sha256; prints size, bytes received and resumed_from" },
+  { name: "files put", brief: "Upload a file", flags: [KERNEL, OVERWRITE, TIMEOUT, SOCKET], args: ["LOCAL_PATH", "REMOTE_PATH"], summary: "upload a file, verified by sha256; prints size, bytes sent and resumed_from" },
+  { name: "events subscribe", brief: "Follow a Room, agent or notification source", flags: [KERNEL, SESSION, { name: "--agent", value: "AGENT_ID" }, { name: "--source", value: "SOURCE" }, { name: "--like", value: "GRANT_ID" }, SOCKET], summary: "follow a session or one agent (--kernel and --session), one notification source on this kernel (--source ID or display name), or take over the targets an earlier live grant of yours follows (--like GRANT_ID), in the durable event inbox" },
+  { name: "events unsubscribe", brief: "Stop following a target or source", flags: [KERNEL, { name: "--session", value: "SESSION_ID" }, { name: "--agent", value: "AGENT_ID" }, { name: "--source", value: "SOURCE" }, { name: "--all" }, SOCKET], summary: "remove targets or one followed source (--source ID, or all), or end the subscription with --all" },
+  { name: "events subscription", brief: "Show your followed targets and their health", flags: [SOCKET], summary: "show followed targets, followed sources and per-kernel health" },
+  { name: "events sources", brief: "List available notification sources", flags: [SOCKET], summary: "list the notification sources your grant can follow on this kernel (workflow exits and \"Agent needs your action\"); an occurrence arrives once as a notification record" },
+  { name: "events list", brief: "Read pending events", flags: [{ name: "--since", value: "CURSOR" }, { name: "--limit", value: "N" }, SOCKET], summary: "read pending records, oldest first; save next_cursor" },
+  { name: "events wait", brief: "Wait for pending events", flags: [{ name: "--since", value: "CURSOR" }, { name: "--limit", value: "N" }, TIMEOUT, SOCKET], summary: "wait for pending records (default 540 s, at most 540 s: a longer --timeout is refused at once); exit 5 on timeout; a grant that follows nothing is refused at once (exit 3) with how to follow" },
+  { name: "events watch", brief: "Stream pending events", flags: [{ name: "--since", value: "CURSOR" }, SOCKET], summary: "print one JSON line per record until interrupted or the subscription ends" },
+  { name: "events ack", brief: "Acknowledge events through a cursor", flags: [SOCKET], args: ["CURSOR"], summary: "acknowledge all records through CURSOR" },
+  { name: "events mcp", brief: "Answer Chariox questions from a compatible harness", flags: [SOCKET], summary: "MCP server over stdio for a harness that supports elicitation: its tool chariox_next_choice shows the next pending question in the harness's own chooser and sends the answer" },
 
 ]
+
+const CLI_COMMANDS = [
+  { name: "help", summary: "List commands (also --help or -h)" },
+  { name: "--version", summary: "Print the installed version (also -V)" },
+  { name: "context", summary: "Read the current agent and Room context" },
+  { name: "sudo", summary: "Ask the owner to approve a privileged task" },
+  { name: "terminal", summary: "Attach to a terminal" },
+  { name: "logs", summary: "Read Chariox logs" },
+  { name: "app", summary: "Manage apps and app development" },
+  { name: "claude", summary: "Open a native Claude session" },
+  { name: "codex", summary: "Open a native Codex session" },
+  { name: "opencode", summary: "Open a native OpenCode session" },
+  { name: "publication", summary: "Deploy a publication or manage its deployment" },
+  { name: "deployments", summary: "Manage deployed workflows (also deployed)" },
+  { name: "cloud login", summary: "Sign in to Chariox Cloud (also login)" },
+  { name: "cloud logout", summary: "Sign out of Chariox Cloud" },
+  { name: "cloud status", summary: "Show the Cloud sign-in status" },
+  { name: "cloud kernels", summary: "List kernels on your Cloud account" },
+  { name: "cloud setup", summary: "Set up this computer (also setup)" },
+]
+
+const COMMAND_GROUPS: readonly [string, readonly string[]][] = [
+  ["Run commands", ["exec", "terminal"]],
+  ["Files", ["files"]],
+  ["Agent events", ["agent", "events", "interaction", "watch"]],
+  ["Access and secrets", ["access", "secret", "sudo"]],
+  ["Cloud and apps", ["app", "cloud", "deployments", "publication"]],
+  ["Terminal client", ["claude", "codex", "logs", "opencode"]],
+]
+
+export const ONE_OFF_COMMAND_HINT = "For a one-off command, use chariox exec --kernel NAME -- argv... (omit --kernel for this kernel)."
+
+export function topLevelHelpText(): string {
+  const groups = new Map(COMMAND_GROUPS.map(([group]) => [group, [] as string[]]))
+  const general: string[] = []
+  for (const { name, summary } of [...COMMANDS.map(spec => ({ name: spec.name, summary: spec.brief ?? spec.summary })), ...CLI_COMMANDS]) {
+    const verb = name.split(" ", 1)[0]!
+    const group = COMMAND_GROUPS.find(([, verbs]) => verbs.includes(verb))?.[0]
+    const row = `  ${name.padEnd(22)}  ${summary}`
+    ;(group ? groups.get(group)! : general).push(row)
+  }
+  return [
+    "Usage: chariox <command> [arguments]",
+    "Run chariox without a command to open the terminal client.",
+    "Run chariox guide for agent command details and examples.",
+    "",
+    "General", ...general,
+    ...Array.from(groups, ([title, rows]) => ["", title, ...rows]).flat(),
+    "",
+  ].join("\n")
+}
 
 export const REQUEST_EXAMPLES: readonly { body: object; note: string }[] = [
   { body: listSessionsRequest(), note: "SessionsListed.sessions" },
@@ -217,7 +270,7 @@ export function guideText(): string {
     "4. Watch events on a kernel: chariox watch --kernel NAME --session ID --attachment ID (after kernel_connection_lost run it again with --from N, the N in the message)",
     "5. Move files: chariox files put|get|stat|ls --kernel NAME ... (put and get resume after an interruption: run the same command again)",
     "6. Run long commands: chariox terminal open|send|read|wait|close --kernel NAME --session ID ...",
-    "   Terminals belong to the Room and keep running if you disconnect; read them later with --since. They need a session (ListSessions, or CreateSession: see Requests below).",
+    "   Terminals keep running if you disconnect; read them later with --since. For one-off commands, run chariox exec --kernel NAME -- argv...",
     "",
     "Follow sessions or single agents with chariox events subscribe. Use chariox events wait --timeout 540 in the foreground or your harness background option, or poll chariox events list. Keep next_cursor. A new grant follows nothing, and a wait on it is refused at once. To continue an earlier grant's follows, run chariox events subscribe --like OLD_GRANT_ID.",
     "On exit 7, reread the followed targets and resume from oldest_cursor - 1; ack after handling records.",
@@ -230,14 +283,12 @@ export function guideText(): string {
     ...commands,
     "Requests for chariox request (replace the UPPERCASE values; ids come from earlier answers):",
     ...REQUEST_EXAMPLES.map(({ body, note }) => `  ${JSON.stringify(body)}  | ${note}`),
-    "A request the kernel cannot parse comes back with a message naming the expected variants and fields: read it and fix the request.",
+    "If the kernel cannot parse a request, read its message naming the expected variants and fields.",
     "Give every request that changes state (CreateSession, AttachToSession, SpawnAgent, DestroyAgent, SubmitPrompt, RunShellCommand, EndSession, RequestKernelSudo) its own --command-id ID; reuse one only to retry.",
     "An AttachToSession you make on another kernel is kept alive for you while your access lasts; send DetachFromSession when you are done with it.",
-    "",
-    "Exec streams raw binary stdout and stderr and returns the remote command's exit code (128 + signal). Other commands print one JSON document on stdout. Errors are JSON on stderr: {\"error\":{\"code\",\"message\",\"kernel\"}}.",
+    "Exec streams raw binary stdout and stderr and returns the remote command's exit code (128 + signal). Requests print one JSON document on stdout. Errors are JSON on stderr: {\"error\":{\"code\",\"message\",\"kernel\"}}.",
     "Exit codes:",
     ...exits,
-    "",
     "Sudo outcomes: kernel_sudo_refused means the person refused; kernel_sudo_expired means the approval deadline passed; kernel_sudo_room_owner_local means the Room predates enrollment (re-create the Room after enrollment). None starts elevation or retries automatically. Submit a new request only when needed and approve it in a Chariox client.",
     "Retry rule: on kernel_request_timeout or kernel_connection_lost retry ONCE with the same --command-id. On kernel_outcome_unknown read the state first; never retry blindly.",
     "Human-only, never attempted by you: passkey approvals, grants, sudo approvals, secrets and credentials, relay and pairing configuration. You answer the person's other cards for them with interaction list and interaction answer.",
