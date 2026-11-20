@@ -131,6 +131,8 @@ export class BrowserMirror2Renderer {
   private focusHold: { id: string, previous: string | null, until: number } | null = null
   private kernelFocus: string | null = null // the latest packet's focus
   private kernelFocusVisible = false // whether the page draws a focus ring on it (it matches :focus-visible there)
+  private pageWheel = false // Y3-C1a: the page's own script takes the wheel; every wheel over its document goes to the kernel's page
+  private pageWheelRest: [number, number] = [0, 0] // the sub-pixel part of those wheels not sent yet
   private focusWithheld: string | null | undefined // a packet's focus not taken while inputs were pending
   private resetSerial = 0 // local only: IDs and cached focus never cross a snapshot
   private queue: Array<{ resetSerial: number; action: Mirror2Input; epoch: { sequence: number; document_id: string } }> = []
@@ -192,6 +194,8 @@ export class BrowserMirror2Renderer {
     // Only the newest pointer position matters: a queued move is replaced, so moves never pile up behind a slow reply.
     if (pointerOnly(action) && last && pointerOnly(last.action)) { last.action = action; last.epoch = epoch; last.resetSerial = this.resetSerial; return }
     if (action.kind === 'scroll_to' && last?.action.kind === 'scroll_to' && last.action.node_id === action.node_id) { last.action = action; last.epoch = epoch; last.resetSerial = this.resetSerial; return }
+    // Wheel steps for the kernel's page waiting behind a reply add up into one step at the newest point.
+    if (action.kind === 'scroll' && last?.action.kind === 'scroll' && last.action.node_id === action.node_id) { last.action = { ...action, delta_x: last.action.delta_x + action.delta_x, delta_y: last.action.delta_y + action.delta_y }; last.epoch = epoch; last.resetSerial = this.resetSerial; return }
     if (action.kind === 'selection' && this.records.get(action.anchor_id)?.kind === 'text') { this.selectionSent = JSON.stringify(action); this.selectionHold = { key: this.selectionSent, until: Infinity, epoch: epoch.sequence }; this.selectionFailure = false }
     this.queue.push({ action, epoch, resetSerial: this.resetSerial }); if (!pointerOnly(action)) this.pendingInputs++
     this.queueWake?.(); void this.pump()
@@ -379,6 +383,15 @@ export class BrowserMirror2Renderer {
     // Local scrolling, eased per frame (MP-10); opaque regions (canvas, video, foreign stills) take the wheel themselves.
     on('wheel', event => {
       const hit = element(event), wheel = event as WheelEvent
+      // Y3-C1a: the page's own script takes the wheel (a smooth-scroll or full-page library): as in its browser, every wheel over
+      // its document reaches it (the kernel's page), never the copy's own scrolling; the copy follows the page's positions.
+      if (doc === this.doc && this.pageWheel && !wheel.ctrlKey && wheel.deltaMode === 0 && (!hit || this.records.get(hit.id)?.kind !== 'tile')) {
+        event.preventDefault()
+        const x = this.pageWheelRest[0] + wheel.deltaX, y = this.pageWheelRest[1] + wheel.deltaY, dx = Math.trunc(x), dy = Math.trunc(y)
+        this.pageWheelRest = [x - dx, y - dy]
+        if (hit && (dx || dy)) this.enqueue({ kind: 'scroll', node_id: hit.id, ...offset(hit.el, wheel), delta_x: dx, delta_y: dy })
+        return
+      }
       if (!hit || this.records.get(hit.id)?.kind !== 'tile') {
         const view = doc.defaultView!, x = view.scrollX, y = view.scrollY
         if (this.wheel.take(wheel, target(event))) event.preventDefault()
@@ -925,7 +938,7 @@ export class BrowserMirror2Renderer {
       if (packet.document_id !== this.documentId) this.documentAt = performance.now()
       this.sequence = packet.sequence; this.documentId = packet.document_id
       // A focus taken by a pointer still pressed is pending input too (it is sent with its click or drag end).
-      this.kernelFocus = packet.focused; this.kernelFocusVisible = packet.focus_visible === true
+      this.kernelFocus = packet.focused; this.kernelFocusVisible = packet.focus_visible === true; this.pageWheel = packet.page_wheel === true
       rangeRestored = restoreMirror2Range(this.doc, savedRange, node => this.ids.has(node), node => this.records.get(this.ids.get(node) ?? '')?.kind === 'mask')
       const selectionKey = packet.selection ? JSON.stringify({kind:'selection',anchor_id:packet.selection.anchor_id,anchor_offset:packet.selection.anchor_offset,focus_id:packet.selection.focus_id,focus_offset:packet.selection.focus_offset}) : ''
       if (this.selectionHold && (selectionKey === this.selectionHold.key || packet.sequence > this.selectionHold.until)) this.selectionHold = null
@@ -1143,9 +1156,9 @@ export async function attachBrowserMirror2(transport: Mirror2Transport, containe
       return packet
     }
     if (!base) throw Error('MP-08: mirror lost base')
-    const header = (name: 'scroll' | 'focused' | 'focus_visible' | 'selection' | 'fragment' | 'snapshot_complete' | 'font_failures') => Object.hasOwn(body, name) ? body[name] : base![name] ?? (name === 'snapshot_complete' || name === 'focus_visible' ? false : name === 'font_failures' ? [] : null)
+    const header = (name: 'scroll' | 'focused' | 'focus_visible' | 'page_wheel' | 'selection' | 'fragment' | 'snapshot_complete' | 'font_failures') => Object.hasOwn(body, name) ? body[name] : base![name] ?? (name === 'snapshot_complete' || name === 'focus_visible' || name === 'page_wheel' ? false : name === 'font_failures' ? [] : null)
     return decodeMirror2Packet({ ...body, ...media, subscription_id, tab_id: binding.tab_id, generation: binding.generation, document_id: base.document_id, base_sequence: wire.sequence - 1, reset: false,
-      css_width: base.css_width, css_height: base.css_height, device_scale_factor: base.device_scale_factor, scroll: header('scroll'), focused: header('focused'), focus_visible: header('focus_visible'), selection: header('selection'), fragment: header('fragment'), snapshot_complete: header('snapshot_complete'), font_failures: header('font_failures') } as Mirror2Packet)
+      css_width: base.css_width, css_height: base.css_height, device_scale_factor: base.device_scale_factor, scroll: header('scroll'), focused: header('focused'), focus_visible: header('focus_visible'), page_wheel: header('page_wheel'), selection: header('selection'), fragment: header('fragment'), snapshot_complete: header('snapshot_complete'), font_failures: header('font_failures') } as Mirror2Packet)
   }
   // MP-08/MP-11: undo/redo keep the mirror's frame, focus and epoch admission.
   const renderer = createRenderer(container, async (action, epoch, onWritten) => { activeAt = performance.now(); fill(); try { return await request({ op: 'mirror_input', tab_id: binding.tab_id, generation: binding.generation, document_id: epoch.document_id, subscription_id, sequence: epoch.sequence, action: 'modifiers' in action ? { kind: 'key', key: action.modifiers & 8 ? 'Ctrl+Shift+Z' : 'Ctrl+Z' } : action },onWritten) } catch(error) { if(!closed){handlers.diagnostic?.('mirror_input_refused',error,epoch.sequence);handlers.inputFailure?.(error)} throw error } }, retention)

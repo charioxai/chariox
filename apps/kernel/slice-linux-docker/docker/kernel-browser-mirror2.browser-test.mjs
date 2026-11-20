@@ -844,6 +844,29 @@ test("MP-08: the header says whether the page's focus draws its ring (:focus-vis
     assert.deepEqual(await stateOf([three, true]), [three, true], "MP-08: a key inside the frame turns its ring on");
   }, { "/inner": { type: "text/html", body: '<!doctype html><button id="three" style="width:120px;height:30px">three</button>' } }));
 
+// browserfidelity r18 (Y3-C1a): a page whose own script takes the wheel (a smooth-scroll or full-page library: a non-passive
+// wheel listener on window, document, html or body) must get every wheel; the header says so, and stops saying so when it goes.
+test("Y3-C1a: the header says whether the page's own script takes the wheel, on a snapshot and after the page changes it", () => mirrored(
+  '<div id="a" style="height:3000px">a</div><script>window.take = e => e.preventDefault(); window.count = () => {}</script>', async ({ next, evaluate }) => {
+    await new Promise(resolve => setTimeout(resolve, 800));
+    const snapshot = await next();
+    assert.equal(snapshot.page_wheel, false, "Y3-C1a: a page without wheel listeners scrolls in the viewer");
+    let wheel = snapshot.page_wheel;
+    const after = async (script, want) => {
+      await evaluate(`${script}; document.getElementById('a').textContent = String(Math.random())`);
+      const end = Date.now() + 4000;
+      while (wheel !== want && Date.now() < end) { const packet = await next(1000); if (Object.hasOwn(packet, "page_wheel")) wheel = packet.page_wheel; }
+      return wheel;
+    };
+    assert.equal(await after("addEventListener('wheel', take, { passive: false })", true), true, "Y3-C1a: a non-passive window listener added later takes the wheel");
+    assert.equal(await after("removeEventListener('wheel', take, { passive: false })", false), false, "Y3-C1a: removing it gives the wheel back to the viewer");
+    assert.equal(await after("document.addEventListener('wheel', count, { passive: true }); document.body.addEventListener('wheel', count)", false), false, "Y3-C1a: passive listeners (root listeners are passive by default) never take it");
+    assert.equal(await after("document.getElementById('a').addEventListener('wheel', take, { passive: false })", false), false, "Y3-C1a: an inner element's listener does not take the document's wheel");
+    assert.equal(await after("document.body.addEventListener('mousewheel', take, { passive: false })", true), true, "Y3-C1a: a non-passive mousewheel listener on body takes it");
+    assert.equal(await after("document.body.removeEventListener('mousewheel', take, { passive: false }); document.documentElement.addEventListener('wheel', take, { passive: false })", true), true, "Y3-C1a: so does one on html");
+    assert.equal((await next(0, true)).page_wheel, true, "Y3-C1a: a snapshot carries it");
+  }));
+
 test("MP-10: review #941-4 a CDP-read cross-origin sheet keeps its already-loaded imports (own base, media condition, images and fonts)", () => mirrored(
   '<link rel="stylesheet" href="http://localhost:PORT/cdn/main.css"><div class="x" style="width:20px;height:20px">a</div>', async ({ next }) => {
     await new Promise(resolve => setTimeout(resolve, 800));
