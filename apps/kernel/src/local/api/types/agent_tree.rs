@@ -76,6 +76,15 @@ pub struct AgentTreeNode {
     /// in no Room agent list, so this is where a client reads the stop it decides on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage_limit_stop: Option<crate::agent::UsageLimitStop>,
+    /// A prompt of the node is running: a client reads the node as busy whatever its `state` says.
+    #[serde(default)]
+    pub has_active_prompt: bool,
+    /// What the node waits on and since when, as `liveness.waiting_on` of the single-agent read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waiting_on: Option<crate::runtime::projection::AgentWaitingOn>,
+    /// The node works but its provider run wrote nothing for too long (`liveness.stalled`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub stalled: bool,
 }
 
 /// The descendants of `root` in creation order (stable); the client builds the

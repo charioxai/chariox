@@ -86,6 +86,27 @@ impl KernelRuntimeState {
             },
             &|room| self.owned.session_store.get_session(room).ok(),
         )?;
+        // What each node is doing right now, as the single-agent read says it: a client lists the
+        // tree and must see a busy or stalled child without reading every agent.
+        let mut room_activity = std::collections::HashMap::new();
+        for node in &mut tree.nodes {
+            let room_id = node
+                .room_id
+                .clone()
+                .unwrap_or_else(|| session.id().to_owned());
+            let activity = room_activity.entry(room_id.clone()).or_insert_with(|| {
+                self.owned
+                    .session_store
+                    .get_session(&room_id)
+                    .map(|room| self.agent_activity_for_session(&room))
+                    .unwrap_or_default()
+            });
+            if let Some(activity) = activity.get(&node.agent_id) {
+                node.has_active_prompt = activity.active_prompt_count > 0;
+                node.waiting_on = activity.liveness.waiting_on.clone();
+                node.stalled = activity.liveness.stalled;
+            }
+        }
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         serde_json::to_string(&(&tree.totals, &tree.nodes))
             .unwrap_or_default()

@@ -618,4 +618,6 @@ pub use workspace::*;
 /// The machine list separates live/reconnecting machines (presence) from offline_machines.
 /// Machine inventories identify the Cloud directory, and a stale reply can mark an active renewal.
 /// Relay registrations and machine records include each kernel's registered local protocol.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1012;
+/// 1014 (provisional, renumber after L12.1): an `AgentTreeNode` carries `has_active_prompt`, `waiting_on` and
+/// `stalled`, the same busy and waiting truth the single-agent read gives.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1014;

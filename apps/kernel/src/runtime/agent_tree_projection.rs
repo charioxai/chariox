@@ -254,6 +254,10 @@ pub(crate) fn project_agent_tree(
             deadline_ms: deadline_ms(agent),
             created_at_ms: agent.created_at_ms(),
             usage_limit_stop: agent.usage_limit_stop().cloned(),
+            // The kernel fills the live truth of the node after the tree is projected.
+            has_active_prompt: false,
+            waiting_on: None,
+            stalled: false,
         });
     }
     let totals = totals_of(&nodes);

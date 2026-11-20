@@ -752,6 +752,12 @@ export interface AgentTreeNode {
   needs_user: boolean
   deadline_ms: number | null
   created_at_ms: number
+  /** Protocol 1014: a prompt of the node is running; read the node as busy whatever `state` says. */
+  has_active_prompt: boolean
+  /** Protocol 1014: what the node waits on and since when, as `liveness.waiting_on` of the agent read. */
+  waiting_on?: AgentWaitingOn
+  /** Protocol 1014: the node works but its provider run wrote nothing for too long. */
+  stalled?: boolean
 }
 
 /** `ListDescendants`: no holder, path or card; read again when an `agent_tree` event arrives. */
