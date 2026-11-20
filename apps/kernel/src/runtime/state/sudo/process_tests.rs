@@ -1196,7 +1196,7 @@ async fn a_sub_agent_requests_one_owner_access_card_with_its_own_identity() {
                 .contains("The owner denied kernel access"));
             let status = f.state.kernel_access_status(&identity, None).unwrap();
             assert_eq!(status.state, KernelAccessHolderState::Ended);
-            assert_eq!(status.reason.unwrap().code, "kernel_access_denied");
+            assert_eq!(status.reason.unwrap().code, "kernel_access_request_denied");
         }
         assert!(f.state.passkey_prompts_for("local").is_empty());
     }
