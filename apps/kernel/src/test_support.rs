@@ -279,6 +279,113 @@ pub(crate) fn authenticate_provider_account(
     )
 }
 
+/// An authenticated account whose provider reports every allowance used up until `resets_at_ms`.
+pub(crate) fn exhaust_provider_account(
+    registry: &ProviderAccountProfileRegistry,
+    owner_user_id: &str,
+    provider: &str,
+    profile_id: &str,
+    resets_at_ms: u64,
+) -> Result<ProviderAccountProfile, DaemonError> {
+    use crate::account_profile::{
+        ProviderAccountUsageAvailability, ProviderAccountUsageMeter, ProviderAccountUsageMeterKind,
+        ProviderAccountUsageMeterScope, ProviderAccountUsageMeterState,
+    };
+    authenticate_provider_account(registry, owner_user_id, provider, profile_id)?;
+    let now_ms = crate::session::unix_epoch_ms();
+    let weekly = ProviderAccountUsageMeter {
+        meter_id: "rolling/10080".to_string(),
+        label: "Weekly".to_string(),
+        service_id: None,
+        kind: ProviderAccountUsageMeterKind::RollingLimit,
+        scope: ProviderAccountUsageMeterScope::Account,
+        used_percent: Some(100.0),
+        used: None,
+        remaining: None,
+        total: None,
+        unit: None,
+        window_duration_minutes: Some(10080),
+        resets_at_ms: Some(resets_at_ms),
+        state: ProviderAccountUsageMeterState::Exhausted,
+        source: "test.fixture".to_string(),
+        observed_at_ms: now_ms,
+    };
+    // Codex draws credits once its allowance is gone, so it is blocked only
+    // when its credits are used up too.
+    let credits = ProviderAccountUsageMeter {
+        meter_id: "credits".to_string(),
+        label: "Credits".to_string(),
+        kind: ProviderAccountUsageMeterKind::CreditBalance,
+        used_percent: None,
+        window_duration_minutes: None,
+        resets_at_ms: None,
+        ..weekly.clone()
+    };
+    let meters = if provider == "codex" {
+        vec![weekly, credits]
+    } else {
+        vec![weekly]
+    };
+    registry.update_usage(
+        owner_user_id,
+        provider,
+        profile_id,
+        ProviderAccountUsageSnapshot {
+            profile_id: profile_id.to_string(),
+            provider: provider.to_string(),
+            availability: ProviderAccountUsageAvailability::Available,
+            meters,
+            observed_at_ms: Some(now_ms),
+            source: "test.fixture".to_string(),
+            management_url: None,
+        },
+    )
+}
+
+/// The provider reports the account's allowance healthy again.
+pub(crate) fn restore_provider_account(
+    registry: &ProviderAccountProfileRegistry,
+    owner_user_id: &str,
+    provider: &str,
+    profile_id: &str,
+) -> Result<ProviderAccountProfile, DaemonError> {
+    use crate::account_profile::{
+        ProviderAccountUsageAvailability, ProviderAccountUsageMeter, ProviderAccountUsageMeterKind,
+        ProviderAccountUsageMeterScope, ProviderAccountUsageMeterState,
+    };
+    let now_ms = crate::session::unix_epoch_ms();
+    registry.update_usage(
+        owner_user_id,
+        provider,
+        profile_id,
+        ProviderAccountUsageSnapshot {
+            profile_id: profile_id.to_string(),
+            provider: provider.to_string(),
+            availability: ProviderAccountUsageAvailability::Available,
+            meters: vec![ProviderAccountUsageMeter {
+                meter_id: "rolling/10080".to_string(),
+                label: "Weekly".to_string(),
+                service_id: None,
+                kind: ProviderAccountUsageMeterKind::RollingLimit,
+                scope: ProviderAccountUsageMeterScope::Account,
+                used_percent: Some(1.0),
+                used: None,
+                remaining: None,
+                total: None,
+                unit: None,
+                window_duration_minutes: Some(10080),
+                resets_at_ms: Some(now_ms + 7 * 24 * 60 * 60 * 1000),
+                state: ProviderAccountUsageMeterState::Healthy,
+                source: "test.fixture".to_string(),
+                observed_at_ms: now_ms,
+            }],
+            observed_at_ms: Some(now_ms),
+            source: "test.fixture".to_string(),
+            management_url: None,
+        },
+    )
+}
+
 pub(crate) fn bootstrap_authenticated_app(config: DaemonConfig) -> Result<DaemonApp, DaemonError> {
     let app = DaemonApp::bootstrap(config)?;
     let registry = app.provider_account_profile_registry();

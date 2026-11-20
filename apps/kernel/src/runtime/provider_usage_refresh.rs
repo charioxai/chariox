@@ -24,6 +24,9 @@ use crate::provider::ProviderUsageReadError;
 
 pub(crate) const USAGE_REFRESH_INTERVAL: Duration = Duration::from_secs(15 * 60);
 pub(crate) const RUNNING_USAGE_REFRESH_INTERVAL: Duration = Duration::from_secs(5 * 60);
+/// An account whose usage is used up is read again this often, so an early
+/// reset is seen within minutes and everything parked on it can go on.
+pub(crate) const EXHAUSTED_USAGE_REFRESH_INTERVAL: Duration = Duration::from_secs(2 * 60);
 pub(crate) const ON_DEMAND_USAGE_MAX_AGE: Duration = Duration::from_secs(5 * 60);
 const SCHEDULER_TICK: Duration = Duration::from_secs(15);
 /// Clients wait about five seconds for an answer; a slower read finishes in
@@ -169,7 +172,10 @@ impl ProviderUsageRefresher {
                 let key = key_of(&profile);
                 let schedule = schedules.entry(key.clone()).or_default();
                 let account = (key.provider.clone(), key.profile_id.clone());
-                let interval = if running_accounts.contains(&account)
+                let exhausted = profile.blocked_until("default", now_ms).is_some();
+                let interval = if exhausted {
+                    EXHAUSTED_USAGE_REFRESH_INTERVAL
+                } else if running_accounts.contains(&account)
                     || prompting_accounts.contains(&account)
                 {
                     RUNNING_USAGE_REFRESH_INTERVAL
@@ -177,7 +183,8 @@ impl ProviderUsageRefresher {
                     USAGE_REFRESH_INTERVAL
                 };
                 let wait_ms = interval.mul_f64(1.0 - schedule.early_start).as_millis() as u64;
-                let due = reading_age_ms(&profile.usage, now_ms).is_none_or(|age| age >= wait_ms);
+                let due = reading_age_ms(&profile.usage, now_ms).is_none_or(|age| age >= wait_ms)
+                    || reset_passed_since_reading(&profile.usage, now_ms);
                 (due && !schedule.in_flight && now_ms >= schedule.no_read_before_ms).then_some(key)
             })
             .collect()
@@ -396,5 +403,15 @@ fn failure_wait(failures: u32, retry_after: Option<Duration>) -> Duration {
 }
 
 mod sources;
+/// A meter the last reading showed used up has reset since that reading.
+fn reset_passed_since_reading(usage: &ProviderAccountUsageSnapshot, now_ms: u64) -> bool {
+    usage.meters.iter().any(|meter| {
+        meter.state == crate::account_profile::ProviderAccountUsageMeterState::Exhausted
+            && meter
+                .resets_at_ms
+                .is_some_and(|reset| reset <= now_ms && meter.observed_at_ms < reset)
+    })
+}
+
 #[cfg(test)]
 mod tests;

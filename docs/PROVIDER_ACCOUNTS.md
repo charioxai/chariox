@@ -144,3 +144,7 @@ If the same check fails from the host service, have the operator check the
 AppArmor policy for Bubblewrap's user namespaces and the service's effective
 namespace restrictions and capabilities. Keep the production provider
 confinement policy in place.
+
+## Substitutes at admission
+
+An agent's configured account is checked before every turn. When the check refuses it because its usage is used up, or because the account is not signed in or verified, the first configured substitute whose own account can run takes that turn (a refusal about a missing account stays the person's choice). This holds for a plain turn, a wake start and a workflow node, with the same launch a rerun after a failed attempt uses, so the next turn is back on the configured profile and its stored profile never changes. A substitute whose usage nobody has read is read before it is chosen, and one that cannot be read runs only when no observed one can. A provider that refuses a turn for its usage limit marks that account used up until the reset it names; the next reading of its usage replaces the mark. If no profile can run, a workflow entry stays Ready with its reason, account and earliest reset on the node run (`waiting_reason`, `waiting_account`, `waiting_until_ms`), whether or not a gate guards it, and the Room is told once per change. A used-up account is read again every two minutes and right after a reset time passes; when it comes back, armed usage-limit stops on it resume at once and the Room hears `<account> reset: N items resume by itself`.

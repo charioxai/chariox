@@ -8,19 +8,53 @@ impl KernelRuntimeOwnedState {
         selected_run: Option<&crate::provider::RuntimeProviderRun>,
         operation: &'static str,
     ) -> Result<(), DaemonError> {
+        // A substitute's process was admitted when it launched, on its own account.
+        if selected_run.is_some_and(|run| run.turn_substitute().is_some()) {
+            return Ok(());
+        }
         let Some((owner, provider, profile)) =
             self.agent_account_for_prompt(agent, selected_run)?
         else {
             return Ok(());
         };
-        self.provider_account_profiles.require_authenticated(
+        match self.provider_account_profiles.require_authenticated(
             &owner,
             provider,
             &profile,
             agent.model(),
             operation,
-        )?;
-        Ok(())
+        ) {
+            Ok(_) => Ok(()),
+            // The turn is admitted when a substitute can answer the refusal;
+            // the launch runs it there.
+            Err(refusal)
+                if crate::substitute_admission::substitute_can_answer(&refusal)
+                    && self.has_usable_substitute(agent, &owner)? =>
+            {
+                Ok(())
+            }
+            Err(refusal) => Err(refusal),
+        }
+    }
+
+    fn has_usable_substitute(
+        &self,
+        agent: &crate::agent::AgentInstance,
+        owner: &str,
+    ) -> Result<bool, DaemonError> {
+        if agent.remote_execution().is_some() {
+            return Ok(false);
+        }
+        let daemon_id = self.config_projection.snapshot().daemon_id.clone();
+        Ok(crate::substitute_admission::first_usable_substitute(
+            &self.provider_account_profiles,
+            owner,
+            &daemon_id,
+            agent,
+            &[],
+        )?
+        .index
+        .is_some())
     }
 
     fn agent_account_for_prompt(

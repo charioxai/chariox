@@ -32,7 +32,7 @@ fn provider_usage_refresh_due_for_launch(
     }
 }
 
-fn refresh_provider_usage_before_launch(
+pub(crate) fn refresh_provider_usage_before_launch(
     registry: &ProviderAccountProfileRegistry,
     owner_user_id: &str,
     provider: &str,

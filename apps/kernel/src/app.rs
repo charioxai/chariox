@@ -30,7 +30,9 @@ mod provider_focus;
 mod provider_launch_failure_retry;
 mod provider_launch_policy;
 mod provider_launch_request;
-pub(crate) use provider_launch_request::{chosen_workspace, handed_over_credentials};
+pub(crate) use provider_launch_request::{
+    chosen_workspace, handed_over_credentials, refresh_provider_usage_before_launch,
+};
 mod provider_liveness;
 pub(crate) mod provider_output;
 mod provider_output_claude_native;

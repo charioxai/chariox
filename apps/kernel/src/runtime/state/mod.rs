@@ -463,6 +463,8 @@ struct KernelRuntimeOwnedState {
     leased_launch_credentials: std::sync::Arc<leased_launch_credentials::LeasedLaunchCredentials>,
     /// When the kernel last sent a usage-limit resume, to stagger the next one.
     usage_limit_resumes: Arc<std::sync::Mutex<u64>>,
+    /// Which accounts were blocked at the last look, to see one come back.
+    usage_reset_watch: Arc<std::sync::Mutex<usage_reset_runtime::UsageResetWatch>>,
     /// The agents whose claimed resume this kernel is still sending.
     usage_limit_sends: Arc<std::sync::Mutex<BTreeSet<String>>>,
     /// The agents whose last resume failed, so the pane says why once.
@@ -615,6 +617,7 @@ mod run_finished_notifications;
 mod usage_limit_interactions;
 mod usage_limit_runtime;
 mod usage_limit_stop_transitions;
+mod usage_reset_runtime;
 mod wake_driver;
 mod watchers;
 #[cfg(test)]
@@ -1399,6 +1402,7 @@ impl KernelRuntimeState {
                 pending_settings_notices: Default::default(),
                 leased_launch_credentials: Default::default(),
                 usage_limit_resumes: Default::default(),
+                usage_reset_watch: Default::default(),
                 usage_limit_sends: Default::default(),
                 usage_limit_resume_failures: Default::default(),
                 pending_mcp_continuations: PendingMcpContinuationStore::shared(),
