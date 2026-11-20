@@ -169,7 +169,7 @@ fn provider_process_gc_reaps_idle_managed_run() {
         .expect("managed run should have pid");
 
     let summary = app
-        .reap_idle_provider_processes(crate::session::unix_epoch_ms(), 0, u64::MAX)
+        .reap_idle_provider_processes(crate::session::unix_epoch_ms(), 0)
         .expect("provider process gc should succeed");
 
     assert_eq!(summary.tracked_processes_reaped, 1);
@@ -278,7 +278,7 @@ fn provider_process_gc_keeps_attached_managed_run() {
         .expect("managed run should have pid");
 
     let summary = app
-        .reap_idle_provider_processes(crate::session::unix_epoch_ms(), 0, u64::MAX)
+        .reap_idle_provider_processes(crate::session::unix_epoch_ms(), 0)
         .expect("provider process gc should succeed");
 
     assert_eq!(summary.tracked_processes_reaped, 0);

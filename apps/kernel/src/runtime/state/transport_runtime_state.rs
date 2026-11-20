@@ -219,11 +219,8 @@ impl KernelRuntimeState {
     ) -> Result<crate::app::ProviderProcessReapSummary, DaemonError> {
         let config = self.owned.config_projection.snapshot();
         let idle_ttl_ms = config.provider_process_idle_ttl_ms;
-        let orphan_ttl_ms = config.provider_process_orphan_ttl_ms;
         let summary = self
-            .with_app_side_effect(move |app| {
-                app.reap_idle_provider_processes(now_ms, idle_ttl_ms, orphan_ttl_ms)
-            })
+            .with_app_side_effect(move |app| app.reap_idle_provider_processes(now_ms, idle_ttl_ms))
             .await?;
         if summary.tracked_processes_reaped > 0 || summary.orphan_processes_reaped > 0 {
             crate::logging::warn_with_fields(

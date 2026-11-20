@@ -816,6 +816,43 @@ fn witnessed_row(pid: u32) -> io::Result<Option<ProcessIdentity>> {
 }
 
 #[cfg(target_os = "linux")]
+pub(crate) fn linux_start(pid: u32) -> io::Result<Option<String>> {
+    let Some(row) = witnessed_row(pid)? else {
+        return Ok(None);
+    };
+    if row.start.is_empty() {
+        return Err(io::Error::other("process start identity unavailable"));
+    }
+    Ok((!row.exited).then_some(row.start))
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn linux_ancestors() -> io::Result<std::collections::BTreeSet<u32>> {
+    let mut ancestors = std::collections::BTreeSet::new();
+    let mut pid = std::process::id();
+    while pid > 1 && ancestors.insert(pid) {
+        let Some(row) = witnessed_row(pid)? else {
+            break;
+        };
+        pid = row.parent;
+    }
+    Ok(ancestors)
+}
+
+/// Each orphan must carry the launch witness itself. A descendant can belong
+/// to a different, still-running kernel and must be checked separately.
+#[cfg(target_os = "linux")]
+pub(crate) fn kill_linux_process_with_start(pid: u32, start: &str) -> io::Result<()> {
+    let Some(row) = witnessed_row(pid)? else {
+        return Ok(());
+    };
+    if row.start != start || row.start.is_empty() {
+        return Err(io::Error::other("orphan process identity changed"));
+    }
+    send_process_signal(&row, Signal::Kill)
+}
+
+#[cfg(target_os = "linux")]
 fn witnessed_exit(start: &str, row: Option<ProcessIdentity>) -> io::Result<bool> {
     match row {
         None => Ok(true),

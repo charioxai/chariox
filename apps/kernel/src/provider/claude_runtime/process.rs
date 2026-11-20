@@ -71,10 +71,7 @@ pub(super) fn spawn_claude_child(
     for (name, value) in provider_credential_env.iter() {
         command.env(name, value);
     }
-    command.env(
-        crate::provider::PROVIDER_OWNER_PID_ENV,
-        std::process::id().to_string(),
-    );
+    crate::provider::process_owner::stamp(&mut command);
     if let Some(working_directory) = working_directory {
         command.current_dir(working_directory);
     }

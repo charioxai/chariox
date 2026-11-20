@@ -2020,7 +2020,7 @@ fn the_shell_does_not_name_a_kernel_as_its_provider_owner() {
                 &service,
                 &id,
                 &TerminalActor::User,
-                "echo OWNER=${CHARIOX_PROVIDER_OWNER_PID:-none}\r",
+                "echo OWNER=${CHARIOX_PROVIDER_OWNER_INSTANCE:-none}\r",
             )
             .await;
             until("the environment", || async {
