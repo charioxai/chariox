@@ -49,6 +49,24 @@ async fn call(
     result.payload
 }
 
+/// The room agent `a` has no chosen alias: rows name it by the alias it was given.
+async fn room_agent_alias(world: &World) -> String {
+    let page = call(
+        world,
+        "b",
+        LIST_SESSION_AGENTS_TOOL,
+        serde_json::json!({ "alias": "agent" }),
+    )
+    .await;
+    page["agents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["id"] == world.ids["a"])
+        .map(|row| row["alias"].as_str().unwrap().to_owned())
+        .expect("the room agent is listed under its alias")
+}
+
 fn size(payload: &serde_json::Value) -> usize {
     serde_json::to_vec(payload).unwrap().len()
 }
@@ -60,6 +78,7 @@ fn list_session_agents_answers_a_crowded_room_in_small_pages_of_compact_rows() {
 
 async fn list_pages() {
     let world = crowded_world("agent-pages-list").await;
+    let a_alias = room_agent_alias(&world).await;
     let mut listed = Vec::new();
     let mut cursor: Option<String> = None;
     let mut first_page_bytes = 0;
@@ -73,7 +92,7 @@ async fn list_pages() {
             first_page_bytes = size(&page);
             // R3a: the agent finds its parent's alias without reading anything else.
             assert_eq!(page["you"]["alias"], "b", "{page}");
-            assert_eq!(page["you"]["parent"], "a", "{page}");
+            assert_eq!(page["you"]["parent"], a_alias, "{page}");
         }
         assert!(page.get("agent_tasks").is_none(), "task history stays out");
         for row in page["agents"].as_array().unwrap() {
@@ -99,7 +118,10 @@ async fn list_pages() {
         "every agent is on some page"
     );
     let lane = listed.iter().find(|row| row["alias"] == "lane7").unwrap();
-    assert_eq!(lane["parent"], "a", "the parent reads as its alias: {lane}");
+    assert_eq!(
+        lane["parent"], a_alias,
+        "the parent reads as its alias: {lane}"
+    );
     let other = listed.iter().find(|row| row["alias"] == "lane60").unwrap();
     assert_eq!(other["parent"], "peer", "{other}");
 
@@ -142,6 +164,8 @@ fn room_overview_pages_its_agents_and_leaves_task_history_out_by_default() {
 }
 
 async fn overview_pages() {
+    // The overview lists the Room's visible agents; the 90 sub-agents stay out of it, and
+    // the task history that used to fill it is left out unless asked for.
     let world = crowded_world("agent-pages-overview").await;
     let page = call(
         &world,
@@ -152,20 +176,26 @@ async fn overview_pages() {
     .await;
     assert!(size(&page) < 16 * 1024, "{} bytes", size(&page));
     assert!(page.get("agent_tasks").is_none() && page.get("activity").is_none());
-    assert_eq!(page["total"], AGENTS + FIXED_AGENTS);
-    let first = page["agents"].as_array().unwrap().len();
-    assert!(first < AGENTS, "a page, not the whole Room");
+    let visible = page["total"].as_u64().unwrap() as usize;
+    assert!(visible >= 2, "{page}");
+    let one = call(
+        &world,
+        "a",
+        META_SESSION_OVERVIEW_TOOL,
+        serde_json::json!({ "limit": 1 }),
+    )
+    .await;
+    assert_eq!(one["agents"].as_array().unwrap().len(), 1);
+    let cursor = one["next_cursor"].clone();
+    assert!(cursor.is_string(), "{one}");
     let next = call(
         &world,
         "a",
         META_SESSION_OVERVIEW_TOOL,
-        serde_json::json!({ "cursor": page["next_cursor"], "limit": 200 }),
+        serde_json::json!({ "cursor": cursor, "limit": 200 }),
     )
     .await;
-    assert_eq!(
-        first + next["agents"].as_array().unwrap().len(),
-        AGENTS + FIXED_AGENTS
-    );
+    assert_eq!(1 + next["agents"].as_array().unwrap().len(), visible);
     let with_tasks = call(
         &world,
         "a",
