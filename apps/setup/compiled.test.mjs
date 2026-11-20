@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
 import { setupFixture } from "./fixture.mjs"
 const execute = promisify(execFile)
-test("MP-07 generic unsigned Setup verifies and installs with a system Python prerequisite only", async t => {
+test("MP-07 generic unsigned Setup verifies and installs with system Python and the three existing provider CLIs", async t => {
   const root = await mkdtemp(join(await realpath(process.env.CHARIOX_BYOM_TEST_STATE ?? tmpdir()), "setup-compiled-")); t.after(() => rm(root, { recursive: true, force: true }))
   const f = await setupFixture(root), artifact = await readFile(f.archive)
   const responses = new Map([[`.manifest.json`, f.manifest], [`.manifest.sig`, f.signature], [`.tar.gz`, artifact]])
@@ -22,6 +22,9 @@ test("MP-07 generic unsigned Setup verifies and installs with a system Python pr
   await mkdir(home); await mkdir(tools)
   await symlink("/usr/bin/python3", join(tools, "python3"))
   await writeFile(join(tools, "systemctl"), '#!/bin/sh\n[ "$1" = "--user" ] || exit 1\nif [ "$2" = "show" ]; then printf "LoadState=not-found\\nFragmentPath=\\nDropInPaths=\\nActiveState=inactive\\nUnitFileState=disabled\\n"; fi\n', { mode: 0o755 })
+  for (const provider of ["claude", "codex", "opencode"]) {
+    await writeFile(join(tools, provider), "#!/bin/sh\necho 100.0.0\n", { mode: 0o755 })
+  }
   const env = { HOME: home, PATH: tools }
   assert.equal((await execute(binary, ["--version"], { env })).stdout, `Chariox Setup ${f.version}\n`)
   const result = await execute(binary, ["--install-only", "--release-base", `http://127.0.0.1:${server.address().port}`, "--api-url", "http://127.0.0.1:1"], { env, timeout: 30_000 })
