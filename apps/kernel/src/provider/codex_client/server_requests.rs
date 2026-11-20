@@ -383,7 +383,10 @@ impl CodexClient {
         if let Some(sandbox) = &self.unavailable_workspace_sandbox {
             if let Some(approval) = sandbox.take_adopted_approval() {
                 let request_id = approval.request_id.clone();
-                if let Some(result) = self.workspace_approval_response(sandbox, approval)? {
+                let result = self.workspace_approval_response(sandbox, approval);
+                #[cfg(unix)]
+                crate::hot_reload::release_retained_goal_approval(&self.provider_run_id);
+                if let Some(result) = result? {
                     self.send_server_result(socket, &request_id, result)?;
                 }
             }

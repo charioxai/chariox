@@ -21,6 +21,15 @@ pub(super) struct PendingWorkspaceApproval {
     pub(super) handover: Option<crate::provider::CodexApprovalHandover>,
 }
 
+#[cfg(unix)]
+impl WorkspaceApprovalState {
+    pub(in crate::provider) fn pending_goal_approval(
+        &self,
+    ) -> Option<&crate::provider::NativeApprovalGoal> {
+        self.pending.as_ref()?.handover.as_ref()?.goal.as_ref()
+    }
+}
+
 pub(super) fn is_shell_command_approval(params: &Value) -> bool {
     // stdin callbacks, subcommand reviews and network permissions are distinct.
     params.get("approvalId").and_then(Value::as_str).is_none()
