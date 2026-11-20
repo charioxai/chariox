@@ -227,6 +227,14 @@ impl RuntimeSession {
         Some(removed)
     }
 
+    pub(crate) fn discard_unadmitted_workflow(&mut self, workflow_id: &str) {
+        self.remove_workflow(workflow_id);
+        self.workflow_runs
+            .retain(|run| run.workflow_id() != workflow_id);
+        self.workflow_runtime_instances
+            .retain(|instance| instance.workflow_id() != workflow_id);
+    }
+
     pub fn workflow(&self, workflow_id: &str) -> Option<&WorkflowDefinition> {
         self.workflows
             .iter()

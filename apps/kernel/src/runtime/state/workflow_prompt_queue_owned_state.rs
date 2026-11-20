@@ -9,6 +9,29 @@ type WorkflowAdmission<T> = (
     Option<crate::durable_state::workflow_invocation_provenance::WorkflowUserInvocation>,
 );
 
+fn workflow_dispatch_after_admission_error(
+    obligation: Option<&str>,
+    code: Option<&crate::workflow_code::WorkflowCodeCompileAndApplyResult>,
+    queue_item: Option<&str>,
+    error: DaemonError,
+) -> DaemonError {
+    if let Some(code) = code {
+        return DaemonError::LocalTransport {
+            operation: "workflow_code.run",
+            message: format!(
+                "Could not confirm dispatch for workflow `{}`: {error}. Check the workflow and its runs before retrying.",
+                code.apply.workflow_id,
+            ),
+        };
+    }
+    crate::runtime::room_dispatch_registration::dispatch_error(
+        obligation,
+        Some(true),
+        queue_item,
+        error,
+    )
+}
+
 impl KernelRuntimeOwnedState {
     fn workflow_ensure_dispatchable_runtime_instance(
         &self,
@@ -922,6 +945,7 @@ impl KernelRuntimeOwnedState {
             None,
             Some(crate::session::DEFAULT_LOCAL_USER_ID),
             None,
+            None,
         )
     }
 
@@ -938,6 +962,7 @@ impl KernelRuntimeOwnedState {
         creator: Option<&str>,
         invoking_user: Option<&str>,
         obligation: Option<&str>,
+        new_workflow_code: Option<&crate::workflow_code::WorkflowCodeCompileAndApplyResult>,
     ) -> Result<
         (
             crate::app::workflow_runtime::WorkflowLaunchOutcome,
@@ -945,11 +970,11 @@ impl KernelRuntimeOwnedState {
         ),
         DaemonError,
     > {
-        let publication_invocation = self.inherit_agent_notification_ancestry(
-            creator,
-            endpoint_ref,
-            publication_invocation,
-        )?;
+        let rollback_before_admission =
+            |error| self.workflow_code_dispatch_refusal(session_id, new_workflow_code, error);
+        let publication_invocation = self
+            .inherit_agent_notification_ancestry(creator, endpoint_ref, publication_invocation)
+            .map_err(rollback_before_admission)?;
         self.workflow_reconcile_live_orphans(session_id);
         let prepared: Result<_, DaemonError> = (|| {
             let workflow = self
@@ -973,7 +998,7 @@ impl KernelRuntimeOwnedState {
                     false,
                     None,
                 )?;
-                return Err(error);
+                return Err(rollback_before_admission(error));
             }
         };
         if workflow.gate().is_some() {
@@ -1033,7 +1058,8 @@ impl KernelRuntimeOwnedState {
                             creator,
                         )?;
                     self.accept_gate_prompt(admission)
-                })?;
+                })
+                .map_err(rollback_before_admission)?;
             return Ok((
                 crate::app::workflow_runtime::WorkflowLaunchOutcome::Entry {
                     entry,
@@ -1076,32 +1102,71 @@ impl KernelRuntimeOwnedState {
             Err(error) => {
                 // Later persistence/projection errors can have committed: retain their intent.
                 if !committed {
+                    let error = rollback_before_admission(error);
                     crate::runtime::room_dispatch_registration::receipt(
                         &self.durable_state_store,
                         obligation,
                         false,
                         None,
                     )?;
+                    if new_workflow_code.is_some() {
+                        return Err(error);
+                    }
+                    return Err(crate::runtime::room_dispatch_registration::dispatch_error(
+                        obligation,
+                        Some(false),
+                        resource_id.as_deref(),
+                        error,
+                    ));
                 }
-                return Err(crate::runtime::room_dispatch_registration::dispatch_error(
+                return Err(workflow_dispatch_after_admission_error(
                     obligation,
-                    Some(committed),
+                    new_workflow_code,
                     resource_id.as_deref(),
                     error,
                 ));
             }
         }
         .expect("manual workflow prompt admission must mutate the session");
-        let (claimed, dispatches) = self
-            .workflow_start_next_queued_prompt_for_response(session_id)
-            .map_err(|error| {
-                crate::runtime::room_dispatch_registration::dispatch_error(
-                    obligation,
-                    Some(true),
-                    Some(queued_prompt.id()),
-                    error,
-                )
-            })?;
+        let (claimed, dispatches) =
+            match self.workflow_start_next_queued_prompt_for_response(session_id) {
+                Ok(started) => started,
+                Err(error) => {
+                    if let Some(code) = new_workflow_code {
+                        match self.rollback_workflow_code_run(
+                            session_id,
+                            code,
+                            Some(queued_prompt.id()),
+                        ) {
+                            Ok(true) => {
+                                crate::runtime::room_dispatch_registration::receipt(
+                                    &self.durable_state_store,
+                                    obligation,
+                                    false,
+                                    None,
+                                )?;
+                                return Err(
+                                    super::workflow_code_request_support::workflow_code_refusal(
+                                        error,
+                                    ),
+                                );
+                            }
+                            Ok(false) => {}
+                            Err(rollback) => return Err(
+                                super::workflow_code_request_support::workflow_code_rollback_failed(
+                                    error, rollback,
+                                ),
+                            ),
+                        }
+                    }
+                    return Err(workflow_dispatch_after_admission_error(
+                        obligation,
+                        new_workflow_code,
+                        Some(queued_prompt.id()),
+                        error,
+                    ));
+                }
+            };
         let Some(claimed_outcome) = claimed else {
             // This invocation dispatched nothing itself, but a concurrent
             // invocation may have already admitted our prompt into the primary
