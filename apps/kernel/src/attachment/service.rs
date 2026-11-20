@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::error::DaemonError;
-use crate::session::{PromptDetachEffect, RuntimeSession, SessionService};
+use crate::session::{RuntimeSession, SessionService};
 
 use super::{AttachRequest, RuntimeAttachment};
 
@@ -54,14 +54,6 @@ impl AttachmentServiceStore {
         self.write().detach(sessions, attachment_id)
     }
 
-    pub fn detach_with_effect(
-        &self,
-        sessions: &mut SessionService,
-        attachment_id: &str,
-    ) -> Result<(RuntimeAttachment, PromptDetachEffect), DaemonError> {
-        self.write().detach_with_effect(sessions, attachment_id)
-    }
-
     pub(crate) fn restore_attachment(
         &self,
         sessions: &mut SessionService,
@@ -87,7 +79,11 @@ impl AttachmentServiceStore {
         sessions: &mut SessionService,
         attachment: RuntimeAttachment,
     ) -> Result<(), DaemonError> {
-        sessions.add_attachment_to_session(attachment.session_id(), attachment.id())?;
+        sessions.add_attachment_to_session(
+            attachment.session_id(),
+            attachment.id(),
+            attachment.owner_user_id(),
+        )?;
         let mut service = self.write();
         service
             .last_heartbeat_at_ms
@@ -213,7 +209,11 @@ impl AttachmentService {
             request.owner_user_id,
         );
 
-        sessions.add_attachment_to_session(&request.session_id, &attachment_id)?;
+        sessions.add_attachment_to_session(
+            attachment.session_id(),
+            attachment.id(),
+            attachment.owner_user_id(),
+        )?;
         self.attachments
             .insert(attachment_id.clone(), attachment.clone());
         self.last_heartbeat_at_ms
@@ -227,27 +227,22 @@ impl AttachmentService {
         sessions: &mut SessionService,
         attachment_id: &str,
     ) -> Result<RuntimeAttachment, DaemonError> {
-        self.detach_with_effect(sessions, attachment_id)
-            .map(|(attachment, _)| attachment)
-    }
-
-    pub fn detach_with_effect(
-        &mut self,
-        sessions: &mut SessionService,
-        attachment_id: &str,
-    ) -> Result<(RuntimeAttachment, PromptDetachEffect), DaemonError> {
-        let attachment = self.attachments.remove(attachment_id).ok_or_else(|| {
-            DaemonError::AttachmentNotFound {
-                attachment_id: attachment_id.to_string(),
-            }
-        })?;
+        let attachment = self.get_attachment(attachment_id)?;
+        let session =
+            sessions.remove_attachment_from_session(attachment.session_id(), attachment_id)?;
+        let member_still_attached = session.attachment_ids().iter().any(|id| {
+            self.attachments
+                .get(id)
+                .is_some_and(|current| current.owner_user_id() == attachment.owner_user_id())
+        });
+        if !member_still_attached {
+            sessions
+                .disconnect_attachment_actor(attachment.session_id(), attachment.owner_user_id());
+        }
+        self.attachments.remove(attachment_id);
         self.last_heartbeat_at_ms.remove(attachment_id);
         self.watched.remove(attachment_id);
-
-        let (_, effect) =
-            sessions.remove_attachment_from_session(attachment.session_id(), attachment_id)?;
-
-        Ok((attachment, effect))
+        Ok(attachment)
     }
 
     pub fn get_attachment(&self, attachment_id: &str) -> Result<RuntimeAttachment, DaemonError> {

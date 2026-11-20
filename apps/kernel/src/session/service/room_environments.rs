@@ -250,6 +250,15 @@ impl SessionService {
         })
     }
 
+    pub(crate) fn disconnect_attachment_actor(&mut self, session_id: &str, owner_user_id: &str) {
+        // Presence follows live attachments. Replaying durable Environment state
+        // after a restart starts human actors disconnected.
+        self.room_environments.disconnect_actor(
+            session_id,
+            &crate::session::human_environment_actor_id(owner_user_id),
+        );
+    }
+
     pub(crate) fn reconcile_room_environment_controller_tabs(
         &mut self,
         session_id: &str,

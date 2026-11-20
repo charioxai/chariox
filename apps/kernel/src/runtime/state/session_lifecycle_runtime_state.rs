@@ -488,9 +488,16 @@ impl KernelRuntimeState {
         &self,
         attachment_id: &str,
     ) -> Result<crate::attachment::RuntimeAttachment, DaemonError> {
-        let attachment = self.owned.detach(attachment_id)?;
+        let attachment = self.detach_attachment(attachment_id)?;
         self.refresh_kernel_browser_audience(&attachment).await?;
         Ok(attachment)
+    }
+
+    pub(crate) fn detach_attachment(
+        &self,
+        attachment_id: &str,
+    ) -> Result<crate::attachment::RuntimeAttachment, DaemonError> {
+        self.owned.detach(attachment_id)
     }
 
     pub(crate) async fn focus_agent(

@@ -1292,12 +1292,6 @@ pub struct PromptCancellation {
     pub started_next: Option<PromptQueueItem>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
-pub struct PromptDetachEffect {
-    pub removed_active_prompt: bool,
-    pub removed_queued_prompt_count: usize,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -33,6 +33,7 @@ pub(super) async fn update_focus_projection_after_session_command(
         | Ok(LocalDaemonResponse::SessionDeleted { .. }) => {
             focus_projection.remove(session_id).await;
         }
+        Ok(LocalDaemonResponse::SessionDetached { .. }) => {}
         Ok(_) => {
             focus_projection.update(session_id, focused_agent_id).await;
         }
@@ -242,8 +243,7 @@ pub(super) fn session_id_for_projection_refresh(
     result: &Result<LocalDaemonResponse, DaemonError>,
 ) -> Option<String> {
     match result {
-        Ok(LocalDaemonResponse::SessionAttached { attachment })
-        | Ok(LocalDaemonResponse::SessionDetached { attachment }) => {
+        Ok(LocalDaemonResponse::SessionAttached { attachment }) => {
             Some(attachment.session_id().to_string())
         }
         Ok(LocalDaemonResponse::SessionCreated { session, .. }) => Some(session.id().to_string()),

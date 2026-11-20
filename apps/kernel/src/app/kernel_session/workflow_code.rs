@@ -726,45 +726,10 @@ impl<'a> KernelSessionService<'a> {
     pub(crate) fn detach(&mut self, attachment_id: &str) -> Result<RuntimeAttachment, DaemonError> {
         let session_store = self.app.session_state_store();
         let mut sessions = session_store.write();
-        let (attachment, effect) = self
-            .app
-            .attachments
-            .detach_with_effect(&mut sessions, attachment_id)?;
+        let attachment = self.app.attachments.detach(&mut sessions, attachment_id)?;
         drop(sessions);
-        let removed_queued_prompt_count = effect.removed_queued_prompt_count;
         let session_after_detach = SessionStateReader::new(self.app.session_state_store())
             .get_session(attachment.session_id())?;
-
-        if removed_queued_prompt_count > 0 {
-            self.app.record_notice(
-                attachment.session_id(),
-                None,
-                self.app
-                    .attachments
-                    .list_session_attachment_ids(attachment.session_id()),
-                format!(
-                    "Removed {removed_queued_prompt_count} queued prompt(s) from detached attachment `{attachment_id}`."
-                ),
-            );
-        }
-
-        if effect.removed_active_prompt {
-            self.app.record_notice(
-                attachment.session_id(),
-                None,
-                self.app
-                    .attachments
-                    .list_session_attachment_ids(attachment.session_id()),
-                format!(
-                    "Removed the active prompt from detached attachment `{attachment_id}` and advanced the queue."
-                ),
-            );
-            if let Some(agent_id) = session_after_detach.focused_agent_id() {
-                let _ = self
-                    .app
-                    .advance_next_queued_prompt(attachment.session_id(), agent_id)?;
-            }
-        }
 
         let remaining_attachment_ids = self
             .app
@@ -823,8 +788,6 @@ impl<'a> KernelSessionService<'a> {
             serde_json::json!({
                 "session_id": attachment.session_id(),
                 "attachment_id": attachment.id(),
-                "removed_queued_prompts": effect.removed_queued_prompt_count,
-                "removed_active_prompt": effect.removed_active_prompt,
                 "remaining_attachment_ids": remaining_attachment_ids,
             }),
         );
