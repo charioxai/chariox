@@ -525,7 +525,8 @@ test('MP-08: protocol 492 a click on a focusable control is forwarded alone (the
   const page = await viewer();
   try {
     await apply(page, snapshot(page2([{ id: 'n4', parent: 'n3', kind: 'element', tag: 'input', attrs: { style: 'width:200px' }, form: textForm('one', 3) }, { id: 'n5', parent: 'n3', kind: 'element', tag: 'button', attrs: { style: 'width:100px;height:30px' } }, { id: 'n6', parent: 'n5', kind: 'text', text: 'go' }])));
-    const sent = () => page.evaluate(() => window.sent.splice(0).filter(action => action.kind !== 'scroll_to').map(action => action.kind + ':' + action.node_id));
+    // B3: the pointer's hover moves to the control are forwarded too; this test is about the click and focus.
+    const sent = () => page.evaluate(() => window.sent.splice(0).filter(action => !['scroll_to', 'move'].includes(action.kind)).map(action => action.kind + ':' + action.node_id));
     for (const selector of ['input', 'button']) {
       const box = await page.evaluate(selector => { const f = window.r.frame.getBoundingClientRect(), t = window.r.frame.contentDocument.querySelector(selector).getBoundingClientRect(); return [f.x + t.x + 5, f.y + t.y + 5]; }, selector);
       await page.mouse.click(box[0], box[1]); await frames(); await frames();
@@ -579,7 +580,7 @@ test('MP-08: a packet drained before the kernel applied the viewer\'s focus (it 
     const active = () => page.evaluate(() => { const d = window.r.frame.contentDocument; return [...d.querySelectorAll('input')].indexOf(d.activeElement); });
     const box = await page.evaluate(() => { const f = window.r.frame.getBoundingClientRect(), t = window.r.frame.contentDocument.querySelectorAll('input')[1].getBoundingClientRect(); return { x: f.x + t.x + 40, y: f.y + t.y + 9 }; });
     await page.mouse.click(box.x, box.y); await frames();
-    assert.deepEqual((await page.evaluate(() => window.sent.splice(0))).map(a => a.kind), ['click'], 'MP-08: the click carries the focus');
+    assert.deepEqual((await page.evaluate(() => window.sent.splice(0))).map(a => a.kind).filter(kind => kind !== 'move'), ['click'], 'MP-08: the click carries the focus (after the pointer\'s hover moves)');
     // The reply came back; a packet the kernel drained before applying the click still names the old focus.
     await apply(page, delta(2, [], { focused: 'n4' })); await frames();
     assert.equal(await active(), 1, 'MP-08: the viewer keeps the control it focused');
@@ -768,18 +769,22 @@ test('MP-08: an echo that names a new focus before its click\'s reply arrives fo
   const page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
   try {
     await page.goto(url);
-    // Replies are held until the test releases them, like a slow input round trip.
-    await page.evaluate(async () => { window.sent = []; window.release = []; window.r = new Mirror2.BrowserMirror2Renderer(document.getElementById('c'), action => { window.sent.push(action); return new Promise(resolve => window.release.push(resolve)); }); await window.r.ready(); });
+    // Replies are held until the test releases them, like a slow input round trip; each input is written at once (as the
+    // live transport reports), so the pointer's unanswered hover moves on the way to the button must not hold the click back.
+    await page.evaluate(async () => { window.sent = []; window.release = []; window.r = new Mirror2.BrowserMirror2Renderer(document.getElementById('c'), (action, _epoch, written) => { window.sent.push(action); written?.(); return new Promise(resolve => window.release.push(resolve)); }); await window.r.ready(); });
     await apply(page, { ...snapshot(page2([{ id: 'n4', parent: 'n3', kind: 'element', tag: 'button', attrs: { style: 'width:200px;height:30px;display:block' } }, { id: 'n5', parent: 'n4', kind: 'text', text: 'Search' },
       { id: 'n6', parent: 'n3', kind: 'element', tag: 'input', attrs: { style: 'width:300px;display:block' }, form: textForm('', 0) }])), focused: null });
     const box = await page.evaluate(() => { const f = window.r.frame.getBoundingClientRect(), t = window.r.frame.contentDocument.querySelector('button').getBoundingClientRect(); return { x: f.x + t.x + 20, y: f.y + t.y + 10 }; });
+    // Replies are released by action kind (sent and release are pushed together): the pointer's hover moves come back first.
+    await page.evaluate(() => { window.releaseKind = kind => window.sent.forEach((a, i) => { if (a.kind === kind && window.release[i]) { const done = window.release[i]; window.release[i] = null; done(); } }); });
     await page.mouse.click(box.x, box.y); await frames();
-    assert.deepEqual(await page.evaluate(() => window.sent.map(a => a.kind)), ['click']);
+    assert.deepEqual(await page.evaluate(() => window.sent.map(a => a.kind).filter(kind => kind !== 'move')), ['click']);
+    await page.evaluate(() => window.releaseKind('move')); await frames();
     await apply(page, delta(2, [], { focused: 'n6' })); await frames(); // the echo, before the reply
-    await page.evaluate(() => window.release.shift()()); await frames();
+    await page.evaluate(() => window.releaseKind('click')); await frames();
     assert.equal(await page.evaluate(() => window.r.frame.contentDocument.activeElement?.localName), 'input', 'MP-08: the kernel\'s new focus is taken once the input settles');
     await page.keyboard.type('c'); await frames();
-    assert.deepEqual(await page.evaluate(() => window.sent.slice(1).map(a => [a.kind, a.key])), [['key', 'c']], 'MP-08: typing reaches the kernel');
+    assert.deepEqual(await page.evaluate(() => window.sent.filter(a => !['click', 'move'].includes(a.kind)).map(a => [a.kind, a.key])), [['key', 'c']], 'MP-08: typing reaches the kernel');
   } finally { await page.close(); }
 });
 
@@ -1668,5 +1673,27 @@ test('B3/B4: a hover sends the newest move, a right click sends a right click (n
     await page.evaluate(() => { window.sent = []; window.r.setInteractive(false); });
     await page.mouse.move(box.x + 50, box.y + 20); await page.mouse.click(box.x + 60, box.y + 10, { button: 'right' }); await frames();
     assert.deepEqual(await sent(), [], 'B3/B4: a hidden or handed-over viewer sends no move and no right click');
+  } finally { await page.close(); }
+});
+
+// B3: hover moves never hold a click, a key or the kernel's focus back. With replies slow (held) and each input written at once,
+// a click right after the pointer moved is written next, and an unanswered move is no pending input for the kernel's focus.
+test('B3: a click right after unanswered hover moves is written at once, and the kernel focus still applies while moves are unanswered', async () => {
+  const page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
+  try {
+    await page.goto(url);
+    await page.evaluate(async () => { window.sent = []; window.release = []; window.r = new Mirror2.BrowserMirror2Renderer(document.getElementById('c'), (action, _epoch, written) => { window.sent.push(action); written?.(); return new Promise(resolve => window.release.push(resolve)); }); await window.r.ready(); });
+    await apply(page, { ...snapshot(page2([{ id: 'n4', parent: 'n3', kind: 'element', tag: 'button', attrs: { style: 'width:300px;height:30px;display:block' } },
+      { id: 'n5', parent: 'n3', kind: 'element', tag: 'input', attrs: { style: 'width:300px;display:block' }, form: textForm('', 0) }])), focused: null });
+    await page.waitForFunction(() => window.r.acceptsInput, {}, { timeout: 3000 });
+    const box = await page.evaluate(() => { const f = window.r.frame.getBoundingClientRect(), t = window.r.frame.contentDocument.querySelector('button').getBoundingClientRect(); return { x: f.x + t.x, y: f.y + t.y + 10 }; });
+    for (let x = 10; x <= 200; x += 10) await page.mouse.move(box.x + x, box.y);
+    await frames();
+    assert.ok(await page.evaluate(() => window.sent.filter(a => a.kind === 'move').length) >= 1, 'the moves were sent and are unanswered');
+    await page.evaluate(() => window.r.frame.contentWindow.focus());
+    await apply(page, delta(2, [], { focused: 'n5' })); await frames();
+    assert.equal(await page.evaluate(() => window.r.frame.contentDocument.activeElement?.localName), 'input', 'B3: unanswered moves do not withhold the kernel\'s focus');
+    await page.mouse.down(); await page.mouse.up(); await frames();
+    assert.deepEqual(await page.evaluate(() => window.sent.filter(a => a.kind !== 'move' && a.kind !== 'scroll_to').map(a => a.kind)), ['click'], 'B3: the click is written behind unanswered moves');
   } finally { await page.close(); }
 });
