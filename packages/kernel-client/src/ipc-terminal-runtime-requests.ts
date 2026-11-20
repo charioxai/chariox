@@ -300,7 +300,7 @@ export function steerQueuedPromptRequest(
 }
 
 // Native turn controls opt into exact admission. Ordinary steering follows the active turn.
-export const promptControlReceiptMinimumProtocolVersion = 1091
+export const promptControlReceiptMinimumProtocolVersion = 1013
 export const activePromptSteeringMinimumProtocolVersion = promptControlReceiptMinimumProtocolVersion
 
 export function steerActivePromptRequest(

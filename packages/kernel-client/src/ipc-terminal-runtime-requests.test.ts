@@ -5,7 +5,7 @@ import { LOCAL_DAEMON_PROTOCOL_VERSION } from "./kernel-types.js"
 import { activePromptSteeringMinimumProtocolVersion, respondToInteractionRequest, steerActivePromptRequest } from "./ipc-terminal-runtime-requests.js"
 
 test("MP-08 MP-10 protocol 491 atomically admits steering against a home prompt", () => {
-  assert.equal(activePromptSteeringMinimumProtocolVersion, 1091)
+  assert.equal(activePromptSteeringMinimumProtocolVersion, 1013)
   assert.deepEqual(steerActivePromptRequest("s", "a", "agent", "home-prompt", "new direction", []), {
     SteerActivePrompt: { session_id: "s", attachment_id: "a", target_agent_id: "agent",
       expected_active_prompt_id: "home-prompt", prompt: "new direction", attachments: [] },

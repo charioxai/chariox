@@ -11,7 +11,7 @@ Public result: `ProviderAccountCopied { receipt }`, containing only operation/pr
 | Acceptance ID | Required real scenario |
 | --- | --- |
 | provider-account-copy/PAC-01 | From the coordinator's real existing grant, copy the real Vault-backed Claude account on the lanes source to a disposable independently enrolled same-owner kernel through the encrypted relay. Use the built CLI and kernel; complete official verification and one short real Claude Haiku 5.5 turn on the target. Prove source profile/default/credential unchanged, target native files contain no credential, target owns its handle after source disconnect, and cleanup removes the target copy and disposable resources. |
-| provider-account-copy/PAC-02 | Local 1066. On a real kernel whose Chariox Vault unlocks "ask every time", launch a Copy of that machine from the web (Machines → Rent → Copy of <machine>) with no signed-in provider login: the unlock taken for the copy's preflight before anything is rented is held for the export, so the transfer completes after the machine is created without a second unlock card and the new machine opens its own copy of the Vault. With the Vault locked and nobody to answer, the copy is refused before anything is rented ("... cannot be copied to a new machine: ... Nothing was rented."). Focused checks: `a_copy_of_this_kernel_holds_the_unlock_for_its_vault_export_without_a_login`, `the_export_opens_the_vault_for_a_vault_login_or_a_copy_of_this_kernel_until_prepared`. |
+| provider-account-copy/PAC-02 | Local 1013. On a real kernel whose Chariox Vault unlocks "ask every time", launch a Copy of that machine from the web (Machines → Rent → Copy of <machine>) with no signed-in provider login: the unlock taken for the copy's preflight before anything is rented is held for the export, so the transfer completes after the machine is created without a second unlock card and the new machine opens its own copy of the Vault. With the Vault locked and nobody to answer, the copy is refused before anything is rented ("... cannot be copied to a new machine: ... Nothing was rented."). Focused checks: `a_copy_of_this_kernel_holds_the_unlock_for_its_vault_export_without_a_login`, `the_export_opens_the_vault_for_a_vault_login_or_a_copy_of_this_kernel_until_prepared`. |
 
 Supplementary regression drill: `cargo test -p chariox-kernel --lib account_copy`. It covers the public source request, authenticated encrypted peer delivery, wrong owner/realm/key/profile, unavailable and locked targets, conflict/explicit replacement, lost acknowledgement retry, interrupted registry publication after Vault storage and retry, official verification rejection, redacted errors/receipts/history/logs and unchanged source/native files. Synthetic fixtures are never PAC-01 acceptance.
 
@@ -59,7 +59,7 @@ then removes the target registration and checks the source remains usable.
 Real acceptance still requires all five scenarios in
 [the target-scope validation plan](../PROVIDER_ACCOUNT_TARGET_SCOPE_VALIDATION_PLAN.md).
 
-## Local 1014 and peer 451: Codex copies, same-kernel links and sign-in notices
+## Local 1013 and peer 450: Codex copies, same-kernel links and sign-in notices
 
 Cross-kernel copies remain usable without their source kernel. Same-kernel requests use the existing transaction/receipt to register a link to the same credential; they do not fork a refresh lineage. Installed Codex retries preserve target credentials after rotation or a new device login. Profile auth failures expose a safe `auth_error`.
 

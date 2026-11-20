@@ -1,5 +1,5 @@
 {
-  "local_protocol": 1066,
+  "local_protocol": 1013,
   "requests": [
     {
       "GrantAppAccount": {

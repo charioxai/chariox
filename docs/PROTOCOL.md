@@ -39,7 +39,7 @@ registration with another `public_key` closes the socket with `daemon identity
 key changed; reconnect to register it`. A kernel refuses a relay that offers no
 challenge. The relay stays blind to traffic: it learns nothing it can decrypt.
 
-### A kernel too old for the relay (relay peer 497, provisional)
+### A kernel too old for the relay (relay peer 450)
 
 A `daemon_register` the relay cannot read (a kernel older than the relay, such as
 one that sends no `proof`) carries no traffic, as before. If its first frame still
@@ -4792,7 +4792,7 @@ A local-dev browser terminal (`CHARIOX_RELAY_URL`/`CHARIOX_RELAY_TOKEN`, no Clou
 ### Provider account portability preflight, protocol 491 (MP-08 / MP-10 / MP-11)
 
 `PreflightProviderAccountPortability` accepts only `providerAccounts` selection
-metadata and, since local 1066, the launch's `kernelContext`. The ordinary kernel owner gate applies to local and relay callers;
+metadata and, since local 1013, the launch's `kernelContext`. The ordinary kernel owner gate applies to local and relay callers;
 shared-session membership, another realm, and kernel peers cannot use it. The
 kernel checks the selected accounts through the existing provider-native managed
 context exporter and discards the exported bytes. Success is
@@ -7588,7 +7588,7 @@ omitted when absent; no protocol number of its own): an export whose start names
 held unlock and, when it has to ask again, shows the unlock card in the session that ran that launch's preflight, so
 two launches in flight never ask in each other's room whichever machine is ready first. Without a `launchId` the hold is
 found by the launching session, else the latest launch. Focused check:
-`each_export_asks_in_the_room_of_its_launch_in_either_ready_order`. Local 1066: preflight also carries the launch's
+`each_export_asks_in_the_room_of_its_launch_in_either_ready_order`. Local 1013: preflight also carries the launch's
 required `kernelContext` (`empty`, `source_kernel` or `source_kernel_without_credentials`). A copy of this kernel
 (`source_kernel`) exports its Vault even with no login selected, so its preflight finds the Vault unlocked and holds
 that unlock for the export exactly as for a Vault login, and the export of a `source_kernel` package takes the hold.
@@ -8505,7 +8505,7 @@ Room session state omits `max_agents`. Kernel user configuration omits
 returns `room_full`. Spawn and placement preserve the parent's authority and
 reject cycles.
 
-### Provider turns waiting for memory — local 1014 / relay peer 451
+### Provider turns waiting for memory — local 1013 / relay peer 450
 
 A queued prompt can include `launch_wait`, the reason it is waiting to start.
 The kernel persists this reason with the prompt and promotes a person's queued
