@@ -908,3 +908,88 @@ async fn enrolled_job_status_shows_live_output_and_cancel_stops_the_command() {
     assert_eq!(finished["result"]["outcome"], "cancelled", "{finished}");
     assert!(!home.path().join("completed").exists());
 }
+
+#[tokio::test]
+async fn a_queued_job_moves_to_an_enrolled_kernel_after_its_turn_ends() {
+    let (state, run, task, workspace) = super::tests::fixture().await;
+    let home = crate::test_support::TestWorktree::new("enrolled-job-move-home");
+    let kernel = "enrolled-job-move-kernel";
+    enroll_stand_in(&state, kernel, kernel, home.path()).await;
+    std::fs::write(workspace.path().join("source.txt"), "staged source").unwrap();
+    let busy = crate::runtime::process_resources::LaunchAdmission::default()
+        .reserve_with_memory(
+            "enrolled-job-move-pressure",
+            &["cat".into()],
+            workspace.path(),
+            true,
+            u64::MAX,
+        )
+        .unwrap();
+    let launched = run_on_held(
+        &state,
+        &run,
+        &task,
+        serde_json::json!({"command":["/bin/cat","source.txt"],"needs":{"memory_gib":1}}),
+    )
+    .await
+    .unwrap();
+    let id = launched["job_id"].as_str().unwrap();
+    let driver = state.job_wake_driver.as_ref().unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while driver.read(id).unwrap().state != "queued" {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the local job was not held for memory");
+    state
+        .owned
+        .durable_state_store
+        .agent_lifecycle(ledger::Operation::Settle {
+            room: task.room_id.clone(),
+            agent: task.agent_id.clone(),
+            prompt: task.prompt_id.clone(),
+            run: run.id().into(),
+            has_answer: true,
+            cancelled: false,
+            now: crate::session::unix_epoch_ms(),
+        })
+        .unwrap();
+    assert_eq!(
+        state
+            .owned
+            .durable_state_store
+            .agent_task(&task.task_id)
+            .unwrap()
+            .unwrap()
+            .state,
+        ledger::ExecutionState::Done,
+    );
+    let rental_refusal = state.job_acquisition_subject(id).unwrap_err();
+    assert!(rental_refusal.to_string().contains("This job's task ended"));
+    let owner = crate::runtime::command::KernelCaller {
+        connection_class: Some(crate::local::KernelConnectionClass::Terminal),
+        user_id: Some(task.owner_user_id.clone()),
+        ..crate::runtime::command::KernelCaller::default()
+    };
+    let moved = state
+        .run_session_process_remotely(&task.room_id, &owner, id, Some(kernel))
+        .await
+        .unwrap();
+    assert_eq!(moved, id);
+    drop(busy);
+    let result = tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            if let Some(result) = driver.read(id).unwrap().result {
+                return result;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the remote job did not finish");
+    super::super::peer_agent_outbound::peer_agent_link_for_tests::unregister(kernel);
+    assert_eq!(result.exit_code, Some(0), "{result:?}");
+    assert_eq!(result.output_tail.trim(), "staged source");
+    assert_eq!(result.ran_on.machine, kernel);
+}
