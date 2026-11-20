@@ -30,7 +30,8 @@ impl BrowserInputOrder {
         self.reserve_with_limit(key, LIMIT)
     }
 
-    // Payload dispatch has no input admission limit: its handler performs that admission.
+    // The connector already caps pending payloads. The handler applies the
+    // separate browser input limit when it admits the request.
     pub(super) fn reserve_payload(&self, key: String) -> Turn {
         self.reserve_with_limit(key, usize::MAX)
             .expect("payload dispatch has no input limit")

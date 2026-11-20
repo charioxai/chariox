@@ -907,13 +907,17 @@ async fn run_daemon_relay_connector_inner(
                     RelayOutgoingSender::channel(RELAY_OUTGOING_QUEUE_LIMIT);
                 let reconnect_gate = Arc::new(RelayReconnectGate::default());
                 let (pong_tx, pong_rx) = mpsc::channel::<Vec<u8>>(RELAY_OUTGOING_QUEUE_LIMIT);
-                let (mut inbound, _reader_task) =
-                    socket_thread::spawn_reader(reader, pong_tx, RELAY_READ_IDLE_TIMEOUT);
                 let (transport_receipt_tx, transport_receipt_rx) =
                     mpsc::channel::<String>(chariox_relay::frame_transport::MAX_UNACKED_FRAMES);
                 let mut relay_frames = chariox_relay::frame_transport::FrameReceiver::default();
                 let (upload_receipt_tx, upload_receipt_rx) =
                     mpsc::channel::<(u32, u32)>(chariox_relay::frame_transport::MAX_UNACKED_FRAMES);
+                let (mut inbound, mut reader_end, _reader_task) = socket_thread::spawn_reader(
+                    reader,
+                    pong_tx,
+                    upload_chunks.then_some(upload_receipt_tx),
+                    RELAY_READ_IDLE_TIMEOUT,
+                );
                 let (writer_done_tx, mut writer_done_rx) = oneshot::channel::<()>();
                 let writer_closing = Arc::clone(&outgoing_tx.closing);
                 let writer_notes = Arc::clone(&outgoing_tx.notes);
@@ -1065,92 +1069,77 @@ async fn run_daemon_relay_connector_inner(
                                 break 'connector;
                             }
                         }
-                        incoming = inbound.recv() => {
-                            match incoming {
-                                Some(Ok(message @ (Message::Text(_) | Message::Binary(_)))) => {
-                                    let (payload, receipt) = match message {
-                                        Message::Text(payload) => match upload_chunks.then(|| crate::transport::relay_upload::receipt(&payload)).flatten() {
-                                            // Receipts for the kernel's own chunks free its upload window.
-                                            Some(receipt) if upload_receipt_tx.try_send(receipt).is_ok() => continue,
-                                            Some(_) => (Some("{\"kind\":\"close\",\"reason\":\"relay upload receipt lost\"}".to_string()), None),
-                                            None => relay_frames.receive(&payload).unwrap_or_else(|_| (
-                                                Some("{\"kind\":\"close\",\"reason\":\"invalid relay transport frame\"}".to_string()), None)),
-                                        },
-                                        binary => binary_request::payload(&mut relay_frames, binary, binary_requests),
-                                    };
-                                    if let Some(receipt) = receipt {
-                                        if !queue_transport_receipt(&transport_receipt_tx, receipt).await {
-                                            abort_leased_projection_pump_task(
-                                                &mut leased_projection_pump_task,
-                                            );
-                                            abort_inventory_refresh_task(&mut inventory_refresh_task);
-                                            payload_tasks.shutdown().await;
-                                            abort_subscription_tasks(&router, &subscription_tasks).await;
-                                            writer_task.abort();
-                                            clear_remote_inventory_projection(&router);
-                                            disconnect_relay(&state, "relay receipt writer stalled", presence).await;
-                                            break Ok("relay receipt writer stalled");
-                                        }
-                                    }
-                                    let Some(payload) = payload else { continue; };
-
-                                    if let Err(error) = payload_tasks.spawn(
-                                        IncomingEnvelopeContext {
-                                            router: &router,
-                                            command_sequence: &command_sequence,
-                                            state: &state,
-                                            outgoing_tx: &outgoing_tx,
-                                            subscription_tasks: &subscription_tasks,
-                                            event_runtime: &event_runtime,
-                                            command_result_cache: &command_result_cache,
-                                            reconnect_gate: &reconnect_gate,
-                                            local_browser: &local_browser,
-                                        },
-                                        static_relay.is_none().then_some((
-                                            relay_url.clone(),
-                                            active_relay_token.clone(),
-                                        )),
-                                        payload,
-                                    ) {
-                                        break Err(error);
-                                    }
+                        // At capacity, leave data in the wire window and withhold
+                        // its receipts. The reader still handles socket control.
+                        Some(message) = inbound.recv(), if payload_tasks.has_capacity() => {
+                            let (payload, receipt) = match message {
+                                Message::Text(payload) => relay_frames.receive(&payload).unwrap_or_else(|_| (
+                                    Some("{\"kind\":\"close\",\"reason\":\"invalid relay transport frame\"}".to_string()), None)),
+                                binary => binary_request::payload(&mut relay_frames, binary, binary_requests),
+                            };
+                            if let Some(payload) = payload {
+                                if let Err(error) = payload_tasks.spawn(
+                                    IncomingEnvelopeContext {
+                                        router: &router,
+                                        command_sequence: &command_sequence,
+                                        state: &state,
+                                        outgoing_tx: &outgoing_tx,
+                                        subscription_tasks: &subscription_tasks,
+                                        event_runtime: &event_runtime,
+                                        command_result_cache: &command_result_cache,
+                                        reconnect_gate: &reconnect_gate,
+                                        local_browser: &local_browser,
+                                    },
+                                    static_relay.is_none().then_some((
+                                        relay_url.clone(),
+                                        active_relay_token.clone(),
+                                    )),
+                                    payload,
+                                ) {
+                                    break Err(error);
                                 }
-                                Some(Ok(Message::Close(frame))) => {
+                            }
+                            if let Some(receipt) = receipt {
+                                if !queue_transport_receipt(&transport_receipt_tx, receipt).await {
+                                    abort_leased_projection_pump_task(&mut leased_projection_pump_task);
+                                    abort_inventory_refresh_task(&mut inventory_refresh_task);
+                                    payload_tasks.shutdown().await;
+                                    abort_subscription_tasks(&router, &subscription_tasks).await;
+                                    writer_task.abort();
+                                    clear_remote_inventory_projection(&router);
+                                    disconnect_relay(&state, "relay receipt writer stalled", presence).await;
+                                    break Ok("relay receipt writer stalled");
+                                }
+                            }
+                        }
+                        ended = &mut reader_end => {
+                            let reason = match ended {
+                                Ok(socket_thread::ReaderEnd::SocketClose(frame)) => {
                                     if frame.as_ref().is_some_and(|frame| relay_refused_token(&frame.reason)) {
                                         refused = Some(RefusedCredentials::new(
                                             &relay_url,
                                             &active_relay_token,
                                         ));
                                     }
-                                    abort_leased_projection_pump_task(
-                                        &mut leased_projection_pump_task,
-                                    );
-                                    abort_inventory_refresh_task(&mut inventory_refresh_task);
-                                    payload_tasks.shutdown().await;
-                                    abort_subscription_tasks(&router, &subscription_tasks).await;
-                                    writer_task.abort();
-                                    clear_remote_inventory_projection(&router);
-                                    disconnect_relay(&state, "relay close frame received", presence).await;
-                                    break Ok("relay close frame received");
+                                    "relay close frame received"
                                 }
-                                Some(Ok(_)) => {}
-                                ended => {
-                                    let reason = match ended {
-                                        Some(Err(reason)) => reason,
-                                        _ => "relay read failed or ended",
-                                    };
-                                    abort_leased_projection_pump_task(
-                                        &mut leased_projection_pump_task,
-                                    );
-                                    abort_inventory_refresh_task(&mut inventory_refresh_task);
-                                    payload_tasks.shutdown().await;
-                                    abort_subscription_tasks(&router, &subscription_tasks).await;
-                                    writer_task.abort();
-                                    clear_remote_inventory_projection(&router);
-                                    disconnect_relay(&state, reason, presence).await;
-                                    break Ok(reason);
+                                Ok(socket_thread::ReaderEnd::RelayClose(reason)) => {
+                                    break Err(DaemonError::LocalTransport {
+                                        operation: "relay closed connection",
+                                        message: reason,
+                                    });
                                 }
-                            }
+                                Ok(socket_thread::ReaderEnd::Failed(reason)) => reason,
+                                Err(_) => "relay read failed or ended",
+                            };
+                            abort_leased_projection_pump_task(&mut leased_projection_pump_task);
+                            abort_inventory_refresh_task(&mut inventory_refresh_task);
+                            payload_tasks.shutdown().await;
+                            abort_subscription_tasks(&router, &subscription_tasks).await;
+                            writer_task.abort();
+                            clear_remote_inventory_projection(&router);
+                            disconnect_relay(&state, reason, presence).await;
+                            break Ok(reason);
                         }
                         handled = payload_tasks.next(), if !payload_tasks.is_empty() => {
                             if let Some(Err(error)) = handled {

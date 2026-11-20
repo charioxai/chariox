@@ -4,6 +4,7 @@ use super::support::*;
 use crate::transport::relay_client::connection_state::{
     publish_cloud_presence, CloudPresencePublishOutcome, RelayDisplayTunnelClientEvent,
 };
+use chariox_relay::frame_transport::{text_chunk, TransportFrame, CHUNK_BYTES};
 use chariox_relay::protocol::RelayDisplayTunnelStreamChunk;
 use futures_util::StreamExt;
 use std::io::{Read, Write};
@@ -250,6 +251,72 @@ fn a_payload_waiting_for_state_does_not_stop_relay_heartbeats() {
                 .unwrap(),
             Some(RelayDisplayTunnelClientEvent::Close)
         ));
+
+        // The whole burst fits the relay's initial wire window. It must stop
+        // receiving credit when the connector has no space for another handler.
+        let held_state = state.read().await;
+        let flood_size = 192;
+        let text = serde_json::to_string(&RelayEnvelope::DaemonDisplayTunnelRegistered {
+            tunnel_id: "blocked-dispatch".into(),
+            expires_at_ms: 0,
+            error: None,
+        })
+        .unwrap();
+        for id in 1..=flood_size {
+            let (chunk, end) = text_chunk(id, &text, 0, CHUNK_BYTES).unwrap();
+            assert_eq!(end, text.len());
+            socket.send(Message::Text(chunk.into())).await.unwrap();
+        }
+        socket
+            .send(Message::Ping(b"while-dispatch-full".to_vec().into()))
+            .await
+            .unwrap();
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(1200);
+        let (mut receipts, mut pong, mut saturated_heartbeats) = (0, false, 0);
+        while let Ok(Some(Ok(message))) = tokio::time::timeout_at(deadline, socket.next()).await {
+            match message {
+                Message::Text(text) => {
+                    if matches!(
+                        serde_json::from_str::<TransportFrame>(&text),
+                        Ok(TransportFrame::TransportAck { .. })
+                    ) {
+                        receipts += 1;
+                    } else if matches!(
+                        serde_json::from_str::<RelayEnvelope>(&text),
+                        Ok(RelayEnvelope::DaemonHeartbeat { .. })
+                    ) {
+                        saturated_heartbeats += 1;
+                    }
+                }
+                Message::Pong(bytes) if bytes.as_ref() == b"while-dispatch-full" => pong = true,
+                _ => {}
+            }
+        }
+        drop(held_state);
+        assert!(
+            receipts > 0 && receipts < flood_size,
+            "a stalled connector acknowledged {receipts} of {flood_size} payloads"
+        );
+        assert!(pong, "saturated dispatch stopped relay socket control");
+        assert!(
+            saturated_heartbeats >= 2,
+            "saturated dispatch stopped relay heartbeats"
+        );
+        timeout(Duration::from_secs(5), async {
+            while receipts < flood_size {
+                if let Message::Text(text) = socket.next().await.unwrap().unwrap() {
+                    if matches!(
+                        serde_json::from_str::<TransportFrame>(&text),
+                        Ok(TransportFrame::TransportAck { .. })
+                    ) {
+                        receipts += 1;
+                    }
+                }
+            }
+        })
+        .await
+        .expect("receipts resume after the handlers can run");
+
         shutdown_tx.send(true).unwrap();
         timeout(Duration::from_secs(5), connector)
             .await

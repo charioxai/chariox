@@ -3,20 +3,34 @@ use super::browser_input_order::BrowserInputOrder;
 use super::incoming_envelopes::{handle_parsed_incoming_envelope, parse_relay_payload};
 use super::*;
 
+const MAX_PENDING_PAYLOADS: usize = 128;
+const PENDING_PAYLOAD_HIGH_WATER_BYTES: usize = 8 * 1024 * 1024;
+
 #[derive(Default)]
 pub(super) struct IncomingEnvelopeTasks {
-    tasks: tokio::task::JoinSet<Result<(), DaemonError>>,
+    tasks: tokio::task::JoinSet<(usize, Result<(), DaemonError>)>,
     order: BrowserInputOrder,
+    pending_bytes: usize,
 }
 
 impl IncomingEnvelopeTasks {
+    /// Pause transport credit at a count or byte high-water mark. A payload
+    /// already being assembled can cross the byte mark by one bounded envelope.
+    pub(super) fn has_capacity(&self) -> bool {
+        self.tasks.len() < MAX_PENDING_PAYLOADS
+            && self.pending_bytes < PENDING_PAYLOAD_HIGH_WATER_BYTES
+    }
+
     pub(super) fn spawn(
         &mut self,
         context: IncomingEnvelopeContext<'_>,
         active_dynamic_relay: Option<(String, String)>,
         payload: String,
     ) -> Result<(), DaemonError> {
+        debug_assert!(self.has_capacity());
         let envelope = parse_relay_payload(&payload)?;
+        let payload_bytes = payload.len();
+        self.pending_bytes += payload_bytes;
         // Request preparation reserves browser input order before launching its worker.
         // Subscriptions keep socket order across attachment waits, and each display
         // stream delivers its chunks before its close.
@@ -54,7 +68,7 @@ impl IncomingEnvelopeTasks {
             if let Some(turn) = turn.as_mut() {
                 turn.ready().await;
             }
-            handle_parsed_incoming_envelope(
+            let result = handle_parsed_incoming_envelope(
                 IncomingEnvelopeContext {
                     router: &router,
                     command_sequence: &command_sequence,
@@ -71,7 +85,8 @@ impl IncomingEnvelopeTasks {
                     .map(|(url, token)| (url.as_str(), token.as_str())),
                 envelope,
             )
-            .await
+            .await;
+            (payload_bytes, result)
         });
         Ok(())
     }
@@ -81,14 +96,16 @@ impl IncomingEnvelopeTasks {
     }
 
     pub(super) async fn next(&mut self) -> Option<Result<(), DaemonError>> {
-        self.tasks.join_next().await.map(|result| {
-            result.unwrap_or_else(|error| {
-                Err(DaemonError::LocalTransport {
-                    operation: "relay payload task",
-                    message: error.to_string(),
-                })
-            })
-        })
+        match self.tasks.join_next().await? {
+            Ok((payload_bytes, result)) => {
+                self.pending_bytes -= payload_bytes;
+                Some(result)
+            }
+            Err(error) => Some(Err(DaemonError::LocalTransport {
+                operation: "relay payload task",
+                message: error.to_string(),
+            })),
+        }
     }
 
     pub(super) async fn shutdown(&mut self) {
