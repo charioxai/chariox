@@ -72,12 +72,7 @@ impl KernelRuntimeState {
         let store = &self.owned.durable_state_store;
         let now = crate::session::unix_epoch_ms();
         Ok(match name {
-            "chariox.events.wakes" => {
-                let wakes = store.agent_visible_wakes(&task.room_id, Some(&task.agent_id), now)?;
-                let receipts =
-                    store.agent_wake_receipts(Some(&task.room_id), Some(&task.agent_id))?;
-                serde_json::json!({"now_ms":now,"scheduler":self.wake_scheduler_health(now),"wakes":wakes,"receipts":receipts})
-            }
+            "chariox.events.wakes" => self.list_agent_wakes(task, args, now)?,
             "chariox.events.timer" => {
                 let delay = args["delay_ms"]
                     .as_u64()

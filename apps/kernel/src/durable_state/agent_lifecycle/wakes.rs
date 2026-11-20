@@ -110,42 +110,55 @@ impl DurableKernelStateStore {
         agent: Option<&str>,
         now: u64,
     ) -> Result<Vec<AgentWake>, DaemonError> {
+        Ok(self
+            .agent_visible_wake_rows(room, agent, now, 0, -1, false)?
+            .into_iter()
+            .map(|(_, wake)| wake)
+            .collect())
+    }
+
+    pub(crate) fn agent_visible_wake_rows(
+        &self,
+        room: &str,
+        agent: Option<&str>,
+        now: u64,
+        after: i64,
+        limit: i64,
+        armed_only: bool,
+    ) -> Result<Vec<(i64, AgentWake)>, DaemonError> {
         let filter = if agent.is_some() {
             "room_id=?1 AND agent_id=?2"
         } else {
             "room_id=?1"
         };
-        let time = if agent.is_some() { "?3" } else { "?2" };
         let now = sql_integer(now)?;
-        let mut values: Vec<&dyn rusqlite::ToSql> = vec![&room];
-        if agent.is_some() {
-            values.push(&agent);
-        }
-        values.push(&now);
         let payloads = {
             let db = self.lock_connection("agent.lifecycle.visible_wakes")?;
             let mut query = db.prepare_cached(&format!(
                 "WITH finished AS (
                     SELECT rowid FROM agent_wakes WHERE {filter}
+                    AND NOT ?6
                     AND json_extract(payload,'$.state') NOT IN ('scheduled','starting','running','cancelling')
-                    AND coalesce(json_extract(payload,'$.last_fired_at_ms'),json_extract(payload,'$.created_at_ms')) > {time}-86400000
+                    AND coalesce(json_extract(payload,'$.last_fired_at_ms'),json_extract(payload,'$.created_at_ms')) > ?3-86400000
                     ORDER BY rowid DESC LIMIT 64
                 ), visible AS (
                     SELECT rowid FROM agent_wakes INDEXED BY agent_wakes_room_armed WHERE {filter}
                     AND json_extract(payload,'$.state') IN ('scheduled','starting','running','cancelling')
                     UNION ALL SELECT rowid FROM finished
-                ) SELECT payload FROM agent_wakes WHERE rowid IN (SELECT rowid FROM visible) ORDER BY rowid"
+                ) SELECT rowid, payload FROM agent_wakes
+                WHERE rowid > ?4 AND rowid IN (SELECT rowid FROM visible)
+                ORDER BY rowid LIMIT ?5"
             )).map_err(sql)?;
             let rows = query
-                .query_map(rusqlite::params_from_iter(values), |row| {
-                    row.get::<_, String>(0)
+                .query_map(params![room, agent, now, after, limit, armed_only], |row| {
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
                 })
                 .map_err(sql)?;
             rows.collect::<Result<Vec<_>, _>>().map_err(sql)?
         };
         payloads
             .into_iter()
-            .map(|payload| decode(&payload))
+            .map(|(row, payload)| Ok((row, decode(&payload)?)))
             .collect()
     }
 

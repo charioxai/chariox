@@ -53,10 +53,33 @@ impl DurableKernelStateStore {
         room: Option<&str>,
         agent: Option<&str>,
     ) -> Result<Vec<WakeFireReceipt>, DaemonError> {
+        self.agent_wake_receipt_rows(room, agent, 0, -1)
+    }
+
+    pub(crate) fn agent_wake_receipt_rows(
+        &self,
+        room: Option<&str>,
+        agent: Option<&str>,
+        after: u64,
+        limit: i64,
+    ) -> Result<Vec<WakeFireReceipt>, DaemonError> {
         let db = self.lock_connection("agent.lifecycle.wake_receipts")?;
-        let mut q = db.prepare("SELECT r.payload FROM agent_wake_receipts r JOIN agent_wakes w ON w.id=r.wake_id WHERE (?1 IS NULL OR w.room_id=?1) AND (?2 IS NULL OR w.agent_id=?2) AND ((json_extract(r.payload,'$.delivered_at_ms') IS NULL AND json_extract(r.payload,'$.delivery') NOT IN ('expired','failed')) OR r.rowid IN (SELECT r2.rowid FROM agent_wake_receipts r2 JOIN agent_wakes w2 ON w2.id=r2.wake_id WHERE (?1 IS NULL OR w2.room_id=?1) AND (?2 IS NULL OR w2.agent_id=?2) ORDER BY r2.rowid DESC LIMIT 128)) ORDER BY r.sequence").map_err(sql)?;
+        let mut q = db.prepare_cached(
+            "SELECT r.payload FROM agent_wake_receipts r JOIN agent_wakes w ON w.id=r.wake_id
+             WHERE r.sequence > ?3 AND (?1 IS NULL OR w.room_id=?1) AND (?2 IS NULL OR w.agent_id=?2)
+             AND ((json_extract(r.payload,'$.delivered_at_ms') IS NULL
+                   AND json_extract(r.payload,'$.delivery') NOT IN ('expired','failed'))
+                  OR r.rowid IN (
+                    SELECT r2.rowid FROM agent_wake_receipts r2 JOIN agent_wakes w2 ON w2.id=r2.wake_id
+                    WHERE (?1 IS NULL OR w2.room_id=?1) AND (?2 IS NULL OR w2.agent_id=?2)
+                    ORDER BY r2.rowid DESC LIMIT 128
+                  ))
+             ORDER BY r.sequence LIMIT ?4",
+        ).map_err(sql)?;
         let rows = q
-            .query_map(params![room, agent], |r| r.get::<_, String>(0))
+            .query_map(params![room, agent, sql_integer(after)?, limit], |r| {
+                r.get::<_, String>(0)
+            })
             .map_err(sql)?;
         rows.map(|row| decode(&row.map_err(sql)?)).collect()
     }
