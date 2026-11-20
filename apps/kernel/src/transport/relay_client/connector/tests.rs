@@ -33,6 +33,7 @@ fn missing_relay_config_with_cloud_profile_is_cloud_unavailable() {
         cloud_session_token: None,
         cloud_session_expires_at_ms: None,
         kernel_unlinked: false,
+        kernel_removal_pending: false,
         token_expires_at_ms: None,
     });
 
@@ -848,6 +849,7 @@ fn retained_cloud_private_relay_does_not_hydrate_cloud_transport() {
         cloud_session_token: None,
         cloud_session_expires_at_ms: None,
         kernel_unlinked: false,
+        kernel_removal_pending: false,
         token_expires_at_ms: None,
     });
 

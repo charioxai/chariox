@@ -8,9 +8,9 @@ use crate::runtime::cloud_relay_connection_executor::{
     ensure_cloud_relay_connection_replacing as ensure_cloud_relay_connection_replacing_with_executor,
 };
 use crate::runtime::cloud_relay_control::{
-    cloud_kernel_presence_body, cloud_kernel_unlinked_error, cloud_relay_token_refresh_due,
+    cloud_kernel_presence_body, cloud_kernel_removal_error, cloud_relay_token_refresh_due,
 };
-use crate::runtime::cloud_relay_profile_store::record_cloud_kernel_unlink;
+use crate::runtime::cloud_relay_profile_store::record_cloud_kernel_removal;
 
 impl CommandRouter {
     pub(crate) fn relay_config_snapshot(&self) -> crate::config::DaemonConfig {
@@ -62,8 +62,13 @@ impl CommandRouter {
         match result {
             Ok(_) => Ok(()),
             Err(error) => {
-                if record_cloud_kernel_unlink(&self.runtime_state, profile, &error).await? {
-                    return Err(cloud_kernel_unlinked_error("publish Cloud kernel presence"));
+                if let Some(removal) =
+                    record_cloud_kernel_removal(&self.runtime_state, profile, &error).await?
+                {
+                    return Err(cloud_kernel_removal_error(
+                        "publish Cloud kernel presence",
+                        removal,
+                    ));
                 }
                 Err(error)
             }

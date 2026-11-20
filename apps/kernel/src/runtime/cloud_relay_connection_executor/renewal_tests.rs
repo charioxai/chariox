@@ -5,6 +5,83 @@ use base64::Engine;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 #[tokio::test]
+async fn undoing_owner_removal_recovers_the_existing_kernel_enrollment() {
+    let root = crate::test_support::TestWorktree::new("relay-undo-removal");
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.user_config.state.path = Some(root.path().join("state.db").display().to_string());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let expiry = crate::session::unix_epoch_ms() / 1_000 + 180;
+    let claims = serde_json::json!({
+        "exp": expiry,
+        "public_key_thumbprint": crate::runtime::terminal_pairings::public_key_thumbprint(&config.relay_public_key),
+    });
+    let token = format!(
+        "header.{}.signature",
+        base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(serde_json::to_vec(&claims).unwrap())
+    );
+    let expires_at = chrono::DateTime::from_timestamp(expiry.try_into().unwrap(), 0)
+        .unwrap()
+        .to_rfc3339();
+    let profile = crate::config::PersistedCloudRelayProfile {
+        api_url: format!("http://{}", listener.local_addr().unwrap()),
+        relay_url: "ws://127.0.0.1:1".into(),
+        user_id: "cloud-owner".into(),
+        kernel_id: Some(config.daemon_id.clone()),
+        kernel_credential: Some("synthetic-enrollment".into()),
+        ..Default::default()
+    };
+    config.cloud_relay = Some(profile.clone());
+    let server = tokio::spawn(async move {
+        let refused = r#"{"error":{"code":"kernel_removal_pending","message":"Undo Remove"}}"#;
+        let restored = serde_json::json!({"token": token, "expiresAt": expires_at}).to_string();
+        for (status, body) in [
+            ("409 Conflict", refused),
+            ("201 Created", restored.as_str()),
+        ] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = vec![0; 16_384];
+            let read = stream.read(&mut request).await.unwrap();
+            assert!(String::from_utf8_lossy(&request[..read]).starts_with("POST /relay/token "));
+            let header = format!(
+                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            stream.write_all(header.as_bytes()).await.unwrap();
+            stream.write_all(body.as_bytes()).await.unwrap();
+        }
+    });
+    let app = crate::app::DaemonApp::bootstrap(config).unwrap();
+    let projection = app.config_projection_store();
+    let router = crate::runtime::router::CommandRouter::with_interactive_capacity(
+        Arc::new(tokio::sync::Mutex::new(app)),
+        1,
+    );
+    let refusal = ensure_cloud_relay_connection(&router.runtime_state(), &projection)
+        .await
+        .expect_err("owner removal pauses Cloud connection");
+    assert!(refusal.to_string().contains("Undo Remove in Settings"));
+    let pending = projection.snapshot();
+    let pending_profile = pending.cloud_relay.as_ref().unwrap();
+    assert!(pending_profile.kernel_removal_pending);
+    assert_eq!(pending_profile.kernel_credential, profile.kernel_credential);
+    assert!(pending.relay_token.is_none());
+    ensure_cloud_relay_connection(&router.runtime_state(), &projection)
+        .await
+        .expect("Undo restores the existing enrollment");
+    server.await.unwrap();
+    let restored = projection.snapshot();
+    let restored_profile = restored.cloud_relay.as_ref().unwrap();
+    assert_eq!(restored_profile.kernel_removal(), None);
+    assert_eq!(restored_profile.kernel_id, profile.kernel_id);
+    assert_eq!(
+        restored_profile.kernel_credential,
+        profile.kernel_credential
+    );
+    assert!(restored.relay_token.is_some());
+}
+
+#[tokio::test]
 async fn renewal_persists_the_issued_expiry_instead_of_the_requested_lifetime() {
     let root = crate::test_support::TestWorktree::new("relay-issued-expiry");
     let mut config = crate::config::DaemonConfig::for_tests();
