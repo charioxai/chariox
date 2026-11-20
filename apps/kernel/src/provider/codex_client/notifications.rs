@@ -100,6 +100,9 @@ pub enum CodexNotification {
     Error {
         message: String,
     },
+    StreamClosed {
+        reason: String,
+    },
 }
 
 pub(super) fn parse_notification(message: JsonRpcMessage) -> Option<CodexNotification> {

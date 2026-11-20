@@ -4,6 +4,12 @@ use crate::app::ActiveTurnState;
 
 use super::*;
 
+#[derive(serde::Serialize)]
+pub(crate) struct AgentInspectionFailure {
+    outcome: crate::provider::TurnOutcome,
+    finished_at_ms: u64,
+}
+
 impl KernelRuntimeState {
     pub(crate) fn durable_state_store(&self) -> &DurableKernelStateStore {
         &self.owned.durable_state_store
@@ -113,6 +119,47 @@ impl KernelRuntimeState {
         self.agent_activity_for_session_with_unread(session, None)
     }
 
+    pub(crate) fn agent_inspection_status(
+        &self,
+        agent: &crate::agent::AgentInstance,
+        activity: Option<&crate::runtime::projection::AgentRuntimeActivity>,
+        deadline: Option<&crate::local::AgentDeadline>,
+    ) -> Result<(&'static str, Option<AgentInspectionFailure>), DaemonError> {
+        if deadline.is_some_and(|deadline| deadline.stopped_at_ms.is_some()) {
+            return Ok(("ended (deadline)", None));
+        }
+
+        let state = crate::runtime::projection::agent_state_label(agent, activity);
+        if matches!(state, "working" | "waiting") || activity.is_some_and(|activity| activity.busy)
+        {
+            return Ok((state, None));
+        }
+
+        // Read the settlement for both the live and restarted kernel so inspection
+        // uses the original timestamp even if a later Git observation was merged in.
+        let failure = self
+            .owned
+            .operational_history_store
+            .load_latest_agent_settlement_event(agent.session_id(), agent.id())?
+            .and_then(|event| {
+                use crate::history::{
+                    PROMPT_SETTLED_AT_MS_METADATA_KEY, TURN_OUTCOME_METADATA_KEY,
+                };
+                let outcome: crate::provider::TurnOutcome =
+                    serde_json::from_value(event.metadata.get(TURN_OUTCOME_METADATA_KEY)?.clone())
+                        .ok()?;
+                let finished_at_ms = event
+                    .metadata
+                    .get(PROMPT_SETTLED_AT_MS_METADATA_KEY)?
+                    .as_u64()?;
+                outcome.is_error().then_some(AgentInspectionFailure {
+                    outcome,
+                    finished_at_ms,
+                })
+            });
+        Ok((if failure.is_some() { "error" } else { state }, failure))
+    }
+
     pub(crate) fn active_turn_snapshot(&self) -> BTreeMap<String, ActiveTurnState> {
         self.owned.active_turns.snapshot()
     }
@@ -162,6 +209,13 @@ impl KernelRuntimeState {
             ),
             &crate::runtime::projection::SourceLabels::of_session(session),
         );
+        if let Err(error) = crate::runtime::projection::annotate_deadline_ends(
+            &mut activity,
+            &self.owned.durable_state_store,
+            session.id(),
+        ) {
+            tracing::warn!(%error, session_id = session.id(), "could not project stopped agent deadlines");
+        }
         activity
     }
 

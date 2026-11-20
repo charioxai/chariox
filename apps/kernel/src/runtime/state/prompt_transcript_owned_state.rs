@@ -302,7 +302,16 @@ impl KernelRuntimeOwnedState {
         adapter_key: &str,
         error: &DaemonError,
     ) -> Option<crate::provider::TurnOutcome> {
-        let failure = crate::terminal::provider_dispatch_failure(adapter_key, error);
+        let failure = match error {
+            DaemonError::ProviderRefusal { message } => {
+                let message = self.scrub_room_provider_diagnostic(session_id, message.clone());
+                Some(crate::provider::TurnOutcome::classify(
+                    adapter_key,
+                    &message,
+                ))
+            }
+            _ => None,
+        };
         match &failure {
             Some(failure) => self.record_provider_failure_notice(
                 session_id,

@@ -26,7 +26,9 @@ export type AgentRuntimeProjectionContext = {
   readonly promptStates?: Record<string, SessionAgentPromptStateLike | null> | null | undefined
 }
 
-export type AgentRuntimeDisplayState = AgentInstance["state"] | "Done"
+export const AGENT_ENDED_DEADLINE_LABEL = "Ended (deadline)"
+export type AgentRuntimeState = AgentInstance["state"] | typeof AGENT_ENDED_DEADLINE_LABEL
+export type AgentRuntimeDisplayState = AgentRuntimeState | "Done"
 
 export type SessionStatusBadgeTone = "idle" | "working" | "disconnected" | "error"
 export type SessionStatusMode = "idle" | "working" | "disconnected"
@@ -157,6 +159,9 @@ export function sessionAgentPaneStatusBadge(options: {
   if (!agent) {
     return { label: "", tone: "idle" }
   }
+  if (agent.state === AGENT_ENDED_DEADLINE_LABEL) {
+    return { label: AGENT_ENDED_DEADLINE_LABEL, tone: "idle" }
+  }
   if (agent.state === "Error") {
     return { label: "ERROR", tone: "error" }
   }
@@ -197,9 +202,8 @@ export function sessionAgentPaneStatusBadgeForSession(options: {
     busyLatch: options.busyLatch ?? false,
     useLegacyAgentProcessingState: false,
   })
-  // A retained wait or block belongs to an earlier task; a running turn on the
-  // same agent is the current fact and must not be masked by it.
-  if (badge.tone === "working") return badge
+  // Current activity takes precedence over a retained wait or block.
+  if (runtimeState === AGENT_ENDED_DEADLINE_LABEL || badge.tone === "working") return badge
   const task = sessionAgentLedgerStatus(options.session, agent.id)
   if (!task) return badge
   // A static deadline clock keeps the pane correct without a client timer.
@@ -234,17 +238,13 @@ export function sessionAgentRuntimeActivityStatus(
 export function sessionAgentRuntimeState(
   session: RuntimeSession | null | undefined,
   agent: AgentInstance,
-): AgentInstance["state"] {
+): AgentRuntimeState {
   if (!session) {
     return agent.state === "Error" ? "Error" : "Idle"
   }
   const projection = sessionProjectedPromptActivityForAgent(session, agent.id)
   if (projection && projection !== "idle" && projection !== "not_found") {
-    const resolvedStatus = agentRuntimeActivityProjectionResolvedStatus(projection)
-    if (resolvedStatus === "error") {
-      return "Error"
-    }
-    return resolvedStatus === "working" ? "Working" : "Idle"
+    return runtimeStateForActivity(agentRuntimeActivityProjectionResolvedStatus(projection))
   }
   if (projection === "idle" || projection === "not_found") {
     return agent.state === "Error" ? "Error" : "Idle"
@@ -292,17 +292,13 @@ export function sessionAgentRuntimeDisplayStateByAgent(
 export function agentRuntimeStateFromProjection(
   agent: AgentInstance,
   context: AgentRuntimeProjectionContext,
-): AgentInstance["state"] {
+): AgentRuntimeState {
   if (context.agentActivity && !(agent.id in context.agentActivity)) {
     return agent.state === "Error" ? "Error" : "Idle"
   }
   const projected = context.agentActivity?.[agent.id]
   if (projected) {
-    const resolvedStatus = agentRuntimeActivityResolvedStatus(projected)
-    if (resolvedStatus === "error") {
-      return "Error"
-    }
-    return resolvedStatus === "working" ? "Working" : "Idle"
+    return runtimeStateForActivity(agentRuntimeActivityResolvedStatus(projected))
   }
   const promptState = context.promptStates?.[agent.id]
   if (promptState !== undefined) {
@@ -317,6 +313,15 @@ export function agentRuntimeStateFromProjection(
     return agent.state === "Error" ? "Error" : "Idle"
   }
   return agent.state === "Error" ? "Error" : "Idle"
+}
+
+function runtimeStateForActivity(status: AgentRuntimeActivityStatus): AgentRuntimeState {
+  switch (status) {
+    case "ended_deadline": return AGENT_ENDED_DEADLINE_LABEL
+    case "error": return "Error"
+    case "working": return "Working"
+    case "idle": return "Idle"
+  }
 }
 
 export function sessionAgentHasUnreadIdleOutput(

@@ -1223,7 +1223,7 @@ fn local_daemon_protocol_completed_turn_action_projection_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "c84cd51e43bebffa138948ccfe835ed674a171f49dfd908f6b510538dd97dfd6"
+        "e65d2bece8633b356b402abd536a72eb77a85053060fed0a42ea50d18c27a07a"
     );
 }
 
@@ -1263,7 +1263,7 @@ fn local_daemon_protocol_provider_termination_categories_shape_is_versioned() {
                 "failure": {
                     "kind": "provider_crashed",
                     "retryable": true,
-                    "reason": "provider process exited with status 17",
+                    "reason": "Provider CLI exited with status 17.",
                 },
             },
             {
@@ -1283,7 +1283,7 @@ fn local_daemon_protocol_provider_termination_categories_shape_is_versioned() {
                 "failure": {
                     "kind": "other",
                     "retryable": false,
-                    "reason": "The provider could not complete this request.",
+                    "reason": "provider rejected request",
                 },
             },
             {
@@ -1327,7 +1327,7 @@ fn local_daemon_protocol_provider_termination_categories_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "6dd3a05a435f59762d5d346abced5950e28d916aede5491e00ac697c45ac3383"
+        "ed353d2ca0e1e44777e1988e7f337093a0a02a17a65cd5b78c2eaa2aa941627e"
     );
 }
 

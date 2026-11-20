@@ -6262,31 +6262,38 @@ value appears in the three places a reader looks:
 
 `kind` is a closed list: `completed`, `cancelled`, `interrupted_by_restart`,
 `overloaded`, `usage_limit`, `sign_in_required`, `provider_crashed`, `network`,
-`other`. A client that meets a `kind` it does not know, because a newer kernel added
+`model_refused`, `stream_ended`, and `other`. A client that meets a `kind` it does not know, because a newer kernel added
 one, reads it as `unknown` and still shows `reason`. `completed` and `cancelled` are
 not errors: the agent is `idle` and the turn is not failed. Every other kind is an
 error and the agent is in the `error` state. `retryable` is whether a later attempt
 may succeed without anyone changing anything (overload, crash, network loss, a plain
 HTTP 429 and `interrupted_by_restart` are; an exhausted plan, a missing sign-in and an
 unrecognised error are not). A reader decides to retry or stop from `kind` and
-`retryable` only. `reason` is text for people: a controlled explanation of the
-provider failure, such as `The provider is at capacity.`; it is empty for
-`completed` and `cancelled`. Kernel-authored failures can retain specific recovery
-details, such as a missing workspace path. Native provider diagnostics are retained
-in kernel logs with credentials redacted, rather than copied into public reasons. Except for the usage-limit resume of local 1011 (see "Settings change while a turn runs, and a usage limit"), Chariox adds no retry or backoff policy; the
-provider's own behaviour is unchanged and the orchestrating agent decides.
+`retryable` only. `reason` carries the provider's message with credentials masked
+and its first nonempty line bounded. An error without a provider message uses a Chariox explanation.
+The reason is empty for `completed` and `cancelled`. Kernel-authored failures can
+include specific recovery details such as a missing workspace path.
+Chariox resumes usage-limit stops according to the Room settings and leaves other
+retry decisions to the orchestrating agent.
 
 The kernel types a failure once from the harness's native error: Codex
 `codexErrorInfo` codes, Claude `result` errors and `StopFailure` kinds, OpenCode
 error names with their HTTP status and native `isRetryable` flag, then the words of
-the error; a process exit, signal or transport loss is `provider_crashed` or
-`network` without any text. A failure the provider reported without a protocol
-frame is typed from its text. Rejected Codex dispatches retain structured
-`error.data.codexErrorInfo` when present. `explicit_provider_error` records the
-termination provenance; `provider_termination.failure` carries the typed cause and
-matches the settled turn outcome. If native sign-in recovery is declined, the
-failed turn retains its original kind and controlled public reason while the
-existing recovery notice explains what happened.
+the error. The outcome distinguishes `model_refused`, `stream_ended`, a process
+exit or signal (`provider_crashed`), and a transport failure (`network`). The reason
+for a CLI exit includes its status when the kernel observed it. Rejected Codex
+dispatches retain structured `error.data.codexErrorInfo` when present.
+`explicit_provider_error` records the termination provenance.
+`provider_termination.failure` carries the typed cause. A declined sign-in recovery
+preserves the original typed cause and message.
+
+The error entry and settled-turn history record the failure. The parent's
+`child_finished` receipt carries its `outcome` and `finished_at_ms`.
+`chariox.get_session_agent` and `chariox.list_session_agents` include the last failure
+and its timestamp for an agent in Error. Inspection reads the durable settlement
+after a restart. A completed deadline stop takes precedence over an earlier Error.
+Agent inspection returns `ended (deadline)` and session activity returns
+`ended_deadline`.
 
 `interrupted_by_restart` is a turn the kernel restarted in the middle of and could
 not resume (its reason names only what the kernel observed, such as a locked Vault

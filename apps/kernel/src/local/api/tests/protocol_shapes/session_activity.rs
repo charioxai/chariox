@@ -31,3 +31,25 @@ fn semantic_session_activity_protocol_snapshot_and_hash() {
         "6cd065cc8d943fc0d4c52563f3e5a5bccb8c80ac803fdabfbd7882dc60fa2979"
     );
 }
+
+#[test]
+fn provider_failure_and_deadline_status_are_versioned() {
+    use crate::provider::TurnOutcomeKind;
+    use crate::runtime::projection::AgentRuntimeStatus;
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
+    assert_eq!(
+        serde_json::json!(AgentRuntimeStatus::EndedDeadline),
+        "ended_deadline"
+    );
+    assert_eq!(
+        serde_json::json!(TurnOutcomeKind::ModelRefused),
+        "model_refused"
+    );
+    assert_eq!(
+        serde_json::json!(TurnOutcomeKind::StreamEnded),
+        "stream_ended"
+    );
+}

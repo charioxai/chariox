@@ -29,7 +29,7 @@ export type AgentPromptState = {
 }
 
 export type AgentRuntimeActivity = {
-  status: "idle" | "working" | "error"
+  status: "idle" | "working" | "error" | "ended_deadline"
   prompt_status: "none" | "queued" | "dispatching" | "running" | "cancelling" | "settling"
   busy: boolean
   active_prompt_count?: number
@@ -125,6 +125,8 @@ export type TurnOutcomeKind =
   | "sign_in_required"
   | "provider_crashed"
   | "network"
+  | "model_refused"
+  | "stream_ended"
   | "other"
   | "unknown"
 

@@ -50,11 +50,36 @@ impl ProviderRunTermination {
     }
 
     pub fn process_exit(exit_code: u32, timestamp_ms: u64) -> Self {
-        Self::crashed(
+        let mut termination = Self::crashed(
             ProviderRunTerminationCategory::ProcessExit,
             format!("provider process exited with status {exit_code}"),
             timestamp_ms,
-        )
+        );
+        termination.failure = Some(TurnOutcome::new(
+            TurnOutcomeKind::ProviderCrashed,
+            true,
+            &format!("Provider CLI exited with status {exit_code}."),
+        ));
+        termination
+    }
+
+    pub(crate) fn with_process_failure(mut self, failure: Option<&TurnOutcome>) -> Self {
+        if let Some(failure) = failure.filter(|failure| failure.is_error()) {
+            let Some(exit) = self.failure.as_ref() else {
+                return self;
+            };
+            let (kind, retryable) = if failure.kind == TurnOutcomeKind::Other {
+                (exit.kind, exit.retryable)
+            } else {
+                (failure.kind, failure.retryable)
+            };
+            self.failure = Some(TurnOutcome {
+                kind,
+                retryable,
+                reason: format!("{}. {}", exit.reason.trim_end_matches('.'), failure.reason),
+            });
+        }
+        self
     }
 
     pub fn signal(signal_name: &str, timestamp_ms: u64) -> Self {
@@ -184,7 +209,28 @@ impl ProviderRunTermination {
 }
 
 pub(crate) fn sanitize_provider_diagnostic(reason: &str) -> String {
-    redact_diagnostic(reason, is_evidence_character)
+    redact_diagnostic(
+        reason,
+        is_evidence_character,
+        MAX_PROVIDER_TERMINATION_REASON_CHARS,
+        false,
+    )
+}
+
+/// Provider errors may contain credentials and terminal controls even when they come from JSON.
+pub(super) fn sanitize_provider_failure_message(message: &str) -> String {
+    redact_diagnostic(
+        message,
+        |ch| {
+            !ch.is_control()
+                && !matches!(
+                    ch,
+                    '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
+                )
+        },
+        512,
+        true,
+    )
 }
 
 pub(crate) fn provider_exit_before_delivery_message(
@@ -209,13 +255,28 @@ pub(crate) fn provider_exit_before_delivery_message(
     )
 }
 
-fn redact_diagnostic(reason: &str, keep: fn(char) -> bool) -> String {
+fn redact_diagnostic(
+    reason: &str,
+    keep: fn(char) -> bool,
+    max_chars: usize,
+    summary_only: bool,
+) -> String {
     let push_diagnostic_token =
         |output: &mut String, token: &str| push_diagnostic_token(output, token, keep);
     // The shared secret shapes first, over the whole text: a PEM block spans
     // lines, so no single token below shows it.
     let reason = strip_terminal_sequences(reason);
+    let reason = crate::secret::redact_cached_vault_values(&reason);
     let reason = crate::secret_redaction::redact_secrets_as(&reason, REDACTED_DIAGNOSTIC_VALUE);
+    let reason = if summary_only {
+        reason
+            .lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty())
+            .unwrap_or_default()
+    } else {
+        &reason
+    };
     let normalized = reason
         .chars()
         .map(|character| {
@@ -288,13 +349,10 @@ fn redact_diagnostic(reason: &str, keep: fn(char) -> bool) -> String {
         push_diagnostic_token(&mut sanitized, token);
     }
 
-    sanitized
-        .chars()
-        .take(MAX_PROVIDER_TERMINATION_REASON_CHARS)
-        .collect()
+    sanitized.chars().take(max_chars).collect()
 }
 
-fn strip_terminal_sequences(input: &str) -> String {
+pub(super) fn strip_terminal_sequences(input: &str) -> String {
     let mut output = String::with_capacity(input.len());
     let mut chars = input.chars().peekable();
     while let Some(character) = chars.next() {

@@ -1104,7 +1104,6 @@ impl KernelRuntimeState {
             let failed_prompt_matches = failed_prompt
                 .as_ref()
                 .is_some_and(|prompt| prompt.id() == dispatch.prompt_id);
-            let dispatch_failure = format!("Provider prompt dispatch failed: {error}");
             let adapter_key = owned
                 .provider_store
                 .get_run(&dispatch.provider_run_id)
@@ -1128,7 +1127,7 @@ impl KernelRuntimeState {
                     &dispatch.prompt_id,
                     &dispatch.provider_run_id,
                     &crate::terminal::user_facing_dispatch_failure(&error),
-                    failure,
+                    failure.clone(),
                 ) {
                 Ok(Some(released_claim)) => (true, released_claim),
                 Ok(None) => (false, false),
@@ -1163,10 +1162,9 @@ impl KernelRuntimeState {
                 owned.record_failed_request(
                     &dispatch.session_id,
                     &dispatch.provider_run_id,
-                    &adapter_key,
                     &dispatch.agent_id,
                     failed_prompt,
-                    &dispatch_failure,
+                    failure.as_ref(),
                 );
             }
             advance_queued_prompt_after_failure = should_advance;
@@ -5500,9 +5498,7 @@ pub(in crate::runtime::state) mod tests {
         assert_eq!(
             not_carried_out_entries(&runtime, session.id(), observer.id()),
             vec![format!(
-                // The notice drops the middle dot of Claude's "limit · resets" line.
-                "Request not carried out: {}. It was dropped; send it again to retry.",
-                reason.replace(" · ", " ")
+                "Request not carried out: {reason}. It was dropped; send it again to retry."
             )],
             "{provider}"
         );
@@ -5521,7 +5517,6 @@ pub(in crate::runtime::state) mod tests {
             "claude",
             "claude-headless",
             "Provider prompt dispatch failed: You've hit your session limit · resets 8:30am",
-            // Claude's reset time is kept for people; other providers get the generic reason.
             "You've hit your session limit · resets 8:30am",
         )
         .await;
@@ -5529,14 +5524,14 @@ pub(in crate::runtime::state) mod tests {
             "codex",
             "codex",
             "Provider prompt dispatch failed: You exceeded your current quota, please check your plan and billing details.",
-            "The provider's usage limit was reached",
+            "You exceeded your current quota, please check your plan and billing details",
         )
         .await;
         assert_provider_limit_records_failed_request(
             "opencode",
             "opencode",
             "Provider prompt dispatch failed: insufficient_quota",
-            "The provider's usage limit was reached",
+            "insufficient_quota",
         )
         .await;
     }

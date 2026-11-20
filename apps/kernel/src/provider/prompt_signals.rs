@@ -179,6 +179,20 @@ pub(crate) fn classify_provider_terminal_failure_output_text(
     })
 }
 
+/// A final error frame from a process that exited. Ordinary PTY output can
+/// contain the conversation and must stay out of the turn's failure reason.
+pub(crate) fn provider_exit_error_message(output: &str) -> Option<String> {
+    let output = super::termination::strip_terminal_sequences(output);
+    let message = output
+        .lines()
+        .rev()
+        .map(str::trim)
+        .find(|line| provider_normalized_text_has_error_frame(&line.to_ascii_lowercase()))?;
+    Some(super::termination::sanitize_provider_failure_message(
+        message,
+    ))
+}
+
 fn provider_normalized_text_has_error_frame(normalized: &str) -> bool {
     normalized.lines().any(|line| {
         let line = line.trim();
@@ -273,18 +287,6 @@ pub(crate) fn classify_provider_substitutable_failure_text(
 /// assistant text. Claude's native `StopFailure` frame has the same shape.
 pub(crate) fn provider_coded_failure_text(provider: &str, code: &str, message: &str) -> String {
     format!("{provider} error [{code}]: {message}")
-}
-
-/// The same calm reason used by the failed turn, including in substitute notices.
-pub(crate) fn provider_turn_failure_reason(
-    adapter_key: &str,
-    message: &str,
-    termination: Option<&super::ProviderRunTermination>,
-) -> String {
-    let failure = termination
-        .and_then(|termination| termination.failure.clone())
-        .unwrap_or_else(|| super::TurnOutcome::classify(adapter_key, message));
-    failure.reason.trim_end_matches('.').to_string()
 }
 
 pub(super) fn split_coded_failure(detail: &str) -> Option<(&str, &str, Option<bool>)> {
@@ -391,52 +393,8 @@ mod tests {
     use super::{
         classify_provider_substitutable_failure_text,
         classify_provider_terminal_failure_output_text, classify_provider_terminal_failure_text,
-        claude_native_stop_failure, provider_retry_status, provider_turn_failure_reason,
-        CLAUDE_ROOT_YOLO_REFUSAL,
+        claude_native_stop_failure, provider_retry_status, CLAUDE_ROOT_YOLO_REFUSAL,
     };
-    use crate::provider::ProviderRunTermination;
-
-    #[test]
-    fn failure_reasons_do_not_repeat_provider_words_or_codes() {
-        for (adapter, text, reason) in [
-            (
-                "codex",
-                "Codex error [server_overloaded]: Selected model is at capacity. Please try a different model.",
-                "The provider is at capacity",
-            ),
-            (
-                "claude",
-                "Claude StopFailure [rate_limit]: You've hit your session limit",
-                "You've hit your session limit",
-            ),
-            (
-                "opencode",
-                "Insufficient balance. Manage your billing here.",
-                "The provider's usage limit was reached",
-            ),
-            (
-                "codex",
-                "stream disconnected",
-                "The connection to the provider was interrupted",
-            ),
-            (
-                "codex",
-                "upstream failed Authorization: Bearer sk-live-0123456789abcdef",
-                "The provider could not complete this request",
-            ),
-        ] {
-            assert_eq!(provider_turn_failure_reason(adapter, text, None), reason);
-        }
-        assert_eq!(
-            provider_turn_failure_reason(
-                "codex",
-                "",
-                Some(&ProviderRunTermination::process_exit(1, 1))
-            ),
-            "provider process exited with status 1"
-        );
-    }
-
     #[test]
     fn retry_status_uses_one_provider_neutral_message_shape() {
         assert_eq!(
