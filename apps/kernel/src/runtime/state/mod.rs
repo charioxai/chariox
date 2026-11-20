@@ -327,6 +327,8 @@ struct KernelRuntimeOwnedState {
     /// Held across the worker requests of a rearm pass, and by every deadline edit before
     /// `agent_deadline_edit`, so a worker never ends on the older of two values.
     agent_deadline_rearm: Arc<tokio::sync::Mutex<()>>,
+    /// The (room, agent, deadline, level) warnings this kernel already sent.
+    deadline_warnings_sent: Arc<std::sync::Mutex<std::collections::BTreeSet<(String, String, u64, u64)>>>,
     app_control: crate::runtime::app_control::AppControlService,
     dev_app_bindings: Arc<app_dev_runtime::DevAppBindings>,
     critical_approval_passkeys: critical_approval_passkey::CriticalApprovalPasskeys,
@@ -1260,6 +1262,7 @@ impl KernelRuntimeState {
             owned: KernelRuntimeOwnedState {
                 agent_deadline_edit: Arc::new(tokio::sync::Mutex::new(())),
                 agent_deadline_rearm: Arc::new(tokio::sync::Mutex::new(())),
+                deadline_warnings_sent: Arc::default(),
                 provider_usage_refresher:
                     crate::runtime::provider_usage_refresh::ProviderUsageRefresher::for_kernel(
                         provider_account_profiles.clone(),
@@ -1777,6 +1780,7 @@ mod room_agent_admission;
 mod agent_assessment_result;
 mod agent_delegation_runtime;
 pub(crate) use agent_assessment_result::PrivateAssessmentDispatch;
+mod agent_deadline_notices;
 mod agent_deadline_runtime;
 mod leased_agent_deadline_rearm;
 mod spawned_agent_facts;
