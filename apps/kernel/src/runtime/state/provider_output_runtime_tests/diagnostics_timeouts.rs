@@ -146,6 +146,7 @@ async fn refused_structured_submit(failure: FailedSubmit, room_agent_tools: bool
                     crate::prompt_assembly::PromptAssemblyMode::NormalProviderTurn,
                     None,
                     false,
+                    None,
                 )
                 .unwrap();
             // The provider actor submits on its own thread; reap until the
