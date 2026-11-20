@@ -846,6 +846,7 @@ async fn sudo_agents_cannot_answer_any_approval() {
     let responder = f
         .state
         .create_kernel_operation_interaction(
+            crate::runtime::state::CardKind::NativePermissionInput,
             &turn.session_id,
             "local",
             RuntimeInteraction::for_kernel_operation(

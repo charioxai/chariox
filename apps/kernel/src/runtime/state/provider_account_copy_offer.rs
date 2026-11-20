@@ -288,7 +288,12 @@ impl KernelRuntimeState {
             ],
         );
         let receiver = self
-            .create_kernel_operation_interaction("", owner, interaction)
+            .create_kernel_operation_interaction(
+                crate::runtime::state::CardKind::ProviderLogin,
+                "",
+                owner,
+                interaction,
+            )
             .await?;
         let _consent = CopyConsent {
             state: self.clone(),

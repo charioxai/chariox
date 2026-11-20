@@ -95,7 +95,12 @@ async fn the_inbox_lists_the_owners_cards_from_every_room_newest_first_and_drops
         pending.push(
             router
                 .runtime_state
-                .create_kernel_operation_interaction(session, owner, decision(id))
+                .create_kernel_operation_interaction(
+                    crate::runtime::state::CardKind::NativePermissionInput,
+                    session,
+                    owner,
+                    decision(id),
+                )
                 .await
                 .unwrap(),
         );
@@ -176,7 +181,12 @@ async fn a_watched_inbox_gets_a_raised_card_and_its_answer_within_two_seconds() 
 
     let _pending = router
         .runtime_state
-        .create_kernel_operation_interaction(&session_id, DEFAULT_LOCAL_USER_ID, decision("raised"))
+        .create_kernel_operation_interaction(
+            crate::runtime::state::CardKind::NativePermissionInput,
+            &session_id,
+            DEFAULT_LOCAL_USER_ID,
+            decision("raised"),
+        )
         .await
         .unwrap();
     assert_eq!(next_cards(&mut events).await, ["raised"]);

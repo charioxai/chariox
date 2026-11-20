@@ -677,6 +677,7 @@ impl KernelRuntimeState {
         use crate::session::{RuntimeInteraction, RuntimeInteractionChoice};
         let session = self.owned.session_store.get_session(session_id).unwrap();
         self.create_kernel_operation_interaction(
+            crate::runtime::state::CardKind::App,
             session_id,
             session.owner_user_id(),
             RuntimeInteraction::for_kernel_operation(

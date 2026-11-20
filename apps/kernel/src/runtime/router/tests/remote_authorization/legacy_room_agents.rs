@@ -379,7 +379,12 @@ async fn f4_legacy_decisions_inner() {
         .with_timeout_sec(900);
         let _pending = router
             .runtime_state
-            .create_kernel_operation_interaction(&id, decision_owner, interaction)
+            .create_kernel_operation_interaction(
+                crate::runtime::state::CardKind::NativePermissionInput,
+                &id,
+                decision_owner,
+                interaction,
+            )
             .await
             .unwrap();
         let answer =

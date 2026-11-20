@@ -37,8 +37,15 @@ impl WakeDriver for InteractionWakeDriver {
         {
             let (tx, _rx) = tokio::sync::oneshot::channel();
             self.owned.register_runtime_interaction(
+                crate::runtime::state::runtime_interaction_owned_state::CardRequest(
+                    if super::vault_use::is_vault_payment_decision(&wake.id) {
+                        super::CardKind::VaultCredentialPayment
+                    } else {
+                        super::CardKind::Task
+                    },
+                    interaction,
+                ),
                 &wake.room_id,
-                interaction,
                 tx,
                 None,
                 None,

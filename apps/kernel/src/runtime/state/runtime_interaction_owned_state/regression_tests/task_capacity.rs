@@ -218,6 +218,7 @@ async fn a12_owner_elevation_reserves_the_last_slot_and_keeps_the_global_bound()
         receivers.push(
             f.state
                 .create_kernel_operation_interaction(
+                    crate::runtime::state::CardKind::NativePermissionInput,
                     &f.session,
                     owners[index / 8],
                     RuntimeInteraction::for_kernel_operation(
@@ -239,6 +240,7 @@ async fn a12_owner_elevation_reserves_the_last_slot_and_keeps_the_global_bound()
     assert!(
         f.state
             .create_kernel_operation_interaction(
+                crate::runtime::state::CardKind::NativePermissionInput,
                 &f.session,
                 owners[3],
                 RuntimeInteraction::for_kernel_operation(
@@ -273,14 +275,24 @@ async fn a12_owner_elevation_reserves_the_last_slot_and_keeps_the_global_bound()
     };
     receivers.push(
         f.state
-            .create_kernel_operation_interaction(&f.session, owners[3], elevation("last-slot"))
+            .create_kernel_operation_interaction(
+                crate::runtime::state::CardKind::NativePermissionInput,
+                &f.session,
+                owners[3],
+                elevation("last-slot"),
+            )
             .await
             .unwrap(),
     );
     assert_eq!(f.active_ids().len(), 32);
     assert!(
         f.state
-            .create_kernel_operation_interaction(&f.session, owners[0], elevation("over-limit"))
+            .create_kernel_operation_interaction(
+                crate::runtime::state::CardKind::NativePermissionInput,
+                &f.session,
+                owners[0],
+                elevation("over-limit")
+            )
             .await
             .is_err(),
         "owner elevation also obeys the hard32 bound"
@@ -297,16 +309,19 @@ async fn owner_task_decision_is_removed_when_its_task_is_missing() {
     f.state
         .owned
         .register_runtime_interaction(
-            &f.session,
-            RuntimeInteraction::for_kernel_operation(
-                id,
-                id,
-                "Agent needs your action",
-                "Continue?",
-                vec![RuntimeInteractionChoice::new(
-                    "cancel", "Cancel", "cancel", None,
-                )],
+            crate::runtime::state::runtime_interaction_owned_state::CardRequest(
+                crate::runtime::state::CardKind::NativePermissionInput,
+                RuntimeInteraction::for_kernel_operation(
+                    id,
+                    id,
+                    "Agent needs your action",
+                    "Continue?",
+                    vec![RuntimeInteractionChoice::new(
+                        "cancel", "Cancel", "cancel", None,
+                    )],
+                ),
             ),
+            &f.session,
             sender,
             Some(DEFAULT_LOCAL_USER_ID),
             None,

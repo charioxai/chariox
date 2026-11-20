@@ -692,6 +692,14 @@ pub(crate) enum Operation {
         later_prompt: String,
         now: u64,
     },
+    /// Consume the exact task question and enqueue its answer before returning to the owner.
+    AnswerTaskQuestion {
+        room: String,
+        task: String,
+        revision: u64,
+        reply: Option<String>,
+        now: u64,
+    },
     OwnerResponse {
         task: String,
         revision: u64,

@@ -6,8 +6,6 @@ use crate::durable_state::agent_lifecycle::{AgentTaskExecution, Operation, Outco
 pub(super) enum OwnerTaskAction {
     Cancel,
     Resume,
-    /// The owner's answer to an agent's question.
-    Reply(String),
 }
 
 impl KernelRuntimeState {
@@ -28,13 +26,6 @@ impl KernelRuntimeState {
         action: OwnerTaskAction,
     ) -> Result<(), DaemonError> {
         let resume = action != OwnerTaskAction::Cancel;
-        // An answer is only meant for a question the agent asked; a stale one is dropped like any stale decision.
-        if matches!(action, OwnerTaskAction::Reply(_))
-            && task.owner_action
-                != Some(crate::durable_state::agent_lifecycle::TaskOwnerAction::Question)
-        {
-            return Ok(());
-        }
         // Archive keeps the agent out of work. Refusing before the decision is
         // committed leaves the task blocked, and the sweep offers the same
         // decision again once the agent is unarchived.
@@ -97,24 +88,19 @@ impl KernelRuntimeState {
                 async {
                     let agent = self.owned.agent_store.get_agent(&next.agent_id)?;
                     let attachment = self.ensure_agent_message_attachment(&next.room_id, &agent)?;
-                    let mut context = if let OwnerTaskAction::Reply(reply) = &action {
-                        format!(
-                            "The owner answered your question ({}): {reply}\nContinue the original task with this answer.",
-                            crate::terminal::public_task_failure_reason(&task.reason)
-                        )
-                    } else {
-                        self.owned.task_resume_text(&next, &task.reason)?
-                    };
+                    let mut context = self.owned.task_resume_text(&next, &task.reason)?;
                     if let Some(goal) = self.owned.goal_continuation_context(&next)? {
                         context.push('\n');
                         context.push_str(&goal);
                     }
                     Box::pin(self.dispatch_task_continuation(&next, &attachment, context)).await
-                }.await
+                }
+                .await
             } else {
                 Box::pin(self.cancel_agent_task_resources(&next)).await
             }
-        }.await;
+        }
+        .await;
         let outcome = if let Err(error) = result {
             self.record_agent_task_owner_failure(&next, &error);
             if resume {

@@ -215,7 +215,7 @@ impl KernelRuntimeState {
                 }
                 None
             } else {
-                Some(self.create_runtime_interaction(run.session_id(), RuntimeInteraction::new(
+                Some(self.create_runtime_interaction(crate::runtime::state::CardKind::ProviderLogin, run.session_id(), RuntimeInteraction::new(
                     &id, agent_id, RuntimeInteractionKind::Choice, RuntimeInteractionLevel::Warning,
                     Some(format!("Log in to {provider} on this machine")),
                     "The provider could not renew its login. Credentials will stay on this machine.",

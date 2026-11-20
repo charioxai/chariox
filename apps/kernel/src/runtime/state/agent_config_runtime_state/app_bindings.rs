@@ -745,7 +745,11 @@ impl KernelRuntimeState {
             None,
         );
         let resolution = self
-            .create_runtime_interaction(session.id(), interaction)
+            .create_runtime_interaction(
+                crate::runtime::state::CardKind::RuntimeGrant,
+                session.id(),
+                interaction,
+            )
             .await?
             .await
             .map_err(|_| app_binding_error("App binding approval closed without a decision"))?;

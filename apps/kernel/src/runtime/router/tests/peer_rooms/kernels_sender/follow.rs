@@ -423,7 +423,11 @@ fn a_card_raised_and_answered_on_the_followed_kernel_gives_no_outcome() {
         let _answer = b
             .router
             .runtime_state
-            .create_runtime_interaction(&b.room, card)
+            .create_runtime_interaction(
+                crate::runtime::state::CardKind::NativePermissionInput,
+                &b.room,
+                card,
+            )
             .await
             .unwrap();
         b.router

@@ -445,7 +445,12 @@ impl KernelRuntimeState {
             vec![RuntimeInteractionChoice::new("refuse", "Refuse", "refuse", None), RuntimeInteractionChoice::new("approve", "Extend", "approve", None).requiring_passkey()])
             .with_timeout_sec(remaining);
         let rx = self
-            .create_kernel_operation_interaction(&turn.session_id, owner, interaction)
+            .create_kernel_operation_interaction(
+                crate::runtime::state::CardKind::OwnerControl,
+                &turn.session_id,
+                owner,
+                interaction,
+            )
             .await?;
         self.audit_sudo(&turn, "extension_requested")?;
         let answer = tokio::time::timeout(Duration::from_secs(remaining), rx)

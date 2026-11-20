@@ -331,7 +331,11 @@ impl KernelRuntimeState {
             });
         }
         let resolution_rx = self
-            .create_runtime_interaction(&session_id, interaction)
+            .create_runtime_interaction(
+                crate::runtime::state::CardKind::NativePermissionInput,
+                &session_id,
+                interaction,
+            )
             .await?;
         // The card is only answerable while this tool call waits: when the
         // provider gives up on the call, withdraw it instead of leaving a dead card.

@@ -191,7 +191,11 @@ impl KernelRuntimeState {
                     }
                 } else {
                     let resolution_rx = self
-                        .create_runtime_interaction(&session_id, interaction)
+                        .create_runtime_interaction(
+                            crate::runtime::state::CardKind::VaultCredentialPayment,
+                            &session_id,
+                            interaction,
+                        )
                         .await?;
                     if let Some(timeout_sec) = timeout_sec {
                         let state = self.clone();
@@ -899,7 +903,11 @@ impl KernelRuntimeState {
         let interaction_id = interaction.id().to_string();
         let timeout_sec = interaction.timeout_sec();
         let resolution_rx = self
-            .create_runtime_interaction(&context.home_session_id, interaction)
+            .create_runtime_interaction(
+                crate::runtime::state::CardKind::VaultCredentialPayment,
+                &context.home_session_id,
+                interaction,
+            )
             .await?;
         if let Some(timeout_sec) = timeout_sec {
             let state = self.clone();

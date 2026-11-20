@@ -88,8 +88,11 @@ impl Fixture {
         self.state
             .owned
             .register_runtime_interaction(
+                crate::runtime::state::runtime_interaction_owned_state::CardRequest(
+                    crate::runtime::state::CardKind::NativePermissionInput,
+                    interaction,
+                ),
                 &self.session_id,
-                interaction,
                 tx,
                 None,
                 None,

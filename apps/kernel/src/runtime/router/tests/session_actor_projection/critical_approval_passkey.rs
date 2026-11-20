@@ -119,6 +119,7 @@ impl Fixture {
         self.router
             .runtime_state
             .create_kernel_operation_interaction(
+                crate::runtime::state::CardKind::App,
                 &self.session,
                 DEFAULT_LOCAL_USER_ID,
                 RuntimeInteraction::for_kernel_operation(
@@ -483,6 +484,7 @@ async fn routine_decisions_agent_meta_and_other_users_are_unchanged() {
         .router
         .runtime_state
         .create_kernel_operation_interaction(
+            crate::runtime::state::CardKind::App,
             &f.session,
             DEFAULT_LOCAL_USER_ID,
             RuntimeInteraction::for_kernel_operation(
@@ -541,7 +543,11 @@ async fn routine_decisions_agent_meta_and_other_users_are_unchanged() {
     let refused = f
         .router
         .runtime_state
-        .create_runtime_interaction(&f.session, agent_question)
+        .create_runtime_interaction(
+            crate::runtime::state::CardKind::App,
+            &f.session,
+            agent_question,
+        )
         .await
         .expect_err("an agent question may not require the passkey");
     assert!(refused.to_string().contains("passkey"), "{refused}");
