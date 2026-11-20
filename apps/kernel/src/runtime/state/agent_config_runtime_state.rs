@@ -1423,8 +1423,75 @@ impl KernelRuntimeState {
         }
         self.owned
             .persist_workflow_runtime_session(session_id, "workflow_source_agent_changed")?;
+        self.sync_busy_workflow_copies_with_source(session_id, agent_id)?;
         self.owned
             .workflow_cleanup_runtime_instances_exclusive(session_id)
+    }
+
+    /// An idle copy of a template is retired and rebuilt from the edited
+    /// template; a copy that still holds a run keeps its agents until the run
+    /// ends. Those agents take the template's profile now, so the next turn of
+    /// the run is on it. The turn running now keeps the profile it started on.
+    fn sync_busy_workflow_copies_with_source(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Result<(), DaemonError> {
+        let source = self.owned.agent_store.get_agent(agent_id)?;
+        let session = self.owned.session_store.get_session(session_id)?;
+        let mut copy_ids = Vec::new();
+        for instance in session
+            .workflow_runtime_instances()
+            .iter()
+            .filter(|instance| !instance.primary() && instance.active_run_id().is_some())
+        {
+            let Some(workflow) = session
+                .workflows()
+                .iter()
+                .find(|workflow| workflow.id() == instance.workflow_id())
+            else {
+                continue;
+            };
+            copy_ids.extend(
+                workflow
+                    .nodes()
+                    .iter()
+                    .filter(|node| node.agent_id() == agent_id)
+                    .filter_map(|node| instance.agent_id_for_node(node.id()))
+                    .map(str::to_string),
+            );
+        }
+        let store = &self.owned.agent_store;
+        for copy_id in copy_ids {
+            let copy = store.get_agent(&copy_id)?;
+            if (
+                copy.provider(),
+                copy.model(),
+                copy.effort(),
+                copy.provider_account_profile(),
+            ) != (
+                source.provider(),
+                source.model(),
+                source.effort(),
+                source.provider_account_profile(),
+            ) {
+                store.set_agent_runtime_profile_with_account_profile(
+                    &copy_id,
+                    source.provider(),
+                    source.model().map(str::to_string),
+                    source.effort().map(str::to_string),
+                    Some(source.provider_account_profile().to_string()),
+                    crate::provider::ProviderResumeState::default(),
+                )?;
+            }
+            if copy.substitutes() != source.substitutes() {
+                store.clear_agent_substitutes(&copy_id)?;
+                for substitute in source.substitutes() {
+                    store.add_agent_substitute(&copy_id, substitute.clone())?;
+                }
+            }
+        }
+        Ok(())
     }
 
     pub(crate) async fn alias_agent(

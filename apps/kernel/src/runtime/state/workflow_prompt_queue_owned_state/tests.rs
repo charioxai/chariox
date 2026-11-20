@@ -2485,16 +2485,16 @@ fn unverified_refusal() -> DaemonError {
 }
 
 #[test]
-fn refused_gated_entry_waits_with_its_reason_until_the_gate_deadline() {
+fn refused_entry_waits_with_its_reason_until_the_gate_deadline() {
     assert_eq!(
-        refused_gated_entry(&unverified_refusal(), Some(2_000), 1_999),
-        Some(RefusedGatedEntry::Wait(
+        refused_entry(&unverified_refusal(), Some(2_000), 1_999),
+        Some(RefusedEntry::Wait(
             crate::session::WorkflowNodeWaitingReason::ProviderProfileUnverified
         ))
     );
     assert_eq!(
-        refused_gated_entry(&unverified_refusal(), Some(2_000), 2_000),
-        Some(RefusedGatedEntry::Expired)
+        refused_entry(&unverified_refusal(), Some(2_000), 2_000),
+        Some(RefusedEntry::Expired)
     );
     // The expired entry fails with the plain refusal an ungated invoke returns.
     assert_eq!(
@@ -2503,11 +2503,312 @@ fn refused_gated_entry_waits_with_its_reason_until_the_gate_deadline() {
     );
 }
 
+/// Points the fixture's workflow agent at an exhausted Codex account, with
+/// `substitutes` (dev-stub models) behind it.
+fn exhaust_workflow_agent(runtime: &KernelRuntimeState, session_id: &str, substitutes: &[&str]) {
+    let agent_id = runtime.owned.agent_store.get_session_agents(session_id)[0]
+        .id()
+        .to_string();
+    // The Room's owner has an account of its own, used up until a reset.
+    let owner = crate::account_profile::provider_account_authority_owner_user_id(
+        &runtime.owned.config_projection.snapshot(),
+        runtime
+            .owned
+            .agent_store
+            .get_agent(&agent_id)
+            .unwrap()
+            .owner_user_id(),
+    );
+    let account = runtime
+        .owned
+        .provider_account_profiles
+        .create_managed(&owner, "codex", "Primary")
+        .unwrap();
+    crate::test_support::exhaust_provider_account(
+        &runtime.owned.provider_account_profiles,
+        &owner,
+        "codex",
+        &account.profile_id,
+        crate::session::unix_epoch_ms() + 6 * 24 * 60 * 60 * 1000,
+    )
+    .unwrap();
+    runtime
+        .owned
+        .agent_store
+        .set_agent_runtime_profile_with_account_profile(
+            &agent_id,
+            "codex",
+            Some("gpt-test".to_string()),
+            None,
+            Some(account.profile_id),
+            crate::provider::ProviderResumeState::default(),
+        )
+        .unwrap();
+    for model in substitutes {
+        runtime
+            .owned
+            .agent_store
+            .add_agent_substitute(
+                &agent_id,
+                crate::agent::AgentSubstituteProfile::new("dev-stub", *model, None),
+            )
+            .unwrap();
+    }
+    // The fixture's idle process is retired, as after a restart: the entry
+    // launches cold.
+    if let Some(run) = runtime
+        .owned
+        .provider_store
+        .get_run_for_agent(session_id, &agent_id)
+    {
+        runtime
+            .owned
+            .provider_store
+            .terminate_run_provider_only(session_id, run.id())
+            .unwrap();
+        runtime
+            .owned
+            .session_store
+            .set_active_provider_run(session_id, None)
+            .unwrap();
+    }
+}
+
+fn first_node_run(
+    runtime: &KernelRuntimeState,
+    session_id: &str,
+) -> crate::session::WorkflowNodeRun {
+    runtime
+        .owned
+        .session_store
+        .get_session(session_id)
+        .unwrap()
+        .workflow_runs()
+        .iter()
+        .find_map(|run| run.node_runs().first().cloned())
+        .expect("the invoke created a workflow run")
+}
+
+/// A run of the fixture workflow whose entry node is Ready, and that node's ids.
+fn ready_entry(
+    runtime: &KernelRuntimeState,
+    session: &str,
+    workflow: &str,
+    endpoint: &str,
+) -> (String, String, String) {
+    runtime
+        .owned
+        .workflow_enqueue_prompt_and_maybe_start(
+            session,
+            workflow,
+            endpoint,
+            Some("review".into()),
+            None,
+            None,
+        )
+        .expect("the run is created");
+    let run = runtime
+        .owned
+        .session_store
+        .get_session(session)
+        .unwrap()
+        .workflow_runs()[0]
+        .clone();
+    let node = &run.node_runs()[0];
+    (
+        run.id().to_string(),
+        node.id().to_string(),
+        node.agent_id().to_string(),
+    )
+}
+
+// S1 workflow node: a cold launch of an entry whose primary is exhausted uses
+// the first substitute that can run, bound to that node's turn.
 #[test]
-fn refused_ungated_entry_and_other_failures_keep_existing_handling() {
-    assert_eq!(refused_gated_entry(&unverified_refusal(), None, 1), None);
+fn workflow_entry_on_an_exhausted_primary_launches_on_the_substitute() {
+    let (runtime, session, _workflow, _endpoint, _root) = runtime_with_idle_workflow();
+    exhaust_workflow_agent(&runtime, &session, &["substitute-a", "substitute-b"]);
+    let agent_id = runtime.owned.agent_store.get_session_agents(&session)[0]
+        .id()
+        .to_string();
+    let agent = runtime.owned.agent_store.get_agent(&agent_id).unwrap();
+
+    let (launch_agent, turn) = runtime
+        .owned
+        .admission_launch_profile(agent.clone(), Some("node-run-1"))
+        .expect("the launch profile resolves");
+
+    assert_eq!(launch_agent.provider(), "dev-stub");
+    assert_eq!(launch_agent.model(), Some("substitute-a"));
+    let turn = turn.expect("the launch is a substitute's");
+    assert_eq!(turn.prompt_id, "pending:node-run-1");
+    assert_eq!(turn.tried.len(), 1);
     assert_eq!(
-        refused_gated_entry(
+        runtime
+            .owned
+            .agent_store
+            .get_agent(&agent_id)
+            .unwrap()
+            .model(),
+        agent.model(),
+        "the stored profile never changes"
+    );
+    assert!(runtime
+        .owned
+        .terminal_stream
+        .notice_records()
+        .iter()
+        .any(|notice| notice.message.starts_with("This turn runs on substitute-a")));
+}
+
+// S1 negative / R4 / S2: with every profile used up the node keeps its own
+// profile (the launch is then refused and the entry waits), the wait names the
+// account and when it is back, and a retry per pump pass tells the Room once.
+#[test]
+fn workflow_entry_with_every_profile_exhausted_waits_and_does_not_fail() {
+    let (runtime, session, workflow, endpoint, _root) = runtime_with_idle_workflow();
+    exhaust_workflow_agent(&runtime, &session, &[]);
+    let (run_id, node_run_id, _) = ready_entry(&runtime, &session, &workflow, &endpoint);
+    let agent = runtime.owned.agent_store.get_session_agents(&session)[0].clone();
+    let refusal = runtime
+        .owned
+        .admission_launch_profile(agent.clone(), Some(&node_run_id))
+        .expect_err("no profile can run: the refusal is the answer");
+    assert!(matches!(
+        refusal,
+        DaemonError::ProviderProfileRefused {
+            reason: crate::error::ProviderProfileRefusal::UsageExhausted,
+            ..
+        }
+    ));
+
+    let held: Vec<bool> = (0..3)
+        .map(|_| {
+            runtime.owned.workflow_hold_refused_entry(
+                &session,
+                &run_id,
+                &node_run_id,
+                agent.id(),
+                crate::session::WorkflowNodeWaitingReason::ProviderProfileUsageExhausted,
+                "Primary",
+            )
+        })
+        .collect();
+
+    assert_eq!(held, [true, false, false], "only the change is announced");
+    let node = first_node_run(&runtime, &session);
+    assert_ne!(node.status(), crate::session::WorkflowNodeRunStatus::Failed);
+    assert_eq!(
+        node.waiting_reason(),
+        Some(crate::session::WorkflowNodeWaitingReason::ProviderProfileUsageExhausted)
+    );
+    assert_eq!(node.waiting_account(), Some("Primary"));
+    assert!(node
+        .waiting_until_ms()
+        .is_some_and(|at| at > crate::session::unix_epoch_ms()));
+    let waiting = runtime
+        .owned
+        .terminal_stream
+        .notice_records()
+        .into_iter()
+        .filter(|notice| notice.message.starts_with("Waiting:"))
+        .count();
+    assert_eq!(waiting, 1, "one notice per state change, not one per retry");
+}
+
+// S5: a template's profile edit reaches the copy that still holds a run.
+mod admission_substitute {
+    use super::*;
+
+    #[tokio::test]
+    async fn edited_template_profile_reaches_a_busy_runtime_copy() {
+        let (runtime, session_id, workflow_id, endpoint_id, _test_root) =
+            runtime_with_idle_workflow();
+        let source = runtime
+            .owned
+            .agent_store
+            .get_session_agents(&session_id)
+            .into_iter()
+            .find(|agent| agent.alias() == Some("owned-workflow-agent"))
+            .expect("source workflow agent should exist");
+        runtime
+            .owned
+            .session_store
+            .write()
+            .set_workflow_endpoint_max_instances(&session_id, &workflow_id, &endpoint_id, 2)
+            .unwrap();
+        let mut outcomes = Vec::new();
+        for text in ["first run", "second run"] {
+            outcomes.push(format!(
+                "{:?}",
+                runtime
+                    .owned
+                    .workflow_enqueue_prompt_and_maybe_start(
+                        &session_id,
+                        &workflow_id,
+                        &endpoint_id,
+                        Some(text.to_string()),
+                        None,
+                        None,
+                    )
+                    .map(|(outcome, _)| outcome)
+                    .map_err(|error| error.to_string())
+            ));
+        }
+        let session = runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .unwrap();
+        let busy_copy = session
+            .workflow_runtime_instances()
+            .iter()
+            .find(|instance| !instance.primary() && instance.active_run_id().is_some())
+            .unwrap_or_else(|| {
+                panic!(
+                    "the second run must hold a copy: {:?} {outcomes:?}",
+                    session.workflow_runtime_instances()
+                )
+            });
+        let copy_id = busy_copy
+            .node_agent_ids()
+            .values()
+            .next()
+            .expect("the copy has its agent")
+            .clone();
+
+        runtime
+            .update_agent_profile(
+                &session_id,
+                source.id(),
+                crate::session::DEFAULT_LOCAL_USER_ID,
+                None,
+                None,
+                Some("template-model-2".into()),
+                None,
+            )
+            .await
+            .expect("the template profile changes");
+
+        let copy = runtime.owned.agent_store.get_agent(&copy_id).unwrap();
+        assert_eq!(
+            copy.model(),
+            Some("template-model-2"),
+            "the busy copy takes the edited profile for its next turn"
+        );
+    }
+}
+
+#[test]
+fn refused_ungated_entry_waits_and_other_failures_keep_existing_handling() {
+    assert_eq!(
+        refused_entry(&unverified_refusal(), None, 1),
+        Some(RefusedEntry::Wait(
+            crate::session::WorkflowNodeWaitingReason::ProviderProfileUnverified
+        ))
+    );
+    assert_eq!(
+        refused_entry(
             &DaemonError::LocalTransport {
                 operation: "dispatch",
                 message: "busy".into(),

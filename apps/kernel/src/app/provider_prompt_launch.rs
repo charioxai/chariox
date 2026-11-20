@@ -59,6 +59,29 @@ impl DaemonApp {
         session_id: &str,
         agent_id: &str,
     ) -> Result<String, DaemonError> {
+        self.with_admission_substitute(session_id, agent_id, None, |app| {
+            app.launch_prompt_provider_run_for_agent(session_id, agent_id)
+        })
+    }
+
+    /// The launch of a turn not yet active: the substitute an exhausted
+    /// account needs is bound to `prompt_id`, the turn about to be submitted.
+    pub(crate) fn ensure_prompt_provider_run_for_turn(
+        &mut self,
+        session_id: &str,
+        agent_id: &str,
+        prompt_id: &str,
+    ) -> Result<String, DaemonError> {
+        self.with_admission_substitute(session_id, agent_id, Some(prompt_id), |app| {
+            app.launch_prompt_provider_run_for_agent(session_id, agent_id)
+        })
+    }
+
+    fn launch_prompt_provider_run_for_agent(
+        &mut self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Result<String, DaemonError> {
         self.retire_finished_turn_substitute_run(session_id, agent_id)?;
         let (agent, turn_substitute) = self.agent_launch_profile(self.agents.get_agent(agent_id)?);
         // A leased live process already holds the home's launch credential.

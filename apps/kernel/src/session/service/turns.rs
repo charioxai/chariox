@@ -836,7 +836,7 @@ impl SessionService {
         session_id: &str,
         workflow_run_id: &str,
         workflow_node_run_id: &str,
-        reason: crate::session::WorkflowNodeWaitingReason,
+        wait: impl Into<crate::session::WorkflowNodeWait>,
     ) -> Result<bool, DaemonError> {
         let session =
             self.store
@@ -857,9 +857,9 @@ impl SessionService {
         else {
             return Ok(false);
         };
-        let before = node_run.waiting_reason();
-        node_run.set_waiting_reason(reason);
-        Ok(node_run.waiting_reason() != before)
+        let before = node_run.held_wait();
+        node_run.set_wait(wait.into());
+        Ok(node_run.held_wait() != before)
     }
 
     pub fn fail_workflow_node_run(
