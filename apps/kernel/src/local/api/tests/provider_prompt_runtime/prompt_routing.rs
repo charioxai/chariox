@@ -720,7 +720,10 @@ fn local_request_api_rejects_prompt_for_fresh_exhausted_provider_account() {
         message.contains("usage allowance and credits are exhausted"),
         "{message}"
     );
-    assert!(message.contains("refresh"), "{message}");
+    assert!(
+        message.contains("select another account in Provider Accounts"),
+        "{message}"
+    );
     assert!(
         !message.contains(&exhausted_account.profile_id),
         "the public error must not expose the stable internal account id: {message}"
@@ -872,7 +875,10 @@ fn local_request_api_rejects_new_prompt_when_busy_agent_account_becomes_unavaila
         .expect_err("an expired account must block a new queued prompt");
     let message = error.to_string();
     assert!(message.contains("Busy account"), "{message}");
-    assert!(message.contains("reconnect"), "{message}");
+    assert!(
+        message.contains("choose Sign in for this account in Provider Accounts"),
+        "{message}"
+    );
 
     let session_state = harness.with_app(|app| {
         app.sessions()
