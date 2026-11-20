@@ -18,7 +18,11 @@ pub fn meta_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                 "type": "object",
                 "properties": {
                     "include_workflows": {"type": "boolean"},
-                    "include_events": {"type": "boolean"}
+                    "include_events": {"type": "boolean"},
+                    "include_tasks": {"type": "boolean", "description": "Add the task history and obligations of the agents in the page."},
+                    "alias": {"type": "string", "description": "Only agents whose alias contains this text."},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 200, "description": "Agents per page; 40 by default."},
+                    "cursor": {"type": "string", "description": "The next_cursor of the previous page."}
                 },
                 "additionalProperties": false
             }),

@@ -6,6 +6,12 @@ pub struct MetaSessionOverviewArgs {
     pub include_workflows: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub include_events: Option<bool>,
+    /// A Room overview lists its agents in pages of compact rows, as `list_session_agents` does.
+    #[serde(flatten)]
+    pub page: super::AgentPageArgs,
+    /// The Room's task history and obligations, for the agents of the page; off by default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub include_tasks: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]

@@ -23,6 +23,21 @@ pub struct SendAgentMessageArgs {
     pub idempotency_key: Option<String>,
 }
 
+/// Which agents of a Room a list returns, and from where: a Room of dozens of agents answers
+/// in pages of compact rows, never in one reply that outgrows the tool limit.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct AgentPageArgs {
+    /// Keeps the agents whose alias contains this text, in any letter case.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alias: Option<String>,
+    /// Rows in the page; 40 when absent, at most 200.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<usize>,
+    /// The `next_cursor` of the previous page.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PromoteAgentMessageArgs {
     /// The `message_id` a queued send answered.
@@ -38,10 +53,14 @@ pub fn agent_messaging_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
     vec![
         RuntimeToolSpec {
             name: LIST_SESSION_AGENTS_TOOL.to_string(),
-            description: "List the agents in the current Chariox session with their stable ids, unique aliases, provider configuration, runtime availability, queue depth, extension capabilities, and local or remote placement. Use this before addressing another agent.".to_string(),
+            description: "List the agents in the current Chariox session, one compact row each: id, alias, state, turn (in_turn, between_turns or finished), provider, model and parent. `you` is your own row. A Room with many agents answers in pages: pass `cursor` from `next_cursor` for the next page, or `alias` to find agents by name. Use chariox.get_session_agent for one agent's full settings, liveness and placement. Use this before addressing another agent.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
-                "properties": {},
+                "properties": {
+                    "alias": {"type": "string", "description": "Only agents whose alias contains this text."},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 200, "description": "Rows per page; 40 by default."},
+                    "cursor": {"type": "string", "description": "The next_cursor of the previous page."}
+                },
                 "additionalProperties": false
             }),
         },

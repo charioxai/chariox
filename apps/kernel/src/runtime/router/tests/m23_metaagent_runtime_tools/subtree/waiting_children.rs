@@ -4,7 +4,7 @@ use super::*;
 use crate::durable_state::agent_lifecycle::{AgentWake, Operation};
 
 /// `agent` finishes a turn that yielded on a timer armed at `armed_at_ms`.
-async fn yield_on_a_timer(world: &World, alias: &str, armed_at_ms: u64) {
+pub(super) async fn yield_on_a_timer(world: &World, alias: &str, armed_at_ms: u64) {
     let agent = world.ids[alias].as_str();
     let store = world.app.lock().await.durable_state_store();
     let (prompt, task) = ("yielded-turn", "yielded-turn");

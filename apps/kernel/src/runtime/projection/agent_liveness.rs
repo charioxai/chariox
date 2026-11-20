@@ -180,6 +180,43 @@ pub(crate) fn agent_state_label(
     }
 }
 
+/// Where an agent stands in its work, in one word a parent can act on. `agent_state_label`
+/// cannot say it: a child that yielded and a child in a tool call are both "running" to a
+/// parent that reads task state, and an agent that waits on its provider can read "idle".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum AgentTurnState {
+    /// A prompt is being worked: the provider thinks, or a tool call runs.
+    InTurn,
+    /// No prompt is being worked, and a queued prompt, a wake or an event will start the next.
+    BetweenTurns,
+    /// Nothing is running and nothing is armed.
+    Finished,
+}
+
+pub(crate) fn agent_turn_state(
+    has_active_prompt: bool,
+    activity: Option<&AgentRuntimeActivity>,
+) -> AgentTurnState {
+    let Some(activity) = activity else {
+        return if has_active_prompt {
+            AgentTurnState::InTurn
+        } else {
+            AgentTurnState::Finished
+        };
+    };
+    if has_active_prompt || activity.busy || activity.active_prompt_count > 0 {
+        AgentTurnState::InTurn
+    } else if activity.waiting
+        || activity.queued_prompt_count > 0
+        || activity.liveness.waiting_on.is_some()
+    {
+        AgentTurnState::BetweenTurns
+    } else {
+        AgentTurnState::Finished
+    }
+}
+
 /// A working agent in the health report: quiet since a time that is past the limit.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SilentAgentHealth {

@@ -6,31 +6,36 @@ impl KernelRuntimeState {
         &self,
         session: &crate::session::RuntimeSession,
         requester: &crate::agent::AgentInstance,
+        arguments: serde_json::Value,
     ) -> crate::transport::runtime_tools::RuntimeToolResult {
-        let mut agents = self.session_agents(session.id());
-        agents.sort_by(|left, right| {
-            left.created_at_ms()
-                .cmp(&right.created_at_ms())
-                .then_with(|| left.id().cmp(right.id()))
-        });
+        let args = match serde_json::from_value::<crate::transport::runtime_tools::AgentPageArgs>(
+            arguments,
+        ) {
+            Ok(args) => args,
+            Err(error) => {
+                return agent_message_failure(format!(
+                    "invalid list-session-agents arguments: {error}"
+                ));
+            }
+        };
+        let agents = self.session_agents(session.id());
+        let page = match agent_rows::page_of_agents(&agents, &args) {
+            Ok(page) => page,
+            Err(message) => return agent_message_failure(message),
+        };
         let activity = self.agent_activity_for_session(session);
+        let aliases = agent_rows::alias_index(&agents);
         crate::transport::runtime_tools::RuntimeToolResult {
             ok: true,
             payload: serde_json::json!({
                 "session_id": session.id(),
-                "focused_agent_id": session.focused_agent_id(),
-                "agent_tasks": self.owned.durable_state_store.agent_tasks(Some(session.id()),None).unwrap_or_default(),
-                "agents": agents
+                "you": agent_rows::compact_agent_row(session, requester, &aliases, &activity),
+                "total": page.total,
+                "next_cursor": page.next_cursor,
+                "agents": page
+                    .agents
                     .iter()
-                    .map(|agent| {
-                        session_agent_description(
-                            session,
-                            requester,
-                            agent,
-                            self.owned.agent_store.effective_execution_config(session, agent, &self.owned.session_store),
-                            &activity,
-                        )
-                    })
+                    .map(|agent| agent_rows::compact_agent_row(session, agent, &aliases, &activity))
                     .collect::<Vec<_>>(),
             }),
         }
@@ -619,6 +624,10 @@ fn session_agent_description(
             crate::agent::AgentOperatingMode::Meta => "meta",
         },
         "state": crate::runtime::projection::agent_state_label(agent, activity.get(agent.id())),
+        "turn": crate::runtime::projection::agent_turn_state(
+            session.active_prompt_for_agent(agent.id()).is_some(),
+            activity.get(agent.id()),
+        ),
         "is_processing": agent.is_processing(),
         "has_active_prompt": session.active_prompt_for_agent(agent.id()).is_some(),
         "queued_prompt_count": session
