@@ -1,0 +1,6 @@
+{"v":1,"source":"generator","seed":42,"agent":"orch","notes":"Structured replay fixture"}
+{"t":0,"kind":"prompt","chars":30}
+{"t":0,"kind":"reasoning","chars":80,"stream_ms":20}
+{"t":20,"kind":"text","chars":120,"stream_ms":20,"markdown":"list"}
+{"t":40,"kind":"tool","name":"Bash","input_bytes":70,"output_bytes":256,"ms":20,"outcome":"ok"}
+{"t":60,"kind":"end","outcome":"completed"}
