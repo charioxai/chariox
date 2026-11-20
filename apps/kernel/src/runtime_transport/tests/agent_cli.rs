@@ -170,7 +170,7 @@ async fn agent_cli_credentials_allow_authorized_peer_requests_only() {
             }}),
         )
         .await;
-        assert_eq!(peer_state["error"]["code"], "kernel_access_denied");
+        assert_eq!(peer_state["error"]["code"], "room_tool_refused");
         let peer_deadline = request(
             &mut socket,
             serde_json::json!({"type": "request", "request": {
