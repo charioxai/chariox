@@ -180,7 +180,7 @@ pub struct RuntimeSession {
     external_provider_imports: Vec<ExternalProviderImportMetadata>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     workspace_live_sync_mode: Option<crate::config::WorkspaceLiveSyncMode>,
-    /// Setup steps of a new Room, projected from the kernel's live setup store; never stored.
+    /// Setup steps of a new Room, projected from the kernel's durable setup store.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     room_setup: Option<RoomSetupState>,
 }

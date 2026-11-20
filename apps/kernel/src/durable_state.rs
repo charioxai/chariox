@@ -70,6 +70,7 @@ mod event_reader;
 mod owner;
 mod retired_sessions;
 pub(crate) mod room_environment;
+pub(crate) mod room_setup;
 pub(crate) mod skill_reset;
 mod skill_reset_startup;
 pub(crate) mod storage_full;
@@ -273,6 +274,7 @@ enum DurableWriterRequest {
 enum DurableWriteOperation {
     AcquireChoice(acquire_choices::AcquireChoiceTransition),
     RoomEnvironment(room_environment::RoomEnvironmentWrite),
+    RoomSetup(room_setup::RoomSetupWrite),
     BrowserImport(browser_import::ImportStateWrite),
     RetiredSessionBackfill {
         owner_id: String,
@@ -2033,6 +2035,7 @@ fn commit_durable_write_batch(
             DurableWriteOperation::AcquireChoice(transition) => {
                 acquire_choices::apply(&transaction, transition)
             }
+            DurableWriteOperation::RoomSetup(write) => room_setup::apply(&transaction, write),
             DurableWriteOperation::RoomEnvironment(write) => {
                 room_environment::apply(&transaction, write)
             }
@@ -2380,6 +2383,13 @@ CREATE TABLE IF NOT EXISTS app_restore_receipts (
     owner_id TEXT NOT NULL,
     installation_id TEXT PRIMARY KEY,
     restore_id TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS durable_room_setups (
+    owner_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    agent_id TEXT NOT NULL,
+    state_json TEXT NOT NULL,
+    PRIMARY KEY (owner_id, session_id)
 );
 CREATE TABLE IF NOT EXISTS durable_room_environments (
     owner_id TEXT NOT NULL,

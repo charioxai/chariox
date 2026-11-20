@@ -62,6 +62,9 @@ impl DaemonApp {
                 .set_capture_enabled(self.config.user_config.history.operational.enabled);
         }
         self.config_projection.update(self.config.clone());
+        if path.starts_with("providers.") {
+            self.invalidate_provider_catalog_cache();
+        }
         Ok(())
     }
 
@@ -79,6 +82,40 @@ impl DaemonApp {
                 .set_capture_enabled(self.config.user_config.history.operational.enabled);
         }
         self.config_projection.update(self.config.clone());
+        if path.starts_with("providers.") {
+            self.invalidate_provider_catalog_cache();
+        }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_room_defaults_announce_config_changes() {
+        let mut config = crate::config::DaemonConfig::for_tests();
+        let root = crate::test_temp_dir::TestTempDir::new("new-room-defaults");
+        config.user_config_path = root.join("config.toml");
+        let mut app = DaemonApp::bootstrap(config).unwrap();
+        for (path, value) in [
+            ("providers.default", "claude"),
+            ("providers.model", "claude-haiku-5-5"),
+            ("providers.effort", "low"),
+        ] {
+            let before = app.provider_catalog_projection.change_sequence();
+            app.set_user_config_value(path, value).unwrap();
+            assert!(
+                app.provider_catalog_projection.change_sequence() > before,
+                "{path} must reach every client's launch defaults"
+            );
+            let before = app.provider_catalog_projection.change_sequence();
+            app.unset_user_config_value(path).unwrap();
+            assert!(
+                app.provider_catalog_projection.change_sequence() > before,
+                "unsetting {path} must reach every client too"
+            );
+        }
     }
 }
