@@ -1055,6 +1055,7 @@ export function setWorkflowRunOutputSchemaRequest(
 }
 
 export * from "./ipc-workflow-notification-requests.js"
+export * from "./ipc-watcher-requests.js"
 
 export function workflowGateRequest(sessionId: string, workflowRef: string, action: import("./kernel-types-workflow.js").WorkflowGateAction) {
   return { WorkflowGate: { session_id: sessionId, workflow_ref: workflowRef, action } }

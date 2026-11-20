@@ -48,9 +48,9 @@ pub(super) fn append_in(
             EventRefs::default(),
             format!("{} finished", env.display_name),
         ),
-        NotificationSourceKind::WorkflowRun | NotificationSourceKind::AppEvent => {
-            (None, EventRefs::default(), env.display_name.clone())
-        }
+        NotificationSourceKind::WorkflowRun
+        | NotificationSourceKind::AppEvent
+        | NotificationSourceKind::Watcher => (None, EventRefs::default(), env.display_name.clone()),
         NotificationSourceKind::OwnerAction => {
             let (agent_id, refs) = owner_action_locator(&env.output);
             (agent_id, refs, env.display_name.clone())

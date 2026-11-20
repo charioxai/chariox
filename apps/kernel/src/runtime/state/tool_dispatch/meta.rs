@@ -148,7 +148,9 @@ impl KernelRuntimeState {
         }
         let tool_name = crate::transport::runtime_tools::canonical_meta_tool_name(tool_name)
             .unwrap_or(tool_name);
-        if tool_name.starts_with("chariox.notification_") {
+        if tool_name.starts_with("chariox.notification_")
+            || tool_name.starts_with("chariox.watcher.")
+        {
             return self
                 .dispatch_notification_tool(session, agent, tool_name, arguments)
                 .await;
