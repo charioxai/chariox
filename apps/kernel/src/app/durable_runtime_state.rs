@@ -337,6 +337,7 @@ impl DaemonApp {
             );
         }
         let reconciliation_started = Instant::now();
+        self.reconcile_restored_usage_limit_stops()?;
         self.recover_pending_slice_backup_restores()?;
         self.reconcile_slice_backup_restore_acknowledgements()?;
         self.restore_normalized_workflow_runtime_state()?;
@@ -380,6 +381,25 @@ impl DaemonApp {
                 "total_ms": restore_started.elapsed().as_millis(),
             }),
         );
+        Ok(())
+    }
+
+    fn reconcile_restored_usage_limit_stops(&mut self) -> Result<(), DaemonError> {
+        let mut updated_rooms = BTreeSet::new();
+        for agent in self.agents.list_agents() {
+            let Some(stop) = agent.usage_limit_stop() else {
+                continue;
+            };
+            if agent.matches_usage_limit_profile(&stop.provider, &stop.account_profile) {
+                continue;
+            }
+            self.agents
+                .change_usage_limit_stop_durably(&self.durable_state, agent.id(), |_| Some(None))?;
+            updated_rooms.insert(agent.session_id().to_string());
+        }
+        for room in updated_rooms {
+            self.refresh_restored_agent_session_projection(&room)?;
+        }
         Ok(())
     }
 

@@ -229,7 +229,7 @@ pub(crate) fn project_agent_tree(
                 && !matches!(state, AgentTreeState::Ended | AgentTreeState::Error),
             deadline_ms: deadline_ms(agent),
             created_at_ms: agent.created_at_ms(),
-            usage_limit_stop: agent.usage_limit_stop().cloned(),
+            usage_limit_stop: agent.usage_limit_wait().cloned(),
         });
     }
     let totals = totals_of(&nodes);

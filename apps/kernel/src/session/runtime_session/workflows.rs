@@ -742,8 +742,13 @@ impl RuntimeSession {
         // carried across a kernel restart. Kernel operation decisions retain
         // their existing owner-controlled supersession path.
         let interaction_count = self.active_interactions.len();
-        self.active_interactions
-            .retain(|interaction| interaction.agent_id().is_none());
+        self.active_interactions.retain(|interaction| {
+            // The scheduler recreates current limit decisions with a live responder.
+            interaction.agent_id().is_none()
+                && !interaction
+                    .id()
+                    .starts_with(crate::agent::UsageLimitStop::DECISION_PREFIX)
+        });
         reconciliation.cleared_agent_interaction_count =
             interaction_count - self.active_interactions.len();
         let terminal_workflow_run_ids = self

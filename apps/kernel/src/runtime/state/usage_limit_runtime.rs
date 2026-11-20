@@ -67,8 +67,10 @@ impl KernelRuntimeOwnedState {
         let changed = self.agent_store.change_usage_limit_stop_durably(
             &self.durable_state_store,
             agent_id,
-            |held| {
-                let held = held.filter(|held| *held == stop && held.prompt_id != prompt_id)?;
+            |current| {
+                let held = current
+                    .usage_limit_stop()
+                    .filter(|held| *held == stop && held.prompt_id != prompt_id)?;
                 transition(Some(held), &event)
             },
         )?;
@@ -208,7 +210,15 @@ impl KernelRuntimeState {
         let changed = self.owned.agent_store.change_usage_limit_stop_durably(
             &self.owned.durable_state_store,
             agent_id,
-            |held| {
+            |current| {
+                if let StopEvent::Hit { origin, .. } = event {
+                    if !current
+                        .matches_usage_limit_profile(&origin.provider, &origin.account_profile)
+                    {
+                        return None;
+                    }
+                }
+                let held = current.usage_limit_stop();
                 let next = transition(held, event);
                 if next.is_some() {
                     before = held.cloned();
@@ -677,14 +687,18 @@ impl KernelRuntimeState {
                 ) {
                     return Err(refused("this stop is already going on"));
                 }
-                self.update_agent_profile(
+                self.update_agent_profile_with_selections(
                     session_id,
                     agent_id,
                     caller_user_id,
-                    None,
-                    Some(account_profile),
-                    None,
-                    None,
+                    super::agent_profile_owned_state::AgentProfileSelections {
+                        provider: None,
+                        account_profile: Some(account_profile),
+                        model: None,
+                        effort: None,
+                        continue_limit: Some(stop),
+                    },
+                    super::SettingsContext::person(),
                 )
                 .await?;
                 let agent = owned.agent_store.get_agent(agent_id)?;

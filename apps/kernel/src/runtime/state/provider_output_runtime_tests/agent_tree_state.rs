@@ -479,12 +479,13 @@ async fn a_node_reports_the_settings_it_runs_with_and_a_change_moves_the_revisio
 async fn a_node_carries_the_usage_limit_stop_its_room_projection_does_not_list() {
     let team = team_with("tree-usage-limit", None, true).await;
     let before = read(&team);
-    assert!(before.nodes[0].usage_limit_stop.is_none());
+    let child = &before.nodes[0];
+    assert!(child.usage_limit_stop.is_none());
     let stop = crate::agent::UsageLimitStop {
         prompt_id: "p".into(),
-        provider: "codex".into(),
-        account_profile: "default".into(),
-        account_label: "codex-1".into(),
+        provider: child.provider.clone(),
+        account_profile: child.account_profile.as_deref().unwrap_or("default").into(),
+        account_label: "Fixture profile".into(),
         stopped_at_ms: 3,
         resumes_at_ms: Some(9),
         refused: 0,

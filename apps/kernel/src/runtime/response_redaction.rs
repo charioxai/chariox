@@ -232,7 +232,7 @@ pub(crate) fn redact_response_for_user(
             session,
             applies,
         } => LocalDaemonResponse::AgentConfigUpdated {
-            agent,
+            agent: agent.without_inactive_usage_limit_stop(),
             session: redact_session(session)?,
             applies,
         },
@@ -241,7 +241,7 @@ pub(crate) fn redact_response_for_user(
             session,
             applies,
         } => LocalDaemonResponse::AgentProfileUpdated {
-            agent,
+            agent: agent.without_inactive_usage_limit_stop(),
             session: redact_session(session)?,
             applies,
         },
@@ -270,6 +270,7 @@ pub(crate) fn redact_response_for_user(
                     agent.owner_user_id() == caller_user_id
                         || agent.owner_user_id() == authenticated_user_id
                 })
+                .map(crate::agent::AgentInstance::without_inactive_usage_limit_stop)
                 .collect(),
         },
         LocalDaemonResponse::ProviderRun { provider_run } => {
