@@ -247,7 +247,7 @@ mod tests {
             }
         }
 
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::test_support::TestTempDir::new("provider-cleanup-child-first");
         let child = crate::process_spawn::command("sh")
             .args([
                 "-c",
