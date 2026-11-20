@@ -218,19 +218,20 @@ impl WakeSink {
             ));
         }
         let wake = self.own_wake(&occurrence.wake_id)?;
-        let Outcome::Wakes(changed) =
-            self.state
-                .owned
-                .durable_state_store
-                .agent_lifecycle(Operation::WakeOccurred {
-                    id: wake.id.clone(),
-                    occurrence: occurrence.occurrence_id,
-                    kind: occurrence.kind,
-                    payload: occurrence.payload,
-                    summary: occurrence.summary,
-                    end: occurrence.end,
-                    now: crate::session::unix_epoch_ms(),
-                })?
+        let Outcome::Wakes(changed) = self
+            .state
+            .owned
+            .durable_state_store
+            .agent_lifecycle(Operation::WakeOccurred {
+                id: wake.id.clone(),
+                occurrence: occurrence.occurrence_id,
+                kind: occurrence.kind,
+                payload: occurrence.payload,
+                summary: occurrence.summary,
+                end: occurrence.end,
+                now: crate::session::unix_epoch_ms(),
+            })
+            .inspect_err(|_| self.state.deliver_committed_wake(&wake))?
         else {
             return Err(crate::durable_state::agent_lifecycle::error(
                 "wake occurrence outcome mismatch",

@@ -223,7 +223,14 @@ impl KernelRuntimeState {
         if due.is_empty() {
             return Ok(());
         }
-        let Outcome::Wakes(fired) = store.agent_lifecycle(Operation::FireWakes { now })? else {
+        let Outcome::Wakes(fired) = store
+            .agent_lifecycle(Operation::FireWakes { now })
+            .inspect_err(|_| {
+                for wake in &due {
+                    self.deliver_committed_wake(wake);
+                }
+            })?
+        else {
             return Err(crate::durable_state::agent_lifecycle::error(
                 "wake fire outcome mismatch",
             ));
@@ -494,6 +501,19 @@ impl KernelRuntimeState {
         );
         self.schedule_wake_delivery(wake);
         Ok(())
+    }
+
+    /// A failed writer reply can follow a successful commit. Only a new
+    /// durable occurrence warrants delivery when the writer returned an error.
+    pub(super) fn deliver_committed_wake(&self, before: &AgentWake) {
+        match self.owned.durable_state_store.agent_wake(&before.id) {
+            Ok(Some(wake)) if wake.last_sequence > before.last_sequence => {
+                self.schedule_wake_delivery(&wake);
+            }
+            Ok(_) => {}
+            Err(error) => tracing::warn!(%error, wake_id=%before.id,
+                "could not reconcile an unconfirmed wake commit; the sweep retains delivery"),
+        }
     }
 
     pub(super) fn schedule_wake_delivery(&self, wake: &AgentWake) {
