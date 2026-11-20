@@ -286,7 +286,7 @@ async fn metaagent_run_command_returns_structured_denials_for_forbidden_commands
             &meta_auth_token,
             crate::transport::runtime_tools::META_RUN_COMMAND_TOOL,
             serde_json::json!({
-                "command": "session new"
+                "command": "session attach other-room"
             }),
         )
         .await
@@ -298,7 +298,7 @@ async fn metaagent_run_command_returns_structured_denials_for_forbidden_commands
             .payload
             .get("error")
             .and_then(serde_json::Value::as_str)
-            .is_some_and(|message| message.contains("cannot create")),
+            .is_some_and(|message| message.contains("cannot attach")),
         "{:?}",
         denied.payload
     );
@@ -395,7 +395,7 @@ async fn metaagent_run_command_returns_structured_denials_for_forbidden_commands
         .find(|event| {
             event.kind == "metaagent.command.executed"
                 && event.payload["metaagent_id"] == metaagent.id()
-                && event.payload["command"] == "session new"
+                && event.payload["command"] == "session attach other-room"
                 && event.payload["status"] == "denied"
         })
         .expect("denied metaagent commands should be audited");

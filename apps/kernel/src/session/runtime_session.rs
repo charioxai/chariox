@@ -115,6 +115,9 @@ pub struct RuntimeSession {
     status: SessionStatus,
     #[serde(default, skip_serializing_if = "crate::session::is_false")]
     hidden: bool,
+    /// The agent that created this Room through its Room tools; only it, and the agents above it, may delete the Room.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    created_by_agent_id: Option<String>,
     #[serde(default)]
     agent_defaults: SessionAgentDefaults,
     active_provider_run_id: Option<String>,
@@ -320,6 +323,7 @@ impl RuntimeSession {
             execution_mode: SessionExecutionMode::SingleAgent,
             status: SessionStatus::Created,
             hidden: false,
+            created_by_agent_id: None,
             agent_defaults: SessionAgentDefaults::default(),
             active_provider_run_id: None,
             focused_agent_id: None,
@@ -675,6 +679,14 @@ impl RuntimeSession {
 
     pub fn set_hidden(&mut self, hidden: bool) {
         self.hidden = hidden;
+    }
+
+    pub fn created_by_agent_id(&self) -> Option<&str> {
+        self.created_by_agent_id.as_deref()
+    }
+
+    pub(crate) fn set_created_by_agent_id(&mut self, agent_id: Option<String>) {
+        self.created_by_agent_id = agent_id;
     }
 
     pub fn agent_defaults(&self) -> &SessionAgentDefaults {

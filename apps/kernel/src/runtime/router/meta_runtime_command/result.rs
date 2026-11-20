@@ -123,6 +123,14 @@ fn summarize_meta_command_response(
                 crate::local::SettingsApplies::AtTurnEnd => "applied when this turn ends",
             },
         }),
+        LocalDaemonResponse::SessionCreated { session, .. } => serde_json::json!({
+            "type": "RoomCreated",
+            "room": {"id": session.id(), "name": session.alias(), "project_id": session.project_id()},
+        }),
+        LocalDaemonResponse::SessionDeleted { session } => serde_json::json!({
+            "type": "RoomDeleted",
+            "room": {"id": session.id(), "name": session.alias()},
+        }),
         LocalDaemonResponse::AgentDestroyed { agent } => serde_json::json!({
             "type": "AgentDestroyed",
             "agent": summarize_meta_agent(agent),

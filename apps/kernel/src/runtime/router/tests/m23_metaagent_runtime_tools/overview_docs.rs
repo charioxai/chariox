@@ -254,7 +254,7 @@ async fn assert_metaagent_runtime_mcp_returns_session_overview_and_command_docs(
             &meta_auth_token,
             crate::transport::runtime_tools::META_COMMAND_DOCS_TOOL,
             serde_json::json!({
-                "command": "session create"
+                "command": "session attach"
             }),
         )
         .await

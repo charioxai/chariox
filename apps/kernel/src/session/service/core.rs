@@ -89,6 +89,7 @@ impl SessionService {
         session.set_max_agents(self.session_default_max_agents);
         session.set_owner_user_id(request.owner_user_id);
         session.set_hidden(request.hidden);
+        session.set_created_by_agent_id(request.created_by_agent_id);
         if let Some(agent_defaults) = request.agent_defaults {
             session.set_agent_defaults(agent_defaults);
         }
