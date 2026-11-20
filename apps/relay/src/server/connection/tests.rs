@@ -1857,3 +1857,43 @@ async fn delivering_to_a_backlogged_receiver_drops_counts_and_closes_it_once() {
     drop(rx);
     assert_eq!(deliver(&receiver, &envelope), Delivery::ReceiverGone);
 }
+
+#[test]
+fn a_full_bulk_queue_returns_a_retryable_peer_reply_without_disconnect() {
+    let (receiver, mut replies) = RelaySender::detached_channel(4);
+    let mut payload = encrypted_payload();
+    // The envelope of a 4 MiB file slice fills most of one relay bulk queue.
+    payload.ciphertext = "x".repeat(7_457_000);
+    let reply = |request_id: &str| RelayEnvelope::DaemonPeerResponse {
+        request_id: request_id.into(),
+        from_daemon_id: "source".into(),
+        encrypted_response: Some(payload.clone()),
+        error: None,
+    };
+    assert_eq!(deliver(&receiver, &reply("first")), Delivery::Sent);
+    assert_eq!(
+        deliver(&receiver, &reply("second")),
+        Delivery::ReceiverBacklogged
+    );
+    assert!(!receiver.queue().backlog_closed());
+
+    let mut next = || {
+        let Message::Text(text) = replies.try_recv().unwrap() else {
+            panic!("expected a relay response");
+        };
+        serde_json::from_str::<RelayEnvelope>(&text).unwrap()
+    };
+    assert!(matches!(
+        next(),
+        RelayEnvelope::DaemonPeerResponse { request_id, encrypted_response: Some(_), error: None, .. }
+            if request_id == "first"
+    ));
+    assert!(matches!(
+        next(),
+        RelayEnvelope::DaemonPeerResponse { request_id, from_daemon_id, encrypted_response: None, error: Some(error) }
+            if request_id == "second" && from_daemon_id == "source"
+                && error.code == "target_backpressure" && error.retryable
+    ));
+    assert_eq!(deliver(&receiver, &reply("retry")), Delivery::Sent);
+    assert_eq!(receiver.queue().stats().dropped_replies, 1);
+}
