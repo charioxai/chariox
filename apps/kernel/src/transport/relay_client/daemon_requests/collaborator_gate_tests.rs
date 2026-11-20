@@ -69,6 +69,7 @@ async fn a_room_collaborator_over_the_relay_cannot_use_kernel_global_requests() 
                 request.clone(),
                 Some(format!("{member}-{index}")),
                 &cache,
+                false,
             )
             .await;
             let refused = matches!(&outcome, RelayDispatchOutcome::RelayError(error)
@@ -104,6 +105,7 @@ async fn a_room_collaborator_over_the_relay_cannot_use_kernel_global_requests() 
             request.clone(),
             Some(format!("allowed-{user_id}-{}", request_kind_name(&request))),
             &cache,
+            false,
         )
         .await;
         assert!(
@@ -146,6 +148,7 @@ async fn a_room_collaborator_lists_only_its_own_rooms_in_the_older_sessions_page
         }),
         Some("older-sessions".into()),
         &CommandResultCache::default(),
+        false,
     )
     .await;
     let response: crate::local::LocalDaemonResponse = match outcome {
