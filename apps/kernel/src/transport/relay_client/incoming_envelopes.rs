@@ -238,6 +238,7 @@ pub(super) async fn handle_parsed_incoming_envelope(
                                 &command_result_cache,
                                 &display_subscriptions,
                                 Some(&local_browser),
+                                false,
                             )
                             .await
                         }

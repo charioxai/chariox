@@ -211,6 +211,46 @@ impl KernelRuntimeState {
         caller: &crate::runtime::command::KernelCommand,
         command: KernelBrowserCommand,
     ) -> Result<serde_json::Value, DaemonError> {
+        use KernelBrowserCommand as C;
+        let (command, download_room) = match command {
+            C::DownloadsWait {
+                session_id,
+                after,
+                wait_ms,
+            } => {
+                return self
+                    .room_downloads_wait(caller, &session_id, after, wait_ms)
+                    .await;
+            }
+            C::RevealDownload {
+                session_id,
+                download_id,
+            } => {
+                return self
+                    .room_download_reveal(caller, &session_id, &download_id)
+                    .await;
+            }
+            C::Room {
+                session_id,
+                command,
+            } => {
+                if !matches!(
+                    *command,
+                    C::Open { .. }
+                        | C::Navigate { .. }
+                        | C::Input { .. }
+                        | C::MirrorInput { .. }
+                        | C::DisplayInput { .. }
+                ) {
+                    return Err(host_error(
+                        "Room browser scope requires navigation or input".into(),
+                    ));
+                }
+                self.room_downloads_owner(caller, &session_id)?;
+                (*command, Some(session_id))
+            }
+            command => (command, None),
+        };
         if let KernelBrowserCommand::PasteSecret {
             credential_id,
             tab_id,
@@ -258,7 +298,9 @@ impl KernelRuntimeState {
                 | KernelBrowserCommand::MirrorClose { .. }
                 | KernelBrowserCommand::MirrorInput { .. }
         ) {
-            return self.kernel_browser_mirror_request(caller, command).await;
+            return self
+                .kernel_browser_mirror_request(caller, command, download_room.as_deref())
+                .await;
         }
         let request = match command {
             KernelBrowserCommand::DisplayCapture { tab_id, generation } => {
@@ -432,6 +474,9 @@ impl KernelRuntimeState {
                 let mut params = serde_json::to_value(command)
                     .map_err(|_| host_error("MD-2: invalid command".into()))?;
                 params["observed_by"] = serde_json::json!(actor);
+                if let Some(room) = &download_room {
+                    params["_download_session"] = serde_json::json!(room);
+                }
                 let admission = self
                     .owned
                     .kernel_browser_host
@@ -480,7 +525,12 @@ impl KernelRuntimeState {
         if !(room_control || features::display_enabled() || mirror_control) {
             return Err(host_error("MD-DISPLAY: display disabled".into()));
         }
-        Box::pin(self.kernel_browser_display_request(caller, request)).await
+        Box::pin(self.kernel_browser_display_request_in_room(
+            caller,
+            request,
+            download_room.as_deref(),
+        ))
+        .await
     }
     pub(crate) async fn kernel_browser_display_attach(
         &self,
@@ -594,6 +644,16 @@ impl KernelRuntimeState {
         &self,
         caller: &crate::runtime::command::KernelCommand,
         request: KernelBrowserDisplayRequest,
+    ) -> Result<serde_json::Value, DaemonError> {
+        self.kernel_browser_display_request_in_room(caller, request, None)
+            .await
+    }
+
+    async fn kernel_browser_display_request_in_room(
+        &self,
+        caller: &crate::runtime::command::KernelCommand,
+        request: KernelBrowserDisplayRequest,
+        download_room: Option<&str>,
     ) -> Result<serde_json::Value, DaemonError> {
         let room_control = request.room_control();
         if let Some((id, generation, command)) = room_control {
@@ -747,6 +807,9 @@ impl KernelRuntimeState {
             }
         };
         params["observed_by"] = serde_json::json!(actor);
+        if let Some(room) = download_room {
+            params["_download_session"] = serde_json::json!(room);
+        }
         if let Some(at) = input_at {
             crate::transport::kernel_browser_display::timing("input_admission", at);
         }

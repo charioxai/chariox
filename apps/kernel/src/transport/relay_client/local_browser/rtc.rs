@@ -479,6 +479,7 @@ struct Peer {
     direct: std::sync::Weak<LocalBrowserDirect>,
     created: Instant,
     channel: Option<OpenChannel>,
+    same_computer: Arc<std::sync::atomic::AtomicBool>,
 }
 
 struct OpenChannel {
@@ -625,6 +626,7 @@ async fn drive(
                     direct: peer.direct,
                     created: Instant::now(),
                     channel: None,
+                    same_computer: Arc::default(),
                 }),
                 Some(Command::Peer(mut peer)) => {
                     peer.rtc.disconnect();
@@ -644,6 +646,13 @@ async fn drive(
                 if let Some(peer) = peers.iter_mut().find(|peer| peer.rtc.accepts(&input)) {
                     if peer.rtc.handle_input(input).is_err() {
                         peer.rtc.disconnect();
+                    } else {
+                        // A direct carrier can also reach another machine. Require an
+                        // accepted datagram from an address bound on this machine.
+                        let same_computer = source.ip().is_loopback() || sockets.iter().any(|socket| {
+                            socket.local_addr().is_ok_and(|local| local.ip() == source.ip())
+                        });
+                        peer.same_computer.store(same_computer, std::sync::atomic::Ordering::Relaxed);
                     }
                 }
             }
@@ -746,11 +755,16 @@ fn open_channel(peer: &mut Peer, id: ChannelId, wake: &Arc<Notify>) {
         wake: Arc::clone(wake),
     };
     let grant = peer.grant.clone();
-    tokio::spawn(admit(direct, socket, grant));
+    tokio::spawn(admit(direct, socket, grant, peer.same_computer.clone()));
 }
 
 /// The loopback handshake over the channel, bound to the offer's own grant.
-async fn admit(direct: Arc<LocalBrowserDirect>, mut socket: ChannelSocket, grant: String) {
+async fn admit(
+    direct: Arc<LocalBrowserDirect>,
+    mut socket: ChannelSocket,
+    grant: String,
+    same_computer: Arc<std::sync::atomic::AtomicBool>,
+) {
     let Some(origin) = direct
         .authority
         .borrow()
@@ -776,7 +790,7 @@ async fn admit(direct: Arc<LocalBrowserDirect>, mut socket: ChannelSocket, grant
     .await
     .unwrap_or(Err("direct WebRTC handshake timed out"));
     match admitted {
-        Ok(grant) => super::session::run(direct, socket, grant).await,
+        Ok(grant) => super::session::run(direct, socket, grant, Some(same_computer)).await,
         Err(reason) => {
             direct.forget_grant(&grant);
             crate::logging::warn_with_fields(

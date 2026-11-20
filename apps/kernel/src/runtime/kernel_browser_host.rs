@@ -1174,6 +1174,30 @@ impl KernelBrowserHost {
         })?;
         Ok(reply["signal"].as_u64())
     }
+    pub(crate) fn downloads_wait(
+        &self,
+        user: &str,
+        params: &Value,
+    ) -> Result<Option<Value>, String> {
+        let browser = self.backend(user)?;
+        let signal = Arc::new(BrowserCancellation::default());
+        let method = "host.downloads.wait";
+        let pending = {
+            let mut backend = browser
+                .lock()
+                .map_err(|_| "browser operation lock poisoned")?;
+            if !backend.host_is_live()? {
+                return Ok(None);
+            }
+            backend.begin_cancellable_mutation(method, params, &signal)?
+        };
+        pending
+            .wait(&signal)?
+            .into_host_result(method)
+            .map(Some)
+            .map_err(|error| error.to_string())
+    }
+
     /// A person holding one Tab of `user`'s browser.
     #[cfg(test)]
     pub(crate) fn seed_person_takeover_for_test(&self, user: &str, actor: &str) {
