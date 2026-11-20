@@ -90,11 +90,13 @@ fn browser_mirror_protocol_443_shapes_and_hash() {
             node_id: "n1".into(),
             x: None,
             y: None,
+            button: None,
         }),
         binding(A::Click {
             node_id: "n1".into(),
             x: Some(4.5),
             y: Some(2.0),
+            button: None,
         }),
         binding(A::Focus {
             node_id: "n1".into(),
@@ -191,6 +193,35 @@ fn browser_mirror_protocol_443_shapes_and_hash() {
         !crate::runtime_transport::command_cache::request_is_cacheable(&next),
         "MP-11: no retained mirror DOM/media receipts"
     );
+}
+// B3/B4: a hover move and a right click are mirror actions of their own shape; a middle-button page click is not one.
+#[test]
+fn browser_mirror_move_and_right_click_shapes() {
+    for (value, ok) in [
+        (
+            serde_json::json!({"kind":"move","node_id":"n1","x":4.5,"y":2.0}),
+            true,
+        ),
+        (
+            serde_json::json!({"kind":"click","node_id":"n1","x":4.5,"y":2.0,"button":"right"}),
+            true,
+        ),
+        (serde_json::json!({"kind":"move","node_id":"n1"}), false),
+        (
+            serde_json::json!({"kind":"move","node_id":"n1","x":1.0,"y":1.0,"button":"right"}),
+            false,
+        ),
+        (
+            serde_json::json!({"kind":"click","node_id":"n1","button":"left"}),
+            false,
+        ),
+    ] {
+        let parsed = serde_json::from_value::<A>(value.clone());
+        assert_eq!(parsed.is_ok(), ok, "{value}");
+        if let Ok(action) = parsed {
+            assert_eq!(serde_json::to_value(action).unwrap(), value);
+        }
+    }
 }
 #[test]
 fn browser_mirror_refuses_authority_scripts_and_missing_document_shapes() {

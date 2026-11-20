@@ -440,6 +440,28 @@ for (const device_scale_factor of [1, 2]) test(`MP-10: the still of an opaque We
   assert.deepEqual([...stills.values()].map(centre).sort(), ["0,0,0", "26,128,204"]);
 }, {}, {}, { ...process.env, CHARIOX_KERNEL_BROWSER_HEADLESS: "1" }));
 
+// B3/B4 (browserfidelity r16): a viewer's hover move reaches the page (mouseover, :hover reveals a submenu whose item
+// then takes the click), and a right click reaches it as the right button (mousedown 2, contextmenu) with Chrome's own
+// menu cancelled after the page's listeners ran.
+const hover = '<style>body{margin:0}#m{width:200px;height:40px;background:#ccc}#sub{display:none;width:200px;height:40px;background:#9c9}#m:hover #sub{display:block}</style><div id="m">menu<div id="sub"><a id="item" href="#item">item</a></div></div><p id="r" style="margin-top:100px;width:200px;height:40px;background:#c99">right</p><script>window.ev=[];m.addEventListener("mouseover",()=>ev.push("over"));item.addEventListener("click",()=>ev.push("item"));r.addEventListener("mousedown",e=>ev.push("down"+e.button));r.addEventListener("contextmenu",e=>ev.push("ctx:"+e.defaultPrevented))</script>';
+test("B3/B4: a hover move opens a :hover submenu whose item takes the click; a right click is the page's", () => mirrored(hover, async ({ next, evaluate, input }) => {
+  const first = await next(), ids = Object.fromEntries(elements(first).filter(([, , attrs]) => attrs.id).map(([id, , attrs]) => [attrs.id, id]));
+  assert(ids.m && ids.r && ids.item, "menu, item and right-click target are in the snapshot");
+  await input(first.sequence, { kind: "move", node_id: ids.m, x: 20, y: 10 });
+  for (let i = 0; i < 40 && await evaluate("getComputedStyle(sub).display") !== "block"; i++) await settle(25);
+  assert.equal(await evaluate("getComputedStyle(sub).display"), "block", "the kernel page hovers the menu");
+  assert((await evaluate("ev")).includes("over"));
+  let packet = first; for (let i = 0; i < 4; i++) packet = await next(300);
+  await input(packet.sequence, { kind: "click", node_id: ids.item, x: 5, y: 5 });
+  for (let i = 0; i < 40 && !(await evaluate("ev.includes('item')")); i++) await settle(25);
+  assert((await evaluate("ev")).includes("item"), "the revealed item takes the click");
+  await input(packet.sequence, { kind: "click", node_id: ids.r, x: 10, y: 10, button: "right" });
+  for (let i = 0; i < 40 && !(await evaluate("ev.some(e=>e.startsWith('ctx'))")); i++) await settle(25);
+  const events = await evaluate("ev");
+  assert(events.includes("down2"), `right button down reaches the page (${events})`);
+  assert(events.includes("ctx:false"), `the page sees its contextmenu uncancelled (${events})`);
+}));
+
 // browserfidelity r4 (vimeo): a consent banner lives in a closed root whose host has no box of its own (0x0, the content is
 // position: fixed). The region's still covers what the closed content paints, placed relative to the host, and a click
 // on it reaches the content.
