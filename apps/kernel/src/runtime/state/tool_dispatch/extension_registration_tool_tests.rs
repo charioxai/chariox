@@ -78,7 +78,9 @@ async fn registration_by_a_child_under_a_lowered_parent_asks_the_person() {
 async fn the_room_agent_list_shows_a_child_at_its_parent_chain_limit() {
     let (runtime, session, child) = lowered_parent().await;
 
-    let listed = runtime.handle_list_session_agents_runtime_tool(&session, &child);
+    let listed = runtime
+        .handle_list_session_agents_runtime_tool(&session, &child, &serde_json::json!({}))
+        .unwrap();
 
     let entry = listed.payload["agents"]
         .as_array()

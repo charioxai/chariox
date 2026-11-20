@@ -48,6 +48,31 @@ impl DurableKernelStateStore {
         }))
     }
 
+    /// The diagnostic listing pages all retained receipts. The scheduler uses its own
+    /// smaller read below so a diagnostic history does not slow down delivery.
+    pub(crate) fn agent_wake_receipt_page(
+        &self,
+        room: &str,
+        agent: &str,
+        before: Option<i64>,
+        limit: u32,
+    ) -> Result<Vec<WakeFireReceipt>, DaemonError> {
+        let db = self.lock_connection("agent.lifecycle.wake_receipt_page")?;
+        let mut query = db
+            .prepare_cached(
+                "SELECT r.payload FROM agent_wakes w JOIN agent_wake_receipts r ON r.wake_id=w.id
+             WHERE w.room_id=?1 AND w.agent_id=?2 AND r.sequence < coalesce(?3, 9223372036854775807)
+             ORDER BY r.sequence DESC LIMIT ?4",
+            )
+            .map_err(sql)?;
+        let rows = query
+            .query_map(params![room, agent, before, limit], |row| {
+                row.get::<_, String>(0)
+            })
+            .map_err(sql)?;
+        rows.map(|row| decode(&row.map_err(sql)?)).collect()
+    }
+
     pub(crate) fn agent_wake_receipts(
         &self,
         room: Option<&str>,

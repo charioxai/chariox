@@ -189,13 +189,7 @@ impl KernelRuntimeState {
         let now = crate::session::unix_epoch_ms();
         let payload = match name {
             "chariox.events.inbox" => self.read_agent_inbox(room, actor, &args)?,
-            "chariox.events.subscriptions" => {
-                serde_json::json!({
-                    "task":task,
-                    "registrations":self.owned.durable_state_store.agent_registrations(task_id)?,
-                    "other_tasks":self.owned.durable_state_store.agent_registrations_of_other_tasks(room, actor, task_id)?,
-                })
-            }
+            "chariox.events.subscriptions" => self.agent_subscription_listing(task, &args)?,
             "chariox.events.unsubscribe" => {
                 let id = args["registration_id"]
                     .as_str()

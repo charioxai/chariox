@@ -2,40 +2,6 @@ use super::*;
 use sha2::{Digest, Sha256};
 
 impl KernelRuntimeState {
-    pub(super) fn handle_list_session_agents_runtime_tool(
-        &self,
-        session: &crate::session::RuntimeSession,
-        requester: &crate::agent::AgentInstance,
-    ) -> crate::transport::runtime_tools::RuntimeToolResult {
-        let mut agents = self.session_agents(session.id());
-        agents.sort_by(|left, right| {
-            left.created_at_ms()
-                .cmp(&right.created_at_ms())
-                .then_with(|| left.id().cmp(right.id()))
-        });
-        let activity = self.agent_activity_for_session(session);
-        crate::transport::runtime_tools::RuntimeToolResult {
-            ok: true,
-            payload: serde_json::json!({
-                "session_id": session.id(),
-                "focused_agent_id": session.focused_agent_id(),
-                "agent_tasks": self.owned.durable_state_store.agent_tasks(Some(session.id()),None).unwrap_or_default(),
-                "agents": agents
-                    .iter()
-                    .map(|agent| {
-                        session_agent_description(
-                            session,
-                            requester,
-                            agent,
-                            self.owned.agent_store.effective_execution_config(session, agent, &self.owned.session_store),
-                            &activity,
-                        )
-                    })
-                    .collect::<Vec<_>>(),
-            }),
-        }
-    }
-
     pub(super) fn handle_get_session_agent_runtime_tool(
         &self,
         session: &crate::session::RuntimeSession,
@@ -576,7 +542,7 @@ pub(in crate::runtime::state) fn resolve_session_agent<'a>(
     Ok(target)
 }
 
-fn session_agent_description(
+pub(super) fn session_agent_description(
     session: &crate::session::RuntimeSession,
     requester: &crate::agent::AgentInstance,
     agent: &crate::agent::AgentInstance,

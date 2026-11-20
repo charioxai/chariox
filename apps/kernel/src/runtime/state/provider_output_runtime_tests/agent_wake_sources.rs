@@ -14,6 +14,7 @@ use std::sync::Mutex as StdMutex;
 mod assessment_inbox;
 #[cfg(unix)]
 mod handed_over_run;
+mod mcp_paging;
 mod watch_open;
 
 const KIND: &str = "test-source";
@@ -86,9 +87,18 @@ struct Fixture {
 /// `running_prompt` leaves a real turn running for the agent, as a provider
 /// run has while it calls tools; without it the agent is idle.
 async fn fixture(name: &str, running_prompt: bool) -> Fixture {
+    fixture_with_agent_limit(name, running_prompt, None).await
+}
+
+async fn fixture_with_agent_limit(
+    name: &str,
+    running_prompt: bool,
+    max_agents: Option<u32>,
+) -> Fixture {
     let worktree = crate::test_support::TestWorktree::new(name);
     let mut config = crate::config::DaemonConfig::for_tests();
     config.room_agent_tools = true;
+    config.user_config.workflow.session_default_max_agents = max_agents;
     let mut app = DaemonApp::bootstrap(config).unwrap();
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(worktree.session_request())
