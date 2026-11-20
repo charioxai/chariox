@@ -238,6 +238,12 @@ pub(crate) async fn execute(
                 Err(error) => *access_reason = Some(error.code().to_string()),
             }
         }
+        // The service tracks compute lifecycle. A ready response also requires verified access
+        // to the kernel, which can disappear independently of the compute instance.
+        if machine_state == "ready" && access_state != "available" {
+            *machine_state = "reconnecting".into();
+            access_reason.get_or_insert_with(|| "kernel_target_unverified".into());
+        }
     }
     Ok(LocalDaemonResponse::ControlPlane { result })
 }
