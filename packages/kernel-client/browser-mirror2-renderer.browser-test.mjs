@@ -1635,3 +1635,38 @@ test('MP-08/MP-10/MP-11: a font the native machine lacks does not style the view
   } finally { await page.close(); }
 });
 
+
+// B3/B4: the viewer's pointer hovers the kernel's page (one move per position, the newest wins behind unanswered replies), a right
+// click reaches the page as a right click instead of opening the viewer browser's menu, and a viewer that is not interactive sends neither.
+test('B3/B4: a hover sends the newest move, a right click sends a right click (no viewer menu), and a non-interactive viewer sends neither', async () => {
+  const page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
+  try {
+    await page.goto(url);
+    await page.evaluate(async () => { window.sent = []; window.release = []; window.r = new Mirror2.BrowserMirror2Renderer(document.getElementById('c'), action => new Promise(resolve => { window.sent.push(action); window.release.push(resolve); })); await window.r.ready(); });
+    await apply(page, snapshot([{ id: 'n1', parent: null, kind: 'document' }, { id: 'n2', parent: 'n1', kind: 'element', tag: 'html' }, { id: 'n3', parent: 'n2', kind: 'element', tag: 'body', attrs: { style: 'margin:0' } },
+      { id: 'n4', parent: 'n3', kind: 'element', tag: 'div', attrs: { style: 'width:400px;height:40px' } }]));
+    await page.waitForFunction(() => window.r.acceptsInput, {}, { timeout: 3000 });
+    const box = await page.evaluate(() => { const r = window.r.frame.getBoundingClientRect(); return { x: r.x, y: r.y }; });
+    const sent = () => page.evaluate(() => window.sent.filter(a => a.kind !== 'scroll_to'));
+    const releaseAll = () => page.evaluate(() => { for (const resolve of window.release.splice(0)) resolve(); });
+    await page.mouse.move(box.x + 10, box.y + 20); await frames();
+    assert.deepEqual(await sent(), [{ kind: 'move', node_id: 'n4', x: 10, y: 20 }], 'B3: a hover sends a move at the pointer');
+    // Two replies may be outstanding; later positions wait and only the newest of them is sent.
+    for (let x = 20; x <= 200; x += 10) await page.mouse.move(box.x + x, box.y + 20);
+    await frames();
+    const held = (await sent()).length;
+    assert.ok(held <= 3, `B3: moves do not pile up behind unanswered replies (${held} sent)`);
+    await releaseAll(); await frames(); await releaseAll(); await frames();
+    const moves = (await sent()).filter(a => a.kind === 'move');
+    assert.deepEqual(moves.at(-1), { kind: 'move', node_id: 'n4', x: 200, y: 20 }, 'B3: the newest position is the last move sent');
+    assert.ok(moves.length <= 4, `B3: one move per position kept (${moves.length})`);
+    await page.evaluate(() => { window.sent = []; window.r.frame.contentWindow.addEventListener('contextmenu', e => { window.menuPrevented = e.defaultPrevented; }); });
+    await page.mouse.click(box.x + 30, box.y + 10, { button: 'right' }); await frames(); await releaseAll(); await frames();
+    const right = (await sent()).filter(a => a.kind === 'click');
+    assert.deepEqual(right, [{ kind: 'click', node_id: 'n4', x: 30, y: 10, button: 'right' }], 'B4: one right click, no left click');
+    assert.equal(await page.evaluate(() => window.menuPrevented), true, 'B4: the viewer browser\'s own menu does not open over the copy');
+    await page.evaluate(() => { window.sent = []; window.r.setInteractive(false); });
+    await page.mouse.move(box.x + 50, box.y + 20); await page.mouse.click(box.x + 60, box.y + 10, { button: 'right' }); await frames();
+    assert.deepEqual(await sent(), [], 'B3/B4: a hidden or handed-over viewer sends no move and no right click');
+  } finally { await page.close(); }
+});

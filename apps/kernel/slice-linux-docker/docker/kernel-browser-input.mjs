@@ -229,12 +229,19 @@ export async function inputHostTab(browser, tab, input, { viewport=canonicalView
         onDispatch?.()?.();
       } else {
         if (!Number.isInteger(input.x) || input.x < 0 || input.x >= viewport.css_width || !Number.isInteger(input.y) || input.y < 0 || input.y >= viewport.css_height) throw new PointerOutsideViewport();
-        // Protocol 530: middle/right buttons are the band's (Chrome's own UI), never a page click.
-        if (input.kind === "click" && input.button !== undefined) throw new Error("MD-2: unsupported input");
+        // Protocol 530: middle/right buttons are the band's (Chrome's own UI), never a page click; B4: a mirror's
+        // resolved right click is the page's.
+        if (input.kind === "click" && input.button !== undefined && !(resolved && input.button === "right")) throw new Error("MD-2: unsupported input");
+        if (input.kind === "move" && resolved) {
+          // B3: the page hovers where the viewer's pointer is (mouseenter/over/move, :hover); no button, no focus.
+          await mirrorGuard?.(); onDispatch?.();
+          await connection.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: input.x * viewScale, y: input.y * viewScale, button: "none", buttons: 0, ...stamp }, sessionId);
+          assertNotCancelled(signal); return;
+        }
         if (input.kind === "click") {
           // MP-08/MP-10: a viewer click on the owned display goes through
           // XTest after the same fences (no renderer acknowledgement wait).
-          if (nativeClick && !resolved) {
+          if (nativeClick && !resolved && input.button === undefined) {
             await check(); await mirrorGuard?.();
             if (await nativeOnce(() => nativeClick(input.x, input.y))) { onDispatch?.(); return; }
           }
@@ -248,8 +255,10 @@ export async function inputHostTab(browser, tab, input, { viewport=canonicalView
           // matching release before awaiting the frame-paced press reply. Once
           // admitted, navigation/cancellation must not strand a pressed button.
           onDispatch?.();
-          const press = connection.send("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", clickCount: 1, ...stamp }, sessionId);
-          const release = connection.send("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", clickCount: 1, ...stamp }, sessionId);
+          // B4: a mirror's right click presses the right button (Chrome fires mousedown 2, contextmenu, mouseup).
+          const button = input.button === "right" ? "right" : "left";
+          const press = connection.send("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button, clickCount: 1, ...(button === "right" ? { buttons: 2 } : {}), ...stamp }, sessionId);
+          const release = connection.send("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button, clickCount: 1, ...stamp }, sessionId);
           const replies = await Promise.allSettled([press, release]);
           const failed = replies.find(reply => reply.status === "rejected");
           if (failed) throw failed.reason;

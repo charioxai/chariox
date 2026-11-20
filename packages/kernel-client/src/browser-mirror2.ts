@@ -183,6 +183,8 @@ export class BrowserMirror2Renderer {
     const epoch = { sequence: this.sequence, document_id: this.documentId }
     // Ordered; a queued scroll position for the same scroller is replaced, not appended.
     const last = this.queue.at(-1)
+    // Only the newest pointer position matters: a queued move is replaced, so moves never pile up behind a slow reply.
+    if (action.kind === 'move' && last?.action.kind === 'move') { last.action = action; last.epoch = epoch; last.resetSerial = this.resetSerial; return }
     if (action.kind === 'scroll_to' && last?.action.kind === 'scroll_to' && last.action.node_id === action.node_id) { last.action = action; last.epoch = epoch; last.resetSerial = this.resetSerial; return }
     if (action.kind === 'selection' && this.records.get(action.anchor_id)?.kind === 'text') { this.selectionSent = JSON.stringify(action); this.selectionHold = { key: this.selectionSent, until: Infinity, epoch: epoch.sequence }; this.selectionFailure = false }
     this.queue.push({ action, epoch, resetSerial: this.resetSerial }); this.pendingInputs++
@@ -325,7 +327,15 @@ export class BrowserMirror2Renderer {
     // A press whose gesture forwards no click (a drag, a select or picker, a release elsewhere) sends its focus now.
     on('pointerup', () => { this.syncSelection(doc); this.releasePointer(); origin = null; setTimeout(() => { const id = this.pointerFocus; this.pointerFocus = null; if (id && !this.disposed) { this.focusSent = id; this.enqueue({ kind: 'focus', node_id: id }) } }, 0) })
     on('pointercancel', () => { this.releasePointer(); origin = null; this.pointerFocus = null; pressed = null; dragged = false })
-    on('pointermove', event => { const e = event as PointerEvent; if (origin && (e.buttons & 1) && Math.hypot(e.clientX - origin.x, e.clientY - origin.y) > 4) dragged = true })
+    on('pointermove', event => {
+      const e = event as PointerEvent
+      if (origin && (e.buttons & 1) && Math.hypot(e.clientX - origin.x, e.clientY - origin.y) > 4) dragged = true
+      // B3: a pointer with no button held hovers the kernel's page where the viewer's pointer is (Chromium already coalesces
+      // pointermove to one per frame).
+      const hit = e.buttons ? null : element(event); if (hit) this.enqueue({ kind: 'move', node_id: hit.id, ...offset(hit.el, e) })
+    })
+    // B4: the page's own context menu, not the viewer's browser menu over the copy.
+    on('contextmenu', event => { event.preventDefault(); const hit = element(event); if (hit) this.enqueue({ kind: 'click', node_id: hit.id, ...offset(hit.el, event as MouseEvent), button: 'right' }) })
     const selecting = (el: Element): boolean => { if (el.closest('input,textarea,button,select,[contenteditable]')) return false; const s = doc.getSelection(); return Boolean(s && !s.isCollapsed && (el.contains(s.anchorNode) || el.contains(s.focusNode))) }
     // A drag inside a text control focused it here only: its range goes now (the kernel focuses the control with it).
     // A select or picker opens the viewer's own UI; its committed state goes as `set` (the kernel's popup never opens).
