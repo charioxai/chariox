@@ -916,7 +916,7 @@ mod tests {
         let request = crate::provider::LaunchProviderRequest::new(
             session.id(),
             "claude",
-            "claude-code",
+            "claude",
             "default",
             "sonnet",
         )
