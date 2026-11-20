@@ -58,13 +58,16 @@ fn retired_cloud_controls_are_not_on_the_wire() {
 }
 
 #[test]
-fn provider_account_portability_preflight_protocol_478_is_acknowledgement_only() {
+fn provider_account_portability_preflight_protocol_1066_is_acknowledgement_only() {
     assert_eq!(
         LOCAL_DAEMON_PROTOCOL_VERSION,
         crate::test_support::expected_local_protocol_version()
     );
+    // 1066: the launch's kernel-context choice travels with the check, so a copy of this kernel
+    // holds the Vault unlock for its export.
     let request_json = serde_json::json!({"PreflightProviderAccountPortability": {
-        "providerAccounts": {"kind": "selected", "accounts": [{"provider": "codex", "accountProfile": "synthetic-profile"}]}
+        "providerAccounts": {"kind": "selected", "accounts": [{"provider": "codex", "accountProfile": "synthetic-profile"}]},
+        "kernelContext": "source_kernel"
     }});
     let request: LocalDaemonRequest =
         serde_json::from_value(request_json.clone()).expect("selection-only kernel preflight");
@@ -77,11 +80,11 @@ fn provider_account_portability_preflight_protocol_478_is_acknowledgement_only()
     let serialized = serde_json::to_string(&snapshot).unwrap();
     assert_eq!(
         format!("{:x}", Sha256::digest(serialized.as_bytes())),
-        "0fdaa3cbf78bfba9b1e58d2164fdcf5471ff8e989d064e2614be8e8fbcd27115"
+        "ab8cd5874d29a3d197af91a8aa8443422ea093d4cf2d997dab5f9c4a77a14a7e"
     );
     assert!(serde_json::from_value::<LocalDaemonRequest>(
         serde_json::json!({"PreflightProviderAccountPortability": {
-            "providerAccounts": {"kind": "none"}, "credential": "forbidden"
+            "providerAccounts": {"kind": "none"}, "kernelContext": "empty", "credential": "forbidden"
         }})
     )
     .is_err());
@@ -92,7 +95,7 @@ fn provider_account_portability_preflight_protocol_478_is_acknowledgement_only()
 #[test]
 fn preflight_and_transfer_start_carry_an_optional_launch_key() {
     let preflight = serde_json::json!({"PreflightProviderAccountPortability": {
-        "providerAccounts": {"kind": "none"}, "launchId": "launch-1"
+        "providerAccounts": {"kind": "none"}, "kernelContext": "empty", "launchId": "launch-1"
     }});
     let parsed: LocalDaemonRequest = serde_json::from_value(preflight.clone()).unwrap();
     let LocalDaemonRequest::PreflightProviderAccountPortability(request) = &parsed else {

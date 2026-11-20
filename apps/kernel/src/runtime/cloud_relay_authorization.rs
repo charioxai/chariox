@@ -261,6 +261,8 @@ mod tests {
         let request = LocalDaemonRequest::PreflightProviderAccountPortability(
             crate::local::PreflightProviderAccountPortabilityRequest {
                 provider_accounts: crate::local::ProviderAccountTransferSelection::None,
+                kernel_context:
+                    crate::managed_context::package::ManagedContextKernelSelection::Empty,
                 launch_id: None,
             },
         );

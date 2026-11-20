@@ -618,4 +618,6 @@ pub use workspace::*;
 /// The machine list separates live/reconnecting machines (presence) from offline_machines.
 /// Machine inventories identify the Cloud directory, and a stale reply can mark an active renewal.
 /// Relay registrations and machine records include each kernel's registered local protocol.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1012;
+/// `PreflightProviderAccountPortability` carries the launch's `kernelContext`, so a copy of this
+/// kernel holds its Vault unlock for the export that follows.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1066;

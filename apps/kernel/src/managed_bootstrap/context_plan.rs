@@ -560,6 +560,25 @@ impl ManagedKernelContextPlan {
         plan
     }
 
+    /// A copy of the source kernel itself, selecting no login.
+    #[cfg(test)]
+    pub(crate) fn source_kernel_for_tests(
+        context_id: &str,
+        source_kernel_id: &str,
+        source_key_thumbprint: &str,
+    ) -> Self {
+        let mut plan = Self::provider_accounts_for_tests(
+            context_id,
+            source_kernel_id,
+            source_key_thumbprint,
+            &[],
+        );
+        plan.provider_accounts = ManagedKernelProviderAccounts::None;
+        plan.kernel_context = ManagedKernelContextSelection::SourceKernel;
+        plan.plan_digest = plan.compute_digest().expect("test plan digest");
+        plan
+    }
+
     #[cfg(test)]
     pub(crate) fn empty_for_tests(context_id: &str) -> Self {
         let mut plan = Self {

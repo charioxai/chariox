@@ -2035,6 +2035,7 @@ mod tests {
                     account_profile: profile.profile_id.clone(),
                 }],
             },
+            kernel_context: crate::managed_context::package::ManagedContextKernelSelection::Empty,
             launch_id: None,
         };
         let command_in = |session: Option<&str>| {

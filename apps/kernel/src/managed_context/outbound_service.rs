@@ -556,9 +556,10 @@ pub(crate) fn start_managed_context_outbound_operation(
                 return;
             }
         }
-        // The Vault login is read from the Vault, which preflight's unlock may no longer cover.
+        // A Vault login or this kernel's own Vault is read from the Vault, which preflight's unlock
+        // may no longer cover.
         let vault_open = match caller.as_ref() {
-            Some(caller) => match package_export_reads_vault_login(
+            Some(caller) => match package_export_reads_vault(
                 &config,
                 &store,
                 &provider_account_profiles,
@@ -572,7 +573,7 @@ pub(crate) fn start_managed_context_outbound_operation(
                     )
                     .await
                     .map(Some)
-                    .map_err(|_| vault_login_locked_error()),
+                    .map_err(|_| vault_locked_error()),
                 Ok(false) => Ok(None),
                 Err(error) => Err(error),
             },
@@ -1872,11 +1873,8 @@ fn source_account_owner(config: &DaemonConfig) -> Result<String, DaemonError> {
     Ok(crate::account_profile::provider_account_authority_owner_user_id(config, cloud_user_id))
 }
 
-fn vault_login_locked_error() -> DaemonError {
-    outbound_service_error(
-        "the Vault holding the selected provider login is locked",
-        true,
-    )
+fn vault_locked_error() -> DaemonError {
+    outbound_service_error("the Vault this copy reads is locked", true)
 }
 
 fn vault_login_export_error(error: DaemonError) -> DaemonError {
@@ -1885,7 +1883,7 @@ fn vault_login_export_error(error: DaemonError) -> DaemonError {
         DaemonError::LocalTransport { message, .. } if message.contains("vault is locked")
     );
     if locked {
-        vault_login_locked_error()
+        vault_locked_error()
     } else {
         outbound_service_error(
             "a selected provider login could not be read from the Vault",
@@ -1894,25 +1892,28 @@ fn vault_login_export_error(error: DaemonError) -> DaemonError {
     }
 }
 
-/// Whether preparing this package reads a Vault login, so the Vault must be open for it. A
-/// retry that finds its package already prepared reads nothing.
-fn package_export_reads_vault_login(
+/// Whether preparing this package reads the Vault (a selected Vault login, or this kernel's own
+/// Vault for a copy of it), so the Vault must be open for it. A retry that finds its package
+/// already prepared reads nothing.
+fn package_export_reads_vault(
     config: &DaemonConfig,
     store: &ManagedContextOutboundOperationStore,
     provider_account_profiles: &crate::account_profile::ProviderAccountProfileRegistry,
     ticket: &ManagedContextTransferTicket,
 ) -> Result<bool, DaemonError> {
     let plan = ticket.context_plan.package_binding();
-    let ManagedContextProviderAccountSelection::Selected { accounts } = &plan.provider_accounts
-    else {
-        return Ok(false);
-    };
-    let owner_user_id = source_account_owner(config)?;
-    let mut uses_vault = false;
-    for account in accounts {
-        uses_vault |= provider_account_profiles
-            .login_is_vault_credential(&owner_user_id, &account.provider, &account.account_profile)
-            .unwrap_or(false);
+    let mut uses_vault = plan.kernel_context == ManagedContextKernelSelection::SourceKernel;
+    if let ManagedContextProviderAccountSelection::Selected { accounts } = &plan.provider_accounts {
+        let owner_user_id = source_account_owner(config)?;
+        for account in accounts {
+            uses_vault |= provider_account_profiles
+                .login_is_vault_credential(
+                    &owner_user_id,
+                    &account.provider,
+                    &account.account_profile,
+                )
+                .unwrap_or(false);
+        }
     }
     let prepared = store
         .artifact_parent(config)?
@@ -2164,7 +2165,7 @@ mod tests {
     }
 
     #[test]
-    fn the_export_opens_the_vault_only_for_a_vault_login_it_has_not_prepared_yet() {
+    fn the_export_opens_the_vault_for_a_vault_login_or_a_copy_of_this_kernel_until_prepared() {
         crate::test_support::isolated_env_test!();
         let _lock = crate::env_lock::lock();
         const OWNER: &str = crate::session::DEFAULT_LOCAL_USER_ID;
@@ -2232,12 +2233,24 @@ mod tests {
         let store = ManagedContextOutboundOperationStore::open(root.join("outbound")).unwrap();
         let selected = ticket(&[("claude", &profile.profile_id)]);
         assert!(
-            package_export_reads_vault_login(&config, &store, &profiles, &selected).unwrap(),
+            package_export_reads_vault(&config, &store, &profiles, &selected).unwrap(),
             "a selected Vault login is read from the Vault"
         );
         assert!(
-            !package_export_reads_vault_login(&config, &store, &profiles, &ticket(&[])).unwrap(),
+            !package_export_reads_vault(&config, &store, &profiles, &ticket(&[])).unwrap(),
             "no selected login reads nothing"
+        );
+        let copy = ManagedContextTransferTicket {
+            context_plan: ManagedKernelContextPlan::source_kernel_for_tests(
+                "context-needed",
+                "kernel-a",
+                &public_key_thumbprint(&config.relay_public_key),
+            ),
+            ..ticket(&[])
+        };
+        assert!(
+            package_export_reads_vault(&config, &store, &profiles, &copy).unwrap(),
+            "a copy of this kernel exports its Vault"
         );
         let prepared = store
             .artifact_parent(&config)
@@ -2246,7 +2259,7 @@ mod tests {
         std::fs::create_dir_all(&prepared).unwrap();
         std::fs::write(prepared.join("state.json"), b"{}").unwrap();
         assert!(
-            !package_export_reads_vault_login(&config, &store, &profiles, &selected).unwrap(),
+            !package_export_reads_vault(&config, &store, &profiles, &selected).unwrap(),
             "a retry that finds its package prepared reads nothing"
         );
         crate::secret::lock_chariox_encrypted_vault(&config.user_config.credential_vault.path)
