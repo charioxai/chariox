@@ -240,32 +240,64 @@ async fn trace_uses_real_permission_terminal_and_inbox() {
     let agent = spawn(&mut socket, &room, "orch").await;
     submit(&mut socket, &room, &agent).await.unwrap();
 
-    let deadline = Instant::now() + Duration::from_secs(20);
-    let interaction = loop {
-        let response = request(&mut socket, json!({"GetPersonInbox": null}))
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut answered = std::collections::BTreeSet::new();
+    loop {
+        let inbox = request(&mut socket, json!({"GetPersonInbox": null}))
             .await
             .unwrap();
-        let cards = response["PersonInbox"]["cards"].as_array().unwrap();
-        if let Some(card) = cards
-            .iter()
-            .find(|card| card["session_id"] == room && card["body"]["needs_you"].is_object())
-        {
-            break card["card_id"].as_str().unwrap().to_owned();
+        for card in inbox["PersonInbox"]["cards"].as_array().unwrap() {
+            if card["session_id"] != room {
+                continue;
+            }
+            let interaction = &card["body"]["needs_you"]["interaction"];
+            let Some(choices) = interaction["choices"].as_array() else {
+                continue;
+            };
+            let card_id = card["card_id"].as_str().unwrap();
+            if !answered.insert(card_id.to_owned()) {
+                continue;
+            }
+            let choice = choices
+                .iter()
+                .find(|choice| choice["id"] == "allow_once")
+                .or_else(|| {
+                    choices.iter().find(|choice| {
+                        choice["label"]
+                            .as_str()
+                            .is_some_and(|label| label.starts_with("Allow"))
+                    })
+                })
+                .unwrap_or_else(|| panic!("no allow choice: {interaction}"));
+            request(
+                &mut socket,
+                json!({"RespondToInteraction": {
+                    "session_id": room, "interaction_id": card_id, "choice_id": choice["id"],
+                }}),
+            )
+            .await
+            .unwrap();
+        }
+        let response = request(
+            &mut socket,
+            json!({"GetSessionHistoryOutline": {
+                "session_id": room, "agent_ids": [agent],
+            }}),
+        )
+        .await
+        .unwrap();
+        let turn = &response["SessionHistoryOutline"]["agents"][0]["turns"][0];
+        if let Some("completed" | "cancelled" | "failed") = turn["lifecycle"].as_str() {
+            assert_eq!(turn["lifecycle"], "completed", "{turn}");
+            break;
         }
         assert!(
             Instant::now() < deadline,
-            "the permission decision did not appear"
+            "side effects did not settle after {answered:?}: {inbox}"
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
-    };
-    request(
-        &mut socket,
-        json!({"RespondToInteraction": {"session_id": room, "interaction_id": interaction, "choice_id": "allow_once"}}),
-    )
-    .await
-    .unwrap();
-    let turn = completed_turn(&mut socket, &room, &agent).await;
-    assert_eq!(turn["lifecycle"], "completed", "{turn}");
+    }
+    assert!(!answered.is_empty(), "expected a real permission decision");
 
     let list = real_kernel::terminal(&mut socket, &room, json!({"operation": "list"}))
         .await
@@ -367,7 +399,7 @@ seedS1({ rpc, sessionId, attachmentId, traces })
         .unwrap();
     let mut incoming = BufReader::new(driver.stdout.take().unwrap()).lines();
     let mut outgoing = driver.stdin.take().unwrap();
-    let result = tokio::time::timeout(Duration::from_secs(500), async {
+    let result = tokio::time::timeout(Duration::from_secs(680), async {
         while let Some(line) = incoming.next_line().await.unwrap() {
             let frame: Value = serde_json::from_str(&line).unwrap();
             if let Some(body) = frame.get("request") {

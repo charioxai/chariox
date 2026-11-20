@@ -21,7 +21,7 @@ function randomFor(seed) {
 function history(random, turns) {
   return Array.from({ length: turns }, (_, index) => [
     prompt,
-    ...Array.from({ length: 12 }, () => [
+    ...Array.from({ length: 16 }, () => [
       { t: 0, kind: 'reasoning', chars: 100 + random(700), stream_ms: 0 },
       text(200 + random(1200), 0, ['plain', 'list', 'table', 'code'][random(4)]),
     ]).flat(),
@@ -54,9 +54,9 @@ function s1(random, add) {
     } else if (i < 18) {
       add(name, 'waiting', [prompt, { t: 0, kind: 'permission', tool: 'Bash' }, end])
     } else {
-      // Twelve text and reasoning pairs per turn keep the seed fast while
+      // Sixteen text and reasoning pairs per turn keep the seed fast while
       // exercising histories with many turns and up to 2,000 entries.
-      add(name, 'done', history(random, 18 + random(55)))
+      add(name, 'done', history(random, 12 + random(43)))
     }
   }
 }

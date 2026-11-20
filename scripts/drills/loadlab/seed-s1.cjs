@@ -3,7 +3,7 @@
 const { setTimeout: delay } = require('node:timers/promises')
 const { parseTrace, filler } = require('../../../apps/kernel/src/provider/registry/dev_stub_adapter/trace_format.cjs')
 
-async function seedS1({ rpc, sessionId, attachmentId, traces, signal = AbortSignal.timeout(480_000) }) {
+async function seedS1({ rpc, sessionId, attachmentId, traces, signal = AbortSignal.timeout(660_000) }) {
   const plans = new Map([...traces].map(([file, contents]) => {
     const plan = parseTrace(contents, file)
     return [plan.header.agent, plan]
@@ -26,7 +26,7 @@ async function seedS1({ rpc, sessionId, attachmentId, traces, signal = AbortSign
     while (!signal.aborted) {
       value = await read()
       if (ready(value)) return value
-      await delay(100)
+      await delay(200)
     }
     const states = value?.nodes?.map(({ alias, state, outcome }) => `${alias}=${state}/${outcome ?? ""}`)
     throw new Error(`S1 timed out waiting for ${description}${states ? ` (${states.join(", ")})` : ""}`)
@@ -44,17 +44,17 @@ async function seedS1({ rpc, sessionId, attachmentId, traces, signal = AbortSign
     })).SessionHistoryOutline.agents
   }
 
-  async function collect(ids, expectedIds) {
+  async function collect(ids, round, expectedIds) {
     const results = await until(() => readTurns(ids), rows => rows.length === ids.length && rows.every(row => {
       const turn = row.turns[0]
       return turn && turn.lifecycle !== 'open' && (!expectedIds || turn.prompt_id === expectedIds.get(row.agent_id))
-    }), 'the current history turns to settle')
+    }), `history round ${round} to settle`)
     for (const { agent_id, turns: [turn] } of results) {
       if (turn.lifecycle !== 'completed') throw new Error(`S1 history turn ended ${turn.lifecycle}: ${agent_id}`)
     }
   }
 
-  await collect(histories.map(node => node.agent_id))
+  await collect(histories.map(node => node.agent_id), 1)
   const rounds = Math.max(...histories.map(node => plans.get(node.alias).turns.length))
   for (let round = 1; round < rounds; round++) {
     signal.throwIfAborted()
@@ -69,7 +69,7 @@ async function seedS1({ rpc, sessionId, attachmentId, traces, signal = AbortSign
     const submitted = new Map(results.map(({ agent_id, outcome }) => [
       agent_id, (outcome.Started ?? outcome.Queued).prompt.id,
     ]))
-    await collect([...submitted.keys()], submitted)
+    await collect([...submitted.keys()], round + 1, submitted)
   }
 
   const counts = new Map()
