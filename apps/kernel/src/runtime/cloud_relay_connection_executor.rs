@@ -5,6 +5,7 @@ use std::time::Duration;
 use tokio::sync::RwLock;
 use tokio::time::timeout;
 
+use crate::config::CloudKernelRemoval;
 use crate::error::DaemonError;
 use crate::local::{
     CloudRelayProfile, CloudRelayRuntimeToken, ConnectCloudRelayRequest,
@@ -17,13 +18,13 @@ use crate::runtime::cloud_api_client::{
 };
 use crate::runtime::cloud_machine_rebind::rebind_machine_if_moved;
 use crate::runtime::cloud_relay_control::{
-    cloud_kernel_unlinked_error, cloud_relay_profile_has_runtime_credentials,
+    cloud_kernel_removal_error, cloud_relay_profile_has_runtime_credentials,
     cloud_relay_runtime_token_is_fresh, cloud_runtime_token_subject, relay_token_expiry_ms,
     relay_token_payload, CLOUD_RELAY_CLIENT_TOKEN_TTL_MS,
 };
 use crate::runtime::cloud_relay_profile_store::{
     clear_cloud_profile_if_stale, migrate_legacy_kernel_profile, persist_cloud_profile,
-    record_cloud_kernel_unlink, required_cloud_relay_profile,
+    record_cloud_kernel_removal, required_cloud_relay_profile,
 };
 use crate::runtime::projection::{
     DaemonConfigProjectionStore, ProviderCatalogProjectionStore,
@@ -81,7 +82,10 @@ pub(crate) async fn ensure_cloud_relay_connection_replacing(
         return Ok(());
     };
     if profile.kernel_unlinked {
-        return Err(cloud_kernel_unlinked_error("renew Cloud relay connection"));
+        return Err(cloud_kernel_removal_error(
+            "renew Cloud relay connection",
+            CloudKernelRemoval::Permanent,
+        ));
     }
     if !cloud_relay_profile_has_runtime_credentials(&profile) {
         return Ok(());
@@ -110,14 +114,20 @@ pub(crate) async fn ensure_cloud_relay_connection_replacing(
     {
         Ok(issued) => issued,
         Err(error) => {
-            if record_cloud_kernel_unlink(runtime_state, &profile, &error).await? {
-                return Err(cloud_kernel_unlinked_error("renew Cloud relay connection"));
+            if let Some(removal) =
+                record_cloud_kernel_removal(runtime_state, &profile, &error).await?
+            {
+                return Err(cloud_kernel_removal_error(
+                    "renew Cloud relay connection",
+                    removal,
+                ));
             }
             clear_cloud_profile_if_stale(runtime_state, profile, &error).await?;
             return Err(error);
         }
     };
     let mut updated_profile = profile.clone();
+    updated_profile.kernel_removal_pending = false;
     // MP-08 / MP-09 / MP-10 / MP-11: the issuer may shorten the requested TTL.
     updated_profile.token_expires_at_ms = Some(issued_token_expiry_ms(&issued.token)?);
     runtime_state
@@ -137,7 +147,10 @@ pub(crate) async fn execute_connect_cloud_relay_request(
     rebind_machine_if_moved(runtime_state, config_projection).await?;
     let mut profile = required_cloud_relay_profile(config_projection)?;
     if profile.kernel_unlinked {
-        return Err(cloud_kernel_unlinked_error("connect Cloud relay"));
+        return Err(cloud_kernel_removal_error(
+            "connect Cloud relay",
+            CloudKernelRemoval::Permanent,
+        ));
     }
     let config = config_projection.snapshot();
     let token_subject = cloud_runtime_token_subject(&config, &profile);
@@ -157,13 +170,16 @@ pub(crate) async fn execute_connect_cloud_relay_request(
     let issued = match issued {
         Ok(issued) => issued,
         Err(error) => {
-            if record_cloud_kernel_unlink(runtime_state, &profile, &error).await? {
-                return Err(cloud_kernel_unlinked_error("connect Cloud relay"));
+            if let Some(removal) =
+                record_cloud_kernel_removal(runtime_state, &profile, &error).await?
+            {
+                return Err(cloud_kernel_removal_error("connect Cloud relay", removal));
             }
             return Err(error);
         }
     };
     let expected = profile.clone();
+    profile.kernel_removal_pending = false;
     profile.token_expires_at_ms = Some(issued_token_expiry_ms(&issued.token)?);
     runtime_state
         .connect_cloud_relay(expected, profile.clone(), issued.token)

@@ -1,4 +1,4 @@
-use crate::config::{DaemonConfig, PersistedCloudRelayProfile};
+use crate::config::{CloudKernelRemoval, DaemonConfig, PersistedCloudRelayProfile};
 use base64::Engine;
 use chariox_relay::protocol::DaemonRegistration;
 
@@ -8,10 +8,22 @@ pub(crate) const CLOUD_RELAY_TOKEN_REFRESH_WINDOW_MS: u64 = 60_000;
 pub(crate) const CLOUD_KERNEL_UNLINKED_MESSAGE: &str =
     "This kernel was removed from the account. Run /cloud link on that machine to reconnect.";
 
-pub(crate) fn cloud_kernel_unlinked_error(operation: &'static str) -> crate::error::DaemonError {
+pub(crate) fn cloud_kernel_removal_message(removal: CloudKernelRemoval) -> &'static str {
+    match removal {
+        CloudKernelRemoval::Pending => {
+            "This kernel was removed from the account. Use Undo Remove in Settings to reconnect."
+        }
+        CloudKernelRemoval::Permanent => CLOUD_KERNEL_UNLINKED_MESSAGE,
+    }
+}
+
+pub(crate) fn cloud_kernel_removal_error(
+    operation: &'static str,
+    removal: CloudKernelRemoval,
+) -> crate::error::DaemonError {
     crate::error::DaemonError::LocalTransport {
         operation,
-        message: CLOUD_KERNEL_UNLINKED_MESSAGE.into(),
+        message: cloud_kernel_removal_message(removal).into(),
     }
 }
 
@@ -76,6 +88,9 @@ pub(crate) fn cloud_relay_token_unusable(
     {
         return None;
     }
+    if profile.kernel_removal_pending {
+        return Some(CloudRelayTokenProblem::OwnerRemovalPending);
+    }
     if profile
         .token_expires_at_ms
         .is_some_and(|expires_at| expires_at <= now_ms)
@@ -89,6 +104,7 @@ pub(crate) fn cloud_relay_token_unusable(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CloudRelayTokenProblem {
     Expired,
+    OwnerRemovalPending,
     /// Issued for another key or machine than this kernel registers with.
     ForAnotherIdentity,
 }
@@ -97,6 +113,7 @@ impl CloudRelayTokenProblem {
     pub(crate) fn reason(self) -> &'static str {
         match self {
             Self::Expired => "cloud relay token expired",
+            Self::OwnerRemovalPending => cloud_kernel_removal_message(CloudKernelRemoval::Pending),
             Self::ForAnotherIdentity => "cloud relay token is for another machine or key",
         }
     }
@@ -273,6 +290,7 @@ mod tests {
             cloud_session_token: None,
             cloud_session_expires_at_ms: None,
             kernel_unlinked: false,
+            kernel_removal_pending: false,
             token_expires_at_ms: Some(200_000),
         }
     }

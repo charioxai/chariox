@@ -582,7 +582,10 @@ impl KernelRuntimeOwnedState {
         let collection = self.session_store.write().collect_due_workflow_watchdogs(
             now_ms,
             config.publication_control_state_root.is_some(),
-            config.cloud_relay.as_ref().filter(|profile| profile.kernel_unlinked)
+            config
+                .cloud_relay
+                .as_ref()
+                .filter(|profile| profile.kernel_removal().is_some())
                 .map(|profile| profile.user_id.as_str()),
         );
         let collection = match collection {

@@ -1697,6 +1697,7 @@ mod tests {
             cloud_session_token: None,
             cloud_session_expires_at_ms: None,
             kernel_unlinked: false,
+            kernel_removal_pending: false,
             token_expires_at_ms: Some(200_000),
         }
     }

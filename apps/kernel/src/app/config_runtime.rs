@@ -13,11 +13,15 @@ impl DaemonApp {
         Ok(())
     }
 
-    pub(crate) fn mark_cloud_kernel_unlinked(
+    pub(crate) fn mark_cloud_kernel_removal(
         &mut self,
         expected: &crate::config::PersistedCloudRelayProfile,
+        removal: crate::config::CloudKernelRemoval,
     ) -> Result<(), DaemonError> {
-        if self.config.persist_unlinked_cloud_kernel(expected)? {
+        if self
+            .config
+            .persist_cloud_kernel_removal(expected, removal)?
+        {
             self.config_projection.update(self.config.clone());
             let sessions = self.sessions.read().list_all_sessions();
             for session in sessions {
@@ -28,7 +32,7 @@ impl DaemonApp {
                         session.id(),
                         None,
                         self.attachments.list_session_attachment_ids(session.id()),
-                        crate::runtime::cloud_relay_control::CLOUD_KERNEL_UNLINKED_MESSAGE,
+                        crate::runtime::cloud_relay_control::cloud_kernel_removal_message(removal),
                     );
                 }
             }
