@@ -89,6 +89,7 @@ export class BrowserMirror2Renderer {
   private slices = new Map<string, Mirror2Resource>() // resources still arriving in slices
   private styled = new Map<string, Styled>()
   private tileUrls = new Map<string, string>()
+  private placeholderTiles = new WeakSet<Element>() // tiles showing the black placeholder (neither still nor poster)
   private tileBoxes = new Map<string, Pick<Mirror2Tile, "x" | "y" | "width" | "height">>()
   private selects: Array<[Element, Mirror2Form]> = []
   private states: Element[] = [] // UA state to apply once this packet's DOM is attached
@@ -537,7 +538,9 @@ export class BrowserMirror2Renderer {
       const [width, height] = record.size ?? [0, 0]
       style.setProperty('box-sizing', 'border-box', 'important'); style.setProperty('width', `${width}px`, 'important'); style.setProperty('height', `${height}px`, 'important')
       style.setProperty('overflow', 'hidden', 'important'); style.setProperty('color', 'transparent', 'important')
-      if (record.kind === 'mask' || !this.tileUrls.has(record.id)) style.setProperty('background-color', 'black', 'important')
+      // The black placeholder stands only while a tile has neither its still nor a poster to show.
+      if (record.kind === 'mask' || !this.tileUrls.has(record.id) && !this.posterUrl(record)) { style.setProperty('background-color', 'black', 'important'); this.placeholderTiles.add(element) }
+      else this.placeholderTiles.delete(element)
       // A mask keeps the protected box: inline/contents boxes become inline blocks of the source size.
       if (record.kind === 'mask') { style.setProperty('display', record.display === 'none' ? 'none' : !record.display || ['inline', 'contents'].includes(record.display) ? 'inline-block' : record.display, 'important'); style.setProperty('background-image', 'none', 'important'); element.setAttribute('aria-label', 'Protected content') }
       if (record.kind === 'tile') { if (element.localName === 'iframe') element.setAttribute('sandbox', ''); else if (element.localName === 'video') this.tilePoster(record, element as HTMLElement); this.paintTile(record.id, element as HTMLElement) }
@@ -601,11 +604,23 @@ export class BrowserMirror2Renderer {
     if (record?.kind === 'tile' && element.localName === 'video') this.tilePoster(record, element as HTMLElement)
   }
   // A video tile without a still (a transformed or cross-origin video) shows its poster, what Chrome draws before playback,
-  // over the page behind it; with a still the still alone shows (a playing video never shows a frozen poster).
+  // over the page's own background for it; with a still the still alone shows (a playing video never shows a frozen poster).
+  private posterUrl(record: Mirror2Record): string | null {
+    return record.kind === 'tile' && record.tag === 'video' && !this.tileUrls.has(record.id) && record.res ? this.resources.get(record.res) ?? null : null
+  }
   private tilePoster(record: Mirror2Record, element: HTMLElement): void {
-    const still = this.tileUrls.has(record.id), url = !still && record.res ? this.resources.get(record.res) ?? null : null
+    const url = this.posterUrl(record)
     if (url) element.setAttribute('poster', url); else element.removeAttribute('poster')
-    if (!still) element.style.setProperty('background-color', url ? 'transparent' : 'black', 'important')
+    // A poster that comes after the placeholder replaces it with the page's own background; one that goes brings the placeholder back.
+    if (url && this.placeholderTiles.has(element)) this.restoreAuthored(record, element)
+    else if (!url && !this.tileUrls.has(record.id) && !this.placeholderTiles.has(element)) this.opaqueLayout(record, element)
+  }
+  // The author's inline style again (shorthand and variable backgrounds included), then the tile's layout and paint over it.
+  private restoreAuthored(record: Mirror2Record, element: HTMLElement): void {
+    const authored = this.styled.get(`${record.id}#style`)
+    if (authored?.kind === 'attr') element.setAttribute('style', this.substitute(authored.raw))
+    else element.removeAttribute('style')
+    this.opaqueLayout(record, element)
   }
   private form(element: Element, form: Mirror2Form): void {
     // An option of a multiple select carries its own selectedness (`checked`).
@@ -1000,11 +1015,8 @@ export class BrowserMirror2Renderer {
     this.tileBoxes.set(tile.node_id, { x: tile.x, y: tile.y, width: tile.width, height: tile.height })
     const record = this.records.get(tile.node_id)
     if (!old && record?.kind === 'tile') {
-      // Remove the placeholder by restoring author CSS, including shorthand/variable backgrounds.
-      const authored = this.styled.get(`${tile.node_id}#style`)
-      if (authored?.kind === 'attr') element.setAttribute('style', this.substitute(authored.raw))
-      else element.removeAttribute('style')
-      this.opaqueLayout(record, element)
+      // Remove the placeholder (or a poster's) by restoring author CSS.
+      this.restoreAuthored(record, element)
     } else this.paintTile(tile.node_id, element)
   }
   private paintTile(id: string, element: HTMLElement): void {
