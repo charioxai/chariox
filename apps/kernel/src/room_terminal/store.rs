@@ -2,8 +2,9 @@
 mod writer;
 pub(crate) use writer::PendingWrite;
 
+use std::ffi::OsStr;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -99,35 +100,92 @@ impl TerminalStore {
             Err(error) => return Err(store_error(&self.root, error)),
         };
         let mut records = Vec::new();
-        for entry in entries.flatten() {
+        for entry in entries {
+            let entry = entry.map_err(|error| store_error(&self.root, error))?;
             let path = entry.path();
-            if path
-                .extension()
-                .is_some_and(|extension| extension != "json")
+            if path.extension() != Some(OsStr::new("json"))
+                || !entry
+                    .file_type()
+                    .map_err(|error| store_error(&path, error))?
+                    .is_file()
             {
-                let _ = fs::remove_file(&path);
                 continue;
             }
-            let record = fs::read(&path)
-                .ok()
-                .and_then(|body| serde_json::from_slice::<TerminalRecord>(&body).ok());
-            let Some(mut record) = record else {
-                crate::logging::error_with_fields(
-                    "room_terminal.recover",
-                    "unreadable terminal record removed",
-                    serde_json::json!({ "file": entry.file_name().to_string_lossy() }),
-                );
-                let _ = fs::remove_file(&path);
-                continue;
+            let (mut record, migrated) = match read_for_recovery(&path) {
+                Ok(record) => record,
+                Err(reason) => {
+                    self.quarantine(&path, &reason)?;
+                    continue;
+                }
             };
-            if record.ended.is_none() && !handed_over.contains(&record.terminal_id) {
+            let ended_by_restart =
+                record.ended.is_none() && !handed_over.contains(&record.terminal_id);
+            if ended_by_restart {
                 record.ended = Some(RoomTerminalOutcome::KernelRestarted);
+            }
+            if migrated || ended_by_restart {
                 self.save(&record)?;
             }
             records.push(record);
         }
         Ok(records)
     }
+
+    fn quarantine(&self, path: &Path, reason: &str) -> Result<(), DaemonError> {
+        let directory = self.root.join("unreadable");
+        fs::create_dir_all(&directory).map_err(|error| store_error(&directory, error))?;
+        let name = path.file_name().expect("path came from a directory entry");
+        let mut destination = directory.join(name);
+        if destination.symlink_metadata().is_ok() {
+            destination = directory.join(format!(
+                "{:032x}-{}",
+                rand::random::<u128>(),
+                name.to_string_lossy()
+            ));
+        }
+        fs::rename(path, &destination).map_err(|error| store_error(path, error))?;
+        crate::logging::error_with_fields(
+            "room_terminal.recover",
+            "unreadable terminal record moved aside",
+            serde_json::json!({
+                "file": path.display().to_string(),
+                "destination": destination.display().to_string(),
+                "reason": reason,
+            }),
+        );
+        Ok(())
+    }
+}
+
+fn read_for_recovery(path: &Path) -> Result<(TerminalRecord, bool), String> {
+    let bytes = fs::read(path).map_err(|error| error.to_string())?;
+    let mut value: serde_json::Value = serde_json::from_slice(&bytes).map_err(|error| {
+        format!(
+            "invalid JSON at line {}, column {}",
+            error.line(),
+            error.column()
+        )
+    })?;
+    // Write the scope through the normal atomic writer during startup so
+    // subsequent reads use the same record type as newly created terminals.
+    let migrated = value.as_object_mut().is_some_and(|fields| {
+        if fields.contains_key("scope")
+            || !fields
+                .get("session_id")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|id| !id.is_empty())
+        {
+            return false;
+        }
+        fields.insert("scope".into(), "room".into());
+        true
+    });
+    let record: TerminalRecord =
+        serde_json::from_value(value).map_err(|_| "invalid terminal record fields".to_string())?;
+    if path.file_stem().and_then(OsStr::to_str) != Some(record.terminal_id.as_str()) {
+        return Err("terminal ID does not match its filename".into());
+    }
+    Ok((record, migrated))
 }
 
 fn open_private(path: &std::path::Path) -> std::io::Result<fs::File> {
@@ -151,5 +209,80 @@ fn store_error(root: &std::path::Path, error: std::io::Error) -> DaemonError {
     DaemonError::LocalTransport {
         operation: "room terminal store",
         message: format!("{}: {error}", root.display()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cutover_recovers_and_rewrites_pre_l12_room_terminal() {
+        let root = crate::test_support::TestWorktree::new("pre-l12-room-terminal");
+        let path = root.path().join("term-old.json");
+        let legacy = serde_json::json!({
+            "terminal_id": "term-old",
+            "session_id": "room-old",
+            "title": "fixture terminal",
+            "program": "sh",
+            "working_directory": "/fixture",
+            "cols": 80,
+            "rows": 24,
+            "opened_by": { "kind": "user" },
+            "command": null,
+            "user_interacted": true,
+            "created_at_ms": 42,
+            "ended": null,
+            "scrollback_text": "fixture scrollback",
+            "screen_text": "fixture screen"
+        });
+        fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+        let store = TerminalStore::new(root.path().to_path_buf()).unwrap();
+
+        let records = store.recover(&Default::default()).unwrap();
+        let [record] = records.as_slice() else {
+            panic!("the pre-L12 terminal was not recovered");
+        };
+        assert_eq!(record.scope, TerminalScope::Room("room-old".into()));
+        assert_eq!(record.ended, Some(RoomTerminalOutcome::KernelRestarted));
+        assert_eq!(record.scrollback_text, "fixture scrollback");
+        assert_eq!(record.screen_text, "fixture screen");
+
+        let stored: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(stored["scope"], "room");
+        assert_eq!(stored["session_id"], "room-old");
+        assert_eq!(stored["ended"]["reason"], "kernel_restarted");
+        assert_eq!(store.recover(&Default::default()).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn cutover_quarantines_unreadable_terminal_without_removing_its_bytes() {
+        let root = crate::test_support::TestWorktree::new("unreadable-room-terminal");
+        let path = root.path().join("term-bad.json");
+        let body = b"{\"terminal_id\": \"term-bad\", broken";
+        fs::write(&path, body).unwrap();
+
+        let store = TerminalStore::new(root.path().to_path_buf()).unwrap();
+        assert!(store.recover(&Default::default()).unwrap().is_empty());
+        assert!(!path.exists());
+        let quarantine = root.path().join("unreadable");
+        let first = quarantine.join("term-bad.json");
+        assert_eq!(fs::read(&first).unwrap(), body);
+
+        let another_body = b"another unreadable record with the same name";
+        fs::write(&path, another_body).unwrap();
+        assert!(store.recover(&Default::default()).unwrap().is_empty());
+        assert!(!path.exists());
+        assert_eq!(fs::read(&first).unwrap(), body);
+        let mut other_entries = fs::read_dir(quarantine)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|entry| entry != &first);
+        assert_eq!(
+            fs::read(other_entries.next().unwrap()).unwrap(),
+            another_body
+        );
+        assert!(other_entries.next().is_none());
+        assert!(store.recover(&Default::default()).unwrap().is_empty());
     }
 }

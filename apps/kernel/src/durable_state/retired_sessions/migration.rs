@@ -180,3 +180,54 @@ pub(in crate::durable_state) fn commit_backfill(
         params![owner,RECEIPT,sequence.to_string(),crate::session::unix_epoch_ms() as i64])?;
     Ok(records.len() as u64)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cutover_backfill_reads_room_with_inherited_queued_message_projection() {
+        let root = crate::test_support::TestWorktree::new("pre-l12-room-checkpoint");
+        let path = root.path().join("state.sqlite");
+        let room = RuntimeSession::new(
+            "room",
+            crate::session::ProjectId::test(),
+            None,
+            "workspace",
+            "tree",
+            "machine",
+            "home",
+        );
+        let mut stored = serde_json::to_value(&room).unwrap();
+        stored["status"] = serde_json::to_value(SessionStatus::Ended).unwrap();
+        stored["queued_agent_messages"] = serde_json::json!([{
+            "id": "agent-message-1", "agent_id": "agent", "sender": "peer",
+            "prompt": "fixture message",
+        }]);
+        {
+            let store = DurableKernelStateStore::open(path.clone()).unwrap();
+            store
+                .save_entity_checkpoint(
+                    "home",
+                    1,
+                    vec![crate::durable_state::DurableCheckpointEntity {
+                        kind: "sessions".into(),
+                        id: "room".into(),
+                        payload_json: stored.to_string(),
+                    }],
+                )
+                .unwrap();
+        }
+
+        let store = DurableKernelStateStore::open_owned(path).unwrap();
+        let snapshot = store.latest_snapshot_for_owner("home").unwrap().unwrap();
+        store
+            .backfill_retired_sessions("home", Some(&snapshot))
+            .unwrap();
+        let stored_room = &snapshot.payload["sessions"][0];
+        assert_eq!(stored_room["id"], "room");
+        assert!(stored_room.get("queued_agent_messages").is_none());
+        let retired = store.retired_session("home", "room").unwrap().unwrap();
+        assert_eq!(retired.status(), SessionStatus::Ended);
+    }
+}
