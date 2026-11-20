@@ -63,3 +63,65 @@ async fn copied_provider_logout_does_not_revoke_source_login() {
         crate::account_profile::ProviderAccountAuthState::NotConfigured
     );
 }
+
+#[tokio::test]
+async fn copied_provider_logout_removes_the_transferred_vault_login() {
+    crate::test_support::isolated_env_test!();
+    let root = crate::test_support::TestWorktree::new("provider-copy-vault-logout");
+    std::env::set_var("HOME", root.path().join("home"));
+    std::env::set_var("CHARIOX_HOME", root.path().join("state"));
+    std::env::set_var("CHARIOX_LOG_DIR", root.path().join("logs"));
+    std::env::set_var("CHARIOX_ALLOW_VOLATILE_PROCESS_MEMORY_VAULT", "1");
+    let mut config =
+        DaemonConfig::for_tests().with_session_history_root(root.path().join("history"));
+    config.user_config.credential_vault.backend =
+        crate::config::CredentialVaultBackend::ProcessMemory;
+    let app = DaemonApp::bootstrap(config.clone()).unwrap();
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1);
+    let registry = &router.provider_account_profiles;
+    let profile = registry.create_managed("local", "claude", "Copy").unwrap();
+    registry
+        .record_transfer_origin(
+            "local",
+            &crate::account_profile::ManagedContextProviderAccountReceipt {
+                context_id: "fixture".into(),
+                package_sha256: "fixture".into(),
+                materialization_sha256: "fixture".into(),
+                provider: "claude".into(),
+                profile_id: profile.profile_id.clone(),
+            },
+            "fixture-source",
+            "fixture-profile",
+        )
+        .unwrap();
+    crate::provider::store_provider_account_credential(
+        &config,
+        "local",
+        "claude",
+        &profile.profile_id,
+        &format!("sk-ant-oat01-{}", "A".repeat(96)),
+        false,
+    )
+    .unwrap();
+
+    let request = LocalDaemonRequest::LogoutProvider(crate::local::LogoutProviderRequest {
+        provider: "claude".into(),
+        account_profile: profile.profile_id.clone(),
+    });
+    let command = KernelCommand::from_local_request("logout", None, None, &request);
+    let response = router.dispatch(command, request).await.unwrap();
+
+    assert!(matches!(
+        response,
+        crate::local::LocalDaemonResponse::ProviderLoggedOut { .. }
+    ));
+    assert!(
+        !crate::provider::provider_account_credential_registered(
+            "local",
+            "claude",
+            &profile.profile_id,
+        )
+        .unwrap(),
+        "a copied Vault login must no longer be available on this machine"
+    );
+}

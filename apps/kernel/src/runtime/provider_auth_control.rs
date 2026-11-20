@@ -1091,6 +1091,7 @@ pub(crate) async fn execute_logout_provider_request(
             "Finish or cancel the running sign-in before signing out.",
         ));
     }
+    let config = runtime_state.config_snapshot().await;
     let response = tokio::task::spawn_blocking(move || {
         let response = if registry.discard_copied_login(
             &owner_user_id,
@@ -1102,6 +1103,20 @@ pub(crate) async fn execute_logout_provider_request(
                     &owner_user_id,
                     &profile.profile_id,
                 );
+            }
+            if profile.provider == "claude"
+                && crate::provider::provider_account_credential_uses_vault(
+                    &owner_user_id,
+                    &profile.provider,
+                    &profile.profile_id,
+                )?
+            {
+                crate::provider::remove_provider_account_credential(
+                    &config,
+                    &owner_user_id,
+                    &profile.provider,
+                    &profile.profile_id,
+                )?;
             }
             LocalDaemonResponse::ProviderLoggedOut {
                 provider: profile.provider.clone(),
