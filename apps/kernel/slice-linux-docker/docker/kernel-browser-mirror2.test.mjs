@@ -1284,6 +1284,21 @@ for (const display of [undefined, {}]) test(`MP-08/MP-10: an over-budget canvas 
   assert.equal(tiles.length,display?0:1);
 });
 
+// YM-C1 (riften.ai): a transformed, faded or stacked canvas the page never drew showed the viewer's black placeholder: its
+// own pixels read clear, and a distorted region gets no screenshot still (a headless kernel has no video lease either).
+for (const own of [{clear:true}, null]) test(`YM-C1: a distorted canvas whose pixels read ${own ? 'clear gets a transparent still' : 'unreadable keeps none'} (no screenshot)`, async () => {
+  const size={width:1192,height:666}, boxes=[{id:'n3',box:[48,99,98,98],distorted:'transform'}];
+  const {decodePng}=await import('./kernel-browser-pixels.mjs');
+  const shots=[], host={pageSize:()=>size,scales:new Map(),async screenshot(tab,clip){shots.push(clip);throw new Error('no screenshot expected');}};
+  const mirror=new Mirror2({host}); mirror.opaqueBoxes=async()=>boxes; mirror.evaluate=async()=>own;
+  const tiles=await mirror.tiles({ref:'world'}, {tab_id:'tab'}, {frames:new Map()},true,true);
+  assert.deepEqual(shots,[]);
+  if (!own) { assert.equal(tiles.length,0); return; }
+  assert.equal(tiles.length,1);
+  assert.deepEqual([tiles[0].x,tiles[0].y,tiles[0].width,tiles[0].height],[0,0,98,98]);
+  const png=decodePng(tiles[0].data_base64,1); assert.ok(png.pixels.length>0 && png.pixels.every((v,i)=>i%4!==3||v===0),'every pixel is transparent');
+});
+
 for (const kind of ['click', 'scroll']) test(`MP-08/MP-10 resized iframe region ${kind} uses the real mirror input resolver`, async () => {
   const policy = {}, tab = {tab_id:'t',target_id:'target',document_id:'doc'};
   let viewport = {width:1610,height:900};
