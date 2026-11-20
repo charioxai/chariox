@@ -447,3 +447,66 @@ async fn an_old_registration_that_is_not_the_kernel_itself_is_not_listed() {
     assert_eq!(listed_machines(&relay).await, Vec::new());
     relay.stop().await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn malformed_registration_gets_a_close_reason() {
+    let relay = Relay::start().await;
+    let (mut kernel, _) = relay.connect().await;
+    kernel
+        .send(Message::Text(
+            serde_json::json!({"kind":"daemon_register", "registration":{}})
+                .to_string()
+                .into(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        close_reason(&mut kernel).await,
+        "invalid relay registration: missing registration proof"
+    );
+    assert!(relay.live_peer().await.is_none());
+    relay.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn signed_registration_is_acknowledged() {
+    let relay = Relay::start().await;
+    let (mut kernel, handshake) = relay.connect().await;
+    let mut registration = victim_registration();
+    registration.local_protocol = Some(1014);
+    send(
+        &mut kernel,
+        &signed_register(&relay.url, &handshake, registration),
+    )
+    .await;
+    let frame = timeout(Duration::from_secs(2), kernel.next())
+        .await
+        .expect("relay acknowledges an accepted registration")
+        .expect("relay remains connected")
+        .expect("ack frame decodes");
+    assert!(
+        matches!(frame, Message::Text(text) if text.as_str() == r#"{"kind":"daemon_registered"}"#)
+    );
+    relay.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn protocol_1013_registers_without_receiving_the_new_envelope() {
+    let relay = Relay::start().await;
+    let (mut kernel, handshake) = relay.connect().await;
+    let mut registration = victim_registration();
+    registration.local_protocol = Some(1013);
+    send(
+        &mut kernel,
+        &signed_register(&relay.url, &handshake, registration),
+    )
+    .await;
+    assert!(
+        timeout(Duration::from_millis(100), kernel.next())
+            .await
+            .is_err(),
+        "a kernel that predates the acknowledgment must not receive it"
+    );
+    assert!(relay.live_peer().await.is_some());
+    relay.stop().await;
+}

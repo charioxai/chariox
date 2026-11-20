@@ -124,6 +124,35 @@ where
     .await
 }
 
+/// A stand-in relay accepts the test kernel only after reading its registration.
+#[cfg(test)]
+pub(crate) async fn acknowledge_test_registration<S>(
+    socket: &mut tokio_tungstenite::WebSocketStream<S>,
+) where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message;
+
+    let message = tokio::time::timeout(std::time::Duration::from_secs(5), socket.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert!(matches!(message, Message::Text(text) if matches!(
+        serde_json::from_str(&text),
+        Ok(RelayEnvelope::DaemonRegister { .. })
+    )));
+    socket
+        .send(Message::Text(
+            serde_json::to_string(&RelayEnvelope::DaemonRegistered)
+                .unwrap()
+                .into(),
+        ))
+        .await
+        .unwrap();
+}
+
 /// A registration for a test that stands in for a kernel on a real relay: `registration` is the
 /// wire JSON without a public key, which a fresh identity key fills in and signs.
 #[cfg(test)]

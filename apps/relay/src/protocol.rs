@@ -2,6 +2,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::auth::{RelaySubjectKind, VerifiedRelayIdentity};
 
+/// First kernel protocol that reads the registration acknowledgment.
+pub const DAEMON_REGISTERED_PROTOCOL: u32 = 1014;
+
 const TEMPORARY_PEER_DAEMON_MARKER: &str = ":peer-tmp:daemon-peer-tmp-";
 
 /// Returns the stable kernel daemon id for either a kernel registration or a
@@ -280,6 +283,7 @@ pub enum RelayEnvelope {
         /// (`registration_proof`).
         proof: String,
     },
+    DaemonRegistered,
     DaemonHeartbeat {
         daemon_id: String,
         #[serde(default)]
@@ -520,6 +524,16 @@ mod tests {
         assert!(json.contains("\"proof\":\"proof\""));
         assert!(json.contains("\"daemon_id\":\"daemon-1\""));
         assert!(json.contains("\"public_key\":\"public-key\""));
+    }
+
+    #[test]
+    fn daemon_registered_wire_shape_is_stable() {
+        let wire = serde_json::to_string(&RelayEnvelope::DaemonRegistered).unwrap();
+        assert_eq!(wire, r#"{"kind":"daemon_registered"}"#);
+        assert_eq!(
+            serde_json::from_str::<RelayEnvelope>(&wire).unwrap(),
+            RelayEnvelope::DaemonRegistered
+        );
     }
 
     #[test]

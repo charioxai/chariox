@@ -12,7 +12,9 @@ use tokio_tungstenite::{accept_hdr_async, tungstenite::Message};
 
 use crate::auth::{RelayAction, RelayAuthVerifier, VerifiedRelayIdentity};
 use crate::meter::{ConnectionMeter, Direction, UsageMeter, CONTROL_SCOPE, DISPLAY_TUNNEL_SCOPE};
-use crate::protocol::{RelayConnectionRole, RelayEnvelope, RelayError, RelayMetadataQuery};
+use crate::protocol::{
+    RelayConnectionRole, RelayEnvelope, RelayError, RelayMetadataQuery, DAEMON_REGISTERED_PROTOCOL,
+};
 use crate::registry::{
     ActiveEventRoute, ActiveSubscription, DaemonKey, DisplayStreamEvent, PeerHandle,
     PendingRequestKind, RelayRegistry, RelaySender,
@@ -105,6 +107,24 @@ async fn close_display_stream_from_daemon(
     // frames drain, so the viewer still observes termination without blocking
     // the daemon read lane.
     let _ = sender.try_send(DisplayStreamEvent::Close { error });
+}
+
+fn malformed_envelope_reason(text: &str) -> &'static str {
+    // Serde errors may include client-supplied field names and values. Never
+    // relay them to the owner or put them in logs.
+    match serde_json::from_str::<serde_json::Value>(text)
+        .ok()
+        .as_ref()
+    {
+        Some(frame) if frame["kind"] == "daemon_register" => {
+            if frame.get("proof").is_none() {
+                "invalid relay registration: missing registration proof"
+            } else {
+                "invalid relay registration"
+            }
+        }
+        _ => "invalid relay message",
+    }
 }
 
 fn is_transport_ack(text: &str) -> bool {
@@ -474,7 +494,7 @@ pub(crate) async fn handle_connection(
                     first_message_received = true;
                     let envelope: RelayEnvelope = match serde_json::from_str(&text) {
                         Ok(envelope) => envelope,
-                        Err(error) => {
+                        Err(_) => {
                             if registered_daemon_key.is_none() {
                                 if let Some(reason) = update_needed::refuse_old_registration(
                                     &text,
@@ -489,10 +509,9 @@ pub(crate) async fn handle_connection(
                                     break;
                                 }
                             }
-                            return Err(std::io::Error::new(
-                                std::io::ErrorKind::InvalidData,
-                                error.to_string(),
-                            ));
+                            send_close(&outgoing_tx, malformed_envelope_reason(&text).into());
+                            end_reason = "malformed_envelope";
+                            break;
                         }
                     };
                     let scope = match &envelope {
@@ -566,10 +585,15 @@ pub(crate) async fn handle_connection(
                             );
                             let allowed_actions = identity.allowed_actions.clone();
                             let allowed_targets = identity.allowed_targets.clone();
-                            verified_identity = Some(identity.clone());
-                            registered_daemon_key = Some(daemon_key.clone());
                             let mut replaced_senders = Vec::new();
                             let mut guard = registry.write().await;
+                            // L12 kernels do not recognize the acknowledgment. For kernels
+                            // that do, it must precede traffic routed to the new peer.
+                            if registration.local_protocol.is_some_and(|version| version >= DAEMON_REGISTERED_PROTOCOL) {
+                                send_envelope(&outgoing_tx, &RelayEnvelope::DaemonRegistered)?;
+                            }
+                            verified_identity = Some(identity.clone());
+                            registered_daemon_key = Some(daemon_key.clone());
                             guard.peers.retain(|addr, peer| {
                                 let replace = *addr != peer_addr
                                     && peer.role == RelayConnectionRole::Daemon
@@ -618,9 +642,13 @@ pub(crate) async fn handle_connection(
                             registration,
                         } => {
                             let Some(current_daemon_key) = registered_daemon_key.clone() else {
+                                send_close(&outgoing_tx, "register before sending a heartbeat".into());
+                                end_reason = "heartbeat_before_registration";
                                 break;
                             };
                             if current_daemon_key.daemon_id != daemon_id {
+                                send_close(&outgoing_tx, "heartbeat kernel does not match registration".into());
+                                end_reason = "heartbeat_identity_mismatch";
                                 break;
                             }
                             if let Some(registration) = registration {
@@ -642,9 +670,13 @@ pub(crate) async fn handle_connection(
                                     identity.expires_at_ms,
                                 );
                                 if identity.realm_id != current_daemon_key.realm_id {
+                                    send_close(&outgoing_tx, REALM_CHANGED.into());
+                                    end_reason = "realm_changed";
                                     break;
                                 }
                                 if registration.daemon_id != daemon_id {
+                                    send_close(&outgoing_tx, "heartbeat kernel does not match registration".into());
+                                    end_reason = "heartbeat_identity_mismatch";
                                     break;
                                 }
                                 let allowed_actions = identity.allowed_actions.clone();
@@ -1225,7 +1257,8 @@ pub(crate) async fn handle_connection(
                             let _ = outgoing_tx.try_send(Message::Close(None));
                             break;
                         }
-                        RelayEnvelope::ClientConnected { .. }
+                        RelayEnvelope::DaemonRegistered
+                        | RelayEnvelope::ClientConnected { .. }
                         | RelayEnvelope::ClientMetadataResponse { .. }
                         | RelayEnvelope::DaemonPeerResponse { .. }
                         | RelayEnvelope::DaemonIncomingPeerRequest { .. }

@@ -59,6 +59,28 @@ entry, and never routes to or probes them. Cloud has such a kernel offline, so t
 machine-list grant names every kernel the account links; kernel queries are still
 granted the online ones.
 
+### Relay registration result (local 1014, relay peer 451, provisional)
+
+Deploy the acknowledging relay before upgrading kernels to this version. A
+kernel waits up to ten seconds for `{"kind":"daemon_registered"}` and publishes
+connected status and online Cloud presence only after receiving it. An older
+relay that never acknowledges registration leaves an actionable refusal in
+`RelayStatus`.
+
+A kernel too old to register is refused with the update-needed reason above.
+Any other registration the relay cannot read, and any other malformed first
+message, receives a `close` envelope with a reason (`invalid relay registration`
+or `invalid relay message`) before the socket closes. For a kernel that
+declares protocol 1014 or later, the relay queues the acknowledgment before the
+socket becomes routable. Older kernels keep receiving their existing wire
+messages during the relay rollout.
+
+While registration is refused, `RelayStatus.registration_refused` gives the
+reason, next step, first refusal time and scheduled retry time in Unix
+milliseconds. The kernel announces the refusal once to the attached owner
+and backs off consecutive identical refusals. Rejected credentials use the
+existing credential renewal path.
+
 ### MP-08 / MP-09 / MP-10 / MP-11 artifact read pages (local993 / peer432)
 
 `chariox.read_artifact` accepts optional `offset_bytes` (default 0) and
