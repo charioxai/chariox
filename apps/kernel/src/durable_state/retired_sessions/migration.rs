@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use super::*;
-use crate::durable_state::{DurableStateSnapshot, DurableWriteOperation};
+use crate::durable_state::{DurableStateSnapshot, DurableWriteOperation, ReplayFailure};
 
 const RECEIPT: &str = "retired_sessions_backfill";
 
@@ -19,7 +19,7 @@ impl DurableKernelStateStore {
         &self,
         owner: &str,
         snapshot: Option<&DurableStateSnapshot>,
-    ) -> Result<(), DaemonError> {
+    ) -> Result<(), ReplayFailure> {
         let mut records = BTreeMap::new();
         let latest_sequence = self
             .latest_event_sequence()?
@@ -63,7 +63,7 @@ impl DurableKernelStateStore {
             verified_sequence.is_some_and(|sequence| snapshot.sequence <= sequence)
         });
         loop {
-            let events = self.load_events_after_batch(cursor, 512)?;
+            let events = self.load_replay_events_after_batch(cursor, 512)?;
             if events.is_empty() {
                 break;
             }
@@ -71,11 +71,13 @@ impl DurableKernelStateStore {
                 if !checkpoint_applied
                     && snapshot.is_some_and(|snapshot| event.sequence > snapshot.sequence)
                 {
-                    apply_checkpoint(&mut records, owner, snapshot.expect("checkpoint exists"))?;
+                    let snapshot = snapshot.expect("checkpoint exists");
+                    apply_checkpoint(&mut records, owner, snapshot)
+                        .map_err(|error| ReplayFailure::at_snapshot(snapshot.sequence, error))?;
                     checkpoint_applied = true;
                 }
                 cursor = event.sequence;
-                if matches!(
+                let result = if matches!(
                     event.kind.as_str(),
                     "session.created" | "session.updated" | "session.ended" | "session.deleted"
                 ) {
@@ -85,23 +87,30 @@ impl DurableKernelStateStore {
                             owner,
                             payload,
                             event.kind == "session.deleted",
-                        )?;
+                        )
+                    } else {
+                        Ok(())
                     }
                 } else if event.kind == "sessions.updated" {
-                    for payload in event
+                    event
                         .payload
                         .get("sessions")
                         .and_then(serde_json::Value::as_array)
                         .into_iter()
                         .flatten()
-                    {
-                        apply_session(&mut records, owner, payload, false)?;
-                    }
-                }
+                        .try_for_each(|payload| apply_session(&mut records, owner, payload, false))
+                } else {
+                    Ok(())
+                };
+                result.map_err(|error| {
+                    ReplayFailure::at_event(event.kind, event.event_id, event.sequence, error)
+                })?;
             }
         }
         if !checkpoint_applied {
-            apply_checkpoint(&mut records, owner, snapshot.expect("checkpoint exists"))?;
+            let snapshot = snapshot.expect("checkpoint exists");
+            apply_checkpoint(&mut records, owner, snapshot)
+                .map_err(|error| ReplayFailure::at_snapshot(snapshot.sequence, error))?;
         }
         let records = records
             .into_values()
