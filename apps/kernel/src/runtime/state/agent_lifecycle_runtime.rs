@@ -251,8 +251,8 @@ impl KernelRuntimeOwnedState {
             .any(|text| !text.trim().is_empty())
     }
 
-    /// A Working turn whose prompt already ended but whose end never reached
-    /// the ledger. When its run answered, assess it like a normal turn end.
+    /// A Working turn whose end did not reach the ledger. A recorded
+    /// successful end also commits an accepted yield when the turn has no answer.
     pub(super) fn settle_answered_unsettled_turn(
         &self,
         task: &AgentTaskExecution,
@@ -260,15 +260,33 @@ impl KernelRuntimeOwnedState {
         let Some(run) = task.provider_run_id.as_deref() else {
             return Ok(None);
         };
-        let entries = self
-            .operational_history_store
-            .load_session_history_entries(&task.room_id, Some(&task.agent_id))?;
         // A leased task binds a projected run id; its history uses the worker's.
         let answer_run =
             super::agent_task_projection::task_answer_history_run(Some(run)).unwrap_or(run);
         let target = self.background_answer_target(task)?;
-        if target.is_none() && !Self::entries_answer_prompt(&entries, &task.prompt_id, answer_run) {
-            return Ok(None);
+        let completed_yield = target.is_none()
+            && task.wait.is_some()
+            && self
+                .operational_history_store
+                .load_prompt_settlement_event(&task.room_id, &task.agent_id, &task.prompt_id)?
+                .is_some_and(|event| {
+                    event.provider_run_id.as_deref() == Some(answer_run)
+                        && event
+                            .metadata
+                            .get(crate::history::PROMPT_SETTLEMENT_STATUS_METADATA_KEY)
+                            .and_then(serde_json::Value::as_str)
+                            == Some(
+                                crate::git_observer::CompletedTurnSettlementStatus::Completed
+                                    .as_str(),
+                            )
+                });
+        if target.is_none() && !completed_yield {
+            let entries = self
+                .operational_history_store
+                .load_session_history_entries(&task.room_id, Some(&task.agent_id))?;
+            if !Self::entries_answer_prompt(&entries, &task.prompt_id, answer_run) {
+                return Ok(None);
+            }
         }
         let prompt = crate::session::PromptQueueItem::new(
             task.prompt_id.clone(),
@@ -1817,13 +1835,12 @@ impl KernelRuntimeState {
                     .await?;
                     continue;
                 }
-                // A turn that answered but was never settled lands here: assess
-                // it instead of blocking an answered task.
+                // Recover an answer or a completed yield before interrupting the task.
                 match self.owned.settle_answered_unsettled_turn(&task) {
                     Ok(Some(settlement)) => {
                         crate::logging::warn_with_fields(
                             "runtime.agent_lifecycle",
-                            "supervision sweep settled an answered turn whose end was never settled",
+                            "supervision sweep recovered an unsettled turn with completion evidence",
                             serde_json::json!({"room_id": task.room_id, "agent_id": task.agent_id, "task_id": task.task_id,
                                 "prompt_id": task.prompt_id, "provider_run_id": task.provider_run_id}),
                         );
