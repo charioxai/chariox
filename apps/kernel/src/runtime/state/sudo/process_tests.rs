@@ -1189,6 +1189,9 @@ async fn a_sub_agent_requests_one_owner_access_card_with_its_own_identity() {
             let grant = grant.unwrap();
             assert_eq!(grant.holder_pid, identity.pid);
             assert_eq!(grant.term, term);
+            let grants = f.state.access_grants_for(&identity).unwrap();
+            assert_eq!(grants.len(), 1);
+            assert_eq!(grants[0].summary.grant_id, grant.grant_id);
         } else {
             assert!(grant
                 .unwrap_err()
