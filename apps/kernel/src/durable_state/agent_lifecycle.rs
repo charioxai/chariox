@@ -20,6 +20,9 @@ mod delivery_failure_tests;
 mod leased_processes;
 #[cfg(test)]
 mod live_wait_tests;
+#[cfg(test)]
+mod start_failure_tests;
+pub(crate) mod start_failures;
 pub(crate) use deadline_clock::WorkerHeldDeadline;
 pub(crate) use leased_processes::LeasedProcessMutation;
 #[cfg(test)]
@@ -145,6 +148,7 @@ pub(super) fn initialize(db: &mut Connection) -> Result<(), DaemonError> {
     CREATE TABLE IF NOT EXISTS agent_source_occurrences(sequence INTEGER PRIMARY KEY AUTOINCREMENT,room_id TEXT NOT NULL,source_id TEXT NOT NULL,occurrence_id TEXT NOT NULL,success INTEGER NOT NULL,public_answer TEXT,UNIQUE(room_id,source_id,occurrence_id));
     CREATE TABLE IF NOT EXISTS agent_inbox(sequence INTEGER PRIMARY KEY AUTOINCREMENT,room_id TEXT NOT NULL,agent_id TEXT NOT NULL,source_id TEXT NOT NULL,occurrence_id TEXT NOT NULL,payload TEXT NOT NULL,UNIQUE(room_id,agent_id,source_id,occurrence_id));
     CREATE TABLE IF NOT EXISTS agent_inbox_refusals(sequence INTEGER PRIMARY KEY,first_refused_at_ms INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS agent_inbox_start_failures(sequence INTEGER PRIMARY KEY,attempts INTEGER NOT NULL,last_error TEXT NOT NULL,retry_at_ms INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS agent_inbox_shown(sequence INTEGER PRIMARY KEY);
     CREATE TABLE IF NOT EXISTS agent_inbox_unread_reverts(sequence INTEGER PRIMARY KEY,count INTEGER NOT NULL);
     CREATE INDEX IF NOT EXISTS agent_inbox_recipient ON agent_inbox(room_id,agent_id,sequence);
@@ -754,6 +758,15 @@ impl DurableKernelStateStore {
             .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
             .map_err(sql)?;
         rows.collect::<Result<_, _>>().map_err(sql)
+    }
+    /// What failed starts of this delivery left: the attempt, the error and the next try.
+    pub(crate) fn agent_start_failure(
+        &self,
+        sequence: u64,
+    ) -> Result<Option<start_failures::StartFailure>, DaemonError> {
+        let mut db = self.lock_connection("agent.lifecycle.start_failure")?;
+        let tx = db.transaction().map_err(sql)?;
+        start_failures::get(&tx, sequence)
     }
     /// Pending inbox rows, rather than task existence, own periodic delivery retries.
     pub(crate) fn agent_pending_inbox_recipients(
@@ -1782,6 +1795,7 @@ fn save_event(tx: &Transaction<'_>, e: &InboxEvent) -> Result<(), DaemonError> {
             [sql_integer(e.sequence)?],
         )
         .map_err(sql)?;
+        start_failures::clear(tx, e.sequence)?;
     }
     Ok(())
 }
