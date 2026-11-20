@@ -63,6 +63,8 @@ mod relaunch_tests;
 mod remote_command_tests;
 #[cfg(test)]
 mod resource_register_tests;
+#[cfg(all(test, unix))]
+mod slice_refusal_tests;
 #[cfg(test)]
 mod task_scope_tests;
 #[cfg(test)]
