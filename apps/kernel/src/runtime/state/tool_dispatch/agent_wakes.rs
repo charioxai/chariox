@@ -1,4 +1,5 @@
 //! MP-08 / MP-09 / MP-10 / MP-11 A03: agent timers and watched processes.
+use super::list_page::{self, CreationKey, LIST_ROWS};
 use super::*;
 use crate::durable_state::agent_lifecycle::{self as ledger, AgentTaskExecution, AgentWake};
 
@@ -73,10 +74,66 @@ impl KernelRuntimeState {
         let now = crate::session::unix_epoch_ms();
         Ok(match name {
             "chariox.events.wakes" => {
-                let wakes = store.agent_visible_wakes(&task.room_id, Some(&task.agent_id), now)?;
-                let receipts =
-                    store.agent_wake_receipts(Some(&task.room_id), Some(&task.agent_id))?;
-                serde_json::json!({"now_ms":now,"scheduler":self.wake_scheduler_health(now),"wakes":wakes,"receipts":receipts})
+                let wake_cursor = CreationKey::cursor(args, "wakes_cursor")?;
+                let receipt_cursor = list_page::cursor_number(args, "receipts_cursor")?;
+                let (wakes, next_wakes_cursor) =
+                    if wake_cursor.is_some() || receipt_cursor.is_none() {
+                        let mut rows =
+                            store.agent_visible_wakes(&task.room_id, Some(&task.agent_id), now)?;
+                        rows.sort_unstable_by(|left, right| {
+                            (right.created_at_ms, &right.id).cmp(&(left.created_at_ms, &left.id))
+                        });
+                        list_page::page(rows.into_iter().filter_map(|wake| {
+                            let key = CreationKey(wake.created_at_ms, wake.id.clone());
+                            wake_cursor
+                                .as_ref()
+                                .is_none_or(|before| &key < before)
+                                .then(|| {
+                                    (
+                                        key,
+                                        list_page::bounded_row(
+                                            serde_json::json!(wake),
+                                            &[
+                                                "id",
+                                                "registration_id",
+                                                "kind",
+                                                "label",
+                                                "state",
+                                                "created_at_ms",
+                                                "next_due_ms",
+                                                "last_fired_at_ms",
+                                                "last_delivered_at_ms",
+                                                "last_acknowledged_at_ms",
+                                                "last_sequence",
+                                                "last_delivery",
+                                            ],
+                                        ),
+                                    )
+                                })
+                        }))?
+                    } else {
+                        (Vec::new(), None)
+                    };
+                let (receipts, next_receipts_cursor) =
+                    if receipt_cursor.is_some() || wake_cursor.is_none() {
+                        let rows = store.agent_wake_receipt_page(
+                            &task.room_id,
+                            &task.agent_id,
+                            receipt_cursor,
+                            LIST_ROWS + 1,
+                        )?;
+                        list_page::page(
+                            rows.into_iter()
+                                .map(|receipt| (receipt.sequence, serde_json::json!(receipt))),
+                        )?
+                    } else {
+                        (Vec::new(), None)
+                    };
+                serde_json::json!({
+                    "now_ms": now, "scheduler": self.wake_scheduler_health(now),
+                    "wakes": wakes, "next_wakes_cursor": next_wakes_cursor.map(CreationKey::encode),
+                    "receipts": receipts, "next_receipts_cursor": next_receipts_cursor,
+                })
             }
             "chariox.events.timer" => {
                 let delay = args["delay_ms"]

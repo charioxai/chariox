@@ -534,8 +534,22 @@ async fn handle_json_rpc_value(
                     ))
                 }
                 Ok(result) => {
+                    let first_keys: &[&str] = if tool_name.ends_with("wakes")
+                        && crate::transport::runtime_tools::canonical_agent_event_tool_name(
+                            tool_name,
+                        ) == Some("chariox.events.wakes")
+                    {
+                        &["scheduler", "now_ms"]
+                    } else if crate::transport::runtime_tools::canonical_agent_messaging_tool_name(
+                        tool_name,
+                    ) == Some(crate::transport::runtime_tools::LIST_SESSION_AGENTS_TOOL)
+                    {
+                        &["agents", "session_id", "focused_agent_id"]
+                    } else {
+                        &[]
+                    };
                     let (content, structured_content) =
-                        tool_content::runtime_tool_content(result.payload);
+                        tool_content::runtime_tool_content_ordered(result.payload, first_keys);
                     let changed = previous_catalog != catalog::listing(&router, auth_token).await;
                     Ok(catalog::tool_response(
                         changed,
