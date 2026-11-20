@@ -495,7 +495,7 @@ fn apply_result_message(
         .get("subtype")
         .and_then(Value::as_str)
         .unwrap_or_default();
-    batch.model_usage = super::model_usage::result_model_usage(value);
+    batch.model_usage = super::model_usage::result_model_totals(value);
     let is_error = value
         .get("is_error")
         .and_then(Value::as_bool)

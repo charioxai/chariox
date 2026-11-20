@@ -2,9 +2,9 @@ use serde_json::Value;
 
 use crate::provider::{ModelTokenCounts, ModelTurnUsage};
 
-/// Result model totals include all requests attributed to each model. Streamed
-/// message usage is also present, but counting it would add those requests twice.
-pub(super) fn result_model_usage(result: &Value) -> Vec<ModelTurnUsage> {
+/// Claude reports session totals here. The usage store converts these to
+/// prompt deltas using the last result for the same native session.
+pub(super) fn result_model_totals(result: &Value) -> Vec<ModelTurnUsage> {
     let Some(models) = result.get("modelUsage").and_then(Value::as_object) else {
         return Vec::new();
     };

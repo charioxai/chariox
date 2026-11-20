@@ -521,3 +521,61 @@ fn model_usage_report_prices_cached_tokens_and_marks_unpriced_models() {
         ])
     );
 }
+
+#[test]
+fn claude_model_usage_replays_do_not_rewind_the_session_baseline() {
+    use crate::provider::{ModelTokenCounts, ModelTurnUsage};
+
+    crate::test_support::isolated_env_test!();
+    let harness = LocalRouterTestHarness::new();
+    harness.with_app_mut(|app| {
+        let store = app.operational_history_store();
+        let report = |prompt: &str, run: &str, input_tokens: u64| {
+            store
+                .save_claude_model_usage(
+                    "room",
+                    "agent",
+                    prompt,
+                    run,
+                    "native-session",
+                    &[ModelTurnUsage {
+                        model: "claude-haiku-5-5".into(),
+                        tokens: ModelTokenCounts {
+                            input_tokens,
+                            output_tokens: input_tokens / 5,
+                            cached_input_tokens: input_tokens / 10,
+                            cache_write_input_tokens: input_tokens / 20,
+                        },
+                    }],
+                )
+                .unwrap();
+        };
+        report("first", "original", 100);
+        report("second", "original", 250);
+        report("first", "original", 100);
+        report("third", "resumed", 300);
+        report("fourth", "resumed", 60);
+        let delta = |prompt, run| {
+            let usage = store
+                .turn_model_usage("room", "agent", prompt, run)
+                .unwrap();
+            assert_eq!(usage.len(), 1);
+            usage[0].tokens
+        };
+        assert_eq!(delta("second", "original").input_tokens, 150);
+        assert_eq!(
+            delta("third", "resumed"),
+            ModelTokenCounts {
+                input_tokens: 50,
+                output_tokens: 10,
+                cached_input_tokens: 5,
+                cache_write_input_tokens: 3,
+            }
+        );
+        assert_eq!(delta("fourth", "resumed").input_tokens, 60);
+        assert_eq!(
+            store.agent_model_usage("room", "agent").unwrap()[0].input_tokens,
+            360
+        );
+    });
+}

@@ -616,14 +616,27 @@ impl KernelRuntimeState {
                     prompt.durable_delivery_provider_run_id() == Some(provider_run_id)
                 })
             {
-                owned.operational_history_store.save_model_usage(
-                    session_id,
-                    agent_id,
-                    prompt.id(),
-                    provider_run_id,
-                    provider_run.adapter_key(),
-                    &poll_result.model_usage,
-                )?;
+                if provider_run.adapter_key() == "claude" {
+                    owned.operational_history_store.save_claude_model_usage(
+                        session_id,
+                        agent_id,
+                        prompt.id(),
+                        provider_run_id,
+                        projected_provider_run
+                            .provider_session_id()
+                            .unwrap_or(provider_run_id),
+                        &poll_result.model_usage,
+                    )?;
+                } else {
+                    owned.operational_history_store.save_model_usage(
+                        session_id,
+                        agent_id,
+                        prompt.id(),
+                        provider_run_id,
+                        provider_run.adapter_key(),
+                        &poll_result.model_usage,
+                    )?;
+                }
             }
         }
         if let Some(resume_state) = poll_result.resolved_resume_state.as_ref() {
