@@ -43,6 +43,9 @@ pub(crate) enum GatewayError {
     RequestTimeout {
         name: String,
     },
+    SteerUnconfirmed {
+        command_id: String,
+    },
     ConnectionLost {
         name: String,
     },
@@ -102,6 +105,7 @@ impl GatewayError {
             Self::Incompatible { .. } => "kernel_incompatible",
             Self::UpdateNeeded { .. } => "kernel_update_needed",
             Self::RequestTimeout { .. } => "kernel_request_timeout",
+            Self::SteerUnconfirmed { .. } => "steer_unconfirmed",
             Self::ConnectionLost { .. } | Self::SubscriptionEnded { .. } => {
                 "kernel_connection_lost"
             }
@@ -148,6 +152,9 @@ impl GatewayError {
             Self::RequestTimeout { name } => format!(
                 "Kernel \"{name}\" did not answer in time. For a state-changing request retry once with the same --command-id; the kernel never runs it twice."
             ),
+            Self::SteerUnconfirmed { command_id } => format!(
+                "The steer is not confirmed yet. It may still arrive. Retry with the same command ID (--command-id {command_id:?})."
+            ),
             Self::ConnectionLost { name } => format!(
                 "The connection to kernel \"{name}\" ended while the request was in flight. Retry once with the same --command-id."
             ),
@@ -168,6 +175,7 @@ impl GatewayError {
             Self::Unreachable { .. }
             | Self::ListUnavailable { .. }
             | Self::RequestTimeout { .. }
+            | Self::SteerUnconfirmed { .. }
             | Self::ConnectionLost { .. }
             | Self::SubscriptionEnded { .. } => true,
             Self::Remote { retryable, .. } => *retryable,

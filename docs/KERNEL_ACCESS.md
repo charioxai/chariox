@@ -61,13 +61,13 @@ Exit codes and the error codes behind them:
 | 2 | usage | `usage`, `file_path_invalid` |
 | 3 | refused | `events_refused`, `secret_link_unavailable`, `kernel_sudo_refused`, `kernel_sudo_room_owner_local`, `kernel_access_human_only`, `kernel_access_ended`, `kernel_access_not_covered`, `kernel_access_already_granted`, `kernel_access_cover_gone`, `kernel_access_cover_identity_changed`, `kernel_access_cover_kernel_process`, `kernel_access_cover_outside`, `kernel_access_cover_limit`, `kernel_access_sub_agent`, `command_id_required`, `duplicate_command_conflict`, `file_permission_denied`, `subscription_ended` |
 | 4 | kernel unavailable | `kernel_unknown`, `kernel_ambiguous`, `kernel_offline`, `kernel_unreachable`, `kernel_unpaired`, `kernel_incompatible`, `kernel_update_needed`, `kernel_not_available` |
-| 5 | timeout or unknown outcome | `kernel_sudo_expired`, `kernel_request_timeout`, `kernel_connection_lost`, `kernel_outcome_unknown`, `kernel_access_unconfirmed` |
+| 5 | timeout or unknown outcome | `kernel_sudo_expired`, `kernel_request_timeout`, `kernel_connection_lost`, `kernel_outcome_unknown`, `kernel_access_unconfirmed`, `steer_unconfirmed` |
 | 6 | approval pending (`access request --no-wait`, `secret request --no-wait`, `secret status` while pending) | |
 | 7 | event cursor expired: resync followed targets | `cursor_expired` |
 
 `kernel_response_too_large` means a state-changing request through the gateway (a `RunShellCommand` that prints a lot, for example) ran and finished, but its answer is more than the gateway can keep as a receipt (about 256 KiB; the message names the exact limit). It is not run again. Write the output to a file on that kernel and read it with `chariox files get`, or print less. Answers of reads are not limited this way.
 
-On `kernel_request_timeout`, `kernel_connection_lost` or `kernel_access_unconfirmed` (the kernel could not read the caller's process just now; the grant has not changed), retry once with the same `--command-id`. On `kernel_outcome_unknown`, read the state first. When the local connection drops with a request in flight, the CLI probes the kernel once: `kernel_access_ended` means the grant ended during the request; anything else is `kernel_connection_lost`.
+On `kernel_request_timeout`, `kernel_connection_lost` or `kernel_access_unconfirmed` (the kernel could not read the caller's process just now; the grant has not changed), retry once with the same `--command-id`. A steer that returns `steer_unconfirmed` may still arrive. Retry once with the command ID in the message. On `kernel_outcome_unknown`, read the state first. When the local connection drops with a request in flight, the CLI probes the kernel once: `kernel_access_ended` means the grant ended during the request; anything else is `kernel_connection_lost`.
 
 
 MP-08 / MP-10 / MP-11: `kernel_sudo_refused` means the person refused the request;
