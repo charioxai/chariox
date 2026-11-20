@@ -1356,6 +1356,7 @@ mod tests {
                     reason: crate::provider::termination::sanitize_provider_failure_message(
                         message
                     ),
+                    answered_in_turn: None,
                 },
                 "{error}"
             );

@@ -77,6 +77,7 @@ impl ProviderRunTermination {
                 kind,
                 retryable,
                 reason: format!("{}. {}", exit.reason.trim_end_matches('.'), failure.reason),
+                answered_in_turn: None,
             });
         }
         self
