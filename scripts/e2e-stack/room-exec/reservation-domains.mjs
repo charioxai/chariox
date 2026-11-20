@@ -111,7 +111,7 @@ try {
     await new Promise(resolve=>setTimeout(resolve,1500))
     const other=run(second)
     await until(async()=>{
-      result.states=(await fixture.A.send({RoomTerminal:{session_id:result.session,operation:{operation:'exec_list'}}})).RoomTerminal.result.execs.map(row=>({command:row.command.at(-1),state:row.state}))
+      result.states=(await fixture.A.send({RunCommand: { target: { kind: 'room_workspace', session_id: result.session }, operation:{operation:'exec_list'}}})).RunCommand.result.execs.map(row=>({command:row.command.at(-1),state:row.state}))
       return other.output==='ready\n'
     },'second binary starts while first remains running',15_000)
     assert.equal(first.exitCode,null)
@@ -121,9 +121,9 @@ try {
 } catch (error) {result.error=error.message;throw error}
 finally {
   if (liveness && active.size && result.session) {
-    const reply = await fixture.A.send({RoomTerminal:{session_id:result.session,operation:{operation:'exec_list'}}})
-    for (const row of reply.RoomTerminal.result.execs.filter(row=>row.command.at(-1)==='reserved-parent')) {
-      await fixture.A.send({RoomTerminal:{session_id:result.session,operation:{operation:'exec_cancel',exec_id:row.exec_id}}})
+    const reply = await fixture.A.send({RunCommand: { target: { kind: 'room_workspace', session_id: result.session }, operation:{operation:'exec_list'}}})
+    for (const row of reply.RunCommand.result.execs.filter(row=>row.command.at(-1)==='reserved-parent')) {
+      await fixture.A.send({RunCommand: { target: { kind: 'room_workspace', session_id: result.session }, operation:{operation:'exec_cancel',exec_id:row.exec_id}}})
     }
   }
   for (const proc of active) signal(proc,'SIGTERM')

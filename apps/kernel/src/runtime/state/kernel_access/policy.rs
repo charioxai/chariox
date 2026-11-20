@@ -376,8 +376,8 @@ fn owner_vault_is_not_a_kernel_access_operation() {
 /// under this kernel's owner grant for a requester that has none here.
 fn refuse_forwarded_exec_place(request: &LocalDaemonRequest) -> Result<(), DaemonError> {
     match request {
-        LocalDaemonRequest::RoomTerminal(terminal)
-            if matches!(terminal.operation, crate::local::RoomTerminalOperation::ExecPlace { .. }) =>
+        LocalDaemonRequest::RunCommand(command)
+            if matches!(command.operation, crate::local::RunCommandOperation::ExecPlace { .. }) =>
         {
             Err(crate::room_exec::error(
                 "exec_place_not_here",

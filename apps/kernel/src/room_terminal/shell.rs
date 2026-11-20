@@ -92,8 +92,7 @@ pub(crate) fn kernel_user_home() -> Result<std::path::PathBuf, DaemonError> {
         .filter(|home| Path::new(home).is_absolute());
     home.map(std::path::PathBuf::from).ok_or_else(|| {
         super::service::refused(
-            "this kernel's account lists no home folder; pass the folder to open the terminal in"
-                .to_string(),
+            "this kernel's account lists no home folder; supply a working directory".to_string(),
         )
     })
 }

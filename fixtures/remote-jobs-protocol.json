@@ -1,6 +1,6 @@
 {
-  "local": 1012,
-  "relayPeer": 447,
+  "local": 1013,
+  "relayPeer": 450,
   "shapes": [
     {
       "kind": "request",
@@ -95,8 +95,11 @@
     {
       "kind": "request",
       "wire": {
-        "RoomTerminal": {
-          "session_id": "room",
+        "RunCommand": {
+          "target": {
+            "kind": "room_workspace",
+            "session_id": "room"
+          },
           "acting_agent": "agent",
           "operation": {
             "operation": "exec_open_job",
@@ -110,7 +113,7 @@
           }
         }
       },
-      "sha256": "d445e121e49c6179391291d125bf820c7bde354752b4ce801cd7cdb41b85e775"
+      "sha256": "deb960cf3ed8ab5443b819ff613c1c656271f2947a5b27a9a2805339cdb749cb"
     },
     {
       "kind": "response",
@@ -205,7 +208,7 @@
                 "capabilities": [
                   "kernel_gateway_v1",
                   "room_terminal_v1",
-                  "room_exec_v1"
+                  "run_command_v1"
                 ],
                 "accepting_remote_leases": false,
                 "leased_agent_count": 0,
@@ -216,12 +219,12 @@
           }
         }
       },
-      "sha256": "3cdb0bb370b456fbdd8c7d6c2753f7c70bbb69e7377f9a6e2ae7334fd84fc10f"
+      "sha256": "101e50475d2fc65b8d7a22cb07cfae6642c67a9d4cf837765f70776b6050ae31"
     },
     {
       "kind": "response",
       "wire": {
-        "RoomTerminal": {
+        "RunCommand": {
           "result": {
             "result": "exec_output",
             "output": {
@@ -235,7 +238,7 @@
           }
         }
       },
-      "sha256": "4440c4fa6038df9c2491edded15c3f1079badfd3faa0939ad8fc1bf06fd99b1a"
+      "sha256": "78017d424b02209d42750486ebd507d8b0ac14c756a048f04b96c2e4067d3356"
     },
     {
       "kind": "response",

@@ -22,8 +22,7 @@ pub struct RoomTerminalRequest {
 }
 
 /// One operation on the kernel's own terminals: shells on this machine that belong to no Room.
-/// The terminal operations and results are a Room's; commands with separate stdout and stderr
-/// (`exec_*`) need a Room and are refused. Who may send it: `authorize_kernel_terminal`.
+/// Who may send it: `authorize_kernel_terminal`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KernelTerminalRequest {
     /// The folder `open` starts in; the kernel user's home folder when absent.
@@ -35,48 +34,6 @@ pub struct KernelTerminalRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case")]
 pub enum RoomTerminalOperation {
-    ExecList,
-    ExecOpen {
-        command: Vec<String>,
-    },
-    /// Kernel job launch: its command receives only the explicitly selected project environment.
-    ExecOpenJob {
-        command: Vec<String>,
-        #[serde(default)]
-        needs: JobNeeds,
-    },
-    ExecStartNow {
-        exec_id: String,
-    },
-    /// Run a launch that is still held on another of the owner's kernels. The
-    /// target Room is made in `directory` there, else in that kernel's own default Room directory.
-    ExecPlace {
-        exec_id: String,
-        kernel: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        directory: Option<String>,
-    },
-    ExecWrite {
-        exec_id: String,
-        offset: u64,
-        data_base64: String,
-    },
-    ExecStdinClose {
-        exec_id: String,
-        offset: u64,
-    },
-    ExecRead {
-        exec_id: String,
-        after_cursor: u64,
-        #[serde(default)]
-        wait_ms: u64,
-    },
-    ExecCancel {
-        exec_id: String,
-    },
-    ExecClose {
-        exec_id: String,
-    },
     /// A login shell in the Room's project folder, or `command` (argv, no shell).
     Open {
         cols: u16,
@@ -123,41 +80,13 @@ pub enum RoomTerminalOperation {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum RoomTerminalResult {
-    ExecListed {
-        execs: Vec<crate::room_exec::ExecSummary>,
-    },
-    ExecOpened {
-        exec_id: String,
-    },
-    ExecInput {
-        next_offset: u64,
-    },
-    ExecOutput {
-        output: crate::room_exec::ExecOutput,
-    },
-    ExecCancelled,
-    ExecClosed,
-    Opened {
-        terminal: RoomTerminalSummary,
-    },
-    Listed {
-        terminals: Vec<RoomTerminalSummary>,
-    },
-    Snapshot {
-        snapshot: RoomTerminalSnapshot,
-    },
-    Input {
-        input: RoomTerminalInputResult,
-    },
-    Resized {
-        terminal: RoomTerminalSummary,
-    },
-    Output {
-        output: RoomTerminalOutput,
-    },
-    Waited {
-        waited: RoomTerminalWaitResult,
-    },
+    Opened { terminal: RoomTerminalSummary },
+    Listed { terminals: Vec<RoomTerminalSummary> },
+    Snapshot { snapshot: RoomTerminalSnapshot },
+    Input { input: RoomTerminalInputResult },
+    Resized { terminal: RoomTerminalSummary },
+    Output { output: RoomTerminalOutput },
+    Waited { waited: RoomTerminalWaitResult },
     Closed,
 }
 
@@ -173,33 +102,8 @@ impl RoomTerminalResult {
             Self::Snapshot { snapshot } => host(&mut snapshot.terminal),
             Self::Output { output } => host(&mut output.terminal),
             Self::Waited { waited } => host(&mut waited.terminal),
-            Self::Input { .. }
-            | Self::Closed
-            | Self::ExecListed { .. }
-            | Self::ExecOpened { .. }
-            | Self::ExecInput { .. }
-            | Self::ExecOutput { .. }
-            | Self::ExecCancelled
-            | Self::ExecClosed => {}
+            Self::Input { .. } | Self::Closed => {}
         }
         self
-    }
-}
-
-impl RoomTerminalOperation {
-    pub(crate) fn is_exec(&self) -> bool {
-        matches!(
-            self,
-            Self::ExecList
-                | Self::ExecOpen { .. }
-                | Self::ExecOpenJob { .. }
-                | Self::ExecStartNow { .. }
-                | Self::ExecPlace { .. }
-                | Self::ExecWrite { .. }
-                | Self::ExecStdinClose { .. }
-                | Self::ExecRead { .. }
-                | Self::ExecCancel { .. }
-                | Self::ExecClose { .. }
-        )
     }
 }

@@ -24,7 +24,7 @@ const fixture = new AdmissionFixture({home, evidence, kernelBinary: value('--ker
 const active = new Set(), cells = []
 const result = {status: 'FAIL', mp: ['MP-08', 'MP-09', 'MP-10', 'MP-11'], scope: 'native CLI and real kernels, local scoped relay; deterministic learned peak; no remote placement or hosted/paid acceptance', cells}
 let session, peerSession
-const operation = async (operation, host = 'A') => (await fixture[host].send({RoomTerminal: {session_id: host === 'A' ? session : peerSession, operation}})).RoomTerminal.result
+const operation = async (operation, host = 'A') => (await fixture[host].send({RunCommand: { target: { kind: 'room_workspace', session_id: host === 'A' ? session : peerSession }, operation}})).RunCommand.result
 
 function run(name, bytes, host = 'A') {
   const child = spawn(fixture.cliBinary, ['exec', '--socket', fixture.envs.A.CHARIOX_DAEMON_SOCKET, ...(host === 'B' ? ['--kernel', fixture.target] : []), '--session', host === 'A' ? session : peerSession, '--', ...command(name, host)], {env: fixture.envs.A, stdio: ['pipe', 'pipe', 'pipe']})

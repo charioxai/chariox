@@ -20,6 +20,7 @@ async fn supervise_keeps_the_runtime_running_while_cleanup_holds_the_registry() 
         acting_agent: None,
         cwd: dir.clone(),
         command: argv.clone(),
+        timeout_ms: None,
     };
     let admission = LaunchAdmission::limited(512 << 20, u64::MAX);
     let permit = admission
@@ -40,7 +41,7 @@ async fn supervise_keeps_the_runtime_running_while_cleanup_holds_the_registry() 
     held_rx.recv_timeout(Duration::from_secs(10)).unwrap();
 
     let supervising = tokio::spawn(async move {
-        let outcome = supervise(&mut process, &mut cancel, &mut permit).await;
+        let outcome = supervise(&mut process, &mut cancel, &mut permit, None).await;
         (outcome, permit)
     });
     let started = Instant::now();

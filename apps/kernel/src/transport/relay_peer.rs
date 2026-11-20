@@ -234,7 +234,8 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// skill delivery (Agent Move no longer lists skills and the per-agent skill grants are gone).
 /// The receiving agent’s deadline refusal is carried in the encrypted peer response.
 /// A peer spawn carries the starter's display name.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 449;
+/// Command pipes to an agent slice use their own peer request and response.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 450;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
 pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = RELAY_PEER_PROTOCOL_VERSION;
@@ -1269,6 +1270,11 @@ pub enum RelayPeerRequest {
         actor: crate::room_terminal::TerminalActor,
         operation: crate::local::RoomTerminalOperation,
     },
+    RunAgentCommand {
+        leased_agent_id: String,
+        actor: crate::room_terminal::TerminalActor,
+        operation: crate::local::RunCommandOperation,
+    },
     SubmitLeasedPrompt {
         leased_agent_id: String,
         expected_profile: RelayAgentExecutionProfile,
@@ -1794,6 +1800,9 @@ pub enum RelayPeerResponse {
     },
     RoomTerminal {
         result: crate::local::RoomTerminalResult,
+    },
+    RunAgentCommand {
+        result: crate::local::RunCommandResult,
     },
     LeasedPromptSubmitted {
         provider_run_id: String,

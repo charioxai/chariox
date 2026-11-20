@@ -482,7 +482,7 @@ pub enum LocalDaemonResponse {
     TerminalResized { session_id: String, cols: u16, rows: u16, },
     TerminalInputSent { session_id: String, attachment_id: String, byte_count: usize, },
     TerminalOutput { records: Vec<TerminalOutputRecord>, },
-    ShellCommandCompleted { result: RunShellCommandResult, },
+    RunCommand { result: RunCommandResult, },
     DirectoryTreeRead { result: ReadDirectoryTreeResult, },
     FileRead { result: ReadFileResult, },
     FileEdited { result: EditFileResult, },

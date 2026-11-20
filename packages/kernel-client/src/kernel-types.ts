@@ -1,7 +1,7 @@
 import type { SessionProcessState } from "./kernel-events.js"
 import type { TurnOutcome } from "./kernel-types-runtime.js"
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 1012
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 1013
 
 export type * from "./kernel-types-apps.js"
 
@@ -57,3 +57,5 @@ export type OutsideEvent = {
 )
 export type EventsBatch = { events: OutsideEvent[]; next_cursor: number; oldest_cursor: number; timed_out: boolean }
 export type * from "./kernel-types-skills-v2.js"
+
+export type * from "./kernel-types-run-command.js"

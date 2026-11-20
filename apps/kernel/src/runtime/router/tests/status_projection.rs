@@ -86,14 +86,13 @@ async fn daemon_health_projection_reports_session_and_agent_mailboxes_inner() {
         .await
         .expect("workflow command should create a workflow lane");
 
-    let shell_request = LocalDaemonRequest::RunShellCommand(RunShellCapabilityRequest {
-        session_id: session_id.clone(),
-        attachment_id: attachment.id().to_string(),
-        command: "/bin/true".to_string(),
-        args: Vec::new(),
-        working_directory: None,
-        timeout_ms: Some(1_000),
-    });
+    let shell_request =
+        LocalDaemonRequest::ReadDirectoryTree(crate::local::ReadDirectoryTreeCapabilityRequest {
+            session_id: session_id.clone(),
+            attachment_id: attachment.id().to_string(),
+            path: None,
+            max_depth: 1,
+        });
     let shell_command =
         KernelCommand::from_local_request("cmd-capability", None, None, &shell_request);
     router
@@ -104,14 +103,13 @@ async fn daemon_health_projection_reports_session_and_agent_mailboxes_inner() {
     let removed_directory = worktree.path().join("removed-capability-directory");
     std::fs::create_dir(&removed_directory).expect("failure fixture directory should exist");
     std::fs::remove_dir(&removed_directory).expect("failure fixture directory should be removed");
-    let failing_request = LocalDaemonRequest::RunShellCommand(RunShellCapabilityRequest {
-        session_id: session_id.clone(),
-        attachment_id: attachment.id().to_string(),
-        command: "/bin/true".to_string(),
-        args: Vec::new(),
-        working_directory: Some(removed_directory),
-        timeout_ms: Some(1_000),
-    });
+    let failing_request =
+        LocalDaemonRequest::ReadDirectoryTree(crate::local::ReadDirectoryTreeCapabilityRequest {
+            session_id: session_id.clone(),
+            attachment_id: attachment.id().to_string(),
+            path: Some(removed_directory),
+            max_depth: 1,
+        });
     let failing_command =
         KernelCommand::from_local_request("cmd-capability-failure", None, None, &failing_request);
     router

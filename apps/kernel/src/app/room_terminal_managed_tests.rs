@@ -4,7 +4,10 @@
 use std::sync::Arc;
 
 use crate::config::DaemonConfig;
-use crate::local::{RoomTerminalOperation, RoomTerminalResult};
+use crate::local::{
+    CommandTarget, LocalDaemonResponse, RoomTerminalOperation, RoomTerminalResult,
+    RunCommandOperation, RunCommandRequest, RunCommandResult,
+};
 use crate::managed_bootstrap::ConfirmedManagedKernelRegistration;
 use crate::room_terminal::TerminalActor;
 use crate::runtime::router::CommandRouter;
@@ -78,6 +81,30 @@ impl Fixture {
                 operation,
             )
             .await
+    }
+
+    async fn command(
+        &self,
+        operation: RunCommandOperation,
+    ) -> Result<RunCommandResult, crate::error::DaemonError> {
+        use crate::runtime::command::{KernelCaller, KernelCommandSource};
+        let response = self
+            .runtime
+            .run_command_for_client(
+                &KernelCaller::for_source(&KernelCommandSource::LocalCli),
+                RunCommandRequest {
+                    target: CommandTarget::RoomWorkspace {
+                        session_id: self.session_id.clone(),
+                    },
+                    acting_agent: None,
+                    operation,
+                },
+            )
+            .await?;
+        let LocalDaemonResponse::RunCommand { result } = response else {
+            unreachable!()
+        };
+        Ok(result)
     }
 
     async fn open(
@@ -483,12 +510,14 @@ async fn abandoned_exec_expiry_reports_idle_and_allows_the_managed_stop() {
     for script in ["cat", "head -c 8388608 /dev/zero"] {
         let fixture = fixture("exec-expiry-stop");
         let opened = fixture
-            .terminal(RoomTerminalOperation::ExecOpen {
+            .command(RunCommandOperation::ExecOpen {
                 command: vec!["/bin/bash".into(), "-c".into(), script.into()],
+                directory: None,
+                timeout_ms: None,
             })
             .await
             .unwrap();
-        assert!(matches!(opened, RoomTerminalResult::ExecOpened { .. }));
+        assert!(matches!(opened, RunCommandResult::ExecOpened { .. }));
         assert_eq!(fixture.runtime.managed_working_agent_count(), 1);
         assert!(!fixture.reserve(), "busy exec prevents a managed stop");
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -503,10 +532,10 @@ async fn abandoned_exec_expiry_reports_idle_and_allows_the_managed_stop() {
         .await
         .unwrap();
         let listed = fixture
-            .terminal(RoomTerminalOperation::ExecList)
+            .command(RunCommandOperation::ExecList)
             .await
             .unwrap();
-        assert!(matches!(listed, RoomTerminalResult::ExecListed { execs } if execs.is_empty()));
+        assert!(matches!(listed, RunCommandResult::ExecListed { execs } if execs.is_empty()));
         assert!(
             fixture.reserve(),
             "reaped expiry reports idle and allows the managed stop"
@@ -516,7 +545,7 @@ async fn abandoned_exec_expiry_reports_idle_and_allows_the_managed_stop() {
 
 mod kernel_terminal_access {
     use super::*;
-    use crate::local::{KernelTerminalRequest, LocalDaemonResponse};
+    use crate::local::KernelTerminalRequest;
     use crate::runtime::command::{KernelCaller, KernelCallerKind, KernelCommandSource};
 
     fn owner() -> KernelCaller {
@@ -604,20 +633,6 @@ mod kernel_terminal_access {
             })
             .await;
         assert!(by_id.is_err());
-        // Commands with their own streams need a Room.
-        let exec = KernelTerminalRequest {
-            directory: None,
-            operation: RoomTerminalOperation::ExecList,
-        };
-        let refused = fixture
-            .runtime
-            .kernel_terminal_for_client(&owner(), exec)
-            .await
-            .unwrap_err();
-        assert!(
-            refused.to_string().contains("belong to a Room"),
-            "{refused}"
-        );
         fixture
             .runtime
             .kernel_terminal_for_client(

@@ -2,7 +2,7 @@
 use std::sync::Arc;
 
 use super::*;
-use crate::local::{RoomTerminalOperation, RoomTerminalRequest, RoomTerminalResult};
+use crate::local::{RunCommandOperation, RunCommandRequest, RunCommandResult};
 use crate::room_exec::gateway_placement::GrantedSend;
 use crate::room_exec::{error, Placement, Requester};
 use crate::runtime::command::KernelCaller;
@@ -21,10 +21,10 @@ impl KernelRuntimeState {
     pub(crate) fn authorize_exec_place(
         &self,
         caller: &KernelCaller,
-        request: &RoomTerminalRequest,
+        request: &RunCommandRequest,
     ) -> Result<ExecPlacer, DaemonError> {
-        self.authorize_room_terminal(caller, request, false)?;
-        if request.host_agent.is_some() {
+        self.authorize_room_command(caller, request)?;
+        if request.target.host_agent().is_some() {
             return Err(error(
                 "exec_place_not_here",
                 "a held launch is placed by the kernel that holds it; leave host_agent out",
@@ -80,12 +80,12 @@ impl KernelRuntimeState {
     /// Runs the authorized `ExecPlace` through `grant`, the requester's own gateway grant.
     pub(crate) async fn place_room_exec(
         &self,
-        request: RoomTerminalRequest,
+        request: RunCommandRequest,
         requester: &Requester,
         own_name: &str,
         grant: Arc<dyn GrantedSend>,
-    ) -> Result<RoomTerminalResult, DaemonError> {
-        let RoomTerminalOperation::ExecPlace {
+    ) -> Result<RunCommandResult, DaemonError> {
+        let RunCommandOperation::ExecPlace {
             exec_id, directory, ..
         } = request.operation
         else {
@@ -94,7 +94,12 @@ impl KernelRuntimeState {
         crate::room_exec::run_on_kernel(
             &self.owned.room_execs,
             Placement {
-                session_id: &request.session_id,
+                session_id: request.target.session_id().ok_or_else(|| {
+                    error(
+                        "exec_invalid_target",
+                        "place a held command from its Room workspace",
+                    )
+                })?,
                 exec_id: &exec_id,
                 directory: directory.as_deref(),
                 origin_kernel: own_name,
@@ -103,6 +108,6 @@ impl KernelRuntimeState {
             grant,
         )
         .await?;
-        Ok(RoomTerminalResult::ExecOpened { exec_id })
+        Ok(RunCommandResult::ExecOpened { exec_id })
     }
 }

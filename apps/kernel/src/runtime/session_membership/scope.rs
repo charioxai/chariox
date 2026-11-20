@@ -408,9 +408,10 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::EndSession(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
-        LocalDaemonRequest::RunShellCommand(request) => Some(SessionMembershipScope::SessionId(
-            request.session_id.clone(),
-        )),
+        LocalDaemonRequest::RunCommand(request) => request
+            .target
+            .session_id()
+            .map(|id| SessionMembershipScope::SessionId(id.to_owned())),
         LocalDaemonRequest::ReadDirectoryTree(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),

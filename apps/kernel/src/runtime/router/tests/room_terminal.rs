@@ -24,6 +24,26 @@ fn run<F: std::future::Future<Output = ()> + 'static>(name: &str, test: fn() -> 
         .expect("test thread should not panic");
 }
 
+async fn command_request(
+    router: &CommandRouter,
+    user_id: &str,
+    session_id: &str,
+    operation: crate::local::RunCommandOperation,
+) -> Result<crate::local::RunCommandResult, DaemonError> {
+    let request = LocalDaemonRequest::RunCommand(crate::local::RunCommandRequest {
+        target: crate::local::CommandTarget::RoomWorkspace {
+            session_id: session_id.to_string(),
+        },
+        acting_agent: None,
+        operation,
+    });
+    let command = remote_command_for_request(&request, Some(user_id));
+    match router.dispatch(command, request).await? {
+        LocalDaemonResponse::RunCommand { result } => Ok(result),
+        other => panic!("unexpected command response {other:?}"),
+    }
+}
+
 async fn terminal_request(
     router: &CommandRouter,
     user_id: &str,
@@ -467,68 +487,69 @@ fn room_exec_uses_exactly_the_room_terminal_owner_gate() {
             .join_session_invite(&room, invite.invite_id(), "member".to_string(), 1)
             .unwrap();
         let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
-        let operation = RoomTerminalOperation::ExecOpen {
+        use crate::local::{RunCommandOperation, RunCommandResult};
+        let operation = RunCommandOperation::ExecOpen {
             command: vec!["/bin/cat".to_string()],
+            directory: None,
+            timeout_ms: None,
         };
         assert!(
-            terminal_request(&router, "member", &room, None, operation.clone())
+            command_request(&router, "member", &room, operation.clone())
                 .await
                 .is_err(),
             "membership alone grants neither terminal nor exec access"
         );
-        let result = terminal_request(&router, DEFAULT_LOCAL_USER_ID, &room, None, operation)
+        let result = command_request(&router, DEFAULT_LOCAL_USER_ID, &room, operation)
             .await
             .unwrap();
-        let RoomTerminalResult::ExecOpened { exec_id } = result else {
+        let RunCommandResult::ExecOpened { exec_id } = result else {
             panic!("expected exec ID");
         };
-        let listed = terminal_request(
+        let listed = command_request(
             &router,
             DEFAULT_LOCAL_USER_ID,
             &room,
-            None,
-            RoomTerminalOperation::ExecList,
+            RunCommandOperation::ExecList,
         )
         .await
         .unwrap();
-        let RoomTerminalResult::ExecListed { execs } = listed else {
+        let RunCommandResult::ExecListed { execs } = listed else {
             panic!("expected exec list");
         };
         assert_eq!(execs.len(), 1);
         assert_eq!(execs[0].exec_id, exec_id);
         for operation in [
-            RoomTerminalOperation::ExecList,
-            RoomTerminalOperation::ExecWrite {
+            RunCommandOperation::ExecList,
+            RunCommandOperation::ExecWrite {
                 exec_id: exec_id.clone(),
                 offset: 0,
                 data_base64: "YQ==".to_string(),
             },
-            RoomTerminalOperation::ExecStdinClose {
+            RunCommandOperation::ExecStdinClose {
                 exec_id: exec_id.clone(),
                 offset: 0,
             },
-            RoomTerminalOperation::ExecRead {
+            RunCommandOperation::ExecRead {
                 exec_id: exec_id.clone(),
                 after_cursor: 0,
                 wait_ms: 0,
             },
-            RoomTerminalOperation::ExecCancel {
+            RunCommandOperation::ExecCancel {
                 exec_id: exec_id.clone(),
             },
-            RoomTerminalOperation::ExecClose {
+            RunCommandOperation::ExecClose {
                 exec_id: exec_id.clone(),
             },
         ] {
-            assert!(terminal_request(&router, "member", &room, None, operation)
+            assert!(command_request(&router, "member", &room, operation)
                 .await
                 .is_err());
         }
-        terminal_request(
+        command_request(
             &router,
             DEFAULT_LOCAL_USER_ID,
             &room,
-            None,
-            RoomTerminalOperation::ExecClose { exec_id },
+            RunCommandOperation::ExecClose { exec_id },
         )
         .await
         .unwrap();

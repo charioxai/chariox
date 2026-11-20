@@ -251,11 +251,11 @@ test("terminal send --wait-ms keeps its request open for the whole wait, whateve
 for (const ended of [false, true]) test(`exec real socket loss preserves resume details and probes access (ended=${ended})`, async () => {
   let dropped = false
   const kernel = await startFakeKernel((socket, frame) => {
-    if ("RelayStatus" in frame.request) return replyWith(socket, frame, relayStatus(["room_exec_v1"]))
+    if ("RelayStatus" in frame.request) return replyWith(socket, frame, relayStatus(["run_command_v1"]))
     if ("ListGatewayKernels" in frame.request) return replyWith(socket, frame, ended ? refusal("kernel_access_ended") : { response: { GatewayKernelsListed: {} } })
-    const operation = (frame.request.RoomTerminal as { operation: { operation: string } }).operation.operation
+    const operation = (frame.request.RunCommand as { operation: { operation: string } }).operation.operation
     if (operation === "exec_read") { dropped = true; socket.close(); return }
-    replyWith(socket, frame, { response: { RoomTerminal: { result: { result: "exec_opened", exec_id: "exec-live" } } } })
+    replyWith(socket, frame, { response: { RunCommand: { result: { result: "exec_opened", exec_id: "exec-live" } } } })
   })
   const sink = () => new Writable({ write(_chunk, _encoding, done) { done() } })
   try {
@@ -307,9 +307,9 @@ test("--help answers with usage and exit 0 for every agent command; bare termina
 test("exec place sends exec_place to this kernel and names the target in the operation, not as a route", async () => {
   const seen: { operation: unknown; kernel: unknown }[] = []
   const kernel = await startFakeKernel((socket, frame) => {
-    const body = frame.request.RoomTerminal as { session_id: string; operation: unknown }
-    seen.push({ operation: { session: body.session_id, ...(body.operation as object) }, kernel: (frame as { kernel?: unknown }).kernel })
-    replyWith(socket, frame, { response: { RoomTerminal: { result: { result: "exec_opened", exec_id: "exec-held" } } } })
+    const body = frame.request.RunCommand as { target: { session_id: string }; operation: unknown }
+    seen.push({ operation: { session: body.target.session_id, ...(body.operation as object) }, kernel: (frame as { kernel?: unknown }).kernel })
+    replyWith(socket, frame, { response: { RunCommand: { result: { result: "exec_opened", exec_id: "exec-held" } } } })
   })
   const printed: string[] = []
   const log = console.log

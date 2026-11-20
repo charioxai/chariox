@@ -462,7 +462,7 @@ response_policies! {
         TerminalResized,
         TerminalInputSent,
         TerminalOutput,
-        ShellCommandCompleted,
+        RunCommand,
         DirectoryTreeRead,
         FileRead,
         FileEdited,

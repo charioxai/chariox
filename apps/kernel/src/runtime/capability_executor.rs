@@ -1,7 +1,7 @@
 use crate::capability::{
     CaptureScreenshotRequest, DirectoryTreeService, EditFileRequest, FileCapabilityService,
     GitCapabilityService, InspectGitRequest, ReadDirectoryTreeRequest, ReadFileRequest,
-    RunShellCommandRequest, ScreenshotCapabilityService, ShellCommandService,
+    ScreenshotCapabilityService,
 };
 use crate::error::DaemonError;
 use crate::local::{LocalDaemonRequest, LocalDaemonResponse};
@@ -20,34 +20,6 @@ pub(crate) async fn execute_capability_request(
     request: LocalDaemonRequest,
 ) -> Option<Result<LocalDaemonResponse, DaemonError>> {
     match request {
-        LocalDaemonRequest::RunShellCommand(request) => {
-            let context = store
-                .context(&request.session_id, &request.attachment_id, "shell")
-                .await;
-            Some(match context {
-                Ok(context) => {
-                    spawn_capability("run shell command", health, move || {
-                        context.authorize()?;
-                        ShellCommandService::new()
-                            .run(
-                                RunShellCommandRequest::new(
-                                    request.session_id,
-                                    request.attachment_id,
-                                    request.command,
-                                    request.args,
-                                    context.worktree_root,
-                                    request.working_directory,
-                                )
-                                .with_timeout_ms(request.timeout_ms.unwrap_or(5_000))
-                                .with_environment(context.environment),
-                            )
-                            .map(|result| LocalDaemonResponse::ShellCommandCompleted { result })
-                    })
-                    .await
-                }
-                Err(error) => Err(error),
-            })
-        }
         LocalDaemonRequest::ReadDirectoryTree(request) => {
             let context = store
                 .context(
@@ -225,7 +197,7 @@ mod tests {
     };
     use crate::attachment::{AttachRequest, ClientCapabilityLevel};
     use crate::error::DaemonError;
-    use crate::local::{LocalDaemonRequest, RunShellCapabilityRequest};
+    use crate::local::{LocalDaemonRequest, ReadDirectoryTreeCapabilityRequest};
     use crate::runtime::state::KernelRuntimeState;
     use crate::session::CreateSessionRequest;
     use crate::{DaemonApp, DaemonConfig};
@@ -321,21 +293,19 @@ mod tests {
         let response = execute_capability_request(
             &CapabilityRuntimeStore::new(owned_runtime_state(&app).await),
             health.clone(),
-            LocalDaemonRequest::RunShellCommand(RunShellCapabilityRequest {
+            LocalDaemonRequest::ReadDirectoryTree(ReadDirectoryTreeCapabilityRequest {
                 session_id: session.id().to_string(),
                 attachment_id: attachment.id().to_string(),
-                command: "/bin/true".to_string(),
-                args: Vec::new(),
-                working_directory: None,
-                timeout_ms: Some(1_000),
+                path: None,
+                max_depth: 1,
             }),
         )
         .await
-        .expect("shell command should be a capability request");
+        .expect("directory read should be a capability request");
 
         match response.expect_err("overloaded executor should reject work") {
             DaemonError::LocalTransport { operation, message } => {
-                assert_eq!(operation, "run shell command");
+                assert_eq!(operation, "read directory tree");
                 assert_eq!(message, "capability executor is overloaded");
             }
             error => panic!("unexpected error: {error}"),
