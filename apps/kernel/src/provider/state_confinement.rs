@@ -185,6 +185,15 @@ pub(crate) fn configure(config: &crate::config::DaemonConfig) -> Result<(), Daem
             })?;
         }
     }
+    // A running provider can receive a workflow turn later. Keep this mount
+    // present from launch so it sees new files without restarting the provider.
+    let instructions = crate::config::DaemonConfig::workflow_instruction_mount();
+    private_folder(&instructions).map_err(|error| {
+        confinement_error(format!(
+            "could not create workflow instruction directory {}: {error}",
+            instructions.display()
+        ))
+    })?;
     let _ = CONFIGURED_FOLDERS.set(folders);
     Ok(())
 }
@@ -321,6 +330,9 @@ fn confine_command_with_read_only(
     let own = existing_canonical(named.into_iter().map(|(_, path)| path).collect());
     let mut shared = existing_canonical(cli_paths());
     shared.retain(|path| secrets.cover(path));
+    shared.extend(existing_canonical(vec![
+        crate::config::DaemonConfig::workflow_instruction_mount(),
+    ]));
     for path in read_only {
         shared.push(path.canonicalize().map_err(|error| {
             confinement_error(format!(

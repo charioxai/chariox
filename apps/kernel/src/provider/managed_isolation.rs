@@ -1179,6 +1179,10 @@ pub(crate) fn apply_managed_provider_isolation(
             })
             .unwrap_or_default();
         let trusted_read_only_paths = managed_trusted_read_only_paths(&request.skill_cache_roots)?;
+        let workflow_instructions = validate_boundary_directory(
+            &crate::config::DaemonConfig::workflow_instruction_mount(),
+            "workflow instruction directory",
+        )?;
         let runtime_command_roots = managed_runtime_command_roots()?;
 
         let resolver = managed_resolver_binding()?;
@@ -1296,6 +1300,13 @@ pub(crate) fn apply_managed_provider_isolation(
             {
                 append_bind(&mut args, root, root, &mut created_directories);
             }
+        }
+        if workflow_instructions.is_dir() {
+            append_managed_trusted_read_only_paths(
+                &mut args,
+                &[workflow_instructions],
+                &mut created_directories,
+            );
         }
 
         // Runtime and late workspace binds must not re-expose the browser's
