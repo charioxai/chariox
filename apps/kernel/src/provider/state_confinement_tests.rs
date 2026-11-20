@@ -214,7 +214,7 @@ fn a_local_provider_can_read_packages_under_a_confined_state_directory() {
     let kernel = DummyKernelHome::new();
     let packages = kernel.home.join("state/skills/packages");
     let reference = packages.join("skill-id/digest/references/phrase.txt");
-    let scratch = kernel.home.join("t/session/provider");
+    let scratch = crate::agent_temp::dir("session", "provider-test").unwrap();
     write(&reference, "bundled reference");
     let launch = crate::provider::ProviderLaunchResult {
         endpoint_mode: crate::provider::AgentEndpointMode::Managed,
@@ -609,9 +609,9 @@ fn a_provider_run_writes_its_scratch_when_the_kernel_home_holds_the_state() {
         .get("TMPDIR")
         .expect("the run has its scratch folder")
         .clone();
-    assert!(
-        scratch.starts_with(&kernel.home.join("t").display().to_string()),
-        "{scratch}"
+    assert_eq!(
+        Path::new(&scratch),
+        crate::agent_temp::dir("room1", "agent-scratch1").unwrap()
     );
     let output = std::process::Command::new(run.pty_program().expect("the run starts a process"))
         .args(run.pty_args())
