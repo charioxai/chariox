@@ -1816,6 +1816,8 @@ mod child_finished_event;
 
 #[cfg(test)]
 mod agent_delivery_recovery_tests;
+#[cfg(test)]
+mod agent_start_retry_tests;
 mod agent_gone_announcement;
 #[cfg(test)]
 mod agent_inbox_brief_tests;

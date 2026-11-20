@@ -13,7 +13,7 @@ impl Fixture {
             .unwrap()
     }
 
-    fn state_of(&self, sequence: u64) -> String {
+    pub(super) fn state_of(&self, sequence: u64) -> String {
         self.child_inbox()
             .into_iter()
             .find(|e| e.sequence == sequence)
@@ -50,7 +50,7 @@ impl Fixture {
             .unwrap();
     }
 
-    fn blocked_delivery_tasks(&self) -> usize {
+    pub(super) fn blocked_delivery_tasks(&self) -> usize {
         self.runtime
             .owned
             .durable_state_store
@@ -62,7 +62,7 @@ impl Fixture {
     }
 
     /// Takes the room's directory away, as a deleted worktree does.
-    fn remove_workspace(&self) -> std::path::PathBuf {
+    pub(super) fn remove_workspace(&self) -> std::path::PathBuf {
         let dir = self._worktree.path().to_path_buf();
         let moved = dir.with_extension("moved");
         std::fs::rename(&dir, &moved).unwrap();
