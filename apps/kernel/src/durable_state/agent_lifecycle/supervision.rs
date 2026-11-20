@@ -530,9 +530,18 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 {
                     // A delivery with a provider attempt but no receipt is settled by the
                     // kernel before this sweep (`settle_interrupted_deliveries`). What is
-                    // left refused before any provider I/O: nothing is unconfirmed, so it
-                    // ends as failed and cannot fence the recipient's later wakes.
+                    // left refused before any provider I/O, so nothing is unconfirmed.
                     if !clock_quarantined {
+                        if matches!(e.kind.as_str(), "deadline_reached" | "wait_recheck") {
+                            // The wait can only produce this occurrence once. Keep a refused
+                            // wake deliverable so the wait resumes after the workspace returns.
+                            tx.execute(
+                                "UPDATE agent_inbox_refusals SET first_refused_at_ms=?2 WHERE sequence=?1",
+                                params![sql_integer(e.sequence)?, sql_integer(now)?],
+                            )
+                            .map_err(sql)?;
+                            continue;
+                        }
                         super::delivery_failure::fail_undelivered(
                             tx,
                             &mut e,

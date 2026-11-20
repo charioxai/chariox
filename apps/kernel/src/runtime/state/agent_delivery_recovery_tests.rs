@@ -492,6 +492,73 @@ async fn refused_one_shot_wake_settles_its_waiting_task_at_exhaustion() {
     assert!(settled.wait.is_none());
 }
 
+#[tokio::test]
+async fn refused_wait_deadline_delivers_after_the_workspace_returns() {
+    use crate::durable_state::agent_lifecycle::ExecutionState;
+
+    let f = Fixture::with_child_provider("dev-stub");
+    let store = &f.runtime.owned.durable_state_store;
+    let now = crate::session::unix_epoch_ms();
+    let task = f.create_one_shot_timer("deadline-recovery", now);
+    store
+        .agent_lifecycle(Operation::Yield {
+            task: task.task_id.clone(),
+            prompt: task.prompt_id.clone(),
+            registrations: vec!["completion-deadline-recovery".into()],
+            cursor: 0,
+            deadline: Some(now + 100),
+            reason: "wait for the timer or its deadline".into(),
+            now,
+        })
+        .unwrap();
+    store
+        .agent_lifecycle(Operation::Settle {
+            room: f.room.clone(),
+            agent: f.child.clone(),
+            prompt: task.prompt_id.clone(),
+            run: "deadline-setup-run".into(),
+            has_answer: false,
+            cancelled: false,
+            now,
+        })
+        .unwrap();
+
+    let moved = f.remove_workspace();
+    store
+        .agent_lifecycle(Operation::Sweep {
+            now: now + 100,
+            busy_recipients: vec![],
+            vault_wait_recipients: vec![],
+            held_work: vec![],
+        })
+        .unwrap();
+    let deadline = f
+        .child_inbox()
+        .into_iter()
+        .find(|e| e.kind == "deadline_reached")
+        .expect("the live wait reached its deadline");
+    let error = f
+        .runtime
+        .deliver_agent_inbox(&f.room, &f.child)
+        .await
+        .unwrap_err();
+    std::fs::rename(moved, f._worktree.path()).unwrap();
+    assert!(error.to_string().contains("does not exist"), "{error}");
+
+    f.sweep_after_delivery_window();
+    assert_eq!(
+        store.agent_task(&task.task_id).unwrap().unwrap().state,
+        ExecutionState::Waiting
+    );
+    f.sweep_after_delivery_window();
+    f.runtime
+        .deliver_agent_inbox(&f.room, &f.child)
+        .await
+        .unwrap();
+    assert_eq!(f.state_of(deadline.sequence), "acknowledged");
+    assert!(f.child_is_running());
+}
+
 impl Fixture {
     /// The child's waiting task whose wake was refused before it started (a declined Vault
     /// unlock) and that was blocked for its owner: the wake stays pending, held for Resume.
