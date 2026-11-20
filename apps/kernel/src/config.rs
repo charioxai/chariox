@@ -11,8 +11,10 @@ mod credentials;
 mod payment_card;
 pub(crate) use payment_card::PaymentCard;
 pub use payment_card::{PaymentCardField, PaymentCardSummary};
+pub(crate) mod vault_kind;
 pub(crate) mod vault_use;
 pub use vault_use::{VaultUseBinding, VaultUseTarget, VaultValueKind};
+mod daemon_config_lock;
 mod env_loader;
 mod identity;
 mod kernel_access;
@@ -28,10 +30,12 @@ mod relay_peer_keys;
 mod relay_profile;
 mod room_environment;
 mod secret_link;
+mod skills;
 mod slices;
+pub use skills::{SkillMetadataBudgetPercent, UserSkillsConfig};
 mod socket_path;
 mod storage;
-pub(crate) use paths::{default_state_dir, kernel_state_roots};
+pub(crate) use paths::{default_config_dir, default_state_dir, kernel_state_roots};
 pub(crate) use socket_path::validate_local_socket_path;
 mod resource_protection;
 mod totp;
@@ -340,8 +344,9 @@ impl DaemonConfig {
         let state_dir = state_root.path();
         let path_string = |path: PathBuf| path.display().to_string();
         config.session_history_root_default = state_dir.join("session-history");
-        config.user_config.history.operational.path =
-            Some(path_string(state_dir.join("operational-history.db")));
+        config.user_config.history.operational.path = Some(path_string(
+            state_dir.join("operational-history").join("operational.db"),
+        ));
         config.user_config.artifacts.operational.root =
             Some(path_string(state_dir.join("operational-artifacts")));
         config.user_config.artifacts.operational.index_path =
@@ -516,6 +521,8 @@ pub struct CharioxUserConfig {
     #[serde(default)]
     pub slices: UserSlicesConfig,
     #[serde(default)]
+    pub skills: UserSkillsConfig,
+    #[serde(default)]
     pub ui: UserUiConfig,
     #[serde(default)]
     pub relay: UserRelayConfig,
@@ -544,6 +551,7 @@ impl Default for CharioxUserConfig {
             artifacts: UserArtifactsConfig::default(),
             state: UserStateConfig::default(),
             slices: UserSlicesConfig::default(),
+            skills: UserSkillsConfig::default(),
             ui: UserUiConfig::default(),
             relay: UserRelayConfig::default(),
             kernel: UserKernelConfig::default(),

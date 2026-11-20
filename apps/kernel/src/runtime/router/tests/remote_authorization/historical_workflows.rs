@@ -100,12 +100,9 @@ async fn external_history_stop_inner(captured: bool) {
             .contains("ownership tracking"));
     } else {
         let error = outcome.expect_err("MP-11: external owner grant must not stop historical runs");
-        // External callers receive a redacted error; the Running check below
-        // proves the run was not stopped.
-        assert!(
-            error.to_string().contains("external request failed"),
-            "{error}"
-        );
+        // The external caller is told why; the Running check below proves the
+        // run was not stopped.
+        assert!(error.to_string().contains("ownership tracking"), "{error}");
     }
     assert_eq!(
         router

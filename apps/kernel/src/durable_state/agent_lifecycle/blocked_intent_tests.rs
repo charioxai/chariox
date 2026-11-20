@@ -150,7 +150,7 @@ fn restart_failure_retirement_keeps_owned_work_and_requires_current_revision() {
             }
             _ => {}
         }
-        f.apply(Operation::Block {
+        f.apply(Operation::BlockInterrupted {
             task: "p".into(),
             prompt: "p".into(),
             reason: "restart recovery failed".into(),
@@ -159,6 +159,7 @@ fn restart_failure_retirement_keeps_owned_work_and_requires_current_revision() {
         f.apply(Operation::RetireRestartFailure {
             task: "p".into(),
             revision: before.blocked_revision + u64::from(retained_work == "stale"),
+            later_prompt: "later".into(),
             now: 3,
         });
         let after = f.task();
@@ -195,7 +196,7 @@ fn restart_failure_retirement_keeps_pending_deliveries() {
         submit_epoch: None,
         resumed_at_ms: None,
     }));
-    f.apply(Operation::Block {
+    f.apply(Operation::BlockInterrupted {
         task: "p".into(),
         prompt: "p".into(),
         reason: "restart recovery failed".into(),
@@ -205,8 +206,58 @@ fn restart_failure_retirement_keeps_pending_deliveries() {
     f.apply(Operation::RetireRestartFailure {
         task: "p".into(),
         revision: before.blocked_revision,
+        later_prompt: "later".into(),
         now: 3,
     });
     assert_eq!(f.task(), before);
     assert_eq!(f.store.agent_inbox("room", "parent", 0).unwrap(), inbox);
+}
+
+#[test]
+fn a_later_turn_supersedes_an_interrupted_block_but_never_an_owner_block() {
+    let retire = |f: &Fixture| {
+        let before = f.task();
+        f.apply(Operation::RetireRestartFailure {
+            task: "p".into(),
+            revision: before.blocked_revision,
+            later_prompt: "later".into(),
+            now: 3,
+        });
+        f.task()
+    };
+    let owner = Fixture::new();
+    owner.begin("p");
+    owner.apply(Operation::Block {
+        task: "p".into(),
+        prompt: "p".into(),
+        reason: "Owner must confirm the release window".into(),
+    });
+    let before = owner.task();
+    assert_eq!(retire(&owner), before, "an owner block waits for the owner");
+
+    let interrupted = Fixture::new();
+    interrupted.begin("p");
+    interrupted.apply(Operation::BlockInterrupted {
+        task: "p".into(),
+        prompt: "p".into(),
+        reason: "Delivery failed: the agent did not start".into(),
+    });
+    assert_eq!(retire(&interrupted).state, ExecutionState::Cancelled);
+
+    // The agent asks its owner on a task the kernel had blocked as interrupted: the
+    // question is the block now, so a later turn leaves it.
+    let asked = Fixture::new();
+    asked.begin("p");
+    asked.apply(Operation::BlockInterrupted {
+        task: "p".into(),
+        prompt: "p".into(),
+        reason: "Delivery failed: the agent did not start".into(),
+    });
+    asked.apply(Operation::Block {
+        task: "p".into(),
+        prompt: "p".into(),
+        reason: "Owner must confirm the release window".into(),
+    });
+    let before = asked.task();
+    assert_eq!(retire(&asked), before, "the owner question stays");
 }

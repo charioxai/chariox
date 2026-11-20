@@ -33,7 +33,7 @@ esac
     config.user_config.credential_vault.backend =
         crate::config::CredentialVaultBackend::ProcessMemory;
     if recheck == Some("locked-vault") {
-        let path = root.join("vault.json");
+        let path = root.join("vault").join("vault.json");
         config.user_config.credential_vault.backend =
             crate::config::CredentialVaultBackend::CharioxEncrypted;
         config.user_config.credential_vault.path = path.display().to_string();
@@ -220,7 +220,8 @@ esac
         if matches!(recheck, Some("locked-vault" | "missing-executable")) {
             let before = registry.get("local", alias, &profile.profile_id).unwrap();
             if recheck == Some("locked-vault") {
-                crate::secret::lock_chariox_encrypted_vault(root.join("vault.json")).unwrap();
+                crate::secret::lock_chariox_encrypted_vault(root.join("vault").join("vault.json"))
+                    .unwrap();
             } else {
                 std::fs::remove_file(&executable).unwrap();
             }

@@ -15,7 +15,7 @@ test("remote machine formatter shows provider account identities", () => {
     machine_alias: "mini",
     display_name: "mini",
     trust_status: "approved",
-    online: true,
+    presence: "online",
     pending: false,
     kernel_count: 2,
     available_providers: ["codex", "opencode"],
@@ -31,9 +31,9 @@ test("remote machine formatter shows provider account identities", () => {
     }],
   }, {
     machine_id: "machine-2",
-    display_name: "offline-box",
+    display_name: "dropped-box",
     trust_status: "approved",
-    online: false,
+    presence: "reconnecting",
     pending: false,
     kernel_count: 0,
     available_providers: [],
@@ -41,7 +41,7 @@ test("remote machine formatter shows provider account identities", () => {
   }])
 
   assert.match(output, /mini id=machine-1 status=approved kernels=2 providers=codex,opencode accounts=codex=daily \(dev@example.com\),opencode=api\/state=not_configured$/m)
-  assert.match(output, /offline-box id=machine-2 status=approved,offline kernels=0 providers=- accounts=none next: connect or restart the remote kernel on this machine/)
+  assert.match(output, /dropped-box id=machine-2 status=approved,reconnecting kernels=0 providers=- accounts=none next: wait for the remote kernel to reconnect, or restart it on this machine/)
 })
 
 test("remote kernel formatter summarizes worker readiness", () => {

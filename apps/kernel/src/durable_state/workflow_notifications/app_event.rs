@@ -36,10 +36,22 @@ pub(crate) fn emit_in(
         tx,
         &source,
         occurrence_id,
-        WorkflowOutputPayload::new(text_of(payload), Vec::new()),
+        WorkflowOutputPayload::new(text_of(payload), Vec::new()).with_data(
+            chariox_app_package::option_values(&source.options, event_data(route, payload)),
+        ),
         Vec::new(),
         now_ms,
     )
+}
+
+/// Where the declared fields are: a generator's typed `data`, or the App event payload itself
+/// for a route the owner feeds.
+fn event_data<'a>(route: &InboxRoute, payload: &'a serde_json::Value) -> &'a serde_json::Value {
+    if route.source.is_some() {
+        &payload["data"]
+    } else {
+        payload
+    }
 }
 
 /// The event's own text, cut at a character boundary.

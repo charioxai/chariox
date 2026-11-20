@@ -43,9 +43,17 @@ impl KernelRuntimeOwnedState {
                 self.clear_active_provider_run_session_pointer(session_id, run.id())?;
             }
             Ok(_) => {
-                let outcome = self
-                    .provider_store
-                    .park_run_provider_only(session_id, &active_provider_run_id)?;
+                // A prompt given since the check above keeps the run.
+                let Some(outcome) = self.prompt_state_owner.while_sessions_idle(
+                    std::slice::from_ref(&session),
+                    || {
+                        self.provider_store
+                            .park_run_provider_only(session_id, &active_provider_run_id)
+                    },
+                )?
+                else {
+                    return Ok(false);
+                };
                 self.clear_active_provider_run_session_pointer(session_id, outcome.run().id())?;
                 self.provider_run_projection.update(outcome.into_run());
             }

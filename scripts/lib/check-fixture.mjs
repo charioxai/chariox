@@ -20,15 +20,32 @@ export function makeRepo(files) {
     },
     commit: message => { git(root, 'commit', '-q', '-m', message); return git(root, 'rev-parse', 'HEAD') },
     // Runs one check against the working tree, comparing with `base`. Returns {status, text}.
-    run(name, { base = repo.base, args = [] } = {}) {
-      try {
-        const out = execFileSync('node', [runner, '--root', root, '--only', name, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, CHARIOX_BOUNDARY_BASE: base, CI: '' } })
-        return { status: 0, text: out }
-      } catch (error) { return { status: error.status, text: `${error.stdout}${error.stderr}` } }
+    run: (name, { base = repo.base, args = [] } = {}) => runCheck(root, name, base, args),
+    // A clone of `ref` the way CI checks a pull request out: that one commit, plus `base` fetched at depth 1. Its `run`
+    // compares with `base`; its origin is this repository.
+    shallowClone(ref, base = repo.base) {
+      git(root, 'config', 'uploadpack.allowReachableSHA1InWant', 'true')
+      const clone = mkdtempSync(join(tmpdir(), 'rule-check-clone-'))
+      git(clone, 'clone', '-q', '--depth=1', '--no-tags', '--branch', ref, `file://${root}`, '.')
+      git(clone, 'fetch', '-q', '--depth=1', '--no-tags', 'origin', base)
+      return {
+        root: clone,
+        git: (...args) => git(clone, ...args),
+        run: (name, { args = [] } = {}) => runCheck(clone, name, base, args),
+        dispose: () => rmSync(clone, { recursive: true, force: true }),
+      }
     },
+    git: (...args) => git(root, ...args),
     dispose: () => rmSync(root, { recursive: true, force: true }),
   }
   for (const [path, content] of Object.entries(files)) repo.write(path, content)
   repo.base = repo.commit('base')
   return repo
+}
+
+function runCheck(root, name, base, args) {
+  try {
+    const out = execFileSync('node', [runner, '--root', root, '--only', name, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, CHARIOX_BOUNDARY_BASE: base, CI: '' } })
+    return { status: 0, text: out }
+  } catch (error) { return { status: error.status, text: `${error.stdout}${error.stderr}` } }
 }

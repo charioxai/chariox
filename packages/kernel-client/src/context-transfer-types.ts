@@ -4,13 +4,14 @@ export type ContextRepositorySelection = {
   readonly worktreeId: string | null
 }
 
+export type ContextSourceProject = {
+  readonly projectId: string
+  readonly repositories: readonly ContextRepositorySelection[]
+}
+
 export type ContextDevelopmentSetup =
   | { readonly kind: "empty" }
-  | {
-      readonly kind: "source_project"
-      readonly projectId: string
-      readonly repositories: readonly ContextRepositorySelection[]
-    }
+  | { readonly kind: "source_projects"; readonly projects: readonly ContextSourceProject[] }
 
 export type ProviderAccountTransferSelection =
   | { readonly kind: "none" }

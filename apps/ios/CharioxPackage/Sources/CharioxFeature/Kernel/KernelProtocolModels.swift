@@ -4,6 +4,7 @@ public struct RuntimeSession: Identifiable, Equatable, Sendable, Decodable {
     public let id: String
     public let alias: String?
     public let workspaceID: String
+    public let projectID: String?
     public let worktreeID: String
     public let status: String
     public let configState: SessionConfigState?
@@ -22,6 +23,7 @@ public struct RuntimeSession: Identifiable, Equatable, Sendable, Decodable {
         id: String,
         alias: String?,
         workspaceID: String,
+        projectID: String? = nil,
         worktreeID: String,
         status: String,
         configState: SessionConfigState? = nil,
@@ -39,6 +41,7 @@ public struct RuntimeSession: Identifiable, Equatable, Sendable, Decodable {
         self.id = id
         self.alias = alias
         self.workspaceID = workspaceID
+        self.projectID = projectID
         self.worktreeID = worktreeID
         self.status = status
         self.configState = configState
@@ -58,6 +61,7 @@ public struct RuntimeSession: Identifiable, Equatable, Sendable, Decodable {
         case id
         case alias
         case workspaceID = "workspace_id"
+        case projectID = "project_id"
         case worktreeID = "worktree_id"
         case status
         case configState = "config_state"
@@ -78,6 +82,7 @@ public struct RuntimeSession: Identifiable, Equatable, Sendable, Decodable {
         id = try container.decode(String.self, forKey: .id)
         alias = try container.decodeIfPresent(String.self, forKey: .alias)
         workspaceID = try container.decode(String.self, forKey: .workspaceID)
+        projectID = try container.decodeIfPresent(String.self, forKey: .projectID)
         worktreeID = try container.decode(String.self, forKey: .worktreeID)
         status = try container.decode(String.self, forKey: .status)
         configState = try container.decodeIfPresent(SessionConfigState.self, forKey: .configState)
@@ -366,20 +371,6 @@ public struct CharioxMcpServerConfig: Equatable, Sendable, Decodable {
         case enabledTools = "enabled_tools"
         case disabledTools = "disabled_tools"
         case tools
-    }
-}
-
-public struct CharioxSkillMetadata: Equatable, Sendable, Decodable {
-    public let name: String
-    public let description: String
-    public let shortDescription: String?
-    public let path: String
-
-    enum CodingKeys: String, CodingKey {
-        case name
-        case description
-        case shortDescription = "short_description"
-        case path
     }
 }
 

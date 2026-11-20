@@ -2,7 +2,7 @@
 use super::*;
 use serde_json::json;
 #[test]
-fn mp11_desktop_grant_is_explicit_retained_scoped_and_epoch_fenced() {
+fn mp11_desktop_grant_is_retained_owner_scoped_and_epoch_fenced() {
     let root = std::env::temp_dir().join(format!("culinux-grants-{:032x}", rand::random::<u128>()));
     let host = KernelBrowserHost::new(root);
     host.set_focus("alice", Some("a"));
@@ -16,20 +16,17 @@ fn mp11_desktop_grant_is_explicit_retained_scoped_and_epoch_fenced() {
     let desktop = UserDomainResource::Desktop {
         surface_id: "owned".into(),
     };
-    host.claim_resource(Some(&admission), desktop.clone(), false)
+    host.claim_resource(Some(&admission), desktop.clone())
         .unwrap();
     host.set_focus("alice", Some("b"));
-    host.claim_resource(Some(&admission), desktop, false)
-        .unwrap();
-    assert!(host
-        .claim_resource(
-            Some(&admission),
-            UserDomainResource::Desktop {
-                surface_id: "other".into()
-            },
-            false
-        )
-        .is_err());
+    host.claim_resource(Some(&admission), desktop).unwrap();
+    host.claim_resource(
+        Some(&admission),
+        UserDomainResource::Desktop {
+            surface_id: "other".into(),
+        },
+    )
+    .unwrap();
     assert!(host
         .admit_for("bob", "a", KernelBrowserCapability::Computer)
         .is_err());

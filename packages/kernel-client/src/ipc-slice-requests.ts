@@ -51,18 +51,23 @@ export function createSliceRequest(options: {
   }
 }
 
+/** A slice works on exactly one Project, which the kernel reads as a selection of one. */
 function serializeSliceDevelopment(
   development: ContextDevelopmentSetup,
 ) {
   if (development.kind === "empty") return { kind: "empty" } as const
+  const [project, ...others] = development.projects
+  if (!project || others.length > 0) throw new Error("A slice works on exactly one Project.")
   return {
-    kind: "source_project" as const,
-    project_id: development.projectId,
-    repositories: development.repositories.map((repository) => ({
-      role: repository.role,
-      workspaceId: repository.workspaceId,
-      worktreeId: repository.worktreeId,
-    })),
+    kind: "source_projects" as const,
+    projects: [{
+      project_id: project.projectId,
+      repositories: project.repositories.map((repository) => ({
+        role: repository.role,
+        workspaceId: repository.workspaceId,
+        worktreeId: repository.worktreeId,
+      })),
+    }],
   }
 }
 

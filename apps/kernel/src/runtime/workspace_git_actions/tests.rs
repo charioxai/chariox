@@ -1,0 +1,802 @@
+use super::*;
+use crate::runtime::bounded_process::{with_test_command_limit, with_test_mutation_limit};
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
+
+const TOKEN: &str = "ghp_sentinelsecret0123456789";
+
+fn git(cwd: &Path, args: &[&str]) -> String {
+    let output = crate::process_spawn::command("git")
+        .args(args)
+        .current_dir(cwd)
+        .output()
+        .expect("git should run");
+    assert!(
+        output.status.success(),
+        "git {} failed: {}",
+        args.join(" "),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+struct Fixture {
+    root: PathBuf,
+    clone: PathBuf,
+    remote: PathBuf,
+}
+
+impl Fixture {
+    fn new(label: &str) -> Self {
+        Self::with_default_branch(label, "main")
+    }
+
+    /// A clone whose remote's default branch is `default`, with `origin/HEAD` set.
+    fn with_default_branch(label: &str, default: &str) -> Self {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-git-{label}-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        let remote = root.join("remote.git");
+        let clone = root.join("clone");
+        std::fs::create_dir_all(&root).unwrap();
+        git(&root, &["init", "--bare", "-b", default, "remote.git"]);
+        git(&root, &["clone", "remote.git", "clone"]);
+        git(&clone, &["config", "user.email", "tests@example.invalid"]);
+        git(&clone, &["config", "user.name", "Chariox Tests"]);
+        std::fs::write(clone.join("README.md"), "seed\n").unwrap();
+        git(&clone, &["add", "."]);
+        git(&clone, &["commit", "-m", "seed"]);
+        git(&clone, &["checkout", "-B", default]);
+        git(&clone, &["push", "-u", "origin", default]);
+        git(&clone, &["remote", "set-head", "origin", default]);
+        Self {
+            root,
+            clone,
+            remote,
+        }
+    }
+
+    fn path(&self) -> &str {
+        self.clone.to_str().unwrap()
+    }
+
+    fn write(&self, name: &str, text: &str) {
+        std::fs::write(self.clone.join(name), text).unwrap();
+    }
+
+    fn commit(&self, files: &[&str], message: &str, branch: Option<&str>) -> CommitOutcome {
+        let files: Vec<String> = files.iter().map(ToString::to_string).collect();
+        commit_workspace_changes("w", self.path(), &files, message, branch, None).unwrap()
+    }
+}
+
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.root);
+    }
+}
+
+#[test]
+fn a_commit_holds_exactly_the_named_files_even_when_others_are_staged_or_changed() {
+    let fixture = Fixture::new("exact");
+    fixture.write("wanted.txt", "wanted\n");
+    fixture.write("staged.txt", "staged\n");
+    fixture.write("loose.txt", "loose\n");
+    git(&fixture.clone, &["add", "staged.txt"]);
+
+    let outcome = fixture.commit(&["wanted.txt"], "Add wanted", None);
+
+    let committed = git(
+        &fixture.clone,
+        &["show", "--name-only", "--format=", "HEAD"],
+    );
+    assert_eq!(committed, "wanted.txt");
+    let left = git(&fixture.clone, &["status", "--porcelain"]);
+    assert!(
+        left.contains("staged.txt") && left.contains("loose.txt"),
+        "{left}"
+    );
+    assert_eq!(
+        outcome.result.commit_sha,
+        Some(git(&fixture.clone, &["rev-parse", "HEAD"]))
+    );
+}
+
+#[test]
+fn work_on_the_default_branch_moves_to_a_feature_branch_and_a_feature_branch_stays() {
+    let fixture = Fixture::new("branch");
+    fixture.write("a.txt", "a\n");
+    let first = fixture.commit(&["a.txt"], "Add the A file!", None);
+    assert!(first.created_branch);
+    assert_eq!(
+        first.result.branch.as_deref(),
+        Some("chariox/add-the-a-file")
+    );
+    assert_eq!(
+        git(&fixture.clone, &["rev-parse", "main"]),
+        git(&fixture.clone, &["rev-parse", "origin/main"])
+    );
+
+    fixture.write("b.txt", "b\n");
+    let second = fixture.commit(&["b.txt"], "Add the B file", None);
+    assert!(!second.created_branch);
+    assert_eq!(
+        second.result.branch.as_deref(),
+        Some("chariox/add-the-a-file")
+    );
+
+    git(&fixture.clone, &["switch", "main"]);
+    fixture.write("c.txt", "c\n");
+    let third = fixture.commit(&["c.txt"], "Add the A file!", None);
+    assert_eq!(
+        third.result.branch.as_deref(),
+        Some("chariox/add-the-a-file-2")
+    );
+}
+
+#[test]
+fn a_commit_names_changed_files_a_message_and_never_the_default_branch() {
+    let fixture = Fixture::new("refusals");
+    fixture.write("a.txt", "a\n");
+    let attempt = |files: &[&str], message: &str, branch: Option<&str>| {
+        let files: Vec<String> = files.iter().map(ToString::to_string).collect();
+        commit_workspace_changes("w", fixture.path(), &files, message, branch, None)
+            .err()
+            .map(|error| error.to_string())
+            .unwrap_or_default()
+    };
+    assert!(attempt(&[], "m", None).contains("between 1 and 500"));
+    assert!(attempt(&["README.md"], "m", None).contains("not a changed file"));
+    assert!(attempt(&["../outside"], "m", None).contains("not a changed file"));
+    assert!(attempt(&["a.txt"], "  ", None).contains("message is required"));
+    assert!(attempt(&["a.txt"], "m", Some("main")).contains("not a usable feature branch"));
+    assert!(attempt(&["a.txt"], "m", Some("-bad")).contains("not a usable feature branch"));
+    assert_eq!(
+        git(&fixture.clone, &["rev-parse", "--abbrev-ref", "HEAD"]),
+        "main"
+    );
+}
+
+#[test]
+fn a_named_branch_is_created_then_reused() {
+    let fixture = Fixture::new("named");
+    fixture.write("a.txt", "a\n");
+    let first = fixture.commit(&["a.txt"], "one", Some("topic/x"));
+    assert!(first.created_branch);
+    fixture.write("b.txt", "b\n");
+    let second = fixture.commit(&["b.txt"], "two", Some("topic/x"));
+    assert!(!second.created_branch);
+    assert_eq!(second.result.branch.as_deref(), Some("topic/x"));
+}
+
+#[test]
+fn a_remote_default_branch_that_is_not_main_is_found_without_a_local_origin_head() {
+    let fixture = Fixture::with_default_branch("develop", "develop");
+    git(
+        &fixture.clone,
+        &["remote", "set-head", "origin", "--delete"],
+    );
+    fixture.write("a.txt", "a\n");
+
+    let outcome = fixture.commit(&["a.txt"], "Add a", None);
+
+    assert!(outcome.created_branch);
+    assert_eq!(outcome.result.branch.as_deref(), Some("chariox/add-a"));
+    assert_eq!(
+        git(&fixture.clone, &["rev-parse", "develop"]),
+        git(&fixture.clone, &["rev-parse", "origin/develop"])
+    );
+    fixture.write("b.txt", "b\n");
+    git(&fixture.clone, &["switch", "develop"]);
+    let files = vec!["b.txt".to_string()];
+    let error = commit_workspace_changes("w", fixture.path(), &files, "b", Some("develop"), None)
+        .err()
+        .map(|error| error.to_string())
+        .unwrap_or_default();
+    assert!(error.contains("not a usable feature branch"), "{error}");
+}
+
+#[test]
+fn a_default_branch_that_cannot_be_determined_stops_the_commit_with_the_next_step() {
+    let fixture = Fixture::new("unknown-default");
+    git(
+        &fixture.clone,
+        &["remote", "set-head", "origin", "--delete"],
+    );
+    git(
+        &fixture.clone,
+        &["remote", "set-url", "origin", "/nonexistent/remote.git"],
+    );
+    fixture.write("a.txt", "a\n");
+    let files = vec!["a.txt".to_string()];
+    let error = commit_workspace_changes("w", fixture.path(), &files, "Add a", None, None)
+        .err()
+        .map(|error| error.to_string())
+        .unwrap_or_default();
+    assert!(
+        error.contains("default branch") && error.contains("can reach the repository"),
+        "{error}"
+    );
+    assert_eq!(
+        git(&fixture.clone, &["rev-parse", "--abbrev-ref", "HEAD"]),
+        "main"
+    );
+}
+
+#[test]
+fn a_push_url_other_than_the_fetch_repository_is_refused() {
+    let fixture = Fixture::new("push-url");
+    git(&fixture.clone, &["switch", "-c", "feature"]);
+    git(
+        &fixture.clone,
+        &["remote", "set-url", "origin", "https://github.com/o/r.git"],
+    );
+    let credential = PushCredential::from_token(TOKEN);
+    let refused = |fixture: &Fixture| {
+        push_workspace_branch("w", fixture.path(), &credential)
+            .err()
+            .map(|error| error.to_string())
+            .unwrap_or_default()
+    };
+
+    // A separate push URL would send the commits somewhere else.
+    git(
+        &fixture.clone,
+        &[
+            "config",
+            "remote.origin.pushurl",
+            fixture.remote.to_str().unwrap(),
+        ],
+    );
+    assert!(
+        refused(&fixture).contains("push URL"),
+        "{}",
+        refused(&fixture)
+    );
+    assert!(
+        git(&fixture.remote, &["branch", "--list", "feature"]).is_empty(),
+        "nothing may have been pushed"
+    );
+
+    // So would a rewrite of the push URL.
+    git(
+        &fixture.clone,
+        &["config", "--unset", "remote.origin.pushurl"],
+    );
+    git(
+        &fixture.clone,
+        &[
+            "config",
+            &format!("url.{}.pushInsteadOf", fixture.remote.display()),
+            "https://github.com/o/r.git",
+        ],
+    );
+    assert!(
+        refused(&fixture).contains("push URL"),
+        "{}",
+        refused(&fixture)
+    );
+
+    // The same repository under another spelling is the intended destination.
+    git(
+        &fixture.clone,
+        &[
+            "config",
+            "--unset-all",
+            &format!("url.{}.pushInsteadOf", fixture.remote.display()),
+        ],
+    );
+    git(
+        &fixture.clone,
+        &["config", "remote.origin.pushurl", "https://github.com/O/R"],
+    );
+    assert_eq!(
+        checked_push_repository(fixture.path()).unwrap(),
+        "o/r".to_string()
+    );
+}
+
+#[test]
+fn a_staged_rename_commits_both_its_sides() {
+    let fixture = Fixture::new("rename");
+    git(&fixture.clone, &["mv", "README.md", "MOVED.md"]);
+
+    fixture.commit(&["MOVED.md"], "Move the readme", None);
+
+    assert_eq!(
+        git(
+            &fixture.clone,
+            &["show", "--name-status", "--format=", "HEAD"]
+        ),
+        "R100\tREADME.md\tMOVED.md"
+    );
+    assert_eq!(git(&fixture.clone, &["status", "--porcelain"]), "");
+}
+
+#[test]
+fn a_rename_never_carries_a_file_recreated_at_its_source() {
+    let fixture = Fixture::new("rename-recreated");
+    git(&fixture.clone, &["mv", "README.md", "MOVED.md"]);
+    fixture.write("README.md", "something unrelated\n");
+    let files = vec!["MOVED.md".to_string()];
+
+    let error = commit_workspace_changes("w", fixture.path(), &files, "Move", None, None)
+        .err()
+        .map(|error| error.to_string())
+        .unwrap_or_default();
+
+    assert!(
+        error.contains("`README.md`") && error.contains("name `README.md` as well"),
+        "{error}"
+    );
+    assert_eq!(git(&fixture.clone, &["log", "--format=%s", "-1"]), "seed");
+
+    // Named too, the recreated file is the caller's choice.
+    fixture.commit(&["MOVED.md", "README.md"], "Move and recreate", None);
+    assert_eq!(
+        git(&fixture.clone, &["show", "HEAD:README.md"]),
+        "something unrelated"
+    );
+}
+
+#[test]
+fn a_failing_git_status_is_the_commit_error_not_a_missing_changed_file() {
+    let fixture = Fixture::new("status-fails");
+    fixture.write("a.txt", "a\n");
+    std::fs::write(fixture.clone.join(".git/index"), "not an index").unwrap();
+    let files = vec!["a.txt".to_string()];
+
+    let error = commit_workspace_changes("w", fixture.path(), &files, "Add a", None, None)
+        .err()
+        .map(|error| error.to_string())
+        .unwrap_or_default();
+
+    assert!(!error.contains("not a changed file"), "{error}");
+    assert!(
+        error.contains("index") && error.contains("git status") && error.contains("exited with"),
+        "{error}"
+    );
+    assert!(error.contains("fix what it reports"), "{error}");
+
+    let overview = crate::runtime::workspace_git_overview::inspect_workspace_git_overview(
+        "w",
+        fixture.path(),
+        None,
+    )
+    .err()
+    .map(|error| error.to_string())
+    .unwrap_or_default();
+    assert!(overview.contains("git status"), "{overview}");
+}
+
+#[test]
+fn an_unknown_compare_ref_is_the_overview_error_not_an_empty_diff() {
+    let fixture = Fixture::new("bad-compare");
+    fixture.write("a.txt", "a\n");
+
+    let error = crate::runtime::workspace_git_overview::inspect_workspace_git_overview(
+        "w",
+        fixture.path(),
+        Some("no-such-ref"),
+    )
+    .err()
+    .map(|error| error.to_string())
+    .unwrap_or_default();
+
+    assert!(
+        error.contains("no-such-ref") && error.contains("git diff"),
+        "{error}"
+    );
+}
+
+/// A clone of `feature` only: it holds neither `origin/main` nor `origin/HEAD`.
+fn single_branch_clone(fixture: &Fixture) -> PathBuf {
+    git(&fixture.clone, &["switch", "-c", "feature"]);
+    fixture.write("feature.txt", "feature\n");
+    git(&fixture.clone, &["add", "."]);
+    git(&fixture.clone, &["commit", "-m", "feature"]);
+    git(&fixture.clone, &["push", "origin", "feature"]);
+    git(
+        &fixture.root,
+        &[
+            "clone",
+            "--single-branch",
+            "--branch",
+            "feature",
+            "remote.git",
+            "single",
+        ],
+    );
+    let single = fixture.root.join("single");
+    git(&single, &["config", "user.email", "tests@example.invalid"]);
+    git(&single, &["config", "user.name", "Chariox Tests"]);
+    assert!(git_command_output(
+        single.to_str().unwrap(),
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            "refs/remotes/origin/main"
+        ]
+    )
+    .is_none());
+    assert!(git_command_output(
+        single.to_str().unwrap(),
+        &["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"]
+    )
+    .is_none());
+    single
+}
+
+#[test]
+fn the_default_branch_of_a_single_branch_clone_is_read_from_the_remote() {
+    let fixture = Fixture::new("single-branch");
+    let single = single_branch_clone(&fixture);
+    let path = single.to_str().unwrap();
+
+    assert_eq!(default_branch(path, None).unwrap(), "main");
+
+    std::fs::write(single.join("b.txt"), "b\n").unwrap();
+    let files = vec!["b.txt".to_string()];
+    let outcome = commit_workspace_changes("w", path, &files, "Add b", None, None).unwrap();
+    assert_eq!(outcome.result.branch.as_deref(), Some("feature"));
+    assert!(!outcome.created_branch);
+}
+
+/// An `origin` that answers only a request carrying the account's header, as a
+/// private GitHub repository does.
+fn private_origin(fixture: &Fixture, token: &str) {
+    let header = format!(
+        "Authorization: Basic {}",
+        PushCredential::from_token(token).0.as_str()
+    );
+    let script = fixture.root.join("private-origin.sh");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\n[ \"$GIT_CONFIG_VALUE_1\" = '{header}' ] || {{ echo 'denied: sign in to see this repository' >&2; exit 1; }}\nexec git \"${{1#git-}}\" '{}'\n",
+            fixture.remote.display()
+        ),
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    git(
+        &fixture.clone,
+        &["remote", "set-head", "origin", "--delete"],
+    );
+    git(&fixture.clone, &["config", "protocol.ext.allow", "always"]);
+    git(
+        &fixture.clone,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            &format!("ext::{} %S", script.display()),
+        ],
+    );
+}
+
+#[test]
+fn a_private_origin_is_asked_for_its_default_branch_as_the_account() {
+    let fixture = Fixture::new("private-origin");
+    private_origin(&fixture, TOKEN);
+    fixture.write("a.txt", "a\n");
+    let files = vec!["a.txt".to_string()];
+
+    let refused = commit_workspace_changes("w", fixture.path(), &files, "Add a", None, None)
+        .err()
+        .map(|error| error.to_string())
+        .unwrap_or_default();
+    assert!(refused.contains("denied: sign in"), "{refused}");
+    assert!(!refused.contains(TOKEN), "{refused}");
+    let other = PushCredential::from_token("another-account");
+    let refused =
+        commit_workspace_changes("w", fixture.path(), &files, "Add a", None, Some(&other))
+            .err()
+            .map(|error| error.to_string())
+            .unwrap_or_default();
+    assert!(refused.contains("denied: sign in"), "{refused}");
+    assert!(!refused.contains(other.0.as_str()), "{refused}");
+
+    let credential = PushCredential::from_token(TOKEN);
+    let outcome = commit_workspace_changes(
+        "w",
+        fixture.path(),
+        &files,
+        "Add a",
+        None,
+        Some(&credential),
+    )
+    .unwrap();
+    assert_eq!(outcome.result.branch.as_deref(), Some("chariox/add-a"));
+    assert!(outcome.created_branch);
+
+    let pushed = push_branch("w", fixture.path(), &credential).unwrap();
+    assert_eq!(pushed.branch.as_deref(), Some("chariox/add-a"));
+    assert_eq!(
+        git(&fixture.remote, &["rev-parse", "refs/heads/chariox/add-a"]),
+        git(&fixture.clone, &["rev-parse", "HEAD"])
+    );
+}
+
+#[test]
+fn files_with_spaces_and_non_ascii_names_are_named_by_their_real_paths() {
+    let fixture = Fixture::new("names");
+    fixture.write("hello world.txt", "a\n");
+    fixture.write("héllo.txt", "b\n");
+    fixture.write("tracked é.txt", "c\n");
+    fixture.commit(&["tracked é.txt"], "Track it", None);
+    fixture.write("tracked é.txt", "changed\n");
+
+    let listed =
+        crate::runtime::workspace_git_changes::workspace_git_file_changes(fixture.path(), "HEAD")
+            .unwrap();
+    let paths: Vec<&str> = listed.iter().map(|file| file.path.as_str()).collect();
+    assert_eq!(paths, ["hello world.txt", "héllo.txt", "tracked é.txt"]);
+
+    fixture.commit(&["hello world.txt", "héllo.txt"], "Add names", None);
+    assert_eq!(
+        git(
+            &fixture.clone,
+            &[
+                "-c",
+                "core.quotePath=false",
+                "show",
+                "--name-only",
+                "--format=",
+                "HEAD"
+            ]
+        ),
+        "hello world.txt\nhéllo.txt"
+    );
+}
+
+#[test]
+fn a_filename_with_glob_characters_is_not_a_pattern() {
+    let fixture = Fixture::new("literal");
+    fixture.write("data[1].txt", "bracket\n");
+    fixture.write("data1.txt", "plain\n");
+
+    fixture.commit(&["data[1].txt"], "Add the bracket file", None);
+
+    assert_eq!(
+        git(
+            &fixture.clone,
+            &["show", "--name-only", "--format=", "HEAD"]
+        ),
+        "data[1].txt"
+    );
+    assert_eq!(
+        git(&fixture.clone, &["status", "--porcelain"]),
+        "?? data1.txt"
+    );
+}
+
+#[test]
+fn an_existing_requested_branch_is_switched_to_not_created() {
+    let fixture = Fixture::new("existing");
+    git(&fixture.clone, &["branch", "topic/x"]);
+    fixture.write("a.txt", "a\n");
+
+    let outcome = fixture.commit(&["a.txt"], "Add a", Some("topic/x"));
+
+    assert!(!outcome.created_branch);
+    assert_eq!(outcome.result.branch.as_deref(), Some("topic/x"));
+}
+
+#[test]
+fn the_default_branch_is_never_pushed_and_a_push_needs_a_github_https_origin() {
+    let fixture = Fixture::new("guards");
+    let credential = PushCredential::from_token(TOKEN);
+    let error = push_workspace_branch("w", fixture.path(), &credential)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("https://github.com/<owner>/<repo>"),
+        "{error}"
+    );
+
+    git(
+        &fixture.clone,
+        &["remote", "set-url", "origin", "https://github.com/o/r.git"],
+    );
+    let error = push_branch("w", fixture.path(), &PushCredential::from_token(TOKEN))
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("default branch"), "{error}");
+    git(&fixture.clone, &["checkout", "--detach"]);
+    let error = push_branch("w", fixture.path(), &PushCredential::from_token(TOKEN))
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("detached HEAD"), "{error}");
+}
+
+#[test]
+fn a_feature_branch_pushes_with_an_upstream_and_never_forces() {
+    let fixture = Fixture::new("push");
+    fixture.write("a.txt", "a\n");
+    fixture.commit(&["a.txt"], "Add a", None);
+    let pushed = push_branch("w", fixture.path(), &PushCredential::from_token(TOKEN)).unwrap();
+    assert_eq!(pushed.branch.as_deref(), Some("chariox/add-a"));
+    assert_eq!(
+        git(&fixture.remote, &["rev-parse", "chariox/add-a"]),
+        git(&fixture.clone, &["rev-parse", "HEAD"])
+    );
+    assert_eq!(
+        git(&fixture.clone, &["rev-parse", "--abbrev-ref", "@{u}"]),
+        "origin/chariox/add-a"
+    );
+
+    // The remote moved on: a plain push is refused, not forced over.
+    git(&fixture.clone, &["commit", "--amend", "-m", "Rewritten"]);
+    let error = push_branch("w", fixture.path(), &PushCredential::from_token(TOKEN))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("rejected") || error.contains("non-fast-forward"),
+        "{error}"
+    );
+}
+
+#[test]
+fn the_credential_reaches_git_by_environment_only_and_is_scrubbed_from_its_failure() {
+    let credential = PushCredential::from_token(TOKEN);
+    let environment = credential.environment();
+    let header = environment
+        .iter()
+        .find(|(name, _)| name == "GIT_CONFIG_VALUE_1")
+        .map(|(_, value)| value.clone())
+        .unwrap();
+    let basic = header.strip_prefix("Authorization: Basic ").unwrap();
+    assert_eq!(
+        base64::engine::general_purpose::STANDARD
+            .decode(basic)
+            .unwrap(),
+        format!("x-access-token:{TOKEN}").into_bytes()
+    );
+    assert!(environment
+        .iter()
+        .any(|(name, value)| name == "GIT_CONFIG_KEY_0" && value == "credential.helper"));
+
+    // A remote hook that prints the header git was given must not get it back.
+    let fixture = Fixture::new("scrub");
+    fixture.write("a.txt", "a\n");
+    fixture.commit(&["a.txt"], "Add a", None);
+    let hook = fixture.remote.join("hooks/pre-receive");
+    std::fs::create_dir_all(hook.parent().unwrap()).unwrap();
+    std::fs::write(
+        &hook,
+        "#!/bin/sh\necho \"got $GIT_CONFIG_VALUE_1\" >&2\nexit 1\n",
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let error = push_branch("w", fixture.path(), &credential)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("got Authorization: Basic [redacted]"),
+        "{error}"
+    );
+    assert!(!error.contains(basic) && !error.contains(TOKEN), "{error}");
+}
+
+#[test]
+fn only_github_https_remotes_are_repositories() {
+    for (url, expected) in [
+        (
+            "https://github.com/charioxai/chariox.git",
+            Some("charioxai/chariox"),
+        ),
+        ("https://github.com/o/r", Some("o/r")),
+        ("https://github.com/o/r/", Some("o/r")),
+        ("git@github.com:o/r.git", None),
+        ("https://gitlab.com/o/r.git", None),
+        ("https://github.com.evil.test/o/r.git", None),
+        ("https://github.com/o", None),
+        ("/tmp/remote.git", None),
+    ] {
+        assert_eq!(github_https_repository(url).as_deref(), expected, "{url}");
+    }
+}
+
+#[cfg(unix)]
+mod slow_hooks {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt as _;
+
+    const QUERY_CAP: Duration = Duration::from_secs(1);
+
+    fn install_hook(repo_git_dir: &Path, name: &str, body: &str) {
+        let hook = repo_git_dir.join("hooks").join(name);
+        std::fs::create_dir_all(hook.parent().unwrap()).unwrap();
+        std::fs::write(&hook, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[test]
+    fn commit_with_a_hook_slower_than_the_query_cap_succeeds() {
+        let fixture = Fixture::new("slow-commit");
+        fixture.write("change.txt", "change\n");
+        install_hook(&fixture.clone.join(".git"), "pre-commit", "sleep 3");
+        let started = Instant::now();
+        let result = with_test_command_limit(QUERY_CAP, || {
+            commit_workspace_changes(
+                "w",
+                fixture.path(),
+                &["change.txt".into()],
+                "slow hook",
+                None,
+                None,
+            )
+        });
+        assert!(result.is_ok(), "commit failed: {:?}", result.err());
+        assert!(started.elapsed() >= Duration::from_secs(3));
+    }
+
+    #[test]
+    fn push_with_a_remote_hook_slower_than_the_query_cap_succeeds() {
+        let fixture = Fixture::new("slow-push");
+        fixture.write("change.txt", "change\n");
+        fixture.commit(&["change.txt"], "to push", None);
+        install_hook(&fixture.remote, "pre-receive", "sleep 3");
+        let result = with_test_command_limit(QUERY_CAP, || {
+            push_branch("w", fixture.path(), &PushCredential::from_token(TOKEN))
+        });
+        assert!(result.is_ok(), "push failed: {:?}", result.err());
+    }
+
+    fn process_is_alive(pid: i32) -> bool {
+        std::fs::read_to_string(format!("/proc/{pid}/stat"))
+            .map(|stat| !stat.contains(") Z "))
+            .unwrap_or(false)
+    }
+
+    #[test]
+    fn hung_commit_hook_ends_at_the_mutation_deadline_with_its_tree_reaped() {
+        let fixture = Fixture::new("hung-commit");
+        fixture.write("change.txt", "change\n");
+        let pid_file = fixture.root.join("hook.pid");
+        install_hook(
+            &fixture.clone.join(".git"),
+            "pre-commit",
+            &format!("sleep 300 &\necho $! > '{}'\nwait", pid_file.display()),
+        );
+        let started = Instant::now();
+        let error = with_test_mutation_limit(Duration::from_secs(2), || {
+            commit_workspace_changes(
+                "w",
+                fixture.path(),
+                &["change.txt".into()],
+                "hung hook",
+                None,
+                None,
+            )
+        })
+        .err()
+        .expect("a hung hook must end at the mutation deadline");
+        assert!(started.elapsed() < Duration::from_secs(20), "{error}");
+        let pid: i32 = std::fs::read_to_string(&pid_file)
+            .expect("hook should have started its child")
+            .trim()
+            .parse()
+            .unwrap();
+        let reaped_by = Instant::now() + Duration::from_secs(5);
+        while process_is_alive(pid) && Instant::now() < reaped_by {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(
+            !process_is_alive(pid),
+            "hook child {pid} outlived the deadline"
+        );
+    }
+}

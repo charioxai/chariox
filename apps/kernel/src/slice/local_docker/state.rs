@@ -229,22 +229,15 @@ pub fn validate_local_docker_slice_backup(
         });
     }
     let archive_path = Path::new(&backup.home_archive_path);
-    let (actual_size, actual_digest, broker_managed) =
-        match broker::verify_home_archive("backup", &backup.id, archive_path).map_err(|error| {
-            DaemonError::LocalTransport {
-                operation: OPERATION,
-                message: format!(
-                    "backup `{}` archive integrity check failed: {error}",
-                    backup.id
-                ),
-            }
-        })? {
-            Some((size, digest)) => (size, digest, true),
-            None => {
-                let (size, digest) = file_sha256(archive_path, OPERATION)?;
-                (size, digest, false)
-            }
-        };
+    let verified = broker::verify_home_archive("backup", &backup.id, archive_path)
+        .map_err(|error| quarantined_managed_archive_error(&backup.id, archive_path, error))?;
+    let (actual_size, actual_digest, broker_managed) = match verified {
+        Some((size, digest)) => (size, digest, true),
+        None => {
+            let (size, digest) = file_sha256(archive_path, OPERATION)?;
+            (size, digest, false)
+        }
+    };
     if actual_size != expected_size || actual_digest != expected_digest {
         return reject_corrupt_home_archive(
             manifest_path,
@@ -262,6 +255,29 @@ pub fn validate_local_docker_slice_backup(
         });
     }
     Ok(())
+}
+
+/// A broker-owned archive that failed verification is quarantined by the broker, the way a local
+/// one is below, so it stops being restorable; an archive the broker finds intact stays in place.
+fn quarantined_managed_archive_error(
+    backup_id: &str,
+    archive_path: &Path,
+    verify_error: std::io::Error,
+) -> DaemonError {
+    let message = match broker::quarantine_home_archive("backup", backup_id, archive_path) {
+        Ok(Some(quarantined)) => format!(
+            "backup `{backup_id}` archive integrity check failed: {verify_error}; corrupt archive quarantined at {}",
+            quarantined.display()
+        ),
+        Ok(None) => format!("backup `{backup_id}` archive integrity check failed: {verify_error}"),
+        Err(quarantine_error) => format!(
+            "backup `{backup_id}` archive integrity check failed: {verify_error}; {quarantine_error}"
+        ),
+    };
+    DaemonError::LocalTransport {
+        operation: "slice.backup.restore",
+        message,
+    }
 }
 
 pub(super) fn reject_corrupt_home_archive(
@@ -659,7 +675,7 @@ fn create_local_docker_slice_backup_inner(
             backup_dir.display()
         ),
     })?;
-    disk_admission::with_slice_snapshot_disk_admission(|admission| {
+    let created = disk_admission::with_slice_snapshot_disk_admission(|admission| {
         with_local_docker_slice_snapshot_quiesced(
             record,
             options,
@@ -720,13 +736,18 @@ fn create_local_docker_slice_backup_inner(
                         &home_archive_path,
                     );
                     remove_docker_image_best_effort(&image_ref);
-                    let _ = std::fs::remove_dir(&backup_dir);
                     return Err(error);
                 }
                 Ok(backup)
             },
         )
-    })
+    });
+    if created.is_err() {
+        // A failed capture leaves no half-made backup: the directory is only ever empty here, and
+        // a restore rollback that failed would otherwise leave an empty `restore-rollback-*`.
+        let _ = std::fs::remove_dir(&backup_dir);
+    }
+    created
 }
 
 pub fn remove_local_docker_saved_state(state: &SliceSavedStateRecord) -> Result<(), DaemonError> {

@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::DaemonError;
 
+pub(crate) mod acquire_choices;
 mod agent_deletion_provenance;
 pub(crate) mod agent_lifecycle;
 pub(crate) mod agent_subtree_deletion;
@@ -58,14 +59,19 @@ mod apps_tests;
 pub(crate) mod browser_import;
 mod created_resources;
 mod decision_holders;
+mod person_inbox;
 pub(crate) use decision_holders::StoredDecisionHolder;
+pub(crate) use person_inbox::{PersonInboxState, StoredNotice};
 mod event_connection_imports;
 pub(crate) use event_connection_imports::{
     EventConnectionImportChange, EventConnectionImportClaims, IMPORTED_BY_TRANSFER_ID,
 };
+mod event_reader;
 mod owner;
 mod retired_sessions;
 pub(crate) mod room_environment;
+pub(crate) mod skill_reset;
+mod skill_reset_startup;
 pub(crate) mod storage_full;
 mod sync_timing;
 pub(crate) mod worker_prompt_receipts;
@@ -98,8 +104,11 @@ pub struct DurableKernelStateStore {
     _owner: Option<Arc<owner::OwnerLease>>,
     workflow_history_authority: workflow_invocation_provenance::WorkflowHistoryAuthority,
     outside_followed: Arc<agent_lifecycle::outside::Followed>,
+    skill_catalog_owner: bool,
 }
 
+/// How long a finished record stays readable before the next write or the next start drops it.
+pub(crate) const FINISHED_RETENTION_MS: u64 = 24 * 60 * 60 * 1000;
 const DURABLE_WRITE_QUEUE_CAPACITY: usize = 4_096;
 /// Appended events a live subscriber may fall behind before it loses some.
 const APPENDED_EVENT_BACKLOG: usize = 1_024;
@@ -262,6 +271,7 @@ enum DurableWriterRequest {
 
 #[derive(Debug)]
 enum DurableWriteOperation {
+    AcquireChoice(acquire_choices::AcquireChoiceTransition),
     RoomEnvironment(room_environment::RoomEnvironmentWrite),
     BrowserImport(browser_import::ImportStateWrite),
     RetiredSessionBackfill {
@@ -388,10 +398,28 @@ pub(crate) struct DurableCheckpointEntity {
 }
 
 impl DurableKernelStateStore {
+    pub(crate) fn open_kernel_owned(
+        config: &crate::config::DaemonConfig,
+    ) -> Result<Self, DaemonError> {
+        let mut store = Self::open_owned(config.durable_state_path())?;
+        let mut connection =
+            Connection::open(store.path()).map_err(|_| DaemonError::LocalTransport {
+                operation: "skills.v2.reset",
+                message: "cannot open the owned startup connection".into(),
+            })?;
+        store.skill_catalog_owner = skill_reset_startup::run(&mut connection, &store, config)?;
+        Ok(store)
+    }
+    pub(crate) fn owns_skill_catalog(&self) -> bool {
+        self.skill_catalog_owner
+    }
+
     pub(crate) fn open_owned(path: PathBuf) -> Result<Self, DaemonError> {
         let owner = owner::acquire(&path)?;
         let mut store = Self::open(path)?;
         store._owner = Some(Arc::new(owner));
+        // A deadline counts uptime: the time this kernel was stopped is given back before anything reads it.
+        store.resume_agent_deadlines_after_kernel_start()?;
         // Only this store's owning kernel may settle its own crashed workers.
         store
             .reset_app_workers_after_kernel_start()
@@ -437,6 +465,38 @@ impl DurableKernelStateStore {
                 operation: "durable_state.migrate",
                 message: error.to_string(),
             })?;
+        // The inbox owns queued messages. Strip the derived projection before
+        // any checkpoint format can supply Rooms to startup restore.
+        connection
+            .transaction()
+            .and_then(|transaction| {
+                transaction.execute_batch(
+                    "UPDATE durable_state_owner_checkpoint_entities
+                     SET payload_json=json_remove(payload_json,'$.queued_agent_messages')
+                     WHERE entity_kind='sessions'
+                       AND json_type(payload_json,'$.queued_agent_messages') IS NOT NULL;
+                     UPDATE durable_state_checkpoint_entities
+                     SET payload_json=json_remove(payload_json,'$.queued_agent_messages')
+                     WHERE entity_kind='sessions'
+                       AND json_type(payload_json,'$.queued_agent_messages') IS NOT NULL;
+                     UPDATE durable_state_snapshots AS snapshot
+                     SET payload_json=json_set(payload_json,'$.sessions',json((
+                         SELECT json_group_array(json_remove(room.value,'$.queued_agent_messages')
+                                                 ORDER BY room.key)
+                         FROM json_each(snapshot.payload_json,'$.sessions') AS room
+                     )))
+                     WHERE json_type(payload_json,'$.sessions')='array'
+                       AND EXISTS (
+                           SELECT 1 FROM json_each(snapshot.payload_json,'$.sessions') AS room
+                           WHERE json_type(room.value,'$.queued_agent_messages') IS NOT NULL
+                       );",
+                )?;
+                transaction.commit()
+            })
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "durable_state.migrate_room_checkpoint",
+                message: error.to_string(),
+            })?;
         storage_full::initialize(&connection)?;
         apps::initialize(&mut connection)?;
         app_publishers::initialize(&mut connection)?;
@@ -452,6 +512,10 @@ impl DurableKernelStateStore {
         })?;
         decision_holders::initialize(&connection).map_err(|error| DaemonError::LocalTransport {
             operation: "durable_state.decision_holders",
+            message: error.to_string(),
+        })?;
+        person_inbox::initialize(&connection).map_err(|error| DaemonError::LocalTransport {
+            operation: "durable_state.person_inbox",
             message: error.to_string(),
         })?;
         event_connection_imports::initialize(&connection).map_err(|error| {
@@ -504,6 +568,10 @@ impl DurableKernelStateStore {
             operation: "durable_state.trigger_firings",
             message: error.to_string(),
         })?;
+        acquire_choices::initialize(&connection).map_err(|error| DaemonError::LocalTransport {
+            operation: "durable_state.acquire_choices",
+            message: error.to_string(),
+        })?;
         let outside_followed = Arc::new(agent_lifecycle::outside::Followed::default());
         let writer = DurableStateWriter::start(&path, Arc::clone(&outside_followed))?;
         connection
@@ -522,6 +590,7 @@ impl DurableKernelStateStore {
             _owner: None,
             workflow_history_authority: Default::default(),
             outside_followed,
+            skill_catalog_owner: false,
         })
     }
 
@@ -1936,6 +2005,9 @@ fn commit_durable_write_batch(
                 records,
                 sequence,
             } => retired_sessions::commit_backfill(&transaction, owner_id, records, *sequence),
+            DurableWriteOperation::AcquireChoice(transition) => {
+                acquire_choices::apply(&transaction, transition)
+            }
             DurableWriteOperation::RoomEnvironment(write) => {
                 room_environment::apply(&transaction, write)
             }
@@ -1967,6 +2039,7 @@ fn commit_durable_write_batch(
                     created_resources::apply_event(&transaction, kind, payload_json)?;
                     event_connection_imports::apply_event(&transaction, kind, payload_json)?;
                     decision_holders::apply_event(&transaction, kind, payload_json)?;
+                    person_inbox::apply_event(&transaction, kind, payload_json)?;
                     if kind == crate::durable_prompt_state::DURABLE_PROMPT_STATE_EVENT_KIND {
                         let prompt_state =
                             crate::durable_prompt_state::DurablePromptStateEventPayload::decode(

@@ -1,6 +1,6 @@
 use super::*;
 use crate::extension::{AppCapabilityGrant, ExtensionGrant, ExtensionKind};
-use crate::runtime::state::capability_grant_runtime::{AppBindingPermit, AppPromptDelivery};
+use crate::runtime::state::capability_grant_runtime::AppBindingPermit;
 
 #[derive(PartialEq, Eq)]
 enum AppGrantOrigin {
@@ -80,10 +80,8 @@ impl KernelRuntimeState {
             target_binding: agent.remote_execution().cloned(),
             installation: installation.into(),
             target_revision: self.app_binding_revision(agent.id(), installation),
-            prompt_id: None,
             parent: None,
             provider_run_id: None,
-            prompt_delivery: None,
         };
         if !self
             .owned
@@ -238,14 +236,6 @@ impl KernelRuntimeState {
             if permit.target_id != agent.id() || permit.installation != grant.name {
                 return Err(app_binding_error("App grant scope changed"));
             }
-            if let Some(prompt) = &permit.prompt_id {
-                let current = self.owned.agent_store.get_agent(permit.actor.id())?;
-                if self.owner_requested_prompt(&current).as_deref() != Some(prompt.as_str())
-                    || self.app_prompt_delivery(&current) != permit.prompt_delivery
-                {
-                    return Err(app_binding_error("App request's owner turn changed"));
-                }
-            }
         }
         if self.room_agent_tools_enabled() {
             let parent_cause = binding_permit
@@ -264,9 +254,6 @@ impl KernelRuntimeState {
                             .expect("default lifetime is valid");
                         crate::session::unix_epoch_ms().saturating_add(lifetime.as_millis() as u64)
                     }),
-                prompt_id: binding_permit
-                    .as_ref()
-                    .and_then(|permit| permit.prompt_id.clone()),
                 delegated_by_agent_id: parent_cause
                     .and_then(|_| binding_permit.as_ref().map(|p| p.actor.id().to_string())),
                 delegated_from_grant_id: parent_cause.map(|cause| cause.grant_id.clone()),
@@ -277,15 +264,6 @@ impl KernelRuntimeState {
             if self.room_agent_tools_enabled() {
                 self.require_app_grant_wake()?;
             }
-            let acquisition_session = binding_permit
-                .as_ref()
-                .filter(|permit| permit.prompt_id.is_some())
-                .map(|permit| {
-                    self.owned
-                        .session_store
-                        .get_session(permit.actor.session_id())
-                })
-                .transpose()?;
             // MP-11 SB-03: hold run replacement/termination through mutation.
             let providers = self.owned.provider_store.read();
             let mut epochs = self
@@ -386,30 +364,7 @@ impl KernelRuntimeState {
                 record_owner_choice()?;
                 agents.grant_extension(agent.id(), grant.clone())
             };
-            let agent = if let Some(permit) = binding_permit
-                .as_ref()
-                .filter(|permit| permit.prompt_id.is_some())
-            {
-                let session = acquisition_session
-                    .as_ref()
-                    .expect("App prompt permit has a session");
-                self.owned.prompt_state_owner.with_active_prompt(
-                    session,
-                    permit.actor.id(),
-                    |prompt| {
-                        if prompt.is_none_or(|prompt| {
-                            prompt.status() != crate::session::PromptStatus::Running
-                                || Some(AppPromptDelivery::from_prompt(prompt))
-                                    != permit.prompt_delivery
-                        }) {
-                            return Err(app_binding_error("App request's prompt delivery changed"));
-                        }
-                        commit()
-                    },
-                )?
-            } else {
-                commit()?
-            };
+            let agent = commit()?;
             epochs
                 .entry(key)
                 .or_default()
@@ -697,13 +652,11 @@ impl KernelRuntimeState {
             target_binding: target.remote_execution().cloned(),
             installation: installation_id.into(),
             target_revision: self.app_binding_revision(target.id(), installation_id),
-            prompt_id: None,
             parent: None,
             provider_run_id: self
                 .room_provider_origin
                 .as_ref()
                 .map(|(_, run)| run.clone()),
-            prompt_delivery: None,
         };
         self.authorize_current_external_command()?;
         if self.room_agent_tools_enabled() {
@@ -732,8 +685,8 @@ impl KernelRuntimeState {
                 permit.parent = Some(parent.clone());
                 return Ok(Some(permit));
             }
-            // Trust is checked before requesting any owner authorization; publication
-            // and invocation recheck it through the existing App admission path.
+            // Only the owner's trusted, available App binds; publication and
+            // invocation recheck it through the existing App admission path.
             self.owned
                 .durable_state_store
                 .check_app_binding_in_room(
@@ -742,56 +695,16 @@ impl KernelRuntimeState {
                     Some(agent.session_id()),
                 )
                 .map_err(|_| app_binding_error("App installation is not trusted and available"))?;
-            // A binding that is still live needs no new decision and is not renewed.
-            if agent.has_extension_grant(ExtensionKind::App, installation_id) {
-                return Ok(Some(permit));
-            }
-            permit.prompt_delivery = self.app_prompt_delivery(&agent);
-            if let Some(run) = &permit.provider_run_id {
-                if permit
-                    .prompt_delivery
-                    .as_ref()
-                    .is_none_or(|delivery| !delivery.belongs_to_agent_run(&agent, run))
-                {
-                    return Err(app_binding_error(
-                        "App request's prompt was not delivered to this provider",
-                    ));
-                }
-            }
-            // A covering /sudo task is the owner's decision; every fence of the checked
-            // grant (prompt witness, delivery, run, epochs) still applies to the same prompt.
-            permit.prompt_id = Some(
-                if self
-                    .sudo_task_authorizes_agent(session.id(), agent.id())
-                    .await
-                {
-                    self.owner_requested_prompt(&agent).ok_or_else(|| {
-                        crate::runtime::state::capability_grant_runtime::refused(
-                            crate::error::UserDomainRefusalReason::NotRequested,
-                        )
-                    })?
-                } else {
-                    self.confirm_app_capability_request(
-                        &agent,
-                        &format!("App installation `{installation_id}`"),
-                        || {
-                            self.app_binding_revision(target.id(), installation_id)
-                                == permit.target_revision
-                                && self.app_prompt_delivery(&agent) == permit.prompt_delivery
-                        },
-                    )
-                    .await?
-                },
-            );
+            // Every agent may use the owner's trusted Apps, as it has the kernel browser.
             return Ok(Some(permit));
         }
         if target.has_extension_grant(ExtensionKind::App, installation_id)
-            || !crate::session::effective_agent_user_authority(
-                &session,
-                Some(&agent),
-                &self.owned.agent_store.get_session_agents(session.id()),
-            )
-            .requires_approval()
+            || self
+                .owned
+                .agent_store
+                .effective_execution_config(&session, &agent, &self.owned.session_store)
+                .permission_level
+                .is_yolo()
             || self
                 .sudo_task_authorizes_agent(session.id(), agent.id())
                 .await

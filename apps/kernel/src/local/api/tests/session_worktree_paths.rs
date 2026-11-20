@@ -101,6 +101,8 @@ fn session_worktree_paths_reject_invalid_agent_overrides_without_mutation() {
 
 fn spawn_request(session_id: &str, worktree_id: Option<String>) -> SpawnAgentRequest {
     SpawnAgentRequest {
+        initial_task: None,
+        peer_spawn: None,
         max_context_tokens: None,
         no_subscribe: false,
         session_id: session_id.to_string(),

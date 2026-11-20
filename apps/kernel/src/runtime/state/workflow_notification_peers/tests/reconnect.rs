@@ -191,7 +191,7 @@ async fn reconnect_drill() {
     target_runtime
         .owned
         .notification_inventory_projection
-        .update(vec![], vec![]);
+        .update(Default::default(), vec![]);
 
     // The source comes back and drops the row.
     let (source_stop, source_connector) = connect(&sr, &source_runtime, &sc, &url).await;

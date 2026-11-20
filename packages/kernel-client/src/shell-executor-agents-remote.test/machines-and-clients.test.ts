@@ -129,7 +129,7 @@ test("executeShellCommand manages remote machine trust", async () => {
           return { RemoteMachineApproved: { machine } }
         }
         if ("ForgetRemoteMachine" in request) {
-          return { RemoteMachineForgotten: { machine: { ...machine, trust_status: "forgotten" } } }
+          return { RemoteMachineForgotten: { machine_id: machine.machine_id, display_name: machine.display_name } }
         }
         return {}
       },
@@ -143,7 +143,7 @@ test("executeShellCommand manages remote machine trust", async () => {
   assert.equal(approveResult.ok, true)
   assert.match(approveResult.message ?? "", /approved machine mini/)
   assert.equal(revokeResult.ok, true)
-  assert.match(revokeResult.message ?? "", /revoked machine mini/)
+  assert.match(revokeResult.message ?? "", /removed machine mini/)
   assert.deepEqual(requests, [
     { ApproveRemoteMachine: { machine_ref: "machine-1" } },
     { ForgetRemoteMachine: { machine_ref: "machine-1" } },

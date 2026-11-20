@@ -1398,7 +1398,10 @@ mod tests {
             .create_session(worktree.session_request())
             .expect("session should be created");
         let agent = crate::app::KernelSessionService::new(&mut app)
-            .spawn_agent(crate::agent::CreateAgentRequest::new(session.id(), "codex"))
+            .spawn_agent(
+                crate::agent::CreateAgentRequest::new(session.id(), "dev-stub")
+                    .with_model("workflow-scheduler-fixture"),
+            )
             .expect("workflow-capable agent should be created");
         let bad_workflow = app
             .sessions_mut()

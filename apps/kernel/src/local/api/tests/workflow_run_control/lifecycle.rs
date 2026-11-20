@@ -92,6 +92,8 @@ fn local_request_api_invokes_lists_gets_and_cancels_workflow_runs_inner(provider
 
     let agent = match harness
         .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            initial_task: None,
+            peer_spawn: None,
             max_context_tokens: None,
             no_subscribe: false,
             account_profile: None,

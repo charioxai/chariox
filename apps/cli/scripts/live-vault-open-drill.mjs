@@ -67,17 +67,12 @@ async function navigate(url){
 async function prepareBrowser(){
  const ready=marker+'_BROWSER_READY',failed=marker+'_BROWSER_SETUP_FAILED'
  const field=page.locator('[data-prompt-input]')
- await field.fill(`MP-08 / MP-09 / MP-10 / MP-11 setup only: I want you to use my currently displayed kernel browser this turn. Call chariox.load_kernel_browser exactly once, using necessary discovery wrappers, then get browser state. I will approve ordinary browser access if requested. Do not request sudo or use any Vault tool. Finish with exactly ${ready}, or ${failed} if setup fails.`)
+ await field.fill(`MP-08 / MP-09 / MP-10 / MP-11 setup only: I want you to use my currently displayed kernel browser this turn. Call chariox.load_kernel_browser exactly once, using necessary discovery wrappers, then get browser state. Do not request sudo or use any Vault tool. Finish with exactly ${ready}, or ${failed} if setup fails.`)
  await field.press('Enter')
  const deadline=Date.now()+240000
  for(;;){
-  const cards=page.locator('section[data-kernel-interaction-id]')
-  for(let i=0;i<await cards.count();i++){
-   const card=cards.nth(i),text=(await card.getAttribute('aria-label')??'')+' '+await card.innerText()
-   assert.ok(/Chariox resource access/i.test(text)&&/browser/i.test(text)&&!/(?:sudo|payment card)/i.test(text),'only ordinary browser admission is approved during setup')
-   await shot('browser-admission-before-vault-cell')
-   await card.locator('button[data-kernel-interaction-choice="allow"]').click()
-  }
+  // Every agent has the kernel browser: loading it raises no card.
+  assert.equal(await page.locator('section[data-kernel-interaction-id]').count(),0,'browser setup raised a card')
   const replies=await page.locator('.pane-transcript-reply').allInnerTexts()
   assert.ok(!replies.some(r=>r.includes(failed)),'browser admission setup succeeded')
   if(replies.some(r=>r.includes(ready)))break

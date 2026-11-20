@@ -1,10 +1,10 @@
 # Deliver GitHub events to workflows and agents
 
-This page wires GitHub pull-request, review, issue and workflow-run events to any
-number of workflows and agents. It uses the GitHub App (`examples/apps/github`; its
-window lists and reads pull requests, see its README) and the ordinary kernel pieces: an App inbox
-route, App automations and an `event_based` workflow publication. The event handler
-holds no GitHub credentials and makes no GitHub calls.
+This page wires GitHub pull-request, review, issue, check and release events to people,
+agents, Rooms and workflows. It uses the GitHub App (`examples/apps/github`; its window
+lists and reads pull requests and holds the Subscriptions tab, see its README) and the
+ordinary kernel pieces: the App's event routes and an `event_based` workflow publication.
+The App holds no GitHub credentials; the kernel adds them to the App's GitHub calls.
 
 There is one flow for every kernel. You authorize GitHub once, on one kernel; the
 connection then reaches your other kernels through the kernel-to-kernel transfer
@@ -15,35 +15,43 @@ and work the same way everywhere (see "Kernel configuration").
 ## How an event travels
 
 ```
-GitHub -> dev.chariox.github generator -> event delivery -> App inbox route
-  -> App handler -> named automation -> workflow endpoint or agent
+GitHub -> dev.chariox.github generator -> event delivery -> App event route
+  -> App handler -> matching subscriptions -> person, agent, Room or workflow
 ```
 
 - The generator turns a GitHub webhook into one event per connection scope
   (`owner/repository`) and event type.
-- The inbox route claims that event for one App installation. The kernel
-  accepts the delivery and acknowledges it before the App handler runs. A repeated
+- The App asks the kernel for one route per repository and event type that its
+  subscriptions need, and removes the routes nothing needs any more (`eventRouting`
+  in the App's declarations). You never create a route by hand. The kernel accepts
+  a delivery and acknowledges it before the App handler runs, and a repeated
   delivery of the same event never runs the handler twice on that route.
-- An incoming delivery does not start anything by itself. The App's handler emits the
-  matching outgoing event to every automation name in its setting, and each
-  automation runs its target once. Deduplication is per automation.
+- The handler matches the event against every enabled subscription (scope, event
+  kind, filters), keeps one record of the outcome per subscription (delivered,
+  filtered with the reason, or failed) and sends the notification to each target
+  once. The person gets a host notification; an agent, a Room's agent or a workflow
+  gets one directed `github_notification` occurrence whose text is the prompt its
+  turn or run starts with.
 
-| GitHub event | Generator event type | Incoming event | Outgoing event |
-|---|---|---|---|
-| Pull request opened | `pull_request.opened` | `pull_request_opened` | `pull_request_opened_notification` |
-| Pull request updated | `pull_request.synchronize` | `pull_request_updated` | `pull_request_updated_notification` |
-| Review requested | `pull_request.review_requested` | `review_requested` | `review_requested_notification` |
-| Issue opened | `issues.opened` | `issue_opened` | `issue_opened_notification` |
-| Workflow run completed | `workflow_run.completed` | `workflow_run_completed` | `workflow_run_completed_notification` |
+A subscription names its events with kinds: `pull_request.opened`, `.updated`,
+`.review_requested`, `.review_submitted`, `.merged`, `.closed`, `.ready_for_review`,
+`.reopened`, `.labeled`, `.comment`, `check.completed`, `ci.finished`,
+`workflow_run.completed`, `issue.opened`, `.closed`, `.labeled`, `.comment`,
+`release.published`, `push` and `mention`. `src/event-types.mjs` of the App maps each
+kind to the generator types it needs.
 
-The generator emits the five types above through the `github` App. It also
-normalizes, with the same payload shape, `pull_request.{closed, ready_for_review,
+The generator normalizes `pull_request.{closed, ready_for_review,
 reopened, labeled}`, `pull_request_review.submitted`,
 `pull_request_review_comment.created`, `issue_comment.created`, `issues.{closed, labeled}`,
 `check_run.completed`, `check_suite.completed`, `release.published` and `push`. A
 GitHub App installation delivers the new types only after its owner accepts the updated
-permissions (Checks and Contents: read) on GitHub; the five types above are unaffected.
+permissions (Checks and Contents: read) on GitHub; the pull request, review requested, issue
+and workflow run types are unaffected.
 Signed payload fixtures for every type are in `docs/fixtures/event-generators/github/`.
+
+A route made by hand takes the same filter:
+`/app inbox add <installation-id> <route-id> <event> <source-event-type> --connection <generator>/<connection-id>/<scope> --filter-json '<object>'`
+keeps only the events whose fields equal the object's values.
 
 Every event's `metadata.chariox` holds facts GitHub only gives in nested lists, so a
 `--filter-json` such as `{"chariox.labels": "needs-review"}` works without calling GitHub:
@@ -53,9 +61,9 @@ pull request or issue body; team mentions and addresses excluded), and when pres
 `base_ref`, `branch` (base of a pull request, head of a check or workflow run, the pushed
 branch), `head_sha`, `sender_login`, and for pushes `is_default_branch_push`.
 
-The outgoing payload is the incoming payload unchanged. Its `text` is the prompt the
-workflow run or agent turn starts with, and `metadata` carries the GitHub payload
-(for example `repository.full_name` and `pull_request.number`).
+The notification's `data` carries the subscription (`id`, `name`), the event kind, the repository, the
+pull request or issue number and the URL, and the GitHub facts the kind is about (the head commit,
+the check conclusion). Its text is the prompt.
 
 ## Kernel configuration
 
@@ -98,55 +106,38 @@ then check the result with `/notifications authorization <authorization-id>` and
 `/notifications connection resources <connection-id>` lists the repositories (the
 connection scopes, `owner/repository`).
 
-### 3. Create the targets
+### 3. Create a subscription
 
-Workflow target: deploy an `event_based` publication on the workflow's entry
-endpoint, then bind an automation to it.
+In the App's window, open the Subscriptions tab and choose New subscription: a name, the
+repositories (or an organization, or all), the events, optional filters (branches, authors,
+labels, paths, draft, check conclusion; patterns with `*`, a leading `!` leaves a name out) and
+who is told. The tab lists every subscription with its state (Active, Paused, Disabled after five
+failed deliveries in a row), pauses, resumes, edits and deletes it, and shows its last
+deliveries and the filtered ones with the reason. A banner offers to connect GitHub events
+when step 2 has not been done.
 
-```
-/workflow trigger create <workflow-id> <endpoint-id> --kind event_based
-/app automation add github review-workflow pull_request_updated_notification <session-id> <publication-id>
-```
+An agent makes its own subscription with the App's tools: `create_subscription`,
+`update_subscription`, `pause_subscription`, `resume_subscription`, `delete_subscription`,
+`list_subscriptions`, `list_deliveries`, `get_event_sources`. An agent subscribes itself without
+asking. To tell the person, another agent, a Room or a workflow it uses
+`create_subscription_for_others`, which asks the person first.
 
-Agent target: subscribe the agent to the App's outgoing event from its own pane.
+A workflow target needs an `event_based` publication on the workflow's entry endpoint
+(`/workflow trigger create <workflow-id> <endpoint-id> --kind event_based`); the subscription
+names the workflow's session, publication and optionally its queue, and the App has the kernel
+bind the automation.
 
-```
-/trigger notification app:github/pull_request_updated_notification Review this pull request
-/app automation list github
-```
+**One pull request, once.** `watch_pull_request` (and a subscription with `once`) ends after
+its first delivery or at its expiry, whichever comes first: 4 hours by default, at most 7
+days. `ci.finished` fires when the head commit has checks and none is pending, or after 15
+minutes with none. A merged pull request delivers `pull_request.merged` and not also
+`pull_request.closed`.
 
-The agent's automation ID is generated by the kernel; copy it from the list. A
-workflow automation ID is the one you chose above.
-
-### 4. Create the inbox route
-
-One route per event type. The connection scope is the repository, so only that
-repository's events reach the route:
-
-```
-/app inbox add github pr-updated pull_request_updated pull_request.synchronize --connection dev.chariox.github/<connection-id>/<owner>/<repository>
-```
-
-`/app inbox list github` shows the route with its pending, delivered, failed
-and expired counts. Add one route per repository and event type you want.
-
-### 5. Tell the App which automations to feed
-
-The App's handler emits only to automation names in its setting, so a new automation
-receives nothing until you add it. Set the names of each event's automations with the
-App's `configure_automations` tool (`{"automations": {"pull_request_updated_notification":
-["review-workflow", "<agent automation ID>"]}}`) and read them with `get_automations`; your agent
-can call both. An event left empty is ignored.
-
-Do this before the first delivery: an event whose setting was never saved fails in
-the handler, is retried with back-off a few times and then settles as failed in the
-inbox counts.
-
-### 6. Check
+### 4. Check
 
 `/notifications connection test <connection-id>` sends a test occurrence through the
-normal generator and delivery path. Then `/app inbox list github` shows it
-delivered and each target runs once.
+normal generator and delivery path. The subscription's last deliveries then show it, and
+`/app inbox list github` shows the route's delivered count.
 
 ## Follow the events from an agent outside Chariox
 
@@ -157,11 +148,12 @@ either the App's events directly or the workflow an event starts.
 
 ### Directly: the App's event
 
-Every inbox route of an installed App (step 4) is a notification source of its own, named
+Every route the App makes for a subscription is a notification source of its own, named
 for the App's incoming event and the route's repository: `pull_request_updated@<owner>/<repository>`,
 shown as "Pull request updated (<owner>/<repository>)". A route with no connection scope is named
-for the event alone. A source exists while the App is installed and its route exists; an event
-kind with no route has no source, because no event of that kind can arrive.
+for the event alone. A source exists while the App is installed and its route exists, that is while an enabled
+subscription needs it; an event kind with no route has no source, because no event of that kind
+can arrive.
 
 ```
 chariox events sources                                       # lists one source per route, kind app_event
@@ -172,15 +164,15 @@ chariox events unsubscribe --source "pull_request_updated@<owner>/<repository>" 
 ```
 
 The notification arrives when the kernel accepts the event, before the App's handler runs, and its
-text is the event text (`Handle GitHub pull_request.synchronize for <owner>/<repository> #<number>
-at head <sha>`). Following needs the same grant as every other source and adds no authority. An
+text is the event generator's prompt for the event (what happened, the repository and the number),
+before any subscription filter is applied. Following needs the same grant as every other source and adds no authority. An
 event that arrives while nobody follows its source is kept for the App only; a later follower
 receives events from the moment it subscribes. A restart keeps the follow for a grant that lasts
 until its holder exits, and an unread notification is kept for 7 days. At most 64 sources per grant.
 
 ### Through the workflow the event starts
 
-An agent can also follow the workflow the event starts (step 3):
+An agent can also follow the workflow a subscription starts (step 3):
 
 ```
 chariox events sources                      # lists "<workflow> run finished" for each workflow
@@ -195,28 +187,29 @@ arrives when the run ends, not when the event arrives; a stopped run emits nothi
 path to be told what a workflow did with an event, and the direct path to be told that the
 event arrived.
 
-## Several routes and several kernels
+## Several kernels
 
-The kernel accepts any number of routes for the same repository and event type, for
-the same installation or others. A route is refused only by its ID: a route ID is
-unique within one installation.
+A route ID is unique within one installation and the App derives it from the event type and the
+repository (`pull_request.opened@<owner>/<repository>`).
 
-Event delivery identifies a route by `binding_id`, which is
-`sha256(owner, installation ID, route ID)`. A second kernel that creates the same
-owner, installation ID and route ID as the first receives nothing, and the only trace
-is a log line, `event route conflicts with another route`. Give the second kernel a
-different route ID (`pr-updated-b`) or installation ID. After the kernel-to-kernel
-connection transfer arrives, each kernel still keeps its own routes, automations and
-App setting, so the same rule applies.
+Event delivery identifies a kernel's claim of a route by `binding_id`:
+`app-route-` and 40 hex digits of `sha256(owner, installation ID, route ID)` hashed again with the
+event owner of the route's connection, the kernel ID and the environment ID
+(`CHARIOX_EVENT_ENVIRONMENT_ID`). Two kernels that hold the same owner, installation ID and route ID
+therefore each get their own delivery of an event, as long as their kernel IDs or environment IDs
+differ; set a different `CHARIOX_EVENT_ENVIRONMENT_ID` per kernel (see "Kernel configuration"). Each
+kernel keeps its own subscriptions and routes.
 
 Duplicate delivery to two kernels is expected: each runs its own targets once.
 
 ## Limits worth knowing
 
-- Delivery to a workflow or agent is at least once to the App and once per automation
+- Delivery to a workflow or agent is at least once to the App and once per subscription
   after that; do not rely on ordering between events.
 - An event payload and a prompt are each at most 64 KiB.
-- Removing an agent trigger or a workflow publication disables its automation. Remove
-  its name from the App setting too: the handler still tries every listed name, the
-  other targets run, but each delivery of that event then ends as failed in the
-  route's counts.
+- At most 100 subscriptions, 200 routes, 200 automations and the last 200 deliveries per App.
+  An installation has a route limit of its own; a subscription that needs more is refused with the
+  number it needs.
+- Deleting a subscription removes the routes and the automation nothing else uses. A workflow
+  publication that is removed makes each delivery to it fail; five failures in a row disable the
+  subscription, which the window shows as "Disabled after failures" and whose last deliveries say why.

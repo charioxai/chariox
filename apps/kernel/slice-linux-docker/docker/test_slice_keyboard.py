@@ -298,10 +298,12 @@ class PhysicalChordTests(unittest.TestCase):
             inject.assert_not_called()
 
     def test_room_navigation_keys_skip_the_text_focus_proof_but_text_and_chords_keep_it(self):
-        # Chromium is never traversed by the native focus proof, so it would refuse these on every web page.
+        # Chromium is never traversed by the native focus proof, so it would refuse these on every web page;
+        # a key that can insert no text (Escape, Tab, F-keys, Super/Alt chords) never needs that proof.
         m,c=self.native()
         for key,admitted in [('End',False),('PageDown',False),('down',False),('Page_Up',False),('ArrowLeft',False),
-                             ('s',True),('Return',True),('space',True),('shift+End',True),('ctrl+a',True)]:
+                             ('Escape',False),('Tab',False),('F5',False),('super+d',False),('Super_L+e',False),('alt+Tab',False),
+                             ('s',True),('Return',True),('space',True),('shift+End',True),('ctrl+a',True),('ctrl+v',True),('shift+d',True)]:
             with patch.dict(m.os.environ,{'CHARIOX_COMPUTER_AGENT_INPUT':'1'}), patch.object(m,'room_input_guard',return_value=lambda:None) as guard, patch.object(m,'key_repeat') as repeat:
                 m.main(['key-repeat','1'],io.BytesIO(key.encode()))
             self.assertEqual(guard.called,admitted,key)

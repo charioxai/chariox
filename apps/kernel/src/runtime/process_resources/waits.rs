@@ -34,6 +34,35 @@ pub(crate) struct WaitEvent {
 
 static EVENTS: Mutex<VecDeque<WaitEvent>> = Mutex::new(VecDeque::new());
 
+/// The memory controller killed a process in the unit of the workload with
+/// `keys`, whoever started it: the owner is told even when nothing the kernel
+/// itself watches was the victim. `total` kills of the unit have happened.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ScopeKill {
+    pub keys: Vec<String>,
+    pub reason: String,
+    pub total: u64,
+}
+
+static KILLS: Mutex<VecDeque<ScopeKill>> = Mutex::new(VecDeque::new());
+
+pub(super) fn push_kill(kill: ScopeKill) {
+    let mut kills = KILLS.lock().unwrap_or_else(|e| e.into_inner());
+    if kills.len() >= KEPT {
+        kills.pop_front();
+    }
+    kills.push_back(kill);
+}
+
+/// The kills since the last call, oldest first.
+pub(crate) fn take_scope_kills() -> Vec<ScopeKill> {
+    KILLS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .drain(..)
+        .collect()
+}
+
 #[cfg(test)]
 pub(crate) fn push_for_tests(event: WaitEvent) {
     push(event);

@@ -181,6 +181,21 @@ async fn agent_profile_update_ignores_legacy_processing_without_active_prompt() 
             .expect("agent processing should update");
     }
 
+    let default_account = app
+        .lock()
+        .await
+        .provider_account_profile_registry()
+        .get(crate::session::DEFAULT_LOCAL_USER_ID, "opencode", "default")
+        .expect("default account")
+        .profile_id;
+    profile_selection::model_resolution::seed_account_models(
+        &app,
+        crate::session::DEFAULT_LOCAL_USER_ID,
+        "opencode",
+        &default_account,
+        &["model-next"],
+    )
+    .await;
     let agent = runtime
         .update_agent_profile(
             &session_id,
@@ -195,7 +210,7 @@ async fn agent_profile_update_ignores_legacy_processing_without_active_prompt() 
         .expect("stale legacy processing alone should not block profile update");
 
     assert_eq!(agent.provider(), "opencode");
-    assert_eq!(agent.model(), Some("model-next"));
+    assert_eq!(agent.model(), Some("opencode-go/model-next"));
     let durable_events = app
         .lock()
         .await
@@ -220,7 +235,7 @@ async fn agent_profile_update_ignores_legacy_processing_without_active_prompt() 
                 .get("agent")
                 .and_then(|agent| agent.get("model"))
                 .and_then(|model| model.as_str())
-                == Some("model-next")
+                == Some("opencode-go/model-next")
     }));
 }
 
@@ -269,6 +284,14 @@ async fn cloud_owner_agent_profile_update_resolves_host_account_namespace() {
         .provider_account_profile_registry()
         .create_managed(crate::session::DEFAULT_LOCAL_USER_ID, "codex", "Validation")
         .expect("host account profile should be created");
+    profile_selection::model_resolution::seed_account_models(
+        &app,
+        cloud_owner,
+        "codex",
+        &profile.profile_id,
+        &["gpt-5.6-luna"],
+    )
+    .await;
 
     let agent = runtime
         .update_agent_profile(
@@ -547,6 +570,8 @@ async fn assert_remote_agent_profile_response(
             applied_home_steer_ids: Vec::new(),
             home_steer_receipts: Vec::new(),
             replayable_completion: None,
+            skill_names: None,
+            skill_view_revision: 0,
             created_at_ms: 1,
         },
     };
@@ -811,6 +836,8 @@ async fn assert_remote_agent_profile_response(
             applied_home_steer_ids: Vec::new(),
             home_steer_receipts: Vec::new(),
             replayable_completion: None,
+            skill_names: None,
+            skill_view_revision: 0,
             created_at_ms: 1,
         },
     };
@@ -942,6 +969,22 @@ async fn a_running_agent_profile_change_is_accepted_and_its_turn_goes_on() {
     let (app, runtime, session_id, agent_id) = agent_config_runtime().await;
     sync_active_prompt(&app, &session_id, &agent_id).await;
 
+    let default_account = app
+        .lock()
+        .await
+        .provider_account_profile_registry()
+        .get(crate::session::DEFAULT_LOCAL_USER_ID, "opencode", "default")
+        .expect("default account")
+        .profile_id;
+    profile_selection::model_resolution::seed_account_models(
+        &app,
+        crate::session::DEFAULT_LOCAL_USER_ID,
+        "opencode",
+        &default_account,
+        &["model-next"],
+    )
+    .await;
+
     let agent = runtime
         .update_agent_profile(
             &session_id,
@@ -955,7 +998,7 @@ async fn a_running_agent_profile_change_is_accepted_and_its_turn_goes_on() {
         .await
         .expect("a running agent accepts a profile change");
 
-    assert_eq!(agent.model(), Some("model-next"));
+    assert_eq!(agent.model(), Some("opencode-go/model-next"));
     let session = runtime
         .owned
         .session_store
@@ -1022,6 +1065,21 @@ async fn substitute_binds_stable_account_and_profile_edits_keep_the_fallback_lis
         .create_managed(crate::session::DEFAULT_LOCAL_USER_ID, "codex", "Sub Work")
         .expect("host account profile should be created")
         .profile_id;
+    let default_account = app
+        .lock()
+        .await
+        .provider_account_profile_registry()
+        .get(crate::session::DEFAULT_LOCAL_USER_ID, "opencode", "default")
+        .expect("default account")
+        .profile_id;
+    profile_selection::model_resolution::seed_account_models(
+        &app,
+        crate::session::DEFAULT_LOCAL_USER_ID,
+        "opencode",
+        &default_account,
+        &["gpt-5.4", "gpt-5.6-edited"],
+    )
+    .await;
     runtime
         .update_agent_profile(
             &session_id,
@@ -1073,7 +1131,7 @@ async fn substitute_binds_stable_account_and_profile_edits_keep_the_fallback_lis
         .await
         .expect("profile edit should apply");
     assert_eq!(agent.provider(), "opencode");
-    assert_eq!(agent.model(), Some("gpt-5.6-edited"));
+    assert_eq!(agent.model(), Some("opencode-go/gpt-5.6-edited"));
     assert_eq!(agent.effort(), Some("high"));
     assert_eq!(agent.substitutes().len(), 1);
     assert_eq!(agent.substitutes()[0].model, "gpt-5.4");
@@ -1432,3 +1490,5 @@ fn same_execution_profile(
 
 #[path = "tests/profile_compaction.rs"]
 mod profile_compaction;
+#[path = "tests/queue_vault_unlock.rs"]
+mod queue_vault_unlock;

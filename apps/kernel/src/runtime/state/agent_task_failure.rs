@@ -28,10 +28,6 @@ impl KernelRuntimeOwnedState {
                 code: "vault_unlock_declined",
                 ..
             } => "The Vault unlock was declined",
-            DaemonError::VaultUnlock {
-                code: "vault_unlock_timed_out",
-                ..
-            } => "The Vault unlock timed out",
             _ => return Ok(()),
         };
         for task in self
@@ -48,11 +44,12 @@ impl KernelRuntimeOwnedState {
                             .any(|id| id.as_str() == Some(task.task_id.as_str()))
                     }))
             {
-                self.durable_state_store.agent_lifecycle(Operation::Block {
-                    task: task.task_id,
-                    prompt: task.prompt_id,
-                    reason: format!("{cause}; unlock the Vault and Resume, or Cancel"),
-                })?;
+                self.durable_state_store
+                    .agent_lifecycle(Operation::BlockInterrupted {
+                        task: task.task_id,
+                        prompt: task.prompt_id,
+                        reason: format!("{cause}; unlock the Vault and Resume, or Cancel"),
+                    })?;
             }
         }
         Ok(())
@@ -73,18 +70,23 @@ impl KernelRuntimeOwnedState {
                 "reason": crate::provider::sanitize_provider_diagnostic(diagnostic),
             }),
         );
-        self.durable_state_store
-            .agent_lifecycle(Operation::SourceOutcome {
-                room: room.into(),
-                source: agent.into(),
-                occurrence: "failed-start".into(),
-                success: false,
-                public_answer: Some(
-                    crate::durable_state::agent_lifecycle::DelegateGoneReason::FailedStart
-                        .answer(agent),
-                ),
-                now: crate::session::unix_epoch_ms(),
-            })?;
+        let actor = self.agent_store.get_agent(agent).ok();
+        for receiver in
+            std::iter::once(room).chain(actor.as_ref().and_then(|actor| actor.parent_room_id()))
+        {
+            self.durable_state_store
+                .agent_lifecycle(Operation::SourceOutcome {
+                    room: receiver.into(),
+                    source: agent.into(),
+                    occurrence: "failed-start".into(),
+                    success: false,
+                    public_answer: Some(
+                        crate::durable_state::agent_lifecycle::DelegateGoneReason::FailedStart
+                            .answer(agent),
+                    ),
+                    now: crate::session::unix_epoch_ms(),
+                })?;
+        }
         Ok(())
     }
 
@@ -120,14 +122,15 @@ impl KernelRuntimeOwnedState {
                 }
             }
             let diagnostic = crate::provider::sanitize_provider_diagnostic(diagnostic);
-            self.durable_state_store.agent_lifecycle(Operation::Block {
-                task: task.task_id,
-                prompt: task.prompt_id,
-                reason: format!(
-                    "{}. Check the result before using Resume to retry, or Cancel.",
-                    diagnostic.trim_end_matches('.')
-                ),
-            })?;
+            self.durable_state_store
+                .agent_lifecycle(Operation::BlockInterrupted {
+                    task: task.task_id,
+                    prompt: task.prompt_id,
+                    reason: format!(
+                        "{}. Check the result before using Resume to retry, or Cancel.",
+                        diagnostic.trim_end_matches('.')
+                    ),
+                })?;
         }
         Ok(())
     }

@@ -20,6 +20,25 @@ impl Drop for FixtureCleanup {
     }
 }
 
+/// The account observation written after a verified token fails once. The
+/// kernel injects it: a provider tool cannot reach the kernel's state.
+fn fail_next_observation(profile: &str) {
+    crate::runtime::claude_setup_token_login::FAIL_NEXT_OBSERVATION
+        .lock()
+        .unwrap()
+        .insert(profile.to_string());
+}
+
+fn assert_observation_fault_fired(profile: &str) {
+    assert!(
+        !crate::runtime::claude_setup_token_login::FAIL_NEXT_OBSERVATION
+            .lock()
+            .unwrap()
+            .contains(profile),
+        "the observation write fault must actually fire"
+    );
+}
+
 #[tokio::test]
 async fn setup_token_fake_cli_stores_privately_and_preserves_replace_policy() {
     setup_token_fake_cli_fixture(false).await;
@@ -60,7 +79,7 @@ async fn setup_token_fake_cli_fixture(vault: bool) {
     let mut config = DaemonConfig::for_tests().with_session_history_root(root.join("history"));
     config.user_config.credential_vault.backend =
         crate::config::CredentialVaultBackend::ProcessMemory;
-    let vault_path = root.join("vault.enc");
+    let vault_path = root.join("vault").join("vault.enc");
     if vault {
         config.user_config.credential_vault.backend =
             crate::config::CredentialVaultBackend::CharioxEncrypted;
@@ -102,9 +121,6 @@ if [ "$1" = --version ]; then echo 2.2.0; exit 0; fi
 if [ "$1" = -p ]; then
   printf probe >> '{probe_marker}'
   [ '{mode}' = probe-error ] && exit 3
-  if [ '{mode}' = observation-failure ]; then
-    mv '{registry_path}' '{registry_path}.backup'; mkdir '{registry_path}'
-  fi
   printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"duration_api_ms":1,"num_turns":1,"total_cost_usd":0.00001,"usage":{{"input_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":7}},"result":"CHARIOX_AUTH_OK"}}'
   exit 0
 fi
@@ -124,7 +140,6 @@ if [ '{mode}' = multiple ]; then printf 'sk-ant-oat01-'; i=0; while [ "$i" -lt 9
 exit 0
 "#,
             probe_marker = root.join("probe-marker").display(),
-            registry_path = config.account_profile_registry_path().display(),
         );
         std::fs::write(&binary, script).unwrap();
         std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -139,6 +154,9 @@ exit 0
                 agent_id: None,
             },
         );
+        if mode == "observation-failure" {
+            fail_next_observation(&profile.profile_id);
+        }
         let mut command = KernelCommand::from_local_request(
             format!("setup-{mode}-{replace}"),
             None,
@@ -313,10 +331,7 @@ exit 0
             assert_eq!(vault_step, if stored { 2 } else { 4 });
         }
         if mode == "observation-failure" {
-            let path = config.account_profile_registry_path();
-            assert!(path.is_dir(), "the publication fault must actually fire");
-            std::fs::remove_dir(&path).unwrap();
-            std::fs::rename(format!("{}.backup", path.display()), &path).unwrap();
+            assert_observation_fault_fired(&profile.profile_id);
         }
         if expected == "succeeded" {
             stored = true;
@@ -588,22 +603,7 @@ exit 90
         );
     }
     if scenario == "observation-failure" {
-        // The registry is cached in memory; force publication to fail only
-        // after CLI verification, independently of the credential registry.
-        let path = config.account_profile_registry_path();
-        let script = std::fs::read_to_string(&binary).unwrap();
-        let fault = format!(
-            "mv '{}' '{}'; mkdir '{}'\n",
-            path.display(),
-            path.with_extension("backup").display(),
-            path.display()
-        );
-        let success_line = script
-            .lines()
-            .find(|line| line.contains("CHARIOX_AUTH_OK"))
-            .expect("valid model-turn fixture");
-        let script = script.replace(success_line, &format!("{fault}{success_line}"));
-        std::fs::write(&binary, script).unwrap();
+        fail_next_observation(&profile.profile_id);
     }
     let (command, request) = paste(&good);
     router
@@ -611,10 +611,7 @@ exit 90
         .await
         .expect("a stored token must succeed despite an observation write failure");
     if scenario == "observation-failure" {
-        assert!(
-            config.account_profile_registry_path().is_dir(),
-            "fault must actually fire"
-        );
+        assert_observation_fault_fired(&profile.profile_id);
         assert!(crate::provider::provider_account_credential_registered(
             "local",
             "claude",
@@ -876,7 +873,7 @@ exit 1
     let mut config = DaemonConfig::for_tests().with_session_history_root(root.join("history"));
     config.user_config.credential_vault.backend =
         crate::config::CredentialVaultBackend::ProcessMemory;
-    let vault_path = root.join("vault.enc");
+    let vault_path = root.join("vault").join("vault.enc");
     if mode.ends_with("-locked") || mode.ends_with("-relocked") {
         config.user_config.credential_vault.backend =
             crate::config::CredentialVaultBackend::CharioxEncrypted;

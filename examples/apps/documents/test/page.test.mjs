@@ -89,7 +89,7 @@ test('chosen files are read as UTF-8 text; a file that is too big or not text is
   assert.deepEqual(read.files, [{ name: 'Notes.md', content: '# Notes\n' }]);
   assert.deepEqual(read.skipped, [
     { name: 'photo.txt', reason: 'photo.txt is not UTF-8 text' },
-    { name: 'big.md', reason: 'big.md is larger than 512 KB' },
+    { name: 'big.md', reason: 'big.md is larger than 504 KB' },
   ]);
   const many = await readUploads(Array.from({ length: 10 }, (_, n) => new File(['x'], `${n}.md`)));
   assert.equal(many.files.length, 8);
@@ -106,18 +106,16 @@ test('files that fit one by one are imported in requests that each fit the App c
   assert.deepEqual(split.skipped, []);
   const escaped = batches([{ name: 'q.md', content: '"'.repeat(300 * 1024) }]);
   assert.deepEqual(escaped.batches, [], 'escaping makes a document too big for one call');
-  assert.deepEqual(escaped.skipped, [{ name: 'q.md', reason: 'q.md is too big to import here: with its name and escaped characters it is over 512 KB' }]);
+  assert.deepEqual(escaped.skipped, [{ name: 'q.md', reason: 'q.md is too big to import here: with its name and escaped characters it is over 504 KB' }]);
 });
 
-test('a file is imported whenever its whole request fits the 512 KiB the App accepts', async () => {
-  const { batches } = await import('../src/upload.js');
-  const LIMIT = 512 * 1024;
-  const size = (file) => new TextEncoder().encode(JSON.stringify({ files: [file] })).length;
-  const file = (extra) => ({ name: 'big.md', content: 'x'.repeat(LIMIT - size({ name: 'big.md', content: '' }) + extra) });
+test('a file is imported whenever its content fits the most a document holds and its whole request fits the App call', async () => {
+  const { batches, MAX_BYTES } = await import('../src/upload.js');
+  const file = (extra) => ({ name: 'big.md', content: 'x'.repeat(MAX_BYTES - 2 + extra) });
   const fits = batches([file(0)]);
   assert.deepEqual(fits.batches.map((batch) => batch.length), [1], 'a 500 KB-class document is not skipped');
   assert.deepEqual(fits.skipped, []);
-  assert.equal(size(fits.batches[0][0]), LIMIT);
+  assert.ok(new TextEncoder().encode(JSON.stringify({ files: fits.batches[0] })).length < 512 * 1024, 'with room for the rest of the call');
   const over = batches([file(1)]);
   assert.deepEqual(over.batches, []);
   assert.equal(over.skipped.length, 1);
@@ -159,6 +157,7 @@ function fakeBackend() {
     },
     view_changes: () => ({ latest: 1, dropped: false, changes: [] }),
     save_draft: (draft) => {
+      if (store.failDraftSaves) throw Error(store.failDraftSaves);
       if (typeof draft.editor !== 'string') throw Error('editor is required');
       const key = `${draft.editor}/${draft.id}`;
       store.drafts.delete(key);
@@ -254,6 +253,16 @@ test('an unsaved edit survives the replacement of the view and keeps the revisio
   await until(() => /newer than 1/.test(second.$('status').textContent), 'the stale save is refused');
   assert.equal(backend.store.docs.get('d1').content, 'saved text');
   assert.ok(backend.store.draft, 'the refused edit is still kept');
+});
+
+test('a refused draft write is shown to the person, not swallowed', async () => {
+  const backend = fakeBackend();
+  backend.store.failDraftSaves = 'the draft folder is full';
+  const view = await loadView(backend);
+  await openNotes(view);
+  type(view, { content: 'unsaved edit' });
+  await until(() => /the draft folder is full/.test(view.$('status').textContent), 'the refusal to be shown');
+  assert.equal(backend.store.draft, null);
 });
 
 test('a saved edit leaves no draft to restore', async () => {

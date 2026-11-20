@@ -59,7 +59,7 @@ impl Terminal {
             if limit.is_none() && !outside_end {
                 pty.release_exited_process_jobs(
                     &run_id,
-                    &self.record.session_id,
+                    self.record.scope.process_key(),
                     crate::runtime::process_resources::SessionProcessOwner::Terminal(
                         self.record.terminal_id.clone(),
                     ),

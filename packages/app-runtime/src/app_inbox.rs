@@ -5,7 +5,7 @@
 //! retries and a visible failed (poison) or expired outcome. Payloads are
 //! dropped once an occurrence is settled. Routing grants the App nothing else.
 
-use chariox_app_package::{EventDirection, Limits, VerifiedApp};
+use chariox_app_package::{EventDirection, EventOption, Limits, VerifiedApp};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -47,8 +47,15 @@ pub type Result<T> = std::result::Result<T, InboxError>;
 
 /// The publisher-signed incoming event schemas of one verified release.
 pub struct IncomingCatalog {
-    events: BTreeMap<String, (u32, jsonschema::JSONSchema)>,
+    events: BTreeMap<String, IncomingEvent>,
 }
+
+struct IncomingEvent {
+    version: u32,
+    validator: jsonschema::JSONSchema,
+    options: Vec<EventOption>,
+}
+
 impl IncomingCatalog {
     pub fn compile(package: &impl VerifiedApp) -> Result<Self> {
         let mut events = BTreeMap::new();
@@ -62,9 +69,15 @@ impl IncomingCatalog {
                 &Limits::default(),
             )
             .map_err(|_| InboxError::Schema)?;
+            let options = chariox_app_package::event_options(&declaration.payload_schema)
+                .map_err(|_| InboxError::Schema)?;
             events.insert(
                 declaration.name.clone(),
-                (declaration.schema_version, validator),
+                IncomingEvent {
+                    version: declaration.schema_version,
+                    validator,
+                    options,
+                },
             );
         }
         Ok(Self { events })
@@ -72,12 +85,19 @@ impl IncomingCatalog {
 
     /// The declared version of an incoming event, if the release has one.
     pub fn version(&self, name: &str) -> Option<u32> {
-        self.events.get(name).map(|(version, _)| *version)
+        self.events.get(name).map(|event| event.version)
+    }
+
+    /// The subscription options an incoming event declares.
+    pub fn options(&self, name: &str) -> &[EventOption] {
+        self.events
+            .get(name)
+            .map_or(&[], |event| event.options.as_slice())
     }
 
     pub fn validate(&self, name: &str, payload: &Value) -> Result<()> {
-        let (_, validator) = self.events.get(name).ok_or(InboxError::Schema)?;
-        if validator.is_valid(payload) {
+        let event = self.events.get(name).ok_or(InboxError::Schema)?;
+        if event.validator.is_valid(payload) {
             Ok(())
         } else {
             Err(InboxError::Schema)

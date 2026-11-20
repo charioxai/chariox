@@ -14,11 +14,15 @@ use serde::Serialize;
 use super::subscriptions::{relay_subscription_task_key, RelaySubscriptionTask};
 use super::*;
 use crate::local::{RoomTerminalOperation, RoomTerminalRequest, RoomTerminalResult};
-use crate::room_terminal::{RoomTerminalOutput, RoomTerminalStatus, RoomTerminalSummary};
+use crate::room_terminal::{
+    RoomTerminalOutput, RoomTerminalStatus, RoomTerminalSummary, TerminalScope,
+};
 use crate::runtime::command::KernelCaller;
 
 /// Protocol 1006: the subscription scope of a Room terminal's output stream.
 pub(super) const ROOM_TERMINAL_SCOPE: &str = "room_terminal";
+/// Protocol 1012: the same stream for the terminals of the kernel itself, which have no Room.
+pub(super) const KERNEL_TERMINAL_SCOPE: &str = "kernel_terminal";
 
 /// How often the stream compares the Room's terminals with the tabs the viewer has, as the
 /// viewer's own list poll did.
@@ -30,7 +34,7 @@ const LIST_INTERVAL: Duration = Duration::from_secs(3);
 pub(super) struct RoomTerminalSubscription {
     pub(super) request_id: String,
     pub(super) relay_id: String,
-    pub(super) session_id: String,
+    pub(super) scope: TerminalScope,
     pub(super) address: String,
     pub(super) identity: Option<chariox_relay::protocol::RelayCallerIdentity>,
     pub(super) public_key: String,
@@ -68,7 +72,7 @@ pub(super) async fn handle_subscribe(
     subscription: RoomTerminalSubscription,
 ) -> Result<(), DaemonError> {
     let key = relay_subscription_task_key(
-        &subscription.session_id,
+        subscription.scope.process_key(),
         &subscription.address,
         Some(ROOM_TERMINAL_SCOPE),
         &subscription.relay_id,
@@ -101,22 +105,14 @@ async fn run(
     let RoomTerminalSubscription {
         request_id,
         relay_id,
-        session_id,
+        scope,
         address,
         identity,
         public_key,
         from_offset,
         heartbeat_interval,
     } = subscription;
-    let opened = open(
-        &router,
-        session_id,
-        &address,
-        identity,
-        &public_key,
-        from_offset,
-    )
-    .await;
+    let opened = open(&router, scope, &address, identity, &public_key, from_offset).await;
     let (reader, first) = match opened {
         Ok(opened) => opened,
         Err(error) => {
@@ -176,7 +172,7 @@ async fn run(
 /// The first read checks that the caller may see the terminal before the stream is answered.
 async fn open(
     router: &CommandRouter,
-    session_id: String,
+    scope: TerminalScope,
     address: &str,
     identity: Option<chariox_relay::protocol::RelayCallerIdentity>,
     public_key: &str,
@@ -190,7 +186,7 @@ async fn open(
             )
         })?;
     let reader = Reader {
-        session_id,
+        scope,
         terminal_id,
         host_agent,
         caller: super::browser_display::stream_caller(router, identity, public_key)?,
@@ -328,7 +324,7 @@ fn same_terminal(sent: &RoomTerminalSummary, now: &RoomTerminalSummary) -> bool 
 
 /// Where the stream reads: the Room, the terminal, the machine that runs it, and as whom.
 struct Reader {
-    session_id: String,
+    scope: TerminalScope,
     terminal_id: String,
     host_agent: Option<String>,
     caller: KernelCaller,
@@ -345,17 +341,41 @@ fn parse_address(address: &str) -> Option<(String, Option<String>)> {
 }
 
 impl Reader {
+    /// The request a polling viewer sends for this stream's owner, through the same access
+    /// check: a Room's, or the kernel's own.
+    async fn request(
+        &self,
+        router: &CommandRouter,
+        host_agent: Option<String>,
+        operation: RoomTerminalOperation,
+    ) -> Result<crate::local::LocalDaemonResponse, DaemonError> {
+        let state = router.runtime_state();
+        match &self.scope {
+            TerminalScope::Room(session_id) => {
+                let request = RoomTerminalRequest {
+                    session_id: session_id.clone(),
+                    acting_agent: None,
+                    host_agent,
+                    operation,
+                };
+                state.room_terminal_for_client(&self.caller, request).await
+            }
+            TerminalScope::Kernel => {
+                let request = crate::local::KernelTerminalRequest {
+                    directory: None,
+                    operation,
+                };
+                state
+                    .kernel_terminal_for_client(&self.caller, request)
+                    .await
+            }
+        }
+    }
+
     /// The Room-wide list a polling viewer sends: this kernel's terminals and its workers'.
     async fn list(&self, router: &CommandRouter) -> Result<Vec<RoomTerminalSummary>, DaemonError> {
-        let request = RoomTerminalRequest {
-            session_id: self.session_id.clone(),
-            acting_agent: None,
-            host_agent: None,
-            operation: RoomTerminalOperation::List,
-        };
-        match router
-            .runtime_state()
-            .room_terminal_for_client(&self.caller, request)
+        match self
+            .request(router, None, RoomTerminalOperation::List)
             .await?
         {
             crate::local::LocalDaemonResponse::RoomTerminal {
@@ -374,19 +394,13 @@ impl Reader {
         after_offset: u64,
         wait: Duration,
     ) -> Result<RoomTerminalOutput, DaemonError> {
-        let request = RoomTerminalRequest {
-            session_id: self.session_id.clone(),
-            acting_agent: None,
-            host_agent: self.host_agent.clone(),
-            operation: RoomTerminalOperation::ReadOutput {
-                terminal_id: self.terminal_id.clone(),
-                after_offset,
-                wait_ms: wait.as_millis() as u64,
-            },
+        let operation = RoomTerminalOperation::ReadOutput {
+            terminal_id: self.terminal_id.clone(),
+            after_offset,
+            wait_ms: wait.as_millis() as u64,
         };
-        match router
-            .runtime_state()
-            .room_terminal_for_client(&self.caller, request)
+        match self
+            .request(router, self.host_agent.clone(), operation)
             .await?
         {
             crate::local::LocalDaemonResponse::RoomTerminal {
@@ -410,7 +424,7 @@ mod protocol_shape {
             include_bytes!("../../local/api/tests/protocol_shapes/room-terminal-stream-1006.json");
         assert_eq!(
             format!("{:x}", Sha256::digest(bytes)),
-            "17817dd65319510e1494f72b3a28972445463cdd301a992e7280ee807f62ac54"
+            "a0eb626d5d88e63a7bc9e328aea29e0ab8e6acb944446db0b9f5e6ca9294836a"
         );
         let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
         assert_eq!(

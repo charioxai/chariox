@@ -88,6 +88,24 @@ export async function ensureSystemdUserPersistence(invoke = command, uid = proce
   } catch { /* Keep host/service diagnostics bounded and value-free. */ }
   fail(`The user service would stop after logout. Ask the host administrator to run sudo loginctl enable-linger ${user}, then retry Setup. No enrollment code was consumed.`)
 }
+// The kernel starts agents only inside Bubblewrap, so they cannot read its secrets. Setup adds the
+// bubblewrap package when it runs as root; otherwise it names the administrator command. It never elevates.
+export async function ensureBubblewrap(invoke = command, uid = process.getuid()) {
+  const confines = () => invoke("bwrap", ["--dev-bind", "/", "/", "--", "/bin/true"]).then(() => true, () => false)
+  if (await confines()) return
+  if (await invoke("bwrap", ["--version"]).then(() => true, () => false)) {
+    fail("Bubblewrap cannot make a mount namespace for this user, and agents run inside it. Ask the host administrator to allow unprivileged user namespaces for bwrap, then retry Setup. No enrollment code was consumed.")
+  }
+  if (uid !== 0) {
+    fail("Agents run inside Bubblewrap, which is not installed. Ask the host administrator to run sudo apt-get install -y bubblewrap (or sudo dnf install -y bubblewrap), then retry Setup. No enrollment code was consumed.")
+  }
+  const env = { ...process.env, DEBIAN_FRONTEND: "noninteractive" }
+  for (const steps of [[["apt-get", ["update"]], ["apt-get", ["install", "-y", "--no-install-recommends", "bubblewrap"]]], [["dnf", ["install", "-y", "bubblewrap"]]]]) {
+    try { for (const [program, args] of steps) await invoke(program, args, false, undefined, env) } catch { continue }
+    if (await confines()) return
+  }
+  fail("Agents run inside Bubblewrap, and Setup could not install it with apt-get or dnf. Install the bubblewrap package, then retry Setup. No enrollment code was consumed.")
+}
 function quote(value) {
   if (typeof value !== "string" || /[\x00-\x1f\x7f]/.test(value)) fail("invalid user service environment")
   return `"${value.replaceAll("%", "%%").replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`
@@ -182,7 +200,7 @@ async function preflightMachine(r, home, stage, serviceManager) {
   return prior
 }
 // serviceManager is a test seam, never supplied by serialized requests or environment flags.
-export async function runMachine(r, { home = process.env.HOME, stage = here, enrollment, enrollKernel, kernelCommand, releaseAdapter, serviceDefinition, servicePersistence = ensureSystemdUserPersistence, serviceManager = (args, capture) => command("systemctl", ["--user", ...args], capture) } = {}) {
+export async function runMachine(r, { home = process.env.HOME, stage = here, enrollment, enrollKernel, kernelCommand, releaseAdapter, serviceDefinition, servicePersistence = ensureSystemdUserPersistence, agentConfinement = ensureBubblewrap, serviceManager = (args, capture) => command("systemctl", ["--user", ...args], capture) } = {}) {
   validateRequest(r)
   const verify = releaseAdapter?.verify ?? verifyImage
   const kernelPath = releaseAdapter?.kernelPath ?? "usr/local/bin/chariox-kernel"
@@ -196,7 +214,10 @@ export async function runMachine(r, { home = process.env.HOME, stage = here, enr
     if (releaseAdapter || serviceDefinition) fail("inspection requires the original image/service contract")
     return r.action === "preflight" ? preflightMachine(r, home, stage, serviceManager) : inspectMachine(r, home, stage, serviceManager)
   }
-  if (!serviceDefinition && ["start", "upgrade", "repair"].includes(r.action)) await servicePersistence()
+  if (!serviceDefinition && ["start", "upgrade", "repair"].includes(r.action)) {
+    await servicePersistence()
+    await agentConfinement()
+  }
   const service = serviceDefinition?.name ?? `chariox-machine-${r.installId}.service`
   const renderUnit = () => serviceDefinition?.render(home, r, root, kernelPath) ?? unitFor(home, r, root, kernelPath)
   const installParent = await tree(home, ".local/share/chariox/machines", installing)

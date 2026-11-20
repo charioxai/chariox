@@ -344,7 +344,10 @@ impl<'a> ProviderProcessTracker<'a> {
         Ok(summary)
     }
 
-    fn reap_tracked_process(&mut self, process: &ProviderProcessInfo) -> Result<(), DaemonError> {
+    pub(super) fn reap_tracked_process(
+        &mut self,
+        process: &ProviderProcessInfo,
+    ) -> Result<(), DaemonError> {
         let (process_key, run_ids, pid) = {
             let tracking = self.app.provider_process_tracking.read();
             let Some((process_key, tracked)) = tracking
@@ -361,23 +364,51 @@ impl<'a> ProviderProcessTracker<'a> {
             )
         };
 
+        let live_runs = run_ids
+            .iter()
+            .filter_map(|run_id| self.app.providers.get_run(run_id).ok())
+            .filter(|run| run.state() != ProviderRunState::Ended)
+            .collect::<Vec<_>>();
+        let sessions = live_runs
+            .iter()
+            .filter_map(|run| self.app.sessions.get_session(run.session_id()).ok())
+            .collect::<Vec<_>>();
+        // The process looked idle when the sweep began; a prompt given to one
+        // of its runs since then keeps it.
+        let providers = &self.app.providers;
+        let Some(ended) = self
+            .app
+            .prompt_state_owner
+            .while_sessions_idle(&sessions, || {
+                Ok(live_runs
+                    .iter()
+                    .filter_map(|run| {
+                        providers
+                            .terminate_run_provider_only(run.session_id(), run.id())
+                            .ok()
+                    })
+                    .collect::<Vec<_>>())
+            })?
+        else {
+            crate::logging::info_with_fields(
+                "daemon.provider_process_gc",
+                "kept idle managed provider process: a prompt became active",
+                serde_json::json!({
+                    "process_id": process.process_id,
+                    "owner_provider_run_ids": run_ids,
+                }),
+            );
+            return Ok(());
+        };
+        for outcome in ended {
+            clear_active_provider_run_session_pointer(
+                self.app,
+                outcome.run().session_id(),
+                outcome.run().id(),
+            )?;
+            self.app.update_provider_run_projection(outcome.into_run());
+        }
         for run_id in &run_ids {
-            if let Ok(run) = self.app.providers.get_run(run_id) {
-                if run.state() != ProviderRunState::Ended {
-                    if let Ok(outcome) = self
-                        .app
-                        .providers
-                        .terminate_run_provider_only(run.session_id(), run.id())
-                    {
-                        clear_active_provider_run_session_pointer(
-                            self.app,
-                            run.session_id(),
-                            outcome.run().id(),
-                        )?;
-                        self.app.update_provider_run_projection(outcome.into_run());
-                    }
-                }
-            }
             let _ = self.remove_run(run_id);
         }
 

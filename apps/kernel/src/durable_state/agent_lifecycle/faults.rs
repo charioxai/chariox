@@ -6,6 +6,10 @@
 //! (source or wake occurrence, message, wake firing, completion, owner response,
 //! delivery receipt) is applied a second time: the ledger must keep it one
 //! logical delivery.
+//! A `drop-ack` file holding a delivery kind (the names of `delivery_kind`)
+//! drops one acknowledgement: the next write of that kind commits, the caller is
+//! told it failed (as when the reply is lost after the commit), and the file is
+//! removed, so the retry meets the committed delivery. `drop-ack.log` records it.
 //! Without the variable nothing changes.
 use super::Operation;
 use std::path::PathBuf;
@@ -57,19 +61,41 @@ impl AgentFaults {
     pub(super) fn duplicates_deliveries(&self) -> bool {
         self.active("duplicate-delivery")
     }
+    /// The `drop-ack` file names this operation's delivery kind.
+    pub(super) fn wants_ack_dropped(&self, operation: &Operation) -> bool {
+        let (Some(dir), Some(kind)) = (&self.dir, delivery_kind(operation)) else {
+            return false;
+        };
+        std::fs::read_to_string(dir.join("drop-ack")).is_ok_and(|text| text.trim() == kind)
+    }
+    /// After the commit: the fault fires once, so the retry meets the committed write.
+    pub(super) fn ack_dropped(&self, operation_kind: &str) {
+        if let Some(dir) = &self.dir {
+            let _ = std::fs::remove_file(dir.join("drop-ack"));
+        }
+        self.record_line(
+            "drop-ack.log",
+            &format!("{operation_kind} acknowledgement dropped"),
+        );
+    }
     /// One line per redelivery in `duplicate-delivery.log`, so a drill can
     /// count what was replayed next to the effects it observes.
     pub(super) fn record_duplicate(&self, kind: &str, error: Option<&crate::error::DaemonError>) {
-        let Some(dir) = &self.dir else { return };
-        let line = format!(
-            "{} {kind} {}\n",
-            crate::session::unix_epoch_ms(),
-            error.map_or_else(|| "applied".to_string(), |e| format!("refused: {e}"))
+        self.record_line(
+            "duplicate-delivery.log",
+            &format!(
+                "{kind} {}",
+                error.map_or_else(|| "applied".to_string(), |e| format!("refused: {e}"))
+            ),
         );
+    }
+    fn record_line(&self, log: &str, text: &str) {
+        let Some(dir) = &self.dir else { return };
+        let line = format!("{} {text}\n", crate::session::unix_epoch_ms());
         let _ = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
-            .open(dir.join("duplicate-delivery.log"))
+            .open(dir.join(log))
             .and_then(|mut file| std::io::Write::write_all(&mut file, line.as_bytes()));
     }
     fn active(&self, name: &str) -> bool {

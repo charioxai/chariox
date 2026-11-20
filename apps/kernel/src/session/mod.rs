@@ -23,6 +23,7 @@ pub use runtime_interactions::{
     HANDOFF_CHANGE_LINE_MAX_CHARS, HANDOFF_CHANGE_MAX_LINES, HANDOFF_EXPLANATION_MAX_CHARS,
     HANDOFF_LABEL_MAX_CHARS, HANDOFF_MAX_TIMEOUT_SEC, HANDOFF_MIN_TIMEOUT_SEC,
 };
+mod project_id;
 mod runtime_project;
 mod runtime_session;
 mod runtime_worktrees;
@@ -46,6 +47,7 @@ mod workflow_scheduling;
 mod workflow_turns;
 mod workspace_links;
 
+pub(crate) use agent_config::effective_agent_execution_config_with_parents;
 pub use agent_config::{
     effective_agent_execution_config, effective_agent_execution_config_in_tree,
     effective_agent_execution_mode, effective_agent_extension_registration_authority,
@@ -54,6 +56,7 @@ pub use agent_config::{
     SESSION_AGENT_PERMISSION_CONFIG_KEY,
 };
 pub(crate) use owner::{SessionStateOwner, SessionStateReader, SessionStateStore};
+pub use project_id::{EmptyProjectId, ProjectId};
 pub use room_environment::{
     agent_environment_actor_id, human_environment_actor_id, human_environment_actor_label,
     ActionAdmission, ActionCancellationOutcome, AppPanelLayout, AppPanelPlacement,
@@ -77,7 +80,8 @@ pub use room_setup::{
 };
 pub(crate) use room_setup_store::RoomSetupStore;
 pub use runtime_project::{
-    RuntimeProject, RuntimeProjectKind, RuntimeProjectStatus, SessionProjectSelection,
+    ProjectCopyOrigin, RuntimeProject, RuntimeProjectKind, RuntimeProjectStatus,
+    SessionProjectSelection,
 };
 pub(crate) use runtime_session::DurableWorkflowHotState;
 pub use service::{
@@ -101,8 +105,8 @@ pub use types::{
     RuntimeInteractionKind, RuntimeInteractionLevel, RuntimeInteractionSubject,
     RuntimeInteractionView, RuntimeProviderLogin, RuntimeSession, RuntimeWorktreeAssignment,
     SchedulerState, SessionAgentDefaults, SessionCollaborationAgentCounts, SessionConfigState,
-    SessionExecutionMode, SessionInvite, SessionMember, SessionStatus, WorkflowArtifactRef,
-    WorkflowCanvasLayout, WorkflowCanvasLayoutPatch, WorkflowCanvasPoint,
+    SessionExecutionMode, SessionInvite, SessionMember, SessionStatus, SkillIntent,
+    WorkflowArtifactRef, WorkflowCanvasLayout, WorkflowCanvasLayoutPatch, WorkflowCanvasPoint,
     WorkflowCodeSourceBinding, WorkflowCodeSourceOrigin, WorkflowCompletionSnapshot,
     WorkflowConsole, WorkflowConsoleEntry, WorkflowDefinition, WorkflowEdgeDefinition,
     WorkflowEdgeEndpointSide, WorkflowEndpointDefinition, WorkflowFailureEvent,
@@ -128,7 +132,7 @@ pub use types::{
     DEFAULT_WORKFLOW_RUN_MAX_TURNS_SAFETY_LIMIT, DEFAULT_WORKFLOW_SCHEDULE_MAX_RUNS,
     DEFAULT_WORKFLOW_WATCHDOG_MAX_WAKEUPS, OUTCOME_DETAIL_CHARS,
 };
-pub(crate) use types::{DurablePromptDeliveryPhase, DurablePromptPrivateState};
+pub(crate) use types::{DurablePromptDeliveryPhase, DurablePromptPrivateState, QueuedNotification};
 pub(crate) use workflow_definition::{
     WorkflowCodeSourceDescriptor, WorkflowCodeStructureReplacement,
 };

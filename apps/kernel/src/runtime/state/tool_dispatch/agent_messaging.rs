@@ -23,7 +23,13 @@ impl KernelRuntimeState {
                 "agents": agents
                     .iter()
                     .map(|agent| {
-                        session_agent_description(session, requester, agent, &agents, &activity)
+                        session_agent_description(
+                            session,
+                            requester,
+                            agent,
+                            self.owned.agent_store.effective_execution_config(session, agent, &self.owned.session_store),
+                            &activity,
+                        )
                     })
                     .collect::<Vec<_>>(),
             }),
@@ -54,7 +60,13 @@ impl KernelRuntimeState {
                 ok: true,
                 payload: serde_json::json!({
                     "session_id": session.id(),
-                    "agent": session_agent_description(session, requester, agent, &agents, &activity),
+                    "agent": session_agent_description(
+                            session,
+                            requester,
+                            agent,
+                            self.owned.agent_store.effective_execution_config(session, agent, &self.owned.session_store),
+                            &activity,
+                        ),
                 }),
             },
             Err(message) => agent_message_failure(message),
@@ -88,7 +100,8 @@ impl KernelRuntimeState {
                 operation: "runtime_tool.promote_agent_message",
                 message: format!("invalid promote-agent-message arguments: {error}"),
             })?;
-        self.promote_agent_message(session, sender, args).await
+        let result = self.promote_agent_message(session, sender, args).await;
+        self.project_agent_message_result(session.id(), sender.id(), result)
     }
 
     /// A room command's promotion: the tool's own path, on behalf of the provider run that ran it.
@@ -104,7 +117,60 @@ impl KernelRuntimeState {
             .await
     }
 
+    /// The message tool's own path for a state that already acts as the sender's turn
+    /// (`with_worker_caller_origin`), whether that turn runs here or on a leased worker.
+    pub(crate) async fn send_agent_message_as_caller(
+        &self,
+        session: &crate::session::RuntimeSession,
+        sender: &crate::agent::AgentInstance,
+        arguments: serde_json::Value,
+    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        self.handle_send_agent_message_runtime_tool(session, sender, arguments)
+            .await
+    }
+
     pub(super) async fn handle_send_agent_message_runtime_tool(
+        &self,
+        session: &crate::session::RuntimeSession,
+        sender: &crate::agent::AgentInstance,
+        arguments: serde_json::Value,
+    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        let result = self.send_agent_message(session, sender, arguments).await;
+        self.project_agent_message_result(session.id(), sender.id(), result)
+    }
+
+    fn project_agent_message_result(
+        &self,
+        room: &str,
+        sender: &str,
+        result: Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError>,
+    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        match result {
+            Err(error) if crate::error::is_agent_deadline_refusal(&error) => {
+                let message = error.to_string();
+                let mut notice =
+                    crate::history::SessionHistoryEntry::notice(room, None, Some(sender), &message);
+                notice.notice_reason =
+                    Some(crate::history::SessionHistoryNoticeReason::AgentDeadlineReached);
+                self.owned.record_notice_entry(
+                    notice,
+                    self.owned
+                        .attachment_store
+                        .list_session_attachment_ids(room),
+                );
+                Ok(crate::transport::runtime_tools::RuntimeToolResult {
+                    ok: false,
+                    payload: serde_json::json!({
+                        "code": crate::error::AGENT_DEADLINE_REACHED,
+                        "error": message,
+                    }),
+                })
+            }
+            result => result,
+        }
+    }
+
+    async fn send_agent_message(
         &self,
         session: &crate::session::RuntimeSession,
         sender: &crate::agent::AgentInstance,
@@ -171,6 +237,8 @@ impl KernelRuntimeState {
                 "agent message belongs to a different sender turn; message was not sent",
             ));
         }
+        self.owned
+            .ensure_agent_before_deadline(session.id(), target.id())?;
         let durable_identity = idempotency_key.map(|key| {
             let operation_id = format!(
                 "agent-message:{}:{}:{:x}",
@@ -512,11 +580,9 @@ fn session_agent_description(
     session: &crate::session::RuntimeSession,
     requester: &crate::agent::AgentInstance,
     agent: &crate::agent::AgentInstance,
-    agents: &[crate::agent::AgentInstance],
+    effective: crate::session::EffectiveAgentExecutionConfig,
     activity: &std::collections::BTreeMap<String, crate::runtime::projection::AgentRuntimeActivity>,
 ) -> serde_json::Value {
-    let effective =
-        crate::session::effective_agent_execution_config_in_tree(session, agent, agents);
     let location = agent.remote_execution().map_or_else(
         || serde_json::json!({ "kind": "local" }),
         |remote| {
@@ -552,12 +618,7 @@ fn session_agent_description(
             crate::agent::AgentOperatingMode::Regular => "regular",
             crate::agent::AgentOperatingMode::Meta => "meta",
         },
-        "state": match agent.state() {
-            crate::agent::AgentState::Idle => "idle",
-            crate::agent::AgentState::Working => "working",
-            crate::agent::AgentState::Focused => "focused",
-            crate::agent::AgentState::Error => "error",
-        },
+        "state": crate::runtime::projection::agent_state_label(agent, activity.get(agent.id())),
         "is_processing": agent.is_processing(),
         "has_active_prompt": session.active_prompt_for_agent(agent.id()).is_some(),
         "queued_prompt_count": session
@@ -567,11 +628,11 @@ fn session_agent_description(
         // agent is never an unexplained one.
         "liveness": activity.get(agent.id()).map(|activity| &activity.liveness),
         "parent_agent_id": agent.parent_agent_id(),
+        "parent_room_id": agent.parent_room_id(),
         "visible_in_freeform": agent.visible_in_freeform(),
         "location": location,
         "extensions": {
             "mcps": extension_names(crate::extension::ExtensionKind::Mcp),
-            "skills": extension_names(crate::extension::ExtensionKind::Skill),
             "scripts": extension_names(crate::extension::ExtensionKind::Script),
             "connectors": extension_names(crate::extension::ExtensionKind::Connector),
         },

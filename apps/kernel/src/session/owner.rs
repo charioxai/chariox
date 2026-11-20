@@ -251,6 +251,14 @@ impl SessionStateStore {
             .set_project_pinned(project_id, pinned, caller_user_id)
     }
 
+    pub(crate) fn create_project(
+        &self,
+        name: String,
+        caller_user_id: &str,
+    ) -> Result<RuntimeProject, DaemonError> {
+        self.write().create_project(name, caller_user_id)
+    }
+
     pub(crate) fn rename_project(
         &self,
         project_id: &str,
@@ -332,15 +340,6 @@ impl SessionStateStore {
     ) -> Result<RuntimeSession, DaemonError> {
         self.write()
             .commit_publication_runtime_configuration(session)
-    }
-
-    pub(crate) fn restore_session_with_default_project_name_hint(
-        &self,
-        session: RuntimeSession,
-        default_project_name_hint: Option<&str>,
-    ) -> RuntimeSession {
-        self.write()
-            .restore_session_with_default_project_name_hint(session, default_project_name_hint)
     }
 
     pub(crate) fn restore_ended_session(

@@ -43,7 +43,9 @@ async fn serve_worker_that_never_cancels(
             home_public_key.clone(),
         );
         tokio::spawn(async move {
-            let Ok(mut socket) = accept_async(stream).await else {
+            let Ok(mut socket) =
+                crate::transport::relay_socket_connect::accept_as_relay(stream).await
+            else {
                 return;
             };
             while let Some(Ok(message)) = socket.next().await {

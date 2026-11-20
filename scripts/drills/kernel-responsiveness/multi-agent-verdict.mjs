@@ -28,3 +28,21 @@ export function rssSlopeAfterWarmup(samples, warmupSeconds) {
   const den = tail.reduce((sum, s) => sum + (s.t_s - meanT) ** 2, 0)
   return den === 0 ? null : +((num / den) * 60 / 1024).toFixed(2)
 }
+
+// perf-budgets/kernel.json budgets this drill gates (docs/PERFORMANCE_BUDGETS.md, Kernel): the probe client's p95 of a
+// history outline, a Room state read and an attach view during the load phase, and the "kernel operation stalled"
+// lines the kernel logged over the whole run.
+export const DRILL_BUDGETS = { outline_p95_ms: 'GetSessionHistoryOutline', session_state_p95_ms: 'GetSessionState', attach_view_p95_ms: 'AttachSessionView' }
+
+export function budgetChecks(budgets, latency, stalledOperations) {
+  const checks = {}
+  for (const [name, kind] of Object.entries(DRILL_BUDGETS)) {
+    const max = budgets[name]?.max
+    if (!Number.isFinite(max)) throw new Error(`perf-budgets/kernel.json has no ${name}.max`)
+    // A kind the drill never measured is red, so a probe that stops running cannot pass its budget.
+    checks[`budget_${name}`] = { value: latency[kind]?.p95_ms ?? Infinity, limit: max }
+  }
+  if (!Number.isFinite(budgets.stalled_operations?.max)) throw new Error('perf-budgets/kernel.json has no stalled_operations.max')
+  checks.budget_stalled_operations = { value: stalledOperations, limit: budgets.stalled_operations.max }
+  return checks
+}

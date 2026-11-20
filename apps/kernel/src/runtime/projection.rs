@@ -5,6 +5,7 @@ mod agent_liveness;
 mod agent_runtime_projection;
 mod config_projection;
 mod daemon_health_model;
+pub(crate) mod machine_list_renewal;
 mod provider_projection;
 mod queued_prompt_controls;
 mod remote_relay_inventory_projection;
@@ -17,7 +18,9 @@ mod session_state_projection;
 mod test_support;
 mod transport_health;
 
-pub(crate) use agent_liveness::{annotate_waits, silent_agents, SourceLabels, YieldedSources};
+pub(crate) use agent_liveness::{
+    agent_state_label, annotate_waits, silent_agents, SourceLabels, YieldedSources,
+};
 pub use agent_liveness::{
     AgentLiveness, AgentWaitEvent, AgentWaitKind, AgentWaitingOn, SilentAgentHealth,
 };
@@ -40,7 +43,9 @@ pub(crate) use queued_prompt_controls::queued_prompt_controls_projection;
 pub use queued_prompt_controls::AgentQueuedPromptControlProjection;
 #[cfg(test)]
 pub(crate) use queued_prompt_controls::QUEUED_PROMPT_STEER_EXTERNAL_REASON;
-pub(crate) use remote_relay_inventory_projection::RemoteRelayInventoryProjectionStore;
+pub(crate) use remote_relay_inventory_projection::{
+    LivePassVerdict, RemoteInventoryWatch, RemoteRelayInventoryProjectionStore,
+};
 pub(crate) use session_active_run_projection::projected_active_provider_run_id;
 pub(crate) use session_snapshot_projection::{
     agent_activity_for_session_projection, SESSION_SNAPSHOT_PROJECTION_VERSION,

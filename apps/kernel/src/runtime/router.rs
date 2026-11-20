@@ -50,6 +50,7 @@ mod relay_collaborator_gate;
 mod relay_peer_bridge;
 mod room_exec_place;
 mod runtime_tool_bridge;
+mod skills_v2_dispatch;
 mod slice_relay_token_bridge;
 pub(crate) use slice_relay_token_bridge::ManagedSliceRelayTokenInstallRequest;
 pub(in crate::runtime) use slice_relay_token_bridge::{
@@ -256,6 +257,8 @@ mod tests {
     mod m16_runtime_extension_registration;
     mod m23_metaagent_runtime_tools;
     mod normal_stack;
+    #[cfg(unix)]
+    mod provider_login_vault_entry;
     mod provider_projection;
     #[cfg(unix)]
     mod provider_setup_token;
@@ -300,6 +303,19 @@ mod tests {
             session_id: session_id.to_string(),
             agent_id: agent_id.to_string(),
         })
+    }
+
+    /// Asserts that a read the test started while holding the app lock finishes anyway. A
+    /// session state read builds its answer on a blocking worker (it reads the durable store and
+    /// the process table), so it gets a bound, not a single scheduler turn.
+    async fn assert_finishes_without_app_lock<T>(task: &tokio::task::JoinHandle<T>, why: &str) {
+        let finished = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while !task.is_finished() {
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            }
+        })
+        .await;
+        assert!(finished.is_ok(), "{why}");
     }
 
     fn assert_ownership_denied(error: DaemonError, user_id: &str, owner_user_id: &str) {

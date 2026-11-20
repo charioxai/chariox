@@ -41,7 +41,7 @@ async fn region_drill() {
     std::env::set_var("CHARIOX_ROOM_SCREENSHOT_FIXTURE", &source);
     super::screenshot::create_running_slice(&fixture).await;
     let room = fixture.rooms[0].clone();
-    dispatch_json(
+    dispatch_bind_room(
         &fixture.home,
         json!({"BindRoomEnvironmentSlice":{"session_id":room,"slice_ref":"desktop"}}),
     )

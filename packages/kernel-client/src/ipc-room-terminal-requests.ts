@@ -1,4 +1,5 @@
 import type {
+  KernelTerminalRequest,
   RoomTerminalOperation,
   RoomTerminalRequest,
   RoomTerminalResponse,
@@ -8,8 +9,16 @@ import type {
 // MP-08 / MP-10 / MP-11: the Room terminal service is provisional protocol 569.
 export const roomTerminalMinimumProtocolVersion = 569
 
-/** Which terminal a request is about: the Room, and the machine that runs it. */
-export type RoomTerminalTarget = {
+/** The terminals of the kernel itself: shells with no Room, for the owner and an agent the owner granted access. */
+export type KernelTerminalTarget = {
+  readonly kernelTerminal: true
+  /** Where `open` starts; the kernel user's home folder when absent. */
+  readonly directory?: string
+}
+
+/** Which terminal a request is about: the Room, and the machine that runs it; or the kernel's own. */
+export type RoomTerminalTarget = KernelTerminalTarget | {
+  readonly kernelTerminal?: undefined
   readonly sessionId: string
   /** Speak for this Room agent instead of the signed-in user. */
   readonly actingAgent?: string
@@ -17,18 +26,27 @@ export type RoomTerminalTarget = {
   readonly hostAgent?: string
 }
 
-export function roomTerminalRequest(target: RoomTerminalTarget, operation: RoomTerminalOperation) {
+/** The request a target gets: the Room's, or the kernel's own. */
+export type TerminalRequestOf<T extends RoomTerminalTarget> = T extends KernelTerminalTarget
+  ? { readonly KernelTerminal: KernelTerminalRequest }
+  : { readonly RoomTerminal: RoomTerminalRequest }
+
+export function roomTerminalRequest<T extends RoomTerminalTarget>(target: T, operation: RoomTerminalOperation): TerminalRequestOf<T> {
+  if (target.kernelTerminal) {
+    const kernelRequest: KernelTerminalRequest = { ...(target.directory ? { directory: target.directory } : {}), operation }
+    return { KernelTerminal: kernelRequest } as TerminalRequestOf<T>
+  }
   const request: RoomTerminalRequest = {
     session_id: target.sessionId,
     ...(target.actingAgent ? { acting_agent: target.actingAgent } : {}),
     ...(target.hostAgent ? { host_agent: target.hostAgent } : {}),
     operation,
   }
-  return { RoomTerminal: request } as const
+  return { RoomTerminal: request } as TerminalRequestOf<T>
 }
 
-export function openRoomTerminalRequest(
-  target: RoomTerminalTarget,
+export function openRoomTerminalRequest<T extends RoomTerminalTarget>(
+  target: T,
   size: { readonly cols: number; readonly rows: number },
   options: { readonly title?: string; readonly command?: readonly string[] } = {},
 ) {
@@ -41,11 +59,12 @@ export function openRoomTerminalRequest(
   })
 }
 
-export function listRoomTerminalsRequest(target: RoomTerminalTarget) {
+export function listRoomTerminalsRequest<T extends RoomTerminalTarget>(target: T) {
   return roomTerminalRequest(target, { operation: "list" })
 }
 
-export function roomTerminalSnapshotRequest(target: RoomTerminalTarget, terminalId: string) {
+export function roomTerminalSnapshotRequest<T extends RoomTerminalTarget>(
+  target: T, terminalId: string) {
   return roomTerminalRequest(target, { operation: "snapshot", terminal_id: terminalId })
 }
 
@@ -57,7 +76,8 @@ function base64Of(data: Uint8Array): string {
   return btoa(binary)
 }
 
-export function roomTerminalInputRequest(target: RoomTerminalTarget, terminalId: string, data: Uint8Array) {
+export function roomTerminalInputRequest<T extends RoomTerminalTarget>(
+  target: T, terminalId: string, data: Uint8Array) {
   return roomTerminalRequest(target, {
     operation: "input",
     terminal_id: terminalId,
@@ -65,16 +85,16 @@ export function roomTerminalInputRequest(target: RoomTerminalTarget, terminalId:
   })
 }
 
-export function resizeRoomTerminalRequest(
-  target: RoomTerminalTarget,
+export function resizeRoomTerminalRequest<T extends RoomTerminalTarget>(
+  target: T,
   terminalId: string,
   size: { readonly cols: number; readonly rows: number },
 ) {
   return roomTerminalRequest(target, { operation: "resize", terminal_id: terminalId, cols: size.cols, rows: size.rows })
 }
 
-export function readRoomTerminalOutputRequest(
-  target: RoomTerminalTarget,
+export function readRoomTerminalOutputRequest<T extends RoomTerminalTarget>(
+  target: T,
   terminalId: string,
   afterOffset: number,
   waitMs = 0,
@@ -87,7 +107,8 @@ export function readRoomTerminalOutputRequest(
   })
 }
 
-export function closeRoomTerminalRequest(target: RoomTerminalTarget, terminalId: string) {
+export function closeRoomTerminalRequest<T extends RoomTerminalTarget>(
+  target: T, terminalId: string) {
   return roomTerminalRequest(target, { operation: "close", terminal_id: terminalId })
 }
 

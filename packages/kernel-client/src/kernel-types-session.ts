@@ -127,6 +127,7 @@ export type RuntimeProject = {
   owner_user_id: string
   workspace_id: string
   workspace_ids?: string[]
+  copy_origin?: { kernelId: string; projectId: string }
   name: string
   kind: RuntimeProjectKind
   status: RuntimeProjectStatus
@@ -464,7 +465,7 @@ export type AgentGoal = {
   final_answer: string | null; evidence: string[]
 }
 export type AgentTaskExecution = {
-  owner_action?: "browser_access"
+  owner_action?: "question"
   goal?: AgentGoal | null
   task_id: string; room_id: string; owner_user_id: string; agent_id: string; prompt_id: string
   provider_run_id: string | null; revision: number; blocked_revision: number

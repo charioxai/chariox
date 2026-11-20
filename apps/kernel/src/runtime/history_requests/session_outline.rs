@@ -200,7 +200,7 @@ fn load_blob_content_entries(
     Ok(outline_blob_content_events(events)
         .into_iter()
         .filter(|event| event_belongs_to_external_import(agent_import, event))
-        .filter_map(page_entry_from_event)
+        .filter_map(|event| page_entry_from_event(&event))
         .collect())
 }
 
@@ -306,15 +306,11 @@ fn load_scoped_agent_outline(
                 && !event.is_internal_dispatch_diagnostic()
         });
         let lifecycle_events = scoped_history_events(events, agent_import);
-        let events = if outline_turn_prompt_origin(prompt).is_chariox_prompt() {
-            suppress_external_observed_events_from_chariox_turn(lifecycle_events.clone())
-        } else {
-            lifecycle_events.clone()
-        };
+        let suppress_external_observed = outline_turn_prompt_origin(prompt).is_chariox_prompt();
         if let Some(mut turn) = outline_turn_from_events_with_lifecycle(
             prompt,
-            events,
             &lifecycle_events,
+            suppress_external_observed,
             has_newer_prompt,
         ) {
             ensure_unique_outline_turn_id(&mut turn, &mut seen_turn_ids);
@@ -391,21 +387,6 @@ fn outline_prompt_candidate_limit(
 ) -> usize {
     let minimum = latest_prompt_count.saturating_add(1);
     minimum.saturating_mul(8).clamp(32, 128)
-}
-
-fn suppress_external_observed_events_from_chariox_turn(
-    events: Vec<HistoryEvent>,
-) -> Vec<HistoryEvent> {
-    events
-        .into_iter()
-        .filter(|event| !event_is_external_provider_observed(event))
-        .collect()
-}
-
-fn event_is_external_provider_observed(event: &HistoryEvent) -> bool {
-    event
-        .to_session_history_entry()
-        .is_some_and(|entry| entry.is_external_provider_observed())
 }
 
 fn suppress_chariox_owned_external_prompt_echoes(
@@ -540,18 +521,10 @@ fn external_observed_tool_call_prompt(prompt: &HistoryEvent) -> bool {
 }
 
 fn external_recovery_envelope_prompt(prompt: &HistoryEvent) -> bool {
-    const RECOVERY_OPERATION_PREFIX: &str = "[Chariox recovery operation chariox-recovery:";
-    const CODEX_TURN_ABORTED_PREFIX: &str = "<turn_aborted>";
-
     prompt.kind == HistoryEventKind::UserPrompt
-        && prompt.to_session_history_entry().is_some_and(|entry| {
-            if !entry.is_external_provider_observed() {
-                return false;
-            }
-            let text = entry.text.trim_start();
-            text.starts_with(RECOVERY_OPERATION_PREFIX)
-                || text.starts_with(CODEX_TURN_ABORTED_PREFIX)
-        })
+        && prompt
+            .to_session_history_entry()
+            .is_some_and(|entry| entry.is_external_recovery_envelope())
 }
 
 fn load_latest_scoped_user_prompt_events(
@@ -615,12 +588,12 @@ fn event_belongs_to_external_import(
     agent_import: Option<&ExternalProviderImportMetadata>,
     event: &HistoryEvent,
 ) -> bool {
+    if !event.is_external_provider_observed() {
+        return true;
+    }
     let Some(entry) = event.to_session_history_entry() else {
         return true;
     };
-    if !entry.is_external_provider_observed() {
-        return true;
-    }
     let entry_provider = normalize_external_provider(entry.external_provider.as_deref());
     let entry_session_id = non_blank_trimmed(entry.external_provider_session_id.as_deref());
     let Some(agent_import) = agent_import else {
@@ -684,7 +657,7 @@ fn ensure_unique_outline_turn_id(
 /// token-streamed answer neither floods the inline budget nor loses a lone
 /// space between words. A message too long to inline stays per fragment.
 fn outline_inline_entry_groups<'a>(
-    events: &'a [HistoryEvent],
+    events: &[&'a HistoryEvent],
     prompt_sequence: u64,
     summary_sequences: &BTreeSet<u64>,
 ) -> Vec<Vec<&'a HistoryEvent>> {
@@ -697,7 +670,7 @@ fn outline_inline_entry_groups<'a>(
     };
     let mut groups = Vec::<Vec<&HistoryEvent>>::new();
     let mut open = false;
-    for event in events {
+    for &event in events {
         if event.sequence == prompt_sequence || summary_sequences.contains(&event.sequence) {
             continue;
         }
@@ -754,20 +727,26 @@ fn outline_turn_from_events(
     events: Vec<HistoryEvent>,
     has_newer_prompt: bool,
 ) -> Option<SessionHistoryOutlineTurn> {
-    let lifecycle_events = events.clone();
-    outline_turn_from_events_with_lifecycle(prompt, events, &lifecycle_events, has_newer_prompt)
+    outline_turn_from_events_with_lifecycle(prompt, &events, false, has_newer_prompt)
 }
 
+/// `lifecycle_events` settle the turn; a Chariox prompt's turn shows them without what an
+/// external observer recorded of the same reply (`suppress_external_observed`).
 fn outline_turn_from_events_with_lifecycle(
     prompt: &HistoryEvent,
-    events: Vec<HistoryEvent>,
     lifecycle_events: &[HistoryEvent],
+    suppress_external_observed: bool,
     has_newer_prompt: bool,
 ) -> Option<SessionHistoryOutlineTurn> {
-    let events = suppress_sparse_legacy_transcript_duplicates(events);
+    let events = suppress_sparse_legacy_transcript_duplicates(
+        lifecycle_events
+            .iter()
+            .filter(|event| !(suppress_external_observed && event.is_external_provider_observed()))
+            .collect(),
+    );
     let external_identity = outline_turn_external_identity(&events);
     let prompt_origin = outline_turn_prompt_origin(prompt);
-    let mut user_prompt = outline_page_entry_from_event(prompt.clone())?;
+    let mut user_prompt = outline_page_entry_from_event(prompt)?;
     // The kernel started this turn itself: a wake of a waiting agent, or a trigger that fired.
     // Its prompt is shown as what it is, a system prompt, instead of being hidden or taken for the person's.
     let inbox_wake = prompt
@@ -888,15 +867,15 @@ fn project_workflow_user_prompt(
     user_prompt.fragment_end = user_prompt.total_chars;
 }
 
-fn trailing_provider_output_group(
-    events: &[HistoryEvent],
+fn trailing_provider_output_group<'a>(
+    events: &[&'a HistoryEvent],
     summary_index: usize,
-) -> Vec<&HistoryEvent> {
-    let summary_event = &events[summary_index];
+) -> Vec<&'a HistoryEvent> {
+    let summary_event = events[summary_index];
     let summary_merge_key = history_event_merge_key(summary_event);
     let mut start = summary_index;
     while start > 0 {
-        let candidate = &events[start - 1];
+        let candidate = events[start - 1];
         if candidate.kind != HistoryEventKind::ProviderOutput
             || candidate.provider_run_id != summary_event.provider_run_id
             || history_event_merge_key(candidate) != summary_merge_key
@@ -905,7 +884,7 @@ fn trailing_provider_output_group(
         }
         start -= 1;
     }
-    events[start..=summary_index].iter().collect()
+    events[start..=summary_index].to_vec()
 }
 
 fn history_event_merge_key(event: &HistoryEvent) -> Option<&str> {
@@ -926,11 +905,17 @@ struct LegacyTranscriptDuplicateKey {
     content: String,
 }
 
-fn suppress_sparse_legacy_transcript_duplicates(events: Vec<HistoryEvent>) -> Vec<HistoryEvent> {
+fn suppress_sparse_legacy_transcript_duplicates(events: Vec<&HistoryEvent>) -> Vec<&HistoryEvent> {
+    if events
+        .iter()
+        .all(|event| event.prompt_id.is_some() || event.turn_id.is_some())
+    {
+        return events;
+    }
     let attributed_keys = events
         .iter()
         .filter(|event| event.prompt_id.is_some() || event.turn_id.is_some())
-        .filter_map(legacy_transcript_duplicate_key)
+        .filter_map(|event| legacy_transcript_duplicate_key(event))
         .collect::<BTreeSet<_>>();
     events
         .into_iter()
@@ -1078,13 +1063,10 @@ fn outline_turn_completion_content_is_visible(event: &HistoryEvent) -> bool {
     {
         return false;
     }
-    let Some(entry) = event.to_session_history_entry() else {
-        return false;
-    };
-    if entry.is_external_provider_observed_state_signal()
-        || entry
-            .external_observation
-            .as_ref()
+    if event.session_history_entry_kind().is_none()
+        || event.is_external_provider_observed_state_signal()
+        || event
+            .session_history_external_observation()
             .is_some_and(|observation| observation.passive_telemetry)
     {
         return false;
@@ -1105,10 +1087,11 @@ fn external_turn_observation_is_stale(prompt: &HistoryEvent, events: &[HistoryEv
 }
 
 fn external_observed_at_ms(event: &HistoryEvent) -> Option<u64> {
-    let entry = event.to_session_history_entry()?;
-    entry
-        .is_external_provider_observed()
-        .then_some(entry.observed_at_ms.unwrap_or(event.timestamp_ms))
+    event.is_external_provider_observed().then(|| {
+        event
+            .session_history_observed_at_ms()
+            .unwrap_or(event.timestamp_ms)
+    })
 }
 
 fn outline_turn_settlement_observed_at_ms(
@@ -1125,9 +1108,10 @@ fn outline_turn_settlement_observed_at_ms(
             if let Some(settled_at_ms) = persisted_prompt_settlement_at_ms(event) {
                 return Some(settled_at_ms);
             }
-            let entry = event.to_session_history_entry()?;
-            let observation = entry.external_observation.as_ref()?;
-            let observed_at_ms = entry.observed_at_ms.unwrap_or(event.timestamp_ms);
+            let observation = event.session_history_external_observation()?;
+            let observed_at_ms = event
+                .session_history_observed_at_ms()
+                .unwrap_or(event.timestamp_ms);
             (observation.settles_active_prompt && observed_at_ms >= turn_started_at_ms)
                 .then_some(observed_at_ms)
         })
@@ -1160,9 +1144,10 @@ struct OutlineExternalIdentity {
     provider_turn_id: String,
 }
 
-fn outline_turn_external_identity(events: &[HistoryEvent]) -> Option<OutlineExternalIdentity> {
+fn outline_turn_external_identity(events: &[&HistoryEvent]) -> Option<OutlineExternalIdentity> {
     events
         .iter()
+        .filter(|event| event.is_external_provider_observed())
         .filter_map(|event| event.to_session_history_entry())
         .find_map(|entry| {
             if !entry.is_external_provider_observed() {

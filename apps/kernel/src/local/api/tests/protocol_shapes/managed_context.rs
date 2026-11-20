@@ -135,10 +135,12 @@ fn local_daemon_managed_context_outbound_shape_is_versioned() {
                 context_id: "context-1".to_string(),
                 plan_digest: status.plan_digest,
                 development: crate::local::ManagedContextDevelopmentLaunchTarget::FromSource {
-                    project_id: "project-1".to_string(),
-                    destination_root: "/managed/context".to_string(),
-                    primary_repository_id: "repository-1".to_string(),
-                    repositories: vec![crate::local::ManagedContextRepositoryLaunchTarget {
+                    projects: vec![crate::local::ManagedContextProjectLaunchTarget {
+                        copy_origin: None,
+                        project_id: "project-1".to_string(),
+                        destination_root: "/managed/context".to_string(),
+                        primary_repository_id: "repository-1".to_string(),
+                        repositories: vec![crate::local::ManagedContextRepositoryLaunchTarget {
                         workspace_kind:
                             crate::managed_context::development::DevelopmentWorkspaceKind::Git,
                         repository_id: "repository-1".to_string(),
@@ -148,6 +150,7 @@ fn local_daemon_managed_context_outbound_shape_is_versioned() {
                         workspace_path: "/managed/context/primary".to_string(),
                         head_sha: "c".repeat(40),
                     }],
+                    }]
                 },
             },
         },
@@ -158,7 +161,7 @@ fn local_daemon_managed_context_outbound_shape_is_versioned() {
     );
     assert_eq!(
         snapshot.pointer("/0/StartManagedContextTransfer/ticket/contextPlan/developmentSetup/kind"),
-        Some(&serde_json::json!("source_project"))
+        Some(&serde_json::json!("source_projects"))
     );
     assert_eq!(
         snapshot.pointer("/3/ManagedContextTransferStarted/status/phase"),
@@ -170,22 +173,23 @@ fn local_daemon_managed_context_outbound_shape_is_versioned() {
     );
     assert_eq!(
         snapshot.pointer(
-            "/6/ManagedContextLaunchTarget/target/development/repositories/0/workspacePath"
+            "/6/ManagedContextLaunchTarget/target/development/projects/0/repositories/0/workspacePath"
         ),
         Some(&serde_json::json!("/managed/context/primary"))
     );
     assert_eq!(
-        snapshot.pointer("/6/ManagedContextLaunchTarget/target/development/projectId"),
+        snapshot.pointer("/6/ManagedContextLaunchTarget/target/development/projects/0/projectId"),
         Some(&serde_json::json!("project-1"))
     );
     assert_eq!(
-        snapshot.pointer("/6/ManagedContextLaunchTarget/target/development/destinationRoot"),
+        snapshot
+            .pointer("/6/ManagedContextLaunchTarget/target/development/projects/0/destinationRoot"),
         Some(&serde_json::json!("/managed/context"))
     );
     let serialized = serde_json::to_string(&snapshot).expect("managed-context shape should encode");
     assert_eq!(
         format!("{:x}", Sha256::digest(serialized.as_bytes())),
-        "177b7975c738d66d7ed3245f52a3fbf7e660ff1006bbd47e4ae7f0aee5862d89"
+        "49b64e6deea2c8616066fc36b22c98f50f4b908fd900401268e322f60cc02ffb"
     );
 }
 
@@ -196,16 +200,19 @@ fn local_daemon_managed_context_completed_receipt_uses_public_camel_case_shape()
         RelayManagedDevelopmentContextImportReceipt, RelayManagedKernelContextImportReceipt,
     };
 
-    let relay_receipt = RelayManagedContextImportReceipt {
-        destination: None,
-        transfer_id: "transfer-1".to_string(),
-        archive_sha256: "a".repeat(64),
-        plan_digest: "sha256:plan".to_string(),
-        development: RelayManagedDevelopmentContextImportReceipt::FromSource {
-            project_id: "project-1".to_string(),
-            destination_root: "/managed/context".to_string(),
-            primary_repository_id: "repository-1".to_string(),
-            repositories: vec![RelayManagedContextImportedRepository {
+    let relay_receipt =
+        RelayManagedContextImportReceipt {
+            destination: None,
+            transfer_id: "transfer-1".to_string(),
+            archive_sha256: "a".repeat(64),
+            plan_digest: "sha256:plan".to_string(),
+            development: RelayManagedDevelopmentContextImportReceipt::FromSource {
+                projects: vec![
+                    crate::transport::relay_peer::RelayManagedContextImportedProject {
+                        project_id: "project-1".to_string(),
+                        destination_root: "/managed/context".to_string(),
+                        primary_repository_id: "repository-1".to_string(),
+                        repositories: vec![RelayManagedContextImportedRepository {
                 workspace_kind: crate::managed_context::development::DevelopmentWorkspaceKind::Git,
                 repository_id: "repository-1".to_string(),
                 role: crate::managed_context::development::DevelopmentRepositoryRole::Primary,
@@ -213,17 +220,19 @@ fn local_daemon_managed_context_completed_receipt_uses_public_camel_case_shape()
                 destination_path: "/managed/context/primary".to_string(),
                 head_sha: "b".repeat(40),
             }],
-        },
-        kernel_context: RelayManagedKernelContextImportReceipt::FromKernel {
-            context_id: "context-1".to_string(),
-            source_kernel_id: "home-kernel".to_string(),
-            source_key_thumbprint: "c".repeat(64),
-            snapshot_sha256: "d".repeat(64),
-            extension_count: 1,
-            dependency_count: 2,
-        },
-        receipt_sha256: "e".repeat(64),
-    };
+                    },
+                ],
+            },
+            kernel_context: RelayManagedKernelContextImportReceipt::FromKernel {
+                context_id: "context-1".to_string(),
+                source_kernel_id: "home-kernel".to_string(),
+                source_key_thumbprint: "c".repeat(64),
+                snapshot_sha256: "d".repeat(64),
+                extension_count: 1,
+                dependency_count: 2,
+            },
+            receipt_sha256: "e".repeat(64),
+        };
     let relay_serialized = serde_json::to_value(&relay_receipt)
         .expect("relay receipt should retain its snake_case wire shape");
     assert_eq!(
@@ -231,11 +240,11 @@ fn local_daemon_managed_context_completed_receipt_uses_public_camel_case_shape()
         Some(&serde_json::json!("transfer-1"))
     );
     assert_eq!(
-        relay_serialized.pointer("/development/project_id"),
+        relay_serialized.pointer("/development/projects/0/project_id"),
         Some(&serde_json::json!("project-1"))
     );
     assert_eq!(
-        relay_serialized.pointer("/development/repositories/0/destination_path"),
+        relay_serialized.pointer("/development/projects/0/repositories/0/destination_path"),
         Some(&serde_json::json!("/managed/context/primary"))
     );
     assert_eq!(
@@ -243,9 +252,11 @@ fn local_daemon_managed_context_completed_receipt_uses_public_camel_case_shape()
         Some(&serde_json::json!("home-kernel"))
     );
     assert!(relay_serialized.get("transferId").is_none());
-    assert!(relay_serialized.pointer("/development/projectId").is_none());
     assert!(relay_serialized
-        .pointer("/development/repositories/0/workspacePath")
+        .pointer("/development/projects/0/projectId")
+        .is_none());
+    assert!(relay_serialized
+        .pointer("/development/projects/0/repositories/0/workspacePath")
         .is_none());
     assert!(relay_serialized
         .pointer("/kernelContext/sourceKernelId")
@@ -280,11 +291,11 @@ fn local_daemon_managed_context_completed_receipt_uses_public_camel_case_shape()
         Some(&serde_json::json!("a".repeat(64)))
     );
     assert_eq!(
-        receipt.pointer("/development/projectId"),
+        receipt.pointer("/development/projects/0/projectId"),
         Some(&serde_json::json!("project-1"))
     );
     assert_eq!(
-        receipt.pointer("/development/repositories/0/targetDirectory"),
+        receipt.pointer("/development/projects/0/repositories/0/targetDirectory"),
         Some(&serde_json::json!("primary"))
     );
     assert_eq!(
@@ -296,7 +307,9 @@ fn local_daemon_managed_context_completed_receipt_uses_public_camel_case_shape()
         Some(&serde_json::json!("e".repeat(64)))
     );
     assert!(receipt.get("transfer_id").is_none());
-    assert!(receipt.pointer("/development/project_id").is_none());
+    assert!(receipt
+        .pointer("/development/projects/0/project_id")
+        .is_none());
     assert!(receipt
         .pointer("/kernel_context/source_kernel_id")
         .is_none());
@@ -304,7 +317,7 @@ fn local_daemon_managed_context_completed_receipt_uses_public_camel_case_shape()
         .expect("public managed-context receipt snapshot should encode");
     assert_eq!(
         format!("{:x}", Sha256::digest(serialized.as_bytes())),
-        "9f48b35ae27b36687176123ed44b341d4bc3e5545b9753d88104f16a06b03a31"
+        "a755f676a04009dea06151301ce7a3a7e5f6d40119c11b22d5a0019f97c5b359"
     );
 }
 
@@ -314,15 +327,17 @@ fn managed_context_launch_target_reads_schema_v4_variant_fields() {
         serde_json::from_value::<crate::local::ManagedContextDevelopmentLaunchTarget>(
             serde_json::json!({
                 "kind": "from_source",
-                "project_id": "project-1",
-                "destination_root": "/managed/context",
-                "primary_repository_id": "repository-1",
-                "repositories": [{
-                    "repositoryId": "repository-1",
-                    "role": "primary",
-                    "targetDirectory": "primary",
-                    "workspacePath": "/managed/context/primary",
-                    "headSha": "c".repeat(40),
+                "projects": [{
+                    "project_id": "project-1",
+                    "destination_root": "/managed/context",
+                    "primary_repository_id": "repository-1",
+                    "repositories": [{
+                        "repositoryId": "repository-1",
+                        "role": "primary",
+                        "targetDirectory": "primary",
+                        "workspacePath": "/managed/context/primary",
+                        "headSha": "c".repeat(40),
+                    }],
                 }],
             }),
         )
@@ -350,12 +365,12 @@ fn mp08_mp11_owner_managed_context_shapes_are_versioned() {
         LOCAL_DAEMON_PROTOCOL_VERSION,
         crate::test_support::expected_local_protocol_version()
     );
-    let value: serde_json::Value = serde_json::from_str(r#"{"StartManagedContextTransfer":{"interactive":true,"ownerManaged":{"target":{"relayRealmId":"realm","machineId":"machine","kernelId":"kernel","relayPublicKey":"public","keyThumbprint":"thumbprint"},"contextSelection":{"kernelContext":"source_kernel_without_credentials","developmentSetup":{"kind":"source_project","projectId":"project","repositories":[{"role":"primary","workspaceId":"workspace","worktreeId":null}]}}}}}"#).unwrap();
+    let value: serde_json::Value = serde_json::from_str(r#"{"StartManagedContextTransfer":{"interactive":true,"ownerManaged":{"target":{"relayRealmId":"realm","machineId":"machine","kernelId":"kernel","relayPublicKey":"public","keyThumbprint":"thumbprint"},"contextSelection":{"kernelContext":"source_kernel_without_credentials","developmentSetup":{"kind":"source_projects","projects":[{"projectId":"project","repositories":[{"role":"primary","workspaceId":"workspace","worktreeId":null}]}]}}}}}"#).unwrap();
     let request: LocalDaemonRequest = serde_json::from_value(value.clone()).unwrap();
     assert_eq!(serde_json::to_value(request).unwrap(), value);
     assert_eq!(
         format!("{:x}", Sha256::digest(serde_json::to_vec(&value).unwrap())),
-        "89c4e71d4b995bad514d5f0518c5f41a41abcfa427681fb9647a6037bc2c3df0"
+        "aba6c1f6db98ceeea343f8d4dc56fc7d1b1d06131fa230f73502dcf9cf6f1db6"
     );
     let value: serde_json::Value = serde_json::from_str(r#"{"ManagedContextLaunchTarget":{"target":{"destination":{"kind":"owner_managed_machine","machineId":"machine","kernelId":"kernel"},"kernelId":"kernel","contextId":"context","planDigest":"digest","development":{"kind":"empty","workspacePath":"/home/user/chariox-contexts/context/workspace"}}}}"#).unwrap();
     let response: LocalDaemonResponse = serde_json::from_value(value.clone()).unwrap();
@@ -436,4 +451,20 @@ fn local_daemon_owner_managed_event_connection_selection_shape_is_versioned() {
         "kind": "selected", "connection_ids": ["connection-a"]
     });
     assert!(serde_json::from_value::<ManagedContextPlanBinding>(misspelled).is_err());
+}
+
+#[test]
+fn copied_project_launch_target_keeps_its_origin() {
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
+    let wire = include_bytes!("project-copy-origin.json");
+    let fixture: serde_json::Value = serde_json::from_slice(wire).unwrap();
+    let response: LocalDaemonResponse = serde_json::from_value(fixture.clone()).unwrap();
+    assert_eq!(serde_json::to_value(response).unwrap(), fixture);
+    assert_eq!(
+        format!("{:x}", Sha256::digest(wire)),
+        "e757dac783c157467e97f46d8a8d76cc1687c9307a4b006d180c873cb94adae1"
+    );
 }

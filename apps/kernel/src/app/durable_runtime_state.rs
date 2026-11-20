@@ -837,7 +837,7 @@ impl DaemonApp {
                 session.restore_durable_prompt_private_states(states);
             }
             self.prompt_state_owner.restore_session_state(&session);
-            self.restore_session_with_project_migration(session);
+            self.sessions.restore_session(session);
         }
         let restored_slices = snapshot
             .slices
@@ -1050,7 +1050,7 @@ impl DaemonApp {
             let agents = self.agents.get_session_agents(session.id());
             session.set_agents(agents);
             self.prompt_state_owner.restore_session_state(&session);
-            let session = self.restore_session_with_project_migration(session);
+            let session = self.sessions.restore_session(session);
             self.update_session_projection(session);
         }
         Ok(())
@@ -1064,7 +1064,7 @@ impl DaemonApp {
         let agents = self.agents.get_session_agents(session_id);
         session.set_agents(agents);
         self.prompt_state_owner.restore_session_state(&session);
-        let session = self.restore_session_with_project_migration(session);
+        let session = self.sessions.restore_session(session);
         self.update_session_projection(session);
         Ok(())
     }
@@ -1123,7 +1123,7 @@ impl DaemonApp {
             let agents = self.agents.get_session_agents(session.id());
             session.set_agents(agents);
             self.prompt_state_owner.restore_session_state(&session);
-            let session = self.restore_session_with_project_migration(session);
+            let session = self.sessions.restore_session(session);
             self.update_session_projection(session.clone());
             crate::logging::info_with_fields(
                 "durable_state.restore",
@@ -1224,13 +1224,6 @@ impl DaemonApp {
         Ok(())
     }
 
-    fn restore_session_with_project_migration(&self, session: RuntimeSession) -> RuntimeSession {
-        let project_name =
-            crate::runtime::workspace_git_common::workspace_display_label(session.workspace_id());
-        self.sessions
-            .restore_session_with_default_project_name_hint(session, project_name.as_deref())
-    }
-
     #[allow(dead_code)]
     pub(crate) fn save_durable_state_snapshot(&self) -> Result<(), DaemonError> {
         self.durable_state
@@ -1302,7 +1295,7 @@ impl DaemonApp {
                 )?;
                 self.mark_agent_external_provider_sessions_attached(&default_agent);
                 self.prompt_state_owner.restore_session_state(&session);
-                let session = self.restore_session_with_project_migration(session);
+                let session = self.sessions.restore_session(session);
                 self.agents.restore_agent(default_agent);
                 self.update_session_projection(session);
             }
@@ -1416,7 +1409,7 @@ impl DaemonApp {
                     self.agents.restore_agent(agent.clone());
                 }
                 self.prompt_state_owner.restore_session_state(&session);
-                let session = self.restore_session_with_project_migration(session);
+                let session = self.sessions.restore_session(session);
                 self.update_session_projection(session);
             }
             "session.updated" => {
@@ -1460,7 +1453,7 @@ impl DaemonApp {
                     .get_session(session.id())
                     .map(|current| current.prompt_states().clone())
                     .unwrap_or_default();
-                let session = self.restore_session_with_project_migration(session);
+                let session = self.sessions.restore_session(session);
                 for (agent_id, prompt_state) in preserved_prompt_states {
                     if prompt_state.active_prompt().is_none()
                         && prompt_state.queued_prompts().is_empty()
@@ -1484,10 +1477,18 @@ impl DaemonApp {
                     "sessions",
                     "durable_state.restore_session_batch_update",
                 )?;
-                for session in sessions {
+                for mut session in sessions {
                     if !self.session_belongs_to_current_kernel(&session) {
                         continue;
                     }
+                    // MP-08 / MP-10 / MP-11: public batch snapshots cannot
+                    // replace queued user skill intent with client authority.
+                    let private = self
+                        .sessions
+                        .get_session(session.id())
+                        .map(|current| current.durable_prompt_private_states())
+                        .unwrap_or_default();
+                    session.restore_durable_prompt_private_states(&private);
                     let preserved_prompt_states = self
                         .sessions
                         .get_session(session.id())
@@ -1865,6 +1866,7 @@ mod tests {
             let app = DaemonApp::bootstrap(config.clone()).unwrap();
             let session = RuntimeSession::new(
                 "activity-session",
+                crate::session::ProjectId::test(),
                 None,
                 "workspace",
                 "worktree",
@@ -1945,24 +1947,24 @@ mod tests {
             "owner/repo",
             crate::session::RuntimeProjectKind::Default,
         );
-        let mut main_session = crate::session::RuntimeSession::new(
+        let main_session = crate::session::RuntimeSession::new(
             "session-main",
+            crate::session::ProjectId::new(main_project.id()).unwrap(),
             Some("main-session".to_string()),
             &repo_id,
             &repo_id,
             config.host_machine_id.clone(),
             config.daemon_id.clone(),
         );
-        assert!(main_session.assign_project_id(main_project.id()));
         let mut linked_session = crate::session::RuntimeSession::new(
             "session-linked",
+            crate::session::ProjectId::new(linked_project.id()).unwrap(),
             Some("linked-session".to_string()),
             &worktree_id,
             &worktree_id,
             config.host_machine_id.clone(),
             config.daemon_id.clone(),
         );
-        assert!(linked_session.assign_project_id(linked_project.id()));
         linked_session.set_active_provider_run(Some("legacy-provider-run".to_string()));
         let main_agent = default_agent_for_session(&main_session, "agent-main");
         let linked_agent = default_agent_for_session(&linked_session, "agent-linked");
@@ -2129,6 +2131,7 @@ mod tests {
         );
         let mut hidden_session = crate::session::RuntimeSession::new(
             "hidden-deployment-runtime",
+            crate::session::ProjectId::new(project.id()).unwrap(),
             None,
             "legacy-workspace",
             "legacy-worktree",
@@ -2136,7 +2139,6 @@ mod tests {
             config.daemon_id.clone(),
         );
         hidden_session.set_hidden(true);
-        assert!(hidden_session.assign_project_id(project.id()));
         let default_agent = crate::agent::AgentInstance::new(
             "hidden-deployment-agent",
             "hidden-deployment-agent-ref",
@@ -2191,6 +2193,106 @@ mod tests {
                 .project_id(),
             project.id()
         );
+    }
+
+    #[test]
+    fn durable_restore_refuses_a_stored_room_without_a_project_id() {
+        let config = crate::config::DaemonConfig::for_tests();
+        let session = crate::session::RuntimeSession::new(
+            "room-without-project",
+            crate::session::ProjectId::test(),
+            Some("no-project".to_string()),
+            "workspace-1",
+            "workspace-1",
+            config.host_machine_id.clone(),
+            config.daemon_id.clone(),
+        );
+        let agent = default_agent_for_session(&session, "agent-without-project");
+        let mut stored = serde_json::to_value(&session).expect("session should encode");
+        stored["project_id"] = serde_json::json!("");
+        {
+            let app = DaemonApp::bootstrap(config.clone()).expect("daemon should boot");
+            app.durable_state_store()
+                .append_event(
+                    "session.created",
+                    Some(session.id().to_string()),
+                    serde_json::json!({ "session": stored, "default_agent": &agent }),
+                )
+                .expect("stored Room should persist");
+        }
+
+        let error = DaemonApp::bootstrap(config)
+            .err()
+            .expect("a stored Room without a Project must stop the restore");
+        assert!(error.to_string().contains("project_id"), "{error}");
+    }
+
+    #[test]
+    fn cutover_boot_reads_newer_legacy_room_checkpoint_with_queued_message_projection() {
+        let config = crate::config::DaemonConfig::for_tests();
+        let room = RuntimeSession::new(
+            "retired-room",
+            crate::session::ProjectId::test(),
+            None,
+            "workspace",
+            "workspace",
+            &config.host_machine_id,
+            &config.daemon_id,
+        );
+        let mut stored_room = serde_json::to_value(&room).unwrap();
+        stored_room["status"] = serde_json::json!(crate::session::SessionStatus::Ended);
+        let store = DurableKernelStateStore::open(config.durable_state_path()).unwrap();
+        store
+            .save_entity_checkpoint(
+                &config.daemon_id,
+                1,
+                vec![crate::durable_state::DurableCheckpointEntity {
+                    kind: "sessions".into(),
+                    id: room.id().into(),
+                    payload_json: stored_room.to_string(),
+                }],
+            )
+            .unwrap();
+        stored_room["queued_agent_messages"] = serde_json::json!([{
+            "id": "agent-message-1", "agent_id": "agent", "sender": "peer",
+            "prompt": "fixture message",
+        }]);
+        store
+            .save_snapshot(
+                2,
+                serde_json::json!({"sessions": [stored_room], "agents": [], "slices": []}),
+            )
+            .unwrap();
+        drop(store);
+
+        let app = DaemonApp::bootstrap(config).expect("legacy checkpoint must boot");
+        let restored = app.sessions().get_session(room.id()).unwrap();
+        assert_eq!(restored.status(), crate::session::SessionStatus::Ended);
+        assert!(restored.queued_agent_messages().is_empty());
+    }
+
+    #[test]
+    fn a_room_created_through_create_session_keeps_its_project_across_restart() {
+        let config = crate::config::DaemonConfig::for_tests();
+        let (session_id, project_id) = {
+            let mut app = DaemonApp::bootstrap(config.clone()).expect("daemon should boot");
+            let (session, _agent) = crate::app::KernelSessionService::new(&mut app)
+                .create_session(crate::session::CreateSessionRequest::new(
+                    "workspace-1",
+                    "workspace-1",
+                ))
+                .expect("Room should be created");
+            assert!(!session.project_id().is_empty());
+            (session.id().to_string(), session.project_id().to_string())
+        };
+
+        let app = DaemonApp::bootstrap(config).expect("daemon should restore");
+        let restored = app
+            .sessions()
+            .get_session(&session_id)
+            .expect("Room restores");
+        assert_eq!(restored.project_id(), project_id);
+        assert!(app.sessions().get_project(&project_id).is_ok());
     }
 
     #[test]

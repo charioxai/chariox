@@ -77,7 +77,7 @@ test("MP-08 / MP-10: the source list names kernels by their machine alias, not t
   const deps = { client: { async send(request: Record<string, unknown>) {
     if ("ListWorkflowNotifications" in request) return { WorkflowNotifications: { sources: [own, remote, unknown], subscriptions: [], diagnostics: [] } }
     if ("RelayStatus" in request) return { RelayStatus: { status: { daemon_id: own.kernel_id, machine_id: "machine-own", machine_alias: "Studio" } } }
-    if ("ListRemoteMachines" in request) return { RemoteMachinesListed: { machines: [{ machine_id: "machine-b", machine_alias: "Build room", display_name: "Build room", kernel_count: 1, online: true }] } }
+    if ("ListRemoteMachines" in request) return { RemoteMachinesListed: { machines: [{ machine_id: "machine-b", machine_alias: "Build room", display_name: "Build room", kernel_count: 1, presence: "online" }], offline_machines: [] } }
     if ("ListRemoteMachineKernels" in request) return { RemoteMachineKernelsListed: { machine_ref: "machine-b", kernels: [{ kernel_id: remote.kernel_id, machine_id: "machine-b" }] } }
     throw new Error(`unexpected ${JSON.stringify(request)}`)
   } } }

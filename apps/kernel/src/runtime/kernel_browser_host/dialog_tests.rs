@@ -61,7 +61,6 @@ done
         UserDomainResource::BrowserTab {
             tab_id: "host-tab-a".into(),
         },
-        false,
     )
     .unwrap();
     let viewer = host.lease_terminal("alice", "terminal:human");
@@ -247,7 +246,6 @@ done
         UserDomainResource::BrowserTab {
             tab_id: "host-tab-a".into(),
         },
-        false,
     )
     .unwrap();
     host.request_takeover(

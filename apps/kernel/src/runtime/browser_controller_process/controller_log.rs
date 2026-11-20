@@ -17,12 +17,14 @@ pub(super) fn log_text(line: &str) -> Option<String> {
     (!cleaned.is_empty()).then_some(cleaned)
 }
 
-/// An unmarked line that names an error (`Error: ...`, `TypeError: ...`), cleaned like a marked line, with words
-/// that can carry a secret (URLs, long token-like runs) replaced; `None` for any other line.
+/// An unmarked line that names an error (`Error: ...`, `TypeError: ...`, V8's `FATAL ERROR: ...` when the heap
+/// runs out), cleaned like a marked line, with words that can carry a secret (URLs, long token-like runs)
+/// replaced; `None` for any other line.
 pub(super) fn error_text(line: &str) -> Option<String> {
     let line = line.trim();
     let name = line.split(':').next()?;
-    if !name.ends_with("Error") || !name.chars().all(|c| c.is_ascii_alphanumeric()) {
+    let names_error = name.ends_with("Error") && name.chars().all(|c| c.is_ascii_alphanumeric());
+    if !names_error && name != "FATAL ERROR" {
         return None;
     }
     let words: Vec<&str> = line
@@ -129,6 +131,15 @@ mod tests {
                 .unwrap()
                 .len(),
             160
+        );
+        assert_eq!(
+            error_text(
+                "FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory"
+            )
+            .as_deref(),
+            Some(
+                "FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory"
+            )
         );
         assert_eq!(error_text("Node.js v22.22.1"), None);
         assert_eq!(error_text("at Timeout.flush (/x/a.mjs:25:33)"), None);

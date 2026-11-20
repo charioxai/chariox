@@ -10,7 +10,11 @@ use serde_json::{json, Value};
 /// 0.6 KiB and about 38 nodes with full history, so 300 documents stay well inside both.
 pub const MAX_INDEX_BYTES: usize = 256 * 1024;
 pub const MAX_DOCUMENTS: usize = 300;
-pub const MAX_CONTENT: usize = 512 * 1024;
+/// The most a document's content takes as the catalog counts it: the size of its JSON text, where each
+/// quote, backslash, line break and control character takes two or six bytes. The kernel refuses a call
+/// or a result over 512 KiB, and every tool that carries a document carries it with a small envelope
+/// (ids, a title and a folder of at most 200 characters each), so the rest of that 512 KiB is kept free.
+pub const MAX_CONTENT: usize = 504 * 1024;
 pub const KEEP_VERSIONS: usize = 10;
 const MAX_NAME_CHARS: usize = 200;
 
@@ -200,9 +204,14 @@ pub fn check_name(what: &str, value: &str, allow_empty: bool) -> Result<(), AppE
     Ok(())
 }
 
+/// The size of `content` as the catalog counts it.
+fn call_bytes(content: &str) -> usize {
+    serde_json::to_vec(content).map_or(usize::MAX, |json| json.len())
+}
+
 pub fn check_content(content: &str) -> Result<(), AppError> {
-    if content.len() > MAX_CONTENT {
-        return Err(limit("Document is larger than 512 KiB"));
+    if call_bytes(content) > MAX_CONTENT {
+        return Err(limit("Document is larger than 504 KiB"));
     }
     Ok(())
 }
@@ -485,11 +494,19 @@ mod tests {
 
     #[test]
     fn size_and_count_limits_are_refused_before_anything_is_written() {
-        let big = "x".repeat(MAX_CONTENT + 1);
+        let big = "x".repeat(MAX_CONTENT - 1);
         assert_eq!(
             edit(&doc_with("a"), 1, &big, 1).unwrap_err().code,
-            "LIMIT_EXCEEDED"
+            "LIMIT_EXCEEDED",
+            "the two quotes of its JSON text count"
         );
+        let quotes = "\"".repeat(MAX_CONTENT / 2);
+        assert_eq!(
+            edit(&doc_with("a"), 1, &quotes, 1).unwrap_err().code,
+            "LIMIT_EXCEEDED",
+            "an escaped quote takes two bytes"
+        );
+        assert!(edit(&doc_with("a"), 1, &"x".repeat(MAX_CONTENT - 2), 1).is_ok());
         let mut docs = Vec::new();
         for n in 0..MAX_DOCUMENTS {
             let new = NewDoc {

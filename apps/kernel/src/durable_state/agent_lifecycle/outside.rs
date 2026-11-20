@@ -22,6 +22,12 @@ pub(crate) fn refused(message: &'static str) -> DaemonError {
         message: message.into(),
     }
 }
+/// What a grant that follows nothing is told, by a wait or a list at once instead of after its timeout.
+pub(crate) fn follows_nothing() -> DaemonError {
+    refused(
+        "this subscription follows nothing: follow an agent with chariox events subscribe --kernel K --session S [--agent A], or take over an earlier grant's targets with chariox events subscribe --like <grant id>",
+    )
+}
 pub(crate) fn is_public_code(code: &str) -> bool {
     code == "events_refused"
 }
@@ -69,8 +75,7 @@ fn parts(db: &Connection) -> Result<Vec<Part>, DaemonError> {
     rows
 }
 fn require(db: &Connection, id: &str) -> Result<Part, DaemonError> {
-    read(db, id)?
-        .ok_or_else(|| refused("no event subscription; run chariox events subscribe first"))
+    read(db, id)?.ok_or_else(follows_nothing)
 }
 fn matches(part: &Part, event: &OutsideEvent) -> bool {
     part.targets.iter().any(|target| {

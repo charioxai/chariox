@@ -34,10 +34,10 @@ use crate::managed_context::package::{
     export_managed_context_package, ManagedContextDevelopmentSelection,
     ManagedContextEventConnectionSelection, ManagedContextGitCredentialSelection,
     ManagedContextKernelSelection, ManagedContextPackageDevelopment,
-    ManagedContextPackageEventConnections, ManagedContextPackageExportRequest,
-    ManagedContextPackageGitCredentials, ManagedContextPackageKernel,
-    ManagedContextPackageProviderAccounts, ManagedContextProviderAccountSelection,
-    MAX_PROVIDER_ACCOUNT_COMPONENT_BYTES,
+    ManagedContextPackageDevelopmentArchive, ManagedContextPackageEventConnections,
+    ManagedContextPackageExportRequest, ManagedContextPackageGitCredentials,
+    ManagedContextPackageKernel, ManagedContextPackageProviderAccounts,
+    ManagedContextProviderAccountSelection, MAX_PROVIDER_ACCOUNT_COMPONENT_BYTES,
 };
 use crate::runtime::cloud_api_client::{cloud_error_is_retryable, post_cloud_json};
 use crate::runtime::terminal_pairings::public_key_thumbprint;
@@ -103,11 +103,17 @@ pub struct ManagedContextOutboundImportReceipt {
 pub enum ManagedContextOutboundDevelopmentImportReceipt {
     Empty,
     FromSource {
-        project_id: String,
-        destination_root: String,
-        primary_repository_id: String,
-        repositories: Vec<ManagedContextOutboundImportedRepository>,
+        projects: Vec<ManagedContextOutboundImportedProject>,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ManagedContextOutboundImportedProject {
+    pub project_id: String,
+    pub destination_root: String,
+    pub primary_repository_id: String,
+    pub repositories: Vec<ManagedContextOutboundImportedRepository>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -164,17 +170,23 @@ impl From<RelayManagedDevelopmentContextImportReceipt>
     fn from(receipt: RelayManagedDevelopmentContextImportReceipt) -> Self {
         match receipt {
             RelayManagedDevelopmentContextImportReceipt::Empty => Self::Empty,
-            RelayManagedDevelopmentContextImportReceipt::FromSource {
-                project_id,
-                destination_root,
-                primary_repository_id,
-                repositories,
-            } => Self::FromSource {
-                project_id,
-                destination_root,
-                primary_repository_id,
-                repositories: repositories.into_iter().map(Into::into).collect(),
-            },
+            RelayManagedDevelopmentContextImportReceipt::FromSource { projects } => {
+                Self::FromSource {
+                    projects: projects
+                        .into_iter()
+                        .map(|project| ManagedContextOutboundImportedProject {
+                            project_id: project.project_id,
+                            destination_root: project.destination_root,
+                            primary_repository_id: project.primary_repository_id,
+                            repositories: project
+                                .repositories
+                                .into_iter()
+                                .map(Into::into)
+                                .collect(),
+                        })
+                        .collect(),
+                }
+            }
         }
     }
 }
@@ -884,33 +896,35 @@ fn prepare_managed_context_package_for_ticket(
     let mut cleanup = ArtifactRootCleanup::new(artifact_root.clone());
     let development = match &plan.development {
         ManagedContextDevelopmentSelection::Empty => ManagedContextPackageDevelopment::Empty,
-        ManagedContextDevelopmentSelection::SourceProject {
-            project_id,
-            repositories,
-        } => {
-            let selections = repositories
-                .iter()
-                .map(resolve_repository_selection)
-                .collect::<Result<Vec<_>, DaemonError>>()?;
-            let vault = super::development::vault_artifacts::ExportVault::new(
-                config,
-                &plan.context_id,
-                &ticket.target.kernel_id,
-                &ticket.target.relay_public_key,
-                project_id,
-            );
-            let exported = super::development::export_development_context_with_vault(
-                DevelopmentContextExportRequest {
-                    project_id: project_id.clone(),
-                    repositories: selections,
-                    archive_path: artifact_root.join("development.tar.gz"),
-                },
-                Some(&vault),
-            )?;
-            ManagedContextPackageDevelopment::FromSource {
-                archive_path: exported.archive_path,
-                archive_sha256: exported.archive_sha256,
+        ManagedContextDevelopmentSelection::SourceProjects { projects } => {
+            let mut archives = Vec::with_capacity(projects.len());
+            for (index, project) in projects.iter().enumerate() {
+                let selections = project
+                    .repositories
+                    .iter()
+                    .map(resolve_repository_selection)
+                    .collect::<Result<Vec<_>, DaemonError>>()?;
+                let vault = super::development::vault_artifacts::ExportVault::new(
+                    config,
+                    &plan.context_id,
+                    &ticket.target.kernel_id,
+                    &ticket.target.relay_public_key,
+                    &project.project_id,
+                );
+                let exported = super::development::export_development_context_with_vault(
+                    DevelopmentContextExportRequest {
+                        project_id: project.project_id.clone(),
+                        repositories: selections,
+                        archive_path: artifact_root.join(format!("development-{index}.tar.gz")),
+                    },
+                    Some(&vault),
+                )?;
+                archives.push(ManagedContextPackageDevelopmentArchive {
+                    archive_path: exported.archive_path,
+                    archive_sha256: exported.archive_sha256,
+                });
             }
+            ManagedContextPackageDevelopment::FromSource { archives }
         }
     };
     let provider_accounts = match &plan.provider_accounts {
@@ -1054,25 +1068,25 @@ fn prepare_managed_context_package_for_ticket(
     };
     if plan.destination.is_some() {
         if let (
-            ManagedContextPackageDevelopment::FromSource { archive_path, .. },
-            ManagedContextDevelopmentSelection::SourceProject {
-                project_id,
-                repositories,
-            },
+            ManagedContextPackageDevelopment::FromSource { archives },
+            ManagedContextDevelopmentSelection::SourceProjects { projects },
         ) = (&development, &plan.development)
         {
-            crate::managed_context::credential_free::validate_development_archive(
-                archive_path,
-                project_id,
-                Some(repositories),
-            )?;
+            for (archive, project) in archives.iter().zip(projects) {
+                crate::managed_context::credential_free::validate_development_archive(
+                    &archive.archive_path,
+                    &project.project_id,
+                    Some(&project.repositories),
+                )?;
+            }
         }
     }
-    let development_archive_path = match &development {
-        ManagedContextPackageDevelopment::Empty => None,
-        ManagedContextPackageDevelopment::FromSource { archive_path, .. } => {
-            Some(archive_path.clone())
-        }
+    let development_archive_paths: Vec<PathBuf> = match &development {
+        ManagedContextPackageDevelopment::Empty => Vec::new(),
+        ManagedContextPackageDevelopment::FromSource { archives } => archives
+            .iter()
+            .map(|archive| archive.archive_path.clone())
+            .collect(),
     };
     let package = export_managed_context_package(ManagedContextPackageExportRequest {
         plan,
@@ -1088,7 +1102,7 @@ fn prepare_managed_context_package_for_ticket(
         event_connections,
         package_path: artifact_root.join("managed-context.pkg"),
     })?;
-    if let Some(path) = development_archive_path {
+    for path in development_archive_paths {
         fs::remove_file(path).map_err(|error| {
             outbound_service_io_error("remove packaged development context archive", error)
         })?;
@@ -1104,7 +1118,7 @@ fn prepare_managed_context_package_for_ticket(
         target_key_thumbprint: ticket.target.key_thumbprint.clone(),
         package_sha256: package.package_sha256.clone(),
         package_size_bytes: package.package_size_bytes,
-        development_archive_sha256: package.development_archive_sha256.clone(),
+        development_archive_sha256s: package.development_archive_sha256s.clone(),
         kernel_context_snapshot_sha256: package.kernel_context_snapshot_sha256.clone(),
         provider_accounts_sha256: package.provider_accounts_sha256.clone(),
         git_credentials_sha256: package.git_credentials_sha256.clone(),
@@ -1175,8 +1189,8 @@ struct PersistedOutboundArtifact {
     target_key_thumbprint: String,
     package_sha256: String,
     package_size_bytes: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    development_archive_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    development_archive_sha256s: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     kernel_context_snapshot_sha256: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1528,7 +1542,7 @@ fn restore_prepared_artifact(
             package_path,
             package_sha256: persisted.package_sha256,
             package_size_bytes: persisted.package_size_bytes,
-            development_archive_sha256: persisted.development_archive_sha256,
+            development_archive_sha256s: persisted.development_archive_sha256s,
             kernel_context_snapshot_sha256: persisted.kernel_context_snapshot_sha256,
             provider_accounts_sha256: persisted.provider_accounts_sha256,
             git_credentials_sha256: persisted.git_credentials_sha256,
@@ -1949,7 +1963,7 @@ mod tests {
         let approved = |machine_id: &str| {
             DaemonConfig::machine_registry_entries()
                 .iter()
-                .any(|entry| entry.machine_id == machine_id && entry.approved && !entry.forgotten)
+                .any(|entry| entry.machine_id == machine_id && entry.approved)
         };
         assert!(!approved("machine-target"));
         approve_transfer_target_machine("machine-target");
@@ -2344,13 +2358,17 @@ mod tests {
             context_selection: OwnerManagedContextSelection {
                 event_connections: Default::default(),
                 kernel_context: OwnerManagedKernelSelection::Empty,
-                development_setup: OwnerManagedDevelopmentSelection::SourceProject {
-                    project_id: "project".into(),
-                    repositories: vec![OwnerManagedRepositorySelection {
-                        role: super::super::development::DevelopmentRepositoryRole::Primary,
-                        workspace_id: fixture.project.display().to_string(),
-                        worktree_id: None,
-                    }],
+                development_setup: OwnerManagedDevelopmentSelection::SourceProjects {
+                    projects: vec![
+                        crate::managed_context::owner_managed::OwnerManagedSourceProject {
+                            project_id: "project".into(),
+                            repositories: vec![OwnerManagedRepositorySelection {
+                                role: super::super::development::DevelopmentRepositoryRole::Primary,
+                                workspace_id: fixture.project.display().to_string(),
+                                worktree_id: None,
+                            }],
+                        },
+                    ],
                 },
             },
         };
@@ -2383,12 +2401,12 @@ mod tests {
         )
         .expect("MP-08 inspect the actual packaged archive after source staging is retired");
         let crate::managed_context::package::ExtractedManagedContextDevelopment::FromSource {
-            archive_path,
-            ..
+            archives,
         } = &extracted.development
         else {
             panic!("MP-08 selected Project component missing")
         };
+        let archive_path = &archives[0].archive_path;
         let manifest = super::super::development::extract_verified_development_archive(
             archive_path,
             "project",
@@ -2761,7 +2779,7 @@ mod tests {
             target_key_thumbprint: ticket.target.key_thumbprint.clone(),
             package_sha256: "c".repeat(64),
             package_size_bytes,
-            development_archive_sha256: None,
+            development_archive_sha256s: Vec::new(),
             kernel_context_snapshot_sha256: None,
             provider_accounts_sha256: None,
             git_credentials_sha256: None,
@@ -3167,7 +3185,7 @@ mod tests {
             target_key_thumbprint: ticket.target.key_thumbprint.clone(),
             package_sha256: "c".repeat(64),
             package_size_bytes: 7,
-            development_archive_sha256: Some("d".repeat(64)),
+            development_archive_sha256s: vec!["d".repeat(64)],
             kernel_context_snapshot_sha256: Some("e".repeat(64)),
             provider_accounts_sha256: None,
             git_credentials_sha256: None,

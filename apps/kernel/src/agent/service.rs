@@ -9,9 +9,9 @@ use crate::provider::{
 use crate::session::{RuntimeSession, SessionService, SessionStatus};
 
 use super::{
-    calculate_agent_layout, generate_agent_ref, recalculate_positions, AgentInstance,
-    AgentSelfSettings, AgentState, AgentStore, AgentSubstituteProfile, CreateAgentRequest,
-    FailedRequest, GridPosition, RemoteAgentBinding, UsageLimitStop,
+    calculate_agent_layout, generate_agent_ref, recalculate_positions, AgentInstance, AgentState,
+    AgentStore, AgentSubstituteProfile, CreateAgentRequest, FailedRequest, GridPosition,
+    RemoteAgentBinding, UsageLimitStop,
 };
 
 #[derive(Debug, Clone)]
@@ -98,8 +98,12 @@ impl AgentService {
         let mut session_summary = self.store.session_summary(session.id());
         let current_count = session_summary.count;
         let new_count = requests.len();
-        if requests.iter().any(|r| r.parent_agent_id.is_none())
-            && current_count + new_count > session.max_agents() as usize
+        if requests.iter().any(|request| {
+            request
+                .parent_agent_id
+                .as_ref()
+                .is_none_or(|parent| parent.room_id().is_some())
+        }) && current_count + new_count > session.max_agents() as usize
         {
             return Err(DaemonError::AgentLimitReached {
                 session_id: session.id().to_string(),
@@ -108,7 +112,9 @@ impl AgentService {
         }
 
         for (index, request) in requests.iter().enumerate() {
-            self.check_authority_limit(request, &requests[..index], &session)?;
+            self.check_authority_limit(request, &requests[..index], &session, |id| {
+                sessions.get_session(id).ok()
+            })?;
             if request.role == crate::agent::AgentRole::Meta {
                 return Err(DaemonError::LocalTransport {
                     operation,
@@ -153,6 +159,7 @@ impl AgentService {
             agent.set_owner_user_id(request.owner_user_id);
             agent.set_parent_agent(request.parent_agent_id);
             agent.set_spawn_key(request.spawn_key);
+            agent.set_peer_spawn_limit(request.peer_spawn_limit);
             agent.set_role(request.role);
             agent.set_account_profile(request.account_profile);
             agent.set_execution_mode_override(request.execution_mode_override);
@@ -177,35 +184,34 @@ impl AgentService {
         Ok(created_agents)
     }
 
-    /// A child above its parent's current limit, or beyond the fan-out caps, is refused where
+    /// A child above its parent's current limit, or beyond the depth and team caps, is refused where
     /// it is created, so nothing can change between the check and the effect.
     fn check_authority_limit(
         &self,
         request: &CreateAgentRequest,
         earlier_in_batch: &[CreateAgentRequest],
         session: &RuntimeSession,
+        find_room: impl Fn(&str) -> Option<RuntimeSession>,
     ) -> Result<(), DaemonError> {
-        let Some(parent) = request.parent_agent_id.as_ref() else {
+        let Some(edge) = request.parent_agent_id.as_ref() else {
             return Ok(());
         };
-        let agents = self.store.get_by_session(&request.session_id);
-        let Some(parent) = agents.iter().find(|agent| agent.id() == parent.agent_id()) else {
-            return Ok(());
+        let parent = self.get_agent(edge.agent_id())?;
+        let parent_room = if parent.session_id() == session.id() {
+            session.clone()
+        } else {
+            find_room(parent.session_id()).ok_or_else(|| DaemonError::SessionNotFound {
+                session_id: parent.session_id().to_owned(),
+            })?
         };
-        let unfinished_work = self
-            .durable_state
-            .as_ref()
-            .map(|state| state.agents_with_unfinished_work(&request.session_id))
-            .transpose()?
-            .unwrap_or_default();
-        super::authority_limit::check_spawn(
-            request,
-            parent,
-            &agents,
-            earlier_in_batch,
-            session,
-            &unfinished_work,
-        )
+        let limit = crate::session::effective_agent_execution_config_with_parents(
+            &parent_room,
+            &parent,
+            |id| self.get_agent(id).ok(),
+            find_room,
+        );
+        let agents = self.list_agents();
+        super::authority_limit::check_spawn(request, &parent, &agents, earlier_in_batch, limit)
     }
 
     pub(crate) fn create_agent_for_session(
@@ -223,14 +229,14 @@ impl AgentService {
             });
         }
 
-        self.check_authority_limit(&request, &[], session)?;
+        self.check_authority_limit(&request, &[], session, |_| None)?;
 
         // Check max agents limit
         let current_count = self
             .store
             .get_by_session(&request.session_id)
             .iter()
-            .filter(|agent| !agent.archived() && !agent.is_sub_agent())
+            .filter(|agent| !agent.archived() && agent.is_room_agent())
             .count();
         if request.parent_agent_id.is_none() && current_count >= session.max_agents() as usize {
             return Err(DaemonError::AgentLimitReached {
@@ -273,6 +279,7 @@ impl AgentService {
         agent.set_owner_user_id(request.owner_user_id);
         agent.set_parent_agent(request.parent_agent_id);
         agent.set_spawn_key(request.spawn_key);
+        agent.set_peer_spawn_limit(request.peer_spawn_limit);
         if request.role == crate::agent::AgentRole::Meta {
             return Err(DaemonError::LocalTransport {
                 operation: "create agent",
@@ -454,7 +461,7 @@ impl AgentService {
             .store
             .get_by_session(&session_id)
             .into_iter()
-            .filter(|agent| !agent.archived() && !agent.is_sub_agent())
+            .filter(|agent| !agent.archived() && agent.is_room_agent())
             .collect();
 
         if !remaining_agents.is_empty() {
@@ -1048,6 +1055,21 @@ impl AgentService {
         Ok(agent.clone())
     }
 
+    pub fn set_agent_parent_limit_waived(
+        &mut self,
+        agent_id: &str,
+        waived: bool,
+    ) -> Result<AgentInstance, DaemonError> {
+        let agent = self
+            .store
+            .get_mut(agent_id)
+            .ok_or_else(|| DaemonError::AgentNotFound {
+                agent_id: agent_id.to_string(),
+            })?;
+        agent.set_parent_limit_waived(waived);
+        Ok(agent.clone())
+    }
+
     pub fn clear_agent_substitutes(
         &mut self,
         agent_id: &str,
@@ -1084,21 +1106,6 @@ impl AgentService {
         Ok(Some(agent.clone()))
     }
 
-    pub fn set_agent_self_settings(
-        &mut self,
-        agent_id: &str,
-        self_settings: AgentSelfSettings,
-    ) -> Result<AgentInstance, DaemonError> {
-        let agent = self
-            .store
-            .get_mut(agent_id)
-            .ok_or_else(|| DaemonError::AgentNotFound {
-                agent_id: agent_id.to_string(),
-            })?;
-        agent.set_self_settings(self_settings);
-        Ok(agent.clone())
-    }
-
     pub fn set_agent_substitution_timeout(
         &mut self,
         agent_id: &str,
@@ -1111,6 +1118,25 @@ impl AgentService {
                 agent_id: agent_id.to_string(),
             })?;
         agent.set_substitution_timeout_ms(timeout_ms);
+        Ok(agent.clone())
+    }
+
+    /// The model and variant the worker chose for a remote agent: the worker runs it, so its
+    /// choice is the agent's.
+    pub fn set_worker_model_selection(
+        &mut self,
+        agent_id: &str,
+        model: Option<String>,
+        effort: Option<String>,
+    ) -> Result<AgentInstance, DaemonError> {
+        let agent = self
+            .store
+            .get_mut(agent_id)
+            .ok_or_else(|| DaemonError::AgentNotFound {
+                agent_id: agent_id.to_string(),
+            })?;
+        agent.set_model(model);
+        agent.set_effort(effort);
         Ok(agent.clone())
     }
 
@@ -1171,6 +1197,21 @@ impl AgentService {
     }
 
     /// Get agent by ID
+    pub(crate) fn is_ancestor(&self, ancestor_id: &str, agent: &AgentInstance) -> bool {
+        let mut seen = HashSet::from([agent.id()]);
+        let mut edge = agent.parent_agent_id();
+        while let Some(id) = edge {
+            if !seen.insert(id) {
+                return false;
+            }
+            if id == ancestor_id {
+                return true;
+            }
+            edge = self.store.get(id).and_then(AgentInstance::parent_agent_id);
+        }
+        false
+    }
+
     pub fn get_agent(&self, agent_id: &str) -> Result<AgentInstance, DaemonError> {
         self.store
             .get(agent_id)
@@ -1287,30 +1328,6 @@ impl AgentService {
                 agent_id: agent_ref.to_string(),
             })?;
         agent.revoke_extension(ExtensionKind::Mcp, name);
-        Ok(agent.clone())
-    }
-
-    pub fn grant_skill(
-        &mut self,
-        agent_ref: &str,
-        name: String,
-    ) -> Result<AgentInstance, DaemonError> {
-        self.grant_extension(agent_ref, ExtensionGrant::new(ExtensionKind::Skill, name))
-    }
-
-    pub fn revoke_skill(
-        &mut self,
-        agent_ref: &str,
-        name: &str,
-    ) -> Result<AgentInstance, DaemonError> {
-        let agent_id = self.resolve_agent_id(agent_ref)?;
-        let agent = self
-            .store
-            .get_mut(&agent_id)
-            .ok_or_else(|| DaemonError::AgentNotFound {
-                agent_id: agent_ref.to_string(),
-            })?;
-        agent.revoke_extension(ExtensionKind::Skill, name);
         Ok(agent.clone())
     }
 
@@ -1466,7 +1483,6 @@ mod workflow_copy_alias_tests {
         agent.set_permission_level_override(Some(AgentPermissionLevel::Yolo));
         agent.set_account_profile(Some("acct-primary".to_string()));
         agent.grant_mcp("home_browser");
-        agent.grant_skill("dataviz");
         service.store.insert(agent)
     }
 

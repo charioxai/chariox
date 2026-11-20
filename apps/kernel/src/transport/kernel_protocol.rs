@@ -6,8 +6,8 @@ use serde_json::Value;
 use crate::config::WorkspaceLiveSyncMode;
 use crate::error::DaemonError;
 use crate::local::{
-    LocalDaemonRequest, PasskeyPrompt, RelayStatus, RemoteMachineRecord, RoomListLaunchTarget,
-    RoomListSessionSummary, RoomListSnapshot, WorkflowDesignOpForwarded,
+    LocalDaemonRequest, OfflineMachineRecord, PasskeyPrompt, RelayStatus, RemoteMachineRecord,
+    RoomListLaunchTarget, RoomListSessionSummary, RoomListSnapshot, WorkflowDesignOpForwarded,
 };
 use crate::provider::{OpenCodeProviderCatalog, PublicProviderRun};
 use crate::runtime::projection::{AgentRuntimeActivity, SessionSnapshotProjection};
@@ -105,6 +105,10 @@ pub(crate) enum KernelEvent {
         subscription_id: String,
         frame: Value,
     },
+    SkillsChanged {
+        session_id: String,
+        change: crate::skill::v2::SkillCatalogEvent,
+    },
     TerminalOutput {
         records: Vec<TerminalOutputRecord>,
     },
@@ -185,7 +189,7 @@ pub(crate) enum KernelEvent {
     },
     ProviderRunChanged {
         session_id: String,
-        provider_run: Option<PublicProviderRun>,
+        provider_run: Option<Box<PublicProviderRun>>,
     },
     SessionMetadataChanged {
         session_id: String,
@@ -204,6 +208,10 @@ pub(crate) enum KernelEvent {
     },
     RemoteMachinesChanged {
         machines: Vec<RemoteMachineRecord>,
+        offline_machines: Vec<OfflineMachineRecord>,
+        /// As `RemoteMachineInventory::directory`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        directory: Option<String>,
     },
     RoomListChanged {
         inventory_version: String,
@@ -247,7 +255,7 @@ pub(crate) enum KernelEvent {
     },
     WorkflowRunUpdated {
         session_id: String,
-        workflow_run: WorkflowRun,
+        workflow_run: Box<WorkflowRun>,
     },
     Heartbeat {
         session_id: String,
@@ -511,6 +519,9 @@ pub(crate) fn kernel_event_trace_payload(event_id: u64, event: &KernelEvent) -> 
         KernelEvent::ClientCatalogChanged { revision } => {
             serde_json::json!({ "event_id": event_id, "event": "client_catalog_changed", "revision": revision })
         }
+        KernelEvent::SkillsChanged { session_id, .. } => serde_json::json!({
+            "event_id": event_id, "event": "skills_changed", "session_id": session_id,
+        }),
         KernelEvent::ProviderCatalogChanged {
             generated_at_ms,
             catalog,
@@ -753,7 +764,10 @@ pub(crate) fn provider_run_changed_event(
     }
     Some(KernelEvent::ProviderRunChanged {
         session_id: snapshot.session.id().to_string(),
-        provider_run: snapshot.provider_run.as_ref().map(PublicProviderRun::from),
+        provider_run: snapshot
+            .provider_run
+            .as_ref()
+            .map(|run| Box::new(PublicProviderRun::from(run))),
     })
 }
 
@@ -931,7 +945,7 @@ pub(crate) fn workflow_run_updated_events(
         .into_iter()
         .map(|workflow_run| KernelEvent::WorkflowRunUpdated {
             session_id: snapshot.session.id().to_string(),
-            workflow_run,
+            workflow_run: Box::new(workflow_run),
         })
         .collect()
 }
@@ -999,6 +1013,7 @@ pub(crate) fn kernel_event_name(event: &KernelEvent) -> &'static str {
         KernelEvent::RoomListRowsChanged { .. } => "room_list_rows_changed",
         KernelEvent::ClientCatalogChanged { .. } => "client_catalog_changed",
         KernelEvent::ProviderCatalogChanged { .. } => "provider_catalog_changed",
+        KernelEvent::SkillsChanged { .. } => "skills_changed",
         KernelEvent::SlicesChanged { .. } => "slices_changed",
         KernelEvent::WorkflowDesignOp { .. } => "workflow_design_op",
         KernelEvent::WorkflowRunUpdated { .. } => "workflow_run_updated",
@@ -1041,6 +1056,7 @@ pub(crate) fn event_session_id(event: &KernelEvent) -> Option<&str> {
         KernelEvent::RoomListRowsChanged { .. } => None,
         KernelEvent::ClientCatalogChanged { .. } => None,
         KernelEvent::ProviderCatalogChanged { .. } => None,
+        KernelEvent::SkillsChanged { session_id, .. } => Some(session_id.as_str()),
         KernelEvent::SlicesChanged { .. } => None,
         KernelEvent::WorkflowDesignOp { design_op } => Some(design_op.session_id.as_str()),
         KernelEvent::WorkflowRunUpdated { session_id, .. } => Some(session_id.as_str()),
@@ -1113,6 +1129,7 @@ pub(crate) fn event_is_relevant_to_attachment(event: &KernelEvent, attachment_id
         | KernelEvent::RoomListRowsChanged { .. }
         | KernelEvent::ClientCatalogChanged { .. }
         | KernelEvent::ProviderCatalogChanged { .. }
+        | KernelEvent::SkillsChanged { .. }
         | KernelEvent::SlicesChanged { .. }
         | KernelEvent::WorkflowDesignOp { .. }
         | KernelEvent::WorkflowRunUpdated { .. }
@@ -1205,9 +1222,9 @@ pub(crate) fn map_kernel_error(error: &DaemonError) -> KernelTransportError {
         DaemonError::VaultUnlock {
             code, retryable, ..
         } => kernel_error(code, error, *retryable),
-        DaemonError::ExternalRequestFailed { code, retryable } => {
-            kernel_error(code, error, *retryable)
-        }
+        DaemonError::ExternalRequestFailed {
+            code, retryable, ..
+        } => kernel_error(code, error, *retryable),
         DaemonError::UserDomainRefused { reason } => kernel_error(reason.code(), error, false),
         DaemonError::MachineRequest { code, .. } => kernel_error(
             code.as_str(),
@@ -1345,6 +1362,16 @@ pub(crate) fn map_kernel_error(error: &DaemonError) -> KernelTransportError {
             operation: "project.get",
             ..
         } => kernel_error("local_transport_error", error, false),
+        // A refusal Cloud named (budget, no capacity, denied) is retryable only when Cloud says it is transient.
+        DaemonError::LocalTransport { .. }
+            if crate::runtime::cloud_api_client::cloud_error_code(error).is_some() =>
+        {
+            kernel_error(
+                "local_transport_error",
+                error,
+                crate::runtime::cloud_api_client::cloud_error_is_retryable(error),
+            )
+        }
         DaemonError::LocalTransport { .. } => kernel_error("local_transport_error", error, true),
         DaemonError::PtySpawn { .. } => kernel_error("pty_spawn_failed", error, true),
         DaemonError::TooManyOpenFiles => kernel_error("too_many_open_files", error, true),

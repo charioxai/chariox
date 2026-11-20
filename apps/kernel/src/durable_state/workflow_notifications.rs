@@ -18,16 +18,20 @@ mod run_finished_tests;
 mod source_fence;
 #[cfg(test)]
 mod source_fence_tests;
+pub(crate) mod subscription_settings;
 #[cfg(test)]
 pub(crate) mod tests;
+pub(crate) mod watcher;
+#[cfg(test)]
+mod watcher_tests;
 
 use super::notification_target::WorkflowNotificationTarget;
 use super::{DurableKernelStateStore, DurableWriterRequest};
 use crate::{
     error::DaemonError,
     local::{
-        WorkflowNotificationAck, WorkflowNotificationDiagnostic, WorkflowNotificationEnvelope,
-        WorkflowNotificationSource, WorkflowNotificationSubscription,
+        NotificationTraceTurn, WorkflowNotificationAck, WorkflowNotificationDiagnostic,
+        WorkflowNotificationEnvelope, WorkflowNotificationSource, WorkflowNotificationSubscription,
     },
 };
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
@@ -143,6 +147,7 @@ pub(super) fn exit_key(kind: crate::local::NotificationSourceKind, exit_node_id:
     match kind {
         crate::local::NotificationSourceKind::WorkflowRun => format!("{RESERVED}run"),
         crate::local::NotificationSourceKind::AppEvent => format!("{RESERVED}app{exit_node_id}"),
+        crate::local::NotificationSourceKind::Watcher => format!("{RESERVED}watcher"),
         _ if exit_node_id.starts_with(RESERVED) => format!("{RESERVED}exit{exit_node_id}"),
         _ => exit_node_id.to_owned(),
     }
@@ -184,6 +189,8 @@ pub(super) fn initialize(db: &mut Connection) -> Result<(), DaemonError> {
     )
     .map_err(sql)?;
     agent_lineage::initialize(db).map_err(sql)?;
+    subscription_settings::initialize(db).map_err(sql)?;
+    watcher::initialize(db).map_err(sql)?;
     prune_occurrences(db).map_err(sql)?;
     Ok(())
 }
@@ -236,13 +243,39 @@ pub(crate) enum NotificationOperation {
         kernel: String,
         generation: u64,
     },
-    /// The agent's prompt for an accepted occurrence is queued: the receipt is settled.
+    /// The options a subscriber picked and whether its subscription ends after one delivery.
+    Configure {
+        subscription_id: String,
+        options: serde_json::Map<String, serde_json::Value>,
+        once: bool,
+    },
+    /// The person pauses or resumes a subscription.
+    Pause {
+        subscription_id: String,
+        paused: bool,
+    },
+    /// A new subscriber took the subscription over: its settings, counters and trace move to
+    /// the subscription that replaces it.
+    Carry {
+        from: String,
+        to: String,
+    },
+    /// The agent's prompt for an accepted occurrence is queued: the receipt is settled. A
+    /// subscription that ends after one delivery answers `Spent`.
     AgentQueued {
         subscription_id: String,
         source_id: String,
         occurrence_id: String,
+        agent_id: String,
         prompt_id: String,
         session_id: String,
+    },
+    /// Where an accepted occurrence's prompt would be queued: a paused subscription keeps it.
+    Hold {
+        subscription_id: String,
+        occurrence_id: String,
+        title: String,
+        now: u64,
     },
     /// The receipt names the operation of the prompt about to be admitted for it.
     ReserveAgentLineage {
@@ -347,13 +380,18 @@ pub(crate) enum NotificationOperation {
         accepted: bool,
         at: u64,
     },
+    Watcher(watcher::WatcherOperation),
 }
 #[derive(Debug)]
 pub(crate) enum NotificationOutcome {
+    Watcher(Box<watcher::WatcherWritten>),
     Source(WorkflowNotificationSource),
     Subscription(WorkflowNotificationSubscription),
     Ack(WorkflowNotificationAck),
     Queued,
+    /// The occurrence was the one delivery of a subscription that ends after it.
+    Spent,
+    Hold(subscription_settings::Hold),
     LineageReserved,
     SteerBound,
     Protected(Option<WorkflowNotificationEnvelope>),
@@ -534,6 +572,7 @@ fn apply(
     op: NotificationOperation,
 ) -> Result<NotificationOutcome, DaemonError> {
     match op {
+        NotificationOperation::Watcher(operation) => watcher::apply(tx, operation),
         NotificationOperation::EmitOwnerAction {
             source_id,
             occurrence_id,
@@ -738,11 +777,52 @@ fn apply(
             subscription_id,
             source_id,
             occurrence_id,
+            agent_id,
             prompt_id,
             session_id,
         } => {
             tx.execute("UPDATE app_outbox SET state='queued',queued_prompt_id=?4,queued_session_id=?5,invocation_json=json_set(coalesce(invocation_json,'{}'),'$.ancestry',json_extract(payload_json,'$.ancestry')) WHERE source_kind='workflow_completion' AND automation_id=?1 AND installation_id=?2 AND occurrence_id=?3 AND state='accepted'",params![subscription_id,source_id,occurrence_id,prompt_id,session_id]).map_err(sql)?;
-            Ok(NotificationOutcome::Queued)
+            let turn = NotificationTraceTurn {
+                agent_id,
+                prompt_id,
+            };
+            subscription_settings::woke_in(tx, &subscription_id, &occurrence_id, &turn)?;
+            Ok(if subscription_settings::once_in(tx, &subscription_id)? {
+                NotificationOutcome::Spent
+            } else {
+                NotificationOutcome::Queued
+            })
+        }
+        NotificationOperation::Hold {
+            subscription_id,
+            occurrence_id,
+            title,
+            now,
+        } => Ok(NotificationOutcome::Hold(subscription_settings::hold_in(
+            tx,
+            &subscription_id,
+            &occurrence_id,
+            &title,
+            now,
+        )?)),
+        NotificationOperation::Configure {
+            subscription_id,
+            options,
+            once,
+        } => {
+            subscription_settings::save_in(tx, &subscription_id, &options, once)?;
+            Ok(NotificationOutcome::Swept)
+        }
+        NotificationOperation::Pause {
+            subscription_id,
+            paused,
+        } => {
+            subscription_settings::set_paused_in(tx, &subscription_id, paused)?;
+            Ok(NotificationOutcome::Swept)
+        }
+        NotificationOperation::Carry { from, to } => {
+            subscription_settings::carry_in(tx, &from, &to)?;
+            Ok(NotificationOutcome::Swept)
         }
         NotificationOperation::ReserveAgentLineage {
             receipt_id,
@@ -823,8 +903,15 @@ fn apply(
             owner,
             kernel,
         } => {
+            let removed:Option<String>=tx.query_row("SELECT notification_json FROM app_automations WHERE source_kind='workflow_completion' AND automation_id=?1 AND owner_id=?2 AND json_extract(notification_json,'$.target_kernel_id')=?3",params![subscription_id,owner,kernel],|r|r.get(0)).optional().map_err(sql)?;
             let detached = tx.execute("UPDATE app_automations SET status='disabled' WHERE source_kind='workflow_completion' AND automation_id=?1 AND owner_id=?2 AND json_extract(notification_json,'$.target_kernel_id')=?3",params![subscription_id,owner,kernel]).map_err(sql)?;
             let generation = if detached != 0 {
+                if let Some(removed) = removed {
+                    subscription_settings::retire_in(
+                        tx,
+                        &decode::<WorkflowNotificationSubscription>(&removed)?,
+                    )?;
+                }
                 Some(remote_install::supersede_in(tx, &owner, &subscription_id)?)
             } else {
                 None
@@ -916,6 +1003,7 @@ fn require_source_workflow(
         source.kind,
         crate::local::NotificationSourceKind::OwnerAction
             | crate::local::NotificationSourceKind::AppEvent
+            | crate::local::NotificationSourceKind::Watcher
     ) {
         return Ok(());
     }
@@ -1003,7 +1091,7 @@ fn save_subscription(
         params![sub.owner_user_id, sub.subscription_id],
     )
     .map_err(sql)?;
-    Ok(())
+    subscription_settings::restore_in(tx, sub)
 }
 pub(super) fn insert_receipt(
     tx: &Transaction<'_>,
@@ -1076,6 +1164,7 @@ fn accept(
     }
     let identity = ancestry_identity(sub);
     if env.ancestry.contains(&identity) {
+        subscription_settings::loop_stopped_in(tx, sub, env, now)?;
         tx.execute("INSERT INTO workflow_notification_occurrences VALUES (?1,?2,'workflow_notification_loop_dropped') ON CONFLICT(source_id,occurrence_id) DO UPDATE SET diagnostic=excluded.diagnostic",params![env.source_id,env.occurrence_id]).map_err(sql)?;
         tx.execute("UPDATE app_outbox SET state='failed' WHERE source_kind='workflow_completion' AND automation_id=?1 AND occurrence_id=?2",params![sub.subscription_id,env.occurrence_id]).map_err(sql)?;
         return Ok(NotificationOutcome::Ack(
@@ -1085,27 +1174,33 @@ fn accept(
     use sha2::{Digest, Sha256};
     let digest = format!("{:x}", Sha256::digest(bytes.as_bytes()));
     let existing:Option<(String,String,Option<String>)>=tx.query_row("SELECT state,content_digest,payload_json FROM app_outbox WHERE source_kind='workflow_completion' AND owner_id=?1 AND installation_id=?2 AND automation_id=?3 AND occurrence_id=?4",params![sub.owner_user_id,env.source_id,sub.subscription_id,env.occurrence_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(sql)?;
-    let duplicate = if let Some((state, stored, public_bytes)) = existing {
+    let retained = if let Some((state, stored, public_bytes)) = existing {
         // Admit the exact retained public representation, or the original replay
         // proof. Never normalize an incoming mutated raw replay before comparison.
         if stored != digest && public_bytes.as_deref() != Some(bytes.as_str()) {
             return Err(error("notification occurrence conflict"));
         }
-        if state == "retryable" {
-            tx.execute("UPDATE app_outbox SET state='accepted',next_attempt_at_ms=0 WHERE source_kind='workflow_completion' AND automation_id=?1 AND occurrence_id=?2",params![sub.subscription_id,env.occurrence_id]).map_err(sql)?;
-            false
-        } else {
-            true
+        if state != "retryable" {
+            return Ok(NotificationOutcome::Ack(WorkflowNotificationAck::Duplicate));
         }
+        true
     } else {
-        insert_receipt(tx, sub, env, "accepted", now)?;
         false
     };
-    Ok(NotificationOutcome::Ack(if duplicate {
-        WorkflowNotificationAck::Duplicate
+    // An occurrence the subscriber does not want is settled here, so it wakes no one.
+    let state = match subscription_settings::gate_in(tx, sub, env, now)? {
+        subscription_settings::Gate::Deliver => {
+            subscription_settings::delivered_in(tx, sub, env, now)?;
+            "accepted"
+        }
+        subscription_settings::Gate::Skip => "delivered",
+    };
+    if retained {
+        tx.execute("UPDATE app_outbox SET state=?3,next_attempt_at_ms=0 WHERE source_kind='workflow_completion' AND automation_id=?1 AND occurrence_id=?2",params![sub.subscription_id,env.occurrence_id,state]).map_err(sql)?;
     } else {
-        WorkflowNotificationAck::Accepted
-    }))
+        insert_receipt(tx, sub, env, state, now)?;
+    }
+    Ok(NotificationOutcome::Ack(WorkflowNotificationAck::Accepted))
 }
 
 pub(crate) fn receipt_id(

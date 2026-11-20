@@ -47,6 +47,7 @@ impl Fixture {
         let app = DaemonApp::bootstrap(config).unwrap();
         let mut session = RuntimeSession::new(
             "install-session",
+            crate::session::ProjectId::test(),
             None,
             "workspace",
             "worktree",

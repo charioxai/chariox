@@ -76,7 +76,7 @@ impl KernelRuntimeState {
         record_remote_prompt_dispatch_test_stage(&dispatch.prompt_id, "durable_dispatching_marked");
         #[cfg(test)]
         record_remote_prompt_dispatch_test_stage(&dispatch.prompt_id, "agent_lookup_started");
-        let agent = match self.owned.agent_store.get_agent(&dispatch.agent_id) {
+        let _agent = match self.owned.agent_store.get_agent(&dispatch.agent_id) {
             Ok(agent) => agent,
             Err(error) => {
                 let _ = self
@@ -87,22 +87,7 @@ impl KernelRuntimeState {
         };
         #[cfg(test)]
         record_remote_prompt_dispatch_test_stage(&dispatch.prompt_id, "agent_lookup_ready");
-        #[cfg(test)]
-        record_remote_prompt_dispatch_test_stage(&dispatch.prompt_id, "skill_context_started");
-        let (prompt, _) = match self
-            .prepare_remote_prompt_skill_context(&agent, &dispatch.prompt)
-            .await
-        {
-            Ok(context) => context,
-            Err(error) => {
-                let _ = self
-                    .finish_remote_prompt_dispatch(dispatch, Err(error))
-                    .await;
-                return None;
-            }
-        };
-        #[cfg(test)]
-        record_remote_prompt_dispatch_test_stage(&dispatch.prompt_id, "skill_context_ready");
+        let prompt = dispatch.prompt.clone();
         let attachments = dispatch.attachments.clone();
         #[cfg(test)]
         record_remote_prompt_dispatch_test_stage(

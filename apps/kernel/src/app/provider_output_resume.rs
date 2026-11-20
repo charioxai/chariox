@@ -41,6 +41,10 @@ pub(crate) fn persist_resolved_resume_state(
             agent_id,
             resume_state.clone(),
             provider_run.id(),
+            (
+                provider_run.provider(),
+                crate::account_profile::provider_account_selection_for_run(provider_run),
+            ),
         )?;
     }
     // Snapshot rebuilding reads the provider store again, outside the guard.

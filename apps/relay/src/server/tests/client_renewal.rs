@@ -59,14 +59,14 @@ async fn client_connect_renewal_preserves_routes_and_refuses_permission_or_ident
             .unwrap()
     });
     let url = format!("ws://{addr}");
-    let (mut daemon, _) = connect_async_with_retry(&url).await.unwrap();
+    let (mut daemon, daemon_handshake) = connect_async_with_retry(&url).await.unwrap();
     daemon
         .send(Message::Text(
-            serde_json::to_string(&RelayEnvelope::DaemonRegister {
-                registration: test_registration_with_token(
-                    "daemon", "machine", "Linux", 1, "daemon",
-                ),
-            })
+            serde_json::to_string(&signed_register(
+                &url,
+                &daemon_handshake,
+                test_registration_with_token("daemon", "machine", "Linux", 1, "daemon"),
+            ))
             .unwrap()
             .into(),
         ))

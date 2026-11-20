@@ -23,6 +23,7 @@ fn follow(turn: &FailingTurn) {
             &LocalDaemonRequest::SubscribeEvents(SubscribeEventsRequest {
                 targets: vec![target],
                 sources: Vec::new(),
+                like: None,
             }),
         )
         .unwrap();

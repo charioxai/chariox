@@ -24,6 +24,8 @@ const gap = (cursor: number) => ({ cursor, type: "gap", kernel: "k", machine: "m
 // The kernel's durable inbox: a wait replays what is not acknowledged yet, an ack removes the records up to its cursor.
 class Inbox {
   acknowledged = 0
+  /** What the kernel refuses a wait or a list with, when the grant follows nothing. */
+  refusal: string | null = null
   constructor(readonly events: Json[]) {}
   wait(since?: number, limit = Infinity): Json[] { return this.events.filter(event => event.cursor > (since ?? this.acknowledged)).slice(0, limit) }
 }
@@ -56,6 +58,7 @@ async function harness(events: Json[] | Inbox, elicitation: Json | null, onElici
   const fail = (request: Json) => { const code = failAnswers.shift(); if (code) throw new CommandFailure(code, "answer failed"); return request }
   const send = async (request: Json) => {
     sent.push(request)
+    if (inbox.refusal && ("WaitEvents" in request || "ListEvents" in request)) throw new CommandFailure("events_refused", inbox.refusal)
     if ("WaitEvents" in request || "ListEvents" in request) {
       const query = (request.WaitEvents ?? request.ListEvents) as Json
       const events = inbox.wait(query.since as number | undefined, query.limit as number)
@@ -527,5 +530,19 @@ test("waiting for a decision never acknowledges past a notification nobody has r
   assert.equal(h.inbox.acknowledged, 0)
   assert.equal(body(await nextNotice(h)).occurrence_id, "run-1")
   assert.equal(h.inbox.acknowledged, 2)
+  await h.close()
+})
+
+test("a grant that follows nothing is told why a tool call failed, and the default wait is the limit", async () => {
+  const inbox = new Inbox([])
+  inbox.refusal = "this subscription follows nothing: follow an agent with chariox events subscribe --kernel K --session S"
+  const h = await harness(inbox, null, () => undefined)
+  for (const name of ["chariox_next_notification", "chariox_next_choice"]) {
+    const reply = await h.call("tools/call", { name, arguments: { timeout_s: 5 } })
+    assert.equal(reply.result.isError, true)
+    assert.deepEqual(told(reply), { error: "events_refused", message: inbox.refusal })
+  }
+  const listed = await h.call("tools/list", {})
+  assert.match(JSON.stringify(listed.result.tools), /default 540, at most 540/)
   await h.close()
 })

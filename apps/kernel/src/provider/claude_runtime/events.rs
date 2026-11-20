@@ -4,8 +4,8 @@ use crate::session::unix_epoch_ms;
 use crate::terminal::TerminalOutputKind;
 
 use super::super::{
-    ProviderAssistantCompletion, ProviderPromptChunk, ProviderPromptSignalBatch,
-    ProviderResumeState, ProviderRunTokenUsage,
+    ProviderAssistantCompletion, ProviderOwnTurnSignal, ProviderPromptChunk,
+    ProviderPromptSignalBatch, ProviderResumeState, ProviderRunTokenUsage,
 };
 use super::usage::merge_claude_account_usage;
 use super::ClaudeRuntimeState;
@@ -39,9 +39,36 @@ fn apply_system_message(
     {
         record_claude_session_id(state, batch, session_id);
     }
-    if value.get("subtype").and_then(Value::as_str) == Some("compact_boundary") {
+    if starts_claudes_own_turn(state, value) {
+        state.active_turn_id = Some(format!("turn-{}", state.next_turn_number));
+        state.next_turn_number += 1;
+        state.turn_watchdog.begin(std::time::Instant::now());
+        state.tool_transcript.clear();
+        state.own_turn = true;
+        batch.provider_own_turn = ProviderOwnTurnSignal::Running;
+    }
+    match value.get("subtype").and_then(Value::as_str) {
         // The summary replaces the history that held the run base.
-        state.delivered_hidden_base = None;
+        Some("compact_boundary") => {
+            state.delivered_hidden_base = None;
+            batch
+                .native_compactions
+                .extend(crate::app::claude_compaction_turn_id(value, None));
+        }
+        Some("init") => {
+            state.turn_watchdog.record_process_init();
+            state.runtime_tools_unavailable = runtime_tools_status(value)
+                .filter(|status| *status != "connected")
+                .map(str::to_string);
+        }
+        // Claude streams its reasoning as empty deltas; only this count says it thinks.
+        Some("thinking_tokens") => batch.note_thinking(
+            value
+                .get("estimated_tokens")
+                .and_then(Value::as_u64)
+                .unwrap_or(0),
+        ),
+        _ => {}
     }
     if batch.resolved_model.is_none() {
         if let Some(model) =
@@ -51,6 +78,21 @@ fn apply_system_message(
             batch.resolved_model_source = Some("claude.system");
         }
     }
+}
+
+/// Claude's `init` names each MCP server with its connection status; it waits
+/// up to `MCP_TIMEOUT` for them, then starts the turn whatever they answered.
+fn runtime_tools_status(value: &Value) -> Option<&str> {
+    value
+        .get("mcp_servers")?
+        .as_array()?
+        .iter()
+        .find(|server| {
+            server.get("name").and_then(Value::as_str)
+                == Some(crate::provider::claude::CLAUDE_RUNTIME_MCP_SERVER)
+        })?
+        .get("status")?
+        .as_str()
 }
 
 fn apply_stream_event(
@@ -109,6 +151,9 @@ fn apply_stream_event(
     if event_kind == "content_block_start" {
         if let Some(block) = event.get("content_block") {
             let block_kind = block.get("type").and_then(Value::as_str).unwrap_or("text");
+            if main && matches!(block_kind, "thinking" | "redacted_thinking") {
+                batch.note_thinking(0);
+            }
             if let Some(text) = claude_block_text(block, block_kind) {
                 emit_authoritative_text(
                     provider_run_id,
@@ -434,6 +479,16 @@ fn apply_result_message(
         batch.resolved_usage = Some(usage);
     }
     if !result_answers_active_prompt(state, value) {
+        // The notification result ends its turn even when a prompt is already queued in Claude.
+        // Keep that prompt active: only the result naming its uuid can complete it.
+        if state.own_turn {
+            batch.provider_own_turn = match batch.provider_own_turn {
+                ProviderOwnTurnSignal::Running => ProviderOwnTurnSignal::StartedAndEnded,
+                _ => ProviderOwnTurnSignal::Ended,
+            };
+            state.own_turn = false;
+            state.tool_transcript.clear();
+        }
         return;
     }
     let subtype = value
@@ -456,6 +511,17 @@ fn apply_result_message(
         );
     }
     complete_claude_turn(state, batch);
+}
+
+/// Claude opens every turn with `system/init`; one that names no user message is a turn Claude
+/// started on its own (it reports a finished background command), not the answer to a prompt.
+fn starts_claudes_own_turn(state: &ClaudeRuntimeState, value: &Value) -> bool {
+    state.active_turn_id.is_none()
+        && value.get("subtype").and_then(Value::as_str) == Some("init")
+        && value
+            .get("user_message_uuids")
+            .and_then(Value::as_array)
+            .is_none_or(Vec::is_empty)
 }
 
 /// Claude also runs turns no Chariox prompt asked for, such as the one that
@@ -498,7 +564,14 @@ pub(super) fn complete_claude_turn(
         completed_at_ms: unix_epoch_ms(),
     });
     batch.prompt_completed = true;
+    if state.own_turn {
+        batch.provider_own_turn = match batch.provider_own_turn {
+            ProviderOwnTurnSignal::Running => ProviderOwnTurnSignal::StartedAndEnded,
+            _ => ProviderOwnTurnSignal::Ended,
+        };
+    }
     state.active_turn_id = None;
+    state.own_turn = false;
     state.tool_transcript.clear();
 }
 

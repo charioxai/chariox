@@ -61,4 +61,28 @@ impl DurableKernelStateStore {
                 message: error.to_string(),
             })
     }
+
+    /// The prompts steered into the turns of `task_id`: their answers are that task's turns.
+    pub(crate) fn prompts_steered_into(
+        &self,
+        session_id: &str,
+        task_id: &str,
+    ) -> Result<Vec<String>, DaemonError> {
+        let error = |error: rusqlite::Error| DaemonError::LocalTransport {
+            operation: "durable_state.steered_prompts",
+            message: error.to_string(),
+        };
+        let connection = self.lock_connection("durable_state.steered_prompts")?;
+        let mut statement = connection
+            .prepare(
+                "SELECT prompt_id FROM durable_steered_prompts WHERE session_id = ?1 AND task_id = ?2",
+            )
+            .map_err(error)?;
+        let prompts = statement
+            .query_map(params![session_id, task_id], |row| row.get(0))
+            .map_err(error)?
+            .collect::<Result<Vec<String>, _>>()
+            .map_err(error);
+        prompts
+    }
 }

@@ -109,6 +109,42 @@ fn a_message_from_another_kernel_lands_once_as_a_stamped_message() {
 }
 
 #[test]
+fn a_peer_message_after_deadline_is_refused_before_it_enters_the_inbox() {
+    use crate::durable_state::agent_lifecycle::Operation;
+
+    run_peer_test("peer-kernel-deadline", || async {
+        let rooms = Rooms::new(AgentPermissionLevel::Yolo, AgentPermissionLevel::Required);
+        let deadline_ms = crate::session::unix_epoch_ms();
+        {
+            let app = rooms.app.lock().await;
+            app.durable_state_store()
+                .agent_lifecycle(Operation::SetDeadline {
+                    room: rooms.peer_room.clone(),
+                    agent: rooms.peer.id().into(),
+                    deadline: Some(deadline_ms),
+                    inherited: vec![],
+                })
+                .unwrap();
+        }
+        for urgent in [false, true] {
+            let sent = rooms
+                .request_from_kernel_a(message(&rooms, "after-deadline", "peer", urgent))
+                .await;
+            assert_eq!(
+                refusal(sent),
+                PeerAgentRefusal::AgentDeadlineReached {
+                    message: crate::error::agent_deadline_refusal(deadline_ms).to_string(),
+                }
+            );
+        }
+        assert!(rooms
+            .inbox(&rooms.peer_room, rooms.peer.id())
+            .await
+            .is_empty());
+    });
+}
+
+#[test]
 fn a_peer_on_another_kernel_addresses_only_ordinary_agents_of_its_owner() {
     run_peer_test("peer-kernel-address", || async {
         let rooms = Rooms::new(AgentPermissionLevel::Yolo, AgentPermissionLevel::Yolo);
@@ -307,6 +343,7 @@ fn spawn(request_id: &str, room: &str) -> RelayPeerRequest {
         protocol_version: RELAY_PEER_PROTOCOL_VERSION,
         request_id: request_id.into(),
         sender: stamp(),
+        sender_name: "Lead".into(),
         room: room.into(),
         provider: "dev-stub".into(),
         account_profile: None,
@@ -364,9 +401,29 @@ fn a_room_agent_on_another_kernel_spawns_one_ordinary_clamped_peer_per_request()
             "clamped to the caller's authority"
         );
         drop(app);
-        let inbox = rooms.inbox(&rooms.peer_room, &agent.agent_id).await;
-        assert_eq!(inbox.len(), 1, "the task arrives once, as a message");
-        assert_eq!(inbox[0].payload["sender_kernel_id"], KERNEL_A);
+        rooms.assert_one_spawn_prompt(&agent.agent_id).await;
+        let refused = rooms
+            .router
+            .runtime_state
+            .update_agent_config_as(
+                &rooms.peer_room,
+                &agent.agent_id,
+                rooms.peer.owner_user_id(),
+                None,
+                Some(Some(AgentPermissionLevel::Yolo)),
+                None,
+                None,
+                None,
+                crate::runtime::state::SettingsContext::agent(&agent.agent_id, None),
+            )
+            .await
+            .expect_err("a spawn task cannot give its agent more authority");
+        assert!(
+            refused
+                .to_string()
+                .contains("limited by the spawning agent"),
+            "{refused}"
+        );
     });
 }
 
@@ -387,6 +444,17 @@ fn spawned_agent(response: &RelayPeerResponse) -> String {
 }
 
 impl Rooms {
+    async fn assert_one_spawn_prompt(&self, agent: &str) {
+        let tasks = self
+            .router
+            .runtime_state
+            .durable_state_store()
+            .agent_tasks(Some(&self.peer_room), Some(agent))
+            .unwrap();
+        assert_eq!(tasks.len(), 1, "the spawn admits one first prompt");
+        assert!(self.inbox(&self.peer_room, agent).await.is_empty());
+    }
+
     async fn peer_room_agents(&self) -> usize {
         self.app
             .lock()
@@ -412,8 +480,7 @@ fn a_peer_spawn_retried_while_the_first_attempt_runs_creates_one_agent() {
             before + 1,
             "two overlapping attempts of one request create one agent"
         );
-        let inbox = rooms.inbox(&rooms.peer_room, &spawned_agent(&first)).await;
-        assert_eq!(inbox.len(), 1, "the task arrives once");
+        rooms.assert_one_spawn_prompt(&spawned_agent(&first)).await;
     });
 }
 
@@ -424,6 +491,8 @@ fn a_peer_spawn_retried_after_its_answer_was_lost_to_a_restart_finds_its_agent()
         let before = rooms.peer_room_agents().await;
         // The first attempt created the agent; the kernel stopped before it kept the answer.
         let spawn = crate::local::LocalDaemonRequest::SpawnAgent(crate::local::SpawnAgentRequest {
+            initial_task: None,
+            peer_spawn: None,
             max_context_tokens: None,
             no_subscribe: true,
             session_id: rooms.peer_room.clone(),
@@ -475,8 +544,7 @@ fn a_peer_spawn_retried_after_its_answer_was_lost_to_a_restart_finds_its_agent()
         );
         assert_eq!(spawned_agent(&retry), first.id());
         assert_eq!(rooms.peer_room_agents().await, before + 1);
-        let inbox = rooms.inbox(&rooms.peer_room, first.id()).await;
-        assert_eq!(inbox.len(), 1, "the task arrives once");
+        rooms.assert_one_spawn_prompt(first.id()).await;
     });
 }
 

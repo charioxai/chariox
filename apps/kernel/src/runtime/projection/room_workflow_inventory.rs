@@ -169,7 +169,15 @@ mod tests {
     };
 
     fn room() -> RuntimeSession {
-        RuntimeSession::new("room", None, "workspace", "worktree", "machine", "home")
+        RuntimeSession::new(
+            "room",
+            crate::session::ProjectId::test(),
+            None,
+            "workspace",
+            "worktree",
+            "machine",
+            "home",
+        )
     }
 
     #[test]
@@ -266,7 +274,15 @@ mod tests {
 #[test]
 fn mp11_amfix_room_inventory_hides_foreign_private_runs() {
     use crate::session::{CollaborationLevel, WorkflowDefinition, WorkflowRun};
-    let mut room = RuntimeSession::new("room", None, "workspace", "tree", "machine", "home");
+    let mut room = RuntimeSession::new(
+        "room",
+        crate::session::ProjectId::test(),
+        None,
+        "workspace",
+        "tree",
+        "machine",
+        "home",
+    );
     room.add_member("bob", None, CollaborationLevel::Private);
     room.create_workflow(WorkflowDefinition::new("workflow", None));
     room.create_workflow_run(
@@ -300,7 +316,15 @@ fn mp11_amfix_room_inventory_hides_foreign_private_runs() {
 fn mp11_amfix_snapshot_recomputes_inventory_for_private_recipient() {
     use crate::session::{CollaborationLevel, WorkflowDefinition, WorkflowRun};
     let app = crate::app::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
-    let mut room = RuntimeSession::new("room", None, "workspace", "tree", "machine", "home");
+    let mut room = RuntimeSession::new(
+        "room",
+        crate::session::ProjectId::test(),
+        None,
+        "workspace",
+        "tree",
+        "machine",
+        "home",
+    );
     room.add_member("viewer", None, CollaborationLevel::Transparent);
     room.add_member("bob", None, CollaborationLevel::Private);
     room.create_workflow(WorkflowDefinition::new("workflow", None));

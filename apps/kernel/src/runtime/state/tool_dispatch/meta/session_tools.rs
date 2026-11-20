@@ -627,6 +627,7 @@ mod tests {
     fn meta_session() -> crate::session::RuntimeSession {
         crate::session::RuntimeSession::new(
             "session-1",
+            crate::session::ProjectId::test(),
             None,
             "workspace-1",
             "worktree-1",

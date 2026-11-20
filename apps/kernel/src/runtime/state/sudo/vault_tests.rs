@@ -29,7 +29,7 @@ pub(super) async fn call(f: &Fixture, tool: &str, arguments: Value) -> Result<Va
     .map(|result| result.payload)
 }
 
-fn vault_path(f: &Fixture) -> String {
+pub(super) fn vault_path(f: &Fixture) -> String {
     f.state
         .owned
         .config_projection
@@ -686,15 +686,14 @@ async fn login_room_with_controller(f: Fixture, site: &str, controller: &str) ->
     )
     .unwrap();
     let agent = f.request.target_agent_id.clone().unwrap();
-    host.request_grant(
+    host.grant_agent(
         "local",
         &agent,
-        "owner-request",
         std::time::Duration::from_secs(3600),
-        None,
         &f.request.session_id,
     )
     .unwrap();
+    host.load("local", &agent).unwrap();
     call(
         &f,
         "chariox.kernel_browser",
@@ -904,23 +903,9 @@ async fn a06_vault_fill_into_an_app_tab_is_claimed_agent_input() {
         .unwrap()
         .to_string();
     let app_view_tab = || std::fs::read_to_string(login.root.path().join("app_view_tab")).ok();
-    // An unfocused agent has not claimed this App view: nothing reaches it.
-    assert!(call(f, PASTE, paste_args(&handle)).await.is_err());
-    assert_eq!(inserted(&login), None);
+    // Every agent claims the App view as for any other input, with no focus;
+    // the sudo fill carries that claim to the host.
     assert_eq!(app_view_tab(), None);
-    // Focused, it claims the view as for any other input; then the sudo fill
-    // carries that claim to the host.
-    let host = &f.state.owned.kernel_browser_host;
-    let agent = f.request.target_agent_id.clone().unwrap();
-    host.set_focus("local", Some(&agent));
-    call(
-        f,
-        "chariox.kernel_browser",
-        json!({"command":{"op":"snapshot","tab_id":"host-tab-new","generation":1}}),
-    )
-    .await
-    .unwrap();
-    host.set_focus("local", None);
     assert_eq!(
         call(f, PASTE, paste_args(&handle)).await.unwrap(),
         json!({"inserted": true})
@@ -2642,13 +2627,12 @@ async fn vflag_capture_schema_label_preserves_state_and_control_through_mcp() {
             result["tabs"].is_array(),
             "capturing Tabs must preserve browser inventory through every boundary"
         );
-        assert_eq!(result["tabs"][0]["tab_id"], "host-tab-new");
+        assert!(result["tabs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|tab| tab["tab_id"] == "host-tab-new"));
     }
-    let agent = f.request.target_agent_id.as_deref().unwrap();
-    f.state
-        .owned
-        .kernel_browser_host
-        .set_focus("local", Some(agent));
     let stopped = call(
         f,
         "chariox.kernel_browser",

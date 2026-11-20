@@ -16,7 +16,7 @@ pub(super) struct ManagedSliceActivationConfirmation {
 }
 
 impl ManagedSliceActivationConfirmation {
-    pub(super) async fn resume_pending(
+    pub(super) fn resume_pending(
         &mut self,
         router: &Arc<CommandRouter>,
         state: &Arc<RwLock<RelayClientState>>,
@@ -24,11 +24,10 @@ impl ManagedSliceActivationConfirmation {
         if self.task.as_ref().is_some_and(|task| !task.is_finished()) {
             return;
         }
-        self.task = spawn_pending_managed_slice_activation_confirmation_after_connect(
+        self.task = Some(spawn_managed_slice_activation_confirmation(
             Arc::clone(router),
             Arc::clone(state),
-        )
-        .await;
+        ));
     }
 }
 
@@ -185,6 +184,7 @@ fn spawn_managed_slice_activation_confirmation(
     })
 }
 
+#[cfg(test)]
 pub(super) async fn spawn_pending_managed_slice_activation_confirmation_after_connect(
     router: Arc<CommandRouter>,
     state: Arc<RwLock<RelayClientState>>,

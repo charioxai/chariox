@@ -676,6 +676,7 @@ fn runtime_interactions_only_changes_can_skip_session_snapshot() {
 fn session_snapshot_with_agent() -> SessionSnapshotProjection {
     let mut session = RuntimeSession::new(
         "session-a",
+        crate::session::ProjectId::test(),
         Some("Test".to_string()),
         "workspace-a",
         "worktree-a",
@@ -729,6 +730,7 @@ fn session_snapshot_with_agent() -> SessionSnapshotProjection {
 fn session_snapshot_with_workflow_status(status: WorkflowRunStatus) -> SessionSnapshotProjection {
     let mut session = RuntimeSession::new(
         "session-a",
+        crate::session::ProjectId::test(),
         Some("Test".to_string()),
         "workspace-a",
         "worktree-a",
@@ -1513,4 +1515,15 @@ fn touched_queue_announces_activity_before_its_complete_snapshot() {
         );
         assert!(events.iter().any(|event| matches!(event, KernelEvent::SessionSnapshot { session, .. } if session.queued_prompts().len() == 1)), "queue text must still reach every client");
     }
+}
+
+#[test]
+fn a_cloud_refusal_is_retryable_only_when_cloud_calls_it_transient() {
+    let refused = |code: &str| DaemonError::LocalTransport {
+        operation: "cloud relay request",
+        message: format!("cloud relay request failed with 429: cloud_api_code={code}: refused"),
+    };
+    assert!(!map_kernel_error(&refused("budget_exceeded")).retryable);
+    assert!(!map_kernel_error(&refused("invalid_request")).retryable);
+    assert!(map_kernel_error(&refused("capacity_exceeded")).retryable);
 }

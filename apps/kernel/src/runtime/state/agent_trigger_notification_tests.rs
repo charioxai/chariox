@@ -11,16 +11,28 @@ use crate::session::{
     WorkflowRun, WorkflowRunStatus,
 };
 
+/// A direct admission under a subscription nobody paused.
+fn unpaused() -> super::agent_trigger_notification::NotificationHold<'static> {
+    super::agent_trigger_notification::NotificationHold {
+        subscription_id: "unpaused",
+        occurrence_id: "unpaused",
+        title: String::new(),
+        source: String::new(),
+    }
+}
+
 struct Rig {
     _root: crate::test_support::TestWorktree,
     runtime: KernelRuntimeState,
     session_id: String,
     agent_id: String,
     attachment_id: String,
+    active_prompt_id: String,
+    run_id: String,
 }
 
 async fn rig() -> Rig {
-    let (root, runtime, session_id, agent_id, attachment_id, _, _) =
+    let (root, runtime, session_id, agent_id, attachment_id, active_prompt_id, run_id) =
         runtime_with_active_prompt().await;
     Rig {
         _root: root,
@@ -28,6 +40,8 @@ async fn rig() -> Rig {
         session_id,
         agent_id,
         attachment_id,
+        active_prompt_id,
+        run_id,
     }
 }
 
@@ -152,6 +166,8 @@ impl Rig {
                 source: AgentTriggerNotificationSource::Workflow {
                     source_id: source_id.into(),
                 },
+                options: Vec::new(),
+                once: false,
             },
             busy_policy: None,
             prompt: Some("Triage what the pipeline reports".into()),
@@ -164,6 +180,18 @@ impl Rig {
         // Accepted occurrences are queued by the pass after the one that accepted them.
         self.runtime.owned.route_workflow_notifications();
         self.runtime.route_agent_notifications().await;
+    }
+
+    /// What the agent's inbox holds of its notifications.
+    fn notification_inbox(&self) -> Vec<crate::durable_state::agent_lifecycle::InboxEvent> {
+        self.runtime
+            .owned
+            .durable_state_store
+            .agent_work_inbox(&self.session_id, &self.agent_id, 0, None)
+            .unwrap()
+            .into_iter()
+            .filter(|event| event.kind == "notification")
+            .collect()
     }
 
     fn queued_prompts(&self) -> Vec<String> {
@@ -262,6 +290,7 @@ async fn a_notification_trigger_follows_the_availability_of_its_remote_source() 
             "sub-remote".into(),
             "Studio pipeline".into(),
             None,
+            crate::session::AgentTriggerBusyPolicy::Queue,
         )
         .unwrap()
         .id()
@@ -297,6 +326,7 @@ async fn a_notification_trigger_follows_the_availability_of_its_remote_source() 
                     name: "Studio pipeline".into(),
                     display_name: "Studio pipeline".into(),
                     available: true,
+                    options: Vec::new(),
                 }],
             })
             .unwrap();
@@ -328,13 +358,6 @@ async fn an_agent_notification_trigger_queues_every_occurrence() {
     let workflow = rig.workflow_with_exit("pipeline");
     let source = rig.register(&workflow);
 
-    let mut refused = rig.request(&source);
-    refused.busy_policy = Some(AgentTriggerBusyPolicy::Steer);
-    assert!(rig
-        .runtime
-        .create_agent_trigger(refused, "local")
-        .await
-        .is_err());
     let LocalDaemonResponse::AgentTriggerCreated { trigger, .. } = rig
         .runtime
         .create_agent_trigger(rig.request(&source), "local")
@@ -348,21 +371,30 @@ async fn an_agent_notification_trigger_queues_every_occurrence() {
         trigger.source(),
         AgentTriggerSource::Notification { display_name, .. } if display_name == "pipeline"
     ));
-    assert!(rig
+    let set_mode = |mode| UpdateAgentTriggerRequest {
+        session_id: rig.session_id.clone(),
+        trigger_id: trigger.id().into(),
+        busy_policy: Some(mode),
+        prompt: None,
+        enabled: None,
+    };
+    let LocalDaemonResponse::AgentTriggerUpdated {
+        trigger: steering, ..
+    } = rig
         .runtime
-        .update_agent_trigger(
-            UpdateAgentTriggerRequest {
-                session_id: rig.session_id.clone(),
-                trigger_id: trigger.id().into(),
-                busy_policy: Some(AgentTriggerBusyPolicy::Steer),
-                prompt: None,
-                enabled: None,
-            },
-            "local",
-        )
+        .update_agent_trigger(set_mode(AgentTriggerBusyPolicy::Steer), "local")
         .await
-        .is_err());
+        .unwrap()
+    else {
+        panic!()
+    };
+    assert_eq!(steering.busy_policy(), AgentTriggerBusyPolicy::Steer);
+    rig.runtime
+        .update_agent_trigger(set_mode(AgentTriggerBusyPolicy::Queue), "local")
+        .await
+        .unwrap();
 
+    // The agent is busy: three exits wait as one prompt, one turn.
     for n in 0..3 {
         rig.complete(
             &workflow,
@@ -372,20 +404,236 @@ async fn an_agent_notification_trigger_queues_every_occurrence() {
     }
     rig.pass().await;
     let queued = rig.queued_prompts();
-    assert_eq!(queued.len(), 3, "{queued:?}");
-    for (n, text) in queued.iter().enumerate() {
-        assert!(text.starts_with(
-            "Triage what the pipeline reports\n\n<chariox-trigger-input kind=\"notification\">"
-        ));
-        assert!(text.contains(&format!("release {n} approved")), "{text}");
-        assert!(text.contains("\"display_name\":\"pipeline\""), "{text}");
+    assert_eq!(queued.len(), 1, "{queued:?}");
+    let text = &queued[0];
+    assert!(
+        text.starts_with(
+            "Triage what the pipeline reports\n\n3 notifications arrived while you were busy:"
+        ),
+        "{text}"
+    );
+    assert!(!text.contains("chariox-trigger-input"), "{text}");
+    // Each occurrence keeps its own inbox row, named in the one prompt.
+    let inbox = rig.notification_inbox();
+    assert_eq!(inbox.len(), 3, "{inbox:?}");
+    for (n, event) in inbox.iter().enumerate() {
+        assert_eq!(event.state, "accepted");
+        assert!(event
+            .payload
+            .to_string()
+            .contains(&format!("release {n} approved")));
+        assert!(
+            text.contains(&format!(
+                "- release {n} approved (from pipeline), inbox event {}",
+                event.sequence
+            )),
+            "{text}"
+        );
     }
+    assert!(
+        text.ends_with(&format!(
+            "Read them with chariox.events.inbox after {}, then chariox.events.ack each one you handled.",
+            inbox[0].sequence - 1
+        )),
+        "{text}"
+    );
     let session = rig.runtime.owned.session_snapshot(&rig.session_id).unwrap();
-    assert_eq!(session.agent_triggers()[0].fired(), 3);
-    assert_eq!(session.agent_triggers()[0].coalesced(), 0);
-    // Settled receipts are not delivered twice.
+    assert_eq!(session.agent_triggers()[0].fired(), 1);
+    assert_eq!(session.agent_triggers()[0].coalesced(), 2);
+    // Settled receipts are not delivered twice, and the prompt names each once.
     rig.pass().await;
-    assert_eq!(rig.queued_prompts().len(), 3);
+    let queued = rig.queued_prompts();
+    assert_eq!(queued.len(), 1, "{queued:?}");
+    assert_eq!(queued[0].matches("inbox event").count(), 3, "{}", queued[0]);
+}
+
+/// The person's prompt between two notifications stays its own; a later occurrence
+/// still joins the notification prompt that waits ahead of it.
+#[tokio::test]
+async fn a_person_prompt_in_the_queue_is_never_merged_with_notifications() {
+    let rig = rig().await;
+    let workflow = rig.workflow_with_exit("pipeline");
+    let source = rig.register(&workflow);
+    rig.trigger_on(&source).await;
+    rig.complete(&workflow, "run-0", "release 0 approved");
+    rig.pass().await;
+    let room = rig.runtime.owned.session_snapshot(&rig.session_id).unwrap();
+    rig.runtime
+        .owned
+        .prompt_state_owner
+        .submit_prepared_prompt(
+            &room,
+            crate::session::PromptQueueItem::new(
+                "person-prompt",
+                &rig.attachment_id,
+                &rig.agent_id,
+                "the person's own question",
+                crate::session::PromptStatus::Queued,
+            ),
+            true,
+        )
+        .unwrap();
+    rig.complete(&workflow, "run-1", "release 1 approved");
+    rig.pass().await;
+    let queued = rig.queued_prompts();
+    assert_eq!(queued.len(), 2, "{queued:?}");
+    assert!(
+        queued[0].contains("2 notifications arrived while you were busy:"),
+        "{}",
+        queued[0]
+    );
+    assert_eq!(queued[1], "the person's own question");
+}
+
+/// A trigger that steers into the running turn joins nothing.
+#[tokio::test]
+async fn a_steering_trigger_does_not_join_queued_notifications() {
+    let rig = rig().await;
+    let workflow = rig.workflow_with_exit("pipeline");
+    let source = rig.register(&workflow);
+    let mut request = rig.request(&source);
+    request.busy_policy = Some(AgentTriggerBusyPolicy::Steer);
+    rig.runtime
+        .create_agent_trigger(request, "local")
+        .await
+        .unwrap();
+    for n in 0..2 {
+        rig.complete(
+            &workflow,
+            &format!("run-{n}"),
+            &format!("release {n} approved"),
+        );
+    }
+    rig.pass().await;
+    assert!(rig
+        .queued_prompts()
+        .iter()
+        .all(|text| !text.contains("notifications arrived while you were busy")));
+}
+
+/// A reviewer-style exit with a large body: whatever the mode, the prompt is one notice line and
+/// the inbox holds the whole payload.
+const LARGE_BODY_MARKER: &str = "REVIEWER-FINDING-BODY";
+
+fn large_review(title: &str) -> String {
+    let body = format!("{LARGE_BODY_MARKER} {}\n", "x".repeat(80)).repeat(400);
+    format!("{title}\n{body}")
+}
+
+fn assert_one_notice_line(prompt: &str, title: &str) {
+    assert!(
+        prompt.contains(&format!("Notification: {title} (from pipeline)")),
+        "{prompt}"
+    );
+    assert!(
+        !prompt.contains(LARGE_BODY_MARKER),
+        "the payload reached the prompt"
+    );
+    assert!(!prompt.contains("chariox-trigger-input"), "{prompt}");
+    assert!(prompt.len() < 1024, "{} bytes", prompt.len());
+}
+
+fn assert_inbox_holds_the_review(rig: &Rig) {
+    let inbox = rig.notification_inbox();
+    assert_eq!(inbox.len(), 1, "{inbox:?}");
+    assert_eq!(inbox[0].state, "accepted");
+    let payload = inbox[0].payload.to_string();
+    assert!(
+        payload.contains(LARGE_BODY_MARKER),
+        "the inbox lost the body"
+    );
+    assert!(payload.len() > 30_000, "{} bytes", payload.len());
+}
+
+#[tokio::test]
+async fn a_large_workflow_exit_reaches_a_queue_subscriber_as_one_notice_line() {
+    let rig = rig().await;
+    let workflow = rig.workflow_with_exit("pipeline");
+    let source = rig.register(&workflow);
+    rig.trigger_on(&source).await;
+
+    rig.complete(
+        &workflow,
+        "run-large",
+        &large_review("Review of PR #7: two blockers"),
+    );
+    rig.pass().await;
+
+    let queued = rig.queued_prompts();
+    assert_eq!(queued.len(), 1, "{queued:?}");
+    assert_one_notice_line(&queued[0], "Review of PR #7: two blockers");
+    assert_inbox_holds_the_review(&rig);
+}
+
+#[tokio::test]
+async fn a_large_workflow_exit_reaches_a_steer_subscriber_as_one_notice_line() {
+    use crate::durable_state::agent_lifecycle::Operation;
+    let rig = rig().await;
+    let workflow = rig.workflow_with_exit("pipeline");
+    let source = rig.register(&workflow);
+    let mut request = rig.request(&source);
+    request.busy_policy = Some(AgentTriggerBusyPolicy::Steer);
+    let LocalDaemonResponse::AgentTriggerCreated { trigger, .. } = rig
+        .runtime
+        .create_agent_trigger(request, "local")
+        .await
+        .unwrap()
+    else {
+        panic!()
+    };
+    assert_eq!(trigger.busy_policy(), AgentTriggerBusyPolicy::Steer);
+    let owner = rig
+        .runtime
+        .owned
+        .session_snapshot(&rig.session_id)
+        .unwrap()
+        .owner_user_id()
+        .to_string();
+    rig.runtime
+        .owned
+        .durable_state_store
+        .agent_lifecycle(Operation::Begin {
+            owner,
+            room: rig.session_id.clone(),
+            agent: rig.agent_id.clone(),
+            prompt: rig.active_prompt_id.clone(),
+            run: Some(rig.run_id.clone()),
+            now: crate::session::unix_epoch_ms(),
+        })
+        .unwrap();
+
+    rig.complete(
+        &workflow,
+        "run-large",
+        &large_review("Review of PR #7: two blockers"),
+    );
+    rig.pass().await;
+
+    assert!(
+        rig.queued_prompts().is_empty(),
+        "a steered notice is not queued"
+    );
+    let session = rig.runtime.owned.session_snapshot(&rig.session_id).unwrap();
+    assert_eq!(
+        session.agent_triggers()[0].last_outcome(),
+        Some(crate::session::AgentTriggerOutcome::Steered)
+    );
+    let steered = rig
+        .runtime
+        .owned
+        .operational_history_store
+        .latest_transcript_by_merge_key_prefix(
+            &rig.session_id,
+            &rig.agent_id,
+            &crate::history::steering_prompt_merge_key(""),
+        )
+        .unwrap()
+        .expect("the steered notice is in the transcript");
+    assert_one_notice_line(
+        &steered.to_session_history_entry().unwrap().text,
+        "Review of PR #7: two blockers",
+    );
+    assert_inbox_holds_the_review(&rig);
 }
 
 // MP-08 / MP-09 / MP-10 / MP-11: subscribing one agent to one source again is the same listener.
@@ -457,6 +705,7 @@ async fn listeners_already_duplicated_in_a_store_deliver_each_occurrence_once() 
             copy.subscription_id.clone(),
             "pipeline".into(),
             Some("Triage what the pipeline reports".into()),
+            crate::session::AgentTriggerBusyPolicy::Queue,
         )
         .unwrap();
     copy.publication_id = trigger.id().into();
@@ -679,6 +928,7 @@ async fn a_remote_occurrence_is_admitted_for_the_agent_and_refused_without_its_t
             "sub-remote".into(),
             "Studio pipeline".into(),
             None,
+            AgentTriggerBusyPolicy::Queue,
         )
         .unwrap();
     rig.runtime
@@ -768,6 +1018,8 @@ async fn app_events_queue_each_occurrence_and_detach_when_the_agent_leaves() {
             installation_id: catalog.installation_id().into(),
             event_name: "changed".into(),
         },
+        options: Vec::new(),
+        once: false,
     };
     let LocalDaemonResponse::AgentTriggerCreated { trigger, .. } = rig
         .runtime
@@ -829,11 +1081,23 @@ async fn app_events_queue_each_occurrence_and_detach_when_the_agent_leaves() {
         .route_app_agent_installation("local", catalog.clone())
         .await
         .unwrap();
-    assert_eq!(rig.queued_prompts().len(), 3);
-    for text in rig.queued_prompts() {
-        assert!(text.contains("\\u003c/chariox-trigger-input\\u003e"));
-        assert_eq!(text.matches("</chariox-trigger-input>").count(), 1);
+    // The agent is busy: the three events wait as one prompt.
+    let queued = rig.queued_prompts();
+    assert_eq!(queued.len(), 1, "{queued:?}");
+    assert!(
+        queued[0].contains("3 notifications arrived while you were busy:"),
+        "{}",
+        queued[0]
+    );
+    for text in &queued {
+        assert!(!text.contains("chariox-trigger-input"), "{text}");
+        assert!(!text.contains("issue-"), "{text}");
     }
+    let inbox = rig.notification_inbox();
+    assert_eq!(inbox.len(), 3);
+    assert!(inbox.iter().all(|event| event.payload["payload"]["text"]
+        .as_str()
+        .is_some_and(|text| text.contains("</chariox-trigger-input>"))));
     for receipt in receipts {
         assert_eq!(
             store
@@ -848,7 +1112,7 @@ async fn app_events_queue_each_occurrence_and_detach_when_the_agent_leaves() {
         .route_app_agent_installation("local", catalog.clone())
         .await
         .unwrap();
-    assert_eq!(rig.queued_prompts().len(), 3);
+    assert_eq!(rig.queued_prompts().len(), 1);
     rig.runtime
         .owned
         .session_store
@@ -1071,13 +1335,20 @@ async fn a_notification_queue_replay_reuses_the_admitted_prompt() {
             trigger.id(),
             "wf_receipt_retry",
             payload.clone(),
+            unpaused(),
         )
         .await
         .unwrap()
         .unwrap();
     let second = rig
         .runtime
-        .queue_agent_notification_input(&rig.session_id, trigger.id(), "wf_receipt_retry", payload)
+        .queue_agent_notification_input(
+            &rig.session_id,
+            trigger.id(),
+            "wf_receipt_retry",
+            payload,
+            unpaused(),
+        )
         .await
         .unwrap()
         .unwrap();
@@ -1096,6 +1367,8 @@ async fn notification_lineage_follows_a_steered_prompt() {
         session_id,
         agent_id,
         attachment_id: attachment_id.clone(),
+        active_prompt_id: String::new(),
+        run_id: String::new(),
     };
     let workflow = rig.workflow_with_exit("pipeline");
     let source = rig.register(&workflow);
@@ -1157,6 +1430,8 @@ impl Rig {
                 installation_id: catalog.installation_id().into(),
                 event_name: "changed".into(),
             },
+            options: Vec::new(),
+            once: false,
         };
         let LocalDaemonResponse::AgentTriggerCreated { trigger, .. } = self
             .runtime
@@ -1399,6 +1674,8 @@ async fn guest_app_automation_listing_and_removal_keep_target_ownership() {
             installation_id: catalog.installation_id().into(),
             event_name: "changed".into(),
         },
+        options: Vec::new(),
+        once: false,
     };
     rig.runtime
         .create_agent_trigger(create, "local")
@@ -1475,6 +1752,8 @@ impl Rig {
                 installation_id: catalog.installation_id().into(),
                 event_name: "changed".into(),
             },
+            options: Vec::new(),
+            once: false,
         };
         let LocalDaemonResponse::AgentTriggerCreated { trigger, .. } = self
             .runtime
@@ -1532,8 +1811,8 @@ async fn app_agent_receipts_settle_on_completion_and_cancellation_and_are_pruned
     let store = &rig.runtime.owned.durable_state_store;
     let catalog = crate::durable_state::app_state::fixture_room_event_catalog(store, "local");
     let trigger = rig.app_trigger(&catalog).await;
-    let completed = rig.emit_app(catalog.clone(), &trigger, "complete");
     let cancelled = rig.emit_app(catalog.clone(), &trigger, "cancel");
+    let cancelled_too = rig.emit_app(catalog.clone(), &trigger, "cancel-too");
     rig.runtime
         .route_app_agent_installation("local", catalog.clone())
         .await
@@ -1545,16 +1824,30 @@ async fn app_agent_receipts_settle_on_completion_and_cancellation_and_are_pruned
             .receipt()
             .clone()
     };
+    // Both occurrences wait in one prompt; cancelling it settles each of them.
     let queued = receipt(&cancelled.receipt_id).queued_prompt_id.unwrap();
+    assert_eq!(
+        receipt(&cancelled_too.receipt_id)
+            .queued_prompt_id
+            .as_deref(),
+        Some(queued.as_str())
+    );
     rig.runtime
         .owned
         .cancel_queued_prompt(&rig.session_id, &rig.agent_id, &rig.attachment_id, &queued)
         .unwrap();
-    assert_eq!(
-        receipt(&cancelled.receipt_id).state,
-        ReceiptState::Failed,
-        "cancelled queued notification becomes terminal"
-    );
+    for id in [&cancelled.receipt_id, &cancelled_too.receipt_id] {
+        assert_eq!(
+            receipt(id).state,
+            ReceiptState::Failed,
+            "cancelled queued notification becomes terminal"
+        );
+    }
+    let completed = rig.emit_app(catalog.clone(), &trigger, "complete");
+    rig.runtime
+        .route_app_agent_installation("local", catalog.clone())
+        .await
+        .unwrap();
     // Completing the initial user prompt promotes the first App notification.
     rig.runtime
         .complete_agent_prompt_with_external_authority(&rig.session_id, &rig.agent_id, None, None)
@@ -1591,7 +1884,7 @@ async fn app_agent_receipts_settle_on_completion_and_cancellation_and_are_pruned
     )
     .unwrap();
     assert_eq!(
-        result.pruned, 2,
+        result.pruned, 3,
         "terminal App-to-agent receipts release installation capacity"
     );
     tx.commit().unwrap();
@@ -1663,7 +1956,10 @@ async fn disabled_app_subscriber_does_not_starve_a_live_subscriber() {
             1,
             "the next bounded pass must reach the enabled subscriber"
         );
-        assert!(rig.queued_prompts()[0].contains("live-subscriber"));
+        assert!(rig
+            .notification_inbox()
+            .iter()
+            .any(|event| event.payload.to_string().contains("live-subscriber")));
         for original in deferred {
             let current = store
                 .app_event_candidate("local", catalog.clone(), &original.receipt_id)
@@ -1693,8 +1989,7 @@ async fn app_agent_receipt_settles_when_prompt_cancellation_precedes_association
             &rig.session_id,
             trigger.id(),
             &receipt.receipt_id,
-            serde_json::json!({"installation_id":catalog.installation_id(),"event_name":"changed","occurrence_id":receipt.occurrence_id,"occurred_at_ms":receipt.occurred_at_ms,"deadline_ms":receipt.expires_at_ms,"payload":{"text":"fast-cancellation"}}),
-        )
+            serde_json::json!({"installation_id":catalog.installation_id(),"event_name":"changed","occurrence_id":receipt.occurrence_id,"occurred_at_ms":receipt.occurred_at_ms,"deadline_ms":receipt.expires_at_ms,"payload":{"text":"fast-cancellation"}}), unpaused())
         .await
         .unwrap()
         .unwrap();
@@ -1783,6 +2078,8 @@ async fn r6_full_app_subscriber_does_not_starve_an_available_subscriber() {
             installation_id: catalog.installation_id().into(),
             event_name: "changed".into(),
         },
+        options: Vec::new(),
+        once: false,
     };
     let LocalDaemonResponse::AgentTriggerCreated {
         trigger: available, ..
@@ -1847,6 +2144,8 @@ async fn r6_notification_deadline_survives_queue_recovery_and_blocks_promotion_a
                 session_id,
                 agent_id,
                 attachment_id,
+                active_prompt_id: String::new(),
+                run_id: String::new(),
             };
             let expected_deadline = if app {
                 let catalog = crate::durable_state::app_state::fixture_room_event_catalog(
@@ -2201,10 +2500,10 @@ async fn a_proven_remote_steer_rejection_removes_its_provisional_lineage() {
             .is_none());
         rig.complete(&workflow, "after-rejection", "released again");
         rig.pass().await;
-        assert_eq!(
-            rig.queued_prompts().len(),
-            2,
-            "a workflow the original turn invoked still notifies (exact receipt: {exact_receipt})"
+        let queued = rig.queued_prompts();
+        assert!(
+            queued.iter().any(|text| text.contains("released again")),
+            "a workflow the original turn invoked still notifies (exact receipt: {exact_receipt}): {queued:?}"
         );
     }
 }
@@ -2222,7 +2521,7 @@ async fn r7_app_agent_receipts_recognize_local_and_remote_general_steer() {
             let trigger = rig.app_trigger(&catalog).await;
             let emitted = rig.emit_app(catalog.clone(), &trigger, "general-steer");
             let queued = if late_association {
-                rig.runtime.queue_agent_notification_input(&rig.session_id, trigger.id(), &emitted.receipt_id, serde_json::json!({"installation_id":catalog.installation_id(),"event_name":"changed","occurrence_id":emitted.occurrence_id,"occurred_at_ms":emitted.occurred_at_ms,"deadline_ms":emitted.expires_at_ms,"payload":{"text":"general-steer"}})).await.unwrap().unwrap()
+                rig.runtime.queue_agent_notification_input(&rig.session_id, trigger.id(), &emitted.receipt_id, serde_json::json!({"installation_id":catalog.installation_id(),"event_name":"changed","occurrence_id":emitted.occurrence_id,"occurred_at_ms":emitted.occurred_at_ms,"deadline_ms":emitted.expires_at_ms,"payload":{"text":"general-steer"}}), unpaused()).await.unwrap().unwrap()
             } else {
                 rig.runtime
                     .route_app_agent_installation("local", catalog.clone())
@@ -2397,6 +2696,7 @@ impl Rig {
                 subscription.trigger_id.as_deref().unwrap(),
                 &receipt,
                 serde_json::to_value(&envelope).unwrap(),
+                unpaused(),
             )
             .await
             .unwrap()
@@ -2422,8 +2722,7 @@ impl Rig {
                 &self.session_id,
                 trigger.id(),
                 &receipt.receipt_id,
-                serde_json::json!({"installation_id":catalog.installation_id(),"event_name":"changed","occurrence_id":receipt.occurrence_id,"occurred_at_ms":receipt.occurred_at_ms,"deadline_ms":receipt.expires_at_ms,"payload":{"text":"unsettled"}}),
-            )
+                serde_json::json!({"installation_id":catalog.installation_id(),"event_name":"changed","occurrence_id":receipt.occurrence_id,"occurred_at_ms":receipt.occurred_at_ms,"deadline_ms":receipt.expires_at_ms,"payload":{"text":"unsettled"}}), unpaused())
             .await
             .unwrap()
             .expect("the App notification prompt is admitted");
@@ -2602,6 +2901,8 @@ async fn a_restart_between_admission_and_settlement_keeps_the_notification_linea
             session_id,
             agent_id,
             attachment_id,
+            active_prompt_id: String::new(),
+            run_id: String::new(),
         };
         let workflow = rig.workflow_with_exit("recovery-pipeline");
         let source = rig.register(&workflow);
@@ -2671,6 +2972,8 @@ async fn an_admitted_receipt_is_settled_from_its_prompt_after_a_restart() {
             session_id,
             agent_id,
             attachment_id,
+            active_prompt_id: String::new(),
+            run_id: String::new(),
         };
         let workflow = rig.workflow_with_exit("fence-pipeline");
         let source = rig.register(&workflow);
@@ -2784,6 +3087,8 @@ async fn a_persisted_steer_rejection_survives_recovery_without_its_provisional_l
         session_id,
         agent_id,
         attachment_id,
+        active_prompt_id: String::new(),
+        run_id: String::new(),
     };
     let workflow = rig.workflow_with_exit("pipeline");
     let source = rig.register(&workflow);
@@ -2844,10 +3149,12 @@ async fn a_persisted_steer_rejection_survives_recovery_without_its_provisional_l
     );
     rig.complete(&workflow, "after-rejection", "released again");
     rig.pass().await;
-    assert_eq!(
-        rig.queued_prompts().len(),
-        2,
-        "a workflow the original turn invoked still notifies"
+    let queued = rig.queued_prompts();
+    assert_eq!(queued.len(), 1, "{queued:?}");
+    assert!(
+        queued[0].contains("2 notifications arrived while you were busy:"),
+        "a workflow the original turn invoked still notifies: {}",
+        queued[0]
     );
 }
 
@@ -3251,4 +3558,94 @@ async fn the_workflow_actor_publishes_the_trigger_availability_its_command_chang
         !trigger_listening_in(&published, &trigger),
         "the published projection still shows the trigger available"
     );
+}
+
+#[path = "agent_trigger_notification_options_tests.rs"]
+mod options;
+
+#[path = "notification_subscriptions_tests.rs"]
+mod subscriptions;
+
+/// A joined occurrence is bound to the prompt it joins in that prompt's own commit: a crash
+/// before the receipt is settled cannot leave the join half-recorded.
+#[tokio::test]
+async fn a_joined_occurrence_is_bound_to_its_prompt_in_the_join_commit() {
+    let rig = rig().await;
+    let workflow = rig.workflow_with_exit("pipeline");
+    let source = rig.register(&workflow);
+    let trigger = rig.trigger_on(&source).await;
+    rig.complete(&workflow, "run-0", "release 0 approved");
+    rig.pass().await;
+    let session = rig.runtime.owned.session_snapshot(&rig.session_id).unwrap();
+    let waiting = rig
+        .runtime
+        .owned
+        .prompt_state_owner
+        .state_parts(&session, &rig.agent_id)
+        .1[0]
+        .id()
+        .to_owned();
+    rig.complete(&workflow, "run-1", "release 1 approved");
+    // The occurrence is accepted, then admitted without the caller's settlement (a crash).
+    rig.runtime.owned.route_workflow_notifications();
+    let db = rusqlite::Connection::open(rig.runtime.owned.durable_state_store.path()).unwrap();
+    let (receipt, payload): (String, String) = db
+        .query_row(
+            "SELECT receipt_id, payload_json FROM app_outbox
+              WHERE state='accepted' AND queued_prompt_id IS NULL",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    let joined = rig
+        .runtime
+        .queue_agent_notification_input(
+            &rig.session_id,
+            &trigger,
+            &receipt,
+            serde_json::from_str(&payload).unwrap(),
+            unpaused(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(joined.as_deref(), Some(waiting.as_str()));
+    assert_eq!(
+        rig.runtime
+            .owned
+            .durable_state_store
+            .admitted_agent_notification_prompt(&receipt)
+            .unwrap()
+            .as_deref(),
+        Some(waiting.as_str()),
+        "the join commit binds the receipt to the prompt it joined"
+    );
+}
+
+/// A trigger that is off admits nothing, not even into its prompt that already waits.
+#[tokio::test]
+async fn a_disabled_trigger_joins_nothing() {
+    let rig = rig().await;
+    let workflow = rig.workflow_with_exit("pipeline");
+    let source = rig.register(&workflow);
+    let trigger = rig.trigger_on(&source).await;
+    rig.complete(&workflow, "run-0", "release 0 approved");
+    rig.pass().await;
+    rig.runtime
+        .update_agent_trigger(
+            UpdateAgentTriggerRequest {
+                session_id: rig.session_id.clone(),
+                trigger_id: trigger,
+                busy_policy: None,
+                prompt: None,
+                enabled: Some(false),
+            },
+            "local",
+        )
+        .await
+        .unwrap();
+    rig.complete(&workflow, "run-1", "release 1 approved");
+    rig.pass().await;
+    let queued = rig.queued_prompts();
+    assert_eq!(queued.len(), 1, "{queued:?}");
+    assert!(!queued[0].contains("release 1 approved"), "{}", queued[0]);
 }

@@ -20,7 +20,7 @@ export async function notificationKernelLabels(client: Client, kernelIds: Readon
   // The labels are display only: with no relay the other kernels show their ids.
   try {
     const machines = ((await client.send(listRemoteMachinesRequest())).RemoteMachinesListed as { machines: RemoteMachineRecord[] }).machines
-    for (const machine of machines.filter(m => m.online && m.kernel_count > 0)) {
+    for (const machine of machines.filter(m => m.presence === "online" && m.kernel_count > 0)) {
       if ([...kernelIds].every(id => labels.has(id))) break
       const listed = (await client.send(listRemoteMachineKernelsRequest(machine.machine_id))).RemoteMachineKernelsListed as { kernels: RelayKernelPresence[] }
       for (const kernel of listed.kernels) if (kernelIds.has(kernel.kernel_id)) labels.set(kernel.kernel_id, formatRemoteMachineLabel(machine))

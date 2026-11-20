@@ -166,6 +166,20 @@ impl KernelRuntimeOwnedState {
         let Some(held) = self.background_holds.get(&task.task_id) else {
             return Ok(false);
         };
+        // Its notification turn runs, waiting for adoption behind another prompt: the turn's end
+        // releases it, after the output that answers it is in history.
+        if self.prompt_state_owner.provider_turn_pending_for_held(
+            &held.room,
+            &held.agent,
+            &held.run,
+            &held.prompt,
+        ) && self
+            .provider_store
+            .get_run(&held.run)
+            .is_ok_and(|run| run.state() == crate::provider::ProviderRunState::Running)
+        {
+            return Ok(false);
+        }
         Ok(
             match self.background_calls_of_prompt(&held.room, &held.run, &held.prompt)? {
                 BackgroundCalls::None => true,
@@ -176,6 +190,41 @@ impl KernelRuntimeOwnedState {
                 }
             },
         )
+    }
+
+    /// The prompt of the held task a notification turn on `run` reports for: the one that
+    /// launched a call whose end `ended_now` (the batch that starts the turn) reports, else one
+    /// whose calls have ended, else the first one held.
+    pub(super) fn held_prompt_for_notification_turn(
+        &self,
+        room: &str,
+        agent: &str,
+        run: &str,
+        ended_now: &BTreeSet<String>,
+    ) -> Result<Option<String>, DaemonError> {
+        let held = self.background_holds.of_run(room, agent, run);
+        if !ended_now.is_empty() {
+            for (_, task) in &held {
+                let launched = self
+                    .operational_history_store
+                    .load_provider_tool_entries_for_prompt(room, run, &task.prompt)?;
+                if launched.iter().any(|entry| {
+                    entry
+                        .merge_key
+                        .as_ref()
+                        .is_some_and(|id| ended_now.contains(id))
+                }) {
+                    return Ok(Some(task.prompt.clone()));
+                }
+            }
+        }
+        for (_, task) in &held {
+            if self.background_calls_of_prompt(room, run, &task.prompt)? != BackgroundCalls::Running
+            {
+                return Ok(Some(task.prompt.clone()));
+            }
+        }
+        Ok(held.into_iter().next().map(|(_, task)| task.prompt))
     }
 
     pub(super) fn is_held_for_background_calls(&self, task_id: &str) -> bool {

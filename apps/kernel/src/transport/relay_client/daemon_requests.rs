@@ -955,24 +955,47 @@ fn parse_relay_client_request(bytes: &[u8]) -> Result<ParsedRelayClientMessage, 
             envelope.local_browser_connect,
         ));
     }
-    if let Ok(envelope) = serde_json::from_slice::<RelayClientRequestEnvelope>(bytes) {
-        return Ok(ParsedRelayClientMessage::Request(
-            ParsedRelayClientRequest {
-                command_id: envelope
-                    .command_id
-                    .filter(|command_id| !command_id.trim().is_empty()),
-                request: envelope.request,
-                on_behalf_of: envelope.on_behalf_of,
-            },
-        ));
+    let envelope_error = match serde_json::from_slice::<RelayClientRequestEnvelope>(bytes) {
+        Ok(envelope) => {
+            return Ok(ParsedRelayClientMessage::Request(
+                ParsedRelayClientRequest {
+                    command_id: envelope
+                        .command_id
+                        .filter(|command_id| !command_id.trim().is_empty()),
+                    request: envelope.request,
+                    on_behalf_of: envelope.on_behalf_of,
+                },
+            ));
+        }
+        Err(error) => error,
+    };
+    // A request with no envelope. When the payload has the envelope's `request` field, its own fault
+    // is the answer: reading it as a bare request would name the envelope's `command_id` as an unknown
+    // request variant.
+    serde_json::from_slice(bytes)
+        .map(|request| {
+            ParsedRelayClientMessage::Request(ParsedRelayClientRequest {
+                command_id: None,
+                request,
+                on_behalf_of: None,
+            })
+        })
+        .map_err(|bare_error| {
+            if has_request_field(bytes) {
+                envelope_error
+            } else {
+                bare_error
+            }
+        })
+}
+
+fn has_request_field(bytes: &[u8]) -> bool {
+    #[derive(Deserialize)]
+    struct Probe {
+        #[allow(dead_code)]
+        request: serde::de::IgnoredAny,
     }
-    Ok(ParsedRelayClientMessage::Request(
-        ParsedRelayClientRequest {
-            command_id: None,
-            request: serde_json::from_slice(bytes)?,
-            on_behalf_of: None,
-        },
-    ))
+    serde_json::from_slice::<Probe>(bytes).is_ok()
 }
 
 enum RelayDispatchOutcome {
@@ -1001,7 +1024,11 @@ async fn dispatch_on_behalf_of(
     use crate::runtime::kernel_gateway::ledger::{is_repeatable, Failure, Settled};
     // A decision answered through the paired gateway is the external agent's, not a person's.
     // Everything else keeps the paired gateway's terminal class, so its attachments can run shells.
-    if matches!(request, LocalDaemonRequest::RespondToInteraction(_)) {
+    if matches!(
+        request,
+        LocalDaemonRequest::RespondToInteraction(_)
+            | LocalDaemonRequest::AnswerUserDomainInteraction(_)
+    ) {
         caller.connection_class = Some(crate::local::KernelConnectionClass::ExternalAgent);
     }
     if let Err(error) = router
@@ -1238,12 +1265,23 @@ async fn dispatch_relay_client_request(
             .reserve(&command.command_id, fingerprint)
             .await
         {
-            CommandReservation::Wait(wait_rx) => {
-                return match wait_rx.await {
-                    // A retry's answer window starts when the result exists, not when the retry
-                    // arrived: retries of a command that ran for minutes would each claim an
-                    // expired window and all receive the result at once.
-                    Ok(_) if !command_result_cache.may_answer_retry(&command.command_id) => {
+            CommandReservation::Wait(mut wait_rx) => {
+                // Only a replay of a result that already exists is refused inside the answer
+                // window. Every retry that waited for the original to finish is answered: the
+                // client abandons an attempt that stalled and keeps the newest, so answering one
+                // waiter would leave the live attempt with `duplicate_command_unavailable` after
+                // a slice operation that ran for minutes. Answering opens the window for replays.
+                let ready = wait_rx.try_recv().ok();
+                let replay_of_finished = ready.is_some();
+                let waited = match ready {
+                    Some(cached) => Ok(cached),
+                    None => wait_rx.await,
+                };
+                return match waited {
+                    Ok(_)
+                        if !command_result_cache.may_answer_retry(&command.command_id)
+                            && replay_of_finished =>
+                    {
                         RelayDispatchOutcome::RelayError(relay_error(
                             "duplicate_command_unavailable",
                             "original duplicate command result was unavailable",
@@ -1453,6 +1491,34 @@ mod tests {
                 .as_bytes()
         )
         .is_err());
+    }
+
+    #[test]
+    fn an_invalid_request_inside_an_envelope_is_refused_for_its_own_fault() {
+        for (payload, fault) in [
+            (
+                r#"{"command_id":"c-1","request":{"FutureRequest":{}}}"#,
+                "FutureRequest",
+            ),
+            (
+                r#"{"command_id":"c-1","request":{"GetSlice":{"slice_ref":17}}}"#,
+                "invalid type: integer `17`",
+            ),
+        ] {
+            let error = match super::parse_relay_client_request(payload.as_bytes()) {
+                Ok(_) => panic!("{payload} must not parse"),
+                Err(error) => error,
+            };
+            let message = error.to_string();
+            assert!(message.contains(fault), "{message}");
+            assert!(!message.contains("command_id"), "{message}");
+        }
+        // A bare request keeps its own error.
+        let error = match super::parse_relay_client_request(br#"{"FutureRequest":{}}"#) {
+            Ok(_) => panic!("a bare unknown request must not parse"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("FutureRequest"));
     }
 
     #[test]

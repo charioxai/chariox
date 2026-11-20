@@ -12,13 +12,14 @@ const KERNEL: Flag = { name: "--kernel", value: "NAME" }
 const TIMEOUT: Flag = { name: "--timeout", value: "SECONDS" }
 const OVERWRITE: Flag = { name: "--overwrite" }
 const SESSION: Flag = { name: "--session", value: "SESSION_ID" }
+const DIRECTORY: Flag = { name: "--directory", value: "PATH" }
 const TERMINAL: Flag = { name: "--terminal", value: "TERMINAL_ID" }
 const HOST_AGENT: Flag = { name: "--host-agent", value: "AGENT_ID" }
 
 export const COMMANDS: readonly CommandSpec[] = [
   { name: "agent deadline", flags: [KERNEL, SESSION, SOCKET], args: ["AGENT", "DURATION|none"], summary: "extend, shorten or clear an agent deadline; duration starts now (90s, 30m, 2h, 1d)" },
-  { name: "exec", flags: [KERNEL, SESSION, { name: "--workspace", value: "PATH" }, HOST_AGENT, SOCKET],
-    summary: "run argv after -- without a PTY; streams binary stdin/stdout/stderr live, returns the command exit code; --workspace makes a temporary Room" },
+  { name: "exec", flags: [KERNEL, SESSION, { name: "--workspace", value: "PATH" }, DIRECTORY, HOST_AGENT, TIMEOUT, SOCKET],
+    summary: "run argv after --. With no --session and no --workspace it runs on the kernel itself, in no Room, in a terminal of the kernel (stdout and stderr in one stream; --directory PATH, default the kernel user's home; --timeout SECONDS to wait); with --session it runs in that Room and with --workspace in a temporary Room, without a PTY, streaming binary stdin/stdout/stderr live. Returns the command exit code" },
   {
     name: "exec place",
     flags: [SESSION, { name: "--kernel", value: "NAME", required: true }, { name: "--directory", value: "PATH" }, SOCKET],
@@ -44,6 +45,13 @@ export const COMMANDS: readonly CommandSpec[] = [
     summary: "ask the user for a value that goes straight into their Vault under CREDENTIAL_ID; prints the link as its first line, then waits for stored, cancelled or timed_out (--no-wait: exit 6)",
     note: "Name the host(s) that will receive the key with --host (repeat it, for example api.example.com or localhost:8080); the owner sees them before typing, and the handle works for no other host. Show the link to the user verbatim and do not open it. Never ask for the value in chat and never type it yourself: you do not receive it. Use the stored value only through its credential handle.",
   },
+  { name: "interaction list", flags: [KERNEL, SOCKET], summary: "the open cards of the person you work for, in all their Rooms; person_only says why only the person answers a card" },
+  {
+    name: "interaction answer",
+    flags: [{ name: "--reply", value: "TEXT" }, KERNEL, SOCKET],
+    args: ["INTERACTION_ID", "CHOICE_ID"],
+    summary: "answer one of those cards for the person; --reply TEXT with the card's reply_choice_id. Secret entry, Vault unlock, passkeys and payments stay the person's own"
+  },
   { name: "secret status", flags: [SOCKET], args: ["INTERACTION_ID"], summary: "pending, stored, cancelled or timed_out for a secret request you made" },
   { name: "kernels", flags: [SOCKET], summary: "list the kernels this kernel can reach" },
   {
@@ -59,10 +67,10 @@ export const COMMANDS: readonly CommandSpec[] = [
   },
   {
     name: "terminal open",
-    flags: [KERNEL, SESSION, HOST_AGENT, { name: "--cols", value: "N" }, { name: "--rows", value: "N" }, { name: "--title", value: "TITLE" }, TIMEOUT, SOCKET],
-    summary: "open a terminal in that Room (a login shell, or the argv after --); prints terminal.terminal_id; it keeps running when you disconnect",
+    flags: [KERNEL, SESSION, HOST_AGENT, DIRECTORY, { name: "--cols", value: "N" }, { name: "--rows", value: "N" }, { name: "--title", value: "TITLE" }, TIMEOUT, SOCKET],
+    summary: "open a terminal in that Room (a login shell, or the argv after --); prints terminal.terminal_id; it keeps running when you disconnect. Without --session the terminal is the kernel's own, in no Room, starting in --directory (default the kernel user's home); only the owner and an agent the owner granted access use it",
   },
-  { name: "terminal list", flags: [KERNEL, SESSION, TIMEOUT, SOCKET], summary: "the Room's terminals with their output offsets; a terminal that shows host_agent runs on that agent's machine: pass that id as --host-agent to send, read, wait and close" },
+  { name: "terminal list", flags: [KERNEL, SESSION, TIMEOUT, SOCKET], summary: "the Room's terminals (the kernel's own without --session) with their output offsets; a terminal that shows host_agent runs on that agent's machine: pass that id as --host-agent to send, read, wait and close" },
   {
     name: "terminal send",
     flags: [KERNEL, SESSION, TERMINAL, HOST_AGENT, { name: "--no-enter" }, { name: "--since", value: "OFFSET" }, { name: "--wait-ms", value: "MS" }, TIMEOUT, SOCKET],
@@ -84,12 +92,12 @@ export const COMMANDS: readonly CommandSpec[] = [
   { name: "files ls", flags: [KERNEL, TIMEOUT, SOCKET], args: ["PATH"], summary: "list a directory" },
   { name: "files get", flags: [KERNEL, OVERWRITE, TIMEOUT, SOCKET], args: ["REMOTE_PATH", "LOCAL_PATH"], summary: "download a file, verified by sha256; prints size, bytes received and resumed_from" },
   { name: "files put", flags: [KERNEL, OVERWRITE, TIMEOUT, SOCKET], args: ["LOCAL_PATH", "REMOTE_PATH"], summary: "upload a file, verified by sha256; prints size, bytes sent and resumed_from" },
-  { name: "events subscribe", flags: [KERNEL, SESSION, { name: "--agent", value: "AGENT_ID" }, { name: "--source", value: "SOURCE" }, SOCKET], summary: "follow a session or one agent (--kernel and --session), or one notification source on this kernel (--source ID or display name), in the durable event inbox" },
+  { name: "events subscribe", flags: [KERNEL, SESSION, { name: "--agent", value: "AGENT_ID" }, { name: "--source", value: "SOURCE" }, { name: "--like", value: "GRANT_ID" }, SOCKET], summary: "follow a session or one agent (--kernel and --session), one notification source on this kernel (--source ID or display name), or take over the targets an earlier live grant of yours follows (--like GRANT_ID), in the durable event inbox" },
   { name: "events unsubscribe", flags: [KERNEL, { name: "--session", value: "SESSION_ID" }, { name: "--agent", value: "AGENT_ID" }, { name: "--source", value: "SOURCE" }, { name: "--all" }, SOCKET], summary: "remove targets or one followed source (--source ID, or all), or end the subscription with --all" },
   { name: "events subscription", flags: [SOCKET], summary: "show followed targets, followed sources and per-kernel health" },
   { name: "events sources", flags: [SOCKET], summary: "list the notification sources your grant can follow on this kernel (workflow exits and \"Agent needs your action\"); an occurrence arrives once as a notification record" },
   { name: "events list", flags: [{ name: "--since", value: "CURSOR" }, { name: "--limit", value: "N" }, SOCKET], summary: "read pending records, oldest first; save next_cursor" },
-  { name: "events wait", flags: [{ name: "--since", value: "CURSOR" }, { name: "--limit", value: "N" }, TIMEOUT, SOCKET], summary: "wait for pending records (default 540 s, at most 900 s); exit 5 on timeout" },
+  { name: "events wait", flags: [{ name: "--since", value: "CURSOR" }, { name: "--limit", value: "N" }, TIMEOUT, SOCKET], summary: "wait for pending records (default 540 s, at most 540 s: a longer --timeout is refused at once); exit 5 on timeout; a grant that follows nothing is refused at once (exit 3) with how to follow" },
   { name: "events watch", flags: [{ name: "--since", value: "CURSOR" }, SOCKET], summary: "print one JSON line per record until interrupted or the subscription ends" },
   { name: "events ack", flags: [SOCKET], args: ["CURSOR"], summary: "acknowledge all records through CURSOR" },
   { name: "events mcp", flags: [SOCKET], summary: "MCP server over stdio for a harness that supports elicitation: its tool chariox_next_choice shows the next pending question in the harness's own chooser and sends the answer" },
@@ -120,7 +128,7 @@ export const REQUEST_EXAMPLES: readonly { body: object; note: string }[] = [
 ]
 
 const REFUSED = ["events_refused", "secret_link_unavailable", "kernel_sudo_refused", "kernel_sudo_room_owner_local", "kernel_access_human_only", "kernel_access_ended", "kernel_access_not_covered", "kernel_access_already_granted", "kernel_access_cover_gone", "kernel_access_cover_identity_changed", "kernel_access_cover_kernel_process", "kernel_access_cover_outside", "kernel_access_cover_limit", "kernel_access_sub_agent", "command_id_required", "duplicate_command_conflict"]
-const KERNEL_UNAVAILABLE = ["kernel_unknown", "kernel_ambiguous", "kernel_offline", "kernel_unreachable", "kernel_unpaired", "kernel_incompatible", "kernel_not_available"]
+const KERNEL_UNAVAILABLE = ["kernel_unknown", "kernel_ambiguous", "kernel_offline", "kernel_unreachable", "kernel_unpaired", "kernel_incompatible", "kernel_update_needed", "kernel_not_available"]
 const TIMEOUT_OR_UNKNOWN = ["kernel_sudo_expired", "kernel_request_timeout", "kernel_connection_lost", "kernel_outcome_unknown", "kernel_access_unconfirmed"]
 
 export const EXIT_CODES: readonly { exit: number; meaning: string; codes: readonly string[] }[] = [
@@ -205,20 +213,16 @@ export function guideText(): string {
     "   If a command prints a pointer or says the user must approve, show it to the user verbatim and wait.",
     "   If your tool calls time out, add --no-wait (exit 6), then poll chariox access status until granted (lasts until your harness exits).",
     "2. List kernels: chariox kernels (a name is the machine name, or <machine>/<label> when the machine runs several of your kernels)",
-    "3. Send a request (one JSON object on stdin): chariox request --kernel NAME < request.json",
-    "   Always pass --kernel for another kernel; without it the request runs on this one.",
+    "3. Send a request (one JSON object on stdin): chariox request --kernel NAME < request.json (always pass --kernel for another kernel; without it the request runs on this one)",
     "4. Watch events on a kernel: chariox watch --kernel NAME --session ID --attachment ID (after kernel_connection_lost run it again with --from N, the N in the message)",
-    "5. Move files: chariox files put|get|stat|ls --kernel NAME ...",
-    "   put and get resume after an interruption: run the same command again.",
+    "5. Move files: chariox files put|get|stat|ls --kernel NAME ... (put and get resume after an interruption: run the same command again)",
     "6. Run long commands: chariox terminal open|send|read|wait|close --kernel NAME --session ID ...",
     "   Terminals belong to the Room and keep running if you disconnect; read them later with --since. They need a session (ListSessions, or CreateSession: see Requests below).",
     "",
-    "Follow sessions or single agents with chariox events subscribe. Use chariox events wait --timeout 540",
-    "in the foreground or your harness background option, or poll chariox events list. Keep next_cursor.",
+    "Follow sessions or single agents with chariox events subscribe. Use chariox events wait --timeout 540 in the foreground or your harness background option, or poll chariox events list. Keep next_cursor. A new grant follows nothing, and a wait on it is refused at once. To continue an earlier grant's follows, run chariox events subscribe --like OLD_GRANT_ID.",
     "On exit 7, reread the followed targets and resume from oldest_cursor - 1; ack after handling records.",
     "To be woken instead of polling when a workflow finishes or an agent needs the person: chariox events sources, then chariox events subscribe --source ID; each occurrence is one record of type notification (value.source_id, display_name, occurrence_id, output.message, deadline_ms); a gap record means unread ones were dropped.",
-    "A record with value.question is a decision the person may answer through you: ask the person with your own question tool",
-    "(options are question.choices, a free reply is question.text_reply when present), then send RespondToInteraction with the chosen id and refs.interaction_id (omit --kernel for the kernel you are on).",
+    "A record with value.question is a decision the person may answer through you: ask the person with your own question tool (options are question.choices, a free reply is question.text_reply when present), then send RespondToInteraction with the chosen id and refs.interaction_id (omit --kernel for the kernel you are on).",
     "interaction_closed means someone else answered or it expired: drop the question. Do not choose for the person.",
     "A record with no question but a pointer is the person's alone: show pointer.one_line verbatim and do not answer it.",
     "Or add chariox events mcp as an MCP server: its tool chariox_next_choice waits, asks and answers. A subscription lasts until its grant ends or you cancel it.",
@@ -236,6 +240,6 @@ export function guideText(): string {
     "",
     "Sudo outcomes: kernel_sudo_refused means the person refused; kernel_sudo_expired means the approval deadline passed; kernel_sudo_room_owner_local means the Room predates enrollment (re-create the Room after enrollment). None starts elevation or retries automatically. Submit a new request only when needed and approve it in a Chariox client.",
     "Retry rule: on kernel_request_timeout or kernel_connection_lost retry ONCE with the same --command-id. On kernel_outcome_unknown read the state first; never retry blindly.",
-    "Human-only, never attempted by you: passkey approvals, grants, sudo approvals, secrets and credentials, relay and pairing configuration.",
+    "Human-only, never attempted by you: passkey approvals, grants, sudo approvals, secrets and credentials, relay and pairing configuration. You answer the person's other cards for them with interaction list and interaction answer.",
   ].join("\n")
 }

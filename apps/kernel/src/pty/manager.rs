@@ -500,13 +500,18 @@ struct PtyProcessExit {
 fn observe_pty_process_exit(status: portable_pty::ExitStatus) -> PtyProcessExit {
     // portable-pty 0.8.1 keeps ExitStatus::signal private and exposes only
     // success/exit_code; use its Display form ("Terminated by ...") for the
-    // signal detail available to this integration. The real-PTY signal
-    // regression below guards this dependency assumption during upgrades.
+    // signal detail available to this integration. Recover its number on this
+    // machine: a client may run on an OS with different signal names and numbers.
+    // The real-PTY regression below guards this dependency assumption during upgrades.
     let display = status.to_string();
     if let Some(signal) = display.strip_prefix("Terminated by ") {
         return PtyProcessExit {
             exit_code: None,
-            signal: Some(sanitize_pty_signal(signal).unwrap_or_else(|| "unknown".to_string())),
+            signal: Some(
+                pty_signal_number(signal)
+                    .map(|number| number.to_string())
+                    .unwrap_or_else(|| "unknown".to_string()),
+            ),
         };
     }
     PtyProcessExit {
@@ -515,18 +520,18 @@ fn observe_pty_process_exit(status: portable_pty::ExitStatus) -> PtyProcessExit 
     }
 }
 
-fn sanitize_pty_signal(signal: &str) -> Option<String> {
-    let signal = signal.trim();
-    if signal.is_empty()
-        || signal.chars().count() > 64
-        || !signal.chars().all(|character| {
-            character.is_ascii_alphanumeric()
-                || matches!(character, ' ' | '-' | '_' | '(' | ')' | '/')
-        })
-    {
-        return None;
+fn pty_signal_number(signal: &str) -> Option<u32> {
+    // Adopted children already have the wait status's number.
+    if let Ok(number @ 1..=127) = signal.parse::<u32>() {
+        return Some(number);
     }
-    Some(signal.to_string())
+    // A Unix wait status carries seven signal bits. Compare the same libc
+    // descriptions portable-pty uses, including this machine's real-time signals.
+    (1..=127).find(|number| {
+        let description = unsafe { libc::strsignal(*number as libc::c_int) };
+        !description.is_null()
+            && unsafe { std::ffi::CStr::from_ptr(description) }.to_bytes() == signal.as_bytes()
+    })
 }
 
 fn cached_pty_process_state(process: &PtyProcess) -> PtyProcessState {
@@ -2186,7 +2191,7 @@ mod tests {
             panic!("signal process should be reaped");
         };
         assert_eq!(exit_code, None, "a signal must not be reported as status 1");
-        assert!(signal.as_deref().is_some_and(|value| !value.is_empty()));
+        assert_eq!(signal.as_deref(), Some("15"));
         assert!(String::from_utf8_lossy(
             &output
                 .into_iter()

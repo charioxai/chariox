@@ -57,17 +57,16 @@ impl DaemonApp {
                 "execution_lease_management".to_string(),
             ]
             .into_iter()
-            .chain(
-                crate::local::RUNTIME_CONTROL_CAPABILITIES
-                    .iter()
-                    .map(|value| (*value).to_string()),
-            )
+            .chain(crate::runtime::state::control_capabilities(
+                &self.durable_state_store(),
+            ))
             .collect(),
             available_providers,
             provider_accounts,
             accepting_remote_leases: self.config.accept_remote_leases,
             leased_agent_count: self.leased_agents.len() as u32,
             local_session_count: self.sessions().list_sessions().len() as u32,
+            local_protocol: Some(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION),
         }
     }
 

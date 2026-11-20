@@ -825,7 +825,7 @@ async fn laptop_kernel_websocket_enforces_local_tokens() {
 async fn kernel_websocket_credentials_attribute_critical_approval_audits_to_their_class() {
     const PASSKEY: &str = "correct horse battery";
     let root = RuntimeTransportTempDir::new("connection-class");
-    let vault = root.path().join("vault.json");
+    let vault = root.path().join("vault").join("vault.json");
     crate::secret::create_chariox_encrypted_vault_for_test(&vault, PASSKEY)
         .expect("test vault should be created");
 
@@ -950,6 +950,7 @@ impl ClassAuditKernel {
         let app = DaemonApp::bootstrap(config).expect("daemon should boot");
         let mut session = crate::session::RuntimeSession::new(
             format!("class-audit-{:016x}", rand::random::<u64>()),
+            crate::session::ProjectId::test(),
             None,
             "workspace",
             "worktree",

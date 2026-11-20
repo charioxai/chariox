@@ -13,7 +13,7 @@ use super::types::{
 use super::{
     unix_epoch_ms, AgentTrigger, AgentTriggerBusyPolicy, AgentTriggerDispatch, AgentTriggerOutcome,
     AgentTriggerRepeat, CanonicalViewport, CollaborationLevel, CreateSessionRequest,
-    DurableWorkflowHotState, EnvironmentError, EnvironmentReplay, PromptDetachEffect,
+    DurableWorkflowHotState, EnvironmentError, EnvironmentReplay, ProjectId, PromptDetachEffect,
     PromptQueueItem, RoomEnvironmentRegistry, RoomEnvironmentSnapshot, RuntimeProject,
     RuntimeProjectKind, RuntimeProjectStatus, RuntimeSession, SessionConfigState, SessionInvite,
     SessionMember, SessionProjectSelection, SessionStatus, SessionStore,
@@ -302,6 +302,7 @@ pub struct SessionService {
 
 mod core;
 mod durable_queue;
+mod project_creation;
 mod retired_sessions;
 pub(crate) use durable_queue::{PreparedWorkflowQueueRun, WorkflowQueueRun};
 mod agent_triggers;

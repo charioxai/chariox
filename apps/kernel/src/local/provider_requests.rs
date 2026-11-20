@@ -1,5 +1,4 @@
 use crate::app::DaemonApp;
-use crate::config::DaemonConfig;
 use crate::error::DaemonError;
 use crate::provider::{LaunchProviderRequest, OpenCodeProviderCatalog, ProviderClientInterface};
 use crate::transport::relay_client::send_peer_request_via_temporary_connection;
@@ -7,8 +6,8 @@ use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
 use chariox_relay::protocol::ClientTarget;
 
 use super::api::{
-    ApproveRemoteMachineRequest, ConfigureRelayRequest, ForgetRemoteMachineRequest,
-    LaunchProviderRunRequest, ListRemoteMachineKernelsRequest, LocalDaemonResponse, RelayStatus,
+    ConfigureRelayRequest, LaunchProviderRunRequest, ListRemoteMachineKernelsRequest,
+    LocalDaemonResponse, RelayStatus, RemoteMachineInventory,
 };
 
 mod blocking;
@@ -24,9 +23,9 @@ pub(crate) use catalog::{
     start_provider_login_response, PROVIDER_CATALOG_CACHE_TTL,
 };
 pub(crate) use remote_machines::{
-    forgotten_machine_record, record_for_machine_id, remote_machine_records,
+    forgotten_machine_name, record_for_machine_id, remote_machine_records,
     resolve_machine_for_registry, resolve_machine_id_for_registry,
-    resolve_registered_or_raw_machine_ref,
+    resolve_registered_or_raw_machine_ref, sort_remote_machines,
 };
 
 #[allow(dead_code)]
@@ -123,10 +122,7 @@ impl DaemonApp {
         Ok(RelayStatus {
             local_daemon_protocol_version: crate::local::LOCAL_DAEMON_PROTOCOL_VERSION,
             runtime_process_identity: crate::runtime::kernel_process_identity::current(),
-            capabilities: crate::local::RUNTIME_CONTROL_CAPABILITIES
-                .iter()
-                .map(|value| (*value).to_string())
-                .collect(),
+            capabilities: crate::runtime::state::control_capabilities(&self.durable_state_store()),
             configured: self.config().relay_url.is_some() && self.config().relay_token.is_some(),
             connected,
             relay_url: self.config().relay_url.clone(),
@@ -140,8 +136,17 @@ impl DaemonApp {
     pub(super) fn list_remote_machines_response(
         &mut self,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        let (machines, _) = self.remote_relay_inventory_projection_store().snapshot();
-        Ok(LocalDaemonResponse::RemoteMachinesListed { machines })
+        let RemoteMachineInventory {
+            machines,
+            offline_machines,
+            directory,
+        } = self.remote_relay_inventory_projection_store().inventory();
+        Ok(LocalDaemonResponse::RemoteMachinesListed {
+            directory,
+            renewing: false,
+            machines,
+            offline_machines,
+        })
     }
 
     pub(super) fn list_remote_machine_kernels_response(
@@ -165,38 +170,6 @@ impl DaemonApp {
             kernels,
         })
     }
-
-    pub(super) fn approve_remote_machine_response(
-        &mut self,
-        request: ApproveRemoteMachineRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        let config = self.config().clone();
-        let live = block_on_relay_query(crate::transport::relay_discovery::list_live_machines(
-            &config,
-        ))
-        .unwrap_or_default();
-        let machine = resolve_machine_for_registry(&request.machine_ref, &live)?;
-        DaemonConfig::approve_remote_machine(machine.machine_id.clone())?;
-        self.provider_catalog_cache.clear();
-        let machine = record_for_machine_id(machine.machine_id, live, &config.host_machine_id)?;
-        Ok(LocalDaemonResponse::RemoteMachineApproved { machine })
-    }
-
-    pub(super) fn forget_remote_machine_response(
-        &mut self,
-        request: ForgetRemoteMachineRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        let config = self.config().clone();
-        let live = block_on_relay_query(crate::transport::relay_discovery::list_live_machines(
-            &config,
-        ))
-        .unwrap_or_default();
-        let machine = resolve_machine_id_for_registry(&request.machine_ref, &live)?;
-        DaemonConfig::forget_remote_machine(machine.clone())?;
-        self.provider_catalog_cache.clear();
-        let machine = forgotten_machine_record(machine, live, &config.host_machine_id);
-        Ok(LocalDaemonResponse::RemoteMachineForgotten { machine })
-    }
 }
 
 fn remote_native_provider_run_response(
@@ -216,7 +189,7 @@ fn remote_native_provider_run_response(
         return Ok(None);
     };
     let required_mcps = app.required_remote_mcps_for_native_provider_launch(&agent)?;
-    let required_skills = app.required_remote_skills_for_native_provider_launch(&agent)?;
+
     let remote_extension_manifest = app.remote_extension_manifest_for_agent(&agent)?;
     let relay_config = app.relay_config_for_remote_execution(&remote_execution);
     let response = app.block_on_relay_future(send_peer_request_via_temporary_connection(
@@ -236,7 +209,6 @@ fn remote_native_provider_run_response(
             structured_endpoint: request.structured_endpoint.clone(),
             provider_session_id: request.provider_session_id.clone(),
             required_mcps,
-            required_skills: Some(required_skills),
             remote_extension_manifest,
             provider_launch_credential: None,
         },
@@ -359,6 +331,7 @@ pub(crate) fn launch_provider_request_from_local(
 mod tests {
     use super::*;
     use crate::app::KernelSessionService;
+    use crate::config::DaemonConfig;
     use crate::provider::{AgentExecutionMode, AgentPermissionLevel};
     use crate::session::{CreateSessionRequest, SessionAgentDefaults};
 

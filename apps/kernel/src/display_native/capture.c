@@ -685,6 +685,15 @@ static int pointer_target(struct Capture *c,int x,int y,int *px,int *py){
     }
     return -1;
 }
+/* XTest reports even a zero-length move, and Chromium aligns a mousemove to the next frame: the
+ * BeginFrame it requests can run before the press arrives, and the click then paints one frame
+ * late (a quarter of clicks). The pointer moves only when it is elsewhere. */
+static int move_pointer(struct Capture *c,int px,int py){
+    Window root,child;int rx,ry,wx,wy;unsigned mask;
+    if(XQueryPointer(c->display,DefaultRootWindow(c->display),&root,&child,&rx,&ry,&wx,&wy,&mask)&&rx==px&&ry==py)return 1;
+    return XTestFakeMotionEvent(c->display,-1,px,py,CurrentTime);
+}
+
 /* MP-08/MP-10: wheel notches into the owned window on the kernel's private X
  * server, so Chromium applies native smooth scrolling (CDP wheel deltas are
  * precise and unanimated). Callers fence the document and actor first. */
@@ -693,7 +702,7 @@ int cx_capture_wheel(struct Capture *c,int x,int y,int dx,int dy){
     if(dx<-10||dx>10||dy<-10||dy>10||(!dx&&!dy))return -1;
     int px,py,target=pointer_target(c,x,y,&px,&py);
     if(target)return target;
-    if(!XTestFakeMotionEvent(c->display,-1,px,py,CurrentTime))return -1;
+    if(!move_pointer(c,px,py))return -1;
     for(int i=0;i<abs(dy);i++){unsigned b=dy>0?5:4;XTestFakeButtonEvent(c->display,b,True,CurrentTime);XTestFakeButtonEvent(c->display,b,False,CurrentTime);}
     for(int i=0;i<abs(dx);i++){unsigned b=dx>0?7:6;XTestFakeButtonEvent(c->display,b,True,CurrentTime);XTestFakeButtonEvent(c->display,b,False,CurrentTime);}
     XFlush(c->display);return 0;
@@ -706,7 +715,7 @@ int cx_capture_button(struct Capture *c,int x,int y,int button){
     if(c->desktop||button<1||button>3)return -1; /* MP-11: desktop input keeps its own admission. */
     int px,py,target=pointer_target(c,x,y,&px,&py);
     if(target)return target;
-    if(!XTestFakeMotionEvent(c->display,-1,px,py,CurrentTime))return -1;
+    if(!move_pointer(c,px,py))return -1;
     XTestFakeButtonEvent(c->display,button,True,CurrentTime);XTestFakeButtonEvent(c->display,button,False,CurrentTime);
     XFlush(c->display);return 0;
 }

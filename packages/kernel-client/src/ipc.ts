@@ -88,6 +88,12 @@ const KERNEL_RELOAD_RECONNECT_WINDOW_MS = 10_000
 const KERNEL_RELOAD_RECONNECT_JITTER_MS = 50
 const KERNEL_CONTROL_REQUEST_RETRY_DEADLINE_MS = 60_000
 const KERNEL_CONTROL_RESPONSE_STALL_MS = 5_000
+// The kernel answers one replay of a finished command per ten seconds and tells the others
+// `duplicate_command_unavailable`. A command that ran past the retry deadline is still owed its
+// result, so its replays continue for three of those windows, counted once from the first refusal
+// (never earlier than the original deadline): a command that ran longer than the retry deadline
+// gets its first refusal late, and a kernel that keeps refusing must not keep the request alive.
+const KERNEL_DUPLICATE_ANSWER_RETRY_MS = 30_000
 // The kernel runs these again when they are replayed: they carry no request id
 // its ledgers deduplicate, and it keeps them out of its command-result cache
 // (`request_is_cacheable`, whose tests check this list). Worker control stops an App
@@ -272,6 +278,7 @@ export type LocalIpcClientOptions = {
   reconnectJitterMs?: number | undefined
   reconnectRandom?: (() => number) | undefined
   controlRequestRetryDeadlineMs?: number | undefined
+  duplicateAnswerRetryMs?: number | undefined
   controlResponseStallMs?: number | undefined
   relayIdentity?: RelayClientIdentity | undefined
   relayAuthorizationIssuer?: RelayAuthorizationIssuer | undefined
@@ -337,6 +344,7 @@ export class LocalIpcClient {
   private readonly reconnectJitterMs: number
   private readonly reconnectRandom: () => number
   private readonly controlRequestRetryDeadlineMs: number
+  private readonly duplicateAnswerRetryMs: number
   private readonly controlResponseStallMs: number
   private missedControlPongs = 0
   private readonly socketResponsiveness = new KernelSocketResponsiveness()
@@ -378,6 +386,7 @@ export class LocalIpcClient {
       options.controlRequestRetryDeadlineMs ?? KERNEL_CONTROL_REQUEST_RETRY_DEADLINE_MS,
       0,
     )
+    this.duplicateAnswerRetryMs = Math.max(options.duplicateAnswerRetryMs ?? KERNEL_DUPLICATE_ANSWER_RETRY_MS, 0)
     this.controlResponseStallMs = Math.max(
       options.controlResponseStallMs ?? KERNEL_CONTROL_RESPONSE_STALL_MS,
       10,
@@ -726,9 +735,10 @@ export class LocalIpcClient {
     const lifetime = this.requestLifetime.capture()
     let requestId = randomUUID()
     const waitsForAuthorization = waitsForKernelAuthorization(request)
-    const retryUntilMs = lane === "control" && !waitsForAuthorization
+    let retryUntilMs = lane === "control" && !waitsForAuthorization
       ? Date.now() + this.controlRequestRetryDeadlineMs
       : Date.now()
+    let duplicateAnswerSettled = false
     const replayAfterWrite = !runsAgainOnReplay(request)
     let retryDelayMs = KERNEL_RECONNECT_BASE_DELAY_MS
     const relayBinding: { socket: WebSocket | null; request: ReturnType<typeof normalizeRelayRequest> | null } = { socket: null, request: null }
@@ -756,7 +766,7 @@ export class LocalIpcClient {
       const pending = this.pendingRequests.register<TResponse>(
         requestId,
         lane,
-        waitsForAuthorization ? 0 : replayAfterWrite ? this.requestAttemptTimeoutMs(lane, retryUntilMs) : IPC_TIMEOUT_MS,
+        waitsForAuthorization ? 0 : replayAfterWrite ? this.requestAttemptTimeoutMs(lane, retryUntilMs, request) : IPC_TIMEOUT_MS,
         IPC_TIMEOUT_MS,
       )
 
@@ -804,22 +814,27 @@ export class LocalIpcClient {
               : "the connection closed before the answer"
           throw new LocalIpcError("handle kernel response", `${lost}; the kernel may have run the request`, "outcome_unknown")
         }
+        const resultWindowClosed = error instanceof LocalIpcError && error.code === "duplicate_command_unavailable"
+        if (resultWindowClosed && lane === "control" && !duplicateAnswerSettled) {
+          duplicateAnswerSettled = true
+          retryUntilMs = Math.max(retryUntilMs, Date.now() + this.duplicateAnswerRetryMs)
+        }
         if (admittedSocket || !this.shouldReplayWebSocketRequest(error, lane, retryUntilMs)) {
           throw error
         }
         // A fresh caller binding needs a fresh observation receipt; a responsive
         // carrier keeps the same request and cannot retire a newer lane.
         const current = this.getWebSocket(lane)
-        const responsiveTimeout = error instanceof LocalIpcError && error.code === "request_timeout"
-          && current === socket && socket.readyState === WebSocket.OPEN
-          && this.socketResponsiveness.isResponsive(socket, this.kernelPingIntervalMs * this.kernelMaxMissedPongs)
+        const responsiveTimeout = current === socket && socket.readyState === WebSocket.OPEN
+          && (resultWindowClosed || (error instanceof LocalIpcError && error.code === "request_timeout"
+            && this.socketResponsiveness.isResponsive(socket, this.kernelPingIntervalMs * this.kernelMaxMissedPongs)))
         if (!responsiveTimeout && isBrowserObservation(request)) requestId = randomUUID()
         if (current === socket && !responsiveTimeout) {
           this.destroyWebSocket(lane, "kernel websocket reset", "request_replay", {
             code: error instanceof LocalIpcError ? error.code : null,
           })
         } else if (responsiveTimeout) {
-          this.reportTransportDiagnostic(lane, "request_replay", { code: "request_timeout", operation: "retry responsive socket" })
+          this.reportTransportDiagnostic(lane, "request_replay", { code: resultWindowClosed ? "duplicate_command_unavailable" : "request_timeout", operation: "retry responsive socket" })
         }
         retryDelayMs = await this.waitBeforeWebSocketRequestReplay(retryDelayMs, retryUntilMs, lifetime)
       }
@@ -832,11 +847,13 @@ export class LocalIpcClient {
       && error instanceof LocalIpcError
       && error.retryable
       // target_not_connected: the kernel or relay refused before starting it.
-      && (error.code === "connection_closed" || error.code === "write_failed" || error.code === "request_timeout" || error.code === "target_not_connected")
+      && (error.code === "connection_closed" || error.code === "write_failed" || error.code === "request_timeout" || error.code === "target_not_connected" || error.code === "duplicate_command_unavailable")
   }
 
-  private requestAttemptTimeoutMs(lane: KernelSocketLane, retryUntilMs: number): number {
-    if (lane !== "control") {
+  private requestAttemptTimeoutMs(lane: KernelSocketLane, retryUntilMs: number, request: unknown): number {
+    // Skills requests fetch repositories and cannot be replayed on their admitted socket, so a quiet
+    // moment is not a stall: the kernel answers or fails them, and a lost link is caught by the heartbeat.
+    if (lane !== "control" || isSkillsV2Request(request)) {
       return IPC_TIMEOUT_MS
     }
     const remainingRetryMs = retryUntilMs - Date.now()
@@ -1860,6 +1877,10 @@ export class LocalIpcClient {
     // kernel runs again (a worker control) is not left waiting for 600 s.
     this.rejectPending("kernel websocket dropped", lane)
   }
+}
+
+function isSkillsV2Request(request: unknown): boolean {
+  return request !== null && typeof request === "object" && "SkillsV2" in request
 }
 
 function runsAgainOnReplay(request: unknown): boolean {

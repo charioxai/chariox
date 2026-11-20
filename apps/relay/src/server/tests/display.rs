@@ -30,14 +30,16 @@ async fn daemon_display_tunnel_registration_is_tracked_revoked_and_disconnected(
     });
 
     let url = format!("ws://{}:{}", addr.ip(), addr.port());
-    let (mut daemon_socket, _) = connect_async_with_retry(&url)
+    let (mut daemon_socket, daemon_socket_handshake) = connect_async_with_retry(&url)
         .await
         .expect("daemon should connect to relay");
     daemon_socket
         .send(Message::Text(
-            serde_json::to_string(&RelayEnvelope::DaemonRegister {
-                registration: test_registration("daemon-1", "machine-1", "macOS", 10),
-            })
+            serde_json::to_string(&signed_register(
+                &url,
+                &daemon_socket_handshake,
+                test_registration("daemon-1", "machine-1", "macOS", 10),
+            ))
             .expect("register envelope should serialize")
             .into(),
         ))
@@ -177,14 +179,16 @@ async fn display_http_route_resolves_registered_tunnel_state() {
     assert!(disconnected.starts_with("HTTP/1.1 502 Bad Gateway"));
 
     let url = format!("ws://{}:{}", addr.ip(), addr.port());
-    let (mut daemon_socket, _) = connect_async_with_retry(&url)
+    let (mut daemon_socket, daemon_socket_handshake) = connect_async_with_retry(&url)
         .await
         .expect("daemon should connect to relay");
     daemon_socket
         .send(Message::Text(
-            serde_json::to_string(&RelayEnvelope::DaemonRegister {
-                registration: test_registration("daemon-live", "machine-1", "macOS", 10),
-            })
+            serde_json::to_string(&signed_register(
+                &url,
+                &daemon_socket_handshake,
+                test_registration("daemon-live", "machine-1", "macOS", 10),
+            ))
             .expect("register envelope should serialize")
             .into(),
         ))
@@ -306,14 +310,16 @@ async fn display_http_request_closes_promptly_when_daemon_disconnects() {
     });
 
     let url = format!("ws://{}:{}", addr.ip(), addr.port());
-    let (mut daemon_socket, _) = connect_async_with_retry(&url)
+    let (mut daemon_socket, daemon_socket_handshake) = connect_async_with_retry(&url)
         .await
         .expect("daemon should connect to relay");
     daemon_socket
         .send(Message::Text(
-            serde_json::to_string(&RelayEnvelope::DaemonRegister {
-                registration: test_registration("daemon-live", "machine-1", "macOS", 10),
-            })
+            serde_json::to_string(&signed_register(
+                &url,
+                &daemon_socket_handshake,
+                test_registration("daemon-live", "machine-1", "macOS", 10),
+            ))
             .expect("register envelope should serialize")
             .into(),
         ))
@@ -490,14 +496,16 @@ async fn display_websocket_route_bridges_browser_and_daemon_frames() {
     });
 
     let relay_url = format!("ws://{}:{}", addr.ip(), addr.port());
-    let (mut daemon_socket, _) = connect_async_with_retry(&relay_url)
+    let (mut daemon_socket, daemon_socket_handshake) = connect_async_with_retry(&relay_url)
         .await
         .expect("daemon should connect to relay");
     daemon_socket
         .send(Message::Text(
-            serde_json::to_string(&RelayEnvelope::DaemonRegister {
-                registration: test_registration("daemon-live", "machine-1", "macOS", 10),
-            })
+            serde_json::to_string(&signed_register(
+                &relay_url,
+                &daemon_socket_handshake,
+                test_registration("daemon-live", "machine-1", "macOS", 10),
+            ))
             .expect("register envelope should serialize")
             .into(),
         ))

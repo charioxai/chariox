@@ -150,7 +150,6 @@ fn steering_a_held_turn_is_delivered_when_the_turn_starts() {
             None,
             Some(git_context),
             Vec::new(),
-            None,
             crate::extension::RemoteExtensionManifest::default(),
         )
         .expect("held prompt should be accepted");
@@ -164,7 +163,6 @@ fn steering_a_held_turn_is_delivered_when_the_turn_starts() {
             "more context",
             "",
             Vec::new(),
-            None,
         )
         .unwrap_or_else(|error| panic!("steering a held turn should be accepted: {error}"));
     assert!(

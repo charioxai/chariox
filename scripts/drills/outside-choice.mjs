@@ -2,7 +2,9 @@
 // learns it from the `interaction pending` event alone and answers it through its own harness.
 // Scenarios: native (interactive Claude Code shows its AskUserQuestion), elicit (`chariox events mcp`: Claude Code shows
 // its own elicitation dialog with no model turn),  kinds (owner-only decisions stay
-// pointers), first-wins (two holders answer, one wins), expiry (nobody answers, the late answer is refused).
+// pointers), first-wins (two holders answer, one wins), expiry (nobody answers, the late answer is refused),
+// owner-card (the asker raises its own permission level, or its provider hits its usage limit; the holder
+// answers that owner card for the person).
 // Usage: node outside-choice.mjs --scenario S --kernel-binary K --cli-wrapper W --state-root DIR --evidence-dir DIR --login-file F
 // Disposable kernel, vault and passkey; the Claude login is read from --login-file, stored in that kernel's Vault
 // and handed to the outside Claude Code, never printed.
@@ -21,7 +23,7 @@ const flags = new Map()
 for (let i = 2; i < process.argv.length; i++) flags.set(process.argv[i], process.argv[++i])
 const need = key => { assert.equal(typeof flags.get(key), "string", `${key} is required`); return flags.get(key) }
 const scenario = need("--scenario")
-assert(["native", "elicit", "opencode", "kinds", "first-wins", "expiry"].includes(scenario), "unknown scenario")
+assert(["native", "elicit", "opencode", "kinds", "first-wins", "expiry", "owner-card"].includes(scenario), "unknown scenario")
 const kernelBinary = resolve(need("--kernel-binary")), cliWrapper = resolve(need("--cli-wrapper"))
 const stateRoot = resolve(need("--state-root")), evidence = resolve(need("--evidence-dir")), loginFile = resolve(need("--login-file"))
 assert(!evidence.startsWith(fileURLToPath(new URL("../../", import.meta.url))), "evidence must be outside the repository")
@@ -77,6 +79,8 @@ note("kernel-start", { pid: kernelChild.pid, scenario })
 const client = new LocalIpcClient(`ws://127.0.0.1:${ports[0]}/kernel`, { localAuthEnvironment: kernelEnv, controlRequestRetryDeadlineMs: 1000 })
 const rpc = async request => { const r = await client.send(request); if (r.Error) throw new Error(`refused ${Object.keys(request)[0]}: ${r.Error.code}`); return r }
 await until(async () => { try { return !!(await rpc({ RelayStatus: null })).RelayStatus } catch { return false } }, "kernel ready")
+// `--kernel` names this kernel by its own id.
+const kernelId = (await rpc({ RelayStatus: null })).RelayStatus.status.daemon_id
 
 const tmux = (...args) => execFileSync("tmux", args, { encoding: "utf8" })
 const tmuxName = `choice-${scenario}-${process.pid}`
@@ -94,12 +98,11 @@ try {
   const sessionId = made.session.id
   const att = (await rpc({ AttachToSession: { session_id: sessionId, client_id: alias, capability_level: "FullTerminal" } })).SessionAttached
   await client.subscribeToKernelEvents(sessionId, att.attachment.id)
-  const unlock = rpc({ ManageCredentialVault: { session_id: sessionId, agent_id: made.agent.id } }); unlock.catch(() => {})
-  const prompt = await until(async () => (await rpc({ GetSessionState: { session_id: sessionId } })).SessionState.session.active_interactions?.find(x => x.id.startsWith("vault-unlock-")), "vault prompt")
-  await rpc({ RespondToInteraction: { session_id: sessionId, interaction_id: prompt.id, choice_id: "passphrase", custom_reply: passkey } })
-  await unlock
+  await rpc({ CreateCredentialVault: { origin: { kind: "passphrase", passphrase: passkey } } })
   // The owner's terminal approves every access grant, and answers critical decisions when the scenario asks.
+  const seen = []
   client.onKernelEvent(async event => {
+    if (/on the owner's behalf/.test(JSON.stringify(event))) seen.push(event)
     if (event.event !== "passkey_prompts_changed") return
     for (const p of event.prompts || []) if (p.kind === "access_grant") {
       note("approve-grant", { requester: p.requester?.executable })
@@ -109,7 +112,7 @@ try {
   const token = readFileSync(loginFile, "utf8").trim()
   await rpc({ SetProviderAccountCredential: { provider: "claude", account_profile: "default", value: token, overwrite: true } })
   note("asker-login-stored")
-  const asker = (await rpc({ SpawnAgent: { session_id: sessionId, provider: "claude", model: "claude-haiku-5-5", permission_level: "yolo", alias: "asker" } })).AgentSpawned.agent
+  const asker = (await rpc({ SpawnAgent: { session_id: sessionId, provider: "claude", model: "claude-haiku-5-5", permission_level: scenario === "owner-card" ? "required" : "yolo", alias: "asker" } })).AgentSpawned.agent
   const ask = async text => { await rpc({ SubmitPrompt: { session_id: sessionId, attachment_id: att.attachment.id, target_agent_id: asker.id, prompt: text, attachments: [] } }); note("asker-prompt", { text: text.slice(0, 80) }) }
   const popup = (title, message, choices, extra = "") => `Call your request_popup tool exactly once with title "${title}", message "${message}", timeout_sec ${extra || 300}, default_on_timeout "red", and choices ${JSON.stringify(choices)}. Wait for the reply, then run the shell command: printf '%s' '<the reply you received>' > ${join(dir, "work/chosen.txt")} . Then say DONE.`
   const colours = [{ id: "red", label: "Red", reply: "red" }, { id: "green", label: "Green", reply: "green" }, { id: "blue", label: "Blue", reply: "blue", style: "primary" }]
@@ -124,7 +127,7 @@ try {
     writeFileSync(script, `#!/bin/bash
 cd "$(dirname "$0")"
 chariox access request --until-exit > grant.json 2> grant.err || exit 2
-chariox events subscribe --kernel ${alias} --session ${sessionId} > subscribe.json 2> subscribe.err || exit 3
+chariox events subscribe --kernel ${kernelId} --session ${sessionId} > subscribe.json 2> subscribe.err || exit 3
 cursor=0
 while :; do
   chariox events wait --since $cursor --timeout 20 > wait.json 2> wait.err; rc=$?
@@ -133,7 +136,9 @@ while :; do
   cat wait.json >> records.jsonl; echo >> records.jsonl
   cursor=$(node -e 'const r=JSON.parse(require("fs").readFileSync("wait.json","utf8"));console.log(r.next_cursor)')
   for id in $(node -e 'const r=JSON.parse(require("fs").readFileSync("wait.json","utf8"));for(const e of r.events)if(e.type==="interaction"&&e.value.state==="pending")console.log(e.refs.interaction_id)'); do
-    ${mode.startsWith("answer:") ? `printf '%s' '{"RespondToInteraction":{"session_id":"${sessionId}","interaction_id":"'"$id"'","choice_id":"${mode.split(":")[1]}"}}' | chariox request > "answer-$id.json" 2> "answer-$id.err"; echo $? > "answer-$id.rc"` : ":"}
+    chariox interaction list > "cards-$id.json" 2> "cards-$id.err"
+    ${mode === "owner" ? `case "$id" in agent-settings-*) c=allow_once;; usage-limit-*) c=not_now;; *) continue;; esac
+    printf '%s' '{"RespondToInteraction":{"session_id":"${sessionId}","interaction_id":"'"$id"'","choice_id":"'"$c"'"}}' | chariox request > "answer-$id.json" 2> "answer-$id.err"; echo $? > "answer-$id.rc"` : mode.startsWith("answer:") ? `printf '%s' '{"RespondToInteraction":{"session_id":"${sessionId}","interaction_id":"'"$id"'","choice_id":"${mode.split(":")[1]}"}}' | chariox request > "answer-$id.json" 2> "answer-$id.err"; echo $? > "answer-$id.rc"` : ":"}
   done
   ${mode.startsWith("late:") ? `for id in $(node -e 'const r=JSON.parse(require("fs").readFileSync("wait.json","utf8"));for(const e of r.events)if(e.type==="interaction"&&e.value.state==="resolved")console.log(e.refs.interaction_id)'); do
     printf '%s' '{"RespondToInteraction":{"session_id":"${sessionId}","interaction_id":"'"$id"'","choice_id":"${mode.split(":")[1]}"}}' | chariox request > "late-$id.json" 2> "late-$id.err"; echo $? > "late-$id.rc"
@@ -335,6 +340,32 @@ exec env -i 'PATH=${kernelEnv.PATH}' 'HOME=${kernelEnv.HOME}' 'TMPDIR=${kernelEn
     // The holder's attempts: refused as human-only (exit 3).
     results.attempts = readdirSync(a.out).filter(f => f.startsWith("answer-") && f.endsWith(".rc")).map(f => ({ id: f.slice(7, -3), rc: Number(a.file(f)), err: (a.file(f.replace(".rc", ".err")) ?? "").slice(0, 200) }))
     assert(results.attempts.length === 2 && results.attempts.every(x => x.rc === 3 && /kernel_access_human_only/.test(x.err)), "every attempt is refused as human-only")
+  }
+
+  if (scenario === "owner-card") {
+    const a = holder("holder-a", "owner")
+    await subscribed(a)
+    // Raising its own permission level is a decision the asker cannot make: an owner card, not a question. A
+    // provider at its usage limit raises the other owner card this scenario takes: what to do with the stopped turn.
+    await ask(`Call your Chariox kernel_request tool exactly once with this request: ${JSON.stringify({ UpdateAgentConfig: { session_id: sessionId, agent_id: asker.id, permission_level: "yolo", reason: "the drill needs full access" } })}. Then say DONE.`)
+    const ownerCard = e => /^(agent-settings-|usage-limit-)/.test(e.refs?.interaction_id ?? "") && e.value?.state === "pending"
+    const told = await until(() => a.records().find(ownerCard), "holder told of the owner card", 180000)
+    const card = { id: told.refs.interaction_id }
+    results.card = card.id
+    results.record = { summary: told.summary, has_question: !!told.value.question, pointer: told.value.pointer?.one_line }
+    const rc = await until(() => a.file(`answer-${card.id}.rc`), "the holder's answer", 60000)
+    results.answer = { rc: Number(rc), err: (a.file(`answer-${card.id}.err`) ?? "").slice(0, 300) }
+    try { results.listed = JSON.parse(a.file(`cards-${card.id}.json`) || "null") } catch { results.listed = (a.file(`cards-${card.id}.err`) ?? "").slice(0, 200) }
+    await delay(2000)
+    results.open_after = (await pendingInteractions()).some(i => i.id === card.id)
+    // The Room's own client (this drill's attachment) is told who answered for the person.
+    await until(() => seen.length, "the Room notice", 15000).catch(() => {})
+    results.notice = (/[^"]*on the owner's behalf: [^"]*/.exec(JSON.stringify(seen)) ?? [null])[0]
+    writeFileSync(join(evidence, "notice-events.json"), JSON.stringify(seen, null, 2) + "\n", { mode: 0o600 })
+    assert.equal(results.answer.rc, 0, "the holder answered the owner card for the person")
+    assert.equal(results.record.has_question, true, "the holder was told the card as a question")
+    assert.equal(results.open_after, false, "the card closed")
+    assert(results.notice, "every client of the Room is told who answered for the person")
   }
 
   note("result", results)

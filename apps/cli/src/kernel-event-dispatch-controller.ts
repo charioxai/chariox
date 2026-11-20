@@ -10,9 +10,10 @@ import {
   type WorkflowRun,
 } from "./cli-types.js"
 import type { KernelEvent } from "./ipc.js"
-import type { WorkflowDesignOpForwarded } from "@chariox/kernel-client/kernel-types"
+import type { RemoteMachineRecord as KernelRemoteMachineRecord, WorkflowDesignOpForwarded } from "@chariox/kernel-client/kernel-types"
 import type { ProviderCatalog } from "./provider-catalog.js"
 import type { RelayStatusView } from "./relay-api.js"
+import { remoteMachineView } from "./remote-machine-api.js"
 import type { RemoteMachineView } from "./waiting-room-inventory-api.js"
 import type { WaitingRoomProjectSummary } from "./waiting-room-projects.js"
 
@@ -220,6 +221,10 @@ export function createKernelEventDispatchController(
       case "room_workflows_changed":
         // The room workflow composition subscribes to these itself.
         deps.recordDaemonActivity("kernel_room_workflows_changed")
+        return
+      case "skills_changed":
+        // Skills surfaces reread the catalog when they open; no TUI state to patch.
+        deps.recordDaemonActivity("kernel_skills_changed")
         return
       case "passkey_prompts_changed":
         // The passkey popup composition subscribes to these itself.
@@ -453,7 +458,7 @@ export function createKernelEventDispatchController(
       deps.appendNotice("Kernel sent malformed remote-machine update.", "warning")
       return
     }
-    await deps.applyRemoteMachinesChanged(event.machines as unknown as RemoteMachineView[])
+    await deps.applyRemoteMachinesChanged((event.machines as unknown as KernelRemoteMachineRecord[]).map(remoteMachineView))
   }
 
   async function applyProviderCatalogChanged(event: KernelEventProviderCatalogChanged) {
@@ -484,8 +489,8 @@ function isRemoteMachineRecord(value: unknown): value is Record<string, unknown>
   const trustStatus = value.trust_status
   return typeof value.machine_id === "string"
     && typeof value.display_name === "string"
-    && (trustStatus === "approved" || trustStatus === "pending" || trustStatus === "forgotten")
-    && typeof value.online === "boolean"
+    && (trustStatus === "approved" || trustStatus === "pending")
+    && (value.presence === "online" || value.presence === "reconnecting")
     && typeof value.pending === "boolean"
     && typeof value.kernel_count === "number"
 }

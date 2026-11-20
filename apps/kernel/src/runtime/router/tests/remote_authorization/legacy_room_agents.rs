@@ -86,6 +86,8 @@ async fn f4_legacy_agents_inner() {
 
         if owner {
             let spawn = LocalDaemonRequest::SpawnAgent(crate::local::SpawnAgentRequest {
+                initial_task: None,
+                peer_spawn: None,
                 max_context_tokens: None,
                 session_id: id.clone(),
                 alias: Some("spawned-by-owner".into()),
@@ -146,7 +148,6 @@ async fn f4_legacy_agents_inner() {
                         worktree_id: None,
                         clear_worktree_id: false,
                         reason: None,
-                        self_settings: None,
                         usage_limit: None,
                     }),
                 ),

@@ -1,38 +1,15 @@
-//! A sub-agent never has more authority than the agent that started it: permission level, mode,
-//! folders and fan-out are checked where the child is created, against the parent's current
-//! settings. Tools, secrets, Apps and the account profile are not limited.
+//! A sub-agent never has more authority than the agent that started it: permission level, mode
+//! and folders are checked where the child is created, against the parent's current settings.
+//! Tools, secrets, Apps and the account profile are not limited.
 
-use std::collections::HashSet;
 use std::path::Path;
 
-use super::{AgentInstance, AgentState, CreateAgentRequest};
+use super::{AgentInstance, CreateAgentRequest};
 use crate::error::DaemonError;
-use crate::session::{effective_agent_execution_config_in_tree, RuntimeSession};
+use crate::session::{EffectiveAgentExecutionConfig, RuntimeSession};
 
 pub(crate) const MAX_DEPTH: usize = 4;
-pub(crate) const MAX_CHILDREN_PER_PARENT: usize = 16;
 pub(crate) const MAX_AGENTS_PER_TREE: usize = 64;
-
-/// A child holds one of its parent's sixteen places while it can still be working: one that has
-/// had its turn and is idle again, or has failed, is finished and only counts in the team total.
-/// A child that was never prompted is a prepared agent, not a finished one. The stored state is
-/// not the prompt activity (a running turn leaves it Idle), so a child also stays unfinished
-/// while it has an active or queued prompt. `unfinished_work` names the agents whose durable
-/// lifecycle still holds a task or an armed wake: the session a check reads does not carry them.
-fn counts_toward_fan_out(
-    agent: &AgentInstance,
-    session: &RuntimeSession,
-    unfinished_work: &HashSet<String>,
-) -> bool {
-    !agent.archived()
-        && (agent.state() == AgentState::Working
-            || agent.last_prompt_sent_at_ms().is_none()
-            || session.active_prompt_for_agent(agent.id()).is_some()
-            || session
-                .queued_prompts_for_agent(agent.id())
-                .is_some_and(|queued| !queued.is_empty())
-            || unfinished_work.contains(agent.id()))
-}
 
 fn refused(message: String) -> DaemonError {
     DaemonError::LocalTransport {
@@ -95,13 +72,11 @@ fn chain_above<'a>(
 }
 
 /// Refuses placing `agent` (with its subtree) under `parent` when that closes a cycle or the
-/// moved subtree would exceed the depth, fan-out or team size a spawn is held to.
+/// moved subtree would exceed the depth or team size a spawn is held to.
 pub(crate) fn check_placement(
     agent: &AgentInstance,
     parent: &AgentInstance,
     agents: &[AgentInstance],
-    session: &RuntimeSession,
-    unfinished_work: &HashSet<String>,
 ) -> Result<(), String> {
     let above = chain_above(parent, agents)
         .ok_or("the agent tree has a cycle; place the agents as room agents first")?;
@@ -130,19 +105,6 @@ pub(crate) fn check_placement(
             "sub-agents are limited to {MAX_DEPTH} levels below a room agent; place this agent higher or move part of its team first"
         ));
     }
-    let children = agents
-        .iter()
-        .filter(|a| {
-            counts_toward_fan_out(a, session, unfinished_work)
-                && a.id() != agent.id()
-                && a.parent_agent_id() == Some(parent.id())
-        })
-        .count();
-    if children >= MAX_CHILDREN_PER_PARENT {
-        return Err(format!(
-            "an agent can have at most {MAX_CHILDREN_PER_PARENT} sub-agents that are not finished; place this agent under another one"
-        ));
-    }
     let root = above.last().copied().unwrap_or(parent);
     let moved = std::iter::once(agent.id())
         .chain(subtree.iter().map(|a| a.id()))
@@ -166,17 +128,15 @@ pub(crate) fn check_placement(
     Ok(())
 }
 
-/// Refuses a child above its parent's current level or mode, or beyond the fan-out caps.
-/// `agents` are the agents of the parent's room.
+/// Refuses a child above its parent's current level or mode, or beyond the depth and team caps.
+/// `agents` includes the parent's team across Rooms.
 pub(crate) fn check_spawn(
     request: &CreateAgentRequest,
     parent: &AgentInstance,
     agents: &[AgentInstance],
     earlier_in_batch: &[CreateAgentRequest],
-    session: &RuntimeSession,
-    unfinished_work: &HashSet<String>,
+    limit: EffectiveAgentExecutionConfig,
 ) -> Result<(), DaemonError> {
-    let limit = effective_agent_execution_config_in_tree(session, parent, agents);
     let level_ok = request
         .permission_level_override
         .is_none_or(|level| limit.permission_level.permits(level));
@@ -193,22 +153,6 @@ pub(crate) fn check_spawn(
     if above_parent.len() + 1 > MAX_DEPTH {
         return Err(refused(format!(
             "sub-agents are limited to {MAX_DEPTH} levels below a room agent; do the work in this agent or ask its parent"
-        )));
-    }
-    let children = agents
-        .iter()
-        .filter(|agent| {
-            counts_toward_fan_out(agent, session, unfinished_work)
-                && agent.parent_agent_id() == Some(parent.id())
-        })
-        .count()
-        + earlier_in_batch
-            .iter()
-            .filter(|earlier| earlier.parent_agent_id == request.parent_agent_id)
-            .count();
-    if children >= MAX_CHILDREN_PER_PARENT {
-        return Err(refused(format!(
-            "an agent can have at most {MAX_CHILDREN_PER_PARENT} sub-agents that are not finished; wait for one to finish"
         )));
     }
     let root = above_parent.last().copied().unwrap_or(parent);

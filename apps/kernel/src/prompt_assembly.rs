@@ -49,7 +49,6 @@ const RUNTIME_WORKSPACE_LIVE_SYNC_TRACKED: &str =
 const RUNTIME_NATIVE_PERMISSIONS: &str = include_str!("provider/native_permission_instructions.md");
 const RUNTIME_AGENT_MESSAGE_CONTEXT: &str =
     include_str!("provider/agent_message_context_instructions.md");
-const RUNTIME_SKILL_CONTEXT: &str = include_str!("provider/skill_context_instructions.md");
 const RUNTIME_SLICE: &str = include_str!("provider/slice_runtime_instructions.md");
 const RUNTIME_AGENT_TRIGGER: &str = include_str!("provider/runtime_agent_trigger_instructions.md");
 const RUNTIME_NOTIFICATION: &str = include_str!("provider/runtime_notification_instructions.md");
@@ -118,6 +117,10 @@ pub(crate) struct PromptEnvelope {
     pub(crate) assessment_only: bool,
     #[serde(skip)]
     pub(crate) private_assessment_evidence: Option<AssessmentEvidence>,
+    /// MP-08 / MP-10 / MP-11: execution-validated native items are runtime-only.
+    /// Clients/peers cannot deserialize provider skill paths into an envelope.
+    #[serde(skip)]
+    pub(crate) skill_delivery: Option<crate::provider::skill_delivery::ProviderSkillDelivery>,
 }
 
 impl PromptEnvelope {
@@ -136,7 +139,24 @@ impl PromptEnvelope {
             steering: false,
             assessment_only: false,
             private_assessment_evidence: None,
+            skill_delivery: None,
         }
+    }
+
+    pub(crate) fn with_skill_delivery(
+        mut self,
+        delivery: crate::provider::skill_delivery::ProviderSkillDelivery,
+    ) -> Self {
+        self.visible_user_prompt = delivery.visible_prompt.clone();
+        if !delivery.hidden_context.is_empty() {
+            if !self.hidden_system_context.is_empty() {
+                self.hidden_system_context.push_str("\n\n");
+            }
+            self.hidden_system_context
+                .push_str(&delivery.hidden_context);
+        }
+        self.skill_delivery = Some(delivery);
+        self
     }
 
     pub(crate) fn with_steering(mut self, steering: bool) -> Self {
@@ -156,7 +176,7 @@ impl PromptEnvelope {
 
 pub(crate) fn agent_message_origin_context(prompt_id: &str) -> String {
     format!(
-        "<chariox-agent-message-origin>For chariox.send_agent_message in this turn, set origin_prompt_id to `{prompt_id}`. Never reuse an origin_prompt_id from another turn.</chariox-agent-message-origin>"
+        "<chariox-agent-message-origin>For chariox.send_agent_message and any Chariox runtime tool requiring origin_prompt_id, use `{prompt_id}` in this turn. Use this same origin_prompt_id for both preview and publish of a reviewed mutation. Never reuse an origin_prompt_id from another turn.</chariox-agent-message-origin>"
     )
 }
 
@@ -1073,10 +1093,6 @@ pub(crate) fn bundled_agent_message_context_template() -> &'static str {
     RUNTIME_AGENT_MESSAGE_CONTEXT
 }
 
-pub(crate) fn bundled_skill_context_template() -> &'static str {
-    RUNTIME_SKILL_CONTEXT
-}
-
 /// Return the immutable Markdown fallback for a catalog id.
 ///
 /// Prompt injection callers should obtain bundled text through this boundary
@@ -1107,7 +1123,6 @@ fn bundled_templates() -> Vec<BundledPromptTemplate> {
             "runtime/agent-message-context",
             RUNTIME_AGENT_MESSAGE_CONTEXT,
         ),
-        BundledPromptTemplate::new("runtime/skill-context", RUNTIME_SKILL_CONTEXT),
         BundledPromptTemplate::new("runtime/slice", RUNTIME_SLICE),
         BundledPromptTemplate::new("runtime/agent-trigger", RUNTIME_AGENT_TRIGGER),
         BundledPromptTemplate::new("runtime/notification", RUNTIME_NOTIFICATION),
@@ -1224,7 +1239,6 @@ fn prompt_component_tag(template_id: &str) -> String {
         "runtime/mcp-skill-continuation" => "mcp-skill-continuation-context",
         "runtime/workflow-direct-json-fallback" => "workflow-direct-json-fallback",
         "runtime/metaagent-event" => "metaagent-event",
-        "runtime/skill-context" => "skill-context-instructions",
         "workflow/turn" => "workflow-runtime-instructions",
         "workflow/run-completion" | "workflow/run-intermediate-output" => {
             "system-node-level-prompt"
@@ -1283,7 +1297,6 @@ const CHARIOX_PROMPT_COMPONENT_TAGS: &[&str] = &[
     "mcp-skill-continuation-context",
     "workflow-direct-json-fallback",
     "metaagent-event",
-    "skill-context-instructions",
     "workspace-commit-message-instructions",
     "semantic-recall-search-instructions",
     "endpoint-prompt",
@@ -1748,6 +1761,24 @@ mod tests {
             "`chariox.agent_auth_register`",
         ] {
             assert!(RUNTIME_BASE.contains(expected), "missing {expected}");
+        }
+    }
+
+    /// The number of workers an orchestrator starts decides the cost of a delegation
+    /// (8 workers cost 2.3x the same task in 4): the note and the tool both say one
+    /// worker per independent area.
+    #[test]
+    fn delegation_guidance_caps_workers_at_the_independent_areas() {
+        let description = crate::transport::runtime_tools::agent_run_tool_specs()
+            .remove(0)
+            .description;
+        for text in [RUNTIME_BASE, description.as_str()] {
+            assert!(text.contains("one whole independent area"), "{text}");
+            assert!(
+                text.contains("no more workers than there are independent areas"),
+                "{text}"
+            );
+            assert!(text.contains("never one per file or step"), "{text}");
         }
     }
 

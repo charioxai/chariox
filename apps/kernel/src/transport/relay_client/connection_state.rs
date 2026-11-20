@@ -309,6 +309,7 @@ impl RelayClientState {
         Some(pending.clone())
     }
 
+    #[cfg(test)]
     pub(crate) fn pending_managed_slice_activation_confirmation(
         &self,
     ) -> Option<PendingManagedSliceActivationConfirmation> {

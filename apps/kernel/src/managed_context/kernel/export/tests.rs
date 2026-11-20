@@ -10,13 +10,7 @@ impl Drop for Mp11FixtureRoot {
 
 // MP-08/MP-11: exercise real source snapshot capture and target publication,
 // including hostile snapshots composed without the source's admission guard.
-fn mp11_packaged_snapshot_case(
-    mcp: bool,
-    path: &str,
-    bytes: &[u8],
-    accepted: bool,
-    source_only: bool,
-) {
+fn mp11_packaged_snapshot_case(path: &str, bytes: &[u8], accepted: bool, source_only: bool) {
     let root = test_root(format!(
         "chariox-packaged-context-{:016x}",
         rand::random::<u64>()
@@ -25,36 +19,24 @@ fn mp11_packaged_snapshot_case(
     let isolation = root.join("capabilities");
     std::env::set_var("CHARIOX_CAPABILITY_ISOLATION_ROOT", &isolation);
     std::env::set_var("CHARIOX_HOME", root.join("home"));
-    let package_root = isolation.join(if mcp {
-        "user/mcps/local"
-    } else {
-        "user/skills/review"
-    });
+    let package_root = isolation.join("user/mcps/local");
     fs::create_dir_all(&package_root).unwrap();
-    if mcp {
-        fs::write(package_root.join("run.sh"), "#!/bin/sh\necho ready\n").unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(
-                package_root.join("run.sh"),
-                fs::Permissions::from_mode(0o755),
-            )
-            .unwrap();
-        }
-        let config = CharioxMcpServerConfig::stdio("local", "run.sh", vec![]);
-        fs::write(
-            isolation.join("user/mcps/local.json"),
-            serde_json::to_vec(&config).unwrap(),
-        )
-        .unwrap();
-    } else {
-        fs::write(
-            package_root.join("SKILL.md"),
-            "---\nname: review\ndescription: Review code\n---\nRead the diff.\n",
+    fs::write(package_root.join("run.sh"), "#!/bin/sh\necho ready\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(
+            package_root.join("run.sh"),
+            fs::Permissions::from_mode(0o755),
         )
         .unwrap();
     }
+    let config = CharioxMcpServerConfig::stdio("local", "run.sh", vec![]);
+    fs::write(
+        isolation.join("user/mcps/local.json"),
+        serde_json::to_vec(&config).unwrap(),
+    )
+    .unwrap();
     fs::write(package_root.join(path), bytes).unwrap();
     let target_private = crate::transport::relay_crypto::generate_private_key_base64();
     let target_public =
@@ -66,11 +48,7 @@ fn mp11_packaged_snapshot_case(
         crate::runtime::terminal_pairings::public_key_thumbprint(&target_public);
     let source = export_kernel_context_without_credentials(request.clone());
     if source_only {
-        assert_eq!(
-            source.is_ok(),
-            accepted,
-            "MP-11 source mcp={mcp} path={path}"
-        );
+        assert_eq!(source.is_ok(), accepted, "MP-11 source path={path}");
         fs::remove_dir_all(root).unwrap();
         return;
     }
@@ -91,19 +69,10 @@ fn mp11_packaged_snapshot_case(
             capability_root: destination.clone(),
             vault_path: root.join("unused-vault"),
         });
-    assert_eq!(
-        target.is_ok(),
-        accepted,
-        "MP-11 target mcp={mcp} path={path}"
-    );
+    assert_eq!(target.is_ok(), accepted, "MP-11 target path={path}");
     if accepted {
-        let relative = if mcp {
-            "user/mcps/local"
-        } else {
-            "user/skills/review"
-        };
         assert_eq!(
-            fs::read(destination.join(relative).join(path)).unwrap(),
+            fs::read(destination.join("user/mcps/local").join(path)).unwrap(),
             bytes
         );
     } else {
@@ -124,60 +93,48 @@ fn mp11_packaged_snapshot_case(
 fn mp11_packaged_kernel_snapshot_target_preserves_shell_path() {
     crate::test_support::isolated_env_test!();
     let _guard = crate::env_lock::lock();
-    for mcp in [false, true] {
-        mp11_packaged_snapshot_case(
-            mcp,
-            "bootstrap.sh",
-            b"curl --us\\er owner:synthetic-canary https://example.test\n'",
-            false,
-            false,
-        );
-    }
+    mp11_packaged_snapshot_case(
+        "bootstrap.sh",
+        b"curl --us\\er owner:synthetic-canary https://example.test\n'",
+        false,
+        false,
+    );
 }
 
 #[test]
 fn mp08_mp11_packaged_kernel_snapshot_target_preserves_package_role() {
     crate::test_support::isolated_env_test!();
     let _guard = crate::env_lock::lock();
-    for mcp in [false, true] {
-        mp11_packaged_snapshot_case(
-            mcp,
-            "package.json",
-            br#"{"dependencies":{"js-tokens":"^4.0.0"}}"#,
-            true,
-            false,
-        );
-    }
+    mp11_packaged_snapshot_case(
+        "package.json",
+        br#"{"dependencies":{"js-tokens":"^4.0.0"}}"#,
+        true,
+        false,
+    );
 }
 
 #[test]
 fn mp11_packaged_kernel_snapshot_source_preserves_shell_path() {
     crate::test_support::isolated_env_test!();
     let _guard = crate::env_lock::lock();
-    for mcp in [false, true] {
-        mp11_packaged_snapshot_case(
-            mcp,
-            "bootstrap.sh",
-            b"curl --us\\er owner:synthetic-canary https://example.test\n'",
-            false,
-            true,
-        );
-    }
+    mp11_packaged_snapshot_case(
+        "bootstrap.sh",
+        b"curl --us\\er owner:synthetic-canary https://example.test\n'",
+        false,
+        true,
+    );
 }
 
 #[test]
 fn mp08_mp11_packaged_kernel_snapshot_source_preserves_package_role() {
     crate::test_support::isolated_env_test!();
     let _guard = crate::env_lock::lock();
-    for mcp in [false, true] {
-        mp11_packaged_snapshot_case(
-            mcp,
-            "package.json",
-            br#"{"dependencies":{"js-tokens":"^4.0.0"}}"#,
-            true,
-            true,
-        );
-    }
+    mp11_packaged_snapshot_case(
+        "package.json",
+        br#"{"dependencies":{"js-tokens":"^4.0.0"}}"#,
+        true,
+        true,
+    );
 }
 
 #[test]
@@ -221,7 +178,10 @@ fn mp11_credential_free_export_never_reads_provider_git_vault_or_credential_regi
         .dependencies
         .iter()
         .all(|dependency| !matches!(dependency, KernelExtensionDependency::Credential { .. })));
-    assert_eq!(snapshot.payload.extensions.len(), 1);
+    assert!(
+        snapshot.payload.extensions.is_empty(),
+        "an uninstalled Skill source is not a kernel Extension"
+    );
     let bytes = serde_json::to_vec(&snapshot).unwrap();
     for canary in [
         "provider-credential-canary",
@@ -245,7 +205,10 @@ fn mp11_credential_free_export_never_reads_provider_git_vault_or_credential_regi
         "API_KEY=synthetic-canary",
     )
     .unwrap();
-    assert!(export_kernel_context_without_credentials(credential_bearing).is_err());
+    assert!(
+        export_kernel_context_without_credentials(credential_bearing).is_ok(),
+        "an uninstalled Skill source must not be discovered as a kernel Extension"
+    );
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -463,7 +426,7 @@ fn kernel_context_exports_one_unified_extension_set() {
     let snapshot =
         export_kernel_context(test_export_request()).expect("kernel context should export");
     assert!(snapshot.payload.dependencies.iter().any(|dependency| matches!(dependency, KernelExtensionDependency::UserRules {body} if body == "Prefer clear Project names.")));
-    assert_eq!(snapshot.payload.extensions.len(), 4);
+    assert_eq!(snapshot.payload.extensions.len(), 3);
     assert!(snapshot
         .payload
         .extensions
@@ -482,7 +445,6 @@ fn kernel_context_exports_one_unified_extension_set() {
             .collect::<BTreeSet<_>>(),
         BTreeSet::from([
             ExtensionKind::Mcp,
-            ExtensionKind::Skill,
             ExtensionKind::Script,
             ExtensionKind::Connector,
         ])
@@ -534,16 +496,6 @@ fn kernel_context_exports_one_unified_extension_set() {
             .count(),
         1
     );
-    #[cfg(unix)]
-    assert!(snapshot.payload.extensions.iter().any(|extension| matches!(
-        &extension.definition,
-        KernelExtensionDefinition::Skill {
-            package,
-            executable_paths,
-        } if package.metadata.path == std::path::Path::new("SKILL.md")
-            && executable_paths.len() == 1
-            && executable_paths[0] == "review.sh"
-    )));
     assert_eq!(snapshot.snapshot_sha256.len(), 64);
     let serialized = serde_json::to_string(&snapshot).expect("snapshot should serialize");
     assert!(!serialized.contains("session-secret-id"));
@@ -1228,7 +1180,7 @@ fn bundled_adapter_artifact_hash_covers_implementation_bytes() {
 
 #[cfg(unix)]
 #[test]
-fn kernel_context_rejects_symlinks_in_extension_roots() {
+fn kernel_context_does_not_discover_legacy_skill_source_symlinks() {
     crate::test_support::isolated_env_test!();
     use std::os::unix::fs::symlink;
 
@@ -1253,8 +1205,9 @@ fn kernel_context_rejects_symlinks_in_extension_roots() {
     fs::write(&outside, "do not copy\n").expect("outside file should write");
     symlink(&outside, skill_root.join("outside.txt")).expect("symlink should create");
 
-    let error = export_kernel_context(test_export_request()).expect_err("symlink should reject");
-    assert!(error.to_string().contains("symlink"));
+    let snapshot = export_kernel_context(test_export_request())
+        .expect("legacy Skill sources are not Extensions");
+    assert!(snapshot.payload.extensions.is_empty());
 
     std::env::remove_var("CHARIOX_CAPABILITY_ISOLATION_ROOT");
     std::env::remove_var("CHARIOX_HOME");
@@ -1347,42 +1300,35 @@ fn mp11_packaged_snapshot_normalizes_encoding_and_checks_shebang_and_token_forma
             .flat_map(u16::to_le_bytes),
     );
     for source in [true, false] {
-        for mcp in [false, true] {
-            mp11_packaged_snapshot_case(mcp, "bootstrap.sh", &wide, false, source);
-            for (path, bytes, data) in
-                crate::managed_context::credential_free::tests::boundary_cases()
-            {
-                mp11_packaged_snapshot_case(mcp, path, &bytes, data, source);
-            }
-            mp11_packaged_snapshot_case(
-                mcp,
-                "bootstrap",
-                b"#!/bin/sh\ncurl --us\\er owner:synthetic-canary https://example.test\n'",
-                false,
-                source,
-            );
-            mp11_packaged_snapshot_case(
-                mcp,
-                "notes.md",
-                b"ghp_000000000000000000000000000000000000",
-                false,
-                source,
-            );
-            mp11_packaged_snapshot_case(
-                mcp,
-                "notes.json",
-                br#"{"\u0067hp_000000000000000000000000000000000000":"ordinary"}"#,
-                false,
-                source,
-            );
-            mp11_packaged_snapshot_case(
-                mcp,
-                "bootstrap.sh",
-                b"echo 'ordinary Unicode: \xf0\x9f\xa6\x80'\n",
-                true,
-                source,
-            );
+        mp11_packaged_snapshot_case("bootstrap.sh", &wide, false, source);
+        for (path, bytes, data) in crate::managed_context::credential_free::tests::boundary_cases()
+        {
+            mp11_packaged_snapshot_case(path, &bytes, data, source);
         }
+        mp11_packaged_snapshot_case(
+            "bootstrap",
+            b"#!/bin/sh\ncurl --us\\er owner:synthetic-canary https://example.test\n'",
+            false,
+            source,
+        );
+        mp11_packaged_snapshot_case(
+            "notes.md",
+            b"ghp_000000000000000000000000000000000000",
+            false,
+            source,
+        );
+        mp11_packaged_snapshot_case(
+            "notes.json",
+            br#"{"\u0067hp_000000000000000000000000000000000000":"ordinary"}"#,
+            false,
+            source,
+        );
+        mp11_packaged_snapshot_case(
+            "bootstrap.sh",
+            b"echo 'ordinary Unicode: \xf0\x9f\xa6\x80'\n",
+            true,
+            source,
+        );
     }
 }
 
@@ -1400,25 +1346,25 @@ fn mp11_structured_mcp_target_refuses_literal_slots() {
     mp11_structured_mcp_case(false);
 }
 
-fn write_skill(isolation: &Path, name: &str, files: usize, file_bytes: usize) {
-    let root = isolation.join("user/skills").join(name);
+fn write_script(isolation: &Path, name: &str, source_bytes: usize) {
+    let root = isolation.join("user/scripts").join(name);
     fs::create_dir_all(&root).unwrap();
     fs::write(
-        root.join("SKILL.md"),
-        format!("---\nname: {name}\ndescription: Synthetic\n---\nBody.\n"),
+        root.join("script.py"),
+        format!("#{}\n", "x".repeat(source_bytes)),
     )
     .unwrap();
-    let body = "x".repeat(file_bytes);
-    for index in 1..files {
-        fs::write(root.join(format!("ref-{index}.md")), &body).unwrap();
-    }
+    fs::write(
+        root.join("metadata.json"),
+        format!(
+            r#"{{"name":"{name}","runtime":"python","entrypoint":"script.py","description":"Synthetic","input_schema":{{}},"definition_hash":"{}"}}"#,
+            "a".repeat(64)
+        ),
+    )
+    .unwrap();
 }
 
-fn export_beyond_old_totals(
-    skills: usize,
-    files: usize,
-    file_bytes: usize,
-) -> KernelContextSnapshot {
+fn export_beyond_old_totals(scripts: usize, source_bytes: usize) -> KernelContextSnapshot {
     let _guard = crate::env_lock::lock();
     let root = test_root(format!(
         "chariox-kernel-context-large-{:016x}",
@@ -1427,8 +1373,8 @@ fn export_beyond_old_totals(
     let isolation = root.join("capabilities");
     std::env::set_var("CHARIOX_CAPABILITY_ISOLATION_ROOT", &isolation);
     std::env::set_var("CHARIOX_HOME", root.join("home"));
-    for index in 0..skills {
-        write_skill(&isolation, &format!("skill-{index:05}"), files, file_bytes);
+    for index in 0..scripts {
+        write_script(&isolation, &format!("script-{index:05}"), source_bytes);
     }
     let result = export_kernel_context(test_export_request());
     fs::remove_dir_all(&root).unwrap();
@@ -1439,14 +1385,14 @@ fn export_beyond_old_totals(
 fn kernel_context_exports_beyond_the_old_extension_and_file_count_totals() {
     crate::test_support::isolated_env_test!();
     // Old totals: 2_048 extensions, 16_384 files.
-    let snapshot = export_beyond_old_totals(2_100, 8, 8);
+    let snapshot = export_beyond_old_totals(2_100, 8);
     assert_eq!(snapshot.payload.extensions.len(), 2_100);
 }
 
 #[test]
 fn kernel_context_exports_beyond_the_old_snapshot_byte_total() {
     crate::test_support::isolated_env_test!();
-    // Old total: 128 MiB of serialized snapshot; this is about 2x (30 skills x 9 MiB, base64 inflated; a skill package itself stays within its own 10 MiB bound).
-    let snapshot = export_beyond_old_totals(30, 4, 3 * 1024 * 1024);
+    // Old total: 128 MiB of serialized snapshot; this is about 2x (30 scripts x 9 MiB, base64 inflated).
+    let snapshot = export_beyond_old_totals(30, 9 * 1024 * 1024);
     assert_eq!(snapshot.payload.extensions.len(), 30);
 }

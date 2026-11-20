@@ -28,6 +28,12 @@ pub enum SessionHistoryEntryKind {
     Notice,
 }
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionHistoryNoticeReason {
+    AgentDeadlineReached,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionHistoryEntry {
     pub session_id: String,
@@ -37,7 +43,11 @@ pub struct SessionHistoryEntry {
     pub source_attachment_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_origin: Option<PromptOrigin>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_author: Option<String>,
     pub kind: SessionHistoryEntryKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notice_reason: Option<SessionHistoryNoticeReason>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub merge_key: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -399,6 +409,18 @@ impl SessionHistoryEntry {
         self.source == Some(SessionHistoryEntrySource::ExternalProviderObserved)
     }
 
+    /// An official transcript can echo a recovery command as a user prompt.
+    /// It continues an existing turn and does not define a new answer boundary.
+    pub(crate) fn is_external_recovery_envelope(&self) -> bool {
+        self.kind == SessionHistoryEntryKind::UserPrompt
+            && self.is_external_provider_observed()
+            && {
+                let text = self.text.trim_start();
+                text.starts_with("[Chariox recovery operation chariox-recovery:")
+                    || text.starts_with("<turn_aborted>")
+            }
+    }
+
     pub fn is_external_provider_observed_state_signal(&self) -> bool {
         if !self.is_external_provider_observed() {
             return false;
@@ -459,7 +481,9 @@ impl SessionHistoryEntry {
             agent_id: Some(agent_id.to_string()),
             source_attachment_id: Some(source_attachment_id.to_string()),
             prompt_origin: Some(PromptOrigin::Chariox),
+            prompt_author: None,
             kind: SessionHistoryEntryKind::UserPrompt,
+            notice_reason: None,
             merge_key: None,
             source: None,
             external_provider: None,
@@ -490,6 +514,7 @@ impl SessionHistoryEntry {
             agent_id: agent_id.map(str::to_string),
             source_attachment_id: None,
             prompt_origin: None,
+            prompt_author: None,
             kind: match kind {
                 TerminalOutputKind::ProviderOutput => SessionHistoryEntryKind::ProviderOutput,
                 TerminalOutputKind::ProviderTerminal => {
@@ -501,6 +526,7 @@ impl SessionHistoryEntry {
                 TerminalOutputKind::ProviderStatus => SessionHistoryEntryKind::ProviderStatus,
                 TerminalOutputKind::PromptEcho => SessionHistoryEntryKind::UserPrompt,
             },
+            notice_reason: None,
             merge_key,
             source: None,
             external_provider: None,
@@ -526,7 +552,9 @@ impl SessionHistoryEntry {
             agent_id: agent_id.map(str::to_string),
             source_attachment_id: None,
             prompt_origin: None,
+            prompt_author: None,
             kind: SessionHistoryEntryKind::Notice,
+            notice_reason: None,
             merge_key: None,
             source: None,
             external_provider: None,
@@ -602,7 +630,9 @@ impl SessionHistoryEntry {
             agent_id: Some(agent_id.to_string()),
             source_attachment_id: Some(external_provider_source_attachment_id(&provider)),
             prompt_origin: Some(PromptOrigin::External),
+            prompt_author: None,
             kind,
+            notice_reason: None,
             merge_key,
             source: Some(SessionHistoryEntrySource::ExternalProviderObserved),
             external_provider: Some(provider),

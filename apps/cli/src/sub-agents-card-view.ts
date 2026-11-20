@@ -6,7 +6,9 @@ import type { EnvironmentDialogRow } from "./project-environment-projection.js"
 export function subAgentsCardRows(lines: readonly SubAgentRow[], selected: number, collapsed: ReadonlySet<string>, width: number): EnvironmentDialogRow[] {
   return lines.map((row, index) => {
     const twisty = row.children.length === 0 ? "  " : collapsed.has(row.id) ? "▸ " : "▾ "
-    const left = `${"  ".repeat(row.depth)}${twisty}${row.name}`
+    const origin = row.startedBy ? ` · Started by ${row.startedBy}` : ""
+    const location = row.roomId ? ` · ${row.roomName ?? "another Room"}` : ""
+    const left = `${"  ".repeat(row.depth)}${twisty}${row.name}${origin}${location}`
     const room = Math.max(1, width - row.word.length - 1)
     const text = `${left.length > room ? `${left.slice(0, room - 1)}…` : left.padEnd(room)} ${row.word}`
     return { text, tone: row.dimmed ? "muted" : row.word === "needs you" ? "warning" : "text", focused: index === selected, bold: false }

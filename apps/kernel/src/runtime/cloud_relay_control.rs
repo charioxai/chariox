@@ -516,6 +516,7 @@ mod tests {
             accepting_remote_leases: true,
             leased_agent_count: 0,
             local_session_count: 0,
+            local_protocol: None,
         };
         let body = cloud_kernel_presence_body(
             &config(Some(profile())),
@@ -558,6 +559,7 @@ mod tests {
             accepting_remote_leases: false,
             leased_agent_count: 1,
             local_session_count: 0,
+            local_protocol: None,
         };
 
         let body = cloud_kernel_presence_body(

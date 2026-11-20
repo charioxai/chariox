@@ -41,7 +41,7 @@ impl RoutingHostSlot {
     }
 
     /// Any live router's host: they all act on the same kernel.
-    fn get(&self) -> Option<Arc<RoutingHost>> {
+    pub(super) fn get(&self) -> Option<Arc<RoutingHost>> {
         let hosts = self.0.lock().unwrap_or_else(PoisonError::into_inner);
         hosts.iter().find_map(Weak::upgrade)
     }
@@ -167,6 +167,7 @@ async fn call(
     callers: &[Value],
 ) -> Result<Value, RoutingError> {
     let state = &host.state;
+    let approved = state.app_control().approved_operations();
     match method {
         "routing.ensure_route" => {
             let input: EnsureRoute = input(params)?;
@@ -237,7 +238,12 @@ async fn call(
         "routing.bind_agent" => {
             let input: BindAgent = input(params)?;
             let target = state
-                .app_routing_bind_agent(scope, &Acting::of(callers)?, input.event, input.agent_id)
+                .app_routing_bind_agent(
+                    scope,
+                    &Acting::of(callers, approved)?,
+                    input.event,
+                    input.agent_id,
+                )
                 .await?;
             Ok(target_json(&target))
         }
@@ -246,7 +252,7 @@ async fn call(
             let target = state
                 .app_routing_bind_workflow(
                     scope,
-                    &Acting::of(callers)?,
+                    &Acting::of(callers, approved)?,
                     input.event,
                     input.session_id,
                     input.publication_ref,
@@ -258,7 +264,11 @@ async fn call(
         "routing.unbind_target" => {
             let input: Unbind = input(params)?;
             state
-                .app_routing_unbind_target(scope, &Acting::of(callers)?, &input.automation_id)
+                .app_routing_unbind_target(
+                    scope,
+                    &Acting::of(callers, approved)?,
+                    &input.automation_id,
+                )
                 .await?;
             Ok(json!({}))
         }

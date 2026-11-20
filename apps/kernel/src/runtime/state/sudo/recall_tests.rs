@@ -7,9 +7,24 @@ use super::*;
 #[tokio::test]
 async fn mp11_g08_recall_tools_never_leave_the_caller_room_even_under_sudo() {
     let f = fixture();
-    let own = crate::session::RuntimeSession::new("recall-own-room", None, "w", "wt", "m", "k");
-    let mut foreign =
-        crate::session::RuntimeSession::new("recall-foreign-room", None, "w", "wt", "m", "k");
+    let own = crate::session::RuntimeSession::new(
+        "recall-own-room",
+        crate::session::ProjectId::test(),
+        None,
+        "w",
+        "wt",
+        "m",
+        "k",
+    );
+    let mut foreign = crate::session::RuntimeSession::new(
+        "recall-foreign-room",
+        crate::session::ProjectId::test(),
+        None,
+        "w",
+        "wt",
+        "m",
+        "k",
+    );
     foreign.set_owner_user_id("another-user");
     for session in [own.clone(), foreign.clone()] {
         f.state.owned.session_store.write().restore_session(session);
@@ -65,7 +80,15 @@ async fn mp11_g08_recall_tools_never_leave_the_caller_room_even_under_sudo() {
 #[tokio::test]
 async fn mp11_g08_history_tools_never_leave_the_caller_room_even_under_sudo() {
     let f = fixture_with_options(None, true);
-    let own = crate::session::RuntimeSession::new("history-own-room", None, "w", "wt", "m", "k");
+    let own = crate::session::RuntimeSession::new(
+        "history-own-room",
+        crate::session::ProjectId::test(),
+        None,
+        "w",
+        "wt",
+        "m",
+        "k",
+    );
     f.state
         .owned
         .session_store

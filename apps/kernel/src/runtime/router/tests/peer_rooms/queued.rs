@@ -70,7 +70,8 @@ fn a_message_to_an_idle_agent_queues_and_starts_no_turn() {
         assert_eq!(stripe.len(), 1);
         assert_eq!(stripe[0].agent_id, idle.id());
         assert_eq!(stripe[0].sender, "sender");
-        assert_eq!(stripe[0].prompt, "compare notes on the parser");
+        assert_eq!(stripe[0].preview, "compare notes on the parser");
+        assert!(!stripe[0].truncated);
         assert_eq!(states(&rooms, idle.id()).await, vec!["pending"]);
     });
 }
@@ -98,7 +99,7 @@ fn an_urgent_message_to_an_idle_agent_starts_its_turn() {
         let rooms = Rooms::new(AgentPermissionLevel::Yolo, AgentPermissionLevel::Yolo);
         let idle = spawn_idle(&rooms).await;
         let sent = send_to(&rooms, "idle", serde_json::json!({"urgent": true})).await;
-        assert_eq!(sent["status"], "durable");
+        assert_eq!(sent["status"], "steering");
         assert!(
             rooms
                 .wait_for_message_delivery(&rooms.peer_room, idle.id())
@@ -275,6 +276,79 @@ fn a_promotion_after_the_person_cancelled_says_so() {
             !rooms
                 .message_was_delivered(&rooms.peer_room, idle.id())
                 .await
+        );
+    });
+}
+
+/// A Room whose agents queue many long messages still answers its state in a small read: the session
+/// shows a preview of the first few per agent, and the recipient reads the whole text from its inbox.
+#[test]
+fn many_long_queued_messages_keep_the_session_state_small() {
+    run_peer_test("queued-bounded", || async {
+        let rooms = Rooms::new(AgentPermissionLevel::Yolo, AgentPermissionLevel::Yolo);
+        let idle = spawn_idle(&rooms).await;
+        for (index, agent) in std::iter::repeat_n(["idle", "peer"], 35)
+            .flatten()
+            .enumerate()
+        {
+            let message = format!("{index:02} {}", "x".repeat(3997));
+            send_to(&rooms, agent, serde_json::json!({ "message": message })).await;
+        }
+        let request = LocalDaemonRequest::GetSessionState(crate::local::GetSessionStateRequest {
+            session_id: rooms.peer_room.clone(),
+        });
+        let command = KernelCommand::from_local_request("cmd-queued-bounded", None, None, &request);
+        let response = rooms
+            .router
+            .dispatch(command, request)
+            .await
+            .expect("the room state");
+        let bytes = serde_json::to_vec(&response).unwrap().len();
+        let response = serde_json::to_value(&response).unwrap();
+        let queued = response["SessionState"]["session"]["queued_agent_messages"]
+            .as_array()
+            .expect("the queued messages");
+        let budget = crate::transport::perf_budget::budget("session_state_bytes");
+        assert!(
+            bytes <= budget,
+            "the session state is {bytes} bytes, over kernel.session_state_bytes {budget}"
+        );
+        for agent in [idle.id(), rooms.peer.id()] {
+            let shown: Vec<_> = queued
+                .iter()
+                .filter(|message| message["agent_id"] == agent)
+                .collect();
+            assert_eq!(shown.len(), 10, "{agent} shows its next ten messages");
+            assert!(shown[0]["preview"].as_str().unwrap().starts_with("0"));
+            assert_eq!(shown[0]["preview"].as_str().unwrap().chars().count(), 200);
+            assert_eq!(shown[0]["truncated"], true);
+        }
+        assert_eq!(rooms.inbox(&rooms.peer_room, idle.id()).await.len(), 35);
+
+        // A client opening the Room pays one attach view: the state above plus the latest turns.
+        let request =
+            LocalDaemonRequest::AttachSessionView(crate::local::AttachSessionViewRequest {
+                session_id: rooms.peer_room.clone(),
+                client_id: "perf-budget".into(),
+                capability_level: crate::attachment::ClientCapabilityLevel::FullTerminal,
+                preferred_agent_id: None,
+                latest_prompt_count: None,
+            });
+        let command = KernelCommand::from_local_request("cmd-attach-view", None, None, &request);
+        let response = rooms
+            .router
+            .dispatch(command, request)
+            .await
+            .expect("the attach view");
+        assert!(matches!(
+            response,
+            crate::local::LocalDaemonResponse::SessionViewAttached { .. }
+        ));
+        let bytes = serde_json::to_vec(&response).unwrap().len();
+        let budget = crate::transport::perf_budget::budget("attach_view_bytes");
+        assert!(
+            bytes <= budget,
+            "the attach view is {bytes} bytes, over kernel.attach_view_bytes {budget}"
         );
     });
 }

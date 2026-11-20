@@ -157,6 +157,7 @@ impl Fixture {
             name: String::new(),
             exit_ordinal: 0,
             display_name: String::new(),
+            options: Vec::new(),
         };
         match self
             .store

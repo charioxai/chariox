@@ -2,7 +2,7 @@
 //! use as env/stdin through the real MCP router and real child processes.
 //! Live provider acceptance is the separate drill.
 use super::tests::{fixture, Fixture};
-use super::vault_tests::{call, elevated, names, owner_unlocks, unlock};
+use super::vault_tests::{call, elevated, names, owner_unlocks, unlock, vault_path};
 use super::*;
 use serde_json::{json, Value};
 
@@ -605,6 +605,63 @@ async fn ordinary_vault_capture_retains_the_provider_command_mode() {
     f.state.shutdown_cleanup().await.unwrap();
 }
 
+// "Just this once" lasts a minute; a capture command may run four. The unlock stays open
+// while the command runs, so the value it prints is stored, and the Vault locks after.
+#[tokio::test]
+async fn a_once_only_unlock_stays_open_until_a_long_capture_is_stored() {
+    crate::test_support::isolated_env_test!();
+    let f = fixture();
+    crate::secret::unlock_chariox_encrypted_vault(
+        vault_path(&f),
+        super::tests::PASSKEY,
+        crate::secret::VaultUnlockLease::SingleUse,
+    )
+    .unwrap();
+    let started = workspace(&f).join("once-started");
+    let release = workspace(&f).join("once-release");
+    let argv = json!([
+        "/bin/sh",
+        "-c",
+        format!(
+            "touch '{}'; while [ ! -f '{}' ]; do sleep 0.02; done; printf '%s' '{SECRET}'",
+            started.display(),
+            release.display()
+        )
+    ]);
+    let status = || crate::secret::chariox_encrypted_vault_status(vault_path(&f)).unwrap();
+    let running = async {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !started.exists() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let open_until = status().expires_at_ms.expect("a once-only unlock expires");
+        std::fs::write(&release, "go").unwrap();
+        open_until
+    };
+    let (captured, open_until) = tokio::join!(
+        capture(&f, "once-only", argv, json!({"kind":"stdout"})),
+        running
+    );
+    let captured = captured.unwrap();
+    assert!(
+        open_until >= crate::session::unix_epoch_ms() + 4 * 60_000,
+        "the unlock outlasts the longest capture command"
+    );
+    assert!(
+        !status().unlocked,
+        "the once-only unlock ends with the store"
+    );
+    unlock(&f);
+    assert_eq!(
+        stored(&f, captured["credential_id"].as_str().unwrap()).as_str(),
+        SECRET
+    );
+    f.state.shutdown_cleanup().await.unwrap();
+}
+
 // MP-08 / MP-09 / MP-10 / MP-11: the user Stop path must settle Vault children.
 #[tokio::test]
 async fn r10_cancel_prompt_settles_vault_command_before_side_effect() {
@@ -919,6 +976,29 @@ async fn copy_for_use_derives_an_api_entry_without_the_value_reaching_the_model(
     )
     .await
     .is_err());
+    // A retry that names another source is a different request, not the committed copy.
+    let other = call(
+        &f,
+        CAPTURE,
+        json!({"request_id": "push-other", "argv": printing(SECRET), "host": "github.com",
+            "use_binding":{"target":{"kind":"command_environment","name":"GH_TOKEN","origin":"https://github.com"}}}),
+    )
+    .await
+    .unwrap();
+    let other = other["credential_id"].as_str().unwrap();
+    let swapped = call(
+        &f,
+        COPY_FOR_USE,
+        json!({"request_id":"api","from":other,"use_binding":site("https://api.github.com")}),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        swapped
+            .to_string()
+            .contains("request_id already made a copy of a different entry"),
+        "{swapped}"
+    );
     // Refused: plain HTTP, an entry that does not exist, a missing binding.
     for refused in [
         json!({"request_id":"plain","from":from,"use_binding":site("http://api.github.com")}),
@@ -971,7 +1051,11 @@ async fn a_copy_request_replayed_with_another_source_is_refused() {
     let of_first = copy(&first).await.unwrap();
     // The same request naming another entry is refused: it is not the copy the request already made.
     let refused = copy(&second).await.unwrap_err().to_string();
-    assert!(refused.contains("use a new request_id"), "{refused}");
+    assert!(
+        refused
+            .contains("request_id already made a copy of a different entry; use a new request_id"),
+        "{refused}"
+    );
     // Nor is an entry that does not exist answered with the first copy.
     assert!(copy("nope").await.is_err());
     // The same source still gets its copy back, holding the first entry's value.
@@ -990,5 +1074,130 @@ async fn a_copy_request_replayed_with_another_source_is_refused() {
         )
         .unwrap();
     assert_eq!(authorization.as_str(), format!("Bearer {SECRET}"));
+}
+
+#[tokio::test]
+async fn a_captured_command_secret_refused_for_http_points_to_a_copy_not_a_change_of_kind() {
+    crate::test_support::isolated_env_test!();
+    let f = fixture();
+    unlock(&f);
+    let captured = capture(&f, "key", printing(SECRET), json!({"kind":"stdout"}))
+        .await
+        .unwrap();
+    let handle = captured["credential_id"].as_str().unwrap();
+    let refused = call(
+        &f,
+        "chariox.http_request_with_credential",
+        json!({"credential_id": handle, "url": "https://api.example.com/", "timeout_ms": 5000}),
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+    assert!(
+        refused.contains("saved as Command secret")
+            && refused.contains("chariox.vault.copy_for_use"),
+        "{refused}"
+    );
+    assert!(!refused.contains("change Kind"), "{refused}");
+    assert!(!refused.contains(SECRET));
+    f.state.shutdown_cleanup().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_captured_command_secret_refused_for_browser_fill_points_to_a_new_password_not_a_copy() {
+    crate::test_support::isolated_env_test!();
+    let f = fixture();
+    unlock(&f);
+    let captured = capture(&f, "key", printing(SECRET), json!({"kind":"stdout"}))
+        .await
+        .unwrap();
+    let handle = captured["credential_id"].as_str().unwrap();
+    let refused = f
+        .state
+        .home_runtime_secret_service()
+        .unwrap()
+        .validate_browser_secret_input_for_target_url(handle, "https://api.example.com/login")
+        .unwrap_err()
+        .to_string();
+    assert!(
+        refused.contains("saved as Command secret")
+            && refused.contains("new Password entry")
+            && refused.contains("chariox.vault.generate"),
+        "{refused}"
+    );
+    assert!(!refused.contains("copy_for_use"), "{refused}");
+    assert!(!refused.contains(SECRET));
+    f.state.shutdown_cleanup().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_captured_private_key_is_restored_byte_for_byte_and_loads() {
+    crate::test_support::isolated_env_test!();
+    let f = fixture();
+    elevated(&f);
+    unlock(&f);
+    let key = workspace(&f).join("id_ed25519");
+    let made = std::process::Command::new("ssh-keygen")
+        .args(["-q", "-t", "ed25519", "-N", "", "-C", "vault7", "-f"])
+        .arg(&key)
+        .status()
+        .unwrap();
+    assert!(made.success());
+    let original = std::fs::read_to_string(&key).unwrap();
+    assert!(
+        original.ends_with("-----\n"),
+        "ssh-keygen writes a final newline"
+    );
+    std::fs::create_dir(workspace(&f).join("restored")).unwrap();
+    for (request_id, tool, args) in [
+        (
+            "key-file",
+            CAPTURE_FILE,
+            json!({"path": "id_ed25519", "extract": {"kind": "whole"}}),
+        ),
+        (
+            "key-stdout",
+            CAPTURE,
+            json!({"argv": ["/bin/cat", key], "extract": {"kind": "stdout"}}),
+        ),
+    ] {
+        let restored = workspace(&f).join("restored").join(request_id);
+        let mut request = json!({"request_id": request_id, "host": "server.example.com",
+            "use_binding": {"target": {"kind": "file", "path": restored}}});
+        request
+            .as_object_mut()
+            .unwrap()
+            .extend(args.as_object().unwrap().clone());
+        let captured = call(&f, tool, request).await.unwrap();
+        let handle = captured["credential_id"].as_str().unwrap();
+        assert_eq!(stored(&f, handle).as_str(), original, "{request_id}");
+        call(
+            &f,
+            WRITE_FILE,
+            json!({"path": format!("restored/{request_id}"), "template": "{{KEY}}",
+                "values": {"KEY": handle}}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(std::fs::read_to_string(&restored).unwrap(), original);
+        let loads = std::process::Command::new("ssh-keygen")
+            .arg("-y")
+            .arg("-f")
+            .arg(&restored)
+            .output()
+            .unwrap();
+        assert!(
+            loads.status.success(),
+            "{request_id}: the restored key does not load"
+        );
+    }
+    let token = capture(&f, "token", printing(SECRET), json!({"kind":"stdout"}))
+        .await
+        .unwrap();
+    assert_eq!(
+        stored(&f, token["credential_id"].as_str().unwrap()).as_str(),
+        SECRET,
+        "a one-line value keeps no line ending"
+    );
     f.state.shutdown_cleanup().await.unwrap();
 }

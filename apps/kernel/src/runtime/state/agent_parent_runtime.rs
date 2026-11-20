@@ -21,8 +21,7 @@ impl KernelRuntimeState {
         let placement = self.owned.place_agent(caller_user_id, &request)?;
         self.append_agent_durable_event("agent.updated", &placement.agent, None)
             .await?;
-        self.finish_moved_decisions(&request.session_id, placement.moved, placement.announce)
-            .await?;
+        self.finish_moved_decisions(&placement.moved).await?;
         // The moved team's existing local runs start their next turn within the new parent chain.
         self.limit_local_runs(
             "set agent parent",
@@ -48,8 +47,7 @@ impl KernelRuntimeState {
 
 struct AgentPlacement {
     agent: crate::agent::AgentInstance,
-    moved: usize,
-    announce: Vec<String>,
+    moved: Vec<super::decision_holder::MovedDecision>,
     /// The leased agents of the moved team, by home agent id.
     leased: Vec<String>,
     /// The local agents of the moved team.
@@ -95,28 +93,19 @@ impl KernelRuntimeOwnedState {
                         agent_id: parent_id.to_owned(),
                     });
                 }
-                let session = self.session_store.get_session(&request.session_id)?;
-                let unfinished_work = self
-                    .durable_state_store
-                    .agents_with_unfinished_work(&request.session_id)?;
-                crate::agent::authority_limit::check_placement(
-                    agent,
-                    parent,
-                    &agents,
-                    &session,
-                    &unfinished_work,
-                )
-                .map_err(crate::runtime::room_tool_admission::denied)?;
+                let tree = self.agent_store.list_agents();
+                crate::agent::authority_limit::check_placement(agent, parent, &tree)
+                    .map_err(crate::runtime::room_tool_admission::denied)?;
             }
             // A sub-agent made a room agent counts toward the room's limit, as a new one does.
-            None if agent.is_sub_agent() => {
+            None if !agent.is_room_agent() => {
                 let max_agents = self
                     .session_store
                     .get_session(&request.session_id)?
                     .max_agents();
                 let room_agents = agents
                     .iter()
-                    .filter(|other| !other.archived() && !other.is_sub_agent())
+                    .filter(|other| !other.archived() && other.is_room_agent())
                     .count();
                 if room_agents >= max_agents as usize {
                     return Err(DaemonError::AgentLimitReached {
@@ -131,13 +120,12 @@ impl KernelRuntimeOwnedState {
             &request.agent_id,
             request.parent_agent_id.clone().map(AgentRef::local),
         )?;
-        let (moved, announce) = self.move_subtree_decisions(&request.session_id, agent.id())?;
+        let moved = self.move_subtree_decisions(agent.id())?;
         let leased = self.leased_subtree(&request.session_id, agent.id());
         let local = self.local_subtree(&request.session_id, agent.id());
         Ok(AgentPlacement {
             agent,
             moved,
-            announce,
             leased,
             local,
         })

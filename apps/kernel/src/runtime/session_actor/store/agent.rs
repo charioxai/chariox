@@ -4,6 +4,7 @@ use std::collections::HashMap;
 
 use crate::agent::CreateAgentRequest;
 use crate::error::DaemonError;
+use crate::local::KernelConnectionClass;
 use crate::local::{
     AliasAgentRequest, DestroyAgentRequest, ForkAgentRequest, LocalDaemonResponse,
     SpawnAgentRequest, SpawnAgentsRequest, UndoTurnRequest, UpdateAgentConfigRequest,
@@ -17,6 +18,16 @@ use crate::provider::{AgentExecutionMode, AgentPermissionLevel};
 /// A child never has more authority than its parent: a level or mode the spawn does not ask
 /// for is the parent's current limit, and one it asks for cannot be above it. A spawn from a
 /// person (no parent) keeps the requested values, filled from the room defaults.
+/// A model the request names must be one the account offers; one the Room default supplies is
+/// already in use.
+fn requested_model_source(named: bool) -> crate::runtime::state::ModelSource {
+    if named {
+        crate::runtime::state::ModelSource::Named
+    } else {
+        crate::runtime::state::ModelSource::Kept
+    }
+}
+
 fn child_authority(
     parent: Option<crate::session::EffectiveAgentExecutionConfig>,
     mode: Option<AgentExecutionMode>,
@@ -43,24 +54,19 @@ fn child_authority(
     Ok((Some(child_mode), Some(child_level)))
 }
 
-fn parent_limit(
-    session: &crate::session::RuntimeSession,
-    parent: Option<&crate::agent::AgentInstance>,
-    agents: &[crate::agent::AgentInstance],
-) -> Option<crate::session::EffectiveAgentExecutionConfig> {
-    parent.map(|parent| {
-        crate::session::effective_agent_execution_config_in_tree(session, parent, agents)
-    })
-}
-
-/// An agent that calls is the origin of the change; a client's call is the person's.
+/// An agent that calls is the origin of the change; so is an outside agent acting through an
+/// owner grant. A client's call is the person's.
 fn settings_context(
     caller_agent_id: Option<&str>,
+    connection_class: Option<KernelConnectionClass>,
     reason: Option<String>,
 ) -> crate::runtime::state::SettingsContext {
-    match caller_agent_id {
-        Some(agent_id) => crate::runtime::state::SettingsContext::agent(agent_id, reason),
-        None => crate::runtime::state::SettingsContext::person(),
+    match (caller_agent_id, connection_class) {
+        (Some(agent_id), _) => crate::runtime::state::SettingsContext::agent(agent_id, reason),
+        (None, Some(KernelConnectionClass::ExternalAgent)) => {
+            crate::runtime::state::SettingsContext::external_agent(reason)
+        }
+        (None, _) => crate::runtime::state::SettingsContext::person(),
     }
 }
 
@@ -72,6 +78,7 @@ impl SessionRuntimeStore {
         request: UpdateAgentConfigRequest,
         caller_user_id: String,
         caller_agent_id: Option<String>,
+        connection_class: Option<KernelConnectionClass>,
     ) -> (
         Result<LocalDaemonResponse, DaemonError>,
         Option<SessionProjectionAction>,
@@ -127,7 +134,8 @@ impl SessionRuntimeStore {
         } else {
             request.max_context_tokens.map(Some)
         };
-        let context = settings_context(caller_agent_id.as_deref(), request.reason);
+        let context =
+            settings_context(caller_agent_id.as_deref(), connection_class, request.reason);
         let result = match self
             .state
             .update_agent_config_as(
@@ -139,7 +147,6 @@ impl SessionRuntimeStore {
                 workspace_id,
                 worktree_id,
                 max_context_tokens,
-                request.self_settings,
                 context,
             )
             .await
@@ -163,6 +170,7 @@ impl SessionRuntimeStore {
         request: UpdateAgentProfileRequest,
         caller_user_id: String,
         caller_agent_id: Option<String>,
+        connection_class: Option<KernelConnectionClass>,
     ) -> (
         Result<LocalDaemonResponse, DaemonError>,
         Option<SessionProjectionAction>,
@@ -173,7 +181,8 @@ impl SessionRuntimeStore {
         } else {
             request.effort.map(Some)
         };
-        let context = settings_context(caller_agent_id.as_deref(), request.reason);
+        let context =
+            settings_context(caller_agent_id.as_deref(), connection_class, request.reason);
         let result = match self
             .state
             .update_agent_profile_as(
@@ -291,6 +300,18 @@ impl SessionRuntimeStore {
                 }))
                 .await;
         }
+        let peer_spawn = request.peer_spawn;
+        if request.initial_task.as_deref().is_some_and(|task| {
+            task.trim().is_empty() || (caller_metaagent_id.is_none() && peer_spawn.is_none())
+        }) {
+            return self
+                .with_session_projection_action_result(Err(DaemonError::LocalTransport {
+                    operation: "agent.spawn",
+                    message: "an initial task must be nonempty and submitted by the spawning agent"
+                        .to_string(),
+                }))
+                .await;
+        }
         let session = match self.state.session_snapshot(&request.session_id).await {
             Ok(session) => session,
             Err(error) => return self.with_session_projection_action_result(Err(error)).await,
@@ -312,6 +333,8 @@ impl SessionRuntimeStore {
             .provider
             .as_deref()
             .is_none_or(|provider| provider == defaults.provider);
+        // A model the Room default supplies is already in use; one the request names must be offered.
+        let model_source = requested_model_source(request.model.is_some());
         let model = request
             .model
             .or_else(|| same_provider.then(|| defaults.model.clone()).flatten());
@@ -323,12 +346,23 @@ impl SessionRuntimeStore {
                 .then(|| defaults.account_profile.clone())
                 .flatten()
         });
-        let parent = caller_metaagent_id.as_deref().and_then(|id| {
-            self.state
-                .session_agents(&request.session_id)
-                .into_iter()
-                .find(|agent| agent.id() == id)
-        });
+        let parent = match caller_metaagent_id
+            .as_deref()
+            .map(|id| self.state.agent_for_parent(id))
+            .transpose()
+        {
+            Ok(parent) => parent,
+            Err(error) => return self.with_session_projection_action_result(Err(error)).await,
+        };
+        let author = peer_spawn
+            .as_ref()
+            .map(|peer| peer.author_name.as_str())
+            .or_else(|| {
+                parent
+                    .as_ref()
+                    .map(|agent| agent.alias().unwrap_or_else(|| agent.agent_ref()))
+            });
+        let initial_prompt = author.zip(request.initial_task);
         // A parent's command id, or a peer spawn's request from another kernel, names one agent.
         if let Some(key) = idempotency_key.as_deref() {
             let parent_id = parent.as_ref().map(|parent| parent.id());
@@ -340,6 +374,12 @@ impl SessionRuntimeStore {
                     agent.parent_agent_id() == parent_id && agent.spawn_key() == Some(key)
                 });
             if let Some(agent) = existing {
+                if let Err(error) = self
+                    .admit_spawn_follow_and_prompt(&agent, peer_spawn.as_ref(), initial_prompt)
+                    .await
+                {
+                    return self.with_session_projection_action_result(Err(error)).await;
+                }
                 return self
                     .with_session_projection_action_result(Ok(LocalDaemonResponse::AgentSpawned {
                         agent,
@@ -350,23 +390,16 @@ impl SessionRuntimeStore {
                     .await;
             }
         }
-        let peer_limit = match caller_metaagent_id
-            .as_deref()
-            .map(|caller| self.state.peer_spawn_limit(caller, &request.session_id))
+        let parent_limit = match parent
+            .as_ref()
+            .map(|parent| self.state.parent_execution_limit(&session, parent))
             .transpose()
         {
-            Ok(limit) => limit.flatten(),
+            Ok(limit) => limit,
             Err(error) => return self.with_session_projection_action_result(Err(error)).await,
         };
-        let is_peer = peer_limit.is_some();
         let (execution_mode, permission_level) = match child_authority(
-            peer_limit.or_else(|| {
-                parent_limit(
-                    &session,
-                    parent.as_ref(),
-                    &self.state.session_agents(&request.session_id),
-                )
-            }),
+            parent_limit,
             request.execution_mode,
             request.permission_level,
             defaults,
@@ -398,6 +431,7 @@ impl SessionRuntimeStore {
                     &spawn_provider,
                     account_profile.as_deref(),
                     model,
+                    model_source,
                     effort,
                 )
                 .await
@@ -408,13 +442,14 @@ impl SessionRuntimeStore {
         } else {
             (model, effort)
         };
-        let create_request = CreateAgentRequest::new(&request.session_id, spawn_provider)
+        let mut create_request = CreateAgentRequest::new(&request.session_id, spawn_provider)
             .with_owner_user_id(owner_user_id);
-        let create_request = match caller_metaagent_id.as_deref() {
-            Some(metaagent_id) if !request.metaagent && !is_peer => {
-                create_request.with_parent_agent_id(metaagent_id)
-            }
-            _ => create_request,
+        if initial_prompt.is_some() {
+            create_request.peer_spawn_limit = peer_spawn.as_ref().map(|peer| peer.limit);
+        }
+        let create_request = match parent.as_ref() {
+            Some(parent) => create_request.with_parent(parent),
+            None => create_request,
         };
         // A parent's spawn always carries a key: it marks the child as the parent's own.
         let create_request = match (idempotency_key, parent.as_ref()) {
@@ -516,12 +551,6 @@ impl SessionRuntimeStore {
         let result = match self.state.spawn_agent(create_request).await {
             Ok(agent) => {
                 let session_id = agent.session_id().to_string();
-                // A peer lives and dies with the room agent that made it.
-                if let (true, Some(creator)) = (is_peer, caller_metaagent_id.as_deref()) {
-                    if let Err(error) = self.state.record_created_local_peer(creator, &agent) {
-                        return self.with_session_projection_action_result(Err(error)).await;
-                    }
-                }
                 if let Some(slice_ref) = slice_ref_for_agent {
                     let agent_id = agent.id().to_string();
                     if let Err(error) = self
@@ -531,6 +560,12 @@ impl SessionRuntimeStore {
                     {
                         return self.with_session_projection_action_result(Err(error)).await;
                     }
+                }
+                if let Err(error) = self
+                    .admit_spawn_follow_and_prompt(&agent, peer_spawn.as_ref(), initial_prompt)
+                    .await
+                {
+                    return self.with_session_projection_action_result(Err(error)).await;
                 }
                 // A person's new agent becomes the focus and gets the session's
                 // foreground App, like any focus change. An agent-initiated
@@ -564,6 +599,30 @@ impl SessionRuntimeStore {
             Err(error) => Err(error),
         };
         self.with_session_projection_action_result(result).await
+    }
+
+    async fn admit_spawn_follow_and_prompt(
+        &self,
+        agent: &crate::agent::AgentInstance,
+        peer_spawn: Option<&crate::local::PeerSpawnOrigin>,
+        initial_prompt: Option<(&str, String)>,
+    ) -> Result<(), DaemonError> {
+        // Register the follower before dispatch so a fast first turn still reports its result.
+        if let Some(peer) = peer_spawn {
+            if let Some(follow) = peer.follow.clone() {
+                self.state.follow_spawned_room_peer(
+                    &peer.kernel_id,
+                    &peer.owner_id,
+                    follow,
+                    agent.session_id(),
+                    agent.id(),
+                )?;
+            }
+        }
+        if let Some((author, task)) = initial_prompt {
+            self.state.start_spawn_prompt(agent, author, task).await?;
+        }
+        Ok(())
     }
 
     pub(in crate::runtime::session_actor) async fn spawn_agents(
@@ -633,6 +692,14 @@ impl SessionRuntimeStore {
         let parent = caller_metaagent_id
             .as_deref()
             .and_then(|id| room_agents.iter().find(|agent| agent.id() == id).cloned());
+        let parent_limit = match parent
+            .as_ref()
+            .map(|parent| self.state.parent_execution_limit(&session, parent))
+            .transpose()
+        {
+            Ok(limit) => limit,
+            Err(error) => return self.with_session_projection_action_result(Err(error)).await,
+        };
         let workspace_id = session.workspace_id().to_string();
         let default_worktree_id = session.worktree_id().to_string();
 
@@ -662,6 +729,7 @@ impl SessionRuntimeStore {
                 .provider
                 .as_deref()
                 .is_none_or(|provider| provider == default_provider);
+            let model_source = requested_model_source(item.model.is_some());
             let model = item
                 .model
                 .or_else(|| same_provider.then(|| default_model.clone()).flatten());
@@ -669,7 +737,7 @@ impl SessionRuntimeStore {
                 .effort
                 .or_else(|| same_provider.then(|| default_effort.clone()).flatten());
             let (execution_mode, permission_level) = match child_authority(
-                parent_limit(&session, parent.as_ref(), &room_agents),
+                parent_limit,
                 item.execution_mode,
                 item.permission_level,
                 defaults,
@@ -732,13 +800,14 @@ impl SessionRuntimeStore {
                         &item_provider,
                         item_account_profile.as_deref(),
                         model,
+                        model_source,
                         effort,
                     )
                     .await
                 {
                     Ok(selection) => selection,
                     Err(error) => {
-                        return self.with_session_projection_action_result(Err(error)).await
+                        return self.with_session_projection_action_result(Err(error)).await;
                     }
                 }
             } else {
@@ -944,5 +1013,30 @@ impl SessionRuntimeStore {
             Err(error) => Err(error),
         };
         self.with_session_projection_action_result(result).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runtime::state::SettingsOrigin;
+
+    #[test]
+    fn a_settings_call_is_the_agents_the_outside_agents_or_the_persons() {
+        let origin = |agent: Option<&str>, class| settings_context(agent, class, None).origin;
+        assert_eq!(
+            origin(Some("agent-1"), Some(KernelConnectionClass::KernelAgent)),
+            SettingsOrigin::Agent("agent-1".into())
+        );
+        assert_eq!(
+            origin(None, Some(KernelConnectionClass::ExternalAgent)),
+            SettingsOrigin::ExternalAgent,
+            "an outside agent acts for the person through its grant"
+        );
+        assert_eq!(
+            origin(None, Some(KernelConnectionClass::Terminal)),
+            SettingsOrigin::Person
+        );
+        assert_eq!(origin(None, None), SettingsOrigin::Person);
     }
 }
