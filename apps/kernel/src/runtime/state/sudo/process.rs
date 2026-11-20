@@ -83,7 +83,12 @@ impl KernelRuntimeState {
             .agent_store
             .get_agent(run.agent_instance_id()?)
             .ok()?;
-        (run.state() == crate::provider::ProviderRunState::Running && !agent.archived())
+        let current = self
+            .owned
+            .provider_store
+            .get_run_for_agent(run.session_id(), agent.id())
+            .is_some_and(|current| current.id() == run_id);
+        (current && run.state() == crate::provider::ProviderRunState::Running && !agent.archived())
             .then_some((&chain[index], agent))
     }
 

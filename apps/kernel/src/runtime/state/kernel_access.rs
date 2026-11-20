@@ -24,6 +24,7 @@ pub(crate) struct PendingAccess {
     key: (u32, u64, String),
     deadline_ms: u64,
     description: Option<String>,
+    agent_id: Option<String>,
     extend_notice_minutes: u32,
 }
 
@@ -727,6 +728,7 @@ impl KernelRuntimeState {
             key,
             deadline_ms,
             description,
+            agent_id: agent.map(|agent| agent.id().to_owned()),
             extend_notice_minutes: config.grant_extend_notice_minutes,
         }))
     }
@@ -745,11 +747,16 @@ impl KernelRuntimeState {
             key,
             deadline_ms,
             description,
+            agent_id,
             extend_notice_minutes,
         } = pending;
         let result = self
             .access_decision(&summary, &holder, "grant", deadline_ms, description)
             .await;
+        let same_agent = agent_id.is_none_or(|id| {
+            self.access_requester(&holder, Some(holder.pid))
+                .is_ok_and(|(_, agent)| agent.is_some_and(|agent| agent.id() == id))
+        });
         let mut state = self
             .owned
             .kernel_access
@@ -779,7 +786,14 @@ impl KernelRuntimeState {
         };
         // The requester sat inside the holder when the request arrived (checked on submit),
         // and the grant binds to the holder identity the owner saw, not to the requester.
-        if !holder.alive() || requester.is_some_and(|peer| !peer.alive()) {
+        if !same_agent || !holder.alive() || requester.is_some_and(|peer| !peer.alive()) {
+            state.remember_request_outcome(
+                &holder,
+                KernelAccessStatusReason {
+                    code: Refusal::Ended.code().into(),
+                    message: Refusal::Ended.message().into(),
+                },
+            );
             // Ending the request also locks the access store to track owed audit work.
             drop(state);
             self.audit_access(&summary, "revoked", Some("authorization_invalidated"))?;
