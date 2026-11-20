@@ -24,6 +24,7 @@ fn fail_start(f: &Fixture, sequence: u64, error: &str, now: u64) -> InboxEvent {
         agent: "parent".into(),
         sequence,
         error: error.into(),
+        waits_on_owner: false,
         now,
     }) else {
         panic!("event")
@@ -127,6 +128,60 @@ fn a_failing_start_ends_after_its_attempts_not_after_the_old_window() {
     assert!(
         f.store.agent_start_failure(e.sequence).unwrap().is_none(),
         "the ended delivery keeps no retry state"
+    );
+}
+
+/// WS6: a start that waits on a locked Vault spends no attempt and never ends on its own, however
+/// long the person is away; the next real failure counts from where it was.
+#[test]
+fn a_start_waiting_on_the_vault_spends_no_attempt_and_never_ends() {
+    let f = Fixture::new();
+    let e = pending_message(&f);
+    let mut at = 1_000_000;
+    for _ in 0..(START_ATTEMPTS * 3) {
+        f.apply(Operation::Attempt {
+            room: "room".into(),
+            agent: "parent".into(),
+            sequence: e.sequence,
+            prompt: format!("prompt-{at}"),
+            target: None,
+            run: None,
+            now: at,
+            work: None,
+            through: e.sequence,
+        });
+        f.apply(Operation::StartFailed {
+            room: "room".into(),
+            agent: "parent".into(),
+            sequence: e.sequence,
+            error: "The Vault is locked. The unlock card is open in this Room: try again once the Vault is unlocked.".into(),
+            waits_on_owner: true,
+            now: at,
+        });
+        at += 60 * 60_000;
+        sweep(&f, at);
+    }
+    let kept = f.store.agent_start_failure(e.sequence).unwrap().unwrap();
+    assert_eq!(kept.attempts, 0, "no attempt spent");
+    let row = f.store.agent_inbox("room", "parent", 0).unwrap().remove(0);
+    assert_eq!(row.state, "pending", "still waiting for the person");
+    assert!(f
+        .store
+        .agent_tasks(Some("room"), Some("parent"))
+        .unwrap()
+        .iter()
+        .all(|t| !t.task_id.starts_with("delivery-")));
+    assert_eq!(
+        fail_start(&f, e.sequence, "no such directory", at).state,
+        "pending"
+    );
+    assert_eq!(
+        f.store
+            .agent_start_failure(e.sequence)
+            .unwrap()
+            .unwrap()
+            .attempts,
+        1
     );
 }
 

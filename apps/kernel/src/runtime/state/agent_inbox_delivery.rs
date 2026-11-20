@@ -918,6 +918,16 @@ impl KernelRuntimeState {
         sequence: u64,
         error: &DaemonError,
     ) -> Result<(), DaemonError> {
+        // A locked Vault waits for the person, whose unlock card is open and was announced in the
+        // pane when it opened: no attempt is spent and nothing more is said per retry.
+        let waits_on_owner = super::runtime_vault_unlock_state::is_vault_unlock_card_open(error)
+            || matches!(
+                error,
+                DaemonError::VaultUnlock {
+                    code: "vault_locked",
+                    ..
+                }
+            );
         let Outcome::Event(event) =
             self.owned
                 .durable_state_store
@@ -926,6 +936,7 @@ impl KernelRuntimeState {
                     agent: agent.into(),
                     sequence,
                     error: error.to_string(),
+                    waits_on_owner,
                     now: crate::session::unix_epoch_ms(),
                 })?
         else {

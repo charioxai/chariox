@@ -610,6 +610,9 @@ pub(crate) enum Operation {
         agent: String,
         sequence: u64,
         error: String,
+        /// The start waits on a person (a locked Vault): it is tried again soon and spends no
+        /// attempt, because the person may be away for hours.
+        waits_on_owner: bool,
         now: u64,
     },
     Ack {
