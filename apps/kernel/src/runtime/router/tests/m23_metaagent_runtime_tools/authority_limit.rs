@@ -498,9 +498,13 @@ async fn finished_deadline() {
     assert!(runs(&world, "b").await, "the new limit revived b");
     finish(&world, "b").await;
     assert!(!runs(&world, "b").await);
-    // D2: a refusal names who can change the limit.
-    let refused = room_command(&world, "peer", "agent deadline b 1h").await;
+    // D2: an agent cannot change its own limit, and the refusal says who can.
+    let refused = room_command(&world, "b", "agent deadline b 1h").await;
     assert!(!refused.ok, "{refused:?}");
+    assert!(
+        error_text(&refused).contains("owner"),
+        "the refusal names who can change it: {refused:?}"
+    );
     assert!(!runs(&world, "b").await, "a refused edit changes nothing");
 
     // D1: the parent gives the finished child a new deadline, and b runs again.
