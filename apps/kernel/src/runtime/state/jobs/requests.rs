@@ -99,6 +99,11 @@ impl KernelRuntimeState {
                 }
             }
             if name == "chariox.jobs.cancel" && record.result.is_none() {
+                driver
+                    .agent_cancels
+                    .lock()
+                    .expect("job agent cancels")
+                    .insert(record.job_id.clone());
                 let wake = self
                     .owned
                     .durable_state_store

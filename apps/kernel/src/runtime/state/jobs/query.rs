@@ -86,15 +86,15 @@ impl KernelRuntimeState {
         let reached_at_ms = deadline
             .reached_at_ms
             .filter(|_| deadline.state == crate::local::AgentDeadlineState::Reached)?;
-        // The result was saved when the limit ended, not earlier by the agent's own cancel.
-        let saved_at_ms =
-            std::fs::metadata(self.job_wake_driver.as_ref()?.path(&record.job_id).ok()?)
-                .and_then(|meta| meta.modified())
-                .ok()?
-                .duration_since(std::time::UNIX_EPOCH)
-                .ok()
-                .and_then(|elapsed| u64::try_from(elapsed.as_millis()).ok())?;
-        if saved_at_ms + 1_000 < reached_at_ms {
+        // A job its agent cancelled itself is not the limit's.
+        if self
+            .job_wake_driver
+            .as_ref()?
+            .agent_cancels
+            .lock()
+            .expect("job agent cancels")
+            .contains(&record.job_id)
+        {
             return None;
         }
         let agent = self.owned.agent_store.get_agent(&record.agent_id).ok();
