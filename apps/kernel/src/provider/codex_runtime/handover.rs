@@ -50,6 +50,10 @@ impl CodexHandover {
     pub(crate) fn connection(&self) -> i32 {
         self.connection
     }
+
+    pub(crate) fn pending_goal_approval(&self) -> Option<&crate::provider::NativeApprovalGoal> {
+        self.workspace_approval.as_ref()?.pending_goal_approval()
+    }
 }
 
 /// The run's turn with its connection, when one is running on a thread the

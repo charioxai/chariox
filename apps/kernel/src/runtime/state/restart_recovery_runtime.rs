@@ -15,6 +15,30 @@ pub(crate) fn is_internal_recovery_prompt_attachment(attachment_id: &str) -> boo
     attachment_id.starts_with(KERNEL_RECOVERY_ATTACHMENT_PREFIX)
 }
 
+pub(super) fn restart_recovery_dispatch(
+    session_id: &str,
+    agent_id: &str,
+    provider_run_id: String,
+    prompt: &crate::session::PromptQueueItem,
+) -> crate::app::KernelPromptDispatch {
+    crate::app::KernelPromptDispatch {
+        session_id: session_id.to_string(),
+        provider_run_id,
+        agent_id: agent_id.to_string(),
+        prompt_id: prompt.id().to_string(),
+        target_active_prompt_id: None,
+        source_attachment_id: prompt.source_attachment_id().to_string(),
+        prompt: prompt.prompt().to_string(),
+        hidden_system_context: prompt.hidden_system_context().to_string(),
+        attachments: prompt.attachments().to_vec(),
+        prompt_origin: prompt.prompt_origin(),
+        external_provider: prompt.external_provider().map(str::to_string),
+        external_provider_session_id: prompt.external_provider_session_id().map(str::to_string),
+        external_provider_turn_id: prompt.external_provider_turn_id().map(str::to_string),
+        steering: false,
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct DurableRestartRecoverySummary {
     pub(crate) cancelled_local_prompts_finalized: usize,
@@ -827,6 +851,31 @@ impl KernelRuntimeState {
                     }
                     continue;
                 }
+                #[cfg(unix)]
+                if let Some(result) = self
+                    .resume_handed_over_goal_approval(session.id(), agent_id, &prompt)
+                    .await
+                {
+                    match result {
+                        Ok(()) => summary.uncertain_original_redispatched += 1,
+                        Err(error) => {
+                            summary.failed_reconciliations += 1;
+                            summary.failed_local_prompts.push((
+                                session.id().to_string(),
+                                agent_id.to_string(),
+                                prompt.id().to_string(),
+                            ));
+                            summary.note_vault_locked(session.id(), agent_id, &error);
+                            log_restart_recovery_failure(
+                                session.id(),
+                                agent_id,
+                                prompt.id(),
+                                &error,
+                            );
+                        }
+                    }
+                    continue;
+                }
                 if self.local_prompt_task_handed_off(session.id(), agent_id, &prompt) {
                     match self
                         .end_handed_off_local_prompt_after_restart(session.id(), agent_id, &prompt)
@@ -1257,7 +1306,7 @@ impl KernelRuntimeState {
         Ok(cancellation.queue_head_deferred)
     }
 
-    async fn recover_local_prompt_provider(
+    pub(super) async fn recover_local_prompt_provider(
         &self,
         session_id: &str,
         agent_id: &str,
@@ -1369,22 +1418,7 @@ impl KernelRuntimeState {
         let provider_run_id = self
             .recover_local_prompt_provider(session_id, agent_id, prompt)
             .await?;
-        let dispatch = crate::app::KernelPromptDispatch {
-            session_id: session_id.to_string(),
-            provider_run_id,
-            agent_id: agent_id.to_string(),
-            prompt_id: prompt.id().to_string(),
-            target_active_prompt_id: None,
-            source_attachment_id: prompt.source_attachment_id().to_string(),
-            prompt: prompt.prompt().to_string(),
-            hidden_system_context: prompt.hidden_system_context().to_string(),
-            attachments: prompt.attachments().to_vec(),
-            prompt_origin: prompt.prompt_origin(),
-            external_provider: prompt.external_provider().map(str::to_string),
-            external_provider_session_id: prompt.external_provider_session_id().map(str::to_string),
-            external_provider_turn_id: prompt.external_provider_turn_id().map(str::to_string),
-            steering: false,
-        };
+        let dispatch = restart_recovery_dispatch(session_id, agent_id, provider_run_id, prompt);
         self.enqueue_prompt_dispatch(&dispatch).await
     }
 

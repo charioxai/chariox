@@ -552,6 +552,8 @@ impl ProviderProcessService {
                 provider_run_id: run_id.to_string(),
             });
         }
+        #[cfg(unix)]
+        crate::hot_reload::release_retained_goal_approval(run_id);
         if run_snapshot.state() == ProviderRunState::Ended {
             self.clear_runtime(run_id);
             super::super::mcp_proxy::shutdown_provider_mcp_proxy_run(run_id);
