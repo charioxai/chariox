@@ -268,11 +268,14 @@ impl DurableKernelStateStore {
         &self,
     ) -> Result<Vec<UndeliveredDelegateEnd>, DaemonError> {
         let db = self.lock_connection("agent.lifecycle.undelivered_delegate_ends")?;
+        let started = std::time::Instant::now();
+        // Start from actual dispatches so a large Room inbox is never scanned
+        // once per parent. Separate exclusions can use the occurrence index.
         let mut query = db.prepare(
             "SELECT DISTINCT child.task_id, parent.agent_id, result.public_answer
-             FROM agent_tasks parent
-             JOIN agent_delegation_messages sent ON sent.task_id=parent.task_id
-             JOIN agent_inbox brief ON brief.sequence=sent.sequence AND brief.room_id=parent.room_id
+             FROM agent_delegation_messages sent
+             CROSS JOIN agent_tasks parent ON parent.task_id=sent.task_id
+             CROSS JOIN agent_inbox brief ON brief.sequence=sent.sequence AND brief.room_id=parent.room_id
              JOIN agent_tasks child ON child.task_id='agent-event-' || brief.agent_id || '-' || brief.sequence
                  AND child.room_id=parent.room_id AND child.agent_id=brief.agent_id
              JOIN agent_source_occurrences result ON result.room_id=child.room_id
@@ -289,9 +292,13 @@ impl DurableKernelStateStore {
                  AND NOT EXISTS (
                      SELECT 1 FROM agent_inbox delivered
                      WHERE delivered.room_id=parent.room_id AND delivered.agent_id=parent.agent_id
-                       AND (delivered.occurrence_id='child-finished-' || child.task_id
-                         OR (delivered.occurrence_id=result.occurrence_id
-                             AND json_extract(delivered.payload,'$.state')='handled'))
+                       AND delivered.occurrence_id='child-finished-' || child.task_id
+                 )
+                 AND NOT EXISTS (
+                     SELECT 1 FROM agent_inbox delivered
+                     WHERE delivered.room_id=parent.room_id AND delivered.agent_id=parent.agent_id
+                       AND delivered.occurrence_id=result.occurrence_id
+                       AND json_extract(delivered.payload,'$.state')='handled'
                  )",
         ).map_err(sql)?;
         let rows = query
@@ -303,15 +310,29 @@ impl DurableKernelStateStore {
                 ))
             })
             .map_err(sql)?;
-        rows.map(|row| {
-            let (task, parent, answer) = row.map_err(sql)?;
-            Ok(UndeliveredDelegateEnd {
-                task,
-                parent,
-                answer: answer.as_deref().map(decode).transpose()?,
+        let ends = rows
+            .map(|row| {
+                let (task, parent, answer) = row.map_err(sql)?;
+                Ok(UndeliveredDelegateEnd {
+                    task,
+                    parent,
+                    answer: answer.as_deref().map(decode).transpose()?,
+                })
             })
-        })
-        .collect()
+            .collect::<Result<Vec<_>, DaemonError>>()?;
+        drop(query);
+        drop(db);
+        if !ends.is_empty() {
+            crate::logging::info_with_fields(
+                "durable_state.recovery",
+                "looked up undelivered delegate ends",
+                serde_json::json!({
+                    "count": ends.len(),
+                    "lock_held_us": started.elapsed().as_micros(),
+                }),
+            );
+        }
+        Ok(ends)
     }
 
     pub(crate) fn agent_unpublished_done_tasks(
