@@ -9,9 +9,11 @@ mod binary_request;
 mod managed_slice_activation;
 mod socket_thread;
 mod writer;
-use managed_slice_activation::managed_slice_token_confirmation_matches;
 #[cfg(test)]
-use managed_slice_activation::spawn_pending_managed_slice_activation_confirmation_after_connect;
+use managed_slice_activation::{
+    managed_slice_token_confirmation_matches,
+    spawn_pending_managed_slice_activation_confirmation_after_connect,
+};
 use managed_slice_activation::{socket_has_current_token, ManagedSliceActivationConfirmation};
 
 #[cfg(test)]
