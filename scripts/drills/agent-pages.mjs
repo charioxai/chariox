@@ -4,6 +4,8 @@
 // node scripts/drills/agent-pages.mjs --kernel-binary <kernel> --state-root <~/.chariox/dev/task>
 //   --workspace-root <outside-checkout-directory> --evidence-dir <evidence> [--agents 90]
 // CLAUDE_TOKEN_FILE holds the Claude login, stored in the drill kernel's Vault and never printed.
+// --attach-home <CHARIOX_HOME> --attach-url <ws://127.0.0.1:PORT/kernel> --claude-profile <name> uses a running
+// kernel that already holds a Claude profile (the bench lab) instead of starting one; no token file is read then.
 import { spawn, execFileSync } from "node:child_process"
 import { randomBytes } from "node:crypto"
 import { existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, writeFileSync, rmSync } from "node:fs"
@@ -22,7 +24,9 @@ const binary = need("--kernel-binary"), stateRoot = need("--state-root"), eviden
 const lanes = Number(flags.get("--agents") ?? 90)
 const model = "claude-haiku-5-5"
 const tokenFile = process.env.CLAUDE_TOKEN_FILE
-if (!tokenFile) throw new Error("CLAUDE_TOKEN_FILE is required for Claude product enrollment")
+const attachHome = flags.get("--attach-home"), attachUrl = flags.get("--attach-url")
+const claudeProfile = flags.get("--claude-profile") ?? "default"
+if (!attachHome && !tokenFile) throw new Error("CLAUDE_TOKEN_FILE is required for Claude product enrollment")
 if (!stateRoot.includes("/.chariox/dev/")) throw new Error("state must be lane-owned")
 mkdirSync(stateRoot, { recursive: true, mode: 0o700 })
 mkdirSync(evidence, { recursive: true })
@@ -60,7 +64,20 @@ async function stop(child) {
   child.kill("SIGTERM")
   try { await until(() => child.exitCode !== null || child.signalCode !== null, `PID ${child.pid} exits`, 30000) } catch { child.kill("SIGKILL") }
 }
+async function attachedKernel() {
+  const localEnv = { PATH: process.env.PATH, CHARIOX_HOME: resolve(attachHome) }
+  const client = new LocalIpcClient(attachUrl, { localAuthEnvironment: localEnv, controlRequestRetryDeadlineMs: 15000 })
+  clients.push(client)
+  const rpc = async request => {
+    const result = await client.send(request)
+    if (result.Error) throw new Error(`refused ${Object.keys(request)[0]}: ${result.Error.code} ${result.Error.message ?? ""}`)
+    return result
+  }
+  await rpc({ RelayStatus: null })
+  return { dir: resolve(attachHome), client, rpc, attached: true }
+}
 async function kernel() {
+  if (attachHome) return attachedKernel()
   const dir = join(root, "k"), ports = []
   for (let i = 0; i < 4; i++) ports.push(await freePort())
   for (const sub of ["chariox", "vault", "home", "tmp", "logs", "history", "config", "cache", "state"]) mkdirSync(join(dir, sub), { recursive: true, mode: 0o700 })
@@ -86,21 +103,23 @@ let k, room, work
 async function main() {
   k = await kernel()
   note("kernel-ready", { binary })
-  const passkey = randomBytes(24).toString("hex")
-  await k.rpc({ CreateCredentialVault: { origin: { kind: "passphrase", passphrase: passkey } } })
-  await k.rpc({ SetProviderAccountCredential: { provider: "claude", account_profile: "default", value: readFileSync(tokenFile, "utf8").trim(), overwrite: true } })
+  if (!k.attached) {
+    const passkey = randomBytes(24).toString("hex")
+    await k.rpc({ CreateCredentialVault: { origin: { kind: "passphrase", passphrase: passkey } } })
+    await k.rpc({ SetProviderAccountCredential: { provider: "claude", account_profile: "default", value: readFileSync(tokenFile, "utf8").trim(), overwrite: true } })
+  }
   work = mkdtempSync(join(workspaceRoot, "pages-"))
   execFileSync("git", ["init", "-q", "-b", "main", work])
   writeFileSync(join(work, "README.md"), "Agent pages drill workspace\n")
   execFileSync("git", ["-C", work, "add", "README.md"])
   execFileSync("git", ["-C", work, "-c", "user.name=drill", "-c", "user.email=drill@example.invalid", "commit", "-q", "-m", "Start drill"])
   const made = (await k.rpc({ CreateSession: { workspace_id: work, worktree_id: work, alias: "pages",
-    agent_defaults: { provider: "claude", account_profile: "default", model, effort: "low", permission_level: "yolo" } } })).SessionCreated
+    agent_defaults: { provider: "claude", account_profile: claudeProfile, model, effort: "low", permission_level: "yolo" } } })).SessionCreated
   room = made.session.id
   const boss = made.agent.id
   await k.rpc({ AliasAgent: { session_id: room, agent_id: boss, alias: "boss" } })
   // The scout is the agent that reads the Room; its parent is the boss.
-  const scoutSpawn = await k.rpc(spawnAgentsRequest(room, [{ provider: "claude", accountProfile: "default", alias: "scout", model, effort: "low", permissionLevel: "yolo" }]))
+  const scoutSpawn = await k.rpc(spawnAgentsRequest(room, [{ provider: "claude", accountProfile: claudeProfile, alias: "scout", model, effort: "low", permissionLevel: "yolo" }]))
   const scout = scoutSpawn.AgentsSpawned.agents[0]
   await k.rpc({ SetAgentParent: { session_id: room, agent_id: scout.id, parent_agent_id: boss } })
   note("scout", { id: scout.id })
@@ -118,7 +137,7 @@ async function main() {
   for (const [index, lane] of crowd.slice(0, 60).entries()) {
     await k.rpc({ SetAgentParent: { session_id: room, agent_id: lane.id, parent_agent_id: parents[index % 2] } })
   }
-  await k.rpc({ LaunchProviderRun: { session_id: room, agent_id: scout.id, adapter_key: "claude", provider: "claude", account_profile: "default", model, variant: null, native_tui: false } })
+  await k.rpc({ LaunchProviderRun: { session_id: room, agent_id: scout.id, adapter_key: "claude", provider: "claude", account_profile: claudeProfile, model, variant: null, native_tui: false } })
   const attachment = (await k.rpc({ AttachToSession: { session_id: room, client_id: "pages-owner", capability_level: "FullTerminal" } })).SessionAttached.attachment.id
   await k.client.subscribeToKernelEvents(room, attachment)
   const out = join(work, "pages.json")
@@ -135,7 +154,7 @@ async function main() {
   check("R3a-alias-filter", Array.isArray(report.filtered) && report.filtered.length === 11 && report.filtered.every(alias => alias.startsWith("lane8")), { filtered: report.filtered })
   check("R3b-overview-page", report.overview_rows === 5 && report.overview_total === expectedTotal && report.overview_has_agent_tasks === false, { rows: report.overview_rows, total: report.overview_total })
   // The size the provider received, from the kernel's own record of the tool results.
-  const historyDb = join(k.dir, "chariox/history/operational.db")
+  const historyDb = k.attached ? join(k.dir, "history/operational.db") : join(k.dir, "chariox/history/operational.db")
   const events = JSON.parse(execFileSync("sqlite3", ["-readonly", "-json", historyDb, "SELECT event_json FROM history_events WHERE kind='provider_tool' ORDER BY sequence"], { maxBuffer: 64e6 }).toString() || "[]")
   const sizes = events.map(row => String(row.event_json)).filter(text => text.includes("list_session_agents") || text.includes("room.overview")).map(text => text.length)
   writeFileSync(join(evidence, "tool-event-sizes.json"), JSON.stringify(sizes))
