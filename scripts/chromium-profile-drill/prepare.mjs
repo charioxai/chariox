@@ -44,6 +44,10 @@ const browserCloseModules = [
   "kernel-browser-geometry.mjs",
   "kernel-browser-native-worker.mjs",
   "kernel-browser-pixels.mjs",
+  "browser-submit-outcome.mjs",
+  "kernel-browser-node-ref.mjs",
+  "kernel-browser-payment.mjs",
+  "kernel-browser-refusal.mjs",
 ];
 // slice-screen.sh start prepares the owned X11 keymap through slice-keyboard.py
 // and the native helpers it loads by sibling path.

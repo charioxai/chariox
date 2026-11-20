@@ -2,6 +2,10 @@
 
 This is the post-M4.5 gate before starting new feature work. The M4.5 ownership points are closed; confidence now comes from live behavior across local providers, workflows, and relay-backed remote machines.
 
+Set `CHARIOX_DRILL_RUN` to a unique run ID when several harnesses belong to one drill. Container, network, and volume labels record the run, start time, and harness. For a manually started, dedicated slice kernel, source `scripts/lib/drill-docker-owner.sh` and run `drill_docker_environment environment HARNESS` before starting the kernel. Leave shared product kernels outside the drill's ownership.
+
+Run `node scripts/sweep-drill-containers.mjs --dry-run` to list cleanup candidates, or `pnpm check:drill-containers` to fail on unlabeled containers, restart policies, or leftovers. Apply a reviewed plan with `--apply --run ID` on the intended Docker host. The sweep preserves live local owners. For detached or remote owners, pass `--ended-run ID` after confirming the run ended, or let the age limit apply (seven days by default, adjustable with `--max-age-hours`). For quota-managed slices, use the owning kernel to release quota allocations. On b3 use dry runs only.
+
 Script-level policy lives in `apps/cli/scripts/README.md`: live drills default to older Codex-capable models such as `gpt-5.2` and low effort. OpenCode Workspace Live Sync local validation currently uses the OpenCode Zen model path (`--provider-model opencode=opencode/gpt-5.2`) because the OpenAI OAuth-backed OpenCode path can fail before Chariox behavior with `Token refresh failed: 401`.
 
 Codex model override rule: when a drill includes Codex, pass an explicit provider override such as `--provider-model codex=gpt-5.2` unless the drill is intentionally validating a different Codex model. Do not assume bare `--model gpt-5.2` is enough. Some drill helpers map bare `gpt-5.2`/`gpt-5.3` to `gpt-5.2-codex`/`gpt-5.3-codex`; ChatGPT-backed Codex accounts can reject those `*-codex` ids with HTTP 400, which presents as a stuck drill with prompt echo and no provider output.

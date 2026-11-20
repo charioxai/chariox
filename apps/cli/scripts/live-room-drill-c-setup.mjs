@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { drillEnvironment, drillOwner } from "../../../scripts/lib/drill-docker-owner.mjs"
 
 import assert from "node:assert/strict"
 import { spawn, execFile } from "node:child_process"
@@ -1159,6 +1160,7 @@ function kernelProcessEnvironment(input) {
   }
   return {
     ...env,
+    ...drillEnvironment(drillOwner(import.meta.url)),
     CHARIOX_HOME: input.kernelHome,
     CHARIOX_KERNEL_PORT: String(input.kernelPort),
     CHARIOX_MCP_PORT: String(input.mcpPort),

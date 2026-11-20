@@ -25,6 +25,8 @@ set -a
 # shellcheck disable=SC1091
 source "${deployment_dir}/.env"
 set +a
+source "${repository_dir}/scripts/lib/drill-docker-owner.sh"
+drill_docker_environment environment event-publication
 
 compose=(
   docker compose

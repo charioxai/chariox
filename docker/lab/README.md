@@ -7,7 +7,7 @@ The main purpose is to test remote-machine behavior locally and to let users kee
 ## Start The Lab
 
 ```sh
-docker compose -f docker/lab/docker-compose.yml up -d relay worker-a worker-b
+docker/lab/up.sh
 ```
 
 The compose file starts a local relay and two worker kernels. Each worker has a persistent `/home/chariox` volume, so Chariox machine identity, provider installs, and provider credentials survive container restarts.
@@ -15,7 +15,7 @@ The compose file starts a local relay and two worker kernels. Each worker has a 
 The relay listens on `ws://127.0.0.1:43150` with the default lab token `local-lab`. Override it with `CHARIOX_RELAY_TOKEN` when starting compose:
 
 ```sh
-CHARIOX_RELAY_TOKEN=change-me docker compose -f docker/lab/docker-compose.yml up -d relay worker-a worker-b
+CHARIOX_RELAY_TOKEN=change-me docker/lab/up.sh
 ```
 
 From the host Chariox CLI, point the home kernel at the lab relay:

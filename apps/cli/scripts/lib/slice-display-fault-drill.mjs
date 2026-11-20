@@ -1,3 +1,4 @@
+import { drillDockerLabels } from "../../../../scripts/lib/drill-docker-owner.mjs"
 import path from "node:path"
 
 export const DISPLAY_FAULT_CASE_IDS = Object.freeze([
@@ -18,6 +19,7 @@ export function buildDisplayFaultDockerArgs({ containerName, image, sourceRoot }
     "--rm",
     "--name",
     containerName,
+    ...drillDockerLabels(import.meta.url),
     "--network",
     "none",
     "--memory",

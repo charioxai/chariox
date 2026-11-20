@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { drillEnvironment, drillOwner } from "../../../scripts/lib/drill-docker-owner.mjs"
 import { bindProviderMcpFixture, PROVIDER_MCP_FIXTURE_MODEL } from './lib/provider-mcp-fixture.mjs'
 import { publicRuntimeDiagnostic, publicProviderRun } from "../../kernel/slice-linux-docker/docker/public-runtime-diagnostics.mjs"
 import { spawnOwned, signalOwnedProcessGroup, signalOwnedProcess } from "../../kernel/slice-linux-docker/owned-process-signals.mjs"
@@ -351,6 +352,7 @@ async function run() {
   const log = createWriteStream(path.join(evidenceRoot, "kernel.log"), { flags: "a" })
   const kernelEnv = {
     ...process.env,
+    ...drillEnvironment(drillOwner(import.meta.url, { run: runId })),
     CHARIOX_HOME: path.join(tempRoot, "home"),
     CHARIOX_LOG_DIR: path.join(tempRoot, "kernel-logs"),
     CHARIOX_KERNEL_PORT: String(kernelPort),
