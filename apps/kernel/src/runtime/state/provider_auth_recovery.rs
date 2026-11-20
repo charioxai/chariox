@@ -569,7 +569,7 @@ fn provider_login_outcome_notice(
 fn agent_id_for(run: &crate::provider::RuntimeProviderRun) -> &str {
     run.agent_instance_id().unwrap_or_default()
 }
-fn provider_label(provider: &str) -> &str {
+pub(super) fn provider_label(provider: &str) -> &str {
     match provider {
         "codex" => "Codex",
         "claude" => "Claude",

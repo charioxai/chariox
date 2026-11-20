@@ -122,6 +122,19 @@ impl KernelRuntimeState {
         session: &crate::session::RuntimeSession,
         unread_for_user_id: Option<&str>,
     ) -> BTreeMap<String, crate::runtime::projection::AgentRuntimeActivity> {
+        self.agent_activity_for_session_at(
+            session,
+            unread_for_user_id,
+            crate::session::unix_epoch_ms(),
+        )
+    }
+
+    pub(super) fn agent_activity_for_session_at(
+        &self,
+        session: &crate::session::RuntimeSession,
+        unread_for_user_id: Option<&str>,
+        now_ms: u64,
+    ) -> BTreeMap<String, crate::runtime::projection::AgentRuntimeActivity> {
         let prompt_activity = self.owned.prompt_activity.read();
         let active_turns = self.owned.active_turns.snapshot();
         let mut activity = crate::runtime::projection::agent_activity_for_session_projection(
@@ -141,6 +154,7 @@ impl KernelRuntimeState {
             },
             &prompt_activity,
             &active_turns,
+            now_ms,
             unread_for_user_id,
             |agent_id| {
                 self.owned

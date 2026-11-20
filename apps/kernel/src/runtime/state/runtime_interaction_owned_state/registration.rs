@@ -166,6 +166,8 @@ impl KernelRuntimeOwnedState {
                                 interaction.id(),
                             ) || super::super::usage_limit_interactions::is_usage_limit_decision(
                                 interaction.id(),
+                            ) || super::super::provider_stall::is_provider_stall_decision(
+                                &interaction,
                             )) && interaction.kernel_operation_id() == Some(interaction.id()),
                     }
                 {

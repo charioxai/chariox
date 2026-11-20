@@ -533,6 +533,21 @@ impl PromptStateOwner {
         }
     }
 
+    pub(super) fn rooms_with_running_prompts_before(&self, cutoff_ms: u64) -> BTreeSet<String> {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .states
+            .iter()
+            .filter(|(_, state)| {
+                state.active_prompt.as_ref().is_some_and(|prompt| {
+                    prompt.status() == PromptStatus::Running && prompt.created_at_ms() <= cutoff_ms
+                })
+            })
+            .map(|(key, _)| key.session_id.clone())
+            .collect()
+    }
+
     pub(crate) fn has_any_active_prompt(&self, session: &RuntimeSession) -> bool {
         let owner = self
             .state

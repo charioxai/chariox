@@ -203,6 +203,7 @@ impl SessionSnapshotProjection {
             },
             &prompt_activity,
             &active_turns,
+            crate::session::unix_epoch_ms(),
             unread_for_user_id,
             |agent_id| {
                 completed_git_turn_snapshots.latest_projection_for_agent(session.id(), agent_id)
@@ -243,6 +244,7 @@ pub(crate) fn agent_activity_for_session_projection(
     provider_run_for_agent: impl Fn(&str) -> Option<RuntimeProviderRun>,
     prompt_activity: &BTreeMap<String, ActivePromptState>,
     active_turns: &BTreeMap<String, ActiveTurnState>,
+    now_ms: u64,
     unread_for_user_id: Option<&str>,
     completed_turn_for_agent: impl Fn(
         &str,
@@ -354,8 +356,12 @@ pub(crate) fn agent_activity_for_session_projection(
             provider_run
                 .as_ref()
                 .map(RuntimeProviderRun::last_output_at_ms),
-            active_turn.as_ref().and_then(|turn| turn.started_at_ms),
-            crate::session::unix_epoch_ms(),
+            // A managed leased turn may only have the prompt owner's admitted
+            // state here. Its transition to Running is later than queue creation.
+            provider_turn_activity
+                .map(|turn| turn.started_at_ms)
+                .or_else(|| active_prompt.map(PromptQueueItem::updated_at_ms)),
+            now_ms,
         );
         activity.insert(
             agent.id().to_string(),
