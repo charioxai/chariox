@@ -312,6 +312,7 @@ pub enum DaemonError {
         worktree_id: String,
         existing_session_id: String,
         existing_operation: Box<String>,
+        existing_workflow_run_id: Option<Box<String>>,
         requested_session_id: String,
         requested_operation: Box<String>,
     },
@@ -564,6 +565,16 @@ pub enum DaemonError {
 }
 
 impl DaemonError {
+    pub(crate) fn workspace_claim_holding_run_id(&self) -> Option<&str> {
+        match self {
+            Self::WorkspaceClaimConflict {
+                existing_workflow_run_id,
+                ..
+            } => existing_workflow_run_id.as_deref().map(String::as_str),
+            _ => None,
+        }
+    }
+
     pub(crate) fn steer_not_submitted(self, steering: bool) -> Self {
         if steering {
             Self::ProviderPromptSteerRejected {

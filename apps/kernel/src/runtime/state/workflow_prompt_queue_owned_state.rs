@@ -10,6 +10,14 @@ type WorkflowAdmission<T> = (
 );
 
 impl KernelRuntimeOwnedState {
+    fn workflow_runtime_instances_root(&self, session_id: &str) -> std::path::PathBuf {
+        self.config_projection
+            .snapshot()
+            .workflow_runtime_artifact_root()
+            .join("instances")
+            .join(session_id)
+    }
+
     fn workflow_ensure_dispatchable_runtime_instance(
         &self,
         session_id: &str,
@@ -47,71 +55,45 @@ impl KernelRuntimeOwnedState {
             return Ok(true);
         }
 
-        let instance_id = format!("workflow-instance-{:032x}", rand::random::<u128>());
-        let mut node_agent_ids = std::collections::BTreeMap::new();
+        let (instance_id, worktree_id) =
+            crate::git_worktree_placement::prepare_workflow_runtime_workspace(
+                std::path::Path::new(&candidate.source_worktree_id),
+                &self.workflow_runtime_instances_root(session_id),
+                "provision workflow runtime instance",
+            )?;
+        let mut node_agent_ids = BTreeMap::new();
         let mut materialized_agents = Vec::new();
-        let worktree_id = {
-            let worktree_root = self
-                .config_projection
-                .snapshot()
-                .workflow_runtime_artifact_root()
-                .join("instances")
-                .join(session_id);
-            std::fs::create_dir_all(&worktree_root).map_err(|error| {
-                DaemonError::LocalTransport {
-                    operation: "provision workflow runtime instance",
-                    message: format!(
-                        "failed to create workflow instance directory `{}`: {error}",
-                        worktree_root.display()
-                    ),
-                }
-            })?;
-            let target = worktree_root.join(&instance_id);
-            let placement = crate::agent::GitWorktreePlacement {
-                target_directory: Some(target.display().to_string()),
-                branch: None,
-                from_ref: Some("HEAD".to_string()),
-            };
-            let worktree_id =
-                crate::git_worktree_placement::prepare_workflow_runtime_worktree_or_reuse_directory(
-                    &placement,
-                    std::path::Path::new(&candidate.source_worktree_id),
-                    None,
-                    "provision workflow runtime instance",
-                )?;
-            let mut agent_id_map: BTreeMap<String, String> = BTreeMap::new();
-            for node in candidate.workflow.nodes() {
-                let runtime_agent_id = if let Some(agent_id) = agent_id_map.get(node.agent_id()) {
-                    agent_id.clone()
-                } else {
-                    let source_agent = match self.agent_store.get_agent(node.agent_id()) {
-                        Ok(source_agent) => source_agent,
-                        Err(error) => {
-                            self.workflow_rollback_runtime_instance_provision(
-                                &candidate.source_worktree_id,
-                                &worktree_id,
-                                false,
-                                &materialized_agents,
-                            );
-                            return Err(error);
-                        }
-                    };
-                    let materialized = self
-                        .agent_store
-                        .materialize_workflow_runtime_agent_by_agent(
-                            source_agent,
+        let mut agent_id_map: BTreeMap<String, String> = BTreeMap::new();
+        for node in candidate.workflow.nodes() {
+            let runtime_agent_id = if let Some(agent_id) = agent_id_map.get(node.agent_id()) {
+                agent_id.clone()
+            } else {
+                let source_agent = match self.agent_store.get_agent(node.agent_id()) {
+                    Ok(source_agent) => source_agent,
+                    Err(error) => {
+                        self.workflow_rollback_runtime_instance_provision(
                             session_id,
+                            &candidate.source_worktree_id,
                             &worktree_id,
-                            candidate.creating_agent_id.as_deref(),
+                            &materialized_agents,
                         );
-                    materialized_agents.push(materialized.clone());
-                    agent_id_map.insert(node.agent_id().to_string(), materialized.id().to_string());
-                    materialized.id().to_string()
+                        return Err(error);
+                    }
                 };
-                node_agent_ids.insert(node.id().to_string(), runtime_agent_id);
-            }
-            worktree_id
-        };
+                let materialized = self
+                    .agent_store
+                    .materialize_workflow_runtime_agent_by_agent(
+                        source_agent,
+                        session_id,
+                        &worktree_id,
+                        candidate.creating_agent_id.as_deref(),
+                    );
+                materialized_agents.push(materialized.clone());
+                agent_id_map.insert(node.agent_id().to_string(), materialized.id().to_string());
+                materialized.id().to_string()
+            };
+            node_agent_ids.insert(node.id().to_string(), runtime_agent_id);
+        }
 
         let instance = crate::session::WorkflowEndpointRuntimeInstance::new(
             instance_id.clone(),
@@ -129,9 +111,9 @@ impl KernelRuntimeOwnedState {
             .register_workflow_runtime_instance(session_id, instance)
         {
             self.workflow_rollback_runtime_instance_provision(
+                session_id,
                 &candidate.source_worktree_id,
                 &worktree_id,
-                false,
                 &materialized_agents,
             );
             return Err(error);
@@ -144,9 +126,9 @@ impl KernelRuntimeOwnedState {
                 .write()
                 .remove_workflow_runtime_instance(session_id, &instance_id);
             self.workflow_rollback_runtime_instance_provision(
+                session_id,
                 &candidate.source_worktree_id,
                 &worktree_id,
-                false,
                 &materialized_agents,
             );
             return Err(error);
@@ -169,9 +151,9 @@ impl KernelRuntimeOwnedState {
                     "workflow_instance_provision_rollback",
                 );
                 self.workflow_rollback_runtime_instance_provision(
+                    session_id,
                     &candidate.source_worktree_id,
                     &worktree_id,
-                    false,
                     &materialized_agents,
                 );
                 return Err(error);
@@ -276,6 +258,7 @@ impl KernelRuntimeOwnedState {
                 crate::git_worktree_placement::remove_workflow_runtime_worktree(
                     &source_worktree_id,
                     instance.worktree_id(),
+                    &self.workflow_runtime_instances_root(session_id),
                     "cleanup workflow runtime instance",
                 )?;
             }
@@ -284,12 +267,7 @@ impl KernelRuntimeOwnedState {
                 .remove_workflow_runtime_instance(session_id, instance.id())?;
         }
         self.persist_workflow_runtime_session(session_id, "workflow_instances_cleaned")?;
-        let instance_root = self
-            .config_projection
-            .snapshot()
-            .workflow_runtime_artifact_root()
-            .join("instances")
-            .join(session_id);
+        let instance_root = self.workflow_runtime_instances_root(session_id);
         let _ = std::fs::remove_dir(&instance_root);
         Ok(())
     }
@@ -299,12 +277,7 @@ impl KernelRuntimeOwnedState {
         session_id: &str,
         referenced_instance_worktrees: &std::collections::BTreeSet<std::path::PathBuf>,
     ) -> Result<usize, DaemonError> {
-        let instance_root = self
-            .config_projection
-            .snapshot()
-            .workflow_runtime_artifact_root()
-            .join("instances")
-            .join(session_id);
+        let instance_root = self.workflow_runtime_instances_root(session_id);
         let orphaned_agent_ids = self
             .agent_store
             .get_session_agents(session_id)
@@ -402,17 +375,13 @@ impl KernelRuntimeOwnedState {
             crate::git_worktree_placement::remove_workflow_runtime_worktree(
                 session.worktree_id(),
                 instance.worktree_id(),
+                &self.workflow_runtime_instances_root(session.id()),
                 "delete session workflow runtime instance",
             )?;
         }
 
         self.workflow_cleanup_orphaned_runtime_worktrees(session.id(), session.worktree_id());
-        let instance_root = self
-            .config_projection
-            .snapshot()
-            .workflow_runtime_artifact_root()
-            .join("instances")
-            .join(session.id());
+        let instance_root = self.workflow_runtime_instances_root(session.id());
         if instance_root.exists() {
             std::fs::remove_dir_all(&instance_root).map_err(|error| {
                 DaemonError::LocalTransport {
@@ -432,12 +401,7 @@ impl KernelRuntimeOwnedState {
         session_id: &str,
         source_worktree_id: &str,
     ) {
-        let instance_root = self
-            .config_projection
-            .snapshot()
-            .workflow_runtime_artifact_root()
-            .join("instances")
-            .join(session_id);
+        let instance_root = self.workflow_runtime_instances_root(session_id);
         let referenced_worktrees = self
             .session_store
             .read()
@@ -495,21 +459,20 @@ impl KernelRuntimeOwnedState {
 
     fn workflow_rollback_runtime_instance_provision(
         &self,
+        session_id: &str,
         source_worktree_id: &str,
         worktree_id: &str,
-        primary: bool,
         materialized_agents: &[crate::agent::AgentInstance],
     ) {
         for agent in materialized_agents.iter().rev() {
             let _ = self.agent_store.remove_workflow_runtime_agent(agent.id());
         }
-        if !primary {
-            let _ = crate::git_worktree_placement::remove_workflow_runtime_worktree(
-                source_worktree_id,
-                worktree_id,
-                "rollback workflow runtime instance",
-            );
-        }
+        let _ = crate::git_worktree_placement::remove_workflow_runtime_worktree(
+            source_worktree_id,
+            worktree_id,
+            &self.workflow_runtime_instances_root(session_id),
+            "rollback workflow runtime instance",
+        );
     }
 
     fn workflow_reconcile_live_orphans(&self, session_id: &str) {

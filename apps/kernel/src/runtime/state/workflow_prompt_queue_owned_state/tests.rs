@@ -1506,14 +1506,13 @@ fn deleting_session_removes_registered_workflow_runtime_worktrees() {
         branch: None,
         from_ref: Some("HEAD".to_string()),
     };
-    let registered_worktree =
-        crate::git_worktree_placement::prepare_workflow_runtime_worktree_or_reuse_directory(
-            &placement,
-            &test_root.0,
-            None,
-            "prepare session deletion test worktree",
-        )
-        .expect("runtime worktree should be created");
+    let registered_worktree = crate::git_worktree_placement::prepare_git_worktree(
+        &placement,
+        &test_root.0,
+        None,
+        "prepare session deletion test worktree",
+    )
+    .expect("runtime worktree should be created");
     let workflow = runtime
         .owned
         .session_store
