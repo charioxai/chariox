@@ -258,11 +258,11 @@ mod tests {
     mod m23_metaagent_runtime_tools;
     mod normal_stack;
     #[cfg(unix)]
-    mod provider_login_copy;
-    #[cfg(unix)]
     mod provider_account_links;
     #[cfg(unix)]
     mod provider_device_login;
+    #[cfg(unix)]
+    mod provider_login_copy;
     #[cfg(unix)]
     mod provider_login_vault_entry;
     mod provider_projection;
