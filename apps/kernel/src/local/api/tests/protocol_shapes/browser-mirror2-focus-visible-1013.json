@@ -1,0 +1,31 @@
+{
+  "items": [
+    "MP-08",
+    "MP-10"
+  ],
+  "local_protocol": 1013,
+  "peer_protocol": 450,
+  "allocation": "Landing 12.1 local 1013, relay peer 450: additive mirror v2 header focus_visible (the page's focused element matches :focus-visible); absent means no ring",
+  "subscribe": {
+    "KernelBrowser": {
+      "command": {
+        "op": "mirror_subscribe",
+        "tab_id": "t",
+        "generation": 1,
+        "device_scale_factor": 1,
+        "wire": 2
+      }
+    }
+  },
+  "pressed_delta": {
+    "wire": 2,
+    "sequence": 2,
+    "focused": "n7",
+    "focus_visible": false
+  },
+  "key_delta": {
+    "wire": 2,
+    "sequence": 3,
+    "focus_visible": true
+  }
+}

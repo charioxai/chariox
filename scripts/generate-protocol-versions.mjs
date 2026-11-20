@@ -36,6 +36,7 @@ const currentSnapshots = [
   "apps/kernel/src/local/api/tests/protocol_shapes/app-dev-register-933.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/app-view-inspection-933.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/browser-mirror2-completion-550.json",
+  "apps/kernel/src/local/api/tests/protocol_shapes/browser-mirror2-focus-visible-1013.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/browser-state-wait-unchanged-1008.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/browser-mirror2-font-absent-567.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/browser-mirror2-font-cache-1011.json",

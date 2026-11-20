@@ -379,6 +379,34 @@ fn browser_mirror2_visited_links_629_shape_is_pinned() {
 }
 
 #[test]
+fn browser_mirror2_focus_visible_1013_shape_is_pinned() {
+    // MP-08/MP-10: local 1013 (relay peer 450): the mirror v2 header says whether the page's focused element
+    // matches :focus-visible, beside `focused`; a delta carries it when only the ring changes.
+    let bytes = include_bytes!("browser-mirror2-focus-visible-1013.json");
+    assert_eq!(
+        format!("{:x}", sha2::Sha256::digest(bytes)),
+        "e91dcd34e3a5927695c7c8721871146fb5fbf07db1b4910c266f89f012b5080e"
+    );
+    let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    assert_eq!(fixture["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
+    assert_eq!(
+        fixture["peer_protocol"],
+        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION
+    );
+    let subscribe: LocalDaemonRequest =
+        serde_json::from_value(fixture["subscribe"].clone()).unwrap();
+    assert_eq!(
+        serde_json::to_value(subscribe).unwrap(),
+        fixture["subscribe"]
+    );
+    for name in ["pressed_delta", "key_delta"] {
+        let wire = serde_json::json!({"KernelBrowser": {"result": fixture[name]}});
+        let typed: LocalDaemonResponse = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(serde_json::to_value(typed).unwrap(), wire);
+    }
+}
+
+#[test]
 fn browser_mirror2_document_font_requirements_550_shape_is_pinned() {
     // MP-08/MP-10/MP-11: protocol 550/158 mirror v2 wire contract (font requirements).
     let bytes = include_bytes!("browser-mirror2-font-requirements-550.json");
