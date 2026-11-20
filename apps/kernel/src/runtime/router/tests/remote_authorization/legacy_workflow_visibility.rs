@@ -128,9 +128,6 @@ async fn workflow_visibility() {
         let pushed = router
             .session_snapshot_projection_for_attachment(&id, attachment.id(), 0)
             .unwrap();
-        assert!(
-            pushed.session.workflow_runs().is_empty(),
-            "Room subscription omits workflow history"
-        );
+        check(pushed.session.workflow_runs());
     }
 }
