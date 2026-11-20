@@ -135,6 +135,7 @@ export function fakeClient(handler: (request: Record<string, unknown>) => Record
 
 export function daemonHealth(overrides: Partial<DaemonHealthProjection> = {}): DaemonHealthProjection {
   const base: DaemonHealthProjection = {
+    build_toolchain_version: null,
     metadata: { projection_version: 1, last_event_id: 0, generated_at_ms: 0 },
     session_command_lanes: [],
     agent_command_lanes: [],

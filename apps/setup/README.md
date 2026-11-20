@@ -141,3 +141,30 @@ interrupted-journal recovery, stdin-only codes and local kernel enrollment seams
 Real Cloud/device approval, signed published artifacts, macOS signing/launchd,
 real systemd, Mac-to-LAN and fresh-machine parity remain coordinator acceptance.
 No MP item is closed by the local mocked drills.
+
+## Linux build machines
+
+For native builds on a Linux x86-64 machine, run these commands as the user
+who will build, in the build workspace on that machine:
+
+```sh
+chariox-setup build-toolchain prepare
+chariox-setup build-toolchain run -- cargo build -p chariox-kernel --locked
+```
+
+Setup checks whether the existing C and C++ compilers can link, and whether
+pkg-config can find OpenSSL and D-Bus and the host has CMake, make, Perl and
+libclang. It uses those tools when present. Otherwise, prepare needs curl,
+tar with bzip2, and HTTPS access to conda-forge. Setup verifies the micromamba
+archive and uses the [pinned package list](build-toolchain-linux-x64.lock).
+The managed environment lives in `~/.local/share/chariox/build-toolchain`.
+The run action sets compiler, linker, library and Clang header paths for that
+command.
+Use the project's own Rust toolchain and flags for optional build features.
+
+`chariox-setup build-toolchain status` reports system, managed version, or
+missing. An agent reading a ready allocation's machine status also gets the
+target's managed toolchain version, `not_installed`, or `unavailable` if the
+target could not answer. `chariox-setup build-toolchain remove` removes the
+managed environment in one step. Existing system tools are still eligible on
+the next run.

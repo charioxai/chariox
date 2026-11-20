@@ -30,7 +30,10 @@ async function metadata(path) {
 }
 async function directory(path, create) {
   let m = await metadata(path)
-  if (!m && create) { await mkdir(path, { mode: 0o700 }); m = await lstat(path) }
+  if (!m && create) {
+    await mkdir(path, { mode: 0o700 }).catch(error => { if (error.code !== "EEXIST") throw error })
+    m = await lstat(path)
+  }
   if (!m || !m.isDirectory() || m.isSymbolicLink() || m.uid !== process.getuid() || (m.mode & 0o022)) fail("install path must be a user-owned directory without links or shared write access")
 }
 export async function tree(home, relative, create = true) {
@@ -38,7 +41,7 @@ export async function tree(home, relative, create = true) {
   for (const part of relative.split("/")) { p = join(p, part); await directory(p, create) }
   return p
 }
-async function existingTree(home, relative) {
+export async function existingTree(home, relative) {
   let p = home
   for (const part of relative.split("/")) {
     p = join(p, part)

@@ -22,8 +22,11 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   const scratch = await mkdtemp(join(tmpdir(), "chariox-setup-build-"))
   try {
     const source = await readFile(join(repository, "deploy/runtime-release/extract-release.py"), "utf8")
+    const buildToolchainLock = options.target === "linux-x64"
+      ? await readFile(join(repository, "apps/setup/build-toolchain-linux-x64.lock"), "utf8")
+      : undefined
     const entry = join(scratch, "entry.mjs")
-    await writeFile(entry, `import { runSetup } from ${JSON.stringify(join(repository, "apps/setup/main.mjs"))};\nrunSetup(${JSON.stringify({ ...build, extractorSource: source })}).catch(error => {process.stderr.write("MP-07/MP-08/MP-11: Setup failed: " + (error instanceof Error ? error.message : "unknown installation failure") + "\\n");process.exitCode=1});\n`)
+    await writeFile(entry, `import { runSetup } from ${JSON.stringify(join(repository, "apps/setup/main.mjs"))};\nrunSetup(${JSON.stringify({ ...build, extractorSource: source, buildToolchainLock })}).catch(error => {process.stderr.write("MP-07/MP-08/MP-11: Setup failed: " + (error instanceof Error ? error.message : "unknown installation failure") + "\\n");process.exitCode=1});\n`)
     const result = spawnSync("bun", ["build", "--compile", `--target=bun-${options.target}`, entry, "--outfile", join(output, "chariox-setup")], { stdio: "inherit" })
     if (result.status !== 0) throw new Error("unsigned Setup compilation failed")
     await writeFile(join(output, "install.sh"), script, { mode: 0o755 })
