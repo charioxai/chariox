@@ -1,6 +1,7 @@
 // MP-07 / MP-08 / MP-10 / MP-11: regenerate landing pins from the two Rust constants.
 import { readFileSync, writeFileSync } from "node:fs"
 import { repositoryRoot, localProtocolVersion, relayPeerProtocolVersion } from "./lib/protocol-versions.mjs"
+import { HASH_PINS_PATH, hashPinsProblem } from "./lib/protocol-hash-pins.mjs"
 const check = process.argv.includes("--check")
 function update(path, content) {
   const url = new URL(path, repositoryRoot)
@@ -98,3 +99,8 @@ const clientPath = "packages/kernel-client/src/kernel-types.ts"
 update(clientPath, readFileSync(new URL(clientPath, repositoryRoot), "utf8").replace(/export const LOCAL_DAEMON_PROTOCOL_VERSION = \d+/, `export const LOCAL_DAEMON_PROTOCOL_VERSION = ${localProtocolVersion}`))
 const dockerPath = "docker/publication/Dockerfile"
 update(dockerPath, readFileSync(new URL(dockerPath, repositoryRoot), "utf8").replace(/ARG CHARIOX_LOCAL_DAEMON_PROTOCOL_VERSION=\d+/g, `ARG CHARIOX_LOCAL_DAEMON_PROTOCOL_VERSION=${localProtocolVersion}`))
+// The hashes pinned in the protocol tests follow the protocol pair; pnpm protocol:rehash rewrites them and these pins.
+if (check) {
+  const problem = hashPinsProblem(readFileSync(new URL(HASH_PINS_PATH, repositoryRoot), "utf8"), localProtocolVersion, relayPeerProtocolVersion)
+  if (problem) throw new Error(problem)
+}

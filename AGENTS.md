@@ -19,7 +19,7 @@ One kernel test: `RUST_MIN_STACK=16777216 RUST_TEST_THREADS=1 cargo test -p char
 
 ## Protocol changes
 
-When a serialized shape a client depends on changes, `pnpm lint` requires the version bump (`LOCAL_DAEMON_PROTOCOL_VERSION` in `apps/kernel/src/local/api/types.rs`, and `RELAY_PEER_PROTOCOL_VERSION` in `apps/kernel/src/transport/relay_peer.rs` if peers are affected) and the snapshot update. By hand: raise a client's minimum version only if it needs the new behaviour, and add or update a focused drill.
+When a serialized shape a client depends on changes, `pnpm lint` requires the version bump (`LOCAL_DAEMON_PROTOCOL_VERSION` in `apps/kernel/src/local/api/types.rs`, and `RELAY_PEER_PROTOCOL_VERSION` in `apps/kernel/src/transport/relay_peer.rs` if peers are affected) and the snapshot update. After the bump run `pnpm protocol:generate`, then `pnpm protocol:rehash` (it runs plain cargo, so wrap it like any cargo job: `cargo-slot.sh pnpm protocol:rehash`): it rewrites the pinned snapshot hashes the bump changed and `fixtures/protocol-hash-pins.json`, and `pnpm protocol:check` and `pnpm lint:rules` fail with that command until it ran. By hand: raise a client's minimum version only if it needs the new behaviour, and add or update a focused drill.
 
 ## Development stage
 
