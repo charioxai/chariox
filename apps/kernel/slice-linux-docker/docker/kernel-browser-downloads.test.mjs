@@ -31,6 +31,9 @@ test('MP-08/MP-10 two tabs keep independent download identities and readable com
   await downloads.settle();
   const done=downloads.state()[0]; assert.equal(done.state,'done'); assert.equal(await readFile(done.path,'utf8'),'hello');
   assert.equal(done.name,'report.txt'); assert.ok(!done.path.includes('/.chariox/'));
+  assert.equal(path.basename(done.path), 'report.txt');
+  assert.deepEqual(downloads.completedFor('room-a'), [{ download_id: 'one', name: done.name, path: done.path }]);
+  assert.deepEqual(downloads.completedFor('room-b'), []);
   const saved=done.path; await downloads.cleanupSession('room-a');
   await assert.rejects(access(saved)); assert.equal(downloads.state().length,1);
 }));
@@ -41,6 +44,7 @@ test('MP-08/MP-10 cancel settles after CDP and removes partial bytes; terminal f
   await downloads.cancel('one','a'); assert.equal(downloads.state()[0].state,'in_progress');
   assert.equal(sent.at(-1).method,'Browser.cancelDownload'); progress('one','canceled',7);
   await downloads.settle(); assert.equal(downloads.state()[0].state,'cancelled'); assert.equal(downloads.state()[0].path,null);
+  assert.deepEqual(downloads.completedFor('room-a'), []);
   await assert.rejects(access(path.join(downloads.spool,'one.crdownload')));
   begin('two'); progress('two','canceled',0); await downloads.settle();
   assert.equal(downloads.state()[1].state,'failed'); assert.equal(downloads.state()[1].reason,'interrupted');

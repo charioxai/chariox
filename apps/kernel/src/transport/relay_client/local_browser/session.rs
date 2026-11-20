@@ -12,8 +12,12 @@ const SESSION_QUEUE_LIMIT: usize = 1024;
 const PING_INTERVAL: Duration = Duration::from_secs(10);
 const IDLE_TIMEOUT: Duration = Duration::from_secs(35);
 
-pub(super) async fn run<S, E>(direct: Arc<LocalBrowserDirect>, socket: S, grant: LocalBrowserGrant)
-where
+pub(super) async fn run<S, E>(
+    direct: Arc<LocalBrowserDirect>,
+    socket: S,
+    grant: LocalBrowserGrant,
+    datagram_is_local: Option<Arc<std::sync::atomic::AtomicBool>>,
+) where
     S: Stream<Item = Result<Message, E>> + Sink<Message> + Unpin,
 {
     let mut identity = grant.identity.clone();
@@ -104,6 +108,7 @@ where
                     &input_order,
                     &mut requests,
                     &payload,
+                    datagram_is_local.as_ref().is_none_or(|local| local.load(std::sync::atomic::Ordering::Relaxed)),
                 )).await
                 {
                     Some(Ok(())) => {},
@@ -185,6 +190,7 @@ async fn handle_client_frame(
     input_order: &super::super::browser_input_order::BrowserInputOrder,
     requests: &mut JoinSet<()>,
     payload: &str,
+    same_computer: bool,
 ) -> Result<(), &'static str> {
     let envelope = serde_json::from_str::<RelayEnvelope>(payload)
         .map_err(|_| "local browser sent an invalid frame")?;
@@ -230,6 +236,7 @@ async fn handle_client_frame(
                         &direct.command_result_cache,
                         &subscription_tasks,
                         None,
+                        same_computer,
                     ).await,
                     Err(outcome) => *outcome,
                 };

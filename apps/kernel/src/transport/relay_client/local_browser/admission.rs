@@ -135,7 +135,7 @@ async fn run_listener(
             match admitted {
                 Ok((socket, grant)) => {
                     tokio::spawn(async move {
-                        session::run(direct, socket, grant).await;
+                        session::run(direct, socket, grant, None).await;
                         drop(session);
                     });
                 }

@@ -421,6 +421,7 @@ impl KernelTransportRuntime {
 
 #[derive(Debug)]
 struct ConnectionState {
+    same_computer: bool,
     // MD-3: generated after admission, stable only for this live connection.
     local_terminal_id: String,
     terminal_lifetime: crate::runtime::command::TerminalLifetime,
@@ -975,6 +976,7 @@ async fn handle_kernel_connection(
         connection_class,
         None,
         agent_run_id,
+        peer_addr.is_some_and(|address| address.ip().is_loopback()),
     )
     .await
 }
@@ -998,6 +1000,7 @@ where
         KernelConnectionClass::Terminal,
         None,
         None,
+        true,
     )
     .await
 }
@@ -1010,6 +1013,7 @@ async fn serve_kernel_socket<S>(
     connection_class: KernelConnectionClass,
     peer: Option<crate::runtime::kernel_access::process::ProcessIdentity>,
     agent_run_id: Option<String>,
+    same_computer: bool,
 ) -> Result<(), DaemonError>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
@@ -1031,6 +1035,7 @@ where
     let connection_inbound_request_permits =
         Arc::new(Semaphore::new(CONNECTION_INBOUND_REQUEST_LIMIT));
     let connection_state = Arc::new(Mutex::new(ConnectionState {
+        same_computer,
         local_terminal_id: format!("{:032x}", rand::random::<u128>()),
         terminal_lifetime: Default::default(),
         browser_terminal_contexts: Default::default(),
@@ -1550,8 +1555,11 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
                     return;
                 }
             }
-            command.terminal_lifetime =
-                Some(connection_state.lock().await.terminal_lifetime.clone());
+            {
+                let connection = connection_state.lock().await;
+                command.terminal_lifetime = Some(connection.terminal_lifetime.clone());
+                command.same_computer = connection.same_computer;
+            }
             if peer.is_some() && matches!(&request, crate::local::LocalDaemonRequest::WaitEvents(_))
             {
                 connection_state
