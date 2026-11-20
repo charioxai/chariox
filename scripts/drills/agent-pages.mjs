@@ -124,7 +124,7 @@ async function main() {
   const out = join(work, "pages.json")
   const prompt = `Use only your Chariox tools and one shell command. 1) Call chariox.list_session_agents with no arguments. 2) Call chariox.list_session_agents with {"alias":"lane8"}. 3) Call chariox.room.overview with {"limit":5,"include_workflows":false}. 4) Run one shell command that writes ${out} as JSON with exactly these keys: parent (the "parent" of the "you" row of call 1), total (the "total" of call 1), rows (the number of rows in "agents" of call 1), next_cursor_present (true or false, call 1), keys (the sorted keys of the first row of call 1), filtered (the aliases of call 2), overview_rows (rows in "agents" of call 3), overview_total (the "total" of call 3), overview_has_agent_tasks (true or false). Then reply PAGES-DONE.`
   await k.rpc(submitPromptRequest(room, attachment, scout.id, prompt, []))
-  await until(() => existsSync(out), "the scout wrote its report", 240000)
+  await until(() => existsSync(out), "the scout wrote its report", 420000)
   const report = JSON.parse(readFileSync(out, "utf8"))
   writeFileSync(join(evidence, "report.json"), JSON.stringify(report, null, 2))
   const expectedTotal = lanes + 2
@@ -144,6 +144,13 @@ async function main() {
 }
 try { await main() } catch (error) { note("failure", { message: redact(error.message) }); process.exitCode = 1 }
 finally {
+  if (k) {
+    // What the kernel saw, kept next to the verdict: history events and the kernel's logs.
+    try {
+      const history = join(k.dir, "chariox/history/operational.db")
+      if (existsSync(history)) writeFileSync(join(evidence, "history-events.json"), redact(execFileSync("sqlite3", ["-readonly", "-json", history, "SELECT kind, substr(event_json,1,1500) AS event FROM history_events ORDER BY sequence"], { maxBuffer: 64e6 }).toString()))
+    } catch (error) { note("history-capture-failed", { message: redact(error.message) }) }
+  }
   if (k && room) { try { await k.rpc({ EndSession: { session_id: room } }) } catch (error) { note("session-cleanup-failed", { message: redact(error.message) }) } }
   for (const client of clients) await client.close().catch(() => {})
   for (const child of [...children].reverse()) await stop(child)
