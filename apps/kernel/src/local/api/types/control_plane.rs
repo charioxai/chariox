@@ -14,6 +14,9 @@ pub enum ControlPlaneRequest {
         class_id: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         region: Option<String>,
+        /// The Room agent’s reason is only used by its local approval card.
+        #[serde(skip)]
+        reason: Option<String>,
     },
     AcquireJob {
         capability_revision: String,

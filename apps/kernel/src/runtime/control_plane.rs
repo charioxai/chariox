@@ -297,6 +297,7 @@ mod tests {
             }
         ));
         let acquire = ControlPlaneRequest::Acquire {
+            reason: None,
             capability_revision: "forged".into(),
             request_id: "one".into(),
             class_id: None,
@@ -319,6 +320,7 @@ mod tests {
     #[test]
     fn the_acquire_request_matches_the_shared_contract() {
         let request = ControlPlaneRequest::Acquire {
+            reason: None,
             capability_revision: "a".repeat(128),
             request_id: "kernel-acquire-1".into(),
             class_id: None,

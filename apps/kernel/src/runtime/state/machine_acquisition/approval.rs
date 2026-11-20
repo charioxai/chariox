@@ -60,7 +60,7 @@ pub(in crate::runtime::state) fn timestamp(at_ms: u64) -> String {
         .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
 
-pub(super) fn decision_error(decision: &MachineDecision) -> DaemonError {
+pub(in crate::runtime::state) fn decision_error(decision: &MachineDecision) -> DaemonError {
     match decision {
         MachineDecision::Denied { person, at_ms } => acquisition_error(
             "acquisition_denied",
@@ -83,7 +83,7 @@ pub(in crate::runtime::state) fn decision_deadline(card: &RuntimeInteraction) ->
 }
 
 impl KernelRuntimeOwnedState {
-    pub(super) fn machine_decision(
+    pub(in crate::runtime::state) fn machine_decision(
         &self,
         id: &str,
         owner: &str,
@@ -166,7 +166,10 @@ impl KernelRuntimeOwnedState {
                 .shown_in_agent_id()
                 .or(card.related_agent_id())
                 .map(str::to_owned),
-            message: card.message().into(),
+            message: card.title().map_or_else(
+                || card.message().to_owned(),
+                |title| format!("{title} — {}", card.message()),
+            ),
             state,
             expires_at_ms,
         });
@@ -257,14 +260,29 @@ impl KernelRuntimeState {
         if let Some(decision) = decision {
             return approved_quote(decision, &description);
         }
+        let asker = agent.as_deref().map_or_else(
+            || "An external agent".into(),
+            |id| {
+                self.owned.agent_store.get_agent(id).map_or_else(
+                    |_| id.to_owned(),
+                    |agent| agent.alias().unwrap_or(agent.agent_ref()).to_owned(),
+                )
+            },
+        );
+        let room_name = session
+            .alias()
+            .map_or_else(|| format!("Room {}", session.id()), str::to_owned);
+        let reason = match request {
+            ControlPlaneRequest::Acquire { reason, .. } => {
+                reason.as_deref().unwrap_or("Acquire a machine")
+            }
+            _ => "Run a remote job",
+        };
+        let title = format!("{asker} in {room_name} · {reason}");
         let mut interaction = RuntimeInteraction::for_kernel_operation(
             &id,
             &id,
-            if matches!(request, ControlPlaneRequest::Acquire { .. }) {
-                "Acquire a machine"
-            } else {
-                "Run this job on a machine"
-            },
+            &title,
             &description,
             vec![
                 RuntimeInteractionChoice::new(
@@ -313,9 +331,18 @@ impl KernelRuntimeState {
                 })?;
             return self.pending_machine_acquisition(&wake, &room, Some(agent));
         }
-        let receiver = self
+        let receiver = match self
             .create_kernel_operation_interaction(&room, session.owner_user_id(), interaction)
-            .await?;
+            .await
+        {
+            Ok(receiver) => receiver,
+            Err(error) => {
+                if let Some(decision) = self.owned.machine_decision(&id, session.owner_user_id())? {
+                    return approved_quote(decision, &description);
+                }
+                return Err(error);
+            }
+        };
         let mut pending = PendingAcquisition(Some((self.clone(), room.clone(), id.clone())));
         let answer = receiver.await;
         pending.0 = None;
