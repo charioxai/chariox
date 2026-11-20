@@ -38,6 +38,10 @@ impl KernelRuntimeOwnedState {
             .list_workflows(&request.session_id)?;
         let controlled_by_metaagent_id = controlled_by_metaagent_id
             .filter(|_| !self.config_projection.snapshot().room_agent_tools);
+        let workflows = workflows
+            .into_iter()
+            .filter(|workflow| request.include_archived || !workflow.is_archived())
+            .collect::<Vec<_>>();
         let workflows = match controlled_by_metaagent_id {
             Some(metaagent_id) => workflows
                 .into_iter()

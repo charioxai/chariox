@@ -2014,6 +2014,7 @@ async fn shared_snapshot_encoding_still_encrypts_for_each_admitted_subscriber() 
             home_kernel_id: "kernel".into(),
             revision: "1".into(),
             workflow_count: 0,
+            archived_count: 0,
             workflows: vec![],
         },
         session: Box::new(app.sessions().get_session(&session_id).unwrap()),

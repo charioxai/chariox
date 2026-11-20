@@ -76,6 +76,7 @@ fn denied_requests() -> Vec<LocalDaemonRequest> {
         LocalDaemonRequest::ListSlices(crate::local::ListSlicesRequest),
         LocalDaemonRequest::ListWorkflows(crate::local::ListWorkflowsRequest {
             session_id: "session-1".to_string(),
+            include_archived: false,
         }),
         LocalDaemonRequest::ReadFile(crate::local::ReadFileCapabilityRequest {
             session_id: "session-1".to_string(),

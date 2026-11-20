@@ -517,6 +517,29 @@ impl KernelRuntimeOwnedState {
         }
     }
 
+    pub(super) fn ensure_room_owner_acts(
+        &self,
+        session_id: &str,
+        user_id: &str,
+        operation: &'static str,
+    ) -> Result<(), DaemonError> {
+        let room_owner = self
+            .session_store
+            .read()
+            .session_owner_user_id(session_id)
+            .unwrap_or_default();
+        if self.acts_for_owner(session_id, user_id, &room_owner) {
+            Ok(())
+        } else {
+            Err(Self::deny_owner(
+                user_id,
+                &room_owner,
+                format!("room `{session_id}`"),
+                operation,
+            ))
+        }
+    }
+
     pub(super) fn ensure_workflow_endpoint_owner(
         &self,
         session_id: &str,

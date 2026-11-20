@@ -1,6 +1,7 @@
 use super::*;
 use std::sync::{Arc, Barrier};
 use tokio::sync::Mutex;
+mod archive_delete;
 #[path = "dispatch_recovery_tests.rs"]
 mod dispatch_recovery_tests;
 #[path = "pump_integration_tests.rs"]
