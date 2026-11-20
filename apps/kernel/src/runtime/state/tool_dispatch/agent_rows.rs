@@ -1,6 +1,5 @@
 //! R3: a Room's agent list is one compact row per agent, in pages. The row names who the agent
 //! is and where it stands; `get_session_agent` has the settings, liveness and placement.
-use super::*;
 use crate::runtime::projection::{agent_state_label, agent_turn_state, AgentRuntimeActivity};
 use crate::transport::runtime_tools::AgentPageArgs;
 use std::collections::BTreeMap;
