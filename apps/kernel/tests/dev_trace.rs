@@ -203,3 +203,101 @@ async fn trace_refuses_to_launch_without_opt_in() {
     .unwrap_err();
     assert_eq!(error["code"], "provider_dev_stub_disabled");
 }
+
+#[tokio::test]
+#[ignore = "S1 shapes a full 40-agent Room and is run as a separate drill"]
+async fn trace_seeds_s1_through_the_real_kernel() {
+    use std::process::Stdio;
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+    let scratch = std::env::temp_dir().join(format!("loadlab-s1-{}", std::process::id()));
+    let kernel = start(&scratch);
+    let mut socket = connect(&kernel).await;
+    let room = create_session(&mut socket, &scratch).await;
+    let attached = request(
+        &mut socket,
+        json!({"AttachToSession": {"session_id": room, "client_id": "loadlab-s1",
+            "capability_level": "FullTerminal"}}),
+    )
+    .await
+    .unwrap();
+    let attachment = attached["SessionAttached"]["attachment"]["id"]
+        .as_str()
+        .unwrap();
+
+    let script = r#"
+const { once } = require('node:events')
+const { writeFileSync } = require('node:fs')
+const { join } = require('node:path')
+const { createInterface } = require('node:readline')
+const { generate } = require('./generate.cjs')
+const { seedS1 } = require('./seed-s1.cjs')
+const [directory, sessionId, attachmentId] = process.argv.slice(1)
+const input = createInterface({ input: process.stdin })
+const traces = generate('s1', 42)
+for (const [filename, contents] of traces) writeFileSync(join(directory, filename), contents)
+const rpc = async request => {
+  const reply = once(input, 'line')
+  console.log(JSON.stringify({ request }))
+  const [line] = await reply
+  const { ok, value } = JSON.parse(line)
+  if (!ok) throw new Error(JSON.stringify(value))
+  return value
+}
+seedS1({ rpc, sessionId, attachmentId, traces })
+  .then(({ tree, historyEntries }) => console.log(JSON.stringify({ done: {
+    descendants: tree.nodes.length,
+    states: Object.fromEntries(['running', 'waiting', 'idle'].map(state =>
+      [state, tree.nodes.filter(node => node.state === state).length])),
+    historyEntries: Object.values(historyEntries),
+  } })))
+  .catch(error => { console.error(error.message); process.exitCode = 1 })
+  .finally(() => input.close())
+"#;
+    let mut driver = tokio::process::Command::new("node")
+        .args(["-e", script])
+        .arg(&scratch)
+        .args([room.as_str(), attachment])
+        .current_dir(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../scripts/drills/loadlab"
+        ))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let mut incoming = BufReader::new(driver.stdout.take().unwrap()).lines();
+    let mut outgoing = driver.stdin.take().unwrap();
+    let result = tokio::time::timeout(Duration::from_secs(500), async {
+        while let Some(line) = incoming.next_line().await.unwrap() {
+            let frame: Value = serde_json::from_str(&line).unwrap();
+            if let Some(body) = frame.get("request") {
+                let response = match request(&mut socket, body.clone()).await {
+                    Ok(value) => json!({"ok": true, "value": value}),
+                    Err(value) => json!({"ok": false, "value": value}),
+                };
+                outgoing
+                    .write_all(format!("{response}\n").as_bytes())
+                    .await
+                    .unwrap();
+            } else {
+                return frame["done"].clone();
+            }
+        }
+        Value::Null
+    })
+    .await
+    .expect("S1 did not finish its kernel requests");
+
+    drop(outgoing);
+    assert!(driver.wait().await.unwrap().success());
+    assert_eq!(result["descendants"], 40, "{result}");
+    assert_eq!(
+        result["states"],
+        json!({"running": 12, "waiting": 6, "idle": 22})
+    );
+    assert_eq!(result["historyEntries"].as_array().unwrap().len(), 22);
+    println!("{result}");
+}

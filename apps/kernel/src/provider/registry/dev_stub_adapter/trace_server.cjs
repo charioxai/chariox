@@ -58,7 +58,7 @@ function projectTurn(session, parentID) {
         return
       }
       const part = this.part(kind, { text: '' })
-      const count = Math.min(text.length, Math.ceil(duration / 50))
+      const count = Math.min(Math.ceil(text.length / 40), Math.ceil(duration / 50))
       const start = performance.now()
       for (let index = 0; index < count; index++) {
         const delta = text.slice(Math.floor(index * text.length / count), Math.floor((index + 1) * text.length / count))

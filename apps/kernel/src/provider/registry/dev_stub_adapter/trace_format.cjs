@@ -1,6 +1,7 @@
 // chariox-loadlab-trace v1. Each prompt opens a turn and resets its clock.
 const isInteger = value => Number.isSafeInteger(value) && value >= 0
 const isPositive = value => isInteger(value) && value > 0
+const milliseconds = value => isInteger(value) && value <= 2_147_483_647
 const oneOf = (...values) => value => values.includes(value)
 const agentName = value => typeof value === 'string' && /^[a-zA-Z0-9_-]{1,64}$/.test(value)
 const traceName = value => typeof value === 'string' && /^[a-zA-Z0-9_-]{1,64}\.jsonl$/.test(value)
@@ -10,14 +11,14 @@ const bounded = max => value => isPositive(value) && value <= max
 const bytes = bounded(4 * 1024 * 1024)
 const steps = {
   prompt: { chars: bytes },
-  reasoning: { chars: bytes, stream_ms: isInteger },
-  text: { chars: bytes, stream_ms: isInteger, markdown: oneOf('list', 'code', 'table', 'plain') },
-  tool: { name, input_bytes: bytes, output_bytes: bytes, ms: isInteger, outcome: oneOf('ok', 'error') },
+  reasoning: { chars: bytes, stream_ms: milliseconds },
+  text: { chars: bytes, stream_ms: milliseconds, markdown: oneOf('list', 'code', 'table', 'plain') },
+  tool: { name, input_bytes: bytes, output_bytes: bytes, ms: milliseconds, outcome: oneOf('ok', 'error') },
   terminal: { lines: bounded(100_000), line_bytes: bounded(4096), rate_lps: bounded(100_000) },
   spawn: { agent: agentName, trace: traceName },
-  notify: { source: name, count: bounded(10_000), interval_ms: isInteger },
+  notify: { source: name, count: bounded(10_000), interval_ms: milliseconds },
   permission: { tool: name },
-  wait: { ms: isPositive },
+  wait: { ms: value => milliseconds(value) && value > 0 },
   end: { outcome: oneOf('completed', 'cancelled', 'error') },
 }
 
@@ -55,8 +56,8 @@ function parseTrace(input, filename = 'trace') {
       continue
     }
     const { kind, t } = record
-    if (!Object.hasOwn(steps, kind)) fail('unknown step kind')
-    fields(record, { kind: oneOf(kind), t: isInteger, ...steps[kind] }, fail)
+    if (typeof kind !== 'string' || !Object.hasOwn(steps, kind)) fail('unknown step kind')
+    fields(record, { kind: oneOf(kind), t: milliseconds, ...steps[kind] }, fail)
     if (kind === 'spawn' && record.trace !== `${record.agent}.jsonl`) fail('spawn trace filename must match the child alias')
     if (kind === 'prompt') {
       if (turn || t !== 0) fail('prompt must open a new turn at t=0')
