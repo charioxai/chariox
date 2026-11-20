@@ -196,15 +196,22 @@ pub(crate) fn command(tokens: &[String]) -> Result<(), DaemonError> {
         {
             Ok(())
         }
-        Some("session") if tokens.get(1).map(String::as_str) == Some("overview") => Ok(()),
+        Some("session")
+            if matches!(
+                tokens.get(1).map(String::as_str),
+                Some("overview" | "create" | "new")
+            ) =>
+        {
+            Ok(())
+        }
         Some("kernel") if matches!(tokens, [_, verb] if verb == "status" || verb == "list-local") => {
             Ok(())
         }
-        // What `--room` and `--slice` accept for the caller; the slice lifecycle stays out.
+        // What `--room` and `--slice` accept for the caller, and the Rooms it makes and deletes itself; the slice lifecycle stays out.
         Some("room")
             if matches!(
                 tokens.get(1).map(String::as_str),
-                Some("list" | "agents" | "cards")
+                Some("list" | "agents" | "cards" | "create" | "delete")
             ) =>
         {
             Ok(())
@@ -233,6 +240,10 @@ pub(crate) fn command_doc(mut value: serde_json::Value) -> serde_json::Value {
             } else if matches!(tokens.as_slice(), [a, b] if matches!((a.as_str(), b.as_str()), ("room", "list") | ("slice", "list")))
             {
                 "read-only; what --room and --slice accept for this agent"
+            } else if matches!(tokens.as_slice(), [a, b] if matches!((a.as_str(), b.as_str()), ("room", "create") | ("session", "create" | "new"))) {
+                "owner rooms on this kernel; guests and agents of other owners cannot create Rooms"
+            } else if matches!(tokens.as_slice(), [a, b] if a == "room" && b == "delete") {
+                "only the agent that created the Room, or an agent above it"
             } else if tokens.first().map(String::as_str) == Some("room")
                 || matches!(tokens.as_slice(), [a,b] if a == "agent" && b == "answer") {
                 "owner rooms on this kernel; current authority; secret cards are owner-only; guests cannot reach other rooms"

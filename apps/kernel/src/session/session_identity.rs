@@ -138,6 +138,9 @@ pub struct CreateSessionRequest {
     pub setup: Option<super::RoomSetupRequest>,
     #[serde(skip)]
     pub default_project_name_hint: Option<String>,
+    /// The Room agent that asked for this Room. The kernel sets it from the verified caller; it is never on the wire.
+    #[serde(skip)]
+    pub created_by_agent_id: Option<String>,
 }
 
 impl CreateSessionRequest {
@@ -158,6 +161,7 @@ impl CreateSessionRequest {
             project_selection: super::SessionProjectSelection::Default,
             setup: None,
             default_project_name_hint: None,
+            created_by_agent_id: None,
         }
     }
 
