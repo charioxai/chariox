@@ -4661,9 +4661,10 @@ pub(in crate::runtime::state) mod tests {
         let expected = crate::provider::TurnOutcome::classify(&adapter_key, REFUSAL);
         assert_eq!(expected.kind, crate::provider::TurnOutcomeKind::Overloaded);
         assert!(visible.contains(&expected.notice()));
+        assert!(expected.notice().contains("Selected model is at capacity"));
         assert!(visible
             .iter()
-            .all(|text| !text.contains("Selected model is at capacity")));
+            .all(|text| !text.contains("Codex error [server_overloaded]")));
         assert_eq!(failure, Some(serde_json::to_value(&expected).unwrap()));
     }
 
