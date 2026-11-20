@@ -616,10 +616,7 @@ impl KernelRuntimeState {
             return Err(Refusal::AgentUnavailable.error());
         }
         let holder = match holder_pid {
-            Some(pid) => chain
-                .into_iter()
-                .find(|identity| identity.pid == pid && identity.uid == peer.uid)
-                .ok_or_else(|| Refusal::HolderOutside.error())?,
+            Some(pid) => process::holder(peer, pid).map_err(|_| Refusal::HolderOutside.error())?,
             None => crate::runtime::kernel_access::requester::default_holder(peer)
                 .map_err(|_| Refusal::HolderUnavailable.error())?,
         };
@@ -786,7 +783,7 @@ impl KernelRuntimeState {
         };
         // The requester sat inside the holder when the request arrived (checked on submit),
         // and the grant binds to the holder identity the owner saw, not to the requester.
-        if !same_agent || !holder.alive() || requester.is_some_and(|peer| !peer.alive()) {
+        if !same_agent || !holder.alive() || requester.is_some_and(|peer| !holder.contains(peer)) {
             state.remember_request_outcome(
                 &holder,
                 KernelAccessStatusReason {
@@ -1007,7 +1004,7 @@ impl KernelRuntimeState {
             }
             Ok(Ok(answer)) if answer.choice_id.as_deref() == Some("refuse") => {
                 self.audit_access(grant, "refused", Some("owner_denied"))?;
-                Err(access_request_error("kernel_access_denied",
+                Err(access_request_error("kernel_access_request_denied",
                     "The owner denied kernel access. Run `chariox access request --no-wait` if you still need access.".into()))
             }
             answer => {

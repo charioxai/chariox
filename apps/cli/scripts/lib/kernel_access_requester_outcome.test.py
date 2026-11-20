@@ -10,7 +10,7 @@ outcome = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(outcome)
 
 REFUSAL = json.dumps({"error": {
-    "code": "kernel_access_denied",
+    "code": "kernel_access_request_denied",
     "message": outcome.REFUSAL_DIAGNOSTIC,
 }})
 CAPTURE = "Waiting for the owner to approve kernel access.\n" + REFUSAL + "\n"
