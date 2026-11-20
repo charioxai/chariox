@@ -40,6 +40,8 @@ pub(crate) struct CodexHandover {
     turn_tracker: CodexTurnTracker,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     workspace_approval: Option<WorkspaceApprovalState>,
+    usage_tracker: super::model_usage::CodexUsageTracker,
+    selected_model: Option<String>,
 }
 
 impl CodexHandover {
@@ -91,6 +93,8 @@ pub(crate) fn hand_over_codex_turn(
         .unavailable_workspace_sandbox
         .take()
         .map(|sandbox| sandbox.hand_over());
+    let usage_tracker = std::mem::take(&mut state.usage_tracker);
+    let selected_model = state.selected_model.take();
     // This program's descriptor closes; the connection stays open in `tcp`.
     drop(state);
     Ok(CodexHandover {
@@ -105,6 +109,8 @@ pub(crate) fn hand_over_codex_turn(
         tool_items,
         turn_tracker,
         workspace_approval,
+        usage_tracker,
+        selected_model,
     })
 }
 
@@ -116,6 +122,8 @@ pub(super) struct AdoptedTurn {
     text_items: BTreeMap<String, CodexTextTranscriptState>,
     tool_items: BTreeMap<String, CodexToolTranscriptState>,
     turn_tracker: CodexTurnTracker,
+    usage_tracker: super::model_usage::CodexUsageTracker,
+    selected_model: Option<String>,
 }
 
 /// The runtime of a handed-over turn, reading on where the previous program
@@ -136,6 +144,8 @@ pub(super) fn adopt(turn: CodexHandover) -> CodexRuntimeState {
         text_items: turn.text_items,
         tool_items: turn.tool_items,
         turn_tracker: turn.turn_tracker,
+        usage_tracker: turn.usage_tracker,
+        selected_model: turn.selected_model,
     });
     state
 }
@@ -143,6 +153,8 @@ pub(super) fn adopt(turn: CodexHandover) -> CodexRuntimeState {
 /// Continues the handed-over turn on this program.
 pub(super) fn continue_turn(state: &mut CodexRuntimeState, turn: AdoptedTurn) {
     state.turn_tracker = turn.turn_tracker;
+    state.usage_tracker = turn.usage_tracker;
+    state.selected_model = turn.selected_model;
     state.turn_tracker.note_activity();
     state.active_turn_id = Some(turn.turn_id);
     state.buffered_notifications = turn.buffered_notifications;

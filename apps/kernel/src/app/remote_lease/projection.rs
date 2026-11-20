@@ -353,7 +353,8 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 .worker_prompt_receipts
                 .get(&leased_agent.id, home)
                 .filter(|record| {
-                    record.receipt.worker_provider_run_id.as_deref() == Some(provider_run_id)
+                    record.receipt.execution_lease_id == leased_agent.lease_id
+                        && record.receipt.worker_provider_run_id.as_deref() == Some(provider_run_id)
                 })
                 .and_then(|record| record.backing_prompt_id.clone())
         });
@@ -393,6 +394,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     .is_none_or(|started_at_ms| record.completed_at_ms >= started_at_ms)
             })
             .map(|record| RelayProjectedCompletion {
+                model_usage: Vec::new(),
                 failure: failure.clone(),
                 message_id: record.message_id,
                 completed_at_ms: record.completed_at_ms,
@@ -686,6 +688,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     // The cached message identity can predate a failed native turn.
                     // Keep the current scoped termination when replaying its completion.
                     completions.push(RelayProjectedCompletion {
+                        model_usage: Vec::new(),
                         failure: failure.clone().or_else(|| replay.failure.clone()),
                         message_id: replay.message_id.clone(),
                         completed_at_ms: replay.completed_at_ms,
@@ -737,6 +740,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 .any(|key| key == &completion_key)
             {
                 completions.push(RelayProjectedCompletion {
+                    model_usage: Vec::new(),
                     failure: failure.clone(),
                     message_id,
                     completed_at_ms: crate::session::unix_epoch_ms(),
@@ -815,6 +819,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 })
             {
                 completions.push(RelayProjectedCompletion {
+                    model_usage: Vec::new(),
                     failure: failure.clone().or_else(|| replay.failure.clone()),
                     message_id: replay.message_id.clone(),
                     completed_at_ms: replay.completed_at_ms,
@@ -823,6 +828,27 @@ impl<'a> RemoteLeaseRuntime<'a> {
                         .clone()
                         .or_else(|| replay.provider_termination.clone()),
                 });
+            }
+        }
+        if !completions.is_empty() {
+            // Run snapshots can outlive the prompt that produced their usage.
+            // Resolve the admitted worker prompt before reading its counters.
+            let worker_prompt = receipt_backing_prompt_id
+                .as_deref()
+                .or(workflow_backing_prompt_id.as_deref());
+            if let Some(worker_prompt) = worker_prompt {
+                let model_usage = history_store.turn_model_usage(
+                    &leased_agent.backing_session_id,
+                    &leased_agent.backing_agent_id,
+                    worker_prompt,
+                    provider_run_id,
+                )?;
+                if let Some(completion) = completions.iter_mut().find(|completion| {
+                    !completion.is_notification_end()
+                        && completion.home_prompt_id.as_deref() == home_prompt_id.as_deref()
+                }) {
+                    completion.model_usage = model_usage;
+                }
             }
         }
         history_cursor.latest_home_prompt_key = latest_home_origin_prompt_key;
@@ -1157,6 +1183,9 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .unwrap_or_else(|| agent_id.to_string());
         let projected_provider_run_id =
             crate::provider::projected_leased_provider_run_id(&leased_agent_id, provider_run_id);
+        let worker_adapter = provider_run
+            .as_ref()
+            .map(|run| run.adapter_key().to_string());
         if let Some(provider_run) = provider_run {
             let projected_run = provider_run.projected_for_home_agent_with_id(
                 projected_provider_run_id.clone(),
@@ -1264,6 +1293,20 @@ impl<'a> RemoteLeaseRuntime<'a> {
             deduplicated_completions.push(completion);
         }
         let matching_completions = deduplicated_completions;
+        if let Some((prompt, adapter)) = active_prompt.as_ref().zip(worker_adapter.as_deref()) {
+            for completion in &matching_completions {
+                if completion.home_prompt_id.as_deref() == Some(prompt.id()) {
+                    self.app.operational_history_store().save_model_usage(
+                        session_id,
+                        agent_id,
+                        prompt.id(),
+                        &projected_provider_run_id,
+                        adapter,
+                        &completion.model_usage,
+                    )?;
+                }
+            }
+        }
         let saw_completion = !matching_completions.is_empty();
         let projected_settled_at_ms = matching_completions
             .iter()
@@ -2624,10 +2667,31 @@ mod explicit_completion_tests {
         let (provider_run_id, first_outcome) = RemoteLeaseRuntime::new(&mut app)
             .submit_leased_prompt(&leased_agent.id, "first remote prompt\n", Vec::new())
             .expect("first leased prompt should submit");
-        assert!(matches!(
-            first_outcome,
-            PromptSubmissionOutcome::Started { .. }
-        ));
+        let PromptSubmissionOutcome::Started {
+            prompt: first_prompt,
+        } = first_outcome
+        else {
+            panic!("the first leased prompt should start");
+        };
+        let usage = crate::provider::ModelTurnUsage {
+            model: "gpt-6.2-sol".into(),
+            tokens: crate::provider::ModelTokenCounts {
+                input_tokens: 500,
+                output_tokens: 200,
+                cached_input_tokens: 300,
+                cache_write_input_tokens: 0,
+            },
+        };
+        app.operational_history_store()
+            .save_model_usage(
+                &leased_agent.backing_session_id,
+                &leased_agent.backing_agent_id,
+                first_prompt.id(),
+                &provider_run_id,
+                "codex",
+                std::slice::from_ref(&usage),
+            )
+            .unwrap();
         app.leased_agents
             .get_mut(&leased_agent.id)
             .expect("leased agent should remain registered")
@@ -2683,6 +2747,11 @@ mod explicit_completion_tests {
             .expect("first provider turn should release its completion");
         let RelayPeerEvent::LeasedRuntimeProjection { completions, .. } = first_settled.1;
         assert_eq!(completions.len(), 1);
+        assert_eq!(
+            completions[0].home_prompt_id.as_deref(),
+            Some("home-prompt-a")
+        );
+        assert_eq!(completions[0].model_usage, vec![usage]);
 
         // The Codex label above exercises only explicit-completion projection.
         // Admission must still use the actual stub run's execution profile.
@@ -2782,6 +2851,10 @@ mod explicit_completion_tests {
             .expect("cancelled prompt should release a completion without provider output");
         let RelayPeerEvent::LeasedRuntimeProjection { completions, .. } = projected.1;
         assert_eq!(completions.len(), 1);
+        assert!(
+            completions[0].model_usage.is_empty(),
+            "the second turn produced no counters even though its run was reused"
+        );
         assert_eq!(
             completions[0].message_id,
             format!("prompt-complete:{}", cancelled.prompt.id())
@@ -3507,6 +3580,7 @@ mod explicit_completion_tests {
                     output_chunks: Vec::new(),
                     notices: Vec::new(),
                     completions: vec![RelayProjectedCompletion {
+                        model_usage: Vec::new(),
                         failure: None,
                         message_id: "active-prompt-complete".to_string(),
                         completed_at_ms: crate::session::unix_epoch_ms(),
@@ -3578,6 +3652,7 @@ mod explicit_completion_tests {
                     output_chunks: Vec::new(),
                     notices: Vec::new(),
                     completions: vec![RelayProjectedCompletion {
+                        model_usage: Vec::new(),
                         failure: None,
                         message_id: "ordinary-prompt-complete".to_string(),
                         completed_at_ms: crate::session::unix_epoch_ms(),
@@ -3716,6 +3791,7 @@ mod mp11_projection_admission_tests {
                     output_chunks: vec![],
                     notices: vec![],
                     completions: vec![RelayProjectedCompletion {
+                        model_usage: Vec::new(),
                         failure: None,
                         message_id: "prompt-complete:worker-turn".into(),
                         completed_at_ms: crate::session::unix_epoch_ms(),

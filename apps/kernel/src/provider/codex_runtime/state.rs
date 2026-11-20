@@ -17,6 +17,7 @@ pub struct CodexPollResult {
     pub terminal_failure: Option<String>,
     pub notices: Vec<String>,
     pub resolved_usage: Option<ProviderRunTokenUsage>,
+    pub model_usage: Vec<crate::provider::ModelTurnUsage>,
     pub account_rate_limits: Vec<serde_json::Value>,
 }
 
@@ -53,6 +54,8 @@ pub struct CodexRuntimeState {
     pub(super) unavailable_workspace_sandbox:
         Option<super::super::codex_client::UnavailableWorkspaceSandbox>,
     pub(super) turn_tracker: CodexTurnTracker,
+    pub(super) usage_tracker: super::model_usage::CodexUsageTracker,
+    pub(super) selected_model: Option<String>,
     pub(super) authoritative_backfill_gate: CodexAuthoritativeBackfillGate,
     pub(super) text_items: BTreeMap<String, CodexTextTranscriptState>,
     pub(super) tool_items: BTreeMap<String, CodexToolTranscriptState>,
@@ -128,6 +131,8 @@ impl CodexRuntimeState {
             native_approval_origin: None,
             unavailable_workspace_sandbox: None,
             turn_tracker: CodexTurnTracker::default(),
+            usage_tracker: Default::default(),
+            selected_model: None,
             authoritative_backfill_gate: CodexAuthoritativeBackfillGate::default(),
             text_items: BTreeMap::new(),
             tool_items: BTreeMap::new(),

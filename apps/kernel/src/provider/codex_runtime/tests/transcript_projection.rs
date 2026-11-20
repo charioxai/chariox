@@ -286,6 +286,7 @@ fn token_usage_notification_is_projected() {
         CodexNotification::TokenUsageUpdated {
             thread_id: "thread-1".to_string(),
             turn_id: "turn-1".to_string(),
+            counters: None,
             usage: ProviderRunTokenUsage {
                 total_tokens: Some(42_100),
                 last_tokens: Some(8_900),

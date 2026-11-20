@@ -122,6 +122,7 @@ fn assert_stale_worker_snapshot_preserves_selected_profile(active_worker_run: Op
                 output_chunks: Vec::new(),
                 notices: Vec::new(),
                 completions: vec![RelayProjectedCompletion {
+                    model_usage: Vec::new(),
                     failure: None,
                     message_id: "old-completion".into(),
                     completed_at_ms: crate::session::unix_epoch_ms(),
@@ -326,6 +327,7 @@ fn remote_workflow_completion_preserves_worker_provider_failure_diagnostic() {
                 output_chunks: Vec::new(),
                 notices: Vec::new(),
                 completions: vec![RelayProjectedCompletion {
+                    model_usage: Vec::new(),
                     failure: None,
                     message_id: "failed-turn-1".into(),
                     completed_at_ms: crate::session::unix_epoch_ms(),
@@ -429,6 +431,7 @@ fn remote_runtime_projection_records_output_and_completion_on_home_session() {
         .timestamp_ms;
     let completed_at_ms = started_at_ms.saturating_add(9_000);
     let projected_completion = RelayProjectedCompletion {
+        model_usage: Vec::new(),
         failure: None,
         message_id: "assistant-msg-1".to_string(),
         completed_at_ms,
@@ -604,6 +607,7 @@ fn remote_runtime_projection_preserves_authoritative_provider_termination() {
                 output_chunks: Vec::new(),
                 notices: Vec::new(),
                 completions: vec![RelayProjectedCompletion {
+                    model_usage: Vec::new(),
                     failure: None,
                     message_id: "provider-exit-1".to_string(),
                     completed_at_ms: 9_999,
@@ -666,6 +670,7 @@ fn stale_remote_completion_replay_does_not_complete_the_next_prompt() {
         panic!("first prompt should be active");
     };
     let stale_completion = RelayProjectedCompletion {
+        model_usage: Vec::new(),
         failure: None,
         message_id: "assistant-msg-1".to_string(),
         completed_at_ms: 1234,
@@ -777,6 +782,7 @@ fn native_completion_correlation_distinguishes_durable_and_native_prompts() {
                 output_chunks: Vec::new(),
                 notices: Vec::new(),
                 completions: vec![RelayProjectedCompletion {
+                    model_usage: Vec::new(),
                     failure: None,
                     message_id: "prior-native-completion".to_string(),
                     completed_at_ms: 1234,
@@ -810,6 +816,7 @@ fn native_completion_correlation_distinguishes_durable_and_native_prompts() {
                 output_chunks: Vec::new(),
                 notices: Vec::new(),
                 completions: vec![RelayProjectedCompletion {
+                    model_usage: Vec::new(),
                     failure: None,
                     message_id: "current-home-completion".to_string(),
                     completed_at_ms: 5678,
@@ -846,6 +853,7 @@ fn native_completion_correlation_distinguishes_durable_and_native_prompts() {
                 output_chunks: Vec::new(),
                 notices: Vec::new(),
                 completions: vec![RelayProjectedCompletion {
+                    model_usage: Vec::new(),
                     failure: None,
                     message_id: "native-completion".to_string(),
                     completed_at_ms: 6789,

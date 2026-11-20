@@ -164,6 +164,9 @@ pub fn submit_codex_prompt(
         envelope.steering,
     );
     if active_steering_turn_id.is_none() {
+        if model.is_some() {
+            state.selected_model = model;
+        }
         state.authoritative_backfill_gate.reset();
     }
     crate::logging::debug_with_fields(
@@ -262,6 +265,7 @@ fn ensure_codex_thread_ready(
                         .confirm_model(&thread.model)
                         .map_err(crate::provider::NativeCheckpointFailure::into_daemon_error)?;
                 }
+                state.selected_model = Some(thread.model);
                 state.mark_thread_ready(thread.thread.id);
                 return Ok(());
             }

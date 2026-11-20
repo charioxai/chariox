@@ -26,6 +26,7 @@ mod events;
 mod handover;
 mod hook_receipts;
 mod input;
+mod model_usage;
 mod plan_exit;
 mod process;
 pub(crate) use plan_exit::publish_claude_plan;

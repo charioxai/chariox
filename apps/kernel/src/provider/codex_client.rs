@@ -1092,6 +1092,20 @@ mod tests {
             Some(CodexNotification::TokenUsageUpdated {
                 thread_id: "thread-1".to_string(),
                 turn_id: "turn-1".to_string(),
+                counters: Some((
+                    crate::provider::ModelTokenCounts {
+                        input_tokens: 40000,
+                        output_tokens: 2100,
+                        cached_input_tokens: 12000,
+                        cache_write_input_tokens: 0,
+                    },
+                    crate::provider::ModelTokenCounts {
+                        input_tokens: 7600,
+                        output_tokens: 1300,
+                        cached_input_tokens: 2000,
+                        cache_write_input_tokens: 0,
+                    },
+                )),
                 usage: ProviderRunTokenUsage {
                     total_tokens: Some(42100),
                     last_tokens: Some(8900),
@@ -1125,6 +1139,7 @@ mod tests {
             Some(CodexNotification::TokenUsageUpdated {
                 thread_id: "thread-1".to_string(),
                 turn_id: "turn-2".to_string(),
+                counters: None,
                 usage: ProviderRunTokenUsage {
                     total_tokens: Some(36_000_000),
                     last_tokens: Some(36_000_000),

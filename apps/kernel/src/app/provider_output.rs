@@ -791,6 +791,25 @@ impl<'a> ProviderOutputPumpContext<'a> {
         let projected_provider_run = self
             .provider_store
             .preview_structured_output_metadata(provider_run_id, &poll_result)?;
+        if !poll_result.model_usage.is_empty() {
+            if let Some(agent_id) = projected_provider_run.agent_instance_id() {
+                let prompt = self
+                    .app
+                    .prompt_owner_active_prompt_for_agent(session_id, agent_id)?;
+                if let Some(prompt) = prompt.filter(|prompt| {
+                    prompt.durable_delivery_provider_run_id() == Some(provider_run_id)
+                }) {
+                    self.app.operational_history_store().save_model_usage(
+                        session_id,
+                        agent_id,
+                        prompt.id(),
+                        provider_run_id,
+                        projected_provider_run.adapter_key(),
+                        &poll_result.model_usage,
+                    )?;
+                }
+            }
+        }
         super::provider_output_resume::persist_resolved_resume_state(
             self.app,
             &projected_provider_run,
