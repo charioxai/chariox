@@ -28,10 +28,7 @@ pub struct Kernel {
 
 impl Drop for Kernel {
     fn drop(&mut self) {
-        let pid = self.child.id() as i32;
-        if pid > 1 && self.child.try_wait().unwrap().is_none() {
-            unsafe { libc::kill(pid, libc::SIGTERM) };
-        }
+        self.signal_shutdown();
         let deadline = Instant::now() + Duration::from_secs(10);
         while self.child.try_wait().unwrap().is_none() && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(50));
@@ -43,6 +40,13 @@ impl Drop for Kernel {
 }
 
 impl Kernel {
+    pub fn signal_shutdown(&mut self) {
+        let pid = self.child.id() as i32;
+        if pid > 1 && self.child.try_wait().unwrap().is_none() {
+            unsafe { libc::kill(pid, libc::SIGTERM) };
+        }
+    }
+
     pub fn try_wait(&mut self) -> Option<std::process::ExitStatus> {
         self.child.try_wait().unwrap()
     }
