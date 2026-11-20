@@ -18,7 +18,14 @@ pub(crate) const RESUME_STAGGER_MS: u64 = 20_000;
 
 pub(super) fn clock(at_ms: u64) -> String {
     chrono::DateTime::<chrono::Utc>::from_timestamp_millis(at_ms as i64)
-        .map(|time| time.format("%H:%M UTC").to_string())
+        .map(|time| {
+            let format = if time.date_naive() == chrono::Utc::now().date_naive() {
+                "%H:%M UTC"
+            } else {
+                "%b %-d %H:%M UTC"
+            };
+            time.format(format).to_string()
+        })
         .unwrap_or_default()
 }
 

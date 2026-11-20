@@ -385,6 +385,34 @@ async fn a_turn_that_ends_on_the_limit_asks_by_default_and_names_when_usage_is_b
 }
 
 #[tokio::test]
+async fn a_weekly_limit_card_names_the_utc_reset_date() {
+    let team = team(config(UsageLimitResume::Ask), 1).await;
+    let day = chrono::Utc::now().date_naive() + chrono::Days::new(2);
+    team.hit_the_limit_saying(
+        0,
+        &format!(
+            "Claude StopFailure [rate_limit]: You've hit your weekly limit · resets {}, 4pm (UTC)",
+            day.format("%b %-d")
+        ),
+    )
+    .await;
+
+    let session = team
+        .rt()
+        .owned
+        .session_store
+        .get_session(&team.session_id)
+        .unwrap();
+    let card = session
+        .active_interactions()
+        .iter()
+        .find(|card| card.related_agent_id() == Some(team.lanes[0].agent_id.as_str()))
+        .expect("the weekly limit raises a card");
+    let expected = format!("back at {} 16:00 UTC.", day.format("%b %-d"));
+    assert!(card.message().ends_with(&expected), "{}", card.message());
+}
+
+#[tokio::test]
 async fn an_armed_stop_says_when_the_kernel_resumes_instead_of_asking_to_send_again() {
     let team = team(config(UsageLimitResume::Automatic), 1).await;
 
@@ -393,7 +421,7 @@ async fn an_armed_stop_says_when_the_kernel_resumes_instead_of_asking_to_send_ag
     let lines = team.failed_turn_lines(0);
     assert_eq!(lines.len(), 1, "one failed-turn line: {lines:?}");
     assert!(
-        lines[0].ends_with("Resumes automatically at 16:00 UTC."),
+        lines[0].contains("Resumes automatically at ") && lines[0].ends_with(" 16:00 UTC."),
         "{}",
         lines[0]
     );
@@ -413,7 +441,7 @@ async fn an_armed_stop_from_the_providers_error_frame_says_when_the_kernel_resum
     let lines = team.failed_turn_lines(0);
     assert_eq!(lines.len(), 1, "one failed-turn line: {lines:?}");
     assert!(
-        lines[0].ends_with("Resumes automatically at 16:00 UTC."),
+        lines[0].contains("Resumes automatically at ") && lines[0].ends_with(" 16:00 UTC."),
         "{}",
         lines[0]
     );
