@@ -5,6 +5,8 @@
 
 #[cfg(any(test, not(target_os = "linux")))]
 use crate::runtime::bounded_process::BoundedCommandExt as _;
+use std::collections::BTreeSet;
+
 const DETACH_GRACE: std::time::Duration = std::time::Duration::from_millis(500);
 
 /// Who belongs to a terminal's shell, captured while the shell still runs.
@@ -31,8 +33,22 @@ impl SessionSweep {
     /// commands in sessions of their own (a provider's tool commands). A job
     /// whose parent already exited has left both and keeps running.
     pub(crate) fn stop_with_descendants(&self) {
-        let mut members = descendants(self.leader);
-        members.extend(self.live_members());
+        Self::stop_many_with_descendants(BTreeSet::from([self.leader]));
+    }
+
+    /// Share the process-table reads across the provider PTYs being shut down.
+    pub(crate) fn stop_many_with_descendants(mut leaders: BTreeSet<i32>) {
+        leaders.retain(|&pid| pid > 1);
+        if leaders.is_empty() {
+            return;
+        }
+        let mut members = descendants_of(&leaders);
+        #[cfg(target_os = "linux")]
+        members.extend(proc_members_in_sessions(&leaders));
+        #[cfg(not(target_os = "linux"))]
+        for leader in leaders {
+            members.extend(ps_session_members(leader));
+        }
         for pid in members {
             // SAFETY: a positive PID selected moments ago; never a group.
             let _ = unsafe { libc::kill(pid, libc::SIGKILL) };
@@ -68,8 +84,12 @@ pub(super) fn descendants(leader: i32) -> Vec<i32> {
     if leader <= 1 {
         return Vec::new();
     }
+    descendants_of(&BTreeSet::from([leader]))
+}
+
+fn descendants_of(leaders: &BTreeSet<i32>) -> Vec<i32> {
     let parents = parent_links();
-    let mut found = std::collections::BTreeSet::from([leader]);
+    let mut found = leaders.clone();
     loop {
         let before = found.len();
         for (pid, parent) in &parents {
@@ -81,7 +101,7 @@ pub(super) fn descendants(leader: i32) -> Vec<i32> {
             break;
         }
     }
-    found.remove(&leader);
+    found.retain(|pid| !leaders.contains(pid));
     found.into_iter().filter(|pid| *pid > 1).collect()
 }
 
@@ -125,6 +145,11 @@ fn proc_session_members(session_leader: i32) -> Vec<i32> {
     if session_leader <= 1 {
         return Vec::new();
     }
+    proc_members_in_sessions(&BTreeSet::from([session_leader]))
+}
+
+#[cfg(target_os = "linux")]
+fn proc_members_in_sessions(leaders: &BTreeSet<i32>) -> Vec<i32> {
     let Ok(entries) = std::fs::read_dir("/proc") else {
         return Vec::new();
     };
@@ -137,7 +162,7 @@ fn proc_session_members(session_leader: i32) -> Vec<i32> {
                 .and_then(|name| name.parse::<i32>().ok())
                 .filter(|pid| *pid > 1)
         })
-        .filter(|pid| session_of(*pid) == Some(session_leader))
+        .filter(|pid| session_of(*pid).is_some_and(|session| leaders.contains(&session)))
         .collect()
 }
 
