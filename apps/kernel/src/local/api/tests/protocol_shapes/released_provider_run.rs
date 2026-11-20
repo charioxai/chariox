@@ -138,6 +138,8 @@ fn mp11_released416_turn_undo_and_agent_fork_shape_is_versioned() {
         .remove("last_activity_at_ms");
     // The released hash pins the example value it shipped with; the session type refuses an empty id, so it is set after decoding.
     snapshot[3]["AgentForked"]["session"]["project_id"] = serde_json::json!("");
+    // Keep the released Room field in the historical example.
+    snapshot[3]["AgentForked"]["session"]["max_agents"] = serde_json::json!(1024);
     let serialized = serde_json::to_string(&snapshot).expect("turn action snapshot should encode");
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(

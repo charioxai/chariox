@@ -471,7 +471,6 @@ export type CharioxUserConfig = {
   }
   workflow?: {
     max_queues_per_workflow?: number
-    session_default_max_agents?: number
     code?: {
       max_concurrent?: number
       max_nodes?: number

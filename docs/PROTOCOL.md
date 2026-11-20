@@ -7934,7 +7934,7 @@ room of another kernel of the same owner (design: `docs/design/sub-agents.md` 7.
 `deliver_peer_agent_outcome` (a followed peer's `event` or the `reply` to a message), and five
 responses: `peer_agent_accepted`, `peer_agent_subscribed`, `room_peer_spawned`,
 `peer_agent_outcome_ack` and `peer_agent_refused` with a typed `refusal` (`room_unavailable`,
-`agent_unavailable`, `ambiguous`, `more_authority`, `sub_agent_caller`, `room_full`,
+`agent_unavailable`, `ambiguous`, `more_authority`, `sub_agent_caller`,
 `attachments_local_only`). Each request is admitted only between kernels of one authenticated
 Cloud owner, and its `sender` stamp must name the authenticated sending kernel. The caller's
 `caller_authority` is lowered to the receiving kernel's record of the target room before the
@@ -8489,3 +8489,10 @@ the shapes.
 setting of the Room's project (not with `agent_id`); an agent's own setting wins over its Room's, and the Room's over its
 project's. The answer's `source` is `agent`, `session` or `project`; nothing set anywhere answers `project` with `off`.
 `fixtures/remote-jobs-protocol.json` pins the shapes.
+
+### Agent creation without count limits — local 1013 / relay peer 450
+
+Room session state omits `max_agents`. Kernel user configuration omits
+`workflow.session_default_max_agents`, and a remote peer spawn no longer
+returns `room_full`. Spawn and placement preserve the parent's authority and
+reject cycles.

@@ -89,7 +89,6 @@ function session(): RuntimeSession {
     active_prompt: null,
     queued_prompts: [],
     focused_agent_id: "agent-a",
-    max_agents: 1,
     agents: [agent("agent-a")],
     workflows: [
       {

@@ -472,19 +472,16 @@ async fn lowering_the_holders_authority_hands_the_decision_to_the_user_at_once()
     assert!(answer.try_recv().is_err(), "the asker waits for the user");
 }
 
-/// Review of #1281: each new room agent takes the previous one under it, then the top root is
-/// placed under the oldest leaf, beyond any bounded walk. The depth bound refuses the long chain
-/// calmly, the cycle is refused, and every agent still reaches a room agent.
 #[tokio::test]
-async fn a_move_cannot_exceed_the_tree_depth_or_close_a_cycle() {
+async fn a_move_can_extend_a_long_chain_but_cannot_close_a_cycle() {
     let t = tree(
-        "reparent-depth",
+        "reparent-long-chain",
         AgentPermissionLevel::Yolo,
         AgentPermissionLevel::Yolo,
     )
     .await;
     let mut roots = Vec::new();
-    for n in 0..18 {
+    for n in 0..19 {
         roots.push(
             t.agent_at(&format!("r{n}"), None, AgentPermissionLevel::Yolo)
                 .await,
@@ -500,78 +497,45 @@ async fn a_move_cannot_exceed_the_tree_depth_or_close_a_cycle() {
             },
         )
     };
-    let mut refused = Vec::new();
     for pair in roots.windows(2) {
-        if let Err(error) = place(&pair[0], &pair[1]).await {
-            refused.push(error.to_string());
-        }
+        place(&pair[0], &pair[1]).await.unwrap();
     }
-    assert!(
-        !refused.is_empty(),
-        "a chain deeper than the limit is refused"
-    );
-    assert!(
-        refused
-            .iter()
-            .all(|e| e.contains("levels below a room agent")),
-        "{refused:?}"
-    );
-    assert!(place(&roots[17], &roots[0]).await.is_err());
+    let top = roots.last().unwrap();
+    let error = place(top, &roots[0]).await.unwrap_err();
+    assert!(error.to_string().contains("descendants"), "{error}");
     let agents = t.runtime.owned.agent_store.get_session_agents(&t.room);
-    for agent in &agents {
-        let above = crate::agent::authority_limit::ancestors(agent, &agents);
-        assert!(above.len() <= 4, "every agent reaches a room agent");
-        assert!(above
-            .last()
-            .is_none_or(|top| top.parent_agent_id().is_none()));
-    }
-}
+    let leaf = agents.iter().find(|agent| agent.id() == roots[0]).unwrap();
+    let above = crate::agent::authority_limit::ancestors(leaf, &agents);
+    assert_eq!(above.len(), roots.len() - 1);
+    assert_eq!(above.last().unwrap().id(), top);
+    assert!(above.last().unwrap().parent_agent_id().is_none());
 
-/// Pre-review: a room never has more room agents than its `max_agents`. A sub-agent is not
-/// counted while it is one (A4), so placing it as a room agent must be held to the same limit a
-/// new room agent or an unarchived one is.
-#[tokio::test]
-async fn promoting_a_sub_agent_to_a_room_agent_is_held_to_max_agents() {
-    let worktree = crate::test_support::TestWorktree::new("promote-max-agents");
-    let mut config = crate::config::DaemonConfig::for_tests();
-    config.room_agent_tools = true;
-    config.user_config.workflow.session_default_max_agents = Some(1);
-    let mut app = DaemonApp::bootstrap(config).unwrap();
-    let (session, g) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(worktree.session_request())
-        .unwrap();
-    crate::test_support::admit_room_test_turn(&mut app, session.id(), g.id());
-    let s = crate::app::KernelSessionService::new(&mut app)
-        .spawn_agent(
-            crate::agent::CreateAgentRequest::new(session.id(), "dev-stub")
-                .with_alias("s")
-                .with_parent_agent_id(g.id()),
-        )
-        .unwrap();
-    let app = Arc::new(Mutex::new(app));
-    let runtime = owned_runtime_state(&app).await;
-    let promoted = runtime
-        .set_agent_parent(
+    t.runtime
+        .update_agent_config(
+            &t.room,
+            top,
             USER,
-            crate::local::SetAgentParentRequest {
-                session_id: session.id().into(),
-                agent_id: s.id().into(),
-                parent_agent_id: None,
-            },
+            Some(Some(crate::provider::AgentExecutionMode::Plan)),
+            Some(Some(AgentPermissionLevel::Required)),
+            None,
+            None,
+            None,
         )
-        .await;
-    let room_agents = app
-        .lock()
         .await
-        .agents()
-        .get_session_agents(session.id())
-        .iter()
-        .filter(|agent| !agent.archived() && agent.parent_agent_id().is_none())
-        .count();
-    assert!(
-        promoted.is_err(),
-        "a room at max_agents = 1 gets a second room agent ({room_agents} now): {promoted:?}"
-    );
+        .unwrap();
+    let mut app = t.app.lock().await;
+    let request = || {
+        crate::agent::CreateAgentRequest::new(&t.room, "dev-stub").with_parent_agent_id(&roots[0])
+    };
+    for request in [
+        request().with_permission_level_override(AgentPermissionLevel::Yolo),
+        request().with_execution_mode_override(crate::provider::AgentExecutionMode::Build),
+    ] {
+        let error = crate::app::KernelSessionService::new(&mut app)
+            .spawn_agent(request)
+            .unwrap_err();
+        assert!(error.to_string().contains("more authority"), "{error}");
+    }
 }
 
 impl Tree {

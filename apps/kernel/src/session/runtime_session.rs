@@ -25,7 +25,7 @@ use super::session_identity::{
 use super::session_lifecycle::{
     KernelRestartReconciliation, SchedulerState, SessionExecutionMode, SessionStatus,
 };
-use super::types::{unix_epoch_ms, DEFAULT_SESSION_MAX_AGENTS};
+use super::types::unix_epoch_ms;
 use super::workflow_definition::WorkflowDefinition;
 use super::workflow_diagnostics::{WorkflowConsole, WorkflowFailureEvent, WorkflowFailureKind};
 use super::workflow_instances::{
@@ -119,7 +119,6 @@ pub struct RuntimeSession {
     agent_defaults: SessionAgentDefaults,
     active_provider_run_id: Option<String>,
     focused_agent_id: Option<String>,
-    max_agents: i32,
     agents: Vec<AgentInstance>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     collaboration_agent_counts: Option<SessionCollaborationAgentCounts>,
@@ -325,7 +324,6 @@ impl RuntimeSession {
             agent_defaults: SessionAgentDefaults::default(),
             active_provider_run_id: None,
             focused_agent_id: None,
-            max_agents: DEFAULT_SESSION_MAX_AGENTS,
             agents: Vec::new(),
             collaboration_agent_counts: None,
             attachment_ids: BTreeSet::new(),
@@ -698,14 +696,6 @@ impl RuntimeSession {
 
     pub fn focused_agent_id(&self) -> Option<&str> {
         self.focused_agent_id.as_deref()
-    }
-
-    pub fn max_agents(&self) -> i32 {
-        self.max_agents
-    }
-
-    pub fn set_max_agents(&mut self, max_agents: i32) {
-        self.max_agents = max_agents.max(1);
     }
 
     pub fn agents(&self) -> &[AgentInstance] {

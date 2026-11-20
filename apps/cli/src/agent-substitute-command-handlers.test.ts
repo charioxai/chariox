@@ -217,7 +217,6 @@ function session(overrides: Partial<RuntimeSession> = {}): RuntimeSession {
     active_prompt: null,
     queued_prompts: [],
     focused_agent_id: "agent-1",
-    max_agents: 6,
     agents: [agent()],
     workflows: [],
     workflow_runs: [],

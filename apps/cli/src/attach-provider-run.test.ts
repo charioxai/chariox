@@ -18,7 +18,6 @@ const session: RuntimeSession = {
   active_prompt: null,
   queued_prompts: [],
   focused_agent_id: "agent-vault",
-  max_agents: 6,
   agents: [{
     id: "agent-vault",
     agent_ref: "agent-vault",

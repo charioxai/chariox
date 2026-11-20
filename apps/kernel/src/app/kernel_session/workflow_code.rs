@@ -488,32 +488,6 @@ impl<'a> KernelSessionService<'a> {
     ) -> Result<(), DaemonError> {
         let session = self.app.sessions().get_session(session_id)?;
         let registry = self.app.providers.registry();
-        let generated_agent_count = definition
-            .nodes
-            .iter()
-            .filter(|node| matches!(&node.agent, WorkflowCodeAgentBinding::Create(_)))
-            .count();
-        let current_agent_count = self
-            .app
-            .agents
-            .get_session_agents(session_id)
-            .iter()
-            .filter(|agent| !agent.archived())
-            .count();
-        if caller_metaagent_id.is_none()
-            && current_agent_count.saturating_add(generated_agent_count)
-                > session.max_agents() as usize
-        {
-            push_workflow_code_target_validation_error(
-                validation,
-                "session_agent_limit_exceeded",
-                format!(
-                    "workflow-code would create {generated_agent_count} agents but session `{session_id}` has {current_agent_count}/{} agents",
-                    session.max_agents()
-                ),
-                None,
-            );
-        }
         let runtime_queue_limit = self.app.config().max_workflow_queues_per_workflow();
         let materialized_queue_count =
             crate::workflow_code::workflow_code_materialized_queue_count(definition);

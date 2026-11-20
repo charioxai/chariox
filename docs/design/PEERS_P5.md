@@ -62,7 +62,7 @@ RoomPeerSpawned     { protocol_version: u32, duplicate: bool, agent: PeerAgentSt
 PeerAgentOutcomeAck { protocol_version: u32, ack: OutcomeAck }          // accepted | duplicate | unknown_subscription
 PeerAgentRefused    { protocol_version: u32, reason: PeerAgentRefusal }
 pub enum PeerAgentRefusal { RoomUnavailable, AgentUnavailable, Ambiguous, MoreAuthority { mode, permission_level },
-                            SubAgentCaller, RoomFull, AttachmentsLocalOnly }
+                            SubAgentCaller, AttachmentsLocalOnly }
 ```
 
 - Reasons that never cross the wire are decided on A: `kernel_unreachable`, `uncertain` and `owner_unverified`. `RoomUnavailable` covers an unknown room, another owner's room and a hidden backing room alike, so B reveals nothing about the rooms of other owners.
@@ -86,7 +86,7 @@ pub enum PeerAgentRefusal { RoomUnavailable, AgentUnavailable, Ambiguous, MoreAu
 | **P5a** link, message, reply | all section 3 shapes and the number; admission and stamp check; owner check on both ends; dedupe table; `kernel` tool argument; message as `message` event with `sender_kernel_id` (fills `agent_inbox_read.rs:137`); reply through `peer_agent_outbox`; `kernel_unreachable`, `uncertain`, `attachments_local_only`, `owner_unverified` | a `PeerAgentMessage` whose stamp names another kernel is refused; a message lands once for two sends with one `request_id`; a reply on B becomes the `SourceOutcome` of A's task; hash snapshot | AO-PE-05 | 7 |
 | **P5b** steer and cancel | `caller_authority` from `effective_agent_execution_config_in_tree`; B runs `authorize_peer_control` under the target room's actor; `MoreAuthority` refusal; cancel keeps the agent | Required caller steering a Yolo peer on B is refused; a Yolo caller's cancel stops B's turn and the agent stays | AO-PE-06 | 3 |
 | **P5c** subscribe and `peer_event` | followers with a generation fence; `Event` outcomes for turn ended, turn failed, source lost; outbox retry after reconnect; `duplicate` ack; unpair or target delete -> `source_lost`; no decision events | three outcomes delivered twice give one inbox row and one wake; an older generation is ignored; a decision on B produces no outcome | AO-PE-07 | 5 |
-| **P5d** `agent spawn --room --kernel` | lift `spawn_args.rs:402` with `--room`; `SpawnRoomPeer`; B reuses `authorize_peer_spawn` and `child_authority`; `max_agents` -> `RoomFull`; follow unless `--no-follow`; `--machine` | spawn into a missing room is `RoomUnavailable`; a sub-agent caller is `SubAgentCaller`; a retried `request_id` returns the same agent | AO-PE-08 | 4 |
+| **P5d** `agent spawn --room --kernel` | lift `spawn_args.rs:402` with `--room`; `SpawnRoomPeer`; B reuses `authorize_peer_spawn` and `child_authority`; follow unless `--no-follow`; `--machine` | spawn into a missing room is `RoomUnavailable`; a sub-agent caller is `SubAgentCaller`; a retried `request_id` returns the same agent | AO-PE-08 | 4 |
 | **P5e** offline, restart, fences | B stopped: `kernel_unreachable`; B restarted: outbox resumes; uncertain retry is one delivery; a variant-list test that no peer request reaches `RespondToInteraction`; card on B unanswerable from A | B down gives `kernel_unreachable`, not an error text; a card on B stays open after every peer request from A | AO-PE-09, AO-PE-10 | 3 |
 
 Total about **22 h** (PEERS.md sized P5 at 16 h without the per-slice drills). Order: P5a -> P5b; P5a -> P5c -> P5d; P5e last. Two lanes can split P5b and P5c after P5a.

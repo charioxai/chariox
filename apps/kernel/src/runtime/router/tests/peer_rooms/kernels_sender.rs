@@ -437,6 +437,57 @@ fn a_room_agent_spawns_one_ordinary_peer_in_a_room_on_another_kernel() {
     });
 }
 
+#[test]
+fn a_room_above_the_old_agent_limit_accepts_a_cross_kernel_peer() {
+    run_peer_test("peer-kernel-spawn-large-room", || async {
+        let (a, b) = two_kernels(
+            "peer-kernel-spawn-large-room",
+            AgentPermissionLevel::Required,
+            AgentPermissionLevel::Yolo,
+        );
+        let agent_count = b
+            .app
+            .lock()
+            .await
+            .agents()
+            .get_session_agents(&b.room)
+            .len();
+        for first in (agent_count..1025).step_by(400) {
+            let batch = first..(first + 400).min(1025);
+            let count = batch.len();
+            let idle = batch
+                .map(|index| {
+                    CreateAgentRequest::new(&b.room, "dev-stub")
+                        .with_alias(format!("idle-{index}"))
+                        .with_owner_user_id(OWNER)
+                })
+                .collect::<Vec<_>>();
+            b.router
+                .runtime_state()
+                .spawn_agents(idle, OWNER, &vec![None; count])
+                .await
+                .expect("idle Room agents should spawn");
+        }
+        let spawned = a
+            .command(format!(
+                "agent spawn reviewer --room {} --kernel {} --no-follow",
+                b.room, b.name
+            ))
+            .await
+            .expect("the Room should accept a peer across kernels");
+        let peer_id = spawned["response"]["spawned"]["agent"]
+            .as_str()
+            .expect("the sender receives the peer's identity");
+        let app = b.app.lock().await;
+        let peer = app.agents().get_agent(peer_id).unwrap();
+        assert_eq!(peer.session_id(), b.room);
+        assert!(peer.parent_agent_id().is_none());
+        assert_eq!(app.agents().get_session_agents(&b.room).len(), 1026);
+        drop(app);
+        unlink(&[&a, &b]);
+    });
+}
+
 /// `kernel` acts on every request but its answer to the first spawn is lost on the way back.
 fn link_losing_the_first_spawn_answer(kernel: &Kernel) {
     let router = kernel.router.clone();

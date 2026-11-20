@@ -78,7 +78,6 @@ function sessionWithAgents(agents: AgentInstance[]): RuntimeSession {
     active_prompt: null,
     queued_prompts: [],
     focused_agent_id: agents[0]?.id ?? null,
-    max_agents: agents.length,
     agents,
     config_state: { version: 1, values: {} },
   }

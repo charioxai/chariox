@@ -929,7 +929,6 @@ function sessionWith(overrides: Partial<RuntimeSession>): RuntimeSession {
     active_prompt: null,
     queued_prompts: [],
     focused_agent_id: "agent-1",
-    max_agents: 4,
     agents: [{
       id: "agent-1",
       agent_ref: "agent-1",
