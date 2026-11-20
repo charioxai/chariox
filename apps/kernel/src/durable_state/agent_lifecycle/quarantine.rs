@@ -14,7 +14,10 @@ pub(super) fn task(id: String, room: String, agent: String, prompt: String) -> A
     t.task_id = id;
     t.state = ExecutionState::Blocked;
     t.blocked_revision = t.revision;
-    t.reason="Task ledger is quarantined; owner must restore authoritative state or cancel. Obligation coverage is unknown".into();
+    t.reason = format!(
+        "Task ledger row agent_tasks/{0} is quarantined in agent_lifecycle_quarantine. Restore authoritative state or cancel this task. Obligation coverage is unknown",
+        t.task_id
+    );
     t
 }
 

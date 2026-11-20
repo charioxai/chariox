@@ -1689,6 +1689,44 @@ fn a02_review_failed_turn_on_blocked_task_does_not_abort_settlement() {
 }
 
 #[test]
+fn spawn_receipt_quarantines_an_unreadable_historical_task() {
+    let f = Fixture::new();
+    f.begin("old");
+    f.settle("old", true);
+    f.begin("p");
+    f.register();
+    let db = rusqlite::Connection::open(f.root.join("state.sqlite")).unwrap();
+    let raw: String = db
+        .query_row(
+            "UPDATE agent_tasks SET payload=json_set(payload,'$.state','cancelled','$.owner_action','browser_access') WHERE task_id='old' RETURNING payload",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+
+    f.apply(Operation::DispatchReceipt {
+        id: "obligation".into(),
+        accepted: true,
+        resource: Some("child".into()),
+    });
+    let tasks = f.store.agent_tasks(Some("room"), Some("parent")).unwrap();
+    let historical = tasks.iter().find(|task| task.task_id == "old").unwrap();
+    let spawning = tasks.iter().find(|task| task.task_id == "p").unwrap();
+    assert_eq!(historical.state, ExecutionState::Blocked);
+    assert!(historical.reason.contains("agent_tasks"));
+    assert!(historical.reason.contains("old"));
+    assert_eq!(spawning.obligations[0].dispatch_state, "accepted");
+    let retained: String = db
+        .query_row(
+            "SELECT payload FROM agent_lifecycle_quarantine WHERE kind='task' AND id='old'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(retained, raw);
+}
+
+#[test]
 fn a02_review_late_rejected_dispatch_receipt_cannot_corrupt_done_task() {
     let f = Fixture::new();
     f.begin("p");
