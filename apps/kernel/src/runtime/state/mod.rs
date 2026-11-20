@@ -328,6 +328,7 @@ struct KernelRuntimeOwnedState {
     /// `agent_deadline_edit`, so a worker never ends on the older of two values.
     agent_deadline_rearm: Arc<tokio::sync::Mutex<()>>,
     deadline_warnings_sent: DeadlineWarningsSent,
+    app_control: crate::runtime::app_control::AppControlService,
     dev_app_bindings: Arc<app_dev_runtime::DevAppBindings>,
     critical_approval_passkeys: critical_approval_passkey::CriticalApprovalPasskeys,
     passkey_prompts: Arc<passkey_prompts::PasskeyPromptBoard>,
