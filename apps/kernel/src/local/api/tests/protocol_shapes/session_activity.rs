@@ -21,7 +21,7 @@ fn semantic_session_activity_protocol_snapshot_and_hash() {
         "schema": 14, "session": {"last_activity_at_ms": decoded.last_activity_at_ms()}});
     assert_eq!(
         snapshot,
-        serde_json::json!({"local":1013,"peer": 450,"schema":14,"session":{"last_activity_at_ms":42}})
+        serde_json::json!({"local":1014,"peer": 451,"schema":14,"session":{"last_activity_at_ms":42}})
     );
     assert_eq!(
         format!(

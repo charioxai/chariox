@@ -8462,7 +8462,7 @@ Room session state omits `max_agents`. Kernel user configuration omits
 returns `room_full`. Spawn and placement preserve the parent's authority and
 reject cycles.
 
-### Provider turns waiting for memory — local 1080 / relay peer 506
+### Provider turns waiting for memory — local 1014 / relay peer 451
 
 A queued prompt can include `launch_wait`, the reason it is waiting to start.
 The kernel persists this reason with the prompt and promotes a person's queued
