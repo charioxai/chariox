@@ -182,6 +182,14 @@ impl KernelRuntimeState {
         &self,
         job_id: &str,
     ) -> Result<(String, String, String), DaemonError> {
+        self.live_job_subject(job_id, true)
+    }
+
+    pub(super) fn live_job_subject(
+        &self,
+        job_id: &str,
+        require_active_turn: bool,
+    ) -> Result<(String, String, String), DaemonError> {
         let driver = self
             .job_wake_driver
             .as_ref()
@@ -210,10 +218,9 @@ impl KernelRuntimeState {
             .durable_state_store
             .agent_task(&wake.task_id)?
             .ok_or_else(|| ledger::error("Job task missing"))?;
-        if matches!(
-            task.state,
-            ledger::ExecutionState::Cancelled | ledger::ExecutionState::Done
-        ) {
+        if task.state == ledger::ExecutionState::Cancelled
+            || (require_active_turn && task.state == ledger::ExecutionState::Done)
+        {
             return Err(ledger::error("This job's task ended"));
         }
         let agent = self.owned.agent_store.get_agent(&record.agent_id)?;

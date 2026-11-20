@@ -148,7 +148,9 @@ impl KernelRuntimeState {
         if *cancelled.borrow() {
             return Ok(cancelled_result(record));
         }
-        self.job_acquisition_subject(&record.job_id)?;
+        // An enrolled placement needs no acquisition authority from the initiating turn.
+        let require_active_turn = matches!(target, JobMachineTarget::Allocation(_));
+        self.live_job_subject(&record.job_id, require_active_turn)?;
         let origin = Origin {
             grant_id: format!("job:{}", record.job_id),
             harness: self
