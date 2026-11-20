@@ -107,6 +107,7 @@ fn tool(payload: &serde_json::Value) -> RelayProjectedOutputChunk {
 
 fn completion(message_id: &str, home_prompt_id: Option<&str>) -> RelayProjectedCompletion {
     RelayProjectedCompletion {
+        model_usage: Vec::new(),
         message_id: message_id.into(),
         completed_at_ms: crate::session::unix_epoch_ms(),
         home_prompt_id: home_prompt_id.map(str::to_owned),

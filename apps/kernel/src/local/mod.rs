@@ -1,6 +1,6 @@
 pub use api::{
-    AgentContextUsage, AgentExecutionRoute, AgentUsageSnapshot, GetAgentUsageSnapshotRequest,
-    GetProviderUsageSnapshotRequest, ProviderUsageAccount,
+    AgentContextUsage, AgentExecutionRoute, AgentModelUsage, AgentUsageSnapshot,
+    GetAgentUsageSnapshotRequest, GetProviderUsageSnapshotRequest, ProviderUsageAccount,
 };
 pub use api::{
     AgentTranscriptEntryKind, AgentTranscriptEntryPage, AgentTranscriptEntryStatus,

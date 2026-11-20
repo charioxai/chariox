@@ -70,6 +70,7 @@ fn usage_snapshot_scopes_agent_context_and_route_to_the_requested_agent() {
     let snapshot = &response["AgentUsageSnapshot"]["snapshot"];
     assert_eq!(snapshot["agent_id"], agent.id());
     assert_eq!(snapshot["session_id"], session.id());
+    assert_eq!(snapshot["models"], serde_json::json!([]));
     assert!(
         snapshot.get("context").is_none(),
         "no context estimate before a provider reports it"
@@ -437,5 +438,86 @@ fn usage_snapshot_projects_claude_identity_without_private_profile_fields() {
             "services",
             "usage"
         ]
+    );
+}
+
+#[test]
+fn model_usage_report_prices_cached_tokens_and_marks_unpriced_models() {
+    use crate::provider::{ModelTokenCounts, ModelTurnUsage};
+
+    crate::test_support::isolated_env_test!();
+    let worktree = crate::test_support::TestWorktree::new("model-usage-report");
+    let harness = LocalRouterTestHarness::new();
+    let (session, agent) = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            worktree.session_request(),
+        ))
+        .unwrap()
+    {
+        LocalDaemonResponse::SessionCreated { session, agent, .. } => (session, agent),
+        _ => panic!("expected session"),
+    };
+    let usage = |model: &str, input, output| ModelTurnUsage {
+        model: model.into(),
+        tokens: ModelTokenCounts {
+            input_tokens: input,
+            output_tokens: output,
+            cached_input_tokens: 20,
+            cache_write_input_tokens: 30,
+        },
+    };
+    harness.with_app_mut(|app| {
+        let store = app.operational_history_store();
+        for (prompt, rows) in [
+            ("prompt-1", vec![usage("claude-haiku-5-5", 100, 10)]),
+            ("prompt-1", vec![usage("claude-haiku-5-5", 100, 10)]),
+            ("prompt-1", vec![usage("claude-haiku-5-5", 80, 5)]),
+            (
+                "prompt-2",
+                vec![
+                    usage("claude-haiku-5-5", 100, 10),
+                    usage("unpriced-model", 100, 10),
+                ],
+            ),
+        ] {
+            store
+                .save_model_usage(session.id(), agent.id(), prompt, "run", "claude", &rows)
+                .unwrap();
+        }
+        store
+            .save_model_usage(
+                session.id(),
+                "other-agent",
+                "prompt-2",
+                "run",
+                "claude",
+                &[usage("claude-haiku-5-5", 100, 10)],
+            )
+            .unwrap();
+    });
+    let response = harness
+        .dispatch(LocalDaemonRequest::GetAgentUsageSnapshot(
+            crate::local::GetAgentUsageSnapshotRequest {
+                session_id: session.id().into(),
+                agent_id: agent.id().into(),
+            },
+        ))
+        .unwrap();
+    let reported =
+        &serde_json::to_value(response).unwrap()["AgentUsageSnapshot"]["snapshot"]["models"];
+    assert_eq!(
+        reported,
+        &serde_json::json!([
+            {
+                "provider": "claude", "model": "claude-haiku-5-5",
+                "input_tokens": 200, "output_tokens": 20, "cached_input_tokens": 40,
+                "cache_write_input_tokens": 60, "api_equivalent_nanodollars": "27900"
+            },
+            {
+                "provider": "claude", "model": "unpriced-model",
+                "input_tokens": 100, "output_tokens": 10, "cached_input_tokens": 20,
+                "cache_write_input_tokens": 30, "api_equivalent_nanodollars": null
+            }
+        ])
     );
 }

@@ -19,6 +19,7 @@ mod compaction_boundary;
 pub(crate) use compaction_boundary::AgentCompactionOrigin;
 mod handoff_brief;
 pub(crate) mod leased_projection;
+mod model_usage;
 mod operational_archive;
 mod operational_legacy_import;
 mod operational_query;
@@ -796,6 +797,7 @@ impl OperationalHistoryStore {
         public_history::initialize_public_history(&connection)?;
         ensure_operational_history_answered_sessions(&connection)?;
         compaction_boundary::migrate(&connection)?;
+        model_usage::migrate(&connection)?;
         remote_lease_context::migrate(&connection)?;
         let max_sequence: u64 = connection
             .query_row(

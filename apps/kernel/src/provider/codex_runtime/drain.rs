@@ -30,6 +30,7 @@ pub fn drain_codex_events(
             terminal_failure: None,
             notices: Vec::new(),
             resolved_usage: None,
+            model_usage: Vec::new(),
             account_rate_limits: Vec::new(),
         });
     }
@@ -57,6 +58,8 @@ pub fn drain_codex_events(
     let mut prompt_completed = false;
     let mut terminal_failure = None;
     let mut resolved_usage = None;
+    let mut model_usage = None;
+    let thread_id = state.thread_id().to_string();
     let mut account_rate_limits = Vec::new();
 
     // MP-08 / MP-10: a queued abort shares this actor with output polls.
@@ -83,6 +86,29 @@ pub fn drain_codex_events(
         {
             account_rate_limits.push(rate_limits);
             continue;
+        }
+        if let crate::provider::CodexNotification::TokenUsageUpdated {
+            thread_id: observed_thread,
+            ..
+        } = &notification
+        {
+            if observed_thread != &thread_id {
+                continue;
+            }
+            if let Some(tokens) = state.usage_tracker.observe(
+                &notification,
+                &thread_id,
+                state.active_turn_id.as_deref(),
+            ) {
+                let model = state
+                    .selected_model
+                    .as_deref()
+                    .unwrap_or_else(|| run.model());
+                model_usage = Some(crate::provider::ModelTurnUsage {
+                    model: model.trim_start_matches("codex/").to_string(),
+                    tokens,
+                });
+            }
         }
         apply_notification_with_manifest(
             notification,
@@ -188,6 +214,7 @@ pub fn drain_codex_events(
         terminal_failure,
         notices,
         resolved_usage,
+        model_usage: model_usage.into_iter().collect(),
         account_rate_limits,
     })
 }

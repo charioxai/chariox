@@ -524,6 +524,7 @@ pub(super) fn execute_output_poll_command(
             resolved_variant: None,
             resolved_usage_tokens_total: poll.resolved_usage.and_then(|usage| usage.total_tokens),
             resolved_usage: poll.resolved_usage,
+            model_usage: poll.model_usage,
             account_usage: (!poll.account_rate_limits.is_empty()).then(|| {
                 let limits = serde_json::Value::Array(poll.account_rate_limits);
                 crate::provider::codex_client::normalize_codex_usage(
@@ -628,6 +629,7 @@ pub(super) fn execute_output_poll_command(
         resolved_variant: drain.resolved_variant,
         resolved_usage_tokens_total: drain.resolved_usage_tokens_total,
         resolved_usage: None,
+        model_usage: Vec::new(),
         account_usage: None,
         resolved_resume_state: None,
         thinking_tokens: None,
@@ -681,6 +683,7 @@ mod tests {
             terminal_failure: None,
             notices: Vec::new(),
             resolved_usage: None,
+            model_usage: Vec::new(),
             account_rate_limits: Vec::new(),
         }
     }

@@ -3,7 +3,7 @@
 use base64::Engine as _;
 use serde_json::{json, Value};
 
-use crate::provider::ProviderRunTokenUsage;
+use crate::provider::{ModelTokenCounts, ProviderRunTokenUsage};
 
 use super::JsonRpcMessage;
 
@@ -77,6 +77,7 @@ pub enum CodexNotification {
         thread_id: String,
         turn_id: String,
         usage: ProviderRunTokenUsage,
+        counters: Option<(ModelTokenCounts, ModelTokenCounts)>,
     },
     TurnStarted {
         turn_id: String,
@@ -290,6 +291,7 @@ pub(super) fn parse_notification(message: JsonRpcMessage) -> Option<CodexNotific
                     .and_then(Value::as_str)
                     .unwrap_or_default()
                     .to_string(),
+                counters: usage_counters(token_usage),
                 usage: {
                     let total_tokens = token_usage
                         .get("total")
@@ -535,6 +537,28 @@ fn legacy_output_chunk(value: Option<&Value>) -> String {
             .unwrap_or_default(),
         _ => String::new(),
     }
+}
+
+fn usage_counters(usage: &Value) -> Option<(ModelTokenCounts, ModelTokenCounts)> {
+    fn parse(value: &Value) -> Option<ModelTokenCounts> {
+        let input_tokens = value.get("inputTokens")?.as_u64()?;
+        let cached_input_tokens = value.get("cachedInputTokens")?.as_u64()?;
+        // Codex App Server omits cache writes when the counter is absent.
+        let cache_write_input_tokens = match value.get("cacheWriteInputTokens") {
+            Some(value) => value.as_u64()?,
+            None => 0,
+        };
+        input_tokens
+            .checked_sub(cached_input_tokens)?
+            .checked_sub(cache_write_input_tokens)?;
+        Some(ModelTokenCounts {
+            input_tokens,
+            output_tokens: value.get("outputTokens")?.as_u64()?,
+            cached_input_tokens,
+            cache_write_input_tokens,
+        })
+    }
+    Some((parse(usage.get("total")?)?, parse(usage.get("last")?)?))
 }
 
 #[cfg(test)]

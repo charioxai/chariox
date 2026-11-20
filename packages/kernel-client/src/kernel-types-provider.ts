@@ -344,9 +344,21 @@ export type QueuedPromptUpdatedPayload = {
 
 /** Local protocol: read-only account identity and status, with no credential/profile locations. */
 export type ProviderUsageAccount = Pick<ProviderAccountProfile, "provider" | "profile_id" | "label" | "identity_summary" | "auth_state" | "services" | "usage"> & { account_id: string }
+export type AgentModelUsage = {
+  provider: string
+  model: string
+  /** Includes input cache reads and writes. */
+  input_tokens: number
+  output_tokens: number
+  cached_input_tokens: number
+  cache_write_input_tokens: number
+  /** Standard short-context list rates and shortest cache-write TTL. Null for an unpriced model. */
+  api_equivalent_nanodollars: string | null
+}
 export type AgentUsageSnapshot = {
   session_id: string
   agent_id: string
   context?: { used_tokens: number; limit_tokens?: number }
+  models: AgentModelUsage[]
   route: { target: string; target_kernel_id: string; via?: string; via_kernel_id?: string }
 }

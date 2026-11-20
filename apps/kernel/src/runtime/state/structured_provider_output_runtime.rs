@@ -603,6 +603,29 @@ impl KernelRuntimeState {
         let projected_provider_run = owned
             .provider_store
             .preview_structured_output_metadata(provider_run_id, &poll_result)?;
+        if !poll_result.model_usage.is_empty() {
+            if let Some((agent_id, prompt)) = provider_run
+                .agent_instance_id()
+                .and_then(|agent_id| {
+                    owned
+                        .prompt_state_owner
+                        .active_prompt_for_agent_snapshot(&session, agent_id)
+                        .map(|prompt| (agent_id, prompt))
+                })
+                .filter(|(_, prompt)| {
+                    prompt.durable_delivery_provider_run_id() == Some(provider_run_id)
+                })
+            {
+                owned.operational_history_store.save_model_usage(
+                    session_id,
+                    agent_id,
+                    prompt.id(),
+                    provider_run_id,
+                    provider_run.adapter_key(),
+                    &poll_result.model_usage,
+                )?;
+            }
+        }
         if let Some(resume_state) = poll_result.resolved_resume_state.as_ref() {
             // A substitute run reruns one turn; it never becomes the agent's profile.
             if let Some(agent_id) = projected_provider_run

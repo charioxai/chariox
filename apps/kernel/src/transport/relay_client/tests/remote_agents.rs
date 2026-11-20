@@ -3116,6 +3116,7 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session_async(
         }],
         notices: Vec::new(),
         completions: vec![crate::transport::relay_peer::RelayProjectedCompletion {
+            model_usage: Vec::new(),
             failure: None,
             message_id: "promoted-worker-completion".into(),
             completed_at_ms: crate::session::unix_epoch_ms(),

@@ -234,7 +234,7 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// skill delivery (Agent Move no longer lists skills and the per-agent skill grants are gone).
 /// The receiving agent’s deadline refusal is carried in the encrypted peer response.
 /// A peer spawn carries the starter's display name.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 449;
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 450;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
 pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = RELAY_PEER_PROTOCOL_VERSION;
@@ -1946,6 +1946,8 @@ pub struct RelayProjectedOutputChunk {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RelayProjectedCompletion {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub model_usage: Vec<crate::provider::ModelTurnUsage>,
     pub message_id: String,
     pub completed_at_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2065,6 +2067,7 @@ mod tests {
     fn a_notification_end_is_told_by_its_id_whatever_prompt_the_drain_scopes_it_to() {
         let completion =
             |message_id: &str, home_prompt_id: Option<&str>| RelayProjectedCompletion {
+                model_usage: Vec::new(),
                 message_id: message_id.into(),
                 completed_at_ms: 1,
                 home_prompt_id: home_prompt_id.map(str::to_owned),
@@ -2087,6 +2090,7 @@ mod tests {
             crate::test_support::expected_relay_peer_protocol_version()
         );
         let completion = RelayProjectedCompletion {
+            model_usage: Vec::new(),
             failure: None,
             message_id: "assistant-msg-1".to_string(),
             completed_at_ms: 1_234,
@@ -2125,6 +2129,7 @@ mod tests {
     #[test]
     fn leased_failure_without_termination_shape_is_versioned() {
         let completion = RelayProjectedCompletion {
+            model_usage: Vec::new(),
             message_id: "failed-turn".into(),
             completed_at_ms: 1234,
             home_prompt_id: Some("home-prompt".into()),
@@ -2177,6 +2182,7 @@ mod tests {
 
         for (provider_termination, category) in cases {
             let completion = RelayProjectedCompletion {
+                model_usage: Vec::new(),
                 failure: None,
                 message_id: "assistant-msg-1".to_string(),
                 completed_at_ms: provider_termination.timestamp_ms,

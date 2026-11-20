@@ -12,6 +12,12 @@ import base64, hashlib, json, os, socket, struct, sys, threading, time, urllib.r
 
 record = os.environ.get("CHARIOX_FAKE_CODEX_RECORD", "/dev/null/none")
 finish_in_gap = os.environ.get("CHARIOX_FAKE_CODEX_FINISH_IN_GAP") == "1"
+usage_fixture_path = os.path.join(record, "usage.json")
+usage_fixture = None
+if os.path.exists(usage_fixture_path):
+    with open(usage_fixture_path) as fixture:
+        usage_fixture = json.load(fixture)
+model = usage_fixture["model"] if usage_fixture else "gpt-6-luna"
 THREAD, TURN, ITEM = "thread-1", "turn-1", "msg-1"
 lock = threading.Condition()
 subscriber = None
@@ -100,7 +106,11 @@ def wait_for(name):
 def run_turn():
     notify("turn/started", {"threadId": THREAD, "turn": {"id": TURN, "status": "inProgress", "items": []}})
     notify("item/started", {"threadId": THREAD, "turnId": TURN, "item": {"type": "agentMessage", "id": ITEM, "text": ""}})
-    for n in range(1, PARTS + 1):
+    if usage_fixture:
+        for update in usage_fixture["updates"]:
+            notify("thread/tokenUsage/updated", update)
+        stream(1)
+    for n in range(1, (0 if usage_fixture else PARTS) + 1):
         swapping = os.path.exists(os.path.join(record, "swap"))
         if finish_in_gap and swapping:
             stream(n)
@@ -128,7 +138,7 @@ def answer(conn, request):
     elif method == "account/read":
         result = {"account": {"type": "apiKey"}, "requiresOpenaiAuth": False}
     elif method == "model/list":
-        result = {"data": [{"id": "gpt-6-luna", "model": "gpt-6-luna", "displayName": "gpt-6-luna", "isDefault": True,
+        result = {"data": [{"id": model, "model": model, "displayName": model, "isDefault": True,
                             "supportedReasoningEfforts": [{"reasoningEffort": "low", "description": "low"}],
                             "defaultReasoningEffort": "low"}], "nextCursor": None}
     elif method in ("thread/start", "thread/resume"):
@@ -144,7 +154,7 @@ def answer(conn, request):
             lock.notify_all()
         status = {"type": "active", "activeFlags": []} if turn["status"] == "inProgress" else {"type": "idle"}
         turns = [turn_view()] if turn["status"] else []
-        result = {"thread": {"id": THREAD, "status": status, "turns": turns}, "model": "gpt-6-luna", "cwd": params.get("cwd")}
+        result = {"thread": {"id": THREAD, "status": status, "turns": turns}, "model": model, "cwd": params.get("cwd")}
     elif method == "turn/start":
         note("prompts", "prompt 1")
         turn["status"] = "inProgress"

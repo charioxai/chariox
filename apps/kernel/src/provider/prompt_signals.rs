@@ -56,6 +56,7 @@ pub struct ProviderPromptSignalBatch {
     pub resolved_variant: Option<String>,
     pub resolved_usage_tokens_total: Option<u64>,
     pub resolved_usage: Option<ProviderRunTokenUsage>,
+    pub model_usage: Vec<super::ModelTurnUsage>,
     pub account_usage: Option<crate::account_profile::ProviderAccountUsageSnapshot>,
     pub resolved_resume_state: Option<ProviderResumeState>,
     /// The model reasons without visible output; the provider's token estimate so far.
