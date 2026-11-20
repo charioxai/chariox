@@ -22,6 +22,24 @@ pub(crate) fn canonical_agent_event_tool_name(name: &str) -> Option<&'static str
     .into_iter()
     .find(|n| name == *n || name == n.replace('.', "_"))
 }
+/// The arguments the tool's schema requires that `args` lacks. A provider may pass a call its
+/// schema refuses; a missing argument must be named, never read as empty.
+pub(crate) fn missing_agent_event_arguments(name: &str, args: &serde_json::Value) -> Vec<String> {
+    let Some(spec) = agent_event_tool_specs()
+        .into_iter()
+        .find(|spec| spec.name == name)
+    else {
+        return vec![];
+    };
+    spec.input_schema["required"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(serde_json::Value::as_str)
+        .filter(|field| args.get(*field).is_none_or(serde_json::Value::is_null))
+        .map(str::to_owned)
+        .collect()
+}
 pub(crate) fn agent_event_tool_specs() -> Vec<RuntimeToolSpec> {
     let common =
         serde_json::json!({"task_id":{"type":"string"},"origin_prompt_id":{"type":"string"}});

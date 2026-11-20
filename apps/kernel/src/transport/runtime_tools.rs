@@ -17,7 +17,9 @@ mod terminal_tools;
 mod validation;
 mod workflow_tools;
 mod workspace_live_sync_tools;
-pub(crate) use agent_events::{agent_event_tool_specs, canonical_agent_event_tool_name};
+pub(crate) use agent_events::{
+    agent_event_tool_specs, canonical_agent_event_tool_name, missing_agent_event_arguments,
+};
 pub use agent_messaging_tools::*;
 pub use agent_peek_tools::*;
 pub use credential_tools::*;

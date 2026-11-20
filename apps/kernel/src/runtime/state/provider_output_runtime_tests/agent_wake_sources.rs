@@ -1013,6 +1013,7 @@ async fn refused_wake_after_dispatch_admission_is_retried_by_the_sweep() {
 
     spawn_inert_pty_for_run(&mut *f.app.lock().await, &f.run);
     f.runtime.sweep_agent_lifecycle().await.unwrap();
+    f.runtime.task_work_settled().await;
     let events = f.store().agent_inbox(&f.room, &f.agent, 0).unwrap();
     assert_eq!(events.len(), 1, "retry the original occurrence");
     assert_eq!(events[0].state, "accepted");
@@ -1432,6 +1433,68 @@ async fn call(
     f.runtime
         .dispatch_authenticated_runtime_tool_call(token, tool, args)
         .await
+}
+
+/// A provider may pass a call its schema refuses: the kernel names the missing argument instead of
+/// reading it as empty.
+#[tokio::test]
+async fn an_event_tool_call_missing_a_required_argument_is_refused_naming_it() {
+    let f = fixture("event-tools-missing-argument", true).await;
+    let task = f.begin(&f.prompt_id);
+    let token = {
+        let app = f.app.lock().await;
+        app.providers
+            .get_run(&f.run)
+            .unwrap()
+            .runtime_mcp_auth_token()
+            .expect("runtime MCP auth")
+            .to_string()
+    };
+    let timer = call(
+        &f,
+        &token,
+        "chariox.events.timer",
+        &task,
+        serde_json::json!({"label":"check in","delay_ms":60_000}),
+    )
+    .await
+    .unwrap()
+    .payload;
+    let registration = timer["registration_id"].as_str().unwrap().to_string();
+
+    let refused = call(
+        &f,
+        &token,
+        "mcp__chariox__chariox_events_yield",
+        &task,
+        serde_json::json!({"registration_ids":[registration]}),
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+    assert!(
+        refused.contains("`inbox_cursor`") && refused.contains("`reason`"),
+        "{refused}"
+    );
+    assert!(
+        f.store()
+            .agent_tasks(Some(&f.room), Some(&f.agent))
+            .unwrap()
+            .iter()
+            .all(|t| t.wait.is_none()),
+        "a refused call accepts no wait"
+    );
+    let refused = call(
+        &f,
+        &token,
+        "chariox.events.timer",
+        &task,
+        serde_json::json!({"label":"no delay"}),
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+    assert!(refused.contains("`delay_ms`"), "{refused}");
 }
 
 #[tokio::test]
@@ -1908,6 +1971,50 @@ async fn a_stalled_sweep_does_not_wake_a_live_wait_early() {
         .filter(|e| e.kind == "deadline_reached")
         .count();
     assert_eq!(early, 0, "no deadline has passed");
+}
+
+/// A sweep pass held past the dead-man tolerance is reported with the step it waits on, so the
+/// person sees what holds supervision instead of only when it was last seen.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_stalled_sweep_is_reported_with_the_step_it_waits_on() {
+    let f = fixture("stalled-sweep-report", false).await;
+    let task = f.begin("turn-1");
+    let wake = f.arm(&task, "wake-a").unwrap();
+    f.wait_on(&task, &wake.registration_id);
+    let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel(1);
+    let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+    *f.driver.stall.lock().unwrap() = Some((entered_tx, release_rx));
+    let runtime = f.runtime.clone();
+    let stalled = tokio::spawn(async move { runtime.sweep_agent_lifecycle().await });
+    tokio::task::spawn_blocking(move || {
+        entered_rx.recv_timeout(std::time::Duration::from_secs(20))
+    })
+    .await
+    .unwrap()
+    .expect("the sweep probes the source");
+    // The pass has been held for longer than the dead-man tolerance.
+    f.runtime.agent_wakes_last_swept_for_test(
+        crate::session::unix_epoch_ms() - 4 * crate::durable_state::agent_lifecycle::SWEEP_MS,
+    );
+    let scheduler = {
+        let runtime = f.runtime.clone();
+        tokio::spawn(async move { runtime.run_agent_wake_scheduler().await })
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while !f.notices().contains("Kernel supervision sweep stalled")
+        && std::time::Instant::now() < deadline
+    {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    scheduler.abort();
+    release_tx.send(()).unwrap();
+    stalled.await.unwrap().unwrap();
+    assert!(
+        f.notices()
+            .contains("its pass waits on the wake dead-man check since"),
+        "{}",
+        f.notices()
+    );
 }
 
 async fn runtime_token(f: &Fixture) -> String {
