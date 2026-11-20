@@ -438,6 +438,7 @@ fn local_daemon_protocol_slice_record_relay_endpoint_shape_is_versioned() {
             session_id: Some("session-1".to_string()),
             session_ids: vec!["session-1".to_string(), "session-2".to_string()],
             agent_ids: vec!["agent-1".to_string(), "agent-2".to_string()],
+            delete_when_unused: false,
             backend: crate::slice::SliceBackendKind::LocalDocker,
             os: "linux".to_string(),
             display_mode: crate::slice::SliceDisplayMode::Headed,
@@ -516,6 +517,18 @@ fn local_daemon_protocol_slice_record_relay_endpoint_shape_is_versioned() {
     assert_eq!(
         format!("{hash:x}"),
         "b1dd5c4a49ec8243c410f8d5e063842e113505e0121ff58b4a1859ec7bb8f24d"
+    );
+    assert!(snapshot
+        .pointer("/Slice/slice/delete_when_unused")
+        .is_none());
+    let LocalDaemonResponse::Slice { mut slice } = serde_json::from_value(snapshot).unwrap() else {
+        panic!("expected a slice response");
+    };
+    slice.delete_when_unused = true;
+    let scoped = serde_json::to_value(LocalDaemonResponse::Slice { slice }).unwrap();
+    assert_eq!(
+        scoped.pointer("/Slice/slice/delete_when_unused"),
+        Some(&serde_json::json!(true))
     );
 }
 
@@ -608,6 +621,7 @@ fn local_daemon_protocol_slice_saved_state_shape_is_versioned() {
         session_id: None,
         session_ids: Vec::new(),
         agent_ids: Vec::new(),
+        delete_when_unused: false,
         backend: crate::slice::SliceBackendKind::LocalDocker,
         os: "linux".to_string(),
         display_mode: crate::slice::SliceDisplayMode::Headed,
@@ -812,6 +826,7 @@ fn local_daemon_protocol_slice_auth_remove_shape_is_versioned() {
             session_id: None,
             session_ids: Vec::new(),
             agent_ids: Vec::new(),
+            delete_when_unused: false,
             backend: crate::slice::SliceBackendKind::LocalDocker,
             os: "linux".to_string(),
             display_mode: crate::slice::SliceDisplayMode::Headed,
@@ -885,6 +900,7 @@ fn local_daemon_protocol_slice_provider_login_shape_is_versioned() {
             session_id: None,
             session_ids: Vec::new(),
             agent_ids: Vec::new(),
+            delete_when_unused: false,
             backend: crate::slice::SliceBackendKind::LocalDocker,
             os: "linux".to_string(),
             display_mode: crate::slice::SliceDisplayMode::Headed,

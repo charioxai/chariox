@@ -1472,6 +1472,7 @@ mod tests {
             session_id: Some("session-slice".to_string()),
             session_ids: vec!["session-slice".to_string()],
             agent_ids: vec![agent_id.to_string()],
+            delete_when_unused: false,
             backend: crate::slice::SliceBackendKind::LocalDocker,
             os: "linux".to_string(),
             display_mode: crate::slice::SliceDisplayMode::Headless,

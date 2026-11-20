@@ -111,6 +111,118 @@ fn a_sub_agent_still_refuses_unrelated_directories_and_repositories() {
     run_large_stack_async_test("authority-unrelated-worktree", unrelated);
 }
 
+#[test]
+fn slice_worktree_refuses_unrelated_directories_with_a_next_step() {
+    run_large_stack_async_test("slice-unrelated-worktree", slice_refuses_unrelated);
+}
+
+async fn slice_refuses_unrelated() {
+    let world = world("slice-unrelated-worktree").await;
+    let workspace = world._env.root.join("workspace");
+    init_repo(&workspace);
+    let unrelated = world._env.root.join("unrelated");
+    std::fs::create_dir_all(&unrelated).unwrap();
+    let unrelated_repo = world._env.root.join("other-repo");
+    init_repo(&unrelated_repo);
+    let stale = world._env.root.join("replaced-worktree");
+    git(
+        &workspace,
+        &["worktree", "add", "--detach", stale.to_str().unwrap()],
+    );
+    std::fs::rename(&stale, world._env.root.join("moved-worktree")).unwrap();
+    init_repo(&stale);
+    for directory in [&unrelated, &unrelated_repo, &stale] {
+        let result = room_command(
+            &world,
+            "a",
+            &format!(
+                "agent spawn worker --slice new:headless --dir {}",
+                directory.display()
+            ),
+        )
+        .await;
+        let message = error_text(&result);
+        assert!(!result.ok, "{result:?}");
+        assert!(
+            message.starts_with(&format!("`{}` ", directory.display())),
+            "{message}"
+        );
+        assert!(
+            message.contains("is not a Git worktree of Workspace"),
+            "{message}"
+        );
+        assert!(message.contains("Run `git worktree list`"), "{message}");
+        assert!(message.contains(workspace.to_str().unwrap()), "{message}");
+    }
+    assert!(!alias_exists(&world, "worker").await);
+    assert!(world.app.lock().await.slices().list().is_empty());
+}
+
+#[test]
+fn slice_worktree_agent_deletion_cleans_up_only_the_unused_agent_slice() {
+    run_large_stack_async_test("slice-agent-deletion", delete_slice_agent);
+}
+
+async fn delete_slice_agent() {
+    use crate::slice::{CreateSliceInput, SliceBackendKind, SliceDisplayMode};
+
+    let world = world("slice-agent-deletion").await;
+    let (temporary, reusable) = {
+        let app = world.app.lock().await;
+        let store = app.slices();
+        let create = |name: &str, delete_when_unused| {
+            store
+                .create_with_agent_lifetime(
+                    &app.config().daemon_id,
+                    &app.config().host_machine_id,
+                    CreateSliceInput {
+                        source_slice_ref: None,
+                        name: name.into(),
+                        // Exercise the kernel deletion path without invoking Docker.
+                        backend: SliceBackendKind::SshDocker,
+                        os: "linux".into(),
+                        display_mode: SliceDisplayMode::Headless,
+                        display_backend: Default::default(),
+                        workspace_id: None,
+                        worktree_id: None,
+                        workspace_mount: None,
+                        development: None,
+                        worker_kernel_ref: None,
+                        display_url: None,
+                        provider_auth: Vec::new(),
+                        from_saved_state: None,
+                        now_ms: 0,
+                    },
+                    delete_when_unused,
+                )
+                .unwrap()
+        };
+        let temporary = create("temporary", true);
+        let reusable = create("reusable", false);
+        for (slice, alias) in [(&temporary, "b"), (&temporary, "s"), (&reusable, "s")] {
+            store
+                .attach_agent(&slice.id, &world.room, &world.ids[alias], 1)
+                .unwrap();
+        }
+        (temporary, reusable)
+    };
+    let deleted = room_command(&world, "a", "agent delete b").await;
+    assert!(deleted.ok, "{deleted:?}");
+    assert!(world
+        .app
+        .lock()
+        .await
+        .slices()
+        .resolve(&temporary.id)
+        .is_ok());
+
+    let deleted = room_command(&world, "a", "agent delete s").await;
+    assert!(deleted.ok, "{deleted:?}");
+    let app = world.app.lock().await;
+    assert!(app.slices().resolve(&temporary.id).is_err());
+    assert!(app.slices().resolve(&reusable.id).is_ok());
+}
+
 async fn unrelated() {
     let world = world("authority-unrelated-worktree").await;
     let workspace = world._env.root.join("workspace");
