@@ -159,6 +159,7 @@ mod vault_secret;
 mod vault_unlock;
 mod vault_use;
 
+mod agent_release_notes;
 mod async_questions;
 mod provider_login;
 mod session_activity;

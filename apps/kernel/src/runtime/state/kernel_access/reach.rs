@@ -74,7 +74,8 @@ pub(crate) fn reach_need(request: &LocalDaemonRequest) -> ReachNeed {
     // the acquisition setting. Kernel-wide file access and every other kernel mutation need /sudo.
     if matches!(
         request,
-        LocalDaemonRequest::ListGatewayKernels(_)
+        LocalDaemonRequest::GetAgentReleaseNotes { .. }
+            | LocalDaemonRequest::ListGatewayKernels(_)
             | LocalDaemonRequest::ListSessions(_)
             | LocalDaemonRequest::ResolveSession(_)
             | LocalDaemonRequest::GetSessionState(_)

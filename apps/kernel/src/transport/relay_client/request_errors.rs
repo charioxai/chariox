@@ -209,6 +209,7 @@ pub(super) fn relay_request_kind(request: &LocalDaemonRequest) -> &'static str {
     match request {
         LocalDaemonRequest::ListRoomListSessions(_) => "room_list.sessions.list",
         LocalDaemonRequest::GetRoomListSnapshot(_) => "room_list.public_snapshot.get",
+        LocalDaemonRequest::GetAgentReleaseNotes { .. } => "agent_release_notes.read",
         LocalDaemonRequest::GetTerminalCommandCatalog(_) => "terminal.command_catalog.get",
         LocalDaemonRequest::GetProviderUsageSnapshot(_) => "provider_account.usage_snapshot.get",
         LocalDaemonRequest::GetAgentUsageSnapshot(_) => "agent.usage_snapshot.get",

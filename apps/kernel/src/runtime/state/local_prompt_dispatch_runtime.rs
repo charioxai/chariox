@@ -500,9 +500,15 @@ impl KernelRuntimeState {
                 message: "provider has no tool-free structured assessment path".into(),
             });
         }
-        let mut hidden_system_context = owned.hidden_context_with_failed_requests(
+        let mut hidden_system_context = owned.context_with_agent_release_note(
             &dispatch.agent_id,
-            &dispatch.hidden_system_context,
+            &dispatch.prompt_id,
+            dispatch.prompt_origin,
+            dispatch.steering,
+            owned.hidden_context_with_failed_requests(
+                &dispatch.agent_id,
+                &dispatch.hidden_system_context,
+            ),
         );
         if owned.config_projection.snapshot().room_agent_tools
             && !owned

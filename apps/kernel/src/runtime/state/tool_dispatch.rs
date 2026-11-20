@@ -233,6 +233,11 @@ impl KernelRuntimeState {
             specs.push(super::vault_command::remove_capture_spec());
             specs.extend(super::resource_register::specs());
             specs.push(super::agent_auth::spec());
+            specs.push(crate::transport::runtime_tools::RuntimeToolSpec {
+                name: crate::agent_release_notes::TOOL.into(),
+                description: "Read what changed for agents in this kernel’s latest Chariox landing.".into(),
+                input_schema: serde_json::json!({"type":"object","properties":{},"additionalProperties":false}),
+            });
             specs.push(super::file_copy_tool::file_copy_spec());
             specs.extend(super::machine_files_tools::files_tool_specs());
             specs.extend(super::machine_acquisition::machine_tool_specs());
@@ -554,6 +559,27 @@ impl KernelRuntimeState {
                 provider_runs.iter().map(|run| run.id().to_string()),
                 owned.provider_output_deadlines.clone(),
             );
+            if matches!(
+                tool_name,
+                crate::agent_release_notes::TOOL
+                    | "chariox_whats_new"
+                    | "mcp__chariox__chariox_whats_new"
+            ) {
+                unambiguous_runtime_tool_provider_run(&provider_runs, tool_name)?;
+                if arguments.as_object().is_none_or(|args| !args.is_empty()) {
+                    return Err(DaemonError::LocalTransport {
+                        operation: "agent_release_notes.read",
+                        message: "Read the release note with an empty arguments object.".into(),
+                    });
+                }
+                return Ok(crate::transport::runtime_tools::RuntimeToolResult {
+                    ok: true,
+                    payload: serde_json::json!({
+                        "landing": crate::agent_release_notes::LANDING,
+                        "text": crate::agent_release_notes::NOTE,
+                    }),
+                });
+            }
             if canonical_tool_name == crate::transport::runtime_tools::PERMISSION_PROMPT_TOOL {
                 let run =
                     unambiguous_runtime_tool_provider_run(&provider_runs, canonical_tool_name)?;

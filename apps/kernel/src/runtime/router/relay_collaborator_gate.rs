@@ -58,6 +58,7 @@ fn room_client_request(request: &LocalDaemonRequest) -> bool {
             | LocalDaemonRequest::GetRoomListSnapshot(_)
             | LocalDaemonRequest::ListRoomListSessions(_)
             // The composer's command and model catalogs, from the caller's own accounts.
+            | LocalDaemonRequest::GetAgentReleaseNotes { .. }
             | LocalDaemonRequest::GetTerminalCommandCatalog(_)
             | LocalDaemonRequest::GetProviderCatalog(_)
             | LocalDaemonRequest::GetClientCatalogSnapshot(_)

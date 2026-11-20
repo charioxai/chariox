@@ -867,7 +867,13 @@ impl KernelRuntimeState {
         let prompt_id = dispatch.prompt_id.clone();
         let closure_prompt_id = prompt_id.clone();
         let expected_leased_agent_id = dispatch.leased_agent_id.clone();
-        let mut hidden_system_context = dispatch.hidden_system_context.clone();
+        let mut hidden_system_context = self.owned.context_with_agent_release_note(
+            &dispatch.agent_id,
+            &dispatch.prompt_id,
+            dispatch.prompt_origin,
+            false,
+            dispatch.hidden_system_context.clone(),
+        );
         match self.owned.agent_task_context_hint(
             &dispatch.session_id,
             &dispatch.agent_id,

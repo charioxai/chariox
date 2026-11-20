@@ -32,3 +32,26 @@ test("an agent verb answers without loading the rendering stack", () => {
   assert.equal(result.handled, true)
   assert.deepEqual(result.tui, [])
 })
+
+test("top-level help is the same offline at both entry points and lists each command once", () => {
+  const entry = join(dirname(fileURLToPath(import.meta.url)), "index.js")
+  const run = (arg: string) => {
+    const result = spawnSync("bun", [entry, arg], { encoding: "utf8", timeout: 10_000 })
+    assert.equal(result.status, 0, result.stderr)
+    return result.stdout
+  }
+  const help = run("--help")
+  const rows = help.split("\n").filter(line => /^  \S.* {2,}\S/.test(line))
+  for (const { name } of COMMANDS) {
+    assert.equal(rows.filter(line => line.trimStart().split(/ {2,}/, 1)[0] === name).length, 1, name)
+  }
+  assert.match(help, /^  interaction list +\S/m)
+  assert.match(help, /^  interaction answer +\S/m)
+  assert.match(help, /^  events subscribe +\S/m)
+  assert.match(help, /^  events mcp +\S/m)
+  assert.equal(run("help"), help)
+  assert.match(help, /^Run commands$/m)
+  assert.match(help, /^Agent events$/m)
+  assert.match(help, /^Files$/m)
+  assert.ok(rows.every(line => line.length <= 100), "command rows should fit in a terminal")
+})

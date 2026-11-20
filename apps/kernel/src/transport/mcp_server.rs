@@ -1,4 +1,4 @@
-mod tool_errors;
+use crate::error::runtime_tool as tool_errors;
 use std::convert::Infallible;
 use std::sync::Arc;
 
