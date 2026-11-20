@@ -208,6 +208,7 @@ response_policies! {
         HandoffResolved,
         RoomWorkflowRunsControlled,
         ActivePromptSteered,
+        GatewayWriteCompleted,
         CloudRelayLoggedOut,
         // MP-08 / MP-11: protection-filtered like ScreenshotCaptured and RoomBrowserArtifact.
         KernelSudoRequested,

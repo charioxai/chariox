@@ -4,9 +4,8 @@ use super::error::GatewayError;
 use super::link::Link;
 use super::self_hosted::status_of;
 
-/// The oldest local protocol this gateway serves: the 10-14 release (1008). A kernel below it
-/// cannot read what the gateway sends, and no retry changes that.
-pub(crate) const MINIMUM_TARGET_PROTOCOL: u32 = 1008;
+/// Forwarded Room writes and their acknowledgments use the current local protocol.
+pub(crate) const MINIMUM_TARGET_PROTOCOL: u32 = crate::local::LOCAL_DAEMON_PROTOCOL_VERSION;
 
 /// `refusal`, unless the target's protocol shows it is too old: then `UpdateNeeded`.
 fn settle(name: &str, protocol: Option<u32>, refusal: GatewayError) -> GatewayError {

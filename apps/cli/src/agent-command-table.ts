@@ -108,7 +108,7 @@ export const REQUEST_EXAMPLES: readonly { body: object; note: string }[] = [
   { body: listSessionsRequest(), note: "SessionsListed.sessions" },
   { body: listProjectsRequest(), note: "ProjectsListed.projects" },
   { body: searchWorkspaceDirectoriesRequest("NAME", 20), note: "WorkspaceDirectoriesSearched.directories: absolute directory paths on that machine" },
-  { body: createSessionRequest("/PATH", "/PATH"), note: "workspace_id and worktree_id are one such directory path; SessionCreated.session.id" },
+  { body: createSessionRequest("/PATH", "/PATH"), note: "workspace_id and worktree_id are one such directory path. The Room id is SessionCreated.session_id through the gateway and SessionCreated.session.id on this kernel." },
   { body: attachToSessionRequest("SESSION_ID", "CLIENT_NAME"), note: "SessionAttached.attachment.id; client_id is any name you pick" },
   { body: getSessionStateRequest("SESSION_ID"), note: "SessionState: agents, prompts, output" },
   { body: { SpawnAgent: { ...spawnAgentRequest("SESSION_ID", "codex").SpawnAgent, account_profile: "PROFILE_ID" } }, note: "provider is claude, codex or opencode; use the chosen profile_id from ListProviderAccountProfiles, and set model and effort; AgentSpawned.agent.id" },

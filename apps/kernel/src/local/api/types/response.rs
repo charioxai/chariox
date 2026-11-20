@@ -53,6 +53,14 @@ pub enum LocalDaemonResponse {
     /// Protocol 568: the gateway paired with a self-hosted kernel.
     GatewayKernelJoined { kernel: GatewayKernel, },
     GatewayKernelForgotten { kernel_id: String, },
+    /// A forwarded write succeeded and its complete reply exceeded the durable receipt limit.
+    GatewayWriteCompleted {
+        response_kind: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        session_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        exit_code: Option<i32>,
+    },
     /// Protocol 568: the machine file requests.
     KernelFileStat { stat: KernelFileStat, },
     KernelDirectoryListed { path: String, entries: Vec<KernelDirectoryEntry>, truncated: bool, },
