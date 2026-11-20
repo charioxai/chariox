@@ -33,6 +33,21 @@ const HISTORY_BYTES = 8 * 1024 * 1024;
 const FIRST_PAINT_SHEET = 32 * 1024;
 // A font sent as a subset is checked against the document's characters at most this often.
 const FONT_REFRESH_MS = 1000;
+// Y3-C1a: how often, at most, a page whose script changed its DOM is asked again whether it takes the wheel.
+const WHEEL_REFRESH_MS = 1000;
+// Y3-C1a: whether the page's own script takes the wheel: a non-passive wheel/mousewheel listener on window, document,
+// html or body (a smooth-scroll or full-page library). DevTools lists only listeners of the object's own world, so the
+// objects come from the page's main world (two reads of its global and document, no page script runs). Depth 3 lists the
+// document, html and its children (body); 2 stops at html.
+async function pageTakesWheel(world) {
+  const send = (method, params) => world.connection.send(method, params, world.sessionId, { timeoutMs: world.patience?.() });
+  const objectGroup = 'chariox-mirror-wheel';
+  try {
+    const [global, doc] = await Promise.all(['globalThis', 'document'].map(expression => send('Runtime.evaluate', { expression, objectGroup, silent: true })));
+    const lists = await Promise.all([send('DOMDebugger.getEventListeners', { objectId: global.result.objectId }), send('DOMDebugger.getEventListeners', { objectId: doc.result.objectId, depth: 3 })]);
+    return lists.some(({ listeners }) => listeners.some(listener => (listener.type === 'wheel' || listener.type === 'mousewheel') && !listener.passive));
+  } finally { send('Runtime.releaseObjectGroup', { objectGroup }).catch(() => {}); }
+}
 const MOVED = Symbol('document moved');
 // An idle viewer parks one credit this long: the answer to a quiet page is one heartbeat per wait.
 const MAX_WAIT_MS = 10_000, RESOURCE_PACKET_BYTES = 256 * 1024, RESOURCE_BYTES = 4 * 1024 * 1024, TILE_REFRESH_MS = 1000;
@@ -414,7 +429,7 @@ export class Mirror2 {
     const packet = { wire: 2, subscription_id: command.subscription_id, tab_id: tabId, generation: command.generation,
       document_id: documentId, sequence, base_sequence: null, reset: true, fallback: 'navigation_preview',
       snapshot_complete: false, css_width: this.host.pageSize(tabId).width, css_height: this.host.pageSize(tabId).height, device_scale_factor: this.host.scales.get(tabId) ?? 1,
-      scroll: [0, 0], focused: null, focus_visible: false, selection: null, resources: [], tiles: [] };
+      scroll: [0, 0], focused: null, focus_visible: false, selection: null, page_wheel: false, resources: [], tiles: [] };
     this.remember(stream, sequence, packet, true);
     this.host.timing?.('mirror2_navigation_preview', started);
     return packet;
@@ -615,6 +630,14 @@ export class Mirror2 {
     if (fallback) resources = [];
     mark('observe_resources');
     assertDocument();
+    // Y3-C1a: asked on a snapshot, and after the page's script changed its DOM (a library sets itself up), at most once a second.
+    if (source?.ops?.length) stream.wheelDirty = true;
+    if (!fallback && (reset || stream.wheelDirty && Date.now() - (stream.wheelAt ?? 0) >= WHEEL_REFRESH_MS)) {
+      stream.wheelAt = Date.now(); stream.wheelDirty = false;
+      // A busy renderer that does not answer keeps the last answer (a snapshot: the viewer scrolls).
+      stream.pageWheel = await pageTakesWheel(world).catch(() => !reset && stream.pageWheel === true);
+      mark('wheel'); assertDocument();
+    }
     let sheets = [];
     try { sheets = await this.sheetOps(world, source?.sheets); } catch (error) {
       if (error?.mirrorReason !== 'css_incomplete') throw error;
@@ -649,7 +672,7 @@ export class Mirror2 {
     const sequence = stream.issued + 1;
     // Protocol 489 compact delta: the binding, base (sequence - 1) and every
     // header field equal to the base packet's are implied; empty lists omitted.
-    const header = { snapshot_complete: source?.snapshot_complete === true, ...(stream.viewportFirst ? { snapshot_viewport_complete: source?.snapshot_viewport_complete === true } : {}), font_failures: source?.font_failures ?? [], scroll: source?.scroll ?? [0, 0], focused: source?.focused ?? null, focus_visible: source?.focus_visible === true, selection: source?.selection ?? null, fragment: source?.fragment ?? null }, sent = Object.fromEntries(Object.entries(header).map(([name, value]) => [name, JSON.stringify(value)]));
+    const header = { snapshot_complete: source?.snapshot_complete === true, ...(stream.viewportFirst ? { snapshot_viewport_complete: source?.snapshot_viewport_complete === true } : {}), font_failures: source?.font_failures ?? [], scroll: source?.scroll ?? [0, 0], focused: source?.focused ?? null, focus_visible: source?.focus_visible === true, selection: source?.selection ?? null, fragment: source?.fragment ?? null, page_wheel: stream.pageWheel === true }, sent = Object.fromEntries(Object.entries(header).map(([name, value]) => [name, JSON.stringify(value)]));
     const packet = reset ? { wire: 2, subscription_id: command.subscription_id, tab_id: tab.tab_id, generation: command.generation, document_id: tab.document_id,
       sequence, base_sequence: null, reset, css_width: this.host.pageSize(tab.tab_id).width, css_height: this.host.pageSize(tab.tab_id).height, device_scale_factor: this.host.scales.get(tab.tab_id) ?? 1, ...header }
       : { wire: 2, sequence, ...Object.fromEntries(Object.entries(header).filter(([name]) => sent[name] !== stream.header?.[name])) };
@@ -728,7 +751,7 @@ export class Mirror2 {
   empty(stream, source) { return this.emptyDom(stream, source) && !this.tilesDue(stream); }
   emptyDom(stream, source) {
     const scroll = JSON.stringify(source.scroll) === stream.ownScrolls.get(null) ? stream.sentScroll : source.scroll;
-    return !source.ops?.length && !source.sheets?.length && JSON.stringify(source.snapshot_complete === true) === stream.header?.snapshot_complete && (!stream.viewportFirst || JSON.stringify(source.snapshot_viewport_complete === true) === stream.header?.snapshot_viewport_complete) && JSON.stringify(source.font_failures ?? []) === stream.header?.font_failures && JSON.stringify(scroll) === stream.header?.scroll && JSON.stringify(source.focused) === stream.header.focused && JSON.stringify(source.focus_visible === true) === stream.header.focus_visible && JSON.stringify(source.selection) === stream.header.selection && JSON.stringify(source.fragment ?? null) === stream.header.fragment;
+    return !source.ops?.length && !source.sheets?.length && JSON.stringify(source.snapshot_complete === true) === stream.header?.snapshot_complete && (!stream.viewportFirst || JSON.stringify(source.snapshot_viewport_complete === true) === stream.header?.snapshot_viewport_complete) && JSON.stringify(source.font_failures ?? []) === stream.header?.font_failures && JSON.stringify(scroll) === stream.header?.scroll && JSON.stringify(source.focused) === stream.header.focused && JSON.stringify(source.focus_visible === true) === stream.header.focus_visible && JSON.stringify(source.selection) === stream.header.selection && JSON.stringify(source.fragment ?? null) === stream.header.fragment && JSON.stringify(stream.pageWheel === true) === stream.header.page_wheel;
   }
   // A document that keeps streaming never has an empty credit: its font bytes, which fence the viewer's handover, travel with the DOM chunks.
   fontsDue(stream) { if (stream.fontRequirements !== true) return false; for (const entry of stream.resources.values()) if (entry.kind === 'font' && !entry.sent) return true; return false; }

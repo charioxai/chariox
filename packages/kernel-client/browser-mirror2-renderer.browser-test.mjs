@@ -696,6 +696,28 @@ test('MP-10: protocol 501 an external <use> sprite renders from a validated blob
   } finally { await page.close(); }
 });
 
+// browserfidelity r18 (Y3-C1a): a page whose own script takes the wheel (page_wheel) gets every wheel step, as in its browser;
+// the copy never scrolls itself. When the page gives the wheel back, the viewer scrolls its copy again.
+test('Y3-C1a: with page_wheel every wheel over the document goes to the kernel\'s page and the copy stays; without it the copy scrolls', async () => {
+  const page = await viewer();
+  try {
+    await apply(page, { ...snapshot([{ id: 'n1', parent: null, kind: 'document' }, { id: 'n2', parent: 'n1', kind: 'element', tag: 'html' }, { id: 'n3', parent: 'n2', kind: 'element', tag: 'body', attrs: { style: 'margin:0' } }, { id: 'n4', parent: 'n3', kind: 'element', tag: 'div', attrs: { style: 'height:4000px' } }]), page_wheel: true });
+    const box = await page.evaluate(() => { const b = window.r.frame.getBoundingClientRect(); return { x: b.left + 300, y: b.top + 300 }; });
+    await page.mouse.move(box.x, box.y);
+    for (let i = 0; i < 3; i++) { await page.mouse.wheel(0, 300); await page.waitForTimeout(30); }
+    await page.waitForTimeout(500);
+    const taken = await page.evaluate(() => ({ y: window.r.frame.contentWindow.scrollY, scrolls: window.sent.filter(a => a.kind === 'scroll').map(a => [a.node_id, a.delta_y]), positions: window.sent.filter(a => a.kind === 'scroll_to').length }));
+    assert.equal(taken.y, 0, `Y3-C1a: the copy does not scroll itself (${JSON.stringify(taken)})`);
+    assert.equal(taken.scrolls.reduce((n, [, dy]) => n + dy, 0), 900, `Y3-C1a: every step reaches the kernel's page (${JSON.stringify(taken)})`);
+    assert.equal(taken.positions, 0, 'Y3-C1a: no position is written');
+    await apply(page, delta(2, [], { page_wheel: false }));
+    await page.evaluate(() => { window.sent.length = 0; });
+    await page.mouse.wheel(0, 300); await page.waitForTimeout(600);
+    const local = await page.evaluate(() => ({ y: window.r.frame.contentWindow.scrollY, scrolls: window.sent.filter(a => a.kind === 'scroll').length }));
+    assert.ok(local.y >= 298 && local.scrolls === 0, `Y3-C1a: page_wheel false gives the wheel back to the copy (${JSON.stringify(local)})`);
+  } finally { await page.close(); }
+});
+
 // MP-10 strict Selkies scroll gap: precise wheel steps every 50 ms (a CDP pixel wheel) jumped once per step, so the
 // viewer presented one change per step (~20 fps) where a browser animating its wheel ticks presents every frame.
 // The viewer eases each step over the frames until the next one and ends exactly where the native steps would.
