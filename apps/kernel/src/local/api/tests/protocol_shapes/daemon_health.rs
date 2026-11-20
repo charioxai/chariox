@@ -15,7 +15,10 @@ fn daemon_health_timing_and_sample_protocol_snapshot_and_hash() {
     let request: LocalDaemonRequest = serde_json::from_value(expected["request"].clone()).unwrap();
     let durable_writer: crate::durable_state::DurableWriterHealthSnapshot =
         serde_json::from_value(expected["durable_writer"].clone()).unwrap();
+    let build_toolchain_version: Option<String> =
+        serde_json::from_value(expected["build_toolchain_version"].clone()).unwrap();
     let actual = serde_json::json!({
+        "build_toolchain_version": build_toolchain_version,
         "durable_writer": durable_writer,
         "request": request,
         "projection_invariants": invariants,
@@ -24,6 +27,6 @@ fn daemon_health_timing_and_sample_protocol_snapshot_and_hash() {
     assert_eq!(actual, expected);
     assert_eq!(
         format!("{:x}", Sha256::digest(serde_json::to_vec(&actual).unwrap())),
-        "2f6ec7e43f2a5b4f836537ff41fbb4b7e8328e1663319621ef8b39f44563ac81"
+        "70222f4846e46a7fdf4d322fed023f7a785d130641254ea0c0f48b9db0b42b2d"
     );
 }

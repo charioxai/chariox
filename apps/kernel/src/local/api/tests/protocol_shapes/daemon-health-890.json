@@ -1,4 +1,5 @@
 {
+  "build_toolchain_version": "1",
   "durable_writer": {
     "committed_batches": 120,
     "committed_records": 480,

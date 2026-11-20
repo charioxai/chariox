@@ -752,6 +752,8 @@ pub struct DaemonHealthProjection {
     #[serde(default)]
     pub app_lock: crate::runtime::app_lock::AppLockHealthSnapshot,
     pub durable_writer: crate::durable_state::DurableWriterHealthSnapshot,
+    /// The home-only build toolchain prepared on this kernel's machine.
+    pub build_toolchain_version: Option<String>,
 }
 
 impl DaemonHealthProjection {
@@ -813,6 +815,7 @@ impl DaemonHealthProjection {
             sample_counts: Default::default(),
             app_lock: crate::runtime::app_lock::AppLockHealthSnapshot::default(),
             durable_writer: Default::default(),
+            build_toolchain_version: None,
         }
     }
 }
