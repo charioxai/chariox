@@ -225,3 +225,75 @@ fn skills_v2_review_expired_mutation_reclaims_its_bytes_without_publishing() {
     );
     assert_eq!(f.service.storage.snapshot().unwrap().revision, 0);
 }
+
+#[cfg(unix)]
+#[test]
+fn recorded_folder_refresh_reviews_exact_bytes_and_refuses_source_redirection() {
+    let f = Fixture::new();
+    let install = f.mutation();
+    let installed = f
+        .service
+        .publish_reviewed("owner", &install, &f.preview(&install).id)
+        .unwrap();
+    let skill = &installed.catalogs[0].skills[0];
+    let refresh = |revision, digest: &str| SkillCatalogMutation {
+        scope: SkillScope::Chariox,
+        expected_revision: revision,
+        actions: vec![SkillCatalogAction::Update {
+            skill_id: skill.id.clone(),
+            expected_digest: digest.into(),
+            source: SkillInstallSource::RecordedFolder {},
+        }],
+    };
+    let mutation = refresh(installed.revision, &skill.digest);
+    let unchanged = f.service.preview_review("owner", &mutation).unwrap_err();
+    assert!(unchanged.to_string().contains("already current"));
+
+    fs::write(f.source.join("SKILL.md"), SECOND).unwrap();
+    let SkillsV2Response::Preview {
+        review_receipt,
+        file_changes,
+        ..
+    } = f.service.preview_review("owner", &mutation).unwrap()
+    else {
+        panic!("expected skill review");
+    };
+    assert_eq!(file_changes.len(), 1);
+    let change = &file_changes[0];
+    assert_eq!(change.skill_id, skill.id);
+    assert_eq!(change.path, "SKILL.md");
+    assert_eq!(change.before.as_ref(), Some(&skill.files[0]));
+    assert_ne!(change.before, change.after);
+
+    let moved = f.root.join("moved-source");
+    fs::rename(&f.source, &moved).unwrap();
+    let missing = f.service.preview_review("owner", &mutation).unwrap_err();
+    assert!(missing
+        .to_string()
+        .contains(&f.source.join("SKILL.md").display().to_string()));
+    std::os::unix::fs::symlink(&moved, &f.source).unwrap();
+    fs::write(moved.join("SKILL.md"), FIRST).unwrap();
+    assert!(f
+        .service
+        .preview_review("owner", &mutation)
+        .unwrap_err()
+        .to_string()
+        .contains("symlink"));
+
+    let published = f
+        .service
+        .publish_reviewed("owner", &mutation, &review_receipt.id)
+        .unwrap();
+    let updated = &published.catalogs[0].skills[0];
+    assert_eq!(updated.id, skill.id);
+    assert_eq!(
+        updated.provenance,
+        SkillProvenance {
+            updated_at_ms: updated.provenance.updated_at_ms,
+            ..skill.provenance.clone()
+        }
+    );
+    assert_eq!(updated.digest, review_receipt.sources[0].digest);
+    let body = fs::read_to_string(f.service.package_root(updated).join("SKILL.md")).unwrap();
+    assert_eq!(body, SECOND);
+}

@@ -18,6 +18,13 @@ export type SkillFileManifest = {
   executable: boolean
 }
 
+export type SkillFileChange = {
+  skill_id: string
+  path: string
+  before: SkillFileManifest | null
+  after: SkillFileManifest | null
+}
+
 export type SkillProvenance = {
   kind: string
   source_machine: string | null
@@ -137,6 +144,7 @@ export type RepositorySkillMember = { path: string; skill_id: string; name: stri
 export type RepositorySkillUpdate = { member: RepositorySkillMember; digest: string }
 export type SkillInstallSource =
   | { kind: "folder"; path: string }
+  | { kind: "recorded_folder" }
   | { kind: "content"; skill_md: string }
   | { kind: "url"; url: string; pinned_revision: string | null }
   | { kind: "native"; selection: SkillSelection }
@@ -199,7 +207,7 @@ export type SkillsV2Response =
   | { kind: "native_inventory"; entries: (NativeSkillEntry)[]; inventory_revision: string }
   | { kind: "native_details"; details: NativeSkillDetails }
   | { kind: "loads"; records: (SkillLoadRecord)[] }
-  | { kind: "preview"; expected_revision: number; affected: (SkillRecord)[]; collisions: (string)[]; review_receipt: SkillReviewReceipt }
+  | { kind: "preview"; expected_revision: number; affected: (SkillRecord)[]; collisions: (string)[]; file_changes?: SkillFileChange[]; review_receipt: SkillReviewReceipt }
   | { kind: "repository"; locator: string; revision: string; skills: (RepositorySkill)[]; skipped: (RepositorySkillSkip)[] }
   | { kind: "repository_update"; package_id: string; locator: string; from_revision: string; revision: string; changed: RepositorySkillUpdate[]; added: RepositorySkill[]; removed: RepositorySkillMember[]; unchanged: RepositorySkillMember[]; skipped: RepositorySkillSkip[]; mutation: SkillCatalogMutation }
   | { kind: "published"; revision: number; changed_skill_ids: (string)[]; removed_skill_ids: (string)[] }

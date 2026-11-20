@@ -24,7 +24,7 @@ fn skills_v2_protocol_allocation_and_contract_hash() {
             "{:x}",
             Sha256::digest(include_str!("../../../../skill/v2.rs"))
         ),
-        "eb1b16521dd27d0fffc02e208de3d10ceba637d35d739ce515f9fb434c0e532d"
+        "8c175479654ab6763644315bd4bde136a660f665f7151036e631eb94c8ee189e"
     );
 }
 
@@ -185,6 +185,7 @@ fn skills_v2_review_receipt_is_required_for_mutations_and_native_details_are_bou
         expected_revision: 0,
         affected: vec![],
         collisions: vec![],
+        file_changes: vec![],
         review_receipt: receipt,
     })
     .unwrap();
@@ -378,4 +379,20 @@ fn skills_v2_repository_update_wire_roundtrips() {
     }}});
     let response: LocalDaemonResponse = serde_json::from_value(wire.clone()).unwrap();
     assert_eq!(serde_json::to_value(response).unwrap(), wire);
+}
+
+#[test]
+fn skills_v2_recorded_folder_refresh_wire_shape() {
+    let wire = serde_json::json!({"SkillsV2":{"action":"preview","mutation":{
+        "scope":{"kind":"chariox"},"expected_revision":7,"actions":[{
+            "action":"update","skill_id":"skill-1","expected_digest":"old",
+            "source":{"kind":"recorded_folder"}
+        }]
+    }}});
+    let request: LocalDaemonRequest = serde_json::from_value(wire.clone()).unwrap();
+    assert_eq!(serde_json::to_value(request).unwrap(), wire);
+    let mut with_path = wire;
+    with_path["SkillsV2"]["mutation"]["actions"][0]["source"]["path"] =
+        serde_json::json!("/another/folder");
+    assert!(serde_json::from_value::<LocalDaemonRequest>(with_path).is_err());
 }
