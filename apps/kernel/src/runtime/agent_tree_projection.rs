@@ -85,6 +85,20 @@ fn totals_of(nodes: &[AgentTreeNode]) -> AgentTreeTotals {
     }
 }
 
+/// A node whose prompt is running reads `running` whatever the stored state of its agent says: the
+/// same truth the single-agent read and the room tools give. The totals follow the nodes.
+pub(crate) fn mark_nodes_with_active_prompt(tree: &mut AgentTree) {
+    for node in &mut tree.nodes {
+        if node.has_active_prompt
+            && matches!(node.state, AgentTreeState::Idle | AgentTreeState::Starting)
+        {
+            node.state = AgentTreeState::Running;
+            node.outcome = None;
+        }
+    }
+    tree.totals = totals_of(&tree.nodes);
+}
+
 fn redact_parameters(node: &mut AgentTreeNode) {
     node.provider = "redacted".to_owned();
     node.model = None;
@@ -377,6 +391,29 @@ mod tests {
                 .blocked
         );
         assert!(node_turn(&[], "child", &|_| TurnOutcomeKind::Completed).is_none());
+    }
+
+    // A child with an active prompt that its stored state does not show yet is running in the tree.
+    #[test]
+    fn a_child_with_an_active_prompt_reads_running_whatever_its_stored_state() {
+        let session = session(vec![
+            agent("root", None, 1),
+            agent("child", Some("root"), 2),
+        ]);
+        let mut tree = project_agent_tree(
+            &session,
+            session.agents(),
+            "root",
+            &|_| false,
+            &|_| None,
+            &|_| None,
+        )
+        .unwrap();
+        assert_eq!(tree.nodes[0].state, AgentTreeState::Idle);
+        tree.nodes[0].has_active_prompt = true;
+        mark_nodes_with_active_prompt(&mut tree);
+        assert_eq!(tree.nodes[0].state, AgentTreeState::Running);
+        assert_eq!((tree.totals.live, tree.totals.running), (1, 1));
     }
 
     #[test]

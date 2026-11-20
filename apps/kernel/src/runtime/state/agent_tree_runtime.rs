@@ -5,7 +5,9 @@ use crate::agent::tree_rev;
 use crate::local::{
     AgentTree, EventRefs, ListDescendantsRequest, LocalDaemonResponse, OutsideEventValue,
 };
-use crate::runtime::agent_tree_projection::{node_turn, project_agent_tree, tree_for_viewer};
+use crate::runtime::agent_tree_projection::{
+    mark_nodes_with_active_prompt, node_turn, project_agent_tree, tree_for_viewer,
+};
 use std::hash::{Hash, Hasher};
 
 impl KernelRuntimeState {
@@ -107,6 +109,7 @@ impl KernelRuntimeState {
                 node.stalled = activity.liveness.stalled;
             }
         }
+        mark_nodes_with_active_prompt(&mut tree);
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         serde_json::to_string(&(&tree.totals, &tree.nodes))
             .unwrap_or_default()

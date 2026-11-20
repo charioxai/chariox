@@ -177,7 +177,10 @@ pub(crate) fn agent_state_label(
         AgentState::Idle | AgentState::Focused if has_active_prompt => "working",
         AgentState::Idle | AgentState::Focused if yielded => "waiting",
         AgentState::Idle => "idle",
-        AgentState::Working => "working",
+        // A stored Working with no prompt running and no turn processing is a stale mark: the
+        // tree and the clients show such an agent idle, and so does this label.
+        AgentState::Working if has_active_prompt || agent.is_processing() => "working",
+        AgentState::Working => "idle",
         AgentState::Focused => "focused",
         AgentState::Error => "error",
     }
@@ -496,6 +499,15 @@ mod tests {
         let agent = stored_idle_agent();
         assert_eq!(agent_state_label(&agent, None, false), "idle");
         assert_eq!(agent_state_label(&agent, None, true), "working");
+        let mut stale = stored_idle_agent();
+        stale.set_state(crate::agent::AgentState::Working);
+        assert_eq!(
+            agent_state_label(&stale, None, false),
+            "idle",
+            "a stale Working mark"
+        );
+        stale.set_processing(true);
+        assert_eq!(agent_state_label(&stale, None, false), "working");
         assert_eq!(
             agent_state_label(&agent, Some(&idle_activity()), true),
             "working"
