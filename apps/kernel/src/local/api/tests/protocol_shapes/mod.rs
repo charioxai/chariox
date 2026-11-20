@@ -25,6 +25,7 @@ mod app_standing;
 mod app_view_inspection;
 mod apps;
 mod browser_artifact;
+mod browser_downloads;
 mod browser_import;
 mod browser_mirror;
 mod client_catalog_revisions;

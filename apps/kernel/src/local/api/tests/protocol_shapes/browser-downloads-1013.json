@@ -1,0 +1,59 @@
+{
+  "local": 1013,
+  "requests": [
+    {
+      "KernelBrowser": {
+        "command": {
+          "op": "room",
+          "session_id": "room-a",
+          "command": {
+            "op": "open",
+            "url": "https://example.test/"
+          }
+        }
+      }
+    },
+    {
+      "KernelBrowser": {
+        "command": {
+          "op": "downloads_wait",
+          "session_id": "room-a",
+          "after": "file-a",
+          "wait_ms": 10000
+        }
+      }
+    },
+    {
+      "KernelBrowser": {
+        "command": {
+          "op": "reveal_download",
+          "session_id": "room-a",
+          "download_id": "file-a"
+        }
+      }
+    }
+  ],
+  "responses": [
+    {
+      "KernelBrowser": {
+        "result": {
+          "downloads": [
+            {
+              "download_id": "file-a",
+              "name": "report.txt",
+              "path": "/downloads/file-a/report.txt"
+            }
+          ],
+          "revision": "file-a"
+        }
+      }
+    },
+    {
+      "KernelBrowser": {
+        "result": {
+          "native": true
+        }
+      }
+    }
+  ]
+}
