@@ -41,8 +41,7 @@ use crate::managed_context::package::{
 };
 use crate::runtime::cloud_api_client::{cloud_error_is_retryable, post_cloud_json};
 use crate::runtime::terminal_pairings::public_key_thumbprint;
-use crate::runtime::workspace_git_common::same_fs_path;
-use crate::runtime::workspace_worktrees::list_workspace_worktrees;
+use crate::runtime::workspace_worktrees::registered_workspace_worktree;
 use crate::secret::export_transferred_vault_snapshot;
 use crate::transport::relay_client::RelayClientState;
 use crate::transport::relay_peer::{
@@ -1618,22 +1617,16 @@ pub(crate) fn resolve_repository_selection(
 ) -> Result<DevelopmentRepositorySelection, DaemonError> {
     let worktree_path = match binding.worktree_id.as_deref() {
         None => PathBuf::from(&binding.workspace_id),
-        Some(worktree_id) => {
-            let worktrees = list_workspace_worktrees(&binding.workspace_id, Some(worktree_id))?;
-            let registered = worktrees
-                .into_iter()
-                .find(|worktree| same_fs_path(&worktree.path, worktree_id))
-                .ok_or_else(|| {
-                    outbound_service_error(
-                        format!(
-                            "worktree `{worktree_id}` is not registered for Workspace `{}`",
-                            binding.workspace_id
-                        ),
-                        false,
-                    )
-                })?;
-            PathBuf::from(registered.path)
-        }
+        Some(worktree_id) => registered_workspace_worktree(&binding.workspace_id, worktree_id)?
+            .ok_or_else(|| {
+                outbound_service_error(
+                    format!(
+                        "`{worktree_id}` is not a Git worktree of Workspace `{workspace}`. Run `git worktree list` in `{workspace}` and retry with a listed checkout.",
+                        workspace = binding.workspace_id
+                    ),
+                    false,
+                )
+            })?,
     };
     Ok(DevelopmentRepositorySelection {
         workspace_id: binding.workspace_id.clone(),

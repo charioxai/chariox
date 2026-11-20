@@ -151,6 +151,16 @@ impl SliceStore {
         owner_machine_id: &str,
         input: CreateSliceInput,
     ) -> Result<SliceRecord, DaemonError> {
+        self.create_with_agent_lifetime(owner_kernel_id, owner_machine_id, input, false)
+    }
+
+    pub(crate) fn create_with_agent_lifetime(
+        &self,
+        owner_kernel_id: &str,
+        owner_machine_id: &str,
+        input: CreateSliceInput,
+        delete_when_unused: bool,
+    ) -> Result<SliceRecord, DaemonError> {
         validate_slice_name(&input.name)?;
         let mut state = self
             .inner
@@ -210,6 +220,7 @@ impl SliceStore {
             session_id: None,
             session_ids: Vec::new(),
             agent_ids: Vec::new(),
+            delete_when_unused,
             backend: input.backend,
             os: input.os,
             display_mode: input.display_mode,

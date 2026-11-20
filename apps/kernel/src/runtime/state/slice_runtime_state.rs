@@ -46,9 +46,18 @@ impl KernelRuntimeState {
         }
     }
 
+    #[cfg(test)]
     pub(crate) async fn create_slice(
         &self,
         request: crate::local::CreateSliceRequest,
+    ) -> Result<crate::slice::SliceRecord, DaemonError> {
+        self.create_slice_with_agent_lifetime(request, false).await
+    }
+
+    pub(crate) async fn create_slice_with_agent_lifetime(
+        &self,
+        request: crate::local::CreateSliceRequest,
+        delete_when_unused: bool,
     ) -> Result<crate::slice::SliceRecord, DaemonError> {
         if request.backend == crate::slice::SliceBackendKind::LocalDocker
             && crate::slice::local_docker_slices_unavailable()
@@ -81,7 +90,7 @@ impl KernelRuntimeState {
                 &request.os,
             )?,
         };
-        let mut slice = self.owned.slice_store.create(
+        let mut slice = self.owned.slice_store.create_with_agent_lifetime(
             &config.daemon_id,
             &config.host_machine_id,
             crate::slice::CreateSliceInput {
@@ -101,6 +110,7 @@ impl KernelRuntimeState {
                 from_saved_state,
                 now_ms: crate::session::unix_epoch_ms(),
             },
+            delete_when_unused,
         )?;
         if let Some(storage_parent) = development_storage_parent {
             let storage_root = storage_parent.join(&slice.id);
@@ -918,6 +928,23 @@ impl KernelRuntimeState {
             tracing::warn!("MP-08/MP-10/MP-11: deleted slice obligation cleanup remains pending");
         }
         Ok(slice)
+    }
+
+    pub(crate) async fn cleanup_unused_agent_slice(&self, slice: &crate::slice::SliceRecord) {
+        if let Err(error) = crate::runtime::slice_command_executor::delete_agent_slice_if_unused(
+            self,
+            &self.owned.config_projection,
+            Arc::clone(&self.owned.relay_state),
+            slice,
+        )
+        .await
+        {
+            tracing::warn!(
+                slice = %slice.id,
+                error = %crate::secret_redaction::redact_secrets(&error.to_string()),
+                "could not delete unused agent slice"
+            );
+        }
     }
 
     fn update_slice_operation(
