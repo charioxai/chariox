@@ -123,6 +123,7 @@ export type TurnOutcomeKind =
   | "overloaded"
   | "usage_limit"
   | "sign_in_required"
+  | "content_policy"
   | "provider_crashed"
   | "network"
   | "other"

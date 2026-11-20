@@ -11,6 +11,7 @@ pub(super) fn opencode_error_text(error: &Value, message: &str) -> String {
         .and_then(|data| data.get("statusCode"))
         .and_then(Value::as_u64);
     let code = match (error.get("name").and_then(Value::as_str), status) {
+        (Some("ContentFilterError"), _) => "content_filter",
         (Some("ProviderAuthError"), _) => "provider_auth_error",
         (Some("MessageAbortedError"), _) => "message_aborted",
         (Some("ContextOverflowError"), _) => "context_window_exceeded",
@@ -64,7 +65,15 @@ pub struct OpenCodeMessageInfo {
 
 impl OpenCodeMessageInfo {
     pub fn terminal_error_message(&self) -> Option<String> {
-        let error = self.error.as_ref()?;
+        let Some(error) = self.error.as_ref() else {
+            return (self.finish.as_deref() == Some("content-filter")).then(|| {
+                crate::provider::provider_coded_failure_text(
+                    "OpenCode",
+                    "content_filter",
+                    "OpenCode reported finish: content-filter",
+                )
+            });
+        };
         error
             .get("data")
             .and_then(|value| value.get("message"))

@@ -6237,8 +6237,8 @@ value appears in the three places a reader looks:
   relay peer's projected completion `failure` and its persisted replay.
 
 `kind` is a closed list: `completed`, `cancelled`, `interrupted_by_restart`,
-`overloaded`, `usage_limit`, `sign_in_required`, `provider_crashed`, `network`,
-`other`. A client that meets a `kind` it does not know, because a newer kernel added
+`overloaded`, `usage_limit`, `sign_in_required`, `content_policy`,
+`provider_crashed`, `network`, `other`. A client that meets a `kind` it does not know, because a newer kernel added
 one, reads it as `unknown` and still shows `reason`. `completed` and `cancelled` are
 not errors: the agent is `idle` and the turn is not failed. Every other kind is an
 error and the agent is in the `error` state. `retryable` is whether a later attempt
@@ -6251,6 +6251,11 @@ provider failure, such as `The provider is at capacity.`; it is empty for
 details, such as a missing workspace path. Native provider diagnostics are retained
 in kernel logs with credentials redacted, rather than copied into public reasons. Except for the usage-limit resume of local 1011 (see "Settings change while a turn runs, and a usage limit"), Chariox adds no retry or backoff policy; the
 provider's own behaviour is unchanged and the orchestrating agent decides.
+
+A provider content-policy decline is `content_policy` with `retryable: false`.
+The owner and agent get a controlled explanation and next steps. The redacted
+provider detail is logged with the agent and provider run IDs. A policy decline
+does not rerun the same turn on a configured substitute.
 
 The kernel types a failure once from the harness's native error: Codex
 `codexErrorInfo` codes, Claude `result` errors and `StopFailure` kinds, OpenCode

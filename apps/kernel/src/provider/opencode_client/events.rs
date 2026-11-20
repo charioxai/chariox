@@ -233,6 +233,29 @@ mod failure_cause_tests {
     }
 
     #[test]
+    fn opencode_content_filter_is_a_content_policy_decline() {
+        let expected = TurnOutcome::provider_failure(ContentPolicy, false);
+        assert_eq!(
+            session_error(serde_json::json!({
+                "name": "ContentFilterError",
+                "data": {"message": "The response was blocked by the provider's content filter"}
+            })),
+            expected
+        );
+        // A message update can carry the finish reason before session.error arrives.
+        let info: crate::provider::opencode_client::OpenCodeMessageInfo =
+            serde_json::from_value(serde_json::json!({
+                "id": "message", "sessionID": "session", "role": "assistant",
+                "finish": "content-filter", "time": {"completed": 1}
+            }))
+            .unwrap();
+        let diagnostic = info
+            .terminal_error_message()
+            .expect("content filter failure");
+        assert_eq!(TurnOutcome::classify("opencode", &diagnostic), expected);
+    }
+
+    #[test]
     fn ea2_75_opencode_opaque_errors_use_status_and_native_retryability() {
         for (status, kind, retryable) in [
             (401, SignInRequired, false),

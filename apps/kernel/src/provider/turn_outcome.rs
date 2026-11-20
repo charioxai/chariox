@@ -24,6 +24,7 @@ pub enum TurnOutcomeKind {
     Overloaded,
     UsageLimit,
     SignInRequired,
+    ContentPolicy,
     ProviderCrashed,
     Network,
     Other,
@@ -42,6 +43,7 @@ impl TurnOutcomeKind {
             Self::Overloaded => "overloaded",
             Self::UsageLimit => "usage limit",
             Self::SignInRequired => "Sign-in required",
+            Self::ContentPolicy => "content policy decline",
             Self::ProviderCrashed => "provider crashed",
             Self::Network => "network",
             Self::Other => "other",
@@ -69,6 +71,7 @@ impl TurnOutcomeKind {
             Self::Overloaded => "Provider overloaded",
             Self::UsageLimit => "Usage limit reached",
             Self::SignInRequired => "Sign-in required",
+            Self::ContentPolicy => "Provider declined the request",
             Self::ProviderCrashed => "Provider stopped unexpectedly",
             Self::Network => "Network problem",
             Self::Other => "Provider error",
@@ -166,6 +169,9 @@ impl TurnOutcome {
             (TurnOutcomeKind::SignInRequired, _) => {
                 "Sign in again in Provider Accounts, then send the request again."
             }
+            (TurnOutcomeKind::ContentPolicy, _) => {
+                "Reword the request and retry, or switch this agent to another provider."
+            }
             (TurnOutcomeKind::ProviderCrashed, _) => {
                 "The provider process ended; send the request again to start it."
             }
@@ -221,6 +227,9 @@ impl TurnOutcome {
             TurnOutcomeKind::Overloaded => "The provider is at capacity.",
             TurnOutcomeKind::UsageLimit => "The provider's usage limit was reached.",
             TurnOutcomeKind::SignInRequired => "The provider needs you to sign in.",
+            TurnOutcomeKind::ContentPolicy => {
+                "The provider declined this request under its content policy."
+            }
             TurnOutcomeKind::ProviderCrashed => "The provider process stopped unexpectedly.",
             TurnOutcomeKind::Network => "The connection to the provider was interrupted.",
             TurnOutcomeKind::Other | TurnOutcomeKind::Unknown => {
@@ -251,12 +260,33 @@ impl TurnOutcome {
             } else {
                 Self::classify_words(adapter_key, message)
             };
-            if let Some(retryable) = native_retryable {
+            if let Some(retryable) =
+                native_retryable.filter(|_| failure.kind != TurnOutcomeKind::ContentPolicy)
+            {
                 failure.retryable = retryable;
             }
             return failure;
         }
         Self::classify_words(adapter_key, text)
+    }
+
+    pub(crate) fn log_policy_decline(
+        &self,
+        agent_id: &str,
+        provider_run_id: &str,
+        diagnostic: &str,
+    ) {
+        if self.kind == TurnOutcomeKind::ContentPolicy {
+            crate::logging::info_with_fields(
+                "daemon.provider",
+                "provider declined a turn under its content policy",
+                serde_json::json!({
+                    "agent_id": agent_id,
+                    "provider_run_id": provider_run_id,
+                    "diagnostic": crate::secret_redaction::redact_secrets(diagnostic),
+                }),
+            );
+        }
     }
 
     fn classify_words(adapter_key: &str, message: &str) -> Self {
@@ -423,17 +453,19 @@ fn failure_for_code(code: &str, message: &str) -> Option<(TurnOutcomeKind, bool)
                 (Other, true)
             }
         }
+        "bio_policy"
+        | "cyber_policy"
+        | "misalignment_policy_violation"
+        | "refusal"
+        | "content_filter" => (ContentPolicy, false),
         "context_window_exceeded"
         | "invalid_prompt"
         | "too_many_denials"
         | "active_turn_not_steerable"
-        | "bio_policy"
         | "max_output_tokens"
         | "bad_request"
         | "invalid_request"
         | "model_not_found"
-        | "cyber_policy"
-        | "misalignment_policy_violation"
         | "sandbox_error"
         | "thread_rollback_failed" => (Other, false),
         _ => return None,
@@ -513,6 +545,30 @@ mod tests {
             outcome.notice(),
             "The provider is at capacity. Try again in a moment or choose another model."
         );
+    }
+
+    #[test]
+    fn content_policy_has_its_own_recovery_and_keeps_other_failure_advice() {
+        for (diagnostic, expected) in [
+            (
+                "Codex error [cyber_policy]: native policy detail",
+                "The provider declined this request under its content policy. Reword the request and retry, or switch this agent to another provider.",
+            ),
+            (
+                "Codex error [internal_server_error]: temporary problem",
+                "The provider could not complete this request. Send the request again.",
+            ),
+            (
+                "Codex error [model_not_found]: private account detail",
+                "The provider could not complete this request. Check the provider account and model settings, then send the request again.",
+            ),
+            (
+                "Codex error [usage_limit_exceeded]: limit reached",
+                "The provider's usage limit was reached. Wait for the limit to reset or choose another account, then send the request again.",
+            ),
+        ] {
+            assert_eq!(TurnOutcome::classify("codex", diagnostic).notice(), expected);
+        }
     }
 
     #[test]

@@ -1953,6 +1953,33 @@ done
     }
 
     #[test]
+    fn claude_content_policy_refusal_is_a_failed_result() {
+        let (mut state, mut batch) = parser_state();
+        apply_claude_message(
+            "run-1",
+            &mut state,
+            json!({
+                "type": "result", "subtype": "success", "is_error": false,
+                "stop_reason": "refusal", "result": "Native Claude refusal detail",
+            }),
+            &mut batch,
+        );
+
+        assert!(batch.prompt_completed);
+        assert!(batch.explicit_provider_error);
+        let diagnostic = batch
+            .terminal_failure
+            .expect("a policy refusal fails the turn");
+        assert!(diagnostic.contains("Native Claude refusal detail"));
+        let outcome = crate::provider::TurnOutcome::classify("claude", &diagnostic);
+        assert_eq!(
+            outcome.kind,
+            crate::provider::TurnOutcomeKind::ContentPolicy
+        );
+        assert!(!outcome.notice().contains("Native Claude refusal detail"));
+    }
+
+    #[test]
     fn captures_system_session_and_model() {
         let (mut state, mut batch) = parser_state();
 

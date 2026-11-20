@@ -304,12 +304,17 @@ impl KernelRuntimeOwnedState {
     ) -> Option<crate::provider::TurnOutcome> {
         let failure = crate::terminal::provider_dispatch_failure(adapter_key, error);
         match &failure {
-            Some(failure) => self.record_provider_failure_notice(
-                session_id,
-                provider_run_id,
-                agent_id,
-                failure.notice(),
-            ),
+            Some(failure) => {
+                if let DaemonError::ProviderRefusal { message } = error {
+                    failure.log_policy_decline(agent_id, provider_run_id, message);
+                }
+                self.record_provider_failure_notice(
+                    session_id,
+                    provider_run_id,
+                    agent_id,
+                    failure.notice(),
+                );
+            }
             None => self.record_provider_failure_output(
                 session_id,
                 provider_run_id,

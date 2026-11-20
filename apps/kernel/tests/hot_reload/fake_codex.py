@@ -79,7 +79,10 @@ def turn_view():
     items = [{"type": "userMessage", "id": "user-1", "content": [{"type": "text", "text": "prompt"}]}]
     if turn["status"] == "completed":
         items.append({"type": "agentMessage", "id": ITEM, "text": turn["text"]})
-    return {"id": TURN, "status": turn["status"], "items": items}
+    view = {"id": TURN, "status": turn["status"], "items": items}
+    if view["status"] == "failed":
+        view["error"] = turn["error"]
+    return view
 
 
 PARTS = 450
@@ -99,6 +102,16 @@ def wait_for(name):
 
 def run_turn():
     notify("turn/started", {"threadId": THREAD, "turn": {"id": TURN, "status": "inProgress", "items": []}})
+    failure = os.path.join(record, "turn-failure")
+    if os.path.exists(failure):
+        with open(failure) as frame:
+            error = json.load(frame)
+        wait_for("report-failure")
+        turn["error"] = error
+        turn["status"] = "failed"
+        notify("turn/completed", {"threadId": THREAD, "turn": {
+            "id": TURN, "status": "failed", "items": [], "error": error}})
+        return
     notify("item/started", {"threadId": THREAD, "turnId": TURN, "item": {"type": "agentMessage", "id": ITEM, "text": ""}})
     for n in range(1, PARTS + 1):
         swapping = os.path.exists(os.path.join(record, "swap"))

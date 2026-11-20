@@ -909,7 +909,14 @@ impl KernelRuntimeState {
             self.fail_owned_provider_prompt_with_termination_if_matches(
                 session_id,
                 provider_run_id,
-                &message,
+                native_error
+                    .as_deref()
+                    .filter(|_| {
+                        failure.as_ref().is_some_and(|outcome| {
+                            outcome.kind == crate::provider::TurnOutcomeKind::ContentPolicy
+                        })
+                    })
+                    .unwrap_or(&message),
                 false,
                 None,
                 provider_termination,
