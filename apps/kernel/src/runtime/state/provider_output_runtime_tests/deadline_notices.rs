@@ -146,3 +146,147 @@ async fn a_reached_limit_says_what_stopped_and_leaves_the_sub_agent_told() {
         "{message}"
     );
 }
+
+// TL4: three sub-agents, two mid-turn and one yielded on a wake, all go on when their parent's
+// limit ends, and each is told that no agent above it runs.
+#[tokio::test]
+async fn a_parents_limit_leaves_three_sub_agents_running_and_each_is_told() {
+    use crate::durable_state::agent_lifecycle::{AgentWake, Operation};
+    let family = super::child_finished::family("deadline-three-kids", 3, None, true).await;
+    let (runtime, room) = (&family.runtime, family.room.clone());
+    let store = &runtime.owned.durable_state_store;
+    // The second sub-agent ends its turn on a wake that is still armed.
+    let parked = &family.kids[1];
+    let (task, prompt) = (
+        parked.task.task_id.clone(),
+        parked.child_prompt.id().to_string(),
+    );
+    let now = crate::session::unix_epoch_ms();
+    let wake: AgentWake = serde_json::from_value(serde_json::json!({
+        "id": "parked-wake", "task_id": task, "room_id": room, "agent_id": parked.child,
+        "registration_id": "completion-parked-wake", "kind": "timer", "label": "wait for a build",
+        "state": "scheduled", "created_at_ms": now, "verified_at_ms": null,
+        "next_due_ms": now + 3_600_000, "interval_ms": null, "command": [],
+        "match_text": null, "matched_at_ms": null, "pid": null, "exit_code": null,
+        "fire_count": 0, "missed_fires": 0, "last_fired_at_ms": null, "last_sequence": null,
+        "last_delivery": null, "last_delivered_at_ms": null, "last_acknowledged_at_ms": null,
+        "alerted_sequence": null
+    }))
+    .unwrap();
+    store
+        .agent_lifecycle(Operation::CreateWake {
+            task: task.clone(),
+            prompt: prompt.clone(),
+            wake,
+        })
+        .unwrap();
+    store
+        .agent_lifecycle(Operation::Yield {
+            task: task.clone(),
+            prompt: prompt.clone(),
+            registrations: vec!["completion-parked-wake".into()],
+            cursor: 0,
+            deadline: Some(now + 3_900_000),
+            reason: "wait for the build".into(),
+            now,
+        })
+        .unwrap();
+    store
+        .agent_lifecycle(Operation::Settle {
+            room: room.clone(),
+            agent: parked.child.clone(),
+            prompt: prompt.clone(),
+            run: parked.child_run.clone(),
+            has_answer: true,
+            cancelled: false,
+            now,
+        })
+        .unwrap();
+    runtime
+        .owned
+        .complete_local_prompt_without_advance(&room, &parked.child, Some(&parked.child_run))
+        .unwrap();
+
+    let owner = runtime
+        .owned
+        .session_store
+        .get_session(&room)
+        .unwrap()
+        .owner_user_id()
+        .to_string();
+    runtime
+        .set_agent_deadline(
+            &owner,
+            crate::local::SetAgentDeadlineRequest {
+                session_id: room.clone(),
+                agent_id: family.parent.clone(),
+                deadline_ms: Some(crate::session::unix_epoch_ms() + 30),
+            },
+        )
+        .await
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+    for _ in 0..2 {
+        runtime
+            .tick_agent_deadlines(crate::session::unix_epoch_ms())
+            .await
+            .unwrap();
+    }
+
+    let session = runtime.owned.session_store.get_session(&room).unwrap();
+    for (index, kid) in family.kids.iter().enumerate() {
+        assert!(
+            store.agent_deadline(&room, &kid.child).unwrap().is_none(),
+            "kid {index} has no limit"
+        );
+        if index == 1 {
+            assert!(
+                !runtime
+                    .owned
+                    .unsettled_agent_wakes(&room, &kid.child)
+                    .unwrap()
+                    .is_empty(),
+                "the parked sub-agent's wake was not cancelled"
+            );
+        } else {
+            assert!(
+                runtime
+                    .owned
+                    .prompt_state_owner
+                    .active_prompt_for_agent(&session, &kid.child)
+                    .is_some(),
+                "kid {index} is still in its turn"
+            );
+            assert_ne!(
+                runtime
+                    .owned
+                    .provider_store
+                    .get_run(&kid.child_run)
+                    .unwrap()
+                    .state(),
+                crate::provider::ProviderRunState::Ended
+            );
+        }
+        let told = store
+            .agent_inbox(&room, &kid.child, 0)
+            .unwrap()
+            .into_iter()
+            .find(|event| event.kind == "parent_time_limit_ended")
+            .unwrap_or_else(|| panic!("kid {index} was not told"));
+        assert!(
+            told.payload["message"]
+                .as_str()
+                .unwrap()
+                .contains("You keep running"),
+            "{told:?}"
+        );
+    }
+    let text = runtime
+        .agent_notices_for_test(&room, &family.parent)
+        .into_iter()
+        .find(|notice| notice.contains("time limit ended at"))
+        .expect("the Room is told");
+    for alias in ["child", "child2", "child3"] {
+        assert!(text.contains(alias), "{alias} is named: {text}");
+    }
+}
