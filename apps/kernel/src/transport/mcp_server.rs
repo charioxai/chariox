@@ -228,9 +228,13 @@ fn catalog_notification_stream(
     let registry = http_body_util::BodyStream::new(registry.into_body());
     let body = stream::once(async move {
         let ((scoped_opening, scoped), (registry_opening, registry)) =
-            futures_util::future::join(scoped.into_future(), registry.into_future()).await;
+            futures_util::future::join(scoped.into_future(), registry.fuse().into_future()).await;
+        let scoped_opening = scoped_opening?;
         let mut opening = bytes::BytesMut::new();
-        for frame in [scoped_opening, registry_opening].into_iter().flatten() {
+        for frame in [Some(scoped_opening), registry_opening]
+            .into_iter()
+            .flatten()
+        {
             if let Ok(Ok(data)) = frame.map(hyper::body::Frame::into_data) {
                 opening.extend_from_slice(&data);
             }
@@ -241,8 +245,11 @@ fn catalog_notification_stream(
         )
         .take_while(|frame| std::future::ready(frame.is_some()))
         .filter_map(std::future::ready);
-        stream::once(async move { Ok(hyper::body::Frame::data(opening.freeze())) }).chain(rest)
+        Some(
+            stream::once(async move { Ok(hyper::body::Frame::data(opening.freeze())) }).chain(rest),
+        )
     })
+    .filter_map(std::future::ready)
     .flatten();
     Response::from_parts(parts, http_body_util::StreamBody::new(body).boxed_unsync())
 }

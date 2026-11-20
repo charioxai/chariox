@@ -106,6 +106,26 @@ async fn notification(body: &mut Incoming) -> Bytes {
 }
 
 #[tokio::test]
+async fn catalog_stream_closes_when_listener_stops_before_first_frame() {
+    let (router, _app, _address, server) = fixture().await;
+    let catalogs = catalog::CatalogMonitor::new();
+    catalogs.refresh(&router);
+    let mut headers = hyper::HeaderMap::new();
+    headers.insert(AUTHORIZATION, "Bearer catalog-token-a".parse().unwrap());
+    let (lifetime, shutdown) = tokio::sync::watch::channel(());
+    let response = catalog_notification_stream(router, &catalogs, &headers, shutdown);
+    assert_eq!(response.status(), StatusCode::OK);
+
+    drop(lifetime);
+    let mut body = response.into_body();
+    let frame = tokio::time::timeout(Duration::from_secs(2), body.frame())
+        .await
+        .expect("the response must finish when the listener stops");
+    assert!(frame.is_none());
+    server.abort();
+}
+
+#[tokio::test]
 async fn authenticated_stream_is_scoped_and_fresh_tools_list_observes_only_its_generation() {
     let (router, app, address, server) = fixture().await;
     let (unauthorized, bad_connection) = request(address, Method::GET, "wrong-token", "").await;
