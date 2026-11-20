@@ -15,6 +15,12 @@ pub use subject::RuntimeInteractionSubject;
 #[cfg(test)]
 mod subject_tests;
 
+pub(crate) const BLOCKED_TASK_DECISION_PREFIX: &str = "task-blocked-";
+
+pub(crate) fn is_blocked_task_decision(interaction_id: &str) -> bool {
+    interaction_id.starts_with(BLOCKED_TASK_DECISION_PREFIX)
+}
+
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeInteractionKind {

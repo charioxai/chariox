@@ -17,8 +17,10 @@ mod room_environment;
 mod room_setup;
 mod room_setup_store;
 mod runtime_interactions;
-pub(crate) use runtime_interactions::bounded_display_text;
 pub use runtime_interactions::NativeInteractionOrigin;
+pub(crate) use runtime_interactions::{
+    bounded_display_text, is_blocked_task_decision, BLOCKED_TASK_DECISION_PREFIX,
+};
 pub use runtime_interactions::{
     HANDOFF_CHANGE_LINE_MAX_CHARS, HANDOFF_CHANGE_MAX_LINES, HANDOFF_EXPLANATION_MAX_CHARS,
     HANDOFF_LABEL_MAX_CHARS, HANDOFF_MAX_TIMEOUT_SEC, HANDOFF_MIN_TIMEOUT_SEC,
