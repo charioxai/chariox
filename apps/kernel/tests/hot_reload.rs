@@ -9,6 +9,9 @@ mod local_jobs;
 #[path = "hot_reload/steered_tool_history.rs"]
 mod steered_tool_history;
 
+#[path = "hot_reload/decision_restart.rs"]
+mod decision_restart;
+
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -48,7 +51,7 @@ struct Kernel {
 impl Drop for Kernel {
     fn drop(&mut self) {
         let pid = self.child.id() as i32;
-        if pid > 1 {
+        if pid > 1 && self.child.try_wait().unwrap().is_none() {
             unsafe { libc::kill(pid, libc::SIGTERM) };
         }
         let deadline = Instant::now() + Duration::from_secs(10);
@@ -214,7 +217,10 @@ fn laptop_token(kernel: &Kernel) -> Option<String> {
     Some(std::fs::read_to_string(path).ok()?.trim().to_string())
 }
 
-async fn request(socket: &mut Socket, body: Value) -> Value {
+async fn request<S>(socket: &mut WebSocketStream<S>, body: Value) -> Value
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
     let id = format!("hot-reload-{:016x}", rand::random::<u64>());
     let frame = json!({"type": "request", "request_id": id, "command_id": id, "request": body});
     socket

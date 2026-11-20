@@ -18,6 +18,9 @@ impl KernelRuntimeOwnedState {
             .lock()
             .map_err(|_| interaction_error("Interaction store is unavailable"))?;
         self.pending_interactions.prune_abandoned_kernel_owners();
+        if kernel_operation_owner.is_some() {
+            self.reclaim_kernel_decisions_locked(false);
+        }
         if !interaction.valid_subject()
             || interaction.id().trim().is_empty()
             || interaction.id().len() > 128

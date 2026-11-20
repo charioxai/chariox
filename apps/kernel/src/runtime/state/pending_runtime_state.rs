@@ -189,6 +189,12 @@ impl PendingInteraction {
         sessions.matches_identity(&self.session_store_identity)
     }
 
+    pub(super) fn decision_still_waits(&self, now: std::time::Instant) -> bool {
+        self.kernel_operation_deadline
+            .is_none_or(|deadline| now < deadline)
+            && !self.nobody_waits()
+    }
+
     /// The component that asked is gone or the interaction was answered: no
     /// receiver waits for a resolution any more.
     pub(super) fn nobody_waits(&self) -> bool {

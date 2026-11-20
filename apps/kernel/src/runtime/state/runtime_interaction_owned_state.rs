@@ -925,6 +925,16 @@ impl KernelRuntimeOwnedState {
             .mutation
             .lock()
             .map_err(|_| interaction_error("Interaction store is unavailable"))?;
+        self.settle_runtime_interaction_locked(session_id, interaction_id, expected, settlement)
+    }
+
+    fn settle_runtime_interaction_locked(
+        &self,
+        session_id: &str,
+        interaction_id: &str,
+        expected: Option<&super::PendingInteraction>,
+        settlement: Settlement,
+    ) -> Result<(), DaemonError> {
         crate::logging::debug_with_fields(
             "runtime.interaction",
             "timeout runtime interaction requested",

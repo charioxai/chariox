@@ -88,6 +88,71 @@ impl KernelRuntimeOwnedState {
 }
 
 impl KernelRuntimeState {
+    /// Read just enough to identify the owner's kernel decisions. The terminal still owns
+    /// presentation and answer authority, including for secrets and passkeys.
+    pub(crate) fn owner_kernel_decisions(
+        &self,
+        source: &RuntimeSession,
+        caller: &AgentInstance,
+    ) -> Result<serde_json::Value, DaemonError> {
+        if self.owned.drives_as_room_guest(source, caller) {
+            return Err(denied(
+                "a guest's agent cannot inspect the owner's kernel decisions",
+            ));
+        }
+        let now = std::time::Instant::now();
+        let now_ms = crate::session::unix_epoch_ms();
+        let mut cards = self
+            .owned
+            .pending_kernel_decisions()
+            .into_iter()
+            .filter(|(_, pending)| {
+                pending
+                    .kernel_operation_owner
+                    .as_deref()
+                    .is_some_and(|owner| {
+                        self.owned
+                            .kernel_decision_owner_matches(source.owner_user_id(), owner)
+                    })
+            })
+            .filter_map(|(id, pending)| {
+                let card = self
+                    .owned
+                    .open_kernel_decision(&id, &pending, now, &|room| {
+                        self.owned.session_store.get_session(room).ok()
+                    })?;
+                let kind = if let Some(prompt) = &pending.passkey_prompt {
+                    serde_json::json!(prompt.kind)
+                } else if id.starts_with("machine-acquisition-") {
+                    serde_json::json!("machine_acquisition")
+                } else {
+                    serde_json::json!(card.kind())
+                };
+                let requester = card
+                    .agent_id()
+                    .or_else(|| card.related_agent_id())
+                    .map(|agent_id| serde_json::json!({"agent_id": agent_id}))
+                    .or_else(|| {
+                        card.requester().map(|process| {
+                        serde_json::json!({"pid": process.pid, "harness": process.provider_harness})
+                    })
+                    });
+                let requested_at = card.requested_at_ms();
+                let row = serde_json::json!({
+                    "id": id,
+                    "kind": kind,
+                    "age_ms": now_ms.saturating_sub(requested_at),
+                    "requester": requester,
+                });
+                Some((requested_at, row))
+            })
+            .collect::<Vec<_>>();
+        cards.sort_by_key(|(requested_at, _)| *requested_at);
+        Ok(serde_json::json!({
+            "cards": cards.into_iter().map(|(_, card)| card).collect::<Vec<_>>()
+        }))
+    }
+
     pub(crate) fn owner_room_state(
         &self,
         caller_id: &str,
