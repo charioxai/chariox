@@ -57,12 +57,7 @@ fn apply_system_message(
     }
     if starts_claudes_own_turn(state, value) {
         state.background_notification_pending = false;
-        state.active_turn_id = Some(format!("turn-{}", state.next_turn_number));
-        state.next_turn_number += 1;
-        state.turn_watchdog.begin(std::time::Instant::now());
-        state.tool_transcript.clear();
-        state.own_turn = true;
-        batch.provider_own_turn = ProviderOwnTurnSignal::Running;
+        begin_own_turn(state, batch);
     }
     match value.get("subtype").and_then(Value::as_str) {
         // The summary replaces the history that held the run base.
@@ -95,6 +90,18 @@ fn apply_system_message(
             batch.resolved_model_source = Some("claude.system");
         }
     }
+}
+
+pub(super) fn begin_own_turn(
+    state: &mut ClaudeRuntimeState,
+    batch: &mut ProviderPromptSignalBatch,
+) {
+    state.active_turn_id = Some(format!("turn-{}", state.next_turn_number));
+    state.next_turn_number += 1;
+    state.turn_watchdog.begin(std::time::Instant::now());
+    state.tool_transcript.clear();
+    state.own_turn = true;
+    batch.provider_own_turn = ProviderOwnTurnSignal::Running;
 }
 
 /// Claude's `init` names each MCP server with its connection status; it waits
