@@ -138,6 +138,8 @@ pub struct WorkflowNodeRun {
     status: WorkflowNodeRunStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     waiting_reason: Option<WorkflowNodeWaitingReason>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    workspace_claim_holding_run_id: Option<String>,
     summary: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     completion: Option<WorkflowCompletionSnapshot>,
@@ -165,6 +167,7 @@ impl WorkflowNodeRun {
             iteration_index,
             status,
             waiting_reason: None,
+            workspace_claim_holding_run_id: None,
             summary: None,
             completion: None,
             turn_envelope: None,
@@ -246,10 +249,22 @@ impl WorkflowNodeRun {
         }
     }
 
+    pub(crate) fn workspace_claim_holding_run_id(&self) -> Option<&str> {
+        self.workspace_claim_holding_run_id.as_deref()
+    }
+
+    pub(crate) fn block_on_workspace_claim(&mut self, holding_run_id: Option<&str>) {
+        self.set_status(WorkflowNodeRunStatus::BlockedOnWorkspaceClaim);
+        self.workspace_claim_holding_run_id = holding_run_id.map(str::to_owned);
+    }
+
     pub fn set_status(&mut self, status: WorkflowNodeRunStatus) {
         self.status = status;
         if status != WorkflowNodeRunStatus::Ready {
             self.waiting_reason = None;
+        }
+        if status != WorkflowNodeRunStatus::BlockedOnWorkspaceClaim {
+            self.workspace_claim_holding_run_id = None;
         }
         if matches!(status, WorkflowNodeRunStatus::Running) && self.started_at_ms.is_none() {
             self.started_at_ms = Some(unix_epoch_ms());
