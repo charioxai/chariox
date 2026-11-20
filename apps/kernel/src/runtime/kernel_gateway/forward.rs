@@ -44,6 +44,14 @@ pub(crate) async fn forward_audited(
     } else {
         forwarded.await
     };
+    if matches!(request, LocalDaemonRequest::SteerActivePrompt(_))
+        && matches!(answered, Err(GatewayError::RequestTimeout { .. }))
+    {
+        // The target reserves the forwarded command ID before delivering the steer.
+        answered = Err(GatewayError::SteerUnconfirmed {
+            command_id: command_id.to_owned(),
+        });
+    }
     // Authorization and audit keep the sudo identity; reach events belong to its live run.
     if let Ok(response) = &mut answered {
         gateway.note_forwarded(kernel, origin, request, response);
