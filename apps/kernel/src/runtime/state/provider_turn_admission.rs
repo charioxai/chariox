@@ -336,7 +336,10 @@ mod tests {
             else {
                 panic!("a cold turn should wait when memory is short");
             };
-            assert_eq!(serde_json::to_value(prompt).unwrap()["launch_wait"], WAIT);
+            let room = state.owned.session_store.get_session(session.id()).unwrap();
+            let (_, queued) = owner.state_parts(&room, agent.id());
+            let admitted = queued.iter().find(|item| item.id() == prompt.id()).unwrap();
+            assert_eq!(admitted.launch_wait(), Some(WAIT));
         }
         state
             .recover_queue_head_after_restart(session.id(), agent.id())

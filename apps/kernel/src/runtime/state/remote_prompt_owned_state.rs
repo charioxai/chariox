@@ -1789,7 +1789,7 @@ mod tests {
         );
         assert_eq!(
             task.reason,
-            "provider process terminated by signal SIGKILL The provider process ended; send the request again to start it."
+            "provider process terminated by signal SIGKILL. The provider process ended; send the request again to start it."
         );
         assert!(
             completion::evaluation(&task).is_none(),
