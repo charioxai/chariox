@@ -5,7 +5,7 @@ const { parseTrace } = require('../../../apps/kernel/src/provider/registry/dev_s
 
 const prompt = { t: 0, kind: 'prompt', chars: 420 }
 const end = { t: 0, kind: 'end', outcome: 'completed' }
-const wait = { t: 0, kind: 'wait', ms: 300_000 }
+const wait = { t: 0, kind: 'wait', ms: 1_800_000 }
 const text = (chars, stream_ms = 0, markdown = 'plain') => ({ t: 0, kind: 'text', chars, stream_ms, markdown })
 const terminal = { t: 0, kind: 'terminal', lines: 20_000, line_bytes: 120, rate_lps: 4_000 }
 
@@ -21,13 +21,15 @@ function randomFor(seed) {
 function history(random, turns) {
   return Array.from({ length: turns }, (_, index) => [
     prompt,
-    { t: 0, kind: 'reasoning', chars: 200 + random(1700), stream_ms: 0 },
-    text(300 + random(3500), 0, ['plain', 'list', 'table', 'code'][random(4)]),
-    ...(index % 8 === 0 ? [{
+    ...Array.from({ length: 12 }, () => [
+      { t: 0, kind: 'reasoning', chars: 100 + random(700), stream_ms: 0 },
+      text(200 + random(1200), 0, ['plain', 'list', 'table', 'code'][random(4)]),
+    ]).flat(),
+    {
       t: 0, kind: 'tool', name: ['Bash', 'Read', 'Grep'][random(3)],
       input_bytes: 120 + random(400), output_bytes: 500 + random(39_500),
       ms: 0, outcome: index % 16 === 0 ? 'error' : 'ok',
-    }] : []),
+    },
     end,
   ]).flat()
 }
@@ -48,13 +50,13 @@ function s1(random, add) {
     const name = childName(i)
     if (i < 12) {
       const grandchildren = i < 4 ? [spawn(32 + 2 * i), spawn(33 + 2 * i)] : []
-      add(name, 'running', [prompt, ...grandchildren, text(12_000, 120_000), wait, end])
+      add(name, 'running', [prompt, ...grandchildren, text(48_000, 900_000), wait, end])
     } else if (i < 18) {
       add(name, 'waiting', [prompt, { t: 0, kind: 'permission', tool: 'Bash' }, end])
     } else {
-      // Three ordinary history entries per turn, with a tool row every eighth
-      // turn. Leave enough headroom for both tool call and result rows.
-      add(name, 'done', history(random, 67 + random(540)))
+      // Twelve text and reasoning pairs per turn keep the seed fast while
+      // exercising histories with many turns and up to 2,000 entries.
+      add(name, 'done', history(random, 8 + random(65)))
     }
   }
 }

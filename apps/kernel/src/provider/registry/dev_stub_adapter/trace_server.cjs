@@ -5,13 +5,18 @@ const { join } = require('node:path')
 
 const traceAgent = process.env.CHARIOX_LOADLAB_TRACE_AGENT
 const traceRoot = process.env.CHARIOX_LOADLAB_TRACE_DIR
+function loadTrace(agent) {
+  if (!/^[a-zA-Z0-9_-]{1,64}$/.test(agent ?? '')) throw new Error('invalid load lab agent alias')
+  const file = join(traceRoot, `${agent}.jsonl`)
+  const plan = parseTrace(readFileSync(file, 'utf8'), file)
+  if (plan.header.agent !== agent) throw new Error(`${file}: line 1: agent does not match the filename`)
+  return plan
+}
+
 let trace
 let traceError
 try {
-  if (!/^[a-zA-Z0-9_-]{1,64}$/.test(traceAgent ?? '')) throw new Error('invalid load lab agent alias')
-  const file = join(traceRoot, `${traceAgent}.jsonl`)
-  trace = parseTrace(readFileSync(file, 'utf8'), file)
-  if (trace.header.agent !== traceAgent) throw new Error(`${file}: line 1: agent does not match the filename`)
+  trace = loadTrace(traceAgent)
 } catch (error) {
   traceError = error.message
 }

@@ -2,32 +2,10 @@ const { randomUUID } = require('node:crypto')
 const { setTimeout: delay } = require('node:timers/promises')
 const { once } = require('node:events')
 
-const runtimeUrl = process.env.CHARIOX_DEV_STUB_RUNTIME_MCP_URL
-const runtimeToken = process.env.CHARIOX_DEV_STUB_RUNTIME_MCP_TOKEN
-delete process.env.CHARIOX_DEV_STUB_RUNTIME_MCP_URL
-delete process.env.CHARIOX_DEV_STUB_RUNTIME_MCP_TOKEN
-
 async function runtimeTool(name, args, signal) {
-  if (!runtimeUrl || !runtimeToken) throw new Error('private fixture runtime unavailable')
-  const response = await fetch(runtimeUrl, {
-    method: 'POST',
-    headers: { authorization: `Bearer ${runtimeToken}`, 'content-type': 'application/json' },
-    body: JSON.stringify({ jsonrpc: '2.0', id: randomUUID(), method: 'tools/call', params: { name, arguments: args } }),
-    signal: AbortSignal.any([signal, AbortSignal.timeout(90_000)]),
-  })
-  const value = await response.json()
-  if (!response.ok || value.error || value.result?.isError) throw new Error(`runtime refused ${name}`)
+  const value = await requestRuntime({ id: randomUUID(), method: 'tools/call', params: { name, arguments: args } }, signal)
+  if (value.error || value.result?.isError) throw new Error(`runtime refused ${name}`)
   return value.result?.structuredContent ?? value.result
-}
-
-function filler(size, markdown) {
-  const sample = {
-    plain: 'Generated lab text for replay. ',
-    list: '- Generated lab item\n',
-    code: '```text\ngenerated sample\n```\n',
-    table: '| Lab item | Value |\n| --- | --- |\n| Sample | 42 |\n',
-  }[markdown ?? 'plain']
-  return sample.repeat(Math.ceil(size / sample.length)).slice(0, size)
 }
 
 async function terminalBurst(lines, lineBytes, rate, signal) {
@@ -76,11 +54,14 @@ async function replaySteps(turn, output, signal) {
           }, signal),
         ])
         break
-      case 'spawn':
+      case 'spawn': {
+        const { turns } = loadTrace(step.agent)
+        const prompt = filler(turns[0][0].chars)
         await runtimeTool('chariox.room.run_command', {
-          command: `agent spawn ${step.agent} --provider dev-stub --model trace --task 'Start generated trace ${step.trace}'`,
+          command: `agent spawn ${step.agent} --provider dev-stub --model trace --task '${prompt}'`,
         }, signal)
         break
+      }
       case 'notify':
         for (let i = 0; i < step.count; i++) {
           await runtimeTool('chariox.notify_person', { title: `${step.source} ${i + 1}`, body: 'Generated load lab notice.' }, signal)

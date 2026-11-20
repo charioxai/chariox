@@ -50,6 +50,7 @@ fn start(scratch: &Path) -> real_kernel::Kernel {
         scratch,
         &[
             ("CHARIOX_PROVIDER_DEV_STUB", "1".into()),
+            ("CHARIOX_ROOM_AGENT_TOOLS", "1".into()),
             ("CHARIOX_LOADLAB_TRACE_DIR", scratch.as_os_str().to_owned()),
         ],
         None,
@@ -91,25 +92,99 @@ async fn trace_projects_structured_history_and_outcomes() {
     }
     let mut socket = connect(&kernel).await;
     let room = create_session(&mut socket, &scratch).await;
-    for (alias, lifecycle) in [
-        ("orch", "completed"),
-        ("cancelled", "cancelled"),
-        ("failed", "failed"),
+    for (alias, lifecycle, outcome) in [
+        ("orch", "completed", "completed"),
+        ("cancelled", "cancelled", "cancelled"),
+        ("failed", "failed", "other"),
     ] {
         let agent = spawn(&mut socket, &room, alias).await;
         submit(&mut socket, &room, &agent).await.unwrap();
         let turn = completed_turn(&mut socket, &room, &agent).await;
         assert_eq!(turn["lifecycle"], lifecycle, "{turn}");
-        assert!(turn["outcome"]["kind"].is_string(), "{turn}");
-        let kinds = turn["blobs"]
+        assert_eq!(turn["outcome"]["kind"], outcome, "{turn}");
+        assert_eq!(
+            turn["user_prompt"]["entry"]["kind"], "user_prompt",
+            "{turn}"
+        );
+        assert_eq!(
+            turn["summary"]["entry"]["kind"], "provider_output",
+            "{turn}"
+        );
+        assert_eq!(turn["summary"]["total_chars"], 120, "{turn}");
+        let blobs = turn["blobs"].as_array().unwrap();
+        let rows = |kind: &str| {
+            blobs
+                .iter()
+                .filter(|blob| blob["kind"] == kind)
+                .map(|blob| blob["entry_count"].as_u64().unwrap())
+                .sum::<u64>()
+        };
+        assert_eq!(rows("provider_output"), 0, "{turn}");
+        assert_eq!(rows("provider_reasoning"), 1, "{turn}");
+        assert_eq!(rows("provider_tool"), 2, "{turn}");
+    }
+}
+
+#[tokio::test]
+async fn trace_spawns_two_levels_of_generated_agents() {
+    let scratch = std::env::temp_dir().join(format!("loadlab-spawn-{}", std::process::id()));
+    let kernel = start(&scratch);
+    for (alias, child, chars) in [
+        ("orch", Some("child"), 51),
+        ("child", Some("grandchild"), 83),
+        ("grandchild", None, 137),
+    ] {
+        let mut records = vec![
+            json!({"v": 1, "source": "generator", "seed": 42, "agent": alias, "notes": ""}),
+            json!({"t": 0, "kind": "prompt", "chars": 30}),
+        ];
+        if let Some(child) = child {
+            records.push(
+                json!({"t": 0, "kind": "spawn", "agent": child, "trace": format!("{child}.jsonl")}),
+            );
+        }
+        records.extend([
+            json!({"t": 0, "kind": "text", "chars": chars, "stream_ms": 0, "markdown": "plain"}),
+            json!({"t": 0, "kind": "end", "outcome": "completed"}),
+        ]);
+        let fixture = records
+            .iter()
+            .map(Value::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        std::fs::write(scratch.join(format!("{alias}.jsonl")), fixture).unwrap();
+    }
+
+    let mut socket = connect(&kernel).await;
+    let room = create_session(&mut socket, &scratch).await;
+    let root = spawn(&mut socket, &room, "orch").await;
+    submit(&mut socket, &room, &root).await.unwrap();
+    let mut parent = root;
+    for (alias, chars) in [("orch", 51), ("child", 83), ("grandchild", 137)] {
+        let agents = request(&mut socket, json!({"ListAgents": {"session_id": room}}))
+            .await
+            .unwrap();
+        let agent = agents["AgentsListed"]["agents"]
             .as_array()
             .unwrap()
             .iter()
-            .filter_map(|blob| blob["kind"].as_str())
-            .collect::<Vec<_>>();
-        for kind in ["provider_reasoning", "provider_output", "provider_tool"] {
-            assert!(kinds.contains(&kind), "expected {kind} in {turn}");
+            .find(|agent| agent["alias"] == alias)
+            .unwrap_or_else(|| panic!("missing {alias}: {agents}"));
+        let id = agent["id"].as_str().unwrap();
+        if alias != "orch" {
+            assert_eq!(agent["parent_agent_id"]["agent_id"], parent);
         }
+        let turn = completed_turn(&mut socket, &room, id).await;
+        assert_eq!(turn["lifecycle"], "completed", "{turn}");
+        assert_eq!(
+            turn["summary"]["entry"]["kind"], "provider_output",
+            "{turn}"
+        );
+        assert_eq!(
+            turn["summary"]["total_chars"], chars,
+            "{alias} did not run its own trace: {turn}"
+        );
+        parent = id.to_owned();
     }
 }
 

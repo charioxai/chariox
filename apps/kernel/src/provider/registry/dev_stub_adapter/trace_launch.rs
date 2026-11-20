@@ -35,9 +35,11 @@ pub(super) fn plan(request: &LaunchProviderRequest) -> Result<ProviderLaunchResu
         })?
         .port();
     let script = concat!(
-        "const { parseTrace } = (() => { const module = { exports: {} };\n",
+        "const { parseTrace, filler } = (() => { const module = { exports: {} };\n",
         include_str!("trace_format.cjs"),
         "\nreturn module.exports; })();\n",
+        include_str!("runtime_mcp_client.cjs"),
+        "\n",
         include_str!("trace_runtime.cjs"),
         "\n",
         include_str!("trace_server.cjs"),

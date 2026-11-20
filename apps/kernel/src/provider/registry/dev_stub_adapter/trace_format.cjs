@@ -57,6 +57,7 @@ function parseTrace(input, filename = 'trace') {
     const { kind, t } = record
     if (!Object.hasOwn(steps, kind)) fail('unknown step kind')
     fields(record, { kind: oneOf(kind), t: isInteger, ...steps[kind] }, fail)
+    if (kind === 'spawn' && record.trace !== `${record.agent}.jsonl`) fail('spawn trace filename must match the child alias')
     if (kind === 'prompt') {
       if (turn || t !== 0) fail('prompt must open a new turn at t=0')
       turn = []
@@ -77,4 +78,14 @@ function parseTrace(input, filename = 'trace') {
   return { header, turns }
 }
 
-module.exports = { parseTrace }
+function filler(size, markdown) {
+  const sample = {
+    plain: 'Generated lab text for replay. ',
+    list: '- Generated lab item\n',
+    code: '```text\ngenerated sample\n```\n',
+    table: '| Lab item | Value |\n| --- | --- |\n| Sample | 42 |\n',
+  }[markdown ?? 'plain']
+  return sample.repeat(Math.ceil(size / sample.length)).slice(0, size)
+}
+
+module.exports = { parseTrace, filler }

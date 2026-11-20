@@ -39,7 +39,11 @@ pub(super) fn dev_stub_pty_args(model: &str) -> Vec<String> {
         "native-tui-idle" => Some(dev_stub_native_tui_idle_script()),
         "runtime-mcp-fixture" => Some(format!(
             "stty -echo -icanon 2>/dev/null || true; exec node -e {}",
-            shell_single_quote(include_str!("runtime_mcp_fixture.cjs"))
+            shell_single_quote(concat!(
+                include_str!("runtime_mcp_client.cjs"),
+                "\n",
+                include_str!("runtime_mcp_fixture.cjs"),
+            ))
         )),
         _ => None,
     }
