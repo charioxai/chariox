@@ -16,6 +16,8 @@ import { worldContext } from './browser-focus-world.mjs';
 const OWNER_VIEW = Object.freeze({ unknown: false, values: Object.freeze([]), targets: Object.freeze([]) });
 export const maskPolicy = (stream, policy) => stream.audience === 'owner' ? OWNER_VIEW : policy;
 import { decodePng, encodePng, halvePixels, maskPixels, regionPixels } from './kernel-browser-pixels.mjs';
+// YM-C1: one transparent pixel, stretched over a canvas whose own pixels read clear.
+const CLEAR_STILL = encodePng(1, 1, Buffer.alloc(4));
 import { MirrorFrames, slotOf, localId, rebaseId } from './kernel-browser-mirror2-frames.mjs';
 import { MirrorCssEvents } from './kernel-browser-mirror2-css.mjs';
 import { discoverClosedHosts } from './kernel-browser-mirror2-closed.mjs';
@@ -1051,7 +1053,10 @@ export class Mirror2 {
     for (const b of boxes) {
       const slot = slotOf(b.id), owner = slot ? stream.frameSlots.get(slot)?.child : world;
       const own = b.foreign || !owner ? null : await this.evaluate(owner, `${owner.ref}.elementPixels(${JSON.stringify(slot ? localId(b.id) : b.id)},${scale},${budget})`, true).catch(() => null);
-      if (own) send(b.id, own);
+      // YM-C1: a transformed, faded or stacked canvas whose own pixels read clear shows the page through it: a transparent
+      // still replaces the viewer's placeholder (its screenshot would hold its compositing, applied again by the mirror).
+      if (own?.clear) { if (b.distorted && b.distorted !== 'canvas') send(b.id, { x: 0, y: 0, width: b.box[2], height: b.box[3], data_base64: CLEAR_STILL }); else shots.push(b); }
+      else if (own) send(b.id, own);
       // A distorted region's screenshot already holds its compositing: as the element's background the mirrored DOM
       // would apply the transform/opacity again, so such a region carries no still (its video lease shows it).
       // The canvas marker only selects video placement; its untransformed PNG fallback remains valid.
