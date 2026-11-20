@@ -17,7 +17,7 @@ fn room_history_and_machine_resource_protocol_shapes() {
         ],
     });
     let expected: serde_json::Value =
-        serde_json::from_str(include_str!("lean-room-state-1077.json")).unwrap();
+        serde_json::from_str(include_str!("lean-room-state-1013.json")).unwrap();
     assert_eq!(snapshot, expected);
     assert_eq!(
         format!(

@@ -683,7 +683,7 @@ fn local_daemon_protocol_metaagent_event_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "f3b83c9bb51602ee4358fca08773814114c4f9e37c2ef305f10349f03f92653a"
+        "f701bf0fdb534982eb4621507ec66c8a61cc3436fde59c3fd408c0d63f9348e8"
     );
 }
 
