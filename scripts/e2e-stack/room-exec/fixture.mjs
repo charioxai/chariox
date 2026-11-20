@@ -134,8 +134,12 @@ export class Fixture {
 
   async grant() {
     const pending = this.unix.send({ RequestKernelAccess: { holder_pid: process.pid, term: 'until_holder_exits' } })
-    pending.catch(() => undefined)
-    const prompt = await until(() => this.prompts.find(item => item.kind === 'access_grant'), 'disposable access decision')
+    let rejection
+    pending.catch(error => { rejection = error })
+    const prompt = await until(() => {
+      if (rejection) throw rejection
+      return this.prompts.find(item => item.kind === 'access_grant')
+    }, 'disposable access decision')
     await this.A.send({ RespondToInteraction: { session_id: prompt.session_id, interaction_id: prompt.interaction_id,
       choice_id: prompt.approve_choice_id, passkey: this.passphrase } })
     const reply = await pending
