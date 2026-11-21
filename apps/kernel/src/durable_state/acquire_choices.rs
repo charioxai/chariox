@@ -98,7 +98,10 @@ pub(super) fn initialize(connection: &Connection) -> rusqlite::Result<()> {
             PRIMARY KEY (agent_id, request_id)
         );
         CREATE INDEX IF NOT EXISTS durable_acquire_choices_touched
-            ON durable_acquire_choices (touched_ms);",
+            ON durable_acquire_choices (touched_ms);
+        CREATE TABLE IF NOT EXISTS durable_allocation_owners (
+            allocation_ref TEXT PRIMARY KEY NOT NULL, agent_id TEXT NOT NULL
+        );",
     )?;
     // Rows a restart left past their window: their try is long over.
     connection.execute(
@@ -140,6 +143,23 @@ impl DurableKernelStateStore {
             .map_err(|error| state_error(error.to_string()))
     }
 
+    /// The accepted allocation belongs to its agent for its lifetime, independent of the
+    /// request's replay window. Read current service state before using this association.
+    pub(crate) fn allocation_belongs_to_agent(
+        &self,
+        allocation_ref: &str,
+        agent_id: &str,
+    ) -> Result<bool, DaemonError> {
+        self.lock_connection("acquire_choices.allocation_owner")?
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM durable_allocation_owners
+                    WHERE allocation_ref = ?1 AND agent_id = ?2)",
+                params![allocation_ref, agent_id],
+                |row| row.get(0),
+            )
+            .map_err(|error| state_error(error.to_string()))
+    }
+
     /// Applies `write` when the row is in the state it expects; false when it is not.
     pub(crate) fn write_acquire_choice(
         &self,
@@ -177,6 +197,17 @@ pub(super) fn apply(
         "DELETE FROM durable_acquire_choices WHERE touched_ms <= ?1",
         params![expired_before(*now_ms)],
     )?;
+    if let AcquireChoiceWrite::Accept { allocation_ref, .. } = write {
+        let other_agent: bool = transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM durable_allocation_owners
+                WHERE allocation_ref = ?1 AND agent_id != ?2)",
+            params![allocation_ref, agent_id],
+            |row| row.get(0),
+        )?;
+        if other_agent {
+            return Ok(0);
+        }
+    }
     let changed = match write {
         AcquireChoiceWrite::Choose { option } => transaction.execute(
             "INSERT INTO durable_acquire_choices
@@ -227,6 +258,15 @@ pub(super) fn apply(
             ],
         )?,
     };
+    if changed > 0 {
+        if let AcquireChoiceWrite::Accept { allocation_ref, .. } = write {
+            transaction.execute(
+                "INSERT INTO durable_allocation_owners (allocation_ref, agent_id) VALUES (?1, ?2)
+                    ON CONFLICT (allocation_ref) DO NOTHING",
+                params![allocation_ref, agent_id],
+            )?;
+        }
+    }
     Ok(changed as u64)
 }
 
@@ -263,6 +303,38 @@ mod tests {
             option: option(class_id),
             allocation_ref: allocation_ref.into(),
         }
+    }
+
+    #[test]
+    fn allocation_authority_outlives_the_request_replay_window() {
+        let dir = crate::test_support::TestTempDir::new("allocation-owner");
+        let path = dir.path().join("kernel.db");
+        let store = DurableKernelStateStore::open(&path).unwrap();
+        let first = now();
+        assert!(store
+            .write_acquire_choice("asker", "r1", accept("small", "allocation"), first)
+            .unwrap());
+        assert!(!store
+            .write_acquire_choice(
+                "other",
+                "r2",
+                accept("small", "allocation"),
+                first + REPLAY_WINDOW_MS + 1,
+            )
+            .unwrap());
+        assert!(store
+            .acquire_choice("asker", "r1", first + REPLAY_WINDOW_MS + 1)
+            .unwrap()
+            .is_none());
+        assert!(store
+            .allocation_belongs_to_agent("allocation", "asker")
+            .unwrap());
+        assert!(!store
+            .allocation_belongs_to_agent("allocation", "other")
+            .unwrap());
+        assert!(!store
+            .allocation_belongs_to_agent("foreign", "asker")
+            .unwrap());
     }
 
     #[test]

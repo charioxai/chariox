@@ -203,6 +203,14 @@ async fn service(offers: Vec<MachineOption>, sold_out: &'static [&'static str]) 
                         }
                     }
                 }
+                "get" => (
+                    "200 OK",
+                    serde_json::json!({
+                        "kind":"machine","revision":2,"available_actions":[],
+                        "allocation_ref":request["allocation_ref"],"state":"deleted",
+                        "kernel_target":null,"access_state":"pending","access_reason":null
+                    }),
+                ),
                 other => panic!("unexpected control-plane action {other}"),
             };
             respond(socket, status, response).await;
@@ -1759,4 +1767,60 @@ async fn acquire_retries_if_card_publication_is_still_running() {
         pending.payload["interaction_id"]
     );
     assert!(service.acquires.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn rental_operations_require_the_asking_agents_allocation() {
+    let service = service(two_in_stock(), &[]).await;
+    let (state, token, _workspace) = agent_kernel(service.api_url.clone()).await;
+    for (tool, args) in [
+        (
+            "chariox.machines.exec",
+            serde_json::json!({
+                "allocation_ref": "another-agents-rental", "command": ["uname", "-a"],
+            }),
+        ),
+        (
+            "chariox.machines.copy",
+            serde_json::json!({
+                "allocation_ref": "another-agents-rental", "direction": "upload",
+                "path": "/tmp/input", "folder": "/tmp",
+            }),
+        ),
+    ] {
+        let error = state.machine_tool(&token, tool, args).await.unwrap_err();
+        assert!(
+            matches!(error, DaemonError::MachineRequest { code, .. } if code == "machine_not_held")
+        );
+    }
+    assert!(service.acquires.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn rental_operations_refuse_released_allocations() {
+    let service = service(two_in_stock(), &[]).await;
+    let (state, token, _workspace) = agent_kernel(service.api_url.clone()).await;
+    let acquired = state
+        .machine_tool(&token, "chariox.machines.acquire", acquire_args("released"))
+        .await
+        .unwrap();
+    let allocation_ref = acquired.payload["allocation"]["allocation_ref"]
+        .as_str()
+        .unwrap();
+    let exec = state.machine_tool(
+        &token,
+        "chariox.machines.exec",
+        serde_json::json!({"allocation_ref":allocation_ref,"command":["uname","-a"]}),
+    );
+    let copy = state.machine_tool(
+        &token, "chariox.machines.copy", serde_json::json!({
+            "allocation_ref":allocation_ref,"direction":"download","path":"/tmp/file","folder":"/tmp",
+        }),
+    );
+    for result in [exec.await, copy.await] {
+        let error = result.unwrap_err();
+        assert!(
+            matches!(error, DaemonError::MachineRequest { code, .. } if code == "machine_released")
+        );
+    }
 }

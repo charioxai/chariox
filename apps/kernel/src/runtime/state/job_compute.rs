@@ -14,6 +14,7 @@ pub(super) struct JobMachine {
     pub(super) machine_label: String,
     pub(super) address: Option<String>,
     pub(super) kernel_id: String,
+    pub(super) target_verified: bool,
     pub(super) grant: Arc<dyn GrantedSend>,
     /// Present for a worker the job allocated; a machine the agent already holds has none.
     pub(super) class: Option<JobClass>,
@@ -429,6 +430,7 @@ impl KernelRuntimeState {
                     address,
                     grant: self.job_machine_grant(&target.kernel_id, &origin.harness)?,
                     kernel_id: target.kernel_id,
+                    target_verified: true,
                     class: Some(JobClass {
                         capability_revision: capability_revision.into(),
                         class_id: class.class_id,

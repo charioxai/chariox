@@ -408,6 +408,8 @@ impl KernelRuntimeState {
                 | "chariox.machines.acquire"
                 | "chariox.machines.status"
                 | "chariox.machines.release"
+                | super::machine_acquisition::access::EXEC
+                | super::machine_acquisition::access::COPY
         ) {
             return self.machine_tool(auth_token, tool_name, arguments).await;
         }
