@@ -1076,11 +1076,14 @@ export class Mirror2 {
     if (reset || !stream.tileHashes) stream.tileHashes = new Map();
     const scale = this.host.scales.get(tab.tab_id) ?? 1, out = [], shots = [];
     // A still that does not fit what is left of the packet's budget, even at the lowest density, follows at the next refresh.
+    // T3: each region's own pixels may take an even share of what is left, so the first of two stills over one box (subvysion:
+    // a hidden video under the canvas that paints it) cannot leave the one on top at a lower density; a share it leaves unused
+    // goes to the regions after it.
     let budget = STILL_PACKET_BYTES;
     const send = (id, tile) => { const digest = createHash('sha256').update(`${tile.x},${tile.y},${tile.width},${tile.height},${tile.data_base64}`).digest('hex'); if (stream.tileHashes.get(id) === digest) return; stream.tileHashes.set(id, digest); budget -= tile.data_base64.length; out.push({ node_id: id, ...tile }); };
-    for (const b of boxes) {
-      const slot = slotOf(b.id), owner = slot ? stream.frameSlots.get(slot)?.child : world;
-      const own = b.foreign || !owner ? null : await this.evaluate(owner, `${owner.ref}.elementPixels(${JSON.stringify(slot ? localId(b.id) : b.id)},${scale},${budget})`, true).catch(() => null);
+    for (const [index, b] of boxes.entries()) {
+      const slot = slotOf(b.id), owner = slot ? stream.frameSlots.get(slot)?.child : world, share = Math.floor(budget / (boxes.length - index));
+      const own = b.foreign || !owner ? null : await this.evaluate(owner, `${owner.ref}.elementPixels(${JSON.stringify(slot ? localId(b.id) : b.id)},${scale},${share})`, true).catch(() => null);
       if (own) send(b.id, own);
       // A distorted region's screenshot already holds its compositing: as the element's background the mirrored DOM
       // would apply the transform/opacity again, so such a region carries no still (its video lease shows it).
