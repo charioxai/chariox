@@ -116,6 +116,11 @@ pub(crate) fn error(message: impl Into<String>) -> DaemonError {
         message: message.into(),
     }
 }
+pub(crate) fn accepted_wait_error(reason: &str) -> DaemonError {
+    error(format!(
+        "This turn already accepted the wait `{reason}`. End the turn so the kernel can deliver its wake."
+    ))
+}
 fn sql(e: rusqlite::Error) -> DaemonError {
     super::storage_full::observe(&e);
     error(e.to_string())

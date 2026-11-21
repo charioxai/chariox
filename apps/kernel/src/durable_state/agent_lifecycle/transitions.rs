@@ -534,7 +534,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             let mut t = load(tx, &task)?;
             current(&t, &prompt)?;
             if t.wait.is_some() {
-                return Err(error("Wait already accepted. End this provider turn now without more tools; the kernel delivers the next source or deadline turn."));
+                return Err(accepted_wait_error(&t.reason));
             }
             if ids.is_empty() && t.obligations.iter().all(|o| !o.requires_resolution()) {
                 return Err(error(
@@ -721,16 +721,14 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 .filter(|_| !cancelled && t.state != ExecutionState::Blocked)
             {
                 let regs = registrations(tx, &t.task_id)?;
-                let pending:i64 = tx.query_row("SELECT count(*) FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND sequence>?3 AND json_extract(payload,'$.state') NOT IN ('handled','expired','failed') AND json_extract(payload,'$.kind') IN ('source_completed','source_lost','peer_event') AND (json_extract(payload,'$.payload.task_id')=?4 OR EXISTS(SELECT 1 FROM json_each(json_extract(payload,'$.payload.task_ids')) WHERE value=?4))",params![t.room_id,t.agent_id,sql_integer(w.inbox_cursor)?,t.task_id],|r|r.get(0)).map_err(sql)?;
-                // MP-08/MP-09/MP-10/MP-11 F03: the deadline was checked
-                // at admission. A late native boundary commits that same
-                // wait; the normal sweep delivers its elapsed deadline.
+                // Admission checked the deadline and sources. An inbox acknowledgement
+                // can handle a source that ended before the provider finished its turn.
                 w.deadline_ms
                     .is_none_or(|deadline| deadline > w.started_at_ms)
                     && !w.registration_ids.is_empty()
                     && w.registration_ids
                         .iter()
-                        .all(|id| regs.iter().any(|r| &r.id == id && (r.live || pending > 0)))
+                        .all(|id| regs.iter().any(|r| &r.id == id))
             } else {
                 false
             };
@@ -779,6 +777,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     t.reason.clear();
                 } else if valid_wait {
                     t.state = ExecutionState::Waiting;
+                    super::settled_waits::finish(tx, &mut t)?;
                 } else if !t.correction_used {
                     t.correction_used = true;
                     correction = true;
