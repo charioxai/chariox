@@ -469,7 +469,7 @@ async fn a_named_option_that_sold_out_is_refused_with_the_options_in_stock() {
         .machine_tool(
             &token,
             "chariox.machines.acquire",
-            serde_json::json!({"reason":"Run the build","class_id":"big","region":"north"}),
+            serde_json::json!({"reason":"Run the build","class_id":"big","region":"north","request_id":"sold-out-status"}),
         )
         .await
         .unwrap_err()
@@ -482,6 +482,15 @@ async fn a_named_option_that_sold_out_is_refused_with_the_options_in_stock() {
         "{error}"
     );
     assert!(error.contains("Use a new request_id"), "{error}");
+    let status = state
+        .machine_tool(
+            &token,
+            "chariox.machines.status",
+            serde_json::json!({"request_id":"sold-out-status"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(status.payload["status"], "closed");
 }
 
 #[tokio::test]
@@ -2027,6 +2036,18 @@ async fn machine_status_looks_up_the_original_request_id() {
         status("lookup").await.unwrap().payload["status"],
         "approved"
     );
+    service
+        .answers
+        .lock()
+        .unwrap()
+        .push_back(Answer::LoseResponse);
+    assert!(acquire().await.is_err());
+    let unconfirmed = status("lookup").await.unwrap().payload;
+    assert_eq!(unconfirmed["status"], "unconfirmed");
+    assert!(unconfirmed["message"]
+        .as_str()
+        .unwrap()
+        .contains("same request_id"));
     let machine = acquire().await.unwrap().payload;
     let found = status("lookup").await.unwrap().payload;
     assert_eq!(found["status"], "allocated");

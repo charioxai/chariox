@@ -236,6 +236,9 @@ pub(crate) async fn execute(
     } else {
         "acquire"
     };
+    if let Some(trace) = trace.filter(|_| matches!(request, ControlPlaneRequest::Acquire { .. })) {
+        state.mark_acquire_submitted(trace)?;
+    }
     let service_response = post(request, stage).await;
     if let Err(error) = state.machine_approval_sent(command, request) {
         tracing::warn!(%error, "could not close the machine approval receipt");

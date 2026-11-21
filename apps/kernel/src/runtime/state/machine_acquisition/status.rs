@@ -1,7 +1,7 @@
 //! Read the original agent-scoped request without contacting the machine service.
 use super::approval::{decision_error, direct_approval_id, MachineDecision};
 use super::*;
-use crate::durable_state::acquire_choices::AcquireChoiceState;
+use crate::durable_state::acquire_choices::{AcquireChoice, AcquireChoiceState, AcquireSubmission};
 use crate::transport::runtime_tools::RuntimeToolResult;
 use serde_json::json;
 
@@ -27,8 +27,10 @@ impl KernelRuntimeState {
             .machine_decision(&interaction_id, session.owner_user_id())?;
         let response =
             |status, message| json!({"status":status,"request_id":request_id,"message":message});
-        let mut payload = match (choice.as_ref().map(|choice| &choice.state), decision, wake) {
-            (Some(AcquireChoiceState::Accepted { allocation_ref }), _, _) => {
+        let unconfirmed =
+            "The kernel saved the request but has no confirmed allocation. Retry acquire with the same request_id";
+        let mut payload = match (choice.as_ref(), decision, wake) {
+            (Some(AcquireChoice { state: AcquireChoiceState::Accepted { allocation_ref }, .. }), _, _) => {
                 let mut value = response(
                     "allocated",
                     "The service accepted this request. Use allocation_ref to read the machine's current state",
@@ -36,6 +38,14 @@ impl KernelRuntimeState {
                 value["allocation_ref"] = json!(allocation_ref);
                 value
             }
+            (Some(AcquireChoice { submission: AcquireSubmission::Closed, .. }), _, _) => response(
+                "closed",
+                "The service closed the request without an allocation. Use a new request_id to try again",
+            ),
+            (Some(AcquireChoice { submission: AcquireSubmission::Submitted, .. }), _, _) => response(
+                "unconfirmed",
+                unconfirmed,
+            ),
             (_, Some(MachineDecision::Approved { .. }), _) => response(
                 "approved",
                 "The approval is saved. Retry acquire with the same request_id to complete it or recover the allocation",
@@ -69,10 +79,7 @@ impl KernelRuntimeState {
                     "The approval wait ended without a saved decision. Use a new request_id to ask again",
                 ),
             },
-            (Some(_), None, None) => response(
-                "unconfirmed",
-                "The kernel saved the request but has no confirmed allocation. Retry acquire with the same request_id",
-            ),
+            (Some(_), None, None) => response("unconfirmed", unconfirmed),
             (None, None, None) => response(
                 "unknown",
                 "This kernel has no receipt for this request_id from your agent. If a reply was lost, retry acquire with the same request_id",
