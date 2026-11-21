@@ -562,6 +562,8 @@ impl KernelRuntimeOwnedState {
                 dispatch: None,
             }));
         };
+        let started_next =
+            self.add_pending_wakes_to_notification(&session, agent_id, started_next)?;
         let (active_prompt, queued_prompts) =
             self.prompt_state_owner.state_parts(&session, agent_id);
         self.mirror_prompt_owner_agent_state_with_activity_mutation(

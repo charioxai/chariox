@@ -90,6 +90,7 @@ async fn a02_native_settlement_never_reacquires_held_provider_lane() {
             prompt_id: None,
             target_prompt_id: None,
             provider_run_id: None,
+            arrived_at_ms: None,
             attempted_at_ms: None,
             submit_epoch: None,
             resumed_at_ms: None,
