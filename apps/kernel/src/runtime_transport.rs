@@ -721,12 +721,15 @@ where
                 // The join set limits them to one pass and cancels it on shutdown.
                 maintenance.spawn(async move {
                     router.pump_transport_runtime().await;
-                    let interval_ms = router.transport_runtime_pump_interval_ms(
-                        PUMP_INTERVAL_MS,
-                        IDLE_PUMP_INTERVAL_MS,
-                        crate::session::unix_epoch_ms(),
-                    );
-                    tokio::time::Instant::now() + Duration::from_millis(interval_ms)
+                    tokio::task::spawn_blocking(move || {
+                        let interval_ms = router.transport_runtime_pump_interval_ms(
+                            PUMP_INTERVAL_MS,
+                            IDLE_PUMP_INTERVAL_MS,
+                            crate::session::unix_epoch_ms(),
+                        );
+                        tokio::time::Instant::now() + Duration::from_millis(interval_ms)
+                    })
+                    .await
                 });
                 pass_requested = false;
             }
@@ -739,8 +742,8 @@ where
             tokio::select! {
                 Some(result) = maintenance.join_next(), if !maintenance.is_empty() => {
                     next_pass = match result {
-                        Ok(next) => next,
-                        Err(error) => {
+                        Ok(Ok(next)) => next,
+                        Ok(Err(error)) | Err(error) => {
                             crate::logging::error_with_fields(
                                 "kernel.runtime",
                                 "transport maintenance task failed",

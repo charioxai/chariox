@@ -9,7 +9,7 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
+use rusqlite::{config::DbConfig, params, Connection, OpenFlags, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
 use crate::error::DaemonError;
@@ -772,6 +772,12 @@ impl OperationalHistoryStore {
         }
         let mut connection =
             Connection::open(&path).map_err(|error| operational_history_error("open", error))?;
+        // SQLite can recover committed records directly from the WAL. Leave
+        // automatic and explicit checkpoints to the running store instead of
+        // waiting for the last connection to checkpoint during a restart.
+        connection
+            .set_db_config(DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, true)
+            .map_err(|error| operational_history_error("configure WAL close", error))?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -823,6 +829,9 @@ impl OperationalHistoryStore {
             .collect::<Result<Vec<_>, DaemonError>>()?;
         let writer_connection = Connection::open(&path)
             .map_err(|error| operational_history_error("open writer", error))?;
+        writer_connection
+            .set_db_config(DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, true)
+            .map_err(|error| operational_history_error("configure writer WAL close", error))?;
         writer_connection
             .pragma_update(None, "journal_mode", "WAL")
             .map_err(|error| operational_history_error("configure writer WAL", error))?;

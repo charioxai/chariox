@@ -153,11 +153,26 @@ impl KernelRuntimeState {
             "dispatch workflow and agent triggers",
             MAINTENANCE_STALL_THRESHOLD,
         );
-        let watchdog_dispatches = self
-            .owned
-            .workflow_collect_due_watchdog_dispatches(crate::session::unix_epoch_ms());
-        self.spawn_workflow_prompt_dispatches(watchdog_dispatches);
-        self.dispatch_due_agent_triggers(crate::session::unix_epoch_ms());
+        let runtime = self.clone();
+        // This pass can acquire session locks and synchronously await durable
+        // commits. Await one blocking job so the pump never queues another pass
+        // while those writes are still pending.
+        if let Err(error) = tokio::task::spawn_blocking(move || {
+            let now_ms = crate::session::unix_epoch_ms();
+            let watchdog_dispatches = runtime
+                .owned
+                .workflow_collect_due_watchdog_dispatches(now_ms);
+            runtime.spawn_workflow_prompt_dispatches(watchdog_dispatches);
+            runtime.dispatch_due_agent_triggers(now_ms);
+        })
+        .await
+        {
+            crate::logging::error_with_fields(
+                "kernel.runtime",
+                "transport trigger maintenance failed",
+                serde_json::json!({ "error": error.to_string() }),
+            );
+        }
     }
 
     pub(crate) async fn record_terminal_attachment_heartbeat(

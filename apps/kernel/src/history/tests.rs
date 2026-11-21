@@ -34,6 +34,36 @@ fn external_observed_entry(session_id: &str) -> SessionHistoryEntry {
 }
 
 #[test]
+fn operational_history_replays_committed_wal_after_close() {
+    let root = crate::test_support::TestWorktree::new("operational-history-wal-reopen");
+    let path = root.path().join("history.db");
+    let store = OperationalHistoryStore::open(path.clone()).unwrap();
+    let event = store
+        .append_transcript(
+            &external_observed_entry("session-1"),
+            HistoryEventTurnContext::default(),
+        )
+        .unwrap();
+    drop(store);
+    assert!(
+        std::fs::metadata(path.with_extension("db-wal"))
+            .unwrap()
+            .len()
+            > 32
+    );
+
+    let reopened = OperationalHistoryStore::open(path).unwrap();
+    let events = reopened
+        .query_events(HistoryEventQuery {
+            session_id: Some("session-1".into()),
+            ..HistoryEventQuery::default()
+        })
+        .unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].event_id, event.event_id);
+}
+
+#[test]
 fn session_history_entry_source_metadata_line_matches_serialized_source() {
     let serialized = serde_json::to_value(SessionHistoryEntrySource::ExternalProviderObserved)
         .expect("source should serialize");

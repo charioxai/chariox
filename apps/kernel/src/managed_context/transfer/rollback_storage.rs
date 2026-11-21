@@ -14,9 +14,10 @@ struct OwnerTransfers {
     entries: BTreeMap<String, PersistedTransfer>,
 }
 
-pub(super) fn read_state(root: &Path) -> Result<PersistedTransferState, DaemonError> {
-    let mut state = match read_private_state_file(&root.join("state.json"))? {
-        Some(bytes) => serde_json::from_slice::<PersistedTransferState>(&bytes)
+pub(super) fn read_state(root: &Path) -> Result<(PersistedTransferState, bool), DaemonError> {
+    let main_index = read_private_state_file(&root.join("state.json"))?;
+    let mut state = match &main_index {
+        Some(bytes) => serde_json::from_slice::<PersistedTransferState>(bytes)
             .map_err(|_| transfer_error("parse managed context transfer state"))?,
         None => PersistedTransferState::default(),
     };
@@ -26,7 +27,16 @@ pub(super) fn read_state(root: &Path) -> Result<PersistedTransferState, DaemonEr
             state.schema_version
         )));
     }
-    if let Some(bytes) = read_private_state_file(&root.join("owner-transfers.json"))? {
+    let owner_index = read_private_state_file(&root.join("owner-transfers.json"))?;
+    // Even an incomplete owner transfer must move out of the predecessor
+    // index before that kernel can open it after a rollback.
+    let needs_index_write = main_index.is_none()
+        || owner_index.is_none()
+        || state
+            .entries
+            .values()
+            .any(|entry| entry.plan.destination.is_some());
+    if let Some(bytes) = owner_index {
         let owners: OwnerTransfers = serde_json::from_slice(&bytes)
             .map_err(|_| transfer_error("parse owner context transfer state"))?;
         if owners.schema_version != 1
@@ -59,7 +69,7 @@ pub(super) fn read_state(root: &Path) -> Result<PersistedTransferState, DaemonEr
             state.entries.insert(id, owner);
         }
     }
-    Ok(state)
+    Ok((state, needs_index_write))
 }
 
 pub(super) fn persist_state(
