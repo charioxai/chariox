@@ -708,6 +708,7 @@ impl DaemonApp {
     }
 
     pub(crate) fn update_session_projection(&self, mut session: RuntimeSession) {
+        session.project_room_interactions();
         session.set_sudo_windows(
             self.sudo_window_projection
                 .windows_for_session(session.id()),

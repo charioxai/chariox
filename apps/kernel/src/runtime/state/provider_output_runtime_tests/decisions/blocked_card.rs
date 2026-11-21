@@ -1,4 +1,4 @@
-//! A blocked task's Resume/Cancel card is a decision about an agent: it goes to the parent that
+//! A blocked task's card is a decision about an agent: it goes to the parent that
 //! spawned the agent, says what the agent still owes, and only a root agent's card reaches the
 //! person. Tree: g (room agent) -> p -> c.
 use super::*;
@@ -166,7 +166,7 @@ async fn a_blocked_helpers_card_goes_to_its_parent_and_names_what_it_owes() {
     );
     let choices = events[0].payload["choices"].to_string();
     assert!(
-        choices.contains("resume") && choices.contains("cancel"),
+        choices.contains("resume") && choices.contains("cancel") && choices.contains("stop"),
         "{choices}"
     );
     assert!(
@@ -176,7 +176,7 @@ async fn a_blocked_helpers_card_goes_to_its_parent_and_names_what_it_owes() {
 }
 
 #[tokio::test]
-async fn the_parent_cancelling_a_blocked_helper_ends_it_and_its_timer() {
+async fn the_parent_stopping_a_blocked_helper_ends_it_and_its_timer() {
     let t = tree(
         "blocked-card-cancel",
         AgentPermissionLevel::Yolo,
@@ -192,7 +192,7 @@ async fn the_parent_cancelling_a_blocked_helper_ends_it_and_its_timer() {
 
     assert_eq!(
         t.runtime
-            .answer_child_decision(&t.room, &t.p, &id, "cancel")
+            .answer_child_decision(&t.room, &t.p, &id, "stop")
             .await
             .unwrap(),
         ChildDecisionStatus::Answered
@@ -212,6 +212,109 @@ async fn the_parent_cancelling_a_blocked_helper_ends_it_and_its_timer() {
         store.agent_wake("wake-blk").unwrap().unwrap().state,
         "cancelled"
     );
+}
+
+#[tokio::test]
+async fn dismissing_a_blocked_question_keeps_its_task_and_inbox_card() {
+    let t = tree(
+        "blocked-question-dismiss",
+        AgentPermissionLevel::Yolo,
+        AgentPermissionLevel::Yolo,
+    )
+    .await;
+    let task = t.working_task_of(&t.g);
+    let store = &t.runtime.owned.durable_state_store;
+    let Outcome::Task(task) = store
+        .agent_lifecycle(Operation::BlockForQuestion {
+            task: task.task_id,
+            prompt: task.prompt_id,
+            reason: "Which branch should I use?".into(),
+        })
+        .unwrap()
+    else {
+        panic!("expected a blocked task");
+    };
+    t.runtime
+        .ensure_task_owner_interaction(task.clone())
+        .await
+        .unwrap();
+    let id = Tree::blocked_card_id(&task);
+    assert_eq!(
+        t.session()
+            .active_interactions()
+            .iter()
+            .find(|card| card.id() == id)
+            .unwrap()
+            .choice("cancel")
+            .unwrap()
+            .label(),
+        "Dismiss"
+    );
+
+    t.runtime
+        .owned
+        .resolve_runtime_interaction(&t.room, &id, "cancel", None, Some("local"), false)
+        .unwrap();
+    assert!(t
+        .runtime
+        .owned
+        .session_snapshot(&t.room)
+        .unwrap()
+        .active_interactions()
+        .iter()
+        .all(|card| card.id() != id));
+    let crate::local::LocalDaemonResponse::PersonInbox { cards, .. } =
+        crate::runtime::person_inbox::execute_person_inbox_request(
+            &t.runtime,
+            &crate::runtime::command::KernelCaller::default(),
+        )
+        .unwrap()
+    else {
+        panic!("expected the person's Inbox");
+    };
+    assert!(
+        cards.iter().any(|card| card.card_id == id),
+        "the dismissed card remains actionable in the person's Inbox"
+    );
+    assert_eq!(store.agent_task(&task.task_id).unwrap().unwrap(), task);
+
+    // Reattaching the decision after a kernel reload must keep the same card out of the Room.
+    t.runtime
+        .owned
+        .timeout_runtime_interaction(&t.room, &id)
+        .unwrap();
+    t.runtime
+        .ensure_task_owner_interaction(task.clone())
+        .await
+        .unwrap();
+    assert!(t
+        .runtime
+        .owned
+        .session_snapshot(&t.room)
+        .unwrap()
+        .active_interactions()
+        .iter()
+        .all(|card| card.id() != id));
+
+    t.runtime
+        .owned
+        .resolve_runtime_interaction(&t.room, &id, "stop", None, Some("local"), false)
+        .unwrap();
+    for _ in 0..100 {
+        if store.agent_task(&task.task_id).unwrap().unwrap().state == ExecutionState::Cancelled {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert_eq!(
+        store.agent_task(&task.task_id).unwrap().unwrap().state,
+        ExecutionState::Cancelled
+    );
+    assert!(t
+        .session()
+        .active_interactions()
+        .iter()
+        .all(|card| card.id() != id));
 }
 
 #[tokio::test]
@@ -418,7 +521,7 @@ async fn a_resumed_task_is_told_the_sequence_of_an_outcome_the_kernel_expired() 
 }
 
 #[tokio::test]
-async fn corrupt_completion_registrations_keep_the_parents_cancel_decision() {
+async fn corrupt_completion_registrations_keep_the_parents_stop_decision() {
     let t = tree(
         "blocked-corrupt",
         AgentPermissionLevel::Yolo,
@@ -449,7 +552,7 @@ async fn corrupt_completion_registrations_keep_the_parents_cancel_decision() {
     let detail = event.payload["detail"].as_str().unwrap();
     assert!(
         detail.contains("Recovery instructions could not be read")
-            && detail.contains("Cancel this task"),
+            && detail.contains("Stop this task"),
         "{detail}"
     );
 }
