@@ -269,6 +269,7 @@ exit 2
         };
         let materialization = ProviderAccountMaterialization {
             profile: crate::account_profile::ProviderAccountReplicaMetadata {
+                provider_account_id: None,
                 owner_user_id: "owner-a".to_string(),
                 provider: "claude".to_string(),
                 profile_id: "work".to_string(),
@@ -292,6 +293,7 @@ exit 2
 
         let claude_with_refresh_credential = ProviderAccountMaterialization {
             profile: crate::account_profile::ProviderAccountReplicaMetadata {
+                provider_account_id: None,
                 owner_user_id: "owner-a".to_string(),
                 provider: "claude".to_string(),
                 profile_id: "work".to_string(),
@@ -355,6 +357,7 @@ exit 2
         };
         let materialization = |synthetic_key: &str| ProviderAccountMaterialization {
             profile: crate::account_profile::ProviderAccountReplicaMetadata {
+                provider_account_id: None,
                 owner_user_id: "owner-a".to_string(),
                 provider: "opencode".to_string(),
                 profile_id: "work".to_string(),
@@ -429,6 +432,7 @@ exit 2
         let registry = app.provider_account_profile_registry();
         let materialization = ProviderAccountMaterialization {
             profile: crate::account_profile::ProviderAccountReplicaMetadata {
+                provider_account_id: None,
                 owner_user_id: "owner-a".to_string(),
                 provider: "opencode".to_string(),
                 profile_id: "home-work".to_string(),
@@ -514,6 +518,7 @@ exit 2
         let registry = app.provider_account_profile_registry();
         let materialization = |owner: &str| ProviderAccountMaterialization {
             profile: crate::account_profile::ProviderAccountReplicaMetadata {
+                provider_account_id: None,
                 owner_user_id: owner.to_string(),
                 provider: "opencode".to_string(),
                 profile_id: "home-work".to_string(),
@@ -651,6 +656,7 @@ exit 2
             .expect("select B");
         let failed_c = ProviderAccountMaterialization {
             profile: crate::account_profile::ProviderAccountReplicaMetadata {
+                provider_account_id: None,
                 owner_user_id: "owner-a".to_string(),
                 provider: "opencode".to_string(),
                 profile_id: "failed-c".to_string(),
@@ -710,6 +716,7 @@ exit 2
         let (mut app, context) = remote_account_fixture(&root);
         let materialization = ProviderAccountMaterialization {
             profile: crate::account_profile::ProviderAccountReplicaMetadata {
+                provider_account_id: None,
                 owner_user_id: "owner-a".into(),
                 provider: "opencode".into(),
                 profile_id: "quiescent-probe".into(),
@@ -748,6 +755,7 @@ exit 2
         let materialization =
             |profile_id: &str, contents_base64: &str| ProviderAccountMaterialization {
                 profile: crate::account_profile::ProviderAccountReplicaMetadata {
+                    provider_account_id: None,
                     owner_user_id: "owner-a".to_string(),
                     provider: "opencode".to_string(),
                     profile_id: profile_id.to_string(),
@@ -861,6 +869,7 @@ exit 2
         let registry_path = config.account_profile_registry_path();
         let old = ProviderAccountMaterialization {
             profile: crate::account_profile::ProviderAccountReplicaMetadata {
+                provider_account_id: None,
                 owner_user_id: "owner-a".to_string(),
                 provider: "opencode".to_string(),
                 profile_id: "old-worker".to_string(),
@@ -1028,6 +1037,7 @@ exit 2
         let registry_path = config.account_profile_registry_path();
         let old = ProviderAccountMaterialization {
             profile: crate::account_profile::ProviderAccountReplicaMetadata {
+                provider_account_id: None,
                 owner_user_id: "owner-a".to_string(),
                 provider: "opencode".to_string(),
                 profile_id: "old-worker".to_string(),
@@ -1122,6 +1132,7 @@ exit 2
         let registry_path = config.account_profile_registry_path();
         let old = ProviderAccountMaterialization {
             profile: crate::account_profile::ProviderAccountReplicaMetadata {
+                provider_account_id: None,
                 owner_user_id: "owner-a".to_string(),
                 provider: "opencode".to_string(),
                 profile_id: "old-worker".to_string(),

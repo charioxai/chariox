@@ -12,6 +12,8 @@ mod vault_login;
 pub(crate) use vault_login::{VaultLoginOpen, VaultLoginSeal};
 #[path = "account_profile_discovery.rs"]
 mod discovery;
+#[path = "account_profile_identity.rs"]
+mod identity;
 #[path = "account_profile_usage.rs"]
 mod usage;
 use std::collections::{BTreeMap, BTreeSet};
@@ -146,6 +148,8 @@ impl std::fmt::Debug for ProviderAccountMaterializationFile {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderAccountReplicaMetadata {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_account_id: Option<String>,
     pub owner_user_id: String,
     pub provider: String,
     pub profile_id: String,
@@ -994,6 +998,8 @@ struct StoredProviderAccountProfile {
     #[serde(flatten)]
     public: ProviderAccountProfile,
     locator: ProviderAccountLocator,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    provider_account_id: Option<String>,
     /// `None` only on records written before label tracking; `open` infers it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     label_source: Option<ProviderAccountLabelSource>,
@@ -1044,6 +1050,8 @@ struct ReplacedProviderAccountProfile {
     public: ProviderAccountProfile,
     locator: ProviderAccountLocator,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    provider_account_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     label_source: Option<ProviderAccountLabelSource>,
 }
 
@@ -1052,6 +1060,8 @@ struct RegistryDocument {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     account_copies: Vec<account_copy::AccountCopyRecord>,
     version: u32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    claude_account_merges: Vec<identity::ClaudeAccountMerge>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     credential_copy_notices: Vec<copy_notice::CredentialCopyNotice>,
     #[serde(default)]
@@ -1075,6 +1085,7 @@ impl Default for RegistryDocument {
         Self {
             account_copies: Vec::new(),
             version: REGISTRY_VERSION,
+            claude_account_merges: Vec::new(),
             credential_copy_notices: Vec::new(),
             profiles: Vec::new(),
             pending_replica_cleanup: Vec::new(),
@@ -1177,7 +1188,9 @@ impl ProviderAccountProfileRegistry {
             | migrate_legacy_default_profile_ids(&mut document)
             | migrate_legacy_default_profile_labels(&mut document)
             | migrate_legacy_managed_claude_scope(&mut document)
-            | migrate_automatic_labels(&mut document);
+            | migrate_automatic_labels(&mut document)
+            | document.backfill_claude_account_ids()
+            | document.remember_claude_merges();
         let auth_changes = Arc::new(discovery::AuthChanges::new(&document));
         let registry = Self {
             path,
@@ -1270,6 +1283,7 @@ impl ProviderAccountProfileRegistry {
             );
             document.profiles.push(StoredProviderAccountProfile {
                 public: profile,
+                provider_account_id: locator.claude_account_id(),
                 locator,
                 label_source: Some(ProviderAccountLabelSource::AutomaticAlias),
                 materialized_replica: false,
@@ -1308,7 +1322,24 @@ impl ProviderAccountProfileRegistry {
                 profile.public.owner_user_id == owner_user_id
                     && provider.is_none_or(|provider| profile.public.provider == provider)
             })
-            .map(|profile| project_usage_freshness(profile.public.clone()))
+            .filter_map(|profile| document.visible_profile(profile))
+            .collect())
+    }
+
+    pub(crate) fn list_bindings(
+        &self,
+        owner_user_id: &str,
+        provider: &str,
+    ) -> Result<Vec<ProviderAccountProfile>, DaemonError> {
+        let provider = normalize_provider(provider)?;
+        let document = self.read_document()?;
+        Ok(document
+            .profiles
+            .iter()
+            .filter(|stored| {
+                stored.public.owner_user_id == owner_user_id && stored.public.provider == provider
+            })
+            .map(|stored| project_usage_freshness(stored.public.clone()))
             .collect())
     }
 
@@ -1477,6 +1508,11 @@ impl ProviderAccountProfileRegistry {
         let provider = normalize_provider(provider)?;
         let mut document = self.write_document()?;
         let profile_index = resolved_profile_index(&document, owner_user_id, provider, profile_id)?;
+        let stored = &mut document.profiles[profile_index];
+        if provider == "claude" && auth_state == ProviderAccountAuthState::Authenticated {
+            stored.observe_claude_account_id()?;
+        }
+        let has_provider_id = stored.provider_account_id.is_some();
         if auth_state == ProviderAccountAuthState::Authenticated {
             if let Some(identity) = normalized_account_identity(identity_summary.as_deref()) {
                 let duplicate_index =
@@ -1491,6 +1527,7 @@ impl ProviderAccountProfileRegistry {
                                 && !candidate.locator.same_credential_scope(
                                     &document.profiles[profile_index].locator,
                                 )
+                                && !(has_provider_id && candidate.provider_account_id.is_some())
                                 && candidate.public.auth_state
                                     == ProviderAccountAuthState::Authenticated
                                 && normalized_account_identity(
@@ -1566,6 +1603,9 @@ impl ProviderAccountProfileRegistry {
             peer.public.plan = result.plan.clone();
             peer.public.detected_provider_version = result.detected_provider_version.clone();
             peer.public.last_validated_at_ms = result.last_validated_at_ms;
+        }
+        if provider == "claude" && has_provider_id {
+            document.remember_claude_merges();
         }
         self.persist_locked(&document)?;
         Ok(result)
@@ -1910,6 +1950,7 @@ impl ProviderAccountProfileRegistry {
         );
         document.profiles.push(StoredProviderAccountProfile {
             public: profile.clone(),
+            provider_account_id: None,
             locator,
             label_source: Some(label_source),
             materialized_replica: false,
@@ -1955,6 +1996,19 @@ impl ProviderAccountProfileRegistry {
                 ),
             ));
         }
+        let provider_account_id = locator.claude_account_id();
+        if let Some(existing) = provider_account_id
+            .as_deref()
+            .and_then(|id| document.claude_account(owner_user_id, id))
+        {
+            return Err(registry_error(
+                "link account profile",
+                format!(
+                    "This is the same Claude account as `{}`. Use that account instead.",
+                    existing.public.label
+                ),
+            ));
+        }
         let (label, label_source) =
             resolved_new_profile_label(&document, owner_user_id, provider, label)?;
         ensure_unique_label(&document, owner_user_id, provider, &label)?;
@@ -1973,6 +2027,7 @@ impl ProviderAccountProfileRegistry {
         }
         document.profiles.push(StoredProviderAccountProfile {
             public: profile.clone(),
+            provider_account_id,
             locator,
             label_source: Some(label_source),
             materialized_replica: false,
@@ -2018,6 +2073,13 @@ impl ProviderAccountProfileRegistry {
         }) {
             return Ok(project_usage_freshness(existing.public.clone()));
         }
+        let provider_account_id = locator.claude_account_id();
+        if let Some(existing) = provider_account_id
+            .as_deref()
+            .and_then(|id| document.claude_account(owner_user_id, id))
+        {
+            return Ok(project_usage_freshness(existing.public.clone()));
+        }
         let label = next_automatic_label(&document, owner_user_id, provider);
         let profile_id = unique_profile_id(&document, owner_user_id, provider, &label);
         let is_first = !document.profiles.iter().any(|entry| {
@@ -2033,6 +2095,7 @@ impl ProviderAccountProfileRegistry {
         );
         document.profiles.push(StoredProviderAccountProfile {
             public: profile.clone(),
+            provider_account_id,
             locator,
             label_source: Some(ProviderAccountLabelSource::AutomaticAlias),
             materialized_replica: false,
@@ -2647,6 +2710,7 @@ impl ProviderAccountProfileRegistry {
         let files = materialization_files(&stored.locator)?;
         Ok(ProviderAccountMaterialization {
             profile: ProviderAccountReplicaMetadata {
+                provider_account_id: stored.provider_account_id.clone(),
                 owner_user_id: stored.public.owner_user_id.clone(),
                 provider: stored.public.provider.clone(),
                 profile_id: stored.public.profile_id.clone(),
@@ -2671,9 +2735,8 @@ impl ProviderAccountProfileRegistry {
         let provider = normalize_provider(provider)?;
         let profile_id = validate_profile_id(profile_id)?;
         if let Some(profile) = self
-            .list(owner_user_id, Some(provider))?
-            .into_iter()
-            .find(|profile| profile.profile_id == profile_id)
+            .find(owner_user_id, provider, profile_id)?
+            .filter(|profile| profile.profile_id == profile_id)
         {
             return Ok(profile);
         }
@@ -2690,6 +2753,7 @@ impl ProviderAccountProfileRegistry {
             owner_user_id,
             &ProviderAccountMaterialization {
                 profile: ProviderAccountReplicaMetadata {
+                    provider_account_id: locator.claude_account_id(),
                     owner_user_id: owner_user_id.to_string(),
                     provider: provider.to_string(),
                     profile_id: profile_id.to_string(),
@@ -2773,6 +2837,7 @@ impl ProviderAccountProfileRegistry {
         files.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
         Ok(ProviderAccountMaterialization {
             profile: ProviderAccountReplicaMetadata {
+                provider_account_id: stored.provider_account_id.clone(),
                 owner_user_id: stored.public.owner_user_id.clone(),
                 provider: stored.public.provider.clone(),
                 profile_id: stored.public.profile_id.clone(),
@@ -3258,6 +3323,8 @@ impl ProviderAccountProfileRegistry {
             ));
         }
         let provider = normalize_provider(&materialization.profile.provider)?;
+        let provider_account_id =
+            identity::imported_claude_account_id(provider, &materialization.profile)?;
         let profile_id = validate_profile_id(&materialization.profile.profile_id)?;
         let allowed = match provider {
             "codex" => "auth.json",
@@ -3548,6 +3615,7 @@ impl ProviderAccountProfileRegistry {
                     public: stored.public.clone(),
                     locator: stored.locator.clone(),
                     local_credential_source: stored.local_credential_source.clone(),
+                    provider_account_id: stored.provider_account_id.clone(),
                     label_source: stored.label_source,
                 })
         });
@@ -3597,6 +3665,7 @@ impl ProviderAccountProfileRegistry {
             existing.public.detected_provider_version = None;
             existing.public.last_validated_at_ms = None;
             existing.public.usage = ProviderAccountUsageSnapshot::unavailable(profile_id, provider);
+            existing.provider_account_id = provider_account_id;
             existing.locator = locator;
             existing.materialized_replica = true;
             existing.pending_native_validation = pending_native_validation;
@@ -3618,6 +3687,7 @@ impl ProviderAccountProfileRegistry {
             );
             document.profiles.push(StoredProviderAccountProfile {
                 public: public.clone(),
+                provider_account_id,
                 locator,
                 label_source: Some(ProviderAccountLabelSource::Explicit),
                 materialized_replica: true,
@@ -3632,6 +3702,9 @@ impl ProviderAccountProfileRegistry {
             public
         };
 
+        if provider == "claude" {
+            document.remember_claude_merges();
+        }
         if let Err(error) = self.persist_locked(&document) {
             *document = original_document;
             if let Err(rollback_error) = self.persist_locked(&document) {
@@ -3742,6 +3815,7 @@ impl ProviderAccountProfileRegistry {
             document.profiles[index] = StoredProviderAccountProfile {
                 public: replaced.public,
                 locator: replaced.locator,
+                provider_account_id: replaced.provider_account_id,
                 label_source: replaced.label_source,
                 materialized_replica: false,
                 legacy_unpinned_replica: false,
@@ -5649,6 +5723,7 @@ mod tests {
     ) -> ProviderAccountMaterialization {
         ProviderAccountMaterialization {
             profile: ProviderAccountReplicaMetadata {
+                provider_account_id: None,
                 owner_user_id: "owner-a".to_string(),
                 provider: "codex".to_string(),
                 profile_id: profile_id.to_string(),

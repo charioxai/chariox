@@ -1659,6 +1659,7 @@ mod tests {
                 "cloud-owner",
                 &crate::account_profile::ProviderAccountMaterialization {
                     profile: crate::account_profile::ProviderAccountReplicaMetadata {
+                        provider_account_id: None,
                         owner_user_id: "cloud-owner".into(),
                         provider: "codex".into(),
                         profile_id: home.profile_id.clone(),

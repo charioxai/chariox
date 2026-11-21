@@ -438,6 +438,7 @@ async fn mp11_amfix_exact_profile_launch_matches_admission_and_home_alias() {
         .unwrap();
     let materialization = crate::account_profile::ProviderAccountMaterialization {
         profile: crate::account_profile::ProviderAccountReplicaMetadata {
+            provider_account_id: None,
             owner_user_id: "cloud-owner".into(),
             provider: "opencode".into(),
             profile_id: profile.profile_id.clone(),
