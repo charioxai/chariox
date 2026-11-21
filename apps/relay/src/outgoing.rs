@@ -25,6 +25,13 @@ pub(crate) enum Outgoing {
     PeerReply(PeerReplyText),
 }
 
+#[cfg(test)]
+impl From<Message> for Outgoing {
+    fn from(message: Message) -> Self {
+        Self::Frame(message)
+    }
+}
+
 impl Outgoing {
     pub(crate) fn len(&self) -> usize {
         match self {

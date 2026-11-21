@@ -460,9 +460,9 @@ fn leaves_control_slots(lane: Lane, active: &VecDeque<Transfer>) -> bool {
 // Consecutive small sends allowed while a bulk transfer waits for its turn.
 const SMALL_STREAK: usize = 4;
 #[allow(clippy::too_many_arguments)]
-pub(super) async fn run_writer<S>(
+pub(super) async fn run_writer<S, M>(
     mut writer: S,
-    mut outgoing: mpsc::Receiver<Outgoing>,
+    mut outgoing: mpsc::Receiver<M>,
     chunks: bool,
     binary_events: bool,
     binary_requests: bool,
@@ -472,6 +472,7 @@ pub(super) async fn run_writer<S>(
 ) -> &'static str
 where
     S: Sink<Message> + Unpin,
+    M: Into<Outgoing>,
 {
     let capacity = outgoing.max_capacity();
     let mut pending = VecDeque::new();
@@ -503,7 +504,7 @@ where
         while pending.len() < capacity {
             match outgoing.try_recv() {
                 Ok(message) => {
-                    match Queued::prepare(message, binary_events, binary_requests, &usage) {
+                    match Queued::prepare(message.into(), binary_events, binary_requests, &usage) {
                         Some(queued) => pending.push_back(queued),
                         None => return "bad_outgoing_message",
                     }
@@ -731,7 +732,7 @@ where
             }
             message=outgoing.recv(),if open && pending.len()<capacity=>{
                 match message {
-                    Some(message) => match Queued::prepare(message, binary_events, binary_requests, &usage) {
+                    Some(message) => match Queued::prepare(message.into(), binary_events, binary_requests, &usage) {
                         Some(queued) => pending.push_back(queued),
                         None => return "bad_outgoing_message",
                     },
