@@ -1013,7 +1013,8 @@ async fn artifact_timeout(update: bool) {
     let mut config = DaemonConfig::for_tests();
     config.room_agent_tools = true;
     config.user_config.workflow.code = Some(crate::config::UserWorkflowCodeConfig {
-        script_timeout_ms: Some(2_000),
+        // Keep the wall timeout below the next whole-second Linux CPU limit.
+        script_timeout_ms: Some(2_100),
         ..Default::default()
     });
     let mut daemon = DaemonApp::bootstrap(config.clone()).unwrap();
