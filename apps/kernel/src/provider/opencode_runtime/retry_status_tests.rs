@@ -352,3 +352,61 @@ fn status_failure_preserves_drained_text_and_tool_output_through_http_recovery()
         "recovered snapshots must not replay delivered output"
     );
 }
+
+#[test]
+fn idle_permission_rejection_settles_only_the_current_turn() {
+    let denial = "The user rejected permission to use this specific tool call.";
+    for (parent, error, follow_up, rejected) in [
+        ("user-1", denial, false, true),
+        ("old-user", denial, false, false),
+        ("user-1", "Command exited with status 1", false, false),
+        ("user-1", denial, true, false),
+    ] {
+        let mut messages = vec![serde_json::json!({
+            "info": {
+                "id": "assistant-1", "sessionID": "session-1", "role": "assistant",
+                "parentID": parent, "time": {"completed": 2}, "finish": "tool-calls"
+            },
+            "parts": [{
+                "id": "tool-1", "sessionID": "session-1", "messageID": "assistant-1",
+                "type": "tool", "tool": "bash", "state": {"status": "error", "error": error}
+            }]
+        })];
+        if follow_up {
+            messages.push(serde_json::json!({"info": {
+                "id": "assistant-2", "sessionID": "session-1", "role": "assistant",
+                "parentID": "user-1", "time": {"completed": 3}, "finish": "stop"
+            }}));
+        }
+        let (endpoint, server) = serve(vec![
+            ("/session/status", "application/json", "{}".into()),
+            (
+                "/session/session-1/message?limit=100",
+                "application/json",
+                serde_json::to_string(&messages).unwrap(),
+            ),
+        ]);
+        let (_sender, receiver) = mpsc::channel();
+        let mut state = OpenCodeRuntimeState::new(
+            endpoint,
+            "session-1".into(),
+            OpenCodeEventSubscription::for_tests(receiver),
+        );
+        state.note_prompt_submitted("user-1".into());
+        let result = drain_opencode_events(&test_run(), &mut state, None).unwrap();
+        server.join().unwrap();
+        assert_eq!(
+            result.prompt_completed,
+            rejected || follow_up,
+            "parent {parent}, error {error}"
+        );
+        assert_eq!(
+            result.terminal_failure.as_deref(),
+            rejected.then_some(denial)
+        );
+        assert_eq!(
+            state.active_user_message_id.is_none(),
+            rejected || follow_up
+        );
+    }
+}
