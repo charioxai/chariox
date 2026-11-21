@@ -592,6 +592,7 @@ async fn a_kernel_restart_during_a_held_machine_upload_removes_what_was_uploaded
             ("get", 200, held_machine("ready", "held-kernel-restart-up")),
             ("get", 200, held_machine("ready", "held-kernel-restart-up")),
             ("get", 200, held_machine("ready", "held-kernel-restart-up")),
+            ("get", 200, held_machine("ready", "held-kernel-restart-up")),
         ],
     )
     .await;
@@ -632,6 +633,11 @@ async fn a_kernel_restart_while_a_held_machine_cleans_up_keeps_the_finished_resu
     let service = service(
         &state,
         vec![
+            (
+                "get",
+                200,
+                held_machine("ready", "held-kernel-restart-clean"),
+            ),
             (
                 "get",
                 200,
@@ -761,6 +767,7 @@ async fn a_kernel_restart_removes_what_a_finished_held_machine_job_could_not() {
     let service = service(
         &state,
         vec![
+            ("get", 200, held_machine("ready", "held-kernel-startup")),
             ("get", 200, held_machine("ready", "held-kernel-startup")),
             ("get", 200, held_machine("ready", "held-kernel-startup")),
             ("get", 200, held_machine("ready", "held-kernel-startup")),
@@ -1063,7 +1070,13 @@ async fn a_machine_only_held_job_runs_without_uploading_or_returning_workspace_f
     .unwrap();
     served(service).await;
     assert_eq!(finished["result"]["exit_code"], 0, "{finished}");
-    assert_eq!(finished["result"]["output_tail"], "done");
+    assert_eq!(
+        finished["result"]["output_tail"]
+            .as_str()
+            .unwrap()
+            .trim_end(),
+        "done"
+    );
     assert_eq!(finished["result"]["files_back"], serde_json::json!([]));
     assert_eq!(machine.chunks.load(std::sync::atomic::Ordering::SeqCst), 0);
     assert_eq!(
