@@ -172,10 +172,11 @@ impl KernelRuntimeState {
                 .iter()
                 .map(|chunk| String::from_utf8_lossy(&chunk.bytes))
                 .collect::<String>();
-            if let Some(notice) =
-                crate::app::claude_native_first_run_notice(&provider_run, &rendered)
+            if let Some(update) =
+                crate::app::claude_native_trust_dialog_update(&provider_run, &rendered)
             {
-                owned.record_notice(session_id, Some(provider_run_id), Vec::new(), notice);
+                self.follow_claude_trust_dialog(session_id, &provider_run, update)
+                    .await;
             }
             if !rendered.is_empty() {
                 let provider_run = provider_run.clone();
