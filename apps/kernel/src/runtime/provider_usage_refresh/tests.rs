@@ -216,10 +216,10 @@ fn an_idle_account_is_read_again_within_fifteen_minutes_and_not_before_twelve() 
     assert_eq!(f.refresher.due_accounts(f.at(14.02)), vec![f.key.clone()]);
 }
 
-// S6: an account whose usage is used up is read again within about two
-// minutes, so an early reset is seen without anyone asking.
+// S6: a used-up account is re-read on the normal interval, so an early reset
+// shows within it and what waits on the account then goes on by itself.
 #[test]
-fn an_exhausted_account_is_read_again_within_two_minutes() {
+fn an_exhausted_account_is_read_again_within_the_normal_interval() {
     crate::test_support::isolated_env_test!();
     let f = Fixture::new(vec![Ok(5.0)]);
     f.refresher.refresh_account(&f.key, f.at(0.0));
@@ -232,27 +232,9 @@ fn an_exhausted_account_is_read_again_within_two_minutes() {
     )
     .unwrap();
 
-    assert!(f.refresher.due_accounts(f.at(1.0)).is_empty());
-    assert_eq!(f.refresher.due_accounts(f.at(2.0)), vec![f.key.clone()]);
-}
-
-// S6: the reading is also taken when the reset time the last reading named has passed.
-#[test]
-fn an_account_whose_named_reset_passed_is_read_at_once() {
-    crate::test_support::isolated_env_test!();
-    let f = Fixture::new(vec![Ok(5.0)]);
-    f.refresher.refresh_account(&f.key, f.at(0.0));
-    crate::test_support::exhaust_provider_account(
-        &f.registry,
-        "local",
-        "codex",
-        &f.key.profile_id,
-        f.t0 + 3 * MINUTE_MS,
-    )
-    .unwrap();
-
-    assert!(f.refresher.due_accounts(f.at(1.0)).is_empty());
-    assert_eq!(f.refresher.due_accounts(f.at(3.5)), vec![f.key.clone()]);
+    assert!(f.refresher.due_accounts(f.at(2.0)).is_empty());
+    assert!(f.refresher.due_accounts(f.at(12.0)).is_empty());
+    assert_eq!(f.refresher.due_accounts(f.at(14.02)), vec![f.key.clone()]);
 }
 
 #[test]

@@ -69,29 +69,6 @@ pub(crate) fn unusable_reason(
     }
 }
 
-/// Whether the provider has reported `candidate`'s usage. A candidate nobody
-/// has observed (its usage read failed, for instance behind a locked Vault)
-/// could be used up; it runs only when no observed candidate can.
-fn usage_observed(
-    registry: &ProviderAccountProfileRegistry,
-    owner_user_id: &str,
-    candidate: &AgentSubstituteProfile,
-) -> bool {
-    use crate::account_profile::ProviderAccountUsageAvailability::{Available, Partial};
-    let Some(provider) = crate::provider::canonical_provider_family(&candidate.provider) else {
-        return true;
-    };
-    registry
-        .find(
-            owner_user_id,
-            provider,
-            candidate.account_profile.as_deref().unwrap_or("default"),
-        )
-        .ok()
-        .flatten()
-        .is_some_and(|profile| matches!(profile.usage.availability, Available | Partial))
-}
-
 /// Which substitute runs a turn, and why each earlier untried one was skipped.
 pub(crate) struct SubstituteChoice {
     pub(crate) index: Option<usize>,
@@ -99,8 +76,8 @@ pub(crate) struct SubstituteChoice {
     pub(crate) skipped: Vec<(usize, String)>,
 }
 
-/// The first substitute of `agent` not in `tried` that can run, preferring one
-/// whose usage is observed, with the reason each skipped one cannot.
+/// The first substitute of `agent` not in `tried` that can run, in the order the
+/// person configured them, with the reason each skipped one cannot.
 pub(crate) fn first_usable_substitute(
     registry: &ProviderAccountProfileRegistry,
     owner_user_id: &str,
@@ -109,26 +86,22 @@ pub(crate) fn first_usable_substitute(
     tried: &[AgentSubstituteProfile],
 ) -> Result<SubstituteChoice, DaemonError> {
     let mut skipped = Vec::new();
-    let mut unobserved = None;
     for (index, candidate) in agent.substitutes().iter().enumerate() {
         if tried.contains(candidate) {
             continue;
         }
         match unusable_reason(registry, owner_user_id, daemon_id, candidate)? {
-            Some(reason) => skipped.push((index, reason)),
-            None if usage_observed(registry, owner_user_id, candidate) => {
+            None => {
                 return Ok(SubstituteChoice {
                     index: Some(index),
                     skipped,
-                });
+                })
             }
-            None => {
-                unobserved.get_or_insert(index);
-            }
+            Some(reason) => skipped.push((index, reason)),
         }
     }
     Ok(SubstituteChoice {
-        index: unobserved,
+        index: None,
         skipped,
     })
 }
