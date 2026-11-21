@@ -601,7 +601,8 @@ fn session_agent_description(
             .map(|grant| grant.name.clone())
             .collect::<Vec<_>>()
     };
-    serde_json::json!({
+    let activity = activity.get(agent.id());
+    let mut description = serde_json::json!({
         "id": agent.id(),
         "agent_ref": agent.agent_ref(),
         "alias": agent.alias(),
@@ -618,7 +619,7 @@ fn session_agent_description(
             crate::agent::AgentOperatingMode::Regular => "regular",
             crate::agent::AgentOperatingMode::Meta => "meta",
         },
-        "state": crate::runtime::projection::agent_state_label(agent, activity.get(agent.id())),
+        "state": crate::runtime::projection::agent_state_label(agent, activity),
         "is_processing": agent.is_processing(),
         "has_active_prompt": session.active_prompt_for_agent(agent.id()).is_some(),
         "queued_prompt_count": session
@@ -626,7 +627,7 @@ fn session_agent_description(
             .map_or(0, std::collections::VecDeque::len),
         // What it waits on and since when, and when it last wrote: a quiet
         // agent is never an unexplained one.
-        "liveness": activity.get(agent.id()).map(|activity| &activity.liveness),
+        "liveness": activity.map(|activity| &activity.liveness),
         "parent_agent_id": agent.parent_agent_id(),
         "parent_room_id": agent.parent_room_id(),
         "visible_in_freeform": agent.visible_in_freeform(),
@@ -636,7 +637,16 @@ fn session_agent_description(
             "scripts": extension_names(crate::extension::ExtensionKind::Script),
             "connectors": extension_names(crate::extension::ExtensionKind::Connector),
         },
-    })
+    });
+    if let Some(failure) = activity
+        .filter(|activity| activity.status == crate::runtime::projection::AgentRuntimeStatus::Error)
+        .and_then(|activity| activity.last_completed_turn.as_ref())
+        .and_then(|turn| turn.outcome.as_ref())
+        .filter(|outcome| outcome.is_error() && !outcome.reason.is_empty())
+    {
+        description["failure_reason"] = serde_json::json!(failure.reason);
+    }
+    description
 }
 
 fn agent_message_failure(
