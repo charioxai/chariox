@@ -10,8 +10,9 @@ export async function runSetup(build, argv = process.argv.slice(2)) {
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]
     if (arg === "--version") { stdout.write(`Chariox Setup ${build.version}\n`); return }
-    if (arg === "--help") { stdout.write("MP-07/MP-08/MP-11: Chariox Setup [--repair|--upgrade|--uninstall] [--enroll] [--install-only --login] [--id ID --port PORT]\n--enroll reads a single-use code from stdin or a hidden terminal prompt; codes are never accepted in argv.\n"); return }
+    if (arg === "--help") { stdout.write("MP-07/MP-08/MP-11: Chariox Setup [--repair|--upgrade|--uninstall] [--enroll] [--build-tools] [--install-only --login] [--id ID --port PORT]\n--build-tools installs the pinned Linux x86_64 build tools in your home.\n--enroll reads a single-use code from stdin or a hidden terminal prompt; codes are never accepted in argv.\n"); return }
     if (arg === "--enroll") { enroll = true; continue }
+    if (arg === "--build-tools") { options.buildTools = true; continue }
     if (arg === "--login") { login = true; continue }
     if (arg === "--install-only") { options.installOnly = true; continue }
     const actions = { "--repair": "repair", "--upgrade": "upgrade", "--uninstall": "remove" }
