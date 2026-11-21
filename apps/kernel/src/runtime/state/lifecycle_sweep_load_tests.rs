@@ -94,6 +94,8 @@ async fn a_sweep_over_many_waiting_recipients_keeps_its_cost_and_still_delivers_
     let one = room_with_agents(1);
     let many = room_with_agents(8);
     let alone = one.snapshots_in_one_pass().await;
+    // The first Room's deliveries run apart from its pass: let them end before the next count.
+    one.runtime.task_work_settled().await;
     let crowded = many.snapshots_in_one_pass().await;
     assert_eq!(
         crowded, alone,
