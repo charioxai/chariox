@@ -407,9 +407,7 @@ async fn an_agent_notification_trigger_queues_every_occurrence() {
     assert_eq!(queued.len(), 1, "{queued:?}");
     let text = &queued[0];
     assert!(
-        text.starts_with(
-            "Triage what the pipeline reports\n\n3 notifications arrived while you were busy:"
-        ),
+        text.starts_with("Triage what the pipeline reports\n\n3 new messages:"),
         "{text}"
     );
     assert!(!text.contains("chariox-trigger-input"), "{text}");
@@ -447,6 +445,289 @@ async fn an_agent_notification_trigger_queues_every_occurrence() {
     assert_eq!(queued[0].matches("inbox event").count(), 3, "{}", queued[0]);
 }
 
+#[tokio::test]
+async fn a_busy_agent_gets_one_prompt_for_distinct_notification_sources() {
+    let rig = rig().await;
+    let first = rig.workflow_with_exit("first-pipeline");
+    let second = rig.workflow_with_exit("second-pipeline");
+    rig.trigger_on(&rig.register(&first)).await;
+    rig.trigger_on(&rig.register(&second)).await;
+
+    rig.complete(&first, "first-run", "first release");
+    rig.complete(&second, "second-run", "second release");
+    rig.pass().await;
+
+    let queued = rig.queued_prompts();
+    assert_eq!(queued.len(), 1, "{queued:?}");
+    let inbox = rig.notification_inbox();
+    assert_eq!(inbox.len(), 2);
+    for event in inbox {
+        let arrival = event.arrived_at_ms.expect("the inbox stamps arrival");
+        assert!(queued[0].contains(&format!(
+            "inbox event {}{}",
+            event.sequence,
+            super::super::agent_inbox_wake_text::arrival_suffix(Some(arrival)),
+        )));
+    }
+}
+
+#[tokio::test]
+async fn promoting_a_notification_batches_pending_inbox_wakes_with_the_same_receipt_boundary() {
+    use crate::durable_state::agent_lifecycle::{occurrence, Operation, Outcome};
+
+    let rig = rig().await;
+    let source = rig.workflow_with_exit("pipeline");
+    rig.trigger_on(&rig.register(&source)).await;
+    rig.complete(&source, "release-run", "release approved");
+    rig.pass().await;
+    let store = &rig.runtime.owned.durable_state_store;
+    let Outcome::Event(peer_event) = store
+        .agent_lifecycle(Operation::Occur(occurrence(
+            &rig.session_id,
+            &rig.agent_id,
+            "peer",
+            "finished",
+            "peer_event",
+            serde_json::json!({}),
+        )))
+        .unwrap()
+    else {
+        panic!("peer completion did not reach the inbox");
+    };
+    let queued = rig.queued_prompts();
+    assert_eq!(queued.len(), 1);
+    assert!(!queued[0].contains("peer event"));
+    let session = rig
+        .runtime
+        .owned
+        .session_store
+        .get_session(&rig.session_id)
+        .unwrap();
+    rig.runtime
+        .owned
+        .prompt_state_owner
+        .complete_active_prompt_only(&session, &rig.agent_id)
+        .unwrap();
+    let dispatch = rig
+        .runtime
+        .owned
+        .advance_next_queued_prompt_dispatch(&rig.session_id, &rig.agent_id, &rig.run_id)
+        .unwrap()
+        .expect("the queued notification starts after the busy turn");
+
+    assert!(
+        dispatch.prompt.contains("2 new messages:"),
+        "{}",
+        dispatch.prompt
+    );
+    assert!(
+        dispatch.prompt.contains("release approved"),
+        "{}",
+        dispatch.prompt
+    );
+    assert!(dispatch.prompt.contains(&format!(
+        "peer event (from peer), inbox event {}",
+        peer_event.sequence
+    )));
+    let delivered = store
+        .agent_events_for_prompt(&rig.session_id, &rig.agent_id, &dispatch.prompt_id)
+        .unwrap();
+    assert_eq!(delivered.len(), 1, "{delivered:?}");
+    assert_eq!(delivered[0].sequence, peer_event.sequence);
+    assert_eq!(delivered[0].state, "submitting");
+}
+
+#[tokio::test]
+async fn promoted_mixed_notifications_resume_the_timer_task_and_settle_its_receipts() {
+    use super::super::local_prompt_dispatch_runtime::tests::runtime_with_active_prompt_and_config;
+    use crate::durable_state::agent_lifecycle::{ExecutionState, Operation};
+
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let (_root, runtime, session_id, agent_id, attachment_id, active_prompt_id, run_id) =
+        runtime_with_active_prompt_and_config(config, &[]).await;
+    let rig = Rig {
+        _root,
+        runtime,
+        session_id,
+        agent_id,
+        attachment_id,
+        active_prompt_id,
+        run_id,
+    };
+    let store = &rig.runtime.owned.durable_state_store;
+    let parked = "parked-timers";
+    let now = crate::session::unix_epoch_ms();
+    let apply = |operation| store.agent_lifecycle(operation).unwrap();
+    apply(Operation::Begin {
+        owner: "local".into(),
+        room: rig.session_id.clone(),
+        agent: rig.agent_id.clone(),
+        prompt: parked.into(),
+        run: Some(rig.run_id.clone()),
+        now,
+    });
+    let mut registrations = Vec::new();
+    for id in ["timer-a", "timer-b"] {
+        let registration = format!("completion-{id}");
+        let wake = serde_json::from_value(serde_json::json!({
+            "id": id, "task_id": parked, "room_id": rig.session_id, "agent_id": rig.agent_id,
+            "registration_id": registration, "kind": "timer", "label": id, "state": "scheduled",
+            "created_at_ms": now, "verified_at_ms": now, "next_due_ms": now + 1_000,
+            "command": [], "fire_count": 0, "missed_fires": 0,
+        }))
+        .unwrap();
+        apply(Operation::CreateWake {
+            task: parked.into(),
+            prompt: parked.into(),
+            wake,
+        });
+        registrations.push(registration);
+    }
+    apply(Operation::Yield {
+        task: parked.into(),
+        prompt: parked.into(),
+        registrations,
+        cursor: 0,
+        deadline: Some(now + 60_000),
+        reason: "wait for timers".into(),
+        now,
+    });
+    apply(Operation::Settle {
+        room: rig.session_id.clone(),
+        agent: rig.agent_id.clone(),
+        prompt: parked.into(),
+        run: rig.run_id.clone(),
+        has_answer: true,
+        cancelled: false,
+        now,
+    });
+    assert_eq!(
+        store.agent_task(parked).unwrap().unwrap().state,
+        ExecutionState::Waiting
+    );
+
+    let person_id = rig.runtime.owned.session_store.reserve_prompt_id();
+    for name in ["pipeline-a", "pipeline-b", "pipeline-c"] {
+        let workflow = rig.workflow_with_exit(name);
+        rig.trigger_on(&rig.register(&workflow)).await;
+        rig.complete(&workflow, name, name);
+        rig.pass().await;
+        if name == "pipeline-a" {
+            let submitted = rig
+                .runtime
+                .submit_prepared_prompt(crate::app::KernelPreparedPromptSubmission {
+                    session_id: rig.session_id.clone(),
+                    prompt: crate::session::PromptQueueItem::new(
+                        &person_id,
+                        &rig.attachment_id,
+                        &rig.agent_id,
+                        "Person's separate prompt",
+                        crate::session::PromptStatus::Queued,
+                    ),
+                    force_queue: false,
+                    refresh_projection: true,
+                })
+                .await
+                .unwrap();
+            let crate::session::PromptSubmissionOutcome::Queued { prompt } = submitted.outcome
+            else {
+                panic!("the person's prompt must wait behind the notification");
+            };
+            assert_eq!(prompt.id(), person_id);
+        }
+    }
+    apply(Operation::FireWakes { now: now + 1_000 });
+    let inbox = || {
+        store
+            .agent_inbox(&rig.session_id, &rig.agent_id, 0)
+            .unwrap()
+    };
+    let arrived = inbox();
+    assert_eq!(arrived.len(), 5, "{arrived:?}");
+    let room = rig
+        .runtime
+        .owned
+        .session_store
+        .get_session(&rig.session_id)
+        .unwrap();
+    let next = rig
+        .runtime
+        .owned
+        .prompt_state_owner
+        .peek_next_queued_prompt(&room, &rig.agent_id)
+        .unwrap();
+    let batch = rig
+        .runtime
+        .complete_local_prompt_with_queued_advance_if_matches(
+            &rig.session_id,
+            &rig.agent_id,
+            Some(&rig.run_id),
+            &next,
+            Some(&rig.active_prompt_id),
+        )
+        .await
+        .unwrap()
+        .expect("the busy turn completes")
+        .dispatch
+        .expect("the mixed batch uses receipt-aware dispatch");
+    assert!(batch.prompt.contains("5 new messages:"), "{}", batch.prompt);
+    for row in &arrived {
+        assert!(batch
+            .prompt
+            .contains(&format!("inbox event {}, arrived ", row.sequence)));
+    }
+    assert!(rig
+        .runtime
+        .enqueue_prompt_dispatch_with_acceptance(&batch)
+        .await
+        .unwrap());
+    let resumed = store.agent_task(parked).unwrap().unwrap();
+    assert_eq!(
+        resumed.prompt_id, batch.prompt_id,
+        "the original task owns the promoted turn"
+    );
+    assert!(resumed.pending_prompt_id.is_none());
+    assert!(inbox().iter().all(|row| row.state == "accepted"));
+    let run = rig
+        .runtime
+        .owned
+        .provider_store
+        .get_run(&rig.run_id)
+        .unwrap();
+    let result = rig
+        .runtime
+        .dispatch_agent_event_tool(
+            &run,
+            "chariox.events.inbox",
+            serde_json::json!({
+                "task_id": parked, "origin_prompt_id": batch.prompt_id, "after": 0,
+            }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(result.payload["events"].as_array().unwrap().len(), 5);
+    for row in arrived {
+        rig.runtime.dispatch_agent_event_tool(&run, "chariox.events.ack", serde_json::json!({
+            "task_id": parked, "origin_prompt_id": batch.prompt_id, "sequence": row.sequence, "handled": true,
+        })).await.unwrap();
+    }
+    assert!(inbox().iter().all(|row| row.state == "handled"));
+    rig.runtime
+        .owned
+        .complete_local_prompt_without_advance(&rig.session_id, &rig.agent_id, Some(&rig.run_id))
+        .unwrap()
+        .expect("the mixed batch finishes");
+    let next = rig
+        .runtime
+        .owned
+        .advance_next_queued_prompt_dispatch(&rig.session_id, &rig.agent_id, &rig.run_id)
+        .unwrap()
+        .expect("person's prompt runs next");
+    assert_eq!(next.prompt_id, person_id);
+    assert_eq!(next.prompt, "Person's separate prompt");
+}
+
 /// The person's prompt between two notifications stays its own; a later occurrence
 /// still joins the notification prompt that waits ahead of it.
 #[tokio::test]
@@ -477,11 +758,7 @@ async fn a_person_prompt_in_the_queue_is_never_merged_with_notifications() {
     rig.pass().await;
     let queued = rig.queued_prompts();
     assert_eq!(queued.len(), 2, "{queued:?}");
-    assert!(
-        queued[0].contains("2 notifications arrived while you were busy:"),
-        "{}",
-        queued[0]
-    );
+    assert!(queued[0].contains("2 new messages:"), "{}", queued[0]);
     assert_eq!(queued[1], "the person's own question");
 }
 
@@ -508,7 +785,7 @@ async fn a_steering_trigger_does_not_join_queued_notifications() {
     assert!(rig
         .queued_prompts()
         .iter()
-        .all(|text| !text.contains("notifications arrived while you were busy")));
+        .all(|text| !text.contains("new messages")));
 }
 
 /// A reviewer-style exit with a large body: whatever the mode, the prompt is one notice line and
@@ -1084,11 +1361,7 @@ async fn app_events_queue_each_occurrence_and_detach_when_the_agent_leaves() {
     // The agent is busy: the three events wait as one prompt.
     let queued = rig.queued_prompts();
     assert_eq!(queued.len(), 1, "{queued:?}");
-    assert!(
-        queued[0].contains("3 notifications arrived while you were busy:"),
-        "{}",
-        queued[0]
-    );
+    assert!(queued[0].contains("3 new messages:"), "{}", queued[0]);
     for text in &queued {
         assert!(!text.contains("chariox-trigger-input"), "{text}");
         assert!(!text.contains("issue-"), "{text}");
@@ -3152,7 +3425,7 @@ async fn a_persisted_steer_rejection_survives_recovery_without_its_provisional_l
     let queued = rig.queued_prompts();
     assert_eq!(queued.len(), 1, "{queued:?}");
     assert!(
-        queued[0].contains("2 notifications arrived while you were busy:"),
+        queued[0].contains("2 new messages:"),
         "a workflow the original turn invoked still notifies: {}",
         queued[0]
     );
