@@ -3,11 +3,11 @@
 use crate::drain_window::START_WINDOW_BYTES;
 use crate::drain_window::{DrainWindow, SendStamp};
 use crate::frame_transport::{
-    binary_chunk, binary_chunk_payload, peer_reply_chunk, text_chunk, TransportFrame, CHUNK_BYTES,
+    binary_chunk, binary_chunk_payload, text_chunk, TransportFrame, CHUNK_BYTES,
     MAX_ASSEMBLY_BYTES, MAX_MESSAGE_BYTES, MAX_TRANSFERS, PEER_RECEIPT_FRAMES, SMALL_RESERVE_BYTES,
 };
 use crate::meter::{ConnectionMeter, Direction, CONTROL_SCOPE, DISPLAY_TUNNEL_SCOPE};
-use crate::outgoing::{backlog_close_frame, BulkCharge, Outgoing, OutgoingQueue, PeerReplyText};
+use crate::outgoing::{backlog_close_frame, BulkCharge, Outgoing, OutgoingQueue, PeerReply};
 use futures_util::{Sink, SinkExt};
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -107,7 +107,7 @@ struct Transfer {
     small: bool,
     text: Utf8Bytes,
     binary: Option<Message>,
-    peer_reply: Option<PeerReplyText>,
+    peer_reply: Option<PeerReply>,
     offset: usize,
     lane: Lane,
     waiting: usize,
@@ -118,15 +118,9 @@ impl Transfer {
     /// receiver that takes chunks shorter than a full one (`adaptive`).
     fn next_chunk(&self, limit: usize, adaptive: bool) -> Option<(Message, usize)> {
         if let Some(reply) = &self.peer_reply {
-            let (block, start) = reply.front()?;
-            return peer_reply_chunk(
-                self.id,
-                &block[self.offset - start..],
-                self.offset,
-                reply.len(),
-                limit,
-            )
-            .map(|(frame, end)| (Message::Text(frame.into()), end));
+            return reply
+                .next_chunk(self.id, self.offset, limit)
+                .map(|(frame, end)| (Message::Text(frame.into()), end));
         }
         if let Some(Message::Binary(binary)) = &self.binary {
             if binary.len() > CHUNK_BYTES {
@@ -173,20 +167,19 @@ impl Transfer {
     fn len(&self) -> usize {
         self.peer_reply.as_ref().map_or_else(
             || self.binary.as_ref().map_or(self.text.len(), Message::len),
-            PeerReplyText::len,
+            PeerReply::len,
         )
     }
 
     fn charge_written(&mut self, end: usize) -> Option<BulkCharge> {
+        if self.finished() {
+            return self.bulk.take();
+        }
         if let Some(reply) = &mut self.peer_reply {
             let released = reply.written(end)?;
             return self.bulk.as_mut().map(|charge| charge.split(released));
         }
-        if self.finished() {
-            self.bulk.take()
-        } else {
-            None
-        }
+        None
     }
 }
 // Receipts follow wire order, including across transfer IDs. A later transfer's
@@ -401,7 +394,7 @@ impl Queued {
         binary_requests: bool,
         usage: &WriterUsage,
     ) -> Option<Self> {
-        let admitted = message.len();
+        let admitted = message.admitted_len();
         let (message, lane, key, stream) = match message {
             Outgoing::Frame(message) => {
                 let message = receiver_message(message, binary_events, binary_requests)?;
@@ -957,7 +950,10 @@ mod tests {
         assert!(credit.receipt(1, written as u32, &mut active));
         sender.try_send_peer_reply(second_len, &second).unwrap();
         assert_eq!(queue.queued_bytes(), RECEIVER_BULK_BUDGET);
-        assert!(reply.front().is_some(), "the first reply still has a tail");
+        assert!(
+            reply.next_chunk(1, written, CHUNK_BYTES).is_some(),
+            "the first reply still has a tail"
+        );
     }
 
     #[tokio::test]

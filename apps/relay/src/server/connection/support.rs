@@ -1443,6 +1443,14 @@ pub(super) fn deliver_serialized(
     } else {
         receiver.try_send(to_message())
     };
+    finish_delivery(receiver, queued, peer_reply)
+}
+
+pub(super) fn finish_delivery(
+    receiver: &RelaySender,
+    queued: Result<(), SendRefused>,
+    peer_reply: Option<EncryptedPeerReply<'_>>,
+) -> Delivery {
     match queued {
         Ok(()) => Delivery::Sent,
         Err(SendRefused::Backlogged) => {
