@@ -76,26 +76,66 @@ pub fn text_chunk(
     offset: usize,
     limit: usize,
 ) -> Option<(String, usize)> {
-    text_chunk_from(transfer_id, text.get(offset..)?, offset, text.len(), limit)
+    write_text_chunk(
+        transfer_id,
+        text.get(offset..)?,
+        offset,
+        text.len(),
+        limit,
+        limit,
+    )
 }
 
-pub(crate) fn text_chunk_from(
+#[derive(Serialize)]
+struct TextChunk<'a> {
+    kind: &'static str,
+    transfer_id: u32,
+    offset: u32,
+    total_bytes: u32,
+    payload: &'a str,
+}
+
+pub(crate) fn peer_reply_block_size() -> usize {
+    CHUNK_BYTES - *TEXT_CHUNK_HEADER_BYTES
+}
+
+static TEXT_CHUNK_HEADER_BYTES: std::sync::LazyLock<usize> = std::sync::LazyLock::new(|| {
+    serde_json::to_string(&TextChunk {
+        kind: "transport_chunk",
+        transfer_id: u32::MAX,
+        offset: u32::MAX,
+        total_bytes: u32::MAX,
+        payload: "",
+    })
+    .expect("an empty text frame always serializes")
+    .len()
+});
+
+pub(crate) fn peer_reply_chunk(
     transfer_id: u32,
     text: &str,
     offset: usize,
     total_bytes: usize,
     limit: usize,
 ) -> Option<(String, usize)> {
-    #[derive(Serialize)]
-    struct Chunk<'a> {
-        kind: &'static str,
-        transfer_id: u32,
-        offset: u32,
-        total_bytes: u32,
-        payload: &'a str,
-    }
+    // Most of a peer reply is base64. Account for the transport header
+    // up front so a fitting payload is encoded once at its full length.
+    let payload_limit = limit
+        .min(CHUNK_BYTES)
+        .saturating_sub(*TEXT_CHUNK_HEADER_BYTES);
+    write_text_chunk(transfer_id, text, offset, total_bytes, limit, payload_limit)
+}
+
+fn write_text_chunk(
+    transfer_id: u32,
+    text: &str,
+    offset: usize,
+    total_bytes: usize,
+    limit: usize,
+    payload_limit: usize,
+) -> Option<(String, usize)> {
     let limit = limit.min(CHUNK_BYTES);
-    let mut end = limit.min(text.len());
+    let mut end = payload_limit.min(limit).min(text.len());
     while end > 0 {
         while !text.is_char_boundary(end) {
             end -= 1;
@@ -103,7 +143,7 @@ pub(crate) fn text_chunk_from(
         if end == 0 {
             return None;
         }
-        let frame = serde_json::to_string(&Chunk {
+        let frame = serde_json::to_string(&TextChunk {
             kind: "transport_chunk",
             transfer_id,
             offset: offset as u32,

@@ -3,7 +3,7 @@
 use crate::drain_window::START_WINDOW_BYTES;
 use crate::drain_window::{DrainWindow, SendStamp};
 use crate::frame_transport::{
-    binary_chunk, binary_chunk_payload, text_chunk, text_chunk_from, TransportFrame, CHUNK_BYTES,
+    binary_chunk, binary_chunk_payload, peer_reply_chunk, text_chunk, TransportFrame, CHUNK_BYTES,
     MAX_ASSEMBLY_BYTES, MAX_MESSAGE_BYTES, MAX_TRANSFERS, PEER_RECEIPT_FRAMES, SMALL_RESERVE_BYTES,
 };
 use crate::meter::{ConnectionMeter, Direction, CONTROL_SCOPE, DISPLAY_TUNNEL_SCOPE};
@@ -119,7 +119,7 @@ impl Transfer {
     fn next_chunk(&self, limit: usize, adaptive: bool) -> Option<(Message, usize)> {
         if let Some(reply) = &self.peer_reply {
             let (block, start) = reply.front()?;
-            return text_chunk_from(
+            return peer_reply_chunk(
                 self.id,
                 &block[self.offset - start..],
                 self.offset,
@@ -907,8 +907,9 @@ mod tests {
         let queue = sender.queue();
         let mut credit = WireCredit::new();
         let mut active = VecDeque::new();
-        let first = "x".repeat(RECEIVER_BULK_BUDGET - CHUNK_BYTES - 2);
-        let second = "y".repeat(2 * CHUNK_BYTES - 2);
+        let block_size = crate::frame_transport::peer_reply_block_size();
+        let first = "x".repeat(RECEIVER_BULK_BUDGET - block_size - 2);
+        let second = "y".repeat(2 * block_size - 2);
         let first_len = first.len() + 2;
         let second_len = second.len() + 2;
         sender.try_send_peer_reply(first_len, &first).unwrap();
@@ -916,8 +917,8 @@ mod tests {
             panic!("expected an opaque peer reply");
         };
         let mut remaining = queue.start_transfer(first_len).unwrap();
-        assert_eq!(reply.written(CHUNK_BYTES - 1), None);
-        let written = reply.written(CHUNK_BYTES).unwrap();
+        assert_eq!(reply.written(block_size - 1), None);
+        let written = reply.written(block_size).unwrap();
         credit.sent(
             1,
             written as u32,

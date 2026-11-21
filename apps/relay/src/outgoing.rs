@@ -14,7 +14,7 @@ use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 use tokio_tungstenite::tungstenite::Message;
 
-use crate::frame_transport::CHUNK_BYTES;
+use crate::frame_transport::{peer_reply_block_size, CHUNK_BYTES};
 
 /// Bulk bytes one receiver may have queued: about one second at 64 Mbit/s, enough to keep a
 /// fast client's pipe full. A single message larger than this still passes an empty bulk queue.
@@ -93,8 +93,9 @@ impl PeerReplyText {
 impl Write for PeerReplyText {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         let mut text = std::str::from_utf8(bytes).map_err(io::Error::other)?;
+        let block_size = peer_reply_block_size();
         while !text.is_empty() {
-            let mut end = text.len().min(CHUNK_BYTES - self.prefix.len());
+            let mut end = text.len().min(block_size - self.prefix.len());
             while !text.is_char_boundary(end) {
                 end -= 1;
             }
@@ -103,7 +104,7 @@ impl Write for PeerReplyText {
                 continue;
             }
             if self.prefix.is_empty() {
-                self.prefix.reserve_exact(CHUNK_BYTES);
+                self.prefix.reserve_exact(block_size);
             }
             self.prefix.push_str(&text[..end]);
             text = &text[end..];
@@ -319,6 +320,19 @@ impl RelaySender {
 
     pub(crate) fn try_send(&self, message: Message) -> Result<(), SendRefused> {
         self.try_send_sized(message.len(), || Outgoing::Frame(message))
+    }
+
+    /// An obviously oversized candidate can be refused before scanning its JSON.
+    /// The real reservation is still made atomically after the full size is known.
+    pub(crate) fn check_peer_reply_size(&self, ciphertext_bytes: usize) -> Result<(), SendRefused> {
+        if self.tx.is_closed() {
+            return Err(SendRefused::Gone);
+        }
+        let reserved = self.queue.bulk_bytes.load(Ordering::Relaxed);
+        if reserved != 0 && ciphertext_bytes > RECEIVER_BULK_BUDGET.saturating_sub(reserved) {
+            return Err(SendRefused::Backlogged);
+        }
+        Ok(())
     }
 
     /// Reserve capacity before allocating a serialized reply that might be refused.
