@@ -51,10 +51,9 @@ impl KernelRuntimeState {
         let live_output = if record.result.is_none() {
             match super::execute::Output::read_tail(self, &record) {
                 Ok(tail) => Some(tail),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-                Err(error) => {
-                    return Err(ledger::error(format!("Cannot read job output: {error}")))
-                }
+                // Status stays available while the log cannot be read (not yet written, or
+                // being recovered after a restart); the tail is simply absent until it can.
+                Err(_) => None,
             }
         } else {
             None
