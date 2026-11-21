@@ -153,35 +153,37 @@ impl WakeDriver for JobDriver {
                     }
                 }
             }
-            let result = record.result.clone().unwrap_or_else(|| JobResult {
-                exit_code: None,
-                output_tail: if record.remote.holds_worker() {
-                    "The kernel restarted after this job's command ended on its remote machine. The machine is kept so no file it produced is lost: check this job with chariox.jobs.status to collect them, or cancel it to give them up.".into()
-                } else if record.placement == JobPlacement::Local {
-                    "This local job was ended by the kernel restart. No command exit status is available. Run it again with chariox.jobs.run if you still need the result.".into()
+            let result = record.result.clone().unwrap_or_else(|| {
+                let (output_tail, log) = if record.placement == JobPlacement::Local {
+                    super::local::restart_output(&state, &record)
                 } else {
-                    "The kernel restarted; this job was not relaunched.".into()
-                },
-                log: if record.placement == JobPlacement::Local {
-                    super::execute::Output::existing_log(&state, &record).unwrap_or_default()
-                } else {
-                    String::new()
-                },
-                files_back: vec![],
-                conflicts: vec![],
-                ran_on: JobRanOn {
-                    machine: record
-                        .machine_label
-                        .clone()
-                        .unwrap_or_else(|| "this machine".into()),
-                    ip: record.address.clone(),
-                },
-                duration_ms: crate::session::unix_epoch_ms().saturating_sub(record.started_at_ms),
-                outcome: if record.remote.holds_worker() {
-                    JobOutcome::OutsideEnd
-                } else {
-                    JobOutcome::MachineLost
-                },
+                    let reason = if record.remote.holds_worker() {
+                        "The kernel restarted after this job's command ended on its remote machine. The machine is kept so no file it produced is lost: check this job with chariox.jobs.status to collect them, or cancel it to give them up."
+                    } else {
+                        "The kernel restarted; this job was not relaunched."
+                    };
+                    (reason.into(), String::new())
+                };
+                JobResult {
+                    exit_code: None,
+                    output_tail,
+                    log,
+                    files_back: vec![],
+                    conflicts: vec![],
+                    ran_on: JobRanOn {
+                        machine: record
+                            .machine_label
+                            .clone()
+                            .unwrap_or_else(|| "this machine".into()),
+                        ip: record.address.clone(),
+                    },
+                    duration_ms: crate::session::unix_epoch_ms().saturating_sub(record.started_at_ms),
+                    outcome: if record.remote.holds_worker() {
+                        JobOutcome::OutsideEnd
+                    } else {
+                        JobOutcome::MachineLost
+                    },
+                }
             });
             state.finish_job(&wake, &mut record, result).await;
             live.lock().expect("job live").remove(&wake.id);
