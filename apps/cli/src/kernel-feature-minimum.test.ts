@@ -5,8 +5,8 @@ import { requireKernelFeatureProtocol } from "./kernel-feature-minimum.js"
 
 test("active steering requires the prompt receipt protocol", () => {
   const request = { SteerActivePrompt: {} }
-  assert.throws(() => requireKernelFeatureProtocol(request, 1090), /Active prompt steering needs protocol ≥1091/)
-  assert.doesNotThrow(() => requireKernelFeatureProtocol(request, 1091))
+  assert.throws(() => requireKernelFeatureProtocol(request, 1012), /Active prompt steering needs protocol ≥1013/)
+  assert.doesNotThrow(() => requireKernelFeatureProtocol(request, 1013))
 })
 
 test("protocol-388 kernel gets actionable App host refusal before a request is sent", () => {
@@ -47,11 +47,17 @@ test("unknown versions and unrelated requests retain existing transport behavior
 })
 
 test("Cloud owner control and terminal pivots require allocated protocol 491", () => {
-  for (const name of ["CloudRelayStatus", "StartCloudRelayLogin", "PollCloudRelayLogin", "LogoutCloudRelay", "ConnectCloudRelay", "IssueCloudRelayClientToken", "ResolveKernelClientConnection", "PreflightProviderAccountPortability"]) {
+  for (const name of ["CloudRelayStatus", "StartCloudRelayLogin", "PollCloudRelayLogin", "LogoutCloudRelay", "ConnectCloudRelay", "IssueCloudRelayClientToken", "ResolveKernelClientConnection"]) {
     assert.throws(() => requireKernelFeatureProtocol({[name]: {}}, 472), /491/)
     assert.throws(() => requireKernelFeatureProtocol({[name]: {}}, 490), /491/)
     assert.doesNotThrow(() => requireKernelFeatureProtocol({[name]: {}}, 491))
   }
+})
+
+test("provider account portability preflight requires protocol 1013", () => {
+  const request = { PreflightProviderAccountPortability: {} }
+  assert.throws(() => requireKernelFeatureProtocol(request, 1012), /Provider account portability needs protocol ≥1013/)
+  assert.doesNotThrow(() => requireKernelFeatureProtocol(request, 1013))
 })
 
 test("MP-08 / MP-10 / MP-11 kernel-wide access decisions require allocated protocol 470", () => {
