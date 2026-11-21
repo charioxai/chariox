@@ -7,6 +7,6 @@
   "claude_worker_core_tools": 4,
   "claude_worker_core_json_bytes": 3488,
   "claude_worker_server_instructions_bytes": 538,
-  "claude_worker_runtime_note_bytes": 746,
+  "claude_worker_runtime_note_bytes": 702,
   "hidden_runtime_note_bytes": 7134
 }
