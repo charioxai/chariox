@@ -165,6 +165,7 @@ mod session_activity;
 
 mod event_follow;
 mod owner_vault;
+mod owner_view;
 mod person_inbox;
 mod totp;
 mod watcher;

@@ -952,6 +952,7 @@ impl KernelRuntimeState {
                 serde_json::json!({ "slice": &slice }),
             )?;
         }
+        self.owned.owner_view.detach(destroyed.id());
         self.remove_destroyed_agent_provider_processes(local_provider_run_ids);
         end_agent_processes(destroyed.session_id(), agent_id).await?;
         self.append_agent_durable_event("agent.deleted", &destroyed, None)

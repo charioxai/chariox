@@ -1,0 +1,20 @@
+{
+  "local": 1014,
+  "requests": [
+    { "OwnerView": { "operation": "status" } },
+    { "OwnerView": {
+      "operation": "publish",
+      "generation": "generation",
+      "tab_id": "e400ab77-217b-4509-b64b-c1cf40551a90",
+      "rows": { "navigator": ["Projects", "A Room"], "settings": ["Appearance"] }
+    } },
+    { "OwnerView": { "operation": "end", "agent_id": "agent" } }
+  ],
+  "responses": [
+    { "OwnerViewStatus": {
+      "generation": "generation",
+      "tab_id": null,
+      "watchers": [{ "agent_id": "agent", "name": "A watcher" }]
+    } }
+  ]
+}

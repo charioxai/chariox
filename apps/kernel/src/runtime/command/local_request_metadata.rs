@@ -954,6 +954,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         }
         LocalDaemonRequest::ListRoomListSessions(_) => "room_list.sessions.list",
         LocalDaemonRequest::GetRoomListSnapshot(_) => "room_list.public_snapshot.get",
+        LocalDaemonRequest::OwnerView(_) => "owner_view",
         LocalDaemonRequest::GetPersonInbox(_) => "person_inbox.get",
         LocalDaemonRequest::SetInboxCardState(_) => "person_inbox.set_card_state",
         LocalDaemonRequest::SetInboxMute(_) => "person_inbox.set_mute",

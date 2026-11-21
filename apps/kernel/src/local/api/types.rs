@@ -43,6 +43,7 @@ mod notes;
 mod notification_subscription;
 mod outside_events;
 mod own_machine_enrollment;
+mod owner_view;
 mod person_inbox;
 mod project_environment;
 mod prompt_control;
@@ -103,6 +104,7 @@ pub use notes::*;
 pub use notification_subscription::*;
 pub use outside_events::*;
 pub use own_machine_enrollment::*;
+pub use owner_view::*;
 pub use person_inbox::*;
 pub use project_environment::*;
 pub use prompt_control::*;
@@ -618,4 +620,5 @@ pub use workspace::*;
 /// The machine list separates live/reconnecting machines (presence) from offline_machines.
 /// Machine inventories identify the Cloud directory, and a stale reply can mark an active renewal.
 /// Relay registrations and machine records include each kernel's registered local protocol.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1012;
+/// 1014 adds the owner terminal's read-only Web view exchange (`OwnerView` and the `owner_view` resource).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1014;

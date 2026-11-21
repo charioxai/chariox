@@ -133,6 +133,7 @@ response_policies! {
         CredentialsListed,
     ],
     Withhold => [
+        OwnerViewStatus,
         OwnerVault,
         CredentialVaultKeySealed,
         SessionViewAttached,
