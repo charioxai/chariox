@@ -884,6 +884,15 @@ test("Y3-C1a: a wheel listener added or removed without any DOM change still rea
     assert.equal(await after("removeEventListener('wheel', take, { passive: false })", false), false, "removing it with no mutation gives the wheel back");
   }));
 
+// browserfidelity r19 Y3-R1 (6thsense, tensr): the viewer moved its copy the page's own way (smooth); the kernel page must be
+// where the viewer is as soon as the input is done, or its start position comes back to the viewer as the page's.
+test("Y3-R1: the kernel page lands where the viewer scrolled at once, whatever scroll-behavior the page asks for", () => mirrored(
+  '<style>html{scroll-behavior:smooth}</style><div style="height:6000px">a</div>', async ({ next, input, evaluate }) => {
+    const snapshot = await next();
+    await input(snapshot.sequence, { kind: "scroll_to", node_id: null, x: 0, y: 1200 });
+    assert.equal(await evaluate("scrollY"), 1200, "Y3-R1: the page stands at the viewer's position when the scroll input is done");
+  }));
+
 test("MP-10: review #941-4 a CDP-read cross-origin sheet keeps its already-loaded imports (own base, media condition, images and fonts)", () => mirrored(
   '<link rel="stylesheet" href="http://localhost:PORT/cdn/main.css"><div class="x" style="width:20px;height:20px">a</div>', async ({ next }) => {
     await new Promise(resolve => setTimeout(resolve, 800));
