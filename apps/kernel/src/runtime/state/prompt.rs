@@ -594,12 +594,13 @@ impl KernelRuntimeOwnedState {
             &started_next,
             Some(prompt_sent_at_ms),
         );
-        // A substitute run serves only its own turn; the next one goes through
-        // the dispatcher, which moves it to the agent's configured profile.
+        // A substitute run serves only its own turn. A mixed notification also
+        // uses the dispatcher, which binds its wake receipts before provider I/O.
         if self
             .provider_store
             .run_uses_structured_prompt_io(&provider_run)
             && provider_run.turn_substitute().is_none()
+            && started_next.inbox_wakes().is_empty()
         {
             let prompt_with_handoff = self.prompt_with_pending_context_handoff(
                 session_id,
