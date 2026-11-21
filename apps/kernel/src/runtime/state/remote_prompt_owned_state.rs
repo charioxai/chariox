@@ -895,6 +895,7 @@ mod tests {
     /// structured Claude provider run.
     pub(super) async fn local_claude_fixture(
         config: crate::DaemonConfig,
+        worktree: Option<&crate::test_support::TestWorktree>,
     ) -> (
         KernelRuntimeState,
         String,
@@ -904,7 +905,10 @@ mod tests {
     ) {
         let mut app = DaemonApp::bootstrap(config).unwrap();
         let (session, agent) = KernelSessionService::new(&mut app)
-            .create_session(CreateSessionRequest::new("local-home", "local-home"))
+            .create_session(worktree.map_or_else(
+                || CreateSessionRequest::new("local-home", "local-home"),
+                |worktree| worktree.session_request(),
+            ))
             .unwrap();
         let attachment = KernelSessionService::new(&mut app)
             .attach(AttachRequest::new(
@@ -930,9 +934,17 @@ mod tests {
                 pty_target: None,
                 pty_program: None,
                 pty_args: Vec::new(),
-                pty_env: std::collections::BTreeMap::new(),
+                pty_env: worktree
+                    .map(|root| {
+                        [(
+                            "CLAUDE_CONFIG_DIR".into(),
+                            root.path().join("claude-config").display().to_string(),
+                        )]
+                        .into()
+                    })
+                    .unwrap_or_default(),
                 pty_env_remove: Vec::new(),
-                working_directory: None,
+                working_directory: worktree.map(|root| root.path().to_path_buf()),
                 structured_endpoint: None,
             },
         );

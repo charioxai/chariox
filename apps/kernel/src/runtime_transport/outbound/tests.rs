@@ -8,19 +8,16 @@ fn lane_refusals_rebuild_remediation_at_the_final_socket_boundary() {
     for (code, action) in [
         (
             "provider_profile_unverified",
-            "RefreshProviderAccountProfile",
+            "retry the prompt, or choose Sign in",
         ),
-        (
-            "provider_profile_unauthenticated",
-            "RefreshProviderAccountProfile",
-        ),
+        ("provider_profile_unauthenticated", "choose Sign in"),
         (
             "provider_profile_unavailable",
-            "ListProviderAccountProfiles",
+            "then link or select a profile",
         ),
         (
             "provider_profile_usage_exhausted",
-            "RefreshProviderAccountProfile",
+            "select another account in Provider Accounts",
         ),
         ("agent_not_in_session", "ListAgents"),
         ("attachment_not_found", "AttachToSession"),

@@ -10,7 +10,7 @@ use crate::transport::runtime_tools::MANAGE_SKILLS_TOOL;
 #[tokio::test]
 async fn an_agent_resolves_repository_imports_and_updates_through_manage_skills() {
     let (runtime, session_id, agent_id, attachment, run) =
-        super::tests::local_claude_fixture(crate::DaemonConfig::for_tests()).await;
+        super::tests::local_claude_fixture(crate::DaemonConfig::for_tests(), None).await;
     let config = runtime.owned.config_projection.snapshot();
     let storage = SkillCatalogStorage::new(
         config.user_config_path.parent().unwrap(),
