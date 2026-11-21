@@ -26,18 +26,14 @@ fn handles_prompt_submit_through_agent_request_surface() {
         )
         .expect("prompt submit should succeed");
     let response = LocalDaemonResponse::PromptSubmitted {
-        outcome,
-        session: crate::app::KernelSessionReadService::new(&app)
-            .session_snapshot(session.id())
-            .expect("session snapshot should load"),
-        agent_activity: std::collections::BTreeMap::new(),
-        agent_activity_revision: 0,
+        session_id: session.id().to_owned(),
+        outcome: outcome.into(),
     };
 
     match response {
         LocalDaemonResponse::PromptSubmitted {
             outcome,
-            session: projected_session,
+            session_id,
             ..
         } => {
             match outcome {
@@ -46,7 +42,7 @@ fn handles_prompt_submit_through_agent_request_surface() {
                 }
                 _ => panic!("expected prompt to start immediately"),
             }
-            assert_eq!(projected_session.id(), session.id());
+            assert_eq!(session_id, session.id());
         }
         _ => panic!("unexpected local response"),
     }
@@ -80,7 +76,8 @@ fn handles_prompt_cancel_through_agent_request_surface() {
     let response = LocalDaemonResponse::PromptCancelled {
         cancellation: crate::app::KernelAgentService::new(&mut app)
             .cancel_active_prompt(session.id(), attachment.id())
-            .expect("prompt cancel should succeed"),
+            .expect("prompt cancel should succeed")
+            .into(),
     };
 
     match response {

@@ -2,7 +2,7 @@ import { NEW_MACHINE_ALLOCATION_REF } from "@chariox/kernel-client/room-list-run
 import type { WaitingRoomState } from "./waiting-room-types.js"
 import { getWorkspaceGitOverviewRequest, listWorkspaceWorktreesRequest } from "./ipc-requests.js"
 import { expectVariant } from "./ipc-response.js"
-import type { WaitingRoomInventory } from "./waiting-room-inventory-api.js"
+import type { KernelInventory } from "./kernel-inventory-api.js"
 import {
   clearWaitingRoomWorktreeInventory,
   NO_REPOSITORY_WORKTREE_HINT,
@@ -54,7 +54,7 @@ export function createWaitingRoomWorkspaceController(deps: {
   let pendingMachineId: string | null = null
   let pending: WaitingRoomWorkspaceReadToken | null = null
   const workspaces = new Map<string, string>()
-  const inventoryRequests = new WeakMap<WaitingRoomInventory, WaitingRoomWorkspaceReadToken>()
+  const inventoryRequests = new WeakMap<KernelInventory, WaitingRoomWorkspaceReadToken>()
   // Periodic inventory refreshes must not rebuild (and drop selections in) an
   // attached transcript; leaving the session rebuilds the waiting room anyway.
   const render = () => { if (deps.visible?.() ?? true) deps.render() }
@@ -71,14 +71,14 @@ export function createWaitingRoomWorkspaceController(deps: {
     return { ...selection(), path: deps.getWorkspace(), generation }
   }
 
-  async function readInventory(read: () => Promise<WaitingRoomInventory>) {
+  async function readInventory(read: () => Promise<KernelInventory>) {
     const token = captureInventoryRequest()
     const inventory = await read()
     inventoryRequests.set(inventory, token)
     return inventory
   }
 
-  function acceptsInventory(inventory: WaitingRoomInventory) {
+  function acceptsInventory(inventory: KernelInventory) {
     const token = inventoryRequests.get(inventory)
     const target = selection()
     return (!target.machineId || inventory.machineId === target.machineId && inventory.kernelId === target.kernelId)
@@ -146,7 +146,7 @@ export function createWaitingRoomWorkspaceController(deps: {
     }
   }
 
-  async function applyInventory(inventory: WaitingRoomInventory, send?: WorkspaceReadClient["send"]): Promise<void> {
+  async function applyInventory(inventory: KernelInventory, send?: WorkspaceReadClient["send"]): Promise<void> {
     if (deps.getSelection && !acceptsInventory(inventory)) return
     if (pendingMachineId && pendingMachineId !== inventory.machineId) return
     const previousMachine = machineId

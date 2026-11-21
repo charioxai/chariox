@@ -34,7 +34,6 @@ impl SessionService {
             next_workflow_queued_prompt_number: 0,
             next_agent_trigger_number: 0,
             max_workflow_queues_per_workflow: config.max_workflow_queues_per_workflow(),
-            session_default_max_agents: config.session_default_max_agents(),
             workflow_default_max_concurrent: config.workflow_code_limits().max_concurrent.max(1),
             next_workspace_link_number: 0,
         }
@@ -86,7 +85,6 @@ impl SessionService {
             self.host_machine_id.clone(),
             self.host_daemon_id.clone(),
         );
-        session.set_max_agents(self.session_default_max_agents);
         session.set_owner_user_id(request.owner_user_id);
         session.set_hidden(request.hidden);
         if let Some(agent_defaults) = request.agent_defaults {
@@ -262,6 +260,7 @@ impl SessionService {
     pub(crate) fn restore_session(&mut self, mut session: RuntimeSession) -> RuntimeSession {
         if let Some(held) = self.store.get(session.id()) {
             session.note_activity_at(held.last_activity_at_ms());
+            session.preserve_newer_attachment_membership(held);
         }
         session.purge_unsupported_workflow_publications();
         if !session.is_hidden() && !self.projects.contains_key(session.project_id()) {

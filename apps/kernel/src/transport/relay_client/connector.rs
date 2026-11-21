@@ -287,6 +287,19 @@ impl RefusedCredentials {
     }
 }
 
+/// The relay's refusal that the socket reader already received when the
+/// connection ended on another branch. Never waits: a reader still reading
+/// has nothing to report.
+fn reader_end_refused_token(reader_end: &mut oneshot::Receiver<socket_thread::ReaderEnd>) -> bool {
+    match reader_end.try_recv() {
+        Ok(socket_thread::ReaderEnd::RelayClose(reason)) => relay_refused_token(&reason),
+        Ok(socket_thread::ReaderEnd::SocketClose(Some(frame))) => {
+            relay_refused_token(&frame.reason)
+        }
+        _ => false,
+    }
+}
+
 /// Drops of links that had just come up. Only a link that stayed up for
 /// `STABLE_RELAY_CONNECTION` starts the backoff over.
 #[derive(Default)]
@@ -1426,6 +1439,12 @@ async fn run_daemon_relay_connector_inner(
                         "relay payload handling failed"
                     }
                 };
+                // The reader hands over the relay's closing reason before its exit closes
+                // the writer, so a heartbeat or the writer's end can stop this connection
+                // first. A refusal the reader already holds still counts.
+                if refused.is_none() && reader_end_refused_token(&mut reader_end) {
+                    refused = Some(RefusedCredentials::new(&relay_url, &active_relay_token));
+                }
                 let cancelled_reads = reconnect_gate.cancel_reads();
                 if cancelled_reads > 0 {
                     crate::logging::info_with_fields(

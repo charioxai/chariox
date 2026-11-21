@@ -9,7 +9,9 @@ use super::resolve_codex_executable;
 
 mod approval_bodies;
 mod auth;
+mod device_login;
 pub(crate) use auth::codex_version;
+pub(crate) use device_login::CodexDeviceLogin;
 mod catalog;
 mod health;
 mod interrupt_cleanup;
@@ -24,6 +26,10 @@ mod server_requests;
 mod skills;
 mod socket_io;
 mod thread_runtime;
+mod workspace_sandbox;
+pub(in crate::provider) use workspace_sandbox::UnavailableWorkspaceSandbox;
+#[cfg(unix)]
+pub(in crate::provider) use workspace_sandbox::WorkspaceApprovalState;
 
 mod mcp_config;
 
@@ -73,6 +79,7 @@ pub struct CodexClient {
     runtime_mcp_auth_token: Option<String>,
     native_approval_origin: Option<crate::session::NativeInteractionOrigin>,
     native_approval_turn_id: Option<String>,
+    unavailable_workspace_sandbox: Option<UnavailableWorkspaceSandbox>,
     native_interaction_bridge: Option<std::sync::Arc<dyn ProviderNativeInteractionBridge>>,
     mcp_servers: Vec<CharioxMcpServerConfig>,
     provider_config_overrides: BTreeMap<String, Value>,
@@ -114,6 +121,7 @@ impl CodexClient {
             native_interaction_bridge: None,
             native_approval_origin: None,
             native_approval_turn_id: None,
+            unavailable_workspace_sandbox: None,
             mcp_servers: Vec::new(),
             provider_config_overrides: BTreeMap::new(),
             write_access_mode: ProviderWriteAccessMode::Unrestricted,
@@ -161,6 +169,14 @@ impl CodexClient {
     ) -> Self {
         self.native_approval_origin = origin;
         self.native_approval_turn_id = turn_id;
+        self
+    }
+
+    pub(in crate::provider) fn with_unavailable_workspace_sandbox(
+        mut self,
+        sandbox: Option<UnavailableWorkspaceSandbox>,
+    ) -> Self {
+        self.unavailable_workspace_sandbox = sandbox;
         self
     }
 
@@ -1078,6 +1094,20 @@ mod tests {
             Some(CodexNotification::TokenUsageUpdated {
                 thread_id: "thread-1".to_string(),
                 turn_id: "turn-1".to_string(),
+                counters: Some((
+                    crate::provider::ModelTokenCounts {
+                        input_tokens: 40000,
+                        output_tokens: 2100,
+                        cached_input_tokens: 12000,
+                        cache_write_input_tokens: 0,
+                    },
+                    crate::provider::ModelTokenCounts {
+                        input_tokens: 7600,
+                        output_tokens: 1300,
+                        cached_input_tokens: 2000,
+                        cache_write_input_tokens: 0,
+                    },
+                )),
                 usage: ProviderRunTokenUsage {
                     total_tokens: Some(42100),
                     last_tokens: Some(8900),
@@ -1111,6 +1141,7 @@ mod tests {
             Some(CodexNotification::TokenUsageUpdated {
                 thread_id: "thread-1".to_string(),
                 turn_id: "turn-2".to_string(),
+                counters: None,
                 usage: ProviderRunTokenUsage {
                     total_tokens: Some(36_000_000),
                     last_tokens: Some(36_000_000),
@@ -1279,7 +1310,7 @@ mod tests {
             ),
             (
                 json!({"message": "Model access denied", "codexErrorInfo": {"httpConnectionFailed": {"httpStatusCode": 403}}}),
-                Other, false, "Model access denied",
+                ModelRefused, false, "Model access denied",
             ),
             (
                 json!({"message": "OAuth refresh failed: invalid_grant", "codexErrorInfo": {"httpConnectionFailed": {"httpStatusCode": 400}}}),
@@ -1319,7 +1350,14 @@ mod tests {
             assert!(error_text(error.clone()).contains(message));
             assert_eq!(
                 TurnOutcome::classify("codex", &error_text(error.clone())),
-                TurnOutcome::provider_failure(kind, retryable),
+                TurnOutcome {
+                    kind,
+                    retryable,
+                    reason: crate::provider::termination::sanitize_provider_failure_message(
+                        message
+                    ),
+                    answered_in_turn: None,
+                },
                 "{error}"
             );
         }
@@ -1334,11 +1372,11 @@ mod tests {
             ("sessionBudgetExceeded", UsageLimit, false),
             ("contextWindowExceeded", Other, false),
             ("invalidPrompt", Other, false),
-            ("modelNotFound", Other, false),
-            ("tooManyDenials", Other, false),
-            ("bioPolicy", Other, false),
-            ("cyberPolicy", Other, false),
-            ("misalignmentPolicyViolation", Other, false),
+            ("modelNotFound", ModelRefused, false),
+            ("tooManyDenials", ModelRefused, false),
+            ("bioPolicy", ModelRefused, false),
+            ("cyberPolicy", ModelRefused, false),
+            ("misalignmentPolicyViolation", ModelRefused, false),
             ("badRequest", Other, false),
             ("sandboxError", Other, false),
             ("threadRollbackFailed", Other, false),

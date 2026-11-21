@@ -398,6 +398,7 @@ mod tests {
         const KERNEL_KEYED: &[&str] = &[
             "durable_event_delivery_receipts",
             "durable_room_environments",
+            "durable_room_setups",
             "durable_state_metadata",
             "durable_state_owner_checkpoint_entities",
             "durable_state_owner_checkpoint_manifest",

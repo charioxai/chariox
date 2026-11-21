@@ -86,7 +86,7 @@ export class MirrorService {
       const current=()=>this.host.browser.documentIdsByTarget?.get(tab.target_id)===tab.document_id?null:assertCurrentDocument(connection,sessionId,tab.target_id,tab.document_id);
       await current();
       const releaseRender=await this.host.browser.inputCapture.hold(connection,sessionId);
-      try{await current();this.streams.set(subscription_id,this.v2.stream({id:subscription_id,scope,audience,tab_id:tab.tab_id,expires:Date.now()+lifetime,policy:null,releaseRender,initialDocument:tab.document_id,fontRequirements:command.font_requirements===true,fontAbsent:command.font_absent===true,viewportFirst:command.viewport_first===true,visitedLinks:command.visited_links===true,navigationPreview:command.navigation_preview===true&&featureOn('CHARIOX_KERNEL_BROWSER_DISPLAY')}));}
+      try{await current();this.streams.set(subscription_id,this.v2.stream({id:subscription_id,scope,audience,tab_id:tab.tab_id,expires:Date.now()+lifetime,policy:null,releaseRender,initialDocument:tab.document_id,density:command.device_scale_factor,fontRequirements:command.font_requirements===true,fontAbsent:command.font_absent===true,viewportFirst:command.viewport_first===true,visitedLinks:command.visited_links===true,navigationPreview:command.navigation_preview===true&&featureOn('CHARIOX_KERNEL_BROWSER_DISPLAY')}));}
 
       catch(error){await releaseRender().catch(()=>{});throw error;}
       this.v2.begin(this.streams.get(subscription_id),scope,this.host.generation);

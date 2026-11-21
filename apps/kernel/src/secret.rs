@@ -1628,6 +1628,26 @@ fn forget_cached_vault_secret(cache_key: VaultSecretCacheKey) -> Result<(), Daem
     Ok(())
 }
 
+/// A provider can echo a Vault credential without the variable name or a token prefix.
+pub(crate) fn redact_cached_vault_values(text: &str) -> std::borrow::Cow<'_, str> {
+    let Ok(cache) = vault_secret_process_cache().lock() else {
+        return "[redacted]".into();
+    };
+    let mut values: Vec<_> = cache
+        .values()
+        .map(|value| value.as_str())
+        .filter(|value| !value.is_empty() && text.contains(value))
+        .collect();
+    values.sort_unstable_by_key(|value| std::cmp::Reverse(value.len()));
+    let mut text = std::borrow::Cow::Borrowed(text);
+    for value in values {
+        if text.contains(value) {
+            text = text.replace(value, "[redacted]").into();
+        }
+    }
+    text
+}
+
 pub fn clear_vault_secret_process_cache() -> Result<(), DaemonError> {
     vault_secret_process_cache()
         .lock()

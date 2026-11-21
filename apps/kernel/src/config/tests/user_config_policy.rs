@@ -485,9 +485,6 @@ fn user_config_schema_lists_settable_kernel_owned_keys() {
     assert!(schema
         .iter()
         .any(|entry| entry.path == "ui.worktree_aliases.<alias>"));
-    assert!(schema
-        .iter()
-        .any(|entry| entry.path == "workflow.session_default_max_agents"));
     for path in [
         "workflow.code.max_concurrent",
         "workflow.code.max_nodes",

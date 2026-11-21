@@ -51,7 +51,6 @@ export type SessionListEntry = {
   last_used_at_ms?: number | null
   last_activity_at_ms?: number | null
   last_prompt_sent_at_ms?: number | null
-  attachment_ids?: string[]
   connected_cli_count?: number
   joined_collaborator_count?: number
   pending_collaboration_invite_count?: number
@@ -107,7 +106,7 @@ export function formatSessionList(sessions: SessionListEntry[], currentSessionId
     ...sessions.map((session) => {
       const name = session.alias ? `\`${session.alias}\` (\`${session.id}\`)` : `\`${session.id}\``
       const location = path.basename(session.worktree_id) || session.worktree_id
-      const attachmentCount = session.attachment_ids?.length ?? session.connected_cli_count ?? 0
+      const attachmentCount = session.connected_cli_count ?? 0
       const attachments = `${attachmentCount} ${attachmentCount === 1 ? "CLI" : "CLIs"}`
       const home = formatSessionHomeKernel(session)
       const liveSync = formatWorkspaceLiveSyncModeCompactLabel(session.workspace_live_sync_mode)

@@ -409,7 +409,11 @@ impl DaemonApp {
             room_terminals: crate::room_terminal::RoomTerminalService::new(
                 config.private_runtime_state_root().join("room-terminals"),
             )?,
-            providers: ProviderProcessServiceStore::new(ProviderProcessService::new()),
+            providers: ProviderProcessServiceStore::new(if config.test_state_root.is_some() {
+                ProviderProcessService::with_test_fixtures()
+            } else {
+                ProviderProcessService::new()
+            }),
             provider_catalog_cache: ProviderCatalogCacheStore::default(),
             provider_process_tracking: ProviderProcessTrackingStore::default(),
             provider_launch_failure_retries: ProviderLaunchFailureRetryStore::default(),
@@ -444,11 +448,14 @@ impl DaemonApp {
                 config.user_config.credential_vault.clone(),
                 config.daemon_id.clone(),
             ),
-            durable_state,
+            durable_state: durable_state.clone(),
             worker_prompt_receipts,
             worker_steer_receipts,
             agent_moves,
-            room_setup: Default::default(),
+            room_setup: crate::session::RoomSetupStore::durable(
+                durable_state.clone(),
+                &config.daemon_id,
+            )?,
             managed_context_transfers,
             managed_context_outbound,
             managed_kernel_registration,

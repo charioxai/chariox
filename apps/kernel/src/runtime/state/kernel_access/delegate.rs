@@ -37,6 +37,7 @@ impl KernelRuntimeState {
 
     /// The person's open cards, oldest first, each with why only the person answers it, if so.
     pub(crate) fn list_owner_interactions(&self, owner: &str) -> Vec<OwnerInteraction> {
+        let now = std::time::Instant::now();
         let pending = self
             .owned
             .pending_interactions
@@ -48,7 +49,17 @@ impl KernelRuntimeState {
         let mut cards = pending
             .into_iter()
             .filter_map(|(id, pending)| {
-                let interaction = self.owner_card(owner, &id, &pending)?;
+                let interaction = if let Some(recorded) = &pending.kernel_operation_owner {
+                    if !self.owned.kernel_decision_owner_matches(owner, recorded) {
+                        return None;
+                    }
+                    self.owned
+                        .open_kernel_decision(&id, &pending, now, &|session| {
+                            self.owned.session_store.get_session(session).ok()
+                        })?
+                } else {
+                    self.owner_card(owner, &id, &pending)?
+                };
                 Some((
                     interaction.requested_at_ms(),
                     OwnerInteraction {
@@ -128,7 +139,7 @@ impl KernelRuntimeState {
             .write()
             .get(interaction_id)
             .cloned()
-            .ok_or_else(|| error(format!("interaction {interaction_id} is not pending")))?;
+            .ok_or_else(crate::runtime::state::passkey_prompts::interaction_closed)?;
         let interaction = owner
             .and_then(|owner| self.owner_card(owner, interaction_id, &pending))
             .ok_or_else(|| error("this card is not the person's you act for"))?;

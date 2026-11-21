@@ -816,6 +816,101 @@ fn witnessed_row(pid: u32) -> io::Result<Option<ProcessIdentity>> {
 }
 
 #[cfg(target_os = "linux")]
+pub(crate) fn linux_start(pid: u32) -> io::Result<Option<String>> {
+    let Some(row) = witnessed_row(pid)? else {
+        return Ok(None);
+    };
+    if row.start.is_empty() {
+        return Err(io::Error::other("process start identity unavailable"));
+    }
+    Ok((!row.exited).then_some(row.start))
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn linux_ancestors() -> io::Result<std::collections::BTreeSet<u32>> {
+    let mut ancestors = std::collections::BTreeSet::new();
+    let mut pid = std::process::id();
+    while pid > 1 && ancestors.insert(pid) {
+        let Some(row) = witnessed_row(pid)? else {
+            break;
+        };
+        pid = row.parent;
+    }
+    Ok(ancestors)
+}
+
+/// A stopped process pinned to its recorded birth. Each orphan must carry its
+/// own launch witness, because a descendant can belong to another kernel.
+#[cfg(target_os = "linux")]
+pub(crate) struct FrozenLinuxProcess {
+    pid: u32,
+    start: String,
+    handle: std::os::fd::OwnedFd,
+}
+
+#[cfg(target_os = "linux")]
+impl FrozenLinuxProcess {
+    pub(crate) fn stop(pid: u32, start: &str) -> io::Result<Option<Self>> {
+        use std::os::fd::AsRawFd as _;
+        let Some(row) = witnessed_row(pid)? else {
+            return Ok(None);
+        };
+        if row.start != start || row.exited {
+            return Ok(None);
+        }
+        let Some(handle) = pin_process(&row)? else {
+            return Ok(None);
+        };
+        send_handle_signal(handle.as_raw_fd(), libc::SIGSTOP)?;
+        Ok(Some(Self {
+            pid,
+            start: start.to_owned(),
+            handle,
+        }))
+    }
+
+    pub(crate) fn is_quiescent(&self, namespace: &std::path::Path) -> io::Result<bool> {
+        if witnessed_exit(&self.start, witnessed_row(self.pid)?)? {
+            return Ok(true);
+        }
+        let root = std::path::PathBuf::from(format!("/proc/{}", self.pid));
+        let result = (|| {
+            if std::fs::read_link(root.join("ns/pid"))? != namespace {
+                return Err(io::Error::other("stopped process changed PID namespace"));
+            }
+            for task in std::fs::read_dir(root.join("task"))? {
+                let stat = match std::fs::read(task?.path().join("stat")) {
+                    Ok(stat) => stat,
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                    Err(error) => return Err(error),
+                };
+                let state = stat
+                    .iter()
+                    .rposition(|byte| *byte == b')')
+                    .and_then(|end| stat.get(end + 2));
+                if !matches!(state, Some(b'T' | b't' | b'Z' | b'X')) {
+                    return Ok(false);
+                }
+            }
+            Ok(true)
+        })();
+        // A process can exit while the namespace and threads are being read.
+        if witnessed_exit(&self.start, witnessed_row(self.pid)?)? {
+            return Ok(true);
+        }
+        result
+    }
+
+    pub(crate) fn kill(self) -> io::Result<()> {
+        use std::os::fd::AsRawFd as _;
+        let fd = self.handle.as_raw_fd();
+        send_handle_signal(fd, libc::SIGKILL)?;
+        // A pending SIGKILL prevents the stopped task running user code.
+        send_handle_signal(fd, libc::SIGCONT)
+    }
+}
+
+#[cfg(target_os = "linux")]
 fn witnessed_exit(start: &str, row: Option<ProcessIdentity>) -> io::Result<bool> {
     match row {
         None => Ok(true),

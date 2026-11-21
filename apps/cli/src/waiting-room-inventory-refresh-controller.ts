@@ -14,8 +14,8 @@ import type { WaitingRoomState } from "./waiting-room-types.js"
 import type {
   RemoteKernelView,
   RemoteMachineView,
-  WaitingRoomInventory,
-} from "./waiting-room-inventory-api.js"
+  KernelInventory,
+} from "./kernel-inventory-api.js"
 import type { WaitingRoomProjectSummary } from "./waiting-room-projects.js"
 import { waitingRoomProjectsForNavigation } from "./waiting-room-project-rows.js"
 import { LocalIpcError, type LocalIpcClient } from "./ipc.js"
@@ -41,7 +41,7 @@ type WaitingRoomInventoryRefreshControllerOptions = {
   getInventoryStatus: () => WaitingRoomInventoryStatus
   setInventoryStatus: (status: WaitingRoomInventoryStatus) => void
   getWaitingRoomState: () => WaitingRoomState
-  getInventory: () => Promise<WaitingRoomInventory>
+  getInventory: () => Promise<KernelInventory>
   getSessionPage?: (cursor: string | null, inventoryVersion: string) => Promise<{ sessions: RoomListSessionSummary[]; next_cursor: string | null }>
   isKernelHidden: (kernelId: string) => boolean
   getAvailableSessions: () => SessionListEntry[]
@@ -56,26 +56,26 @@ type WaitingRoomInventoryRefreshControllerOptions = {
   setProviderAccountCopyOffers?: (offers: import("@chariox/kernel-client").ProviderAccountCopyOffer[]) => void
   setProviderAccounts?: (profiles: ProviderAccountProfile[]) => void
   setMachineAllocationCapability?: (catalog: MachineAllocationCapability | null | undefined) => void
-  getMachineAllocationCapabilityScope?: (inventory: WaitingRoomInventory) => string
-  shouldApplyWorkspaceInventory?: (inventory: WaitingRoomInventory) => boolean
-  applyWorkspaceInventory?: (inventory: WaitingRoomInventory, client?: LocalIpcClient) => void | Promise<void>
-  setLaunchTarget?: (target: WaitingRoomInventory["launchTarget"]) => void
+  getMachineAllocationCapabilityScope?: (inventory: KernelInventory) => string
+  shouldApplyWorkspaceInventory?: (inventory: KernelInventory) => boolean
+  applyWorkspaceInventory?: (inventory: KernelInventory, client?: LocalIpcClient) => void | Promise<void>
+  setLaunchTarget?: (target: KernelInventory["launchTarget"]) => void
   setExternalProviderSessions?: (sessions: ExternalProviderSessionRecord[]) => void
   setExternalProviderSessionsPage?: (page: { hasMore: boolean; nextCursor: string | null }) => void
   reconcileWaitingRoom: (state: WaitingRoomState) => void
   warn?: (message: string, fields: Record<string, unknown>) => void
   formatError?: (error: unknown) => string
-  cachedInventories?: readonly WaitingRoomInventory[]
+  cachedInventories?: readonly KernelInventory[]
   getCacheScopeKey?: () => string
-  loadCachedInventories?: () => readonly WaitingRoomInventory[]
+  loadCachedInventories?: () => readonly KernelInventory[]
   directTargetKernelId?: string | null
   getDirectTargetKernelId?: () => string | null | undefined
-  persistInventory?: (inventory: WaitingRoomInventory) => void
+  persistInventory?: (inventory: KernelInventory) => void
   getLocalKernelPresences?: () => readonly LocalKernelPresence[]
 }
 
 export type WaitingRoomInventoryRefreshController = {
-  applyWorkspacePreview(inventory: WaitingRoomInventory, client: LocalIpcClient): Promise<void>
+  applyWorkspacePreview(inventory: KernelInventory, client: LocalIpcClient): Promise<void>
   applyTransportClosed(): void
   applyRowsChanged(patch: WaitingRoomRowsChangedPatch): void
   applyRelayStatusChanged(status: RelayStatusView): void
@@ -132,7 +132,7 @@ export function createWaitingRoomInventoryRefreshController(
   }
   if ((options.cachedInventories?.length ?? 0) > 0) restoreCachedInventory()
 
-  const rememberInventory = (inventory: WaitingRoomInventory) => {
+  const rememberInventory = (inventory: KernelInventory) => {
     const previous = inventoriesByKernel.get(inventory.kernelId)
     if (previous?.structuralVersion === inventory.structuralVersion && previous.sessions.length > inventory.sessions.length) {
       inventory = { ...inventory, sessions: [...new Map([...previous.sessions, ...inventory.sessions].map(row => [row.id, row])).values()] }
@@ -172,7 +172,7 @@ export function createWaitingRoomInventoryRefreshController(
       const requestedTransportGeneration = transportGeneration
       const requestedCacheScopeKey = cacheScopeKey
       const requestedTargetKernelId = directTargetKernelId
-      let snapshot: WaitingRoomInventory
+      let snapshot: KernelInventory
       try {
         snapshot = await options.getInventory()
       } catch (error) {
@@ -244,7 +244,7 @@ export function createWaitingRoomInventoryRefreshController(
     })
   }
 
-  const applySupplementalInventory = (snapshot: WaitingRoomInventory) => {
+  const applySupplementalInventory = (snapshot: KernelInventory) => {
     const localPresence = mergeLocalKernelPresence(
       snapshot.remoteMachines,
       snapshot.remoteKernels,
@@ -497,7 +497,7 @@ function mergeWaitingRoomProjectRows(
   ))
 }
 
-function mergedCachedSessions(inventories: Iterable<WaitingRoomInventory>): SessionListEntry[] {
+function mergedCachedSessions(inventories: Iterable<KernelInventory>): SessionListEntry[] {
   return Array.from(inventories)
     .flatMap((inventory) => inventory.sessions)
     .sort((left, right) => (
@@ -507,7 +507,7 @@ function mergedCachedSessions(inventories: Iterable<WaitingRoomInventory>): Sess
 }
 
 function visibleSessions(
-  inventoriesByKernel: ReadonlyMap<string, WaitingRoomInventory>,
+  inventoriesByKernel: ReadonlyMap<string, KernelInventory>,
   directTargetKernelId: string | null | undefined,
 ): SessionListEntry[] {
   const targetKernelId = directTargetKernelId?.trim()
@@ -532,7 +532,7 @@ function mergeLocalKernelPresence(
   kernels: readonly RemoteKernelView[],
   presences: readonly LocalKernelPresence[],
   currentKernelId: string | null,
-  inventoriesByKernel: ReadonlyMap<string, WaitingRoomInventory>,
+  inventoriesByKernel: ReadonlyMap<string, KernelInventory>,
 ): { machines: RemoteMachineView[]; kernels: RemoteKernelView[] } {
   const activePresences = presences.filter((presence) => presence.kernelId !== currentKernelId)
   const kernelsById = new Map(kernels.map((kernel) => [kernel.kernel_id, kernel]))

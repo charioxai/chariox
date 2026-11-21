@@ -566,16 +566,19 @@ fn room_list_snapshot_includes_public_session_activity_counts() {
                 attachments: Vec::new(),
             }))
             .expect("prompt should submit");
-        let response_prompt_sent_at_ms = match submitted {
-            LocalDaemonResponse::PromptSubmitted {
-                outcome: PromptSubmissionOutcome::Started { .. },
-                session,
-                ..
-            } => session
-                .last_prompt_sent_at_ms()
-                .expect("prompt submission should stamp session prompt time"),
-            other => panic!("prompt should start immediately: {other:?}"),
+        let LocalDaemonResponse::PromptSubmitted {
+            outcome: PromptSubmissionOutcome::Started { .. },
+            session_id,
+        } = submitted
+        else {
+            panic!("prompt should start immediately: {submitted:?}");
         };
+        let response_prompt_sent_at_ms = harness
+            .wait_for_session_where(&session_id, "prompt time published", |session| {
+                session.last_prompt_sent_at_ms().is_some()
+            })
+            .last_prompt_sent_at_ms()
+            .unwrap();
 
         let snapshot = match harness
             .dispatch(LocalDaemonRequest::GetRoomListSnapshot(

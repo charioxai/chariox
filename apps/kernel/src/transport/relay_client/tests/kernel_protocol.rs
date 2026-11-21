@@ -358,3 +358,134 @@ async fn a_machine_list_asked_for_after_it_went_stale_is_the_live_one() {
     let _ = server_shutdown_tx.send(());
     server_task.await.expect("server task should join");
 }
+
+/// Registers like a kernel built before the registration proof: the relay cannot read it.
+async fn register_kernel_too_old_for_the_relay(relay_url: &str, config: &DaemonConfig) -> String {
+    let (mut socket, _) = connect_async(relay_url)
+        .await
+        .expect("the old kernel should connect to the relay");
+    let register = serde_json::json!({
+        "kind": "daemon_register",
+        "registration": {
+            "auth_token": "secret",
+            "daemon_id": config.daemon_id,
+            "machine_id": config.host_machine_id,
+            "machine_alias": "old-machine",
+            "public_key": config.relay_public_key,
+            "capabilities": ["kernel_ws"],
+            "local_protocol": 1011
+        }
+    });
+    socket
+        .send(Message::Text(register.to_string().into()))
+        .await
+        .expect("the old kernel's registration should send");
+    loop {
+        match tokio::time::timeout(std::time::Duration::from_secs(5), socket.next())
+            .await
+            .expect("the relay should answer the old registration")
+        {
+            Some(Ok(Message::Text(text))) => {
+                if let Ok(chariox_relay::protocol::RelayEnvelope::Close { reason, .. }) =
+                    serde_json::from_str(&text)
+                {
+                    return reason;
+                }
+            }
+            Some(Ok(_)) => {}
+            other => panic!("the relay closed the old kernel without a reason: {other:?}"),
+        }
+    }
+}
+
+// A kernel too old for the relay carries no traffic, but its own machine entry names it with the
+// protocol it reported, so clients show Update needed; nothing routes to it or probes it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_kernel_too_old_for_the_relay_is_listed_on_its_machine_as_update_needed() {
+    let _relay_test_guard = relay_client_test_guard().await;
+    let _home = RelayTestHome::new();
+    let server = Arc::new(RelayServer::new(RelayConfig {
+        host: "127.0.0.1".to_string(),
+        port: 0,
+        shared_token: Some("secret".to_string()),
+    }));
+    let listener = server
+        .bind_listener()
+        .await
+        .expect("relay listener should bind");
+    let addr = listener.local_addr().expect("listener should have addr");
+    let registry = server.registry();
+    let (server_shutdown_tx, server_shutdown_rx) = oneshot::channel::<()>();
+    let server_task = {
+        let server = Arc::clone(&server);
+        tokio::spawn(async move {
+            server
+                .run_listener_until(listener, async {
+                    let _ = server_shutdown_rx.await;
+                })
+                .await
+                .expect("relay server should run");
+        })
+    };
+    let relay_url = format!("ws://{addr}");
+    let mut config = DaemonConfig::for_tests();
+    config.daemon_id = "home-kernel".to_string();
+    config.host_machine_id = "home-machine".to_string();
+    config.relay_url = Some(relay_url.clone());
+    config.relay_token = Some("secret".to_string());
+    config.relay_heartbeat_ms = 50;
+    let home_app = Arc::new(Mutex::new(
+        DaemonApp::bootstrap(config.clone()).expect("daemon should bootstrap"),
+    ));
+    let (home_shutdown, shutdown_rx) = watch::channel(false);
+    let home_task = tokio::spawn(run_daemon_relay_connector(
+        Arc::clone(&home_app),
+        Arc::new(RwLock::new(RelayClientState::default())),
+        shutdown_rx,
+    ));
+    wait_for_daemon_registration(registry.clone(), &config.daemon_id).await;
+
+    let mut old = DaemonConfig::for_tests();
+    old.daemon_id = "old-kernel".to_string();
+    old.host_machine_id = "old-machine".to_string();
+    let reason = register_kernel_too_old_for_the_relay(&relay_url, &old).await;
+    assert!(
+        reason.starts_with("update needed: this kernel runs protocol 1011"),
+        "the old kernel is told to update: {reason}"
+    );
+    assert!(
+        registry.read().await.daemon(&old.daemon_id).is_none(),
+        "the old kernel is not registered"
+    );
+
+    refresh_remote_inventory_projection_for_app_with_relay_state(&home_app)
+        .await
+        .expect("the home kernel's inventory should refresh");
+    assert_eq!(
+        machine_list_kernels(&home_app).await,
+        vec![(
+            old.host_machine_id.clone(),
+            vec![RemoteMachineKernel {
+                kernel_id: old.daemon_id.clone(),
+                local_protocol: Some(1011),
+            }]
+        )],
+        "the old kernel's own machine entry names it with the protocol it reported"
+    );
+    let (_, remote_kernels) = home_app
+        .lock()
+        .await
+        .remote_relay_inventory_projection_store()
+        .snapshot();
+    assert!(
+        remote_kernels
+            .iter()
+            .all(|kernel| kernel.kernel_id != old.daemon_id),
+        "a refused kernel is never a kernel to reach: {remote_kernels:?}"
+    );
+
+    let _ = home_shutdown.send(true);
+    home_task.await.expect("connector should join");
+    let _ = server_shutdown_tx.send(());
+    server_task.await.expect("server task should join");
+}

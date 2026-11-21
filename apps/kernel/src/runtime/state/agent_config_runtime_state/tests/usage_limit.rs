@@ -38,7 +38,7 @@ fn config(resume: UsageLimitResume) -> crate::config::DaemonConfig {
     config
 }
 
-/// `count` Claude agents of one room, each with a turn running on its own provider run.
+/// `count` agents with a fixture run that speaks Claude's failure protocol.
 async fn team(config: crate::config::DaemonConfig, count: usize) -> Team {
     team_of(config, count, false).await
 }
@@ -89,7 +89,7 @@ async fn team_of(config: crate::config::DaemonConfig, count: usize, workflow_ste
         let request = crate::provider::LaunchProviderRequest::new(
             &session_id,
             "claude",
-            "claude",
+            "dev-stub",
             "default",
             "claude-haiku-5-5",
         )
@@ -376,7 +376,7 @@ async fn a_turn_that_ends_on_the_limit_asks_by_default_and_names_when_usage_is_b
     let stop = team.stop(0).expect("the agent records the stop");
     assert_eq!(stop.state, UsageLimitStopState::Asking);
     assert_eq!(stop.prompt_id, team.lanes[0].prompt_id);
-    assert_eq!(stop.provider, "claude");
+    assert_eq!(stop.provider, "dev-stub");
     assert!(
         stop.resumes_at_ms.is_some(),
         "the provider's own words name the time"
@@ -2120,28 +2120,33 @@ async fn a_turn_on_another_account_ends_the_stop_after_a_restart_too() {
 }
 
 #[tokio::test]
-async fn an_agent_that_only_switched_account_keeps_its_stop_until_it_goes_on() {
-    let team = team(config(UsageLimitResume::Ask), 1).await;
+async fn changing_the_selected_profile_closes_the_stop_before_the_next_turn() {
+    let mut team = team(config(UsageLimitResume::Ask), 1).await;
     team.hit_the_limit(0).await;
-    let stop = team.stop(0).unwrap();
-    team.rt()
-        .owned
-        .agent_store
-        .set_agent_runtime_profile_with_account_profile(
-            &team.lanes[0].agent_id,
-            "claude",
-            Some("claude-haiku-5-5".to_string()),
+    let agent_id = team.lanes[0].agent_id.clone();
+    let updated = team
+        .rt()
+        .update_agent_profile(
+            &team.session_id,
+            &agent_id,
+            OWNER,
             None,
-            Some("other-account".to_string()),
-            crate::provider::ProviderResumeState::default(),
+            Some("other-account".into()),
+            None,
+            None,
         )
+        .await
         .unwrap();
 
-    tick(team.rt(), stop.stopped_at_ms + 5).await;
+    assert!(updated.usage_limit_stop().is_none());
+    assert!(team.cards(0).is_empty());
 
-    assert!(
-        team.stop(0).is_some(),
-        "no turn started: the person may still decide"
-    );
-    assert_eq!(team.cards(0).len(), 1);
+    let after = restarted(&mut team).await;
+    assert!(after
+        .owned
+        .agent_store
+        .get_agent(&agent_id)
+        .unwrap()
+        .usage_limit_stop()
+        .is_none());
 }

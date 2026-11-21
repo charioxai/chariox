@@ -39,8 +39,9 @@ async fn prompt_submit_uses_owned_runtime_state_without_app_lock_for_local_promp
     let agent_id = agent.id().to_string();
     let attachment_id = attachment.id().to_string();
     let app = Arc::new(Mutex::new(app));
+    let runtime_state = owned_runtime_state(&app).await;
     let runtime = AgentRuntime::new(
-        owned_runtime_state(&app).await,
+        runtime_state.clone(),
         ProviderRunOperationLanes::default(),
         FocusedAgentProjection::default(),
         session_projection.clone(),
@@ -74,13 +75,14 @@ async fn prompt_submit_uses_owned_runtime_state_without_app_lock_for_local_promp
 
     let LocalDaemonResponse::PromptSubmitted {
         outcome,
-        session,
-        agent_activity,
-        ..
+        session_id: receipt_session_id,
     } = response
     else {
         panic!("unexpected response");
     };
+    assert_eq!(receipt_session_id, session_id);
+    let session = session_projection.get(&session_id).unwrap();
+    let agent_activity = runtime_state.agent_activity_for_session(&session);
     let PromptSubmissionOutcome::Started { prompt } = outcome else {
         panic!("prompt should start");
     };
@@ -181,7 +183,8 @@ async fn prompt_submit_meta_slash_activates_meta_mode_and_strips_command() {
     .expect("meta slash prompt should submit");
 
     let LocalDaemonResponse::PromptSubmitted {
-        outcome, session, ..
+        outcome,
+        session_id: receipt_session_id,
     } = response
     else {
         panic!("unexpected response");
@@ -196,7 +199,11 @@ async fn prompt_submit_meta_slash_activates_meta_mode_and_strips_command() {
         .notice_records()
         .iter()
         .any(|notice| notice.message.contains("/sudo <prompt> replaces /meta")));
+    assert_eq!(receipt_session_id, session_id);
+    let session = session_projection.get(&session_id).unwrap();
     let active_meta_prompt_id = prompt.id().to_string();
+    let prompt = session.active_prompt_for_agent(&agent_id).unwrap();
+    assert_eq!(prompt.id(), active_meta_prompt_id);
     assert_eq!(prompt.prompt(), "Inspect the repo by delegation.");
     assert!(
         prompt
@@ -234,8 +241,7 @@ async fn prompt_submit_meta_slash_activates_meta_mode_and_strips_command() {
     .expect("replacement meta slash prompt should submit");
     let LocalDaemonResponse::PromptSubmitted {
         outcome,
-        session: replacement_session,
-        ..
+        session_id: receipt_session_id,
     } = replacement_response
     else {
         panic!("unexpected replacement response");
@@ -243,7 +249,8 @@ async fn prompt_submit_meta_slash_activates_meta_mode_and_strips_command() {
     let PromptSubmissionOutcome::Queued { prompt } = outcome else {
         panic!("replacement meta slash prompt should queue behind active meta turn");
     };
-    assert_eq!(prompt.prompt(), "Expand the delegation plan.");
+    assert_eq!(receipt_session_id, session_id);
+    let replacement_session = session_projection.get(&session_id).unwrap();
     assert!(prompt.id().starts_with("session-task:"));
     assert_eq!(
         replacement_session
@@ -456,8 +463,9 @@ async fn prompt_submit_uses_owned_runtime_state_for_multi_agent_pty_prompt_witho
     let agent_id = agent.id().to_string();
     let attachment_id = attachment.id().to_string();
     let app = Arc::new(Mutex::new(app));
+    let runtime_state = owned_runtime_state(&app).await;
     let runtime = AgentRuntime::new(
-        owned_runtime_state(&app).await,
+        runtime_state.clone(),
         ProviderRunOperationLanes::default(),
         FocusedAgentProjection::default(),
         session_projection.clone(),
@@ -491,13 +499,14 @@ async fn prompt_submit_uses_owned_runtime_state_for_multi_agent_pty_prompt_witho
 
     let LocalDaemonResponse::PromptSubmitted {
         outcome,
-        session,
-        agent_activity,
-        ..
+        session_id: receipt_session_id,
     } = response
     else {
         panic!("unexpected response");
     };
+    assert_eq!(receipt_session_id, session_id);
+    let session = session_projection.get(&session_id).unwrap();
+    let agent_activity = runtime_state.agent_activity_for_session(&session);
     let PromptSubmissionOutcome::Started { prompt } = outcome else {
         panic!("prompt should start");
     };
@@ -555,7 +564,7 @@ async fn prompt_submit_routes_leading_agent_alias_and_focuses_target() {
         owned_runtime_state(&app).await,
         ProviderRunOperationLanes::default(),
         FocusedAgentProjection::default(),
-        session_projection,
+        session_projection.clone(),
         agent_runtime_projection,
         prompt_state_owner,
         crate::session::PromptIdAllocator::default(),
@@ -581,7 +590,8 @@ async fn prompt_submit_routes_leading_agent_alias_and_focuses_target() {
         .await
         .expect("alias-routed prompt should submit");
     let LocalDaemonResponse::PromptSubmitted {
-        outcome, session, ..
+        outcome,
+        session_id: receipt_session_id,
     } = response
     else {
         panic!("unexpected response");
@@ -590,7 +600,11 @@ async fn prompt_submit_routes_leading_agent_alias_and_focuses_target() {
         panic!("alias-routed prompt should start");
     };
     assert_eq!(prompt.target_agent_id(), reviewer_id);
-    assert_eq!(prompt.prompt(), "inspect package.json");
+    assert_eq!(receipt_session_id, session_id);
+    let session = session_projection.get(&session_id).unwrap();
+    let active = session.active_prompt_for_agent(&reviewer_id).unwrap();
+    assert_eq!(active.id(), prompt.id());
+    assert_eq!(active.prompt(), "inspect package.json");
     assert_eq!(session.focused_agent_id(), Some(reviewer_id.as_str()));
 }
 

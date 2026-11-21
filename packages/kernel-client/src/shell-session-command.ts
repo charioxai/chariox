@@ -10,6 +10,7 @@ import {
   createSessionRequest,
   getSessionStateRequest,
   joinSessionInviteRequest,
+  listFinishedRoomTasksRequest,
   listSlicesRequest,
   listSessionMembersRequest,
   listSessionsRequest,
@@ -70,6 +71,21 @@ export async function executeSessionCommand(
         message: formatSessionList(sessions, context.sessionId),
         data: { sessions },
       }
+    }
+    case "tasks": {
+      if (!context.sessionId) {
+        return { ok: false, message: "open the Room with `session use <ref>` first" }
+      }
+      const cursor = args.length === 0 ? null : Number(args[0])
+      if (args.length > 1 || (cursor !== null && (!Number.isSafeInteger(cursor) || cursor < 1))) {
+        return { ok: false, message: "usage: session tasks [before]" }
+      }
+      const response = await deps.client.send(listFinishedRoomTasksRequest(context.sessionId, cursor))
+      const page = expectVariant<{
+        tasks: NonNullable<RuntimeSession["agent_tasks"]>
+        next_before: number | null
+      }>(response, "FinishedRoomTasks")
+      return { ok: true, format: "json", message: JSON.stringify(page, null, 2), data: page }
     }
     case "status":
     case "info":
@@ -170,7 +186,7 @@ export async function executeSessionCommand(
       if (!nextMode) {
         return { ok: false, message: "usage: session mode <build|plan>" }
       }
-      const attachmentId = await resolveShellAttachmentId(context, deps)
+      const attachmentId = resolveShellAttachmentId(context)
       if (!attachmentId.ok) {
         return { ok: false, message: attachmentId.message }
       }
@@ -201,7 +217,7 @@ export async function executeSessionCommand(
       if (!nextLevel) {
         return { ok: false, message: "usage: session permissions <required|yolo>" }
       }
-      const attachmentId = await resolveShellAttachmentId(context, deps)
+      const attachmentId = resolveShellAttachmentId(context)
       if (!attachmentId.ok) {
         return { ok: false, message: attachmentId.message }
       }
@@ -290,7 +306,7 @@ export async function executeSessionCommand(
       }
     }
     default:
-      return { ok: false, message: "usage: session list|status|new|attach|use|members|invites|invite|join|revoke-invite|mode|permissions" }
+      return { ok: false, message: "usage: session list|status|tasks|new|attach|use|members|invites|invite|join|revoke-invite|mode|permissions" }
   }
 }
 

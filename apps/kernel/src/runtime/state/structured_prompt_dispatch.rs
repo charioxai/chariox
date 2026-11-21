@@ -188,6 +188,9 @@ impl KernelRuntimeState {
                         }),
                     });
                 }
+                Ok(crate::provider::ProviderPromptSubmitReceipt::OpenCodeConflict) => {
+                    return Err(DaemonError::OpenCodeSteerConflict);
+                }
                 Ok(crate::provider::ProviderPromptSubmitReceipt::Uncertain) | Err(_) => {
                     return Err(DaemonError::ProviderPromptSteerUnconfirmed {
                         provider_run_id: dispatch.provider_run_id.clone(),

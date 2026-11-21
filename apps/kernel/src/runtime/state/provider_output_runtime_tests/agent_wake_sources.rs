@@ -1797,6 +1797,171 @@ async fn a_turn_reusing_an_earlier_waiting_tasks_ids_is_told_its_own() {
 }
 
 #[tokio::test]
+async fn waitprior_mixed_yield_names_the_exact_retry() {
+    let f = fixture("waitprior-mixed", true).await;
+    let earlier = f.begin("earlier-turn");
+    let earlier_watch = f.arm(&earlier, "earlier-source").unwrap();
+    f.wait_on(&earlier, &earlier_watch.registration_id);
+    let original = f.task(&earlier.task_id);
+    let task = f.begin(&f.prompt_id);
+    let token = runtime_token(&f).await;
+    let current = f.arm(&task, "current-source").unwrap();
+
+    let listed = call(
+        &f,
+        &token,
+        "chariox.events.subscriptions",
+        &task,
+        serde_json::json!({}),
+    )
+    .await
+    .unwrap()
+    .payload;
+    assert_eq!(
+        listed["other_tasks"][0]["id"],
+        earlier_watch.registration_id
+    );
+    assert_eq!(listed["registrations"][0]["id"], current.registration_id);
+
+    let refused = call(
+        &f,
+        &token,
+        "chariox.events.yield",
+        &task,
+        serde_json::json!({
+            "registration_ids":[earlier_watch.registration_id,current.registration_id],
+            "inbox_cursor":0,"reason":"wait for both"
+        }),
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+    assert!(
+        refused.contains(&earlier_watch.registration_id),
+        "{refused}"
+    );
+    assert!(refused.contains(&earlier.task_id), "{refused}");
+    assert!(
+        refused.contains(&format!(
+            "Retry with registration_ids [\"{}\"]",
+            current.registration_id
+        )),
+        "{refused}"
+    );
+    assert_eq!(f.task(&earlier.task_id), original);
+    assert!(f.task(&task.task_id).wait.is_none());
+    call(
+        &f,
+        &token,
+        "chariox.events.yield",
+        &task,
+        serde_json::json!({
+            "registration_ids":[current.registration_id],"inbox_cursor":0,"reason":"wait for mine"
+        }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(f.task(&earlier.task_id), original);
+}
+
+#[tokio::test]
+async fn waitprior_adopts_two_retained_watches_and_keeps_one_receipt_each() {
+    let f = fixture("waitprior-adoption", true).await;
+    let now = crate::session::unix_epoch_ms();
+    let mut retained = Vec::new();
+    for id in ["first", "second"] {
+        let earlier = f.begin(id);
+        let mut wake = f.wake(&earlier, id);
+        wake.kind = "process".into();
+        f.store()
+            .agent_lifecycle(Operation::ArmWake {
+                task: earlier.task_id.clone(),
+                prompt: earlier.prompt_id.clone(),
+                wake: Box::new(wake.clone()),
+            })
+            .unwrap();
+        f.store()
+            .agent_lifecycle(Operation::ProcessStarted {
+                id: id.into(),
+                pid: 42,
+                now,
+            })
+            .unwrap();
+        f.store()
+            .agent_lifecycle(Operation::Settle {
+                room: f.room.clone(),
+                agent: f.agent.clone(),
+                prompt: earlier.prompt_id.clone(),
+                run: f.run.clone(),
+                has_answer: true,
+                cancelled: false,
+                now,
+            })
+            .unwrap();
+        assert_eq!(f.task(&earlier.task_id).state, ExecutionState::Done);
+        retained.push(wake);
+    }
+    let task = f.begin(&f.prompt_id);
+    let token = runtime_token(&f).await;
+    let current = f.arm(&task, "current-source").unwrap();
+    let registrations = [
+        &retained[0].registration_id,
+        &current.registration_id,
+        &retained[1].registration_id,
+    ];
+    let listed = call(
+        &f,
+        &token,
+        "chariox.events.subscriptions",
+        &task,
+        serde_json::json!({}),
+    )
+    .await
+    .unwrap()
+    .payload;
+    assert_eq!(listed["other_tasks"].as_array().unwrap().len(), 2);
+    call(
+        &f,
+        &token,
+        "chariox.events.yield",
+        &task,
+        serde_json::json!({
+            "registration_ids":registrations, "inbox_cursor":0,"reason":"wait for all three"
+        }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        f.task(&task.task_id).wait.unwrap().registration_ids.len(),
+        3
+    );
+    for wake in &retained {
+        let earlier = f.task(&wake.task_id);
+        assert!(earlier.wait.is_none() && earlier.obligations.is_empty());
+        assert_eq!(earlier.reason, format!("adopted by task {}", task.task_id));
+        assert_eq!(
+            f.store().agent_wake(&wake.id).unwrap().unwrap().task_id,
+            task.task_id
+        );
+        for _ in 0..2 {
+            f.store()
+                .agent_lifecycle(Operation::ProcessExited {
+                    id: wake.id.clone(),
+                    exit_code: Some(0),
+                    tail: String::new(),
+                    now,
+                })
+                .unwrap();
+        }
+    }
+    let inbox = f.store().agent_inbox(&f.room, &f.agent, 0).unwrap();
+    assert_eq!(inbox.len(), 2);
+    assert!(inbox
+        .iter()
+        .all(|event| event.payload["task_id"] == task.task_id));
+}
+
+#[tokio::test]
 async fn event_tools_cancel_a_timer_and_block_for_the_owner() {
     let f = fixture("event-tools-cancel", true).await;
     let task = f.begin(&f.prompt_id);

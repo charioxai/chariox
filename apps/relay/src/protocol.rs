@@ -134,6 +134,19 @@ pub struct RelayMachinePresence {
     pub available_providers: Vec<String>,
     #[serde(default)]
     pub provider_accounts: Vec<RelayProviderAccountSummary>,
+    /// Kernels on this machine whose registration the relay could not read because they are
+    /// older than it. The relay carries no traffic for them; clients show them as Update needed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub update_needed_kernels: Vec<RelayUpdateNeededKernel>,
+}
+
+/// A kernel the relay refused for its age, with the protocol it reported (none when it predates
+/// the field).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelayUpdateNeededKernel {
+    pub kernel_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_protocol: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

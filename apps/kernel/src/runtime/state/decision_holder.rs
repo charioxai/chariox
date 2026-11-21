@@ -440,6 +440,7 @@ impl KernelRuntimeOwnedState {
             else {
                 continue;
             };
+            let ask = interaction.clone();
             let holder = self.eligible_holder(&sessions, &pending, &interaction, agent, |_| true);
             let old_tenure = pending.holder_tenure;
             self.hand_decision_to(session_id, &id, &holder)?;
@@ -464,6 +465,7 @@ impl KernelRuntimeOwnedState {
             drop(sessions);
             if handed_to_user {
                 self.alert_owner_of_handed_up_task(&id);
+                self.alert_owner_of_ask(session_id, &ask);
             }
             self.withdraw_child_decision_event(holder_room, agent, old_tenure, &id);
             moved.push(MovedDecision {

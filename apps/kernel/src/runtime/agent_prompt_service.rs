@@ -159,8 +159,8 @@ impl AgentPromptCommandService {
 
     pub(crate) async fn steer_active_prompt(
         &self,
-        request: crate::local::SteerActivePromptRequest,
-    ) -> Result<PromptQueueItem, DaemonError> {
+        request: &crate::local::SteerActivePromptRequest,
+    ) -> Result<Option<(String, PromptQueueItem)>, DaemonError> {
         self.state
             .with_external_command_authority(self.request_authority())
             .steer_active_prompt(request)
@@ -292,13 +292,6 @@ impl AgentPromptCommandService {
             provider_run_id,
             trace_id,
         );
-    }
-
-    pub(crate) fn agent_activity_for_session(
-        &self,
-        session: &crate::session::RuntimeSession,
-    ) -> std::collections::BTreeMap<String, crate::runtime::projection::AgentRuntimeActivity> {
-        self.state.agent_activity_for_session(session)
     }
 
     pub(crate) fn inject_metaagent_turn_completion_event(

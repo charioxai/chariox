@@ -97,7 +97,7 @@ async fn room_behind_a_locked_vault(label: &str) -> LockedVaultRoom {
 
 impl LockedVaultRoom {
     /// Submits through the SubmitPrompt request a client sends; a person is never awaited here.
-    async fn submit(&self, text: &str) -> PromptSubmissionOutcome {
+    async fn submit(&self, text: &str) -> PromptSubmissionOutcome<crate::local::PromptReceipt> {
         let request = SubmitPromptRequest {
             session_id: self.session_id.clone(),
             attachment_id: self.attachment_id.clone(),
@@ -196,7 +196,7 @@ impl LockedVaultRoom {
     }
 }
 
-fn queued_id(outcome: PromptSubmissionOutcome) -> String {
+fn queued_id(outcome: PromptSubmissionOutcome<crate::local::PromptReceipt>) -> String {
     match outcome {
         PromptSubmissionOutcome::Queued { prompt } => prompt.id().to_string(),
         other => panic!("a prompt that needs the locked Vault waits in the queue: {other:?}"),

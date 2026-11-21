@@ -39,7 +39,27 @@ registration with another `public_key` closes the socket with `daemon identity
 key changed; reconnect to register it`. A kernel refuses a relay that offers no
 challenge. The relay stays blind to traffic: it learns nothing it can decrypt.
 
-### Relay registration result (local 1013, relay peer 450)
+### A kernel too old for the relay (relay peer 450)
+
+A `daemon_register` the relay cannot read (a kernel older than the relay, such as
+one that sends no `proof`) carries no traffic, as before. If its first frame still
+names a kernel (`registration.auth_token`, `daemon_id`, `machine_id`,
+`public_key`, a kernel capability and the optional `local_protocol`), the relay
+runs the same token and identity checks as a real registration and, when they
+pass, records the refusal for 150 seconds (an old kernel retries at least once a
+minute; a live registration of the same kernel clears it). It closes the socket
+with `update needed: this kernel runs protocol N (or reports no protocol) and is
+older than the relay; update Chariox on this machine and restart the kernel` and
+logs `relay_registration_update_needed`. The relay's machine list names each
+such kernel under its machine as `update_needed_kernels: [{kernel_id,
+local_protocol?}]`; a machine with only refused kernels is listed with
+`kernel_count: 0`. The kernel's machine presence adds them to the machine's
+`kernels` with that protocol, so clients show Update needed on the machine's own
+entry, and never routes to or probes them. Cloud has such a kernel offline, so the
+machine-list grant names every kernel the account links; kernel queries are still
+granted the online ones.
+
+### Relay registration result (local 1014, relay peer 451)
 
 Deploy the acknowledging relay before upgrading kernels to this version. A
 kernel waits up to ten seconds for `{"kind":"daemon_registered"}` and publishes
@@ -50,8 +70,8 @@ relay that never acknowledges registration leaves an actionable refusal in
 The relay checks `registration.local_protocol` before decoding the proof and
 refuses versions below 1012 or registrations with no version. A refused or
 malformed registration receives a `close` envelope with a reason before the
-socket closes. For a kernel that declares protocol 1013 or later, the relay
-queues the acknowledgment before the socket becomes routable. Protocol 1012
+socket closes. For a kernel that declares protocol 1014 or later, the relay
+queues the acknowledgment before the socket becomes routable. Earlier supported
 kernels keep receiving their existing wire messages during the relay rollout.
 
 While registration is refused, `RelayStatus.registration_refused` gives the
@@ -582,13 +602,16 @@ must confirm `exact_prompt_cancellation_v499` in the attached kernel's existing
 the cancellation. Peer 101 is the paired admission generation; worker aborts
 retain the existing lease, home-prompt and provider-run fences.
 
-MP-08 / MP-10: local protocol **491** adds `SteerActivePrompt` with session,
-attachment, agent, required `expected_active_prompt_id`, visible prompt and
-attachments. The home agent actor admits it only against that exact running
-Chariox prompt; stale, cancelled, external or settled targets fail without
-creating a turn or a backlog item. `ActivePromptSteered { prompt }` reports
-admission through shared prompt assembly/history and local or leased provider
-dispatch. Relay peer 101 carries the exact home target.
+SteerActivePrompt takes a session, attachment, agent, the client-observed
+`expected_active_prompt_id`, visible prompt and attachments. Ordinary steering
+selects the current running Chariox prompt at admission. If there is no eligible
+turn, or delivery was definitively declined, the kernel submits the input as the
+next prompt. `ActivePromptSteered` reports the actual turn and steer IDs.
+`PromptSubmitted` confirms the next prompt was queued or started. An uncertain
+provider result never creates a second prompt. Native controls set
+`require_exact_turn: true` to admit only the named running prompt and never
+submit a new one. The worker still checks the exact home turn selected by the
+kernel.
 Codex native `turn/steer` maps both reply and projected display turn IDs to
 home prompt IDs; its response retains the display turn ID. Utility threads
 keep their provider-native controls. `thread/compact/start` resolves the live
@@ -1202,11 +1225,13 @@ damaged interrupted row is skipped and logged without stopping the pass. A task 
 only open work is finished sources with an unacknowledged outcome ends done after the
 one correction instead of blocking.
 MP-08/MP-10/MP-11: each admitted delivery gets a full two-minute receipt
-window. Repeated refusals while idle have a separate bounded escalation clock;
+window. Repeated refusals while idle have a separate bounded retry clock;
 an active recipient turn clears that clock. Unsupported or refused steering
 stays queued through long turns and retries when the recipient becomes idle.
 Steer rejections do not start the idle-refusal clock; idle refusals start it at
-receipt time. A damaged refusal clock is retained and quarantines only its
+receipt time. An exhausted idle refusal ends as a failed delivery, with a receipt
+for the sender or wake and without an owner decision. A damaged refusal clock is
+retained and quarantines only its
 own delivery through the owner-action path; supervision of other Rooms continues.
 
 `chariox.send_agent_message` defaults to nonurgent and no reply. A send returns at once
@@ -1813,6 +1838,7 @@ Current slice-management surface:
 - `slice.logs.get` returns structured log entries for local Docker slice provisioner actions and recent container logs. Clients should render these as diagnostics only and must not treat log text as control data.
 - Slice provider auth import/login/alias/remove requests are scoped by provider and the kernel owns displayed provider auth summaries. Removal purges the slice-side provider credential files and clears matching auth summaries from kernel state; `opencode` removes all `opencode:*` account summaries for that slice.
 - Local daemon protocol v770 / relay peer v320 exposes `GetProviderUsageSnapshot {}` with opaque `account_id`, provider/profile id/label, `auth_state`, safe configured `services`, and provider-observed usage meters. Account identities group provider-reported email identities across kernels; profiles without such an identity group only when the machine and native credential scope match. Identity hashes never use credentials. Unobserved/unconfigured native defaults without usage are omitted; explicit profiles retain their status. Clients group by account identity, keep fixed order and select each meter's latest observation. No credential/profile locations leave the kernel. `GetAgentUsageSnapshot {session_id, agent_id}` still requires Room membership and returns observed context and execution route without remote admission credentials. Usage references require protocol 770; missing balances/windows are never estimated.
+- Local daemon protocol v1013 adds the `models` array to `GetAgentUsageSnapshot`. Each row gives the provider family, model ID, and that agent's observed input, output, cache-read and cache-write token totals. Input includes both cache categories. The kernel calculates `api_equivalent_nanodollars` at standard short-context API list rates and the shortest cache-write TTL. Clients receive the integer as a decimal string, or `null` when the kernel has no applicable rate. The current accounting sources are Codex App Server usage updates and Claude Code result model totals. Relay peer v450 carries the worker's measured model totals with the matching leased prompt completion.
 
 - Local daemon protocol v267 adds kernel-owned provider-account CRUD, profile-scoped auth/login/logout/status, provider-neutral usage meters, and account-aware catalog requests. Room list projections expose safe profile metadata and materialization state, never profile paths or credential payloads.
 - `GetProviderCatalog` carries provider/profile overrides plus `local`, `worker`, or `slice` execution location. Cache identity includes owner, request/profile selection, and location. Worker/slice requests require a matching kernel-projected materialization record.
@@ -4789,7 +4815,7 @@ A local-dev browser terminal (`CHARIOX_RELAY_URL`/`CHARIOX_RELAY_TOKEN`, no Clou
 ### Provider account portability preflight, protocol 491 (MP-08 / MP-10 / MP-11)
 
 `PreflightProviderAccountPortability` accepts only `providerAccounts` selection
-metadata. The ordinary kernel owner gate applies to local and relay callers;
+metadata and, since local 1013, the launch's `kernelContext`. The ordinary kernel owner gate applies to local and relay callers;
 shared-session membership, another realm, and kernel peers cannot use it. The
 kernel checks the selected accounts through the existing provider-native managed
 context exporter and discards the exported bytes. Success is
@@ -6259,31 +6285,38 @@ value appears in the three places a reader looks:
 
 `kind` is a closed list: `completed`, `cancelled`, `interrupted_by_restart`,
 `overloaded`, `usage_limit`, `sign_in_required`, `provider_crashed`, `network`,
-`other`. A client that meets a `kind` it does not know, because a newer kernel added
+`model_refused`, `stream_ended`, and `other`. A client that meets a `kind` it does not know, because a newer kernel added
 one, reads it as `unknown` and still shows `reason`. `completed` and `cancelled` are
 not errors: the agent is `idle` and the turn is not failed. Every other kind is an
 error and the agent is in the `error` state. `retryable` is whether a later attempt
 may succeed without anyone changing anything (overload, crash, network loss, a plain
 HTTP 429 and `interrupted_by_restart` are; an exhausted plan, a missing sign-in and an
 unrecognised error are not). A reader decides to retry or stop from `kind` and
-`retryable` only. `reason` is text for people: a controlled explanation of the
-provider failure, such as `The provider is at capacity.`; it is empty for
-`completed` and `cancelled`. Kernel-authored failures can retain specific recovery
-details, such as a missing workspace path. Native provider diagnostics are retained
-in kernel logs with credentials redacted, rather than copied into public reasons. Except for the usage-limit resume of local 1011 (see "Settings change while a turn runs, and a usage limit"), Chariox adds no retry or backoff policy; the
-provider's own behaviour is unchanged and the orchestrating agent decides.
+`retryable` only. `reason` carries the provider's message with credentials masked
+and its first nonempty line bounded. An error without a provider message uses a Chariox explanation.
+The reason is empty for `completed` and `cancelled`. Kernel-authored failures can
+include specific recovery details such as a missing workspace path.
+Chariox resumes usage-limit stops according to the Room settings and leaves other
+retry decisions to the orchestrating agent.
 
 The kernel types a failure once from the harness's native error: Codex
 `codexErrorInfo` codes, Claude `result` errors and `StopFailure` kinds, OpenCode
 error names with their HTTP status and native `isRetryable` flag, then the words of
-the error; a process exit, signal or transport loss is `provider_crashed` or
-`network` without any text. A failure the provider reported without a protocol
-frame is typed from its text. Rejected Codex dispatches retain structured
-`error.data.codexErrorInfo` when present. `explicit_provider_error` records the
-termination provenance; `provider_termination.failure` carries the typed cause and
-matches the settled turn outcome. If native sign-in recovery is declined, the
-failed turn retains its original kind and controlled public reason while the
-existing recovery notice explains what happened.
+the error. The outcome distinguishes `model_refused`, `stream_ended`, a process
+exit or signal (`provider_crashed`), and a transport failure (`network`). The reason
+for a CLI exit includes its status when the kernel observed it. Rejected Codex
+dispatches retain structured `error.data.codexErrorInfo` when present.
+`explicit_provider_error` records the termination provenance.
+`provider_termination.failure` carries the typed cause. A declined sign-in recovery
+preserves the original typed cause and message.
+
+The error entry and settled-turn history record the failure. The parent's
+`child_finished` receipt carries its `outcome` and `finished_at_ms`.
+`chariox.get_session_agent` and `chariox.list_session_agents` include the last failure
+and its timestamp for an agent in Error. Inspection reads the durable settlement
+after a restart. A completed deadline stop takes precedence over an earlier Error.
+Agent inspection returns `ended (deadline)` and session activity returns
+`ended_deadline`.
 
 `interrupted_by_restart` is a turn the kernel restarted in the middle of and could
 not resume (its reason names only what the kernel observed, such as a locked Vault
@@ -6328,8 +6361,8 @@ this metadata too; relay peer 181 is unchanged.
 A steer is observable by the outside agent that sent it. When `SteerActivePrompt`
 has been taken by the agent's provider (the home provider or the leased worker),
 the kernel records `{ "type": "steer", "value": { "steer_id" } }` for the agent,
-where `steer_id` is the prompt id in the `ActivePromptSteered` reply. A refused,
-stale or rejected steer records nothing. If the event cannot be recorded after
+where `steer_id` is the prompt id in the `ActivePromptSteered` reply. A refused or rejected steer records nothing. A steer admitted as the next
+prompt produces the normal prompt lifecycle events. If the event cannot be recorded after
 delivery, the request fails with the code `prompt_steer_event_unrecorded` and a
 message that names the steer id, says it was delivered and must not be sent again;
 it is distinct from `prompt_steer_rejected`, which means nothing was delivered.
@@ -6717,6 +6750,26 @@ requests share the batch's commit/sync time. Response size measures the JSON res
 Metrics contain no request payloads, identifiers, paths or credentials. The health
 response samples timing entries when necessary, with the full kind count in
 `sample_counts.request_timings`. Relay peer shapes are unchanged.
+
+### Room state, finished tasks and machine resources
+
+`GetSessionState`, the state inside `AttachSessionView`, and `session_snapshot` publish
+the Room's current read model. Workflow labels, endpoints and controls come from
+`room_workflows`. Read full definitions with `ListWorkflows` or `ResolveWorkflow` when
+opening the workflow editor and read run history with `ListWorkflowRuns`. A Room
+reports `connected_cli_count`. Attachments are created with `AttachToSession` or
+`AttachSessionView`, and the creating client receives its own attachment ID.
+
+`ListFinishedRoomTasks {session_id, before}` reads finished tasks visible to the
+caller, 32 at a time from newest to oldest. Omit `before` for the first page. Use
+`FinishedRoomTasks.next_before` unchanged for the next page, or stop when it is
+null. The cursor identifies a position in that Room's durable task order and
+survives a kernel reload. New tasks can arrive above a page already displayed.
+
+Room process rows belong to its visible agents. Machines reads `GetMachineRoomResources
+{session_id}` on demand for process and disk samples grouped by Room. The
+`machine_room_resources` kernel resource uses the same request and parameters.
+The resource sends updates while a client watches it.
 
 ### MP-08 / MP-09 / MP-10 / MP-11: process rows in `SessionState` — local 913 / relay peer 364
 
@@ -7310,8 +7363,8 @@ and `node scripts/drills/process-admission-live.mjs --scenario temp|trim|runaway
 
 ### MP-08 / MP-09 / MP-10 / MP-11: current disk occupancy — local 991 / peer 430
 
-`SessionState` and `session_processes_changed` carry `disk_usage` beside the
-existing CPU, memory and cumulative I/O process samples. Each allocation has
+The Machines resource carries `disk_usage` beside CPU, memory and cumulative
+I/O process samples. Each allocation has
 `id`, nullable `path`, nullable `used_bytes`, `sampled_at_ms`, nullable `owner`
 and nullable `process_id`. Directory entries describe the Room worktree and
 each agent's worktree, scratch and configured provider state directories.
@@ -7578,7 +7631,12 @@ omitted when absent; no protocol number of its own): an export whose start names
 held unlock and, when it has to ask again, shows the unlock card in the session that ran that launch's preflight, so
 two launches in flight never ask in each other's room whichever machine is ready first. Without a `launchId` the hold is
 found by the launching session, else the latest launch. Focused check:
-`each_export_asks_in_the_room_of_its_launch_in_either_ready_order`. A package that carries Vault logins and reaches a machine whose Vault is not open
+`each_export_asks_in_the_room_of_its_launch_in_either_ready_order`. Local 1013: preflight also carries the launch's
+required `kernelContext` (`empty`, `source_kernel` or `source_kernel_without_credentials`). A copy of this kernel
+(`source_kernel`) exports its Vault even with no login selected, so its preflight finds the Vault unlocked and holds
+that unlock for the export exactly as for a Vault login, and the export of a `source_kernel` package takes the hold.
+Clients preflight every copy. Focused checks: `a_copy_of_this_kernel_holds_the_unlock_for_its_vault_export_without_a_login`
+and `the_export_opens_the_vault_for_a_vault_login_or_a_copy_of_this_kernel_until_prepared`. A package that carries Vault logins and reaches a machine whose Vault is not open
 is refused whole, before anything is imported, with `target_vault_locked` (unless the package installs that Vault
 itself); the retry after the owner unlocks completes. The `omittedProviderAccounts` receipt (relay peer
 `omitted_provider_accounts`, import `providerAccounts.omitted`) is retired with local 1002 / relay peer 441. Focused
@@ -7927,7 +7985,7 @@ room of another kernel of the same owner (design: `docs/design/sub-agents.md` 7.
 `deliver_peer_agent_outcome` (a followed peer's `event` or the `reply` to a message), and five
 responses: `peer_agent_accepted`, `peer_agent_subscribed`, `room_peer_spawned`,
 `peer_agent_outcome_ack` and `peer_agent_refused` with a typed `refusal` (`room_unavailable`,
-`agent_unavailable`, `ambiguous`, `more_authority`, `sub_agent_caller`, `room_full`,
+`agent_unavailable`, `ambiguous`, `more_authority`, `sub_agent_caller`,
 `attachments_local_only`). Each request is admitted only between kernels of one authenticated
 Cloud owner, and its `sender` stamp must name the authenticated sending kernel. The caller's
 `caller_authority` is lowered to the receiving kernel's record of the target room before the
@@ -8073,9 +8131,8 @@ to their caller. Other Room Terminal result variants remain ordinary JSON.
 The same 1006 subscription contract distinguishes view interests:
 `session_terminal` carries terminal data without session projection samples;
 `session_metadata` carries Room state and admission-wait changes without terminal
-bytes or periodic process samples; `session_metadata_processes` additionally keeps
-the process/disk sample feed used by Health. Ordinary `session` subscriptions keep
-their full feed. Private provider-run changes do not repeat an unchanged public
+bytes or periodic process samples. Machines follows the `machine_room_resources`
+kernel resource. Private provider-run changes do not repeat an unchanged public
 projection. Activity timestamps accompany the next state or usage update instead
 of resending the whole run on their own. Ordinary metadata sends only admission
 waits, including on its initial projection; full process and disk samples stay on
@@ -8475,3 +8532,28 @@ own (a retry changes nothing); the earlier grant keeps its own, and ending it do
 An id that is unknown, ended, another owner's, the caller's own, or a grant that follows no targets is
 refused with `events_refused` naming what to run instead. `event-follow-1012.json` and its SHA-256 test pin
 the shapes.
+
+### Remote jobs per project, Room and agent — local 1013
+
+`GetRemoteJobPolicy` and `SetRemoteJobPolicy` take `{session_id, agent_id?, project?}`. `project: true` reads or writes the
+setting of the Room's project (not with `agent_id`); an agent's own setting wins over its Room's, and the Room's over its
+project's. The answer's `source` is `agent`, `session` or `project`; nothing set anywhere answers `project` with `off`.
+`fixtures/remote-jobs-protocol.json` pins the shapes.
+
+### Agent creation without count limits — local 1013 / relay peer 450
+
+Room session state omits `max_agents`. Kernel user configuration omits
+`workflow.session_default_max_agents`, and a remote peer spawn no longer
+returns `room_full`. Spawn and placement preserve the parent's authority and
+reject cycles.
+
+### Provider turns waiting for memory — local 1013 / relay peer 450
+
+A queued prompt can include `launch_wait`, the reason it is waiting to start.
+The kernel persists this reason with the prompt and promotes a person's queued
+turn ahead of queued automated turns when memory becomes available.
+
+A worker under memory pressure records `waiting_for_memory` for the home prompt
+and execution lease before reporting `provider_memory_wait` to the home kernel.
+The receipt carries no worker provider run. The home kernel can recover a lost
+response by querying this receipt, then return the same prompt to its queue.

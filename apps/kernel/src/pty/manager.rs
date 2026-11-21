@@ -668,10 +668,9 @@ impl PtyManager {
             "1".to_string(),
         );
         env.insert("CHARIOX_PROVIDER_RUN_ID".to_string(), run.id().to_string());
-        env.insert(
-            crate::provider::PROVIDER_OWNER_PID_ENV.to_string(),
-            std::process::id().to_string(),
-        );
+        if let Some(owner) = crate::provider::process_owner::current_marker() {
+            env.insert(crate::provider::process_owner::OWNER_ENV.into(), owner);
+        }
         env.insert(
             "CHARIOX_PROVIDER_PROCESS_KEY".to_string(),
             process_key.clone(),
@@ -1359,7 +1358,10 @@ impl PtyManager {
     /// public output queue so launch-failure cleanup cannot erase the only
     /// useful Bubblewrap/provider diagnostic.
     pub(crate) fn early_exit_diagnostic(&mut self, provider_run_id: &str) -> Option<String> {
-        self.exited_output_diagnostic(provider_run_id).or_else(|| {
+        let diagnostic = self.exited_output_tail(provider_run_id).map(|tail| {
+            crate::provider::sanitize_provider_diagnostic(&String::from_utf8_lossy(&tail))
+        });
+        diagnostic.filter(|text| !text.is_empty()).or_else(|| {
             self.poll_process_state(provider_run_id)
                 .ok()?
                 .is_exited()
@@ -1369,7 +1371,7 @@ impl PtyManager {
 
     /// A bounded retained tail, including when the output pump already drained
     /// the queue. An empty exit must not manufacture an endpoint-startup cause.
-    pub(crate) fn exited_output_diagnostic(&mut self, provider_run_id: &str) -> Option<String> {
+    pub(crate) fn exited_output_tail(&mut self, provider_run_id: &str) -> Option<Vec<u8>> {
         let state = self.poll_process_state(provider_run_id).ok()?;
         if !state.is_exited() {
             return None;
@@ -1381,9 +1383,7 @@ impl PtyManager {
         let process_key = self.resolve_process_key(provider_run_id).ok()?;
         let process = self.processes.get(&process_key)?;
         let bytes = snapshot_pty_diagnostic_tail(&process.diagnostic_tail);
-        let raw = String::from_utf8_lossy(&bytes);
-        let diagnostic = crate::provider::sanitize_provider_diagnostic(&raw);
-        (!diagnostic.is_empty()).then_some(diagnostic)
+        (!bytes.is_empty()).then_some(bytes)
     }
 
     pub fn poll_process_state(

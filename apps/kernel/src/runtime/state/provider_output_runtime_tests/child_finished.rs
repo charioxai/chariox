@@ -128,12 +128,31 @@ async fn family_in(
     with_spawn_key: bool,
     history_root: Option<std::path::PathBuf>,
 ) -> Family {
-    let worktree = crate::test_support::TestWorktree::new(label);
     let mut config = crate::config::DaemonConfig::for_tests();
-    config.room_agent_tools = true;
     if let Some(root) = history_root {
         config = config.with_session_history_root(root);
     }
+    family_from_config(
+        label,
+        children,
+        settle_cancelled,
+        parent_running,
+        with_spawn_key,
+        config,
+    )
+    .await
+}
+
+async fn family_from_config(
+    label: &str,
+    children: usize,
+    settle_cancelled: Option<bool>,
+    parent_running: bool,
+    with_spawn_key: bool,
+    mut config: crate::config::DaemonConfig,
+) -> Family {
+    let worktree = crate::test_support::TestWorktree::new(label);
+    config.room_agent_tools = true;
     let mut app = DaemonApp::bootstrap(config).unwrap();
     let (session, parent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(worktree.session_request())
@@ -327,6 +346,197 @@ async fn a_child_stopped_by_its_deadline_says_so() {
     assert_eq!(events[0].payload["deadline_reached"], true, "ORCH-06");
     assert_eq!(events[0].payload["success"], false);
     assert_eq!(events[0].payload["outcome"]["kind"], "cancelled", "ORCH-16");
+}
+
+#[tokio::test]
+async fn provider_failure_reason_reaches_the_parent() {
+    let team = team_with("provider-failure-reason", None, true).await;
+    let runtime = &team.runtime;
+    let parent_run = runtime
+        .owned
+        .provider_store
+        .get_run_for_agent(&team.room, &team.parent)
+        .expect("the parent has an active run");
+    let token = parent_run
+        .runtime_mcp_auth_token()
+        .expect("parent's tool auth");
+    let get_child = || {
+        runtime.dispatch_authenticated_runtime_tool_call(
+            token,
+            crate::transport::runtime_tools::GET_SESSION_AGENT_TOOL,
+            serde_json::json!({"agent": "@child"}),
+        )
+    };
+    let reason = "The selected model refused this request.";
+    runtime
+        .fail_owned_provider_prompt(&team.room, &team.child_run, reason, true)
+        .await
+        .unwrap();
+
+    let events = child_finished(&team);
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].payload["outcome"]["reason"], reason);
+    assert_eq!(events[0].payload["outcome"]["kind"], "model_refused");
+    assert!(events[0].payload["finished_at_ms"].as_u64().is_some());
+    let child = get_child().await.unwrap();
+    assert!(child.ok, "{:?}", child.payload);
+    assert_eq!(child.payload["agent"]["state"], "error");
+    assert_eq!(
+        child.payload["agent"]["failure"]["outcome"]["reason"],
+        reason
+    );
+    assert!(child.payload["agent"]["failure"]["finished_at_ms"]
+        .as_u64()
+        .is_some());
+}
+
+#[tokio::test]
+async fn provider_failure_reason_deadline_overrides_the_last_error() {
+    let team = team_with("provider-failure-deadline", None, true).await;
+    let runtime = &team.runtime;
+    runtime
+        .fail_owned_provider_prompt(
+            &team.room,
+            &team.child_run,
+            "Connection closed unexpectedly.",
+            true,
+        )
+        .await
+        .unwrap();
+    let parent_run = runtime
+        .owned
+        .provider_store
+        .get_run_for_agent(&team.room, &team.parent)
+        .expect("the parent has an active run");
+    let token = parent_run
+        .runtime_mcp_auth_token()
+        .expect("parent's tool auth");
+    let get_child = || {
+        runtime.dispatch_authenticated_runtime_tool_call(
+            token,
+            crate::transport::runtime_tools::GET_SESSION_AGENT_TOOL,
+            serde_json::json!({"agent": "@child"}),
+        )
+    };
+    assert_eq!(
+        get_child().await.unwrap().payload["agent"]["state"],
+        "error"
+    );
+    let store = &runtime.owned.durable_state_store;
+    let now = crate::session::unix_epoch_ms();
+    store
+        .agent_lifecycle(Operation::SetDeadline {
+            room: team.room.clone(),
+            agent: team.child.clone(),
+            deadline: Some(now),
+            inherited: Vec::new(),
+        })
+        .unwrap();
+    runtime.tick_agent_deadlines(now).await.unwrap();
+    let child = get_child().await.unwrap();
+    assert_eq!(child.payload["agent"]["state"], "ended (deadline)");
+    assert!(child.payload["agent"]["failure"].is_null());
+    let listed = runtime
+        .dispatch_authenticated_runtime_tool_call(
+            token,
+            crate::transport::runtime_tools::LIST_SESSION_AGENTS_TOOL,
+            serde_json::json!({}),
+        )
+        .await
+        .unwrap();
+    let child = listed.payload["agents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|agent| agent["alias"] == "child")
+        .unwrap();
+    assert_eq!(child["state"], "ended (deadline)");
+    let session = runtime
+        .session_agent_snapshot(&team.room, &team.parent)
+        .unwrap()
+        .0;
+    let activity = runtime.agent_activity_for_session(&session);
+    assert_eq!(
+        serde_json::to_value(&activity[&team.child]).unwrap()["status"],
+        "ended_deadline"
+    );
+}
+
+#[test]
+fn provider_failure_reason_survives_kernel_restart() {
+    let root = crate::test_support::TestTempDir::new("provider-failure-restart");
+    let mut config =
+        crate::config::DaemonConfig::for_tests().with_session_history_root(root.join("history"));
+    config.room_agent_tools = true;
+    config.user_config.state.path = Some(root.join("state.db").display().to_string());
+    config.user_config.history.operational.path =
+        Some(root.join("events.db").display().to_string());
+    config.user_config.credential_vault.path = root.join("vault.json").display().to_string();
+    let executor = || {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+    };
+    let reason = "Connection closed while waiting for the provider.";
+
+    let (room, parent, worktree, ended_at) = executor().block_on(async {
+        let Family {
+            runtime,
+            room,
+            parent,
+            parent_run,
+            kids,
+            _worktree,
+        } = family_from_config("provider-failure-cold", 1, None, true, true, config.clone()).await;
+        let kid = &kids[0];
+        runtime
+            .fail_owned_provider_prompt(&room, &kid.child_run, reason, true)
+            .await
+            .unwrap();
+        let settlement = runtime
+            .owned
+            .operational_history_store
+            .load_prompt_settlement_event(&room, &kid.child, kid.child_prompt.id())
+            .unwrap()
+            .unwrap();
+        let ended_at =
+            settlement.metadata[crate::history::PROMPT_SETTLED_AT_MS_METADATA_KEY].clone();
+        runtime
+            .owned
+            .complete_local_prompt_without_advance(&room, &parent, Some(&parent_run))
+            .unwrap()
+            .expect("the parent ends its inspection turn before restarting");
+        (room, parent, _worktree, ended_at)
+    });
+
+    // Stop the first runtime's background tasks as well as dropping its kernel state.
+    executor().block_on(async {
+        let mut app = DaemonApp::bootstrap(config).unwrap();
+        crate::test_support::admit_room_test_turn(&mut app, &room, &parent);
+        let parent_run = app.providers().get_run_for_agent(&room, &parent).unwrap();
+        let token = parent_run.runtime_mcp_auth_token().unwrap();
+        let app = Arc::new(Mutex::new(app));
+        let runtime = owned_runtime_state(&app).await;
+        let child = runtime
+            .dispatch_authenticated_runtime_tool_call(
+                token,
+                crate::transport::runtime_tools::GET_SESSION_AGENT_TOOL,
+                serde_json::json!({"agent": "@child"}),
+            )
+            .await
+            .unwrap();
+        assert!(child.ok, "{:?}", child.payload);
+        assert_eq!(child.payload["agent"]["state"], "error");
+        assert_eq!(
+            child.payload["agent"]["failure"],
+            serde_json::json!({
+                "outcome": { "kind": "network", "reason": reason, "retryable": true },
+                "finished_at_ms": ended_at,
+            })
+        );
+    });
+    drop(worktree);
 }
 
 #[tokio::test]

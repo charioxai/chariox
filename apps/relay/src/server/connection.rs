@@ -26,6 +26,7 @@ mod support;
 #[cfg(test)]
 mod tests;
 mod token_refusal;
+mod update_needed;
 mod writer;
 
 use support::*;
@@ -533,6 +534,20 @@ pub(crate) async fn handle_connection(
                     let envelope: RelayEnvelope = match serde_json::from_str(&text) {
                         Ok(envelope) => envelope,
                         Err(_) => {
+                            if registered_daemon_key.is_none() {
+                                if let Some(reason) = update_needed::refuse_old_registration(
+                                    &text,
+                                    &auth_verifier,
+                                    &registry,
+                                    peer_addr,
+                                )
+                                .await?
+                                {
+                                    send_close(&outgoing_tx, reason);
+                                    end_reason = "update_needed";
+                                    break;
+                                }
+                            }
                             send_close(&outgoing_tx, malformed_envelope_reason(&text).into());
                             end_reason = "malformed_envelope";
                             break;
@@ -611,7 +626,7 @@ pub(crate) async fn handle_connection(
                             let allowed_targets = identity.allowed_targets.clone();
                             let mut replaced_senders = Vec::new();
                             let mut guard = registry.write().await;
-                            // L12 kernels do not recognize the acknowledgment. For kernels
+                            // Landing 12.1 kernels do not recognize the acknowledgment. For kernels
                             // that do, it must precede traffic routed to the new peer.
                             if registration.local_protocol.is_some_and(|version| version >= DAEMON_REGISTERED_PROTOCOL) {
                                 send_envelope(&outgoing_tx, &RelayEnvelope::DaemonRegistered)?;
@@ -649,6 +664,7 @@ pub(crate) async fn handle_connection(
                                     client_daemon_key: None,
                                 },
                             );
+                            guard.clear_update_needed_kernel(&daemon_key);
                             guard.daemons.insert(daemon_key.clone(), registration);
                             guard.daemon_peers.insert(daemon_key.clone(), peer_addr);
                             routes.set_daemon_sender(daemon_key, outgoing_tx.clone());

@@ -9,6 +9,8 @@ import {
   sessionAgentLedgerStatus,
   sessionAgentPaneStatusBadgeForSession,
   sessionAgentTaskStatus,
+  agentRuntimeStateFromProjection,
+  sessionAgentRuntimeDisplayStateByAgent,
   sessionFocusedStatusBadge,
 } from "./session-runtime-status.js"
 
@@ -119,6 +121,30 @@ test("agent list and inspect show a running turn over an older retained wait", (
   }
   assert.match(formatAgentInspectSummary(agent, [], null, {}, { session: running }).split("\n")[0]!, /\[Working\]/)
   assert.match(formatAgentInspectSummary(agent, [], null, {}, { session: session({ agent_tasks: [waiting] }) }).split("\n")[0]!, /\[WAITING ON build/)
+})
+
+test("agent inspection, list, and pane keep the kernel's deadline-ended status", () => {
+  const agent = { id: "a1", agent_ref: "a1", session_id: "room", provider: "codex", state: "Error" } as const
+  const typedAgent = agent as RuntimeSession["agents"][number]
+  const activity = { status: "ended_deadline", prompt_status: "none", busy: false, unread_idle_output: false } as const
+  const stopped = session({ agents: [typedAgent], agent_activity: { a1: activity } })
+  const retained = { ...stopped, agent_tasks: [waiting] }
+  const badge = sessionAgentPaneStatusBadgeForSession({
+    session: retained, agent: typedAgent, activeLabel: "Reading", isStreaming: true, busyLatch: true,
+  })
+  assert.deepEqual({
+    projected: agentRuntimeStateFromProjection(typedAgent, { agentActivity: { a1: activity } }),
+    listState: sessionAgentRuntimeDisplayStateByAgent(stopped).a1,
+    list: formatAgentListSummary([typedAgent], [], {}, { session: stopped }).includes("[Ended (deadline);"),
+    inspect: formatAgentInspectSummary(typedAgent, [], null, {}, { session: retained }).startsWith("a1 [Ended (deadline)]"),
+    badge,
+  }, {
+    projected: "Ended (deadline)",
+    listState: "Ended (deadline)",
+    list: true,
+    inspect: true,
+    badge: { label: "Ended (deadline)", tone: "idle" },
+  })
 })
 
 test("a task update applies once by revision and only to known agents of its room", () => {

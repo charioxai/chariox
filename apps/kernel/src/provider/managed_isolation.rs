@@ -1551,12 +1551,7 @@ pub(crate) fn command_from_provider_launch(
         environment.remove(*name);
     }
     command.envs(environment);
-    // A utility that outlives its kernel (a shutdown that ran out of time) is ended by the next
-    // kernel, which finds it by this pid.
-    command.env(
-        crate::provider::PROVIDER_OWNER_PID_ENV,
-        std::process::id().to_string(),
-    );
+    crate::provider::process_owner::stamp(&mut command);
     if let Some(directory) = launch.working_directory {
         command.current_dir(directory);
     }
@@ -2368,6 +2363,7 @@ mod tests {
 
     use super::*;
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn a_managed_utility_names_its_kernel_so_a_later_kernel_can_end_it() {
         let command = command_from_provider_launch(ProviderLaunchResult {
@@ -2382,9 +2378,9 @@ mod tests {
             structured_endpoint: None,
         })
         .unwrap();
-        let kernel = std::process::id().to_string();
+        let kernel = crate::provider::process_owner::marker_for_pid(std::process::id()).unwrap();
         assert!(command.get_envs().any(|(name, value)| {
-            name == crate::provider::PROVIDER_OWNER_PID_ENV
+            name == crate::provider::process_owner::OWNER_ENV
                 && value == Some(std::ffi::OsStr::new(&kernel))
         }));
     }

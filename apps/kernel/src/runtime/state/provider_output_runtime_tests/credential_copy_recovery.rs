@@ -18,6 +18,11 @@ async fn mp08_mp10_mp11_credential_copy_startup_login_recovery_stays_on_worker()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn copied_login_recovers_when_codex_refuses_to_start_the_first_thread() {
+    isolated_case(RecoveryCase::ThreadStart).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mp08_mp10_mp11_login_relaunch_failure_settles_prompt_and_advances_queue() {
     isolated_case(RecoveryCase::RelaunchFailure).await;
 }
@@ -32,6 +37,7 @@ enum RecoveryCase {
     Prompt,
     SudoPrompt,
     Startup,
+    ThreadStart,
     RelaunchFailure,
     RelaunchStall,
 }
@@ -48,6 +54,9 @@ async fn isolated_case(recovery: RecoveryCase) {
         }
         RecoveryCase::Startup => {
             "mp08_mp10_mp11_credential_copy_startup_login_recovery_stays_on_worker"
+        }
+        RecoveryCase::ThreadStart => {
+            "copied_login_recovers_when_codex_refuses_to_start_the_first_thread"
         }
         RecoveryCase::RelaunchFailure => {
             "mp08_mp10_mp11_login_relaunch_failure_settles_prompt_and_advances_queue"
@@ -214,6 +223,9 @@ async fn run_case(recovery: RecoveryCase) {
         Some(app.start_provider_launch(request).unwrap())
     } else {
         app.launch_provider(request).unwrap();
+        if matches!(recovery, RecoveryCase::ThreadStart) {
+            std::fs::write(target_home.join("synthetic-thread-refusal"), "").unwrap();
+        }
         app.submit_prompt(
             session.id(),
             attachments[0].id(),
@@ -294,7 +306,7 @@ async fn run_case(recovery: RecoveryCase) {
                 &DaemonError::ProviderProtocol {
                     provider_run_id: run.id().into(),
                     operation: "initialize fixture provider",
-                    message: "refresh_token_reused".into(),
+                    message: "Your access token could not be refreshed because your refresh token was already used. Please log out and sign in again.".into(),
                 },
             )
             .await;
@@ -324,6 +336,15 @@ async fn run_case(recovery: RecoveryCase) {
                     break;
                 }
                 assert_eq!(interaction.title(), Some("Log in to Codex on this machine"));
+                assert_eq!(
+                    runtime
+                        .owned
+                        .provider_account_profiles
+                        .get(owner, "codex", &copied.profile_id)
+                        .unwrap()
+                        .auth_state,
+                    crate::account_profile::ProviderAccountAuthState::Expired
+                );
                 runtime
                     .resolve_runtime_interaction(session.id(), interaction.id(), "login", None)
                     .await
@@ -382,6 +403,10 @@ async fn run_case(recovery: RecoveryCase) {
     assert!(target_home
         .join("synthetic-official-login-invoked")
         .exists());
+    assert!(
+        !target_home.join("synthetic-copied-auth-at-login").exists(),
+        "provider sign-in must start without the copied login"
+    );
     assert!(!source_auth
         .parent()
         .unwrap()

@@ -104,7 +104,7 @@ pub(super) fn execute_submit_command(
         runtime_registry.restore_claude_runtime_if_live(&run_id, &slot, state);
         return result.map(|_| ProviderPromptSubmitAcknowledgement { resume_state });
     }
-    if run.adapter_key() != "opencode" {
+    if !crate::provider::provider_run_uses_opencode_io(&run) {
         return Ok(ProviderPromptSubmitAcknowledgement {
             resume_state: run.resume_state().clone(),
         });
@@ -156,7 +156,7 @@ pub(super) fn execute_abort_command(
         runtime_registry.restore_claude_runtime_if_live(&run_id, &slot, state);
         return result;
     }
-    if run.adapter_key() != "opencode" {
+    if !crate::provider::provider_run_uses_opencode_io(&run) {
         return Ok(());
     }
 
@@ -389,7 +389,7 @@ pub(super) fn execute_terminate_command(
             }
         }
     }
-    if run.adapter_key() == "opencode"
+    if crate::provider::provider_run_uses_opencode_io(&run)
         && runtime_registry.runtime_slot_missing_or_empty_opencode(&run_id)
     {
         return Ok(());
@@ -492,6 +492,7 @@ pub(super) fn execute_output_poll_command(
             .collect();
         return Ok(Some(ProviderPromptSignalBatch {
             provider_own_turn: ProviderOwnTurnSignal::None,
+            background_notifications: Vec::new(),
             process_memory_limit_bytes: None,
             process_outside_ended: false,
             turn_outcome: None,
@@ -524,6 +525,7 @@ pub(super) fn execute_output_poll_command(
             resolved_variant: None,
             resolved_usage_tokens_total: poll.resolved_usage.and_then(|usage| usage.total_tokens),
             resolved_usage: poll.resolved_usage,
+            model_usage: poll.model_usage,
             account_usage: (!poll.account_rate_limits.is_empty()).then(|| {
                 let limits = serde_json::Value::Array(poll.account_rate_limits);
                 crate::provider::codex_client::normalize_codex_usage(
@@ -554,7 +556,7 @@ pub(super) fn execute_output_poll_command(
         runtime_registry.restore_claude_runtime_if_live(run_id, &slot, state);
         return drain.map(Some);
     }
-    if run.adapter_key() != "opencode" {
+    if !crate::provider::provider_run_uses_opencode_io(run) {
         return Ok(None);
     }
     // MP-08 / MP-10: separate actor/HTTP time from pump and app-lock time.
@@ -596,6 +598,7 @@ pub(super) fn execute_output_poll_command(
         .collect();
     Ok(Some(ProviderPromptSignalBatch {
         provider_own_turn: ProviderOwnTurnSignal::None,
+        background_notifications: Vec::new(),
         process_memory_limit_bytes: None,
         process_outside_ended: false,
         turn_outcome: None,
@@ -628,6 +631,7 @@ pub(super) fn execute_output_poll_command(
         resolved_variant: drain.resolved_variant,
         resolved_usage_tokens_total: drain.resolved_usage_tokens_total,
         resolved_usage: None,
+        model_usage: Vec::new(),
         account_usage: None,
         resolved_resume_state: None,
         thinking_tokens: None,
@@ -681,6 +685,7 @@ mod tests {
             terminal_failure: None,
             notices: Vec::new(),
             resolved_usage: None,
+            model_usage: Vec::new(),
             account_rate_limits: Vec::new(),
         }
     }

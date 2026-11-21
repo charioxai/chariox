@@ -29,6 +29,67 @@ async fn receive(socket: &mut tokio::net::TcpStream, expected: &str) -> String {
     .expect("MP-08/MP-10 catalog notification must arrive promptly")
 }
 
+#[test]
+fn authenticated_mcp_initialize_does_not_wait_for_catalog_workers() {
+    let worktree = crate::test_support::TestWorktree::new("mcp-initialize-with-busy-catalog");
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let run = app
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "dev-stub",
+                "default",
+                "default",
+            )
+            .with_agent_id(agent.id()),
+        )
+        .unwrap();
+    let token = run.runtime_mcp_auth_token().unwrap().to_owned();
+    let router = Arc::new(CommandRouter::with_interactive_capacity(
+        Arc::new(Mutex::new(app)),
+        8,
+    ));
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .max_blocking_threads(1)
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async move {
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let worker = tokio::task::spawn_blocking(move || {
+            started_tx.send(()).unwrap();
+            let _ = release_rx.recv_timeout(std::time::Duration::from_secs(5));
+        });
+        started_rx.await.unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(super::super::run_mcp_http_server_on_listener(router, listener));
+
+        let body = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26"}}"#;
+        let mut socket = tokio::net::TcpStream::connect(address).await.unwrap();
+        socket.write_all(format!(
+            "POST /mcp HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {token}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len(),
+        ).as_bytes()).await.unwrap();
+        let mut response = String::new();
+        let received = tokio::time::timeout(
+            std::time::Duration::from_millis(750), socket.read_to_string(&mut response),
+        ).await;
+        release_tx.send(()).unwrap();
+        worker.await.unwrap();
+        server.abort();
+        received.expect("initialize should not wait for catalog workers").unwrap();
+        assert!(response.starts_with("HTTP/1.1 200"));
+        assert!(response.contains("chariox-runtime"));
+    });
+}
+
 #[tokio::test]
 async fn mcp_catalog_stream_tracks_grant_revoke_register_remove_and_scope() {
     let root = std::env::temp_dir().join(format!(

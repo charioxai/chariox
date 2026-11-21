@@ -10,18 +10,18 @@ pub(super) type Fixture = (
 
 /// A kernel as started by default: every job runs locally.
 pub(super) async fn fixture() -> Fixture {
-    fixture_with(false).await
+    fixture_with(crate::config::DaemonConfig::for_tests()).await
 }
 
 /// A kernel started with remote jobs on, for the tests that drive the remote path.
 pub(super) async fn remote_fixture() -> Fixture {
-    fixture_with(true).await
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.remote_jobs = true;
+    fixture_with(config).await
 }
 
-async fn fixture_with(remote_jobs: bool) -> Fixture {
+pub(super) async fn fixture_with(config: crate::config::DaemonConfig) -> Fixture {
     let worktree = crate::test_support::TestWorktree::new("offload-job-entry");
-    let mut config = crate::config::DaemonConfig::for_tests();
-    config.remote_jobs = remote_jobs;
     let mut app = crate::DaemonApp::bootstrap(config).unwrap();
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(worktree.session_request())

@@ -1,11 +1,17 @@
 use super::{
-    EnvironmentActionState, EnvironmentComponent, EnvironmentComponentHealthState,
-    EnvironmentEventKind, EnvironmentLifecycle, RoomEnvironment,
+    EnvironmentActionState, EnvironmentActorKind, EnvironmentActorPresence, EnvironmentComponent,
+    EnvironmentComponentHealthState, EnvironmentEventKind, EnvironmentLifecycle, RoomEnvironment,
 };
 
 impl RoomEnvironment {
     /// A kernel restart loses execution ownership, not the physical browser or its Tab identities.
     pub(crate) fn reconcile_after_kernel_restart(&mut self) {
+        // Live client attachments end with the kernel process.
+        for actor in self.actors.values_mut() {
+            if actor.kind == EnvironmentActorKind::Human {
+                actor.presence = EnvironmentActorPresence::Disconnected;
+            }
+        }
         if matches!(
             self.lifecycle,
             EnvironmentLifecycle::Stopped | EnvironmentLifecycle::Failed

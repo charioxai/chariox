@@ -133,6 +133,7 @@ response_policies! {
         CredentialsListed,
     ],
     Withhold => [
+        MachineRoomResources,
         OwnerVault,
         CredentialVaultKeySealed,
         SessionViewAttached,
@@ -208,6 +209,7 @@ response_policies! {
         HandoffResolved,
         RoomWorkflowRunsControlled,
         ActivePromptSteered,
+        GatewayWriteCompleted,
         CloudRelayLoggedOut,
         // MP-08 / MP-11: protection-filtered like ScreenshotCaptured and RoomBrowserArtifact.
         KernelSudoRequested,
@@ -298,6 +300,7 @@ response_policies! {
         SessionsListed,
         SessionResolved,
         SessionState,
+        FinishedRoomTasks,
         AgentTaskUpdated,
         RoomEnvironmentState,
         BrowserImportConsent,

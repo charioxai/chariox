@@ -83,19 +83,29 @@ impl GatewayLedger {
                     fingerprint: fingerprint.clone(),
                     armed: true,
                 };
-                let result = execute.await;
+                let mut result = execute.await;
                 // Fault injection for the crash-after-effect drill (EA2-09 e): debug builds only.
                 #[cfg(debug_assertions)]
                 if std::env::var_os("CHARIOX_TEST_CRASH_BEFORE_RECEIPT").is_some() {
                     std::process::abort();
                 }
                 guard.armed = false;
-                let mut result = result;
+                if let Ok(response) = &mut result {
+                    super::write_receipt::compact(response);
+                }
                 let mut stored = stored_of(&result);
-                // The receipt is one record; an answer that cannot be kept is told apart
-                // from "outcome unknown": the request ran and finished.
+                // The result data may exceed the journal's bound even after removing Room
+                // state. Keep the outcome in the receipt, so losing details never turns a
+                // successful write into an apparent failure.
                 if let Err(limit) = CommandResultCache::receipt_room(key, &fingerprint, &stored) {
-                    result = Err(response_too_large(limit));
+                    result = match result {
+                        Ok(response) => Ok(completed_without_details(&response)),
+                        Err(mut failure) => {
+                            failure.message =
+                                format!("The request failed and its error details exceed the {limit}-byte receipt limit.");
+                            Err(failure)
+                        }
+                    };
                     stored = stored_of(&result);
                 }
                 match cache
@@ -131,12 +141,25 @@ fn stored_of(result: &Result<Value, Failure>) -> Value {
     }
 }
 
-fn response_too_large(limit: u64) -> Failure {
-    Failure {
-        code: "kernel_response_too_large".into(),
-        message: format!("The request ran and finished, but its answer is more than {limit} bytes, the most a state-changing request through the gateway can return. It is not run again. Write the output to a file on that kernel and read it with `chariox files get`, or print less."),
-        retryable: false,
-    }
+fn completed_without_details(response: &Value) -> Value {
+    let (response_kind, payload) = response
+        .as_object()
+        .and_then(|tagged| tagged.iter().next())
+        .expect("an oversized typed response has a payload");
+    let session_id = payload
+        .get("session_id")
+        .or_else(|| payload.pointer("/result/session_id"))
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let exit_code = payload
+        .pointer("/result/exit_code")
+        .and_then(Value::as_i64)
+        .and_then(|code| i32::try_from(code).ok());
+    json!(crate::local::LocalDaemonResponse::GatewayWriteCompleted {
+        response_kind: response_kind.clone(),
+        session_id,
+        exit_code,
+    })
 }
 
 fn decode(stored: Option<Value>) -> Settled {
@@ -218,6 +241,9 @@ fn terminal_operation(
 /// through the ledger.
 pub(crate) fn is_repeatable(request: &crate::local::LocalDaemonRequest) -> bool {
     use crate::local::RoomTerminalOperation;
+    if matches!(request, crate::local::LocalDaemonRequest::ResolveSession(_)) {
+        return true;
+    }
     // A terminal is read by listing, a snapshot, an offset or a wait; typing, opening,
     // resizing and closing change it, so a retried `input` never types twice.
     if let Some(operation) = terminal_operation(request) {
@@ -418,36 +444,70 @@ mod tests {
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
-    // A 300 KB answer does not fit its receipt record. The request ran and finished, so the
-    // origin gets a typed refusal naming the limit, and a retry is answered the same way
-    // without running it again. It used to be `outcome unknown`.
+    // A 300 KB answer does not fit its receipt record. Preserve the write's successful
+    // outcome across a restart without keeping its large response.
     #[tokio::test]
-    async fn an_answer_too_large_for_its_receipt_is_a_typed_refusal_not_unknown() {
+    async fn a_large_result_keeps_its_successful_receipt_without_the_details() {
         let path = journal();
         let runs = AtomicU32::new(0);
-        let ledger = GatewayLedger::open(path.clone());
-        let answer = |size: usize| json!({"ShellCommandCompleted": {"stdout": "x".repeat(size)}});
-        let run = |id: &'static str, size: usize| {
-            let (ledger, runs) = (&ledger, &runs);
+        let answer = |size: usize| {
+            json!({"ShellCommandCompleted": {"result": {
+                "session_id": "room", "exit_code": 17, "stdout": "x".repeat(size)
+            }}})
+        };
+        let run = |size| {
+            let runs = &runs;
             async move {
-                ledger
-                    .run(id, fingerprint(&create()), async {
-                        runs.fetch_add(1, Ordering::SeqCst);
-                        Ok(answer(size))
-                    })
-                    .await
+                runs.fetch_add(1, Ordering::SeqCst);
+                Ok(answer(size))
             }
         };
-        assert!(matches!(run("small", 120_000).await, Settled::Done(Ok(_))));
-        for attempt in 0..2 {
-            let Settled::Done(Err(failure)) = run("big", 300_000).await else {
-                panic!("attempt {attempt}: a large answer must be a typed refusal");
-            };
-            assert_eq!(failure.code, "kernel_response_too_large");
-            assert!(!failure.retryable);
-            assert!(failure.message.contains(" bytes"), "{}", failure.message);
-        }
+        let expected = json!({"GatewayWriteCompleted": {
+            "response_kind": "ShellCommandCompleted", "session_id": "room", "exit_code": 17,
+        }});
+        let ledger = GatewayLedger::open(path.clone());
+        let small = ledger
+            .run("small", fingerprint(&create()), run(120_000))
+            .await;
+        assert!(matches!(small, Settled::Done(Ok(value)) if value == answer(120_000)));
+        let large = ledger
+            .run("big", fingerprint(&create()), run(300_000))
+            .await;
+        assert!(matches!(large, Settled::Done(Ok(value)) if value == expected));
+        drop(ledger);
+        let ledger = GatewayLedger::open(path.clone());
+        let replay = ledger
+            .run("big", fingerprint(&create()), run(300_000))
+            .await;
+        assert!(matches!(replay, Settled::Done(Ok(value)) if value == expected));
         assert_eq!(runs.load(Ordering::SeqCst), 2, "each id ran exactly once");
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_large_error_keeps_its_failure_code_on_replay() {
+        let path = journal();
+        let ledger = GatewayLedger::open(path.clone());
+        let failed = async {
+            Err(Failure {
+                code: "fixture_failure".into(),
+                message: "x".repeat(300_000),
+                retryable: false,
+            })
+        };
+        let result = ledger.run("failed", fingerprint(&create()), failed).await;
+        let Settled::Done(Err(failure)) = result else {
+            panic!("an oversized error must retain its failure outcome");
+        };
+        assert_eq!(failure.code, "fixture_failure");
+        assert!(!failure.retryable);
+        assert!(failure.message.contains("receipt limit"));
+        let replay = ledger
+            .run("failed", fingerprint(&create()), async {
+                panic!("a completed failed write must not run again");
+            })
+            .await;
+        assert!(matches!(replay, Settled::Done(Err(cached)) if cached == failure));
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 

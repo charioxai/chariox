@@ -22,9 +22,9 @@ use tokio::time::Instant;
 
 use crate::error::DaemonError;
 use crate::local::{
-    GetCredentialVaultStatusRequest, GetPersonInboxRequest, KernelResourceRefusal,
-    KernelResourceWatch, ListAppInstallationsRequest, ListCredentialsRequest,
-    ListProviderAccountProfilesRequest, LocalDaemonRequest,
+    GetCredentialVaultStatusRequest, GetMachineRoomResourcesRequest, GetPersonInboxRequest,
+    KernelResourceRefusal, KernelResourceWatch, ListAppInstallationsRequest,
+    ListCredentialsRequest, ListProviderAccountProfilesRequest, LocalDaemonRequest,
 };
 use crate::runtime::command::{KernelCaller, KernelCommand, KernelCommandSource};
 use crate::runtime::router::CommandRouter;
@@ -133,6 +133,9 @@ enum FeedResource {
     },
     /// Changes with the Rooms' pending interactions, which no request signals.
     PersonInbox,
+    MachineRoomResources {
+        session_id: String,
+    },
 }
 
 impl FeedResource {
@@ -153,6 +156,17 @@ impl FeedResource {
             "vault_entries" => allow_only(&[]).map(|()| Self::VaultEntries),
             "provider_accounts" => allow_only(&[]).map(|()| Self::ProviderAccounts),
             "person_inbox" => allow_only(&[]).map(|()| Self::PersonInbox),
+            "machine_room_resources" => {
+                allow_only(&["session_id"])?;
+                let session_id = params
+                    .get("session_id")
+                    .and_then(Value::as_str)
+                    .filter(|id| !id.is_empty())
+                    .ok_or(("invalid_params", "`session_id` must name a Room".into()))?;
+                Ok(Self::MachineRoomResources {
+                    session_id: session_id.into(),
+                })
+            }
             "app_installations" => {
                 allow_only(&["session_id"])?;
                 let session_id = match params.get("session_id") {
@@ -345,6 +359,14 @@ impl Feed {
             FeedResource::PersonInbox => {
                 self.read_request(LocalDaemonRequest::GetPersonInbox(GetPersonInboxRequest))
                     .await
+            }
+            FeedResource::MachineRoomResources { session_id } => {
+                self.read_request(LocalDaemonRequest::GetMachineRoomResources(
+                    GetMachineRoomResourcesRequest {
+                        session_id: session_id.clone(),
+                    },
+                ))
+                .await
             }
         }
     }

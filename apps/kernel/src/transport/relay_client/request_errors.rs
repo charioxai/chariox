@@ -35,10 +35,12 @@ pub(super) fn map_relay_error(error: &DaemonError) -> RelayError {
         | DaemonError::ProviderLoginCodeIncomplete
         | DaemonError::ProviderLoginCodeInvalid
         | DaemonError::ProviderProfileRefused { .. }
+        | DaemonError::ProviderDevStubDisabled
         | DaemonError::AgentNotInSession { .. }
         | DaemonError::AgentNotFound { .. }
         | DaemonError::NoActivePrompt { .. }
         | DaemonError::ProviderPromptSteerRejected { .. }
+        | DaemonError::OpenCodeSteerConflict
         | DaemonError::LocalTransport {
             operation: "steer active prompt" | "resolve account profile",
             ..
@@ -219,6 +221,8 @@ pub(super) fn relay_request_kind(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::CreateSession(_) => "session.create",
         LocalDaemonRequest::AttachToSession(_) => "session.attach",
         LocalDaemonRequest::GetSessionState(_) => "session.state.get",
+        LocalDaemonRequest::ListFinishedRoomTasks(_) => "session.tasks.finished.list",
+        LocalDaemonRequest::GetMachineRoomResources(_) => "machine.room_resources.get",
         LocalDaemonRequest::SubmitPrompt(_) => "prompt.submit",
         LocalDaemonRequest::GetRoomEnvironmentState(_) => "environment.state.get",
         LocalDaemonRequest::GetRoomEnvironmentEvents(_) => "environment.events.get",

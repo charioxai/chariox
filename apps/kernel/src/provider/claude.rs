@@ -29,7 +29,6 @@ use launch_args::claude_launch_args;
 pub(crate) use launch_args::{claude_args_with_execution_config, normalized_claude_model};
 #[cfg(test)]
 pub(crate) use mcp_config::CLAUDE_MCP_CONFIG_PLACEHOLDER;
-pub(crate) use mcp_config::CLAUDE_RUNTIME_FILES_PREFIX;
 pub(crate) use mcp_config::CLAUDE_RUNTIME_MCP_SERVER;
 pub(crate) use mcp_config::{materialize_runtime_claude_mcp_config, ClaudeMcpConfigFile};
 pub(crate) use native_tui::{

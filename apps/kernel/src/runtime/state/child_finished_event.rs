@@ -64,6 +64,17 @@ impl KernelRuntimeState {
         {
             return Ok(None);
         }
+        let finished_at_ms = self
+            .owned
+            .operational_history_store
+            .load_prompt_settlement_event(&task.room_id, &task.agent_id, &task.prompt_id)?
+            .and_then(|event| {
+                event
+                    .metadata
+                    .get(crate::history::PROMPT_SETTLED_AT_MS_METADATA_KEY)?
+                    .as_u64()
+            })
+            .unwrap_or_else(crate::session::unix_epoch_ms);
         let mut event = ledger::occurrence(
             parent.session_id(),
             parent.id(),
@@ -74,8 +85,12 @@ impl KernelRuntimeState {
                 "child_agent_id": child.id(),
                 "child_alias": child.alias(),
                 "child_task_id": task.task_id,
-                "success": outcome.kind == crate::provider::TurnOutcomeKind::Completed,
+                "success": matches!(
+                    outcome.kind,
+                    crate::provider::TurnOutcomeKind::Completed | crate::provider::TurnOutcomeKind::AnsweredInTurn
+                ),
                 "outcome": outcome,
+                "finished_at_ms": finished_at_ms,
                 "deadline_reached": deadline_reached,
                 "resumes_at_ms": child.usage_limit_stop().and_then(|stop| match stop.state {
                     crate::agent::UsageLimitStopState::Armed { at_ms } => Some(at_ms),
@@ -171,8 +186,16 @@ impl KernelRuntimeOwnedState {
     ) -> TurnOutcome {
         if task.state == ExecutionState::Done {
             failure
-                .filter(|outcome| outcome.is_error())
+                .filter(|outcome| {
+                    outcome.is_error()
+                        || outcome.kind == crate::provider::TurnOutcomeKind::AnsweredInTurn
+                })
                 .cloned()
+                .or_else(|| {
+                    self.recorded_turn_outcome(task).filter(|outcome| {
+                        outcome.kind == crate::provider::TurnOutcomeKind::AnsweredInTurn
+                    })
+                })
                 .unwrap_or_else(TurnOutcome::completed)
         } else {
             // A task that did not finish its work ended cancelled or failed, whatever its turn recorded.

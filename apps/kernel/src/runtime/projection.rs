@@ -48,7 +48,8 @@ pub(crate) use remote_relay_inventory_projection::{
 };
 pub(crate) use session_active_run_projection::projected_active_provider_run_id;
 pub(crate) use session_snapshot_projection::{
-    agent_activity_for_session_projection, SESSION_SNAPSHOT_PROJECTION_VERSION,
+    agent_activity_for_session_projection, annotate_deadline_ends,
+    SESSION_SNAPSHOT_PROJECTION_VERSION,
 };
 pub use session_snapshot_projection::{
     AgentActiveTurnProjection, AgentPromptRuntimeStatus, AgentRuntimeActivity, AgentRuntimeStatus,

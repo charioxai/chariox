@@ -288,12 +288,14 @@ async fn a_second_answer_gets_interaction_closed_and_one_audit_record() {
     let f = fixture("choice-first-wins");
     let _rx = f.register(f.interaction("race", RuntimeInteractionLevel::Info), None);
     f.answer("race", "blue", ExternalAgent).await.unwrap();
-    let late = f.answer("race", "red", Terminal).await.unwrap_err();
-    assert_eq!(
-        crate::transport::kernel_protocol::map_kernel_error(&late).code,
-        "interaction_closed",
-        "{late}"
-    );
+    for caller in [Terminal, ExternalAgent] {
+        let late = f.answer("race", "red", caller).await.unwrap_err();
+        assert_eq!(
+            crate::transport::kernel_protocol::map_kernel_error(&late).code,
+            "interaction_closed",
+            "{late}"
+        );
+    }
     let audit = f
         .state
         .owned

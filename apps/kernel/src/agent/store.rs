@@ -8,12 +8,6 @@ pub struct AgentStore {
     agent_ids_by_session: HashMap<String, Vec<String>>,
 }
 
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub(crate) struct AgentSessionSummary {
-    pub(crate) count: usize,
-    pub(crate) aliases: HashSet<String>,
-}
-
 impl AgentStore {
     pub fn new() -> Self {
         Self::default()
@@ -205,22 +199,13 @@ impl AgentStore {
         })
     }
 
-    pub(crate) fn session_summary(&self, session_id: &str) -> AgentSessionSummary {
-        let mut summary = AgentSessionSummary::default();
-        let Some(agent_ids) = self.session_agent_ids(session_id) else {
-            return summary;
-        };
-        for agent_id in agent_ids {
-            if let Some(agent) = self.agents.get(agent_id) {
-                if !agent.archived() && agent.is_room_agent() {
-                    summary.count += 1;
-                }
-                if let Some(alias) = agent.alias() {
-                    summary.aliases.insert(alias.trim().to_lowercase());
-                }
-            }
-        }
-        summary
+    pub(crate) fn session_aliases(&self, session_id: &str) -> HashSet<String> {
+        self.session_agent_ids(session_id)
+            .into_iter()
+            .flatten()
+            .filter_map(|id| self.agents.get(id)?.alias())
+            .map(|alias| alias.trim().to_lowercase())
+            .collect()
     }
 
     pub fn focused_agent(&self, session_id: &str) -> Option<&AgentInstance> {
@@ -309,35 +294,28 @@ mod tests {
     }
 
     #[test]
-    fn session_summary_counts_agents_and_normalizes_aliases_without_sorting() {
+    fn session_aliases_normalizes_aliases_without_sorting() {
         let mut store = AgentStore::new();
         store.insert(agent("agent-1", "session-a", Some("Alpha")));
         store.insert(agent("agent-2", "session-a", Some("BETA")));
         store.insert(agent("agent-3", "session-a", None));
         store.insert(agent("agent-4", "session-b", Some("alpha")));
 
-        let summary = store.session_summary("session-a");
-
-        assert_eq!(summary.count, 3);
-        assert!(summary.aliases.contains("alpha"));
-        assert!(summary.aliases.contains("beta"));
-        assert_eq!(summary.aliases.len(), 2);
+        let aliases = store.session_aliases("session-a");
+        assert!(aliases.contains("alpha"));
+        assert!(aliases.contains("beta"));
+        assert_eq!(aliases.len(), 2);
     }
 
-    // MP-08/MP-09/MP-10/MP-11 A4: a sub-agent takes no room slot and no grid cell.
     #[test]
-    fn sub_agents_take_no_room_count_and_no_layout_cell() {
+    fn sub_agents_keep_their_alias_without_taking_a_layout_cell() {
         let mut store = AgentStore::new();
         store.insert(agent("agent-1", "session-a", Some("root")));
         let mut worker = agent("agent-2", "session-a", Some("worker"));
         worker.set_parent_agent(Some(crate::agent::AgentRef::local("agent-1")));
         store.insert(worker);
 
-        assert_eq!(store.session_summary("session-a").count, 1);
-        assert!(store
-            .session_summary("session-a")
-            .aliases
-            .contains("worker"));
+        assert!(store.session_aliases("session-a").contains("worker"));
 
         let mut second = agent("agent-3", "session-a", Some("second"));
         second.set_parent_agent(None);
@@ -359,8 +337,7 @@ mod tests {
 
         assert_eq!(store.count_by_session("session-a"), 1);
         assert_eq!(store.count_by_session("session-b"), 1);
-        assert_eq!(store.session_summary("session-b").count, 1);
-        assert!(store.session_summary("session-b").aliases.contains("moved"));
+        assert!(store.session_aliases("session-b").contains("moved"));
 
         let removed = store
             .remove("agent-1")

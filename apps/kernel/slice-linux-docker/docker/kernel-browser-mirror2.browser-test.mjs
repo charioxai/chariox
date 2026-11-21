@@ -26,9 +26,14 @@ const settle = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function stayDom(next, ms, label) { const until = Date.now() + ms; let packet, tiles = 0; while (Date.now() < until) { packet = await next(300); tiles += packet.tiles.length; assert.equal(packet.fallback, undefined, label); } return { ...packet, tiles: packet.tiles, seenTiles: tiles }; }
 
 async function mirrored(html, run, routes = {}, initialOptions = {}, environment = process.env) {
-  const root = await mkdtemp(path.join(process.env.CHARIOX_MDACCESS_DRILL_ROOT, "mirror2-"));
+  const root = await mkdtemp(path.join(process.env.CHARIOX_MDACCESS_DRILL_ROOT, "mirror2-")), requested = [];
   const server = createServer((request, response) => {
-    const port = String(server.address().port), route = routes[request.url];
+    requested.push(request.url);
+    const port = String(server.address().port), own = routes[request.url];
+    // A route with `cookie` answers `denied` to a request without that cookie (an image behind the page's sign-in);
+    // one with `referer` answers `denied` to a request whose Referer is not that path (an image only its own page may load).
+    const refused = own?.cookie && !(request.headers.cookie ?? "").split(/;\s*/).includes(own.cookie) || own?.referer && new URL(request.headers.referer ?? "http://none/").pathname !== own.referer;
+    const route = refused ? own.denied : own;
     if (route) { response.setHeader("Content-Type", route.type); for (const [name, value] of Object.entries(route.headers ?? {})) response.setHeader(name, value); const send = () => response.end(route.binary ?? route.body.replaceAll("PORT", port)); if (route.delay_ms) setTimeout(send, route.delay_ms); else send(); return; }
     response.setHeader("Content-Type", "text/html"); response.end(`<!doctype html>${html.replaceAll("PORT", port)}`);
   });
@@ -60,7 +65,7 @@ async function mirrored(html, run, routes = {}, initialOptions = {}, environment
       return { next, input, subscription_id, generation: opened.generation };
     };
     const { next, input, subscription_id, generation } = await subscribe(initialOptions);
-    await run({ next, evaluate, host, input, subscribe, subscription_id, generation, tab_id: opened.tab_id });
+    await run({ next, evaluate, host, input, subscribe, subscription_id, generation, tab_id: opened.tab_id, requested });
   } finally {
     await host.stop();
     if (host.chromium.browserUser) await rm(host.chromium.browserUser.root, { recursive: true, force: true });
@@ -93,10 +98,9 @@ test("MP-10: a rebuilt subtree of the same shape travels as text/attribute diffs
   const linkId = first.ops.find(op => op.op === "children").children[0];
   await evaluate("render(['Ada Lovelace','Adam Smith'])");
   const second = await next(600);
-  assert.deepEqual([...new Set(second.ops.map(op => op.op))].sort(), ["attr", "text"], JSON.stringify(second.ops));
-  assert.deepEqual(second.ops.filter(op => op.op === "text").map(op => op.text).sort(), ["about Ada Lovelace", "about Adam Smith", "da Lovelace", "dam Smith"]);
-  // The links' new href values (what an href selector reads), never their URLs as an href.
-  assert.deepEqual(second.ops.filter(op => op.op === "attr").map(op => [op.name, op.value]).sort(), [["chariox-href", "/wiki/Ada Lovelace"], ["chariox-href", "/wiki/Adam Smith"]]);
+  // No sheet selects on the links' href values, so none travels (r11): only the text changes.
+  assert.deepEqual([...new Set(second.ops.map(op => op.op))].sort(), ["text"], JSON.stringify(second.ops));
+  assert.deepEqual(second.ops.map(op => op.text).sort(), ["about Ada Lovelace", "about Adam Smith", "da Lovelace", "dam Smith"]);
   assert(JSON.stringify(second).length < 1500, "MP-10: one keystroke-sized delta");
   // One more item: only that item's records travel.
   await evaluate("render(['Ada','Adams','Adobe'])");
@@ -421,6 +425,21 @@ for (const tainted of [false, true]) for (const device_scale_factor of [1, 2]) t
   assert.equal(tiles, 1, "MP-10: the canvas still reaches the viewer");
 }, { "/dot.png": dot }, {}, { ...process.env, CHARIOX_KERNEL_BROWSER_HEADLESS: "1" }));
 
+// browserfidelity r16 (YC sites, three.js): an opaque WebGL canvas (alpha:false, three.js's default) read after
+// compositing is opaque black, not transparent, so its own-pixels still was black. Its still must show what the page
+// shows; a 2D canvas the page fills black stays black.
+const glOpaque = '<style>body{margin:0}canvas{display:block;width:240px;height:120px}</style><canvas id="g" width="240" height="120"></canvas><canvas id="k" width="240" height="120"></canvas><script>const g=document.querySelector("#g").getContext("webgl",{alpha:false});g.clearColor(0.1,0.5,0.8,1);g.clear(g.COLOR_BUFFER_BIT);const k=document.querySelector("#k").getContext("2d");k.fillStyle="#000";k.fillRect(0,0,240,120)</script>';
+for (const device_scale_factor of [1, 2]) test(`MP-10: the still of an opaque WebGL canvas shows its pixels, a black 2D canvas stays black (DPR${device_scale_factor})`, () => mirrored(glOpaque, async ({ subscribe, evaluate }) => {
+  assert.equal(await evaluate('!!document.querySelector("#g").getContext("webgl")'), true, "fixture: the browser has WebGL");
+  const { next } = await subscribe({ device_scale_factor });
+  const stills = new Map();
+  for (let i = 0; i < 8 && stills.size < 2; i++) for (const tile of (await next(1100)).tiles) stills.set(tile.node_id, tile);
+  assert.equal(stills.size, 2, "both canvases' stills reach the viewer");
+  const centre = (still) => { const p = decodePng(still.data_base64, device_scale_factor), x = p.width >> 1, y = p.height >> 1; return [...p.pixels.subarray((y * p.width + x) * 4, (y * p.width + x) * 4 + 3)].join(","); };
+  // The WebGL canvas's still holds its clear colour, not black; the black 2D canvas's still stays black.
+  assert.deepEqual([...stills.values()].map(centre).sort(), ["0,0,0", "26,128,204"]);
+}, {}, {}, { ...process.env, CHARIOX_KERNEL_BROWSER_HEADLESS: "1" }));
+
 // browserfidelity r4 (vimeo): a consent banner lives in a closed root whose host has no box of its own (0x0, the content is
 // position: fixed). The region's still covers what the closed content paints, placed relative to the host, and a click
 // on it reaches the content.
@@ -728,6 +747,30 @@ test("MP-08: review #941-3 focus inside an attached cross-origin frame names the
     await evaluate("document.querySelector('#top').focus();true");
     assert.equal(await focusOf(top), top, "MP-08: focus leaving the frame reaches the viewer");
   }, { "/two": { type: "text/html", body: '<!doctype html><input id="a"><input id="b"><script>onmessage=e=>document.getElementById(e.data).focus()</script>' } }));
+
+// browserfidelity r14 (F7): the viewer draws a focus ring only where the page's browser does. A mouse press focuses
+// without one, a key (also one after the press, which moves no focus) turns it on; inside a cross-origin frame too.
+test("MP-08: the header says whether the page's focus draws its ring (:focus-visible): a press no, a key yes, in a frame too", () => mirrored(
+  '<button id="one" style="width:120px;height:30px">one</button><button id="two">two</button><iframe src="http://localhost:PORT/inner" style="width:300px;height:100px"></iframe>', async ({ next, input }) => {
+    await new Promise(resolve => setTimeout(resolve, 800));
+    const snapshot = await next();
+    const id = name => elements(snapshot).find(([, , attrs]) => attrs.id === name)?.[0];
+    const [one, two, three] = [id("one"), id("two"), id("three")];
+    assert(three && Number(three.slice(1)) >= 1e9, "MP-10: the frame's button is mirrored");
+    assert.equal(snapshot.focus_visible, false, "MP-08: nothing focused draws no ring");
+    let focused = snapshot.focused, ring = snapshot.focus_visible, sequence = snapshot.sequence;
+    const stateOf = async want => { for (let i = 0; i < 6 && JSON.stringify([focused, ring]) !== JSON.stringify(want); i++) { const packet = await next(1000); sequence = packet.sequence; if (Object.hasOwn(packet, "focused")) focused = packet.focused; if (Object.hasOwn(packet, "focus_visible")) ring = packet.focus_visible; } return [focused, ring]; };
+    await input(sequence, { kind: "click", node_id: one, x: 10, y: 10 });
+    assert.deepEqual(await stateOf([one, false]), [one, false], "MP-08: a mouse press focuses the button without a ring");
+    await input(sequence, { kind: "key", key: "ArrowDown" });
+    assert.deepEqual(await stateOf([one, true]), [one, true], "MP-08: a key after the press turns the ring on without moving the focus");
+    await input(sequence, { kind: "key", key: "Tab" });
+    assert.deepEqual(await stateOf([two, true]), [two, true], "MP-08: Tab moves the focus with its ring");
+    await input(sequence, { kind: "click", node_id: three, x: 10, y: 10 });
+    assert.deepEqual(await stateOf([three, false]), [three, false], "MP-08: a press inside the frame focuses its button without a ring");
+    await input(sequence, { kind: "key", key: "ArrowDown" });
+    assert.deepEqual(await stateOf([three, true]), [three, true], "MP-08: a key inside the frame turns its ring on");
+  }, { "/inner": { type: "text/html", body: '<!doctype html><button id="three" style="width:120px;height:30px">three</button>' } }));
 
 test("MP-10: review #941-4 a CDP-read cross-origin sheet keeps its already-loaded imports (own base, media condition, images and fonts)", () => mirrored(
   '<link rel="stylesheet" href="http://localhost:PORT/cdn/main.css"><div class="x" style="width:20px;height:20px">a</div>', async ({ next }) => {
@@ -1055,6 +1098,59 @@ test("MP-10: a selector on a link's href value matches in the viewer as on the p
   assert.equal(op?.value, "/cookies", "MP-10: a changed href value reaches the viewer");
 }));
 
+// Mac decision 208104: the href values cost bytes on link-heavy pages (MDN +16 KB of 40 KB deflated), so they travel only
+// once a sheet of the document selects on them. A presence test (`a[href]`) and `:target` need no value.
+const plainLinks = '<style>a{color:rgb(0, 0, 0)} a[href]{text-decoration:none} :target{color:rgb(1, 2, 3)}</style><a id="c" href="/Cookie-Policy">c</a><a id="n" href="/news">n</a><svg><a id="s" href="/svg-link"><text>s</text></a></svg>';
+const hrefOps = packet => (packet.ops ?? []).filter(op => op.op === "attr" && op.name === "chariox-href");
+test("MP-10: a page whose sheets never select on an href value sends no link's href value", () => mirrored(plainLinks, async ({ next, evaluate }) => {
+  const snapshot = await next();
+  assert(rows(snapshot.nodes).some(row => row.tag === "a"), "the links are mirrored");
+  assert.deepEqual(rows(snapshot.nodes).filter(row => row.attrs?.["chariox-href"] !== undefined).map(row => row.attrs.id), [], "MP-10: no link carries its href value");
+  await evaluate("document.getElementById('n').setAttribute('href','/cookies');document.getElementById('n').textContent='m';true");
+  const later = []; for (let i = 0; i < 4 && !later.some(packet => packet.ops?.some(op => op.op === "text")); i++) later.push(await next(2000));
+  assert(later.some(packet => packet.ops?.some(op => op.op === "text")), "the edit arrived");
+  assert.deepEqual(later.flatMap(hrefOps), [], "MP-10: an href change sends no href value either");
+}));
+test("MP-10: a sheet added after first paint that selects on an href value sends the links already shown their values", () => mirrored(plainLinks, async ({ next, evaluate }) => {
+  const snapshot = await next(), ids = new Map(rows(snapshot.nodes).filter(row => row.attrs?.id).map(row => [row.attrs.id, row.id]));
+  assert.deepEqual(rows(snapshot.nodes).filter(row => row.attrs?.["chariox-href"] !== undefined), []);
+  await evaluate(`document.head.append(Object.assign(document.createElement("style"),{textContent:'a[href*="cookie" i]{color:rgb(4, 5, 6)}'}));true`);
+  const values = new Map(); for (let i = 0; i < 4 && values.size < 3; i++) for (const op of hrefOps(await next(2000))) values.set(op.id, op.value);
+  assert.deepEqual(Object.fromEntries(values), { [ids.get("c")]: "/Cookie-Policy", [ids.get("n")]: "/news", [ids.get("s")]: "/svg-link" }, "MP-10: every link already sent gets its href value");
+  await evaluate("const a=document.createElement('a');a.id='late';a.href='/later';document.body.append(a);true");
+  let added = null; for (let i = 0; i < 4 && !added; i++) added = (await next(2000)).ops?.filter(op => op.op === "children").flatMap(op => rows(op.nodes)).find(row => row.attrs?.id === "late") ?? null;
+  assert.equal(added?.attrs["chariox-href"], "/later", "MP-10: a link added afterwards carries its value");
+}));
+
+// w3.org (browserfidelity r12): the W3C logo is sized by `.head img[src*="logos/W3C"]`; the viewer's img src is a resource
+// key, so the page's own src value travels inert as `chariox-src` once a sheet selects on it, and follows a change.
+const srcValues = '<style>img{width:10px;height:10px} .head img[src*="logos/W3C"]{width:120px;height:120px}</style><div class="head"><img id="logo" src="/logos/W3C.svg"><img id="other" src="/x.svg"></div><iframe id="f" src="about:blank"></iframe><p id="x" chariox-src="/logos/W3C">x</p>';
+const srcOps = packet => (packet.ops ?? []).filter(op => op.op === "attr" && op.name === "chariox-src");
+test("MP-10: a selector on an element's src value reads the page's own src in the viewer (chariox-src), also after it changes", () => mirrored(srcValues, async ({ next, evaluate }) => {
+  const snapshot = await next(), byId = new Map(rows(snapshot.nodes).filter(row => row.attrs?.id).map(row => [row.attrs.id, row]));
+  assert.equal(byId.get("logo").attrs["chariox-src"], "/logos/W3C.svg", "MP-10: the logo carries its own src value");
+  assert.equal(byId.get("other").attrs["chariox-src"], "/x.svg");
+  assert.equal(byId.get("x").attrs["chariox-src"], undefined, "MP-10: a page's own chariox-src never travels");
+  assert.equal(byId.get("logo").attrs.src, undefined, "MP-10: the src itself still never travels");
+  await evaluate("document.getElementById('other').setAttribute('src','/logos/W3C-2.svg');true");
+  let op; for (let i = 0; i < 4 && !op; i++) op = srcOps(await next(2000)).find(op => op.id === byId.get("other").id);
+  assert.equal(op?.value, "/logos/W3C-2.svg", "MP-10: a changed src value reaches the viewer");
+}));
+test("MP-10: a page whose sheets never select on a src value sends no src value", () => mirrored('<style>img[src]{width:12px}</style><img id="a" src="/a.svg"><p id="t">t</p>', async ({ next, evaluate }) => {
+  const snapshot = await next();
+  assert.deepEqual(rows(snapshot.nodes).filter(row => row.attrs?.["chariox-src"] !== undefined), [], "MP-10: no element carries its src value");
+  await evaluate("document.getElementById('a').setAttribute('src','/b.svg');document.getElementById('t').textContent='u';true");
+  const later = []; for (let i = 0; i < 4 && !later.some(packet => packet.ops?.some(op => op.op === "text")); i++) later.push(await next(2000));
+  assert.deepEqual(later.flatMap(srcOps), [], "MP-10: a src change sends no src value either");
+}));
+test("MP-10: a sheet added after first paint that selects on a src value sends the images already shown their values", () => mirrored('<img id="a" src="/logos/W3C.svg"><img id="b" src="/b.svg">', async ({ next, evaluate }) => {
+  const snapshot = await next(), ids = new Map(rows(snapshot.nodes).filter(row => row.attrs?.id).map(row => [row.attrs.id, row.id]));
+  assert.deepEqual(rows(snapshot.nodes).filter(row => row.attrs?.["chariox-src"] !== undefined), []);
+  await evaluate(`document.head.append(Object.assign(document.createElement("style"),{textContent:'img[src*="W3C"]{width:120px}'}));true`);
+  const values = new Map(); for (let i = 0; i < 4 && values.size < 2; i++) for (const op of srcOps(await next(2000))) values.set(op.id, op.value);
+  assert.deepEqual(Object.fromEntries(values), { [ids.get("a")]: "/logos/W3C.svg", [ids.get("b")]: "/b.svg" }, "MP-10: every image already sent gets its src value");
+}));
+
 // Audit 2026-10-10 §4.4: attribute denylist instead of the rendered/CSS-referenced allowlist.
 const attributesPage = '<x-card id="card"><h2 slot="title">Title</h2><p>body</p></x-card><form><input id="v" required pattern="[a-z]+" minlength="2" maxlength="5" step="2" list="l" data-small="ok" data-big="' + "x".repeat(2000) + '" data-csrf-token="t0k3n" csrf="t0k3n" onclick="x()"><datalist id="l"><option value="ab"></option></datalist><input id="img" type="image" alt="Go"><input id="mo" type="month"><input id="fi" type="file"></form><script>document.getElementById("card").attachShadow({mode:"open"}).innerHTML="<slot name=title></slot><slot></slot>"</script>';
 test("MP-10: every attribute travels except the denied ones (named slots, constraint validation, data-*, input types); long values, credential-like names and handlers do not", () => mirrored(attributesPage, async ({ next, evaluate }) => {
@@ -1133,6 +1229,101 @@ for (const picture of [false, true]) test(`MP-10: a lazy ${picture ? 'picture' :
     assert(delivered.some(resource => resource.key === key && Buffer.from(resource.data_base64, 'base64').toString().includes('#c0ffee')), 'MP-10: the mirrored image key has the selected candidate bytes');
   }, { '/candidate.svg': { type: 'image/svg+xml', body: '<svg xmlns="http://www.w3.org/2000/svg" width="30" height="40"><path fill="#c0ffee" d="M0 0h30v40H0z"/></svg>' } }));
 
+// The kernel's page draws at density 1 (the owned desktop); a viewer at density 2 draws each image from the candidate
+// the page would pick at 2, with that density (its intrinsic size), as a page on a density-2 screen.
+const SVG = fill => ({ type: 'image/svg+xml', body: `<svg xmlns="http://www.w3.org/2000/svg" width="30" height="40"><path fill="#${fill}" d="M0 0h30v40H0z"/></svg>` });
+const DENSITY_ROUTES = { '/one.svg': SVG('ff0000'), '/two.svg': SVG('0000ff'), '/fallback.svg': SVG('00ff00'), '/four.svg': SVG('000000') };
+// The viewer's images as packets leave them: each image's id, the fill of its key's bytes (once sent) and its `chariox-density`.
+const imageViews = (snapshot, ids) => {
+  const images = rows(snapshot.nodes).filter(row => row.tag === 'img' && ids.includes(row.attrs.id)), delivered = [...snapshot.resources];
+  const keys = new Map(images.map(row => [row.id, row.res])), densities = new Map(images.map(row => [row.id, row.attrs['chariox-density'] ?? null]));
+  const color = key => { const resource = delivered.findLast(resource => resource.key === key); return resource && /fill="#(\w+)"/.exec(Buffer.from(resource.data_base64, 'base64').toString())?.[1]; };
+  assert.equal(images.length, ids.length, 'MP-10: every fixture image is mirrored');
+  return {
+    add(packet) { for (const op of packet.ops) { if (op.op === 'res') keys.set(op.id, op.res); if (op.op === 'attr' && op.name === 'chariox-density') densities.set(op.id, op.value); } delivered.push(...packet.resources); },
+    now: () => images.map(row => [row.attrs.id, color(keys.get(row.id)), densities.get(row.id)]),
+  };
+};
+// Packets until the images look as expected (or 10 s), then the images as they are.
+const settleImages = async (next, view, expected) => { for (let i = 0; i < 20 && JSON.stringify(view.now()) !== JSON.stringify(expected); i++) view.add(await next(500)); return view.now(); };
+const DENSITY_IMAGES = `<img id="x" srcset="/one.svg 1x, /two.svg 2x" width="30" height="40"><img id="w" srcset="/one.svg 30w, /two.svg 60w" sizes="(max-width: 10px) 5px, calc(2 * 10px + .625em)"><picture><source srcset="/one.svg, /two.svg 2x"><img id="p" src="/fallback.svg" width="30" height="40"></picture>`;
+for (const scale of [1, 2]) test(`MP-10: a density-${scale} viewer gets each srcset image's density-${scale} candidate and its density`, () => mirrored(DENSITY_IMAGES, async ({ next }) => {
+    const expected = ['x', 'w', 'p'].map(id => [id, scale === 2 ? '0000ff' : 'ff0000', scale === 2 ? '2' : null]);
+    assert.deepEqual(await settleImages(next, imageViews(await next(), ['x', 'w', 'p']), expected), expected);
+  }, DENSITY_ROUTES, { device_scale_factor: scale }));
+
+// Chrome picks the lowest candidate density at or above the screen's, else the highest: it no longer steps down to the
+// candidate below when their geometric mean exceeds the screen's density (Chrome 155: `1.5x, 3x` at 2 draws the 3x).
+test("MP-10: a density-2 viewer gets the lowest candidate at or above 2, as Chrome picks it", () => mirrored(
+  `<img id="x" srcset="/one.svg 1.5x, /two.svg 3x">`, async ({ next }) => {
+    const expected = [['x', '0000ff', '3']];
+    assert.deepEqual(await settleImages(next, imageViews(await next(), ['x']), expected), expected);
+  }, DENSITY_ROUTES, { device_scale_factor: 2 }));
+
+// A srcset change re-picks at the viewer's density: the new candidate's key travels with its density.
+test("MP-10: a srcset change at viewer density 2 sends the new density-2 candidate and its density", () => mirrored(
+  `<img id="x" src="/one.svg" width="30" height="40">`, async ({ next, evaluate }) => {
+    const view = imageViews(await next(), ['x']);
+    assert.deepEqual(await settleImages(next, view, [['x', 'ff0000', null]]), [['x', 'ff0000', null]]);
+    await evaluate("document.getElementById('x').srcset = '/one.svg 1x, /two.svg 2x'; true");
+    assert.deepEqual(await settleImages(next, view, [['x', '0000ff', '2']]), [['x', '0000ff', '2']]);
+  }, DENSITY_ROUTES, { device_scale_factor: 2 }));
+
+// Image candidate states at a viewer density the page does not draw at (the PR's table; one test per row):
+// the page's candidate not drawn yet -> it travels, nothing else loads; drawn, the viewer's loading -> the page's
+// travels; the viewer's loaded (with the page's cookies) -> it travels with its density; the viewer's failed -> the page's stays.
+test("MP-10: an image the page has not drawn yet (lazy, below the view) keeps its own candidate and loads no other", () => mirrored(
+  `<div style="height:6000px"></div><img id="x" loading="lazy" src="/one.svg" srcset="/one.svg 1x, /two.svg 2x" width="30" height="40">`, async ({ next, evaluate, requested }) => {
+    const view = imageViews(await next(), ['x']);
+    for (let i = 0; i < 3; i++) view.add(await next(300));
+    assert.equal(view.now()[0][2], null, 'MP-10: no density-2 candidate travels before the page draws the image');
+    assert(!requested.includes('/two.svg'), 'MP-10: the viewer candidate does not load ahead of the page');
+    await evaluate("document.getElementById('x').scrollIntoView(); true");
+    assert.deepEqual(await settleImages(next, view, [['x', '0000ff', '2']]), [['x', '0000ff', '2']]);
+  }, DENSITY_ROUTES, { device_scale_factor: 2 }));
+test("MP-10: while the viewer's candidate loads the image keeps the page's drawn candidate", () => mirrored(
+  `<img id="x" srcset="/one.svg 1x, /two.svg 2x" width="30" height="40">`, async ({ next }) => {
+    const view = imageViews(await next(), ['x']);
+    assert.deepEqual(await settleImages(next, view, [['x', 'ff0000', null]]), [['x', 'ff0000', null]], 'MP-10: the drawn 1x travels while the 2x loads');
+    assert.deepEqual(await settleImages(next, view, [['x', '0000ff', '2']]), [['x', '0000ff', '2']], 'MP-10: then the 2x once it has loaded');
+  }, { ...DENSITY_ROUTES, '/two.svg': { ...SVG('0000ff'), delay_ms: 4000 } }, { device_scale_factor: 2 }));
+// The viewer's candidate on another origin (an image host) behind a cookie of that host: the page's load carries it,
+// a credential-less read of the URL gets the host's sign-in answer instead.
+test("MP-10: a viewer candidate behind its host's cookie loads with that cookie, never as the cookie-less answer", () => mirrored(
+  `<img id="x" srcset="/one.svg 1x, http://localhost:PORT/two.svg 2x" width="30" height="40">`, async ({ host, tab_id, subscribe }) => {
+    const { connection, sessionId } = await host.browser.resolvePageTarget(host.tabs.get(tab_id).target_id), port = new URL((await connection.send('Runtime.evaluate', { expression: 'location.href', returnByValue: true }, sessionId)).result.value).port;
+    assert((await connection.send('Network.setCookie', { name: 'signed', value: '1', url: `http://localhost:${port}/`, sameSite: 'None', secure: true }, sessionId)).success);
+    const viewer = await subscribe({ device_scale_factor: 2 });
+    assert.deepEqual(await settleImages(viewer.next, imageViews(await viewer.next(), ['x']), [['x', '0000ff', '2']]), [['x', '0000ff', '2']]);
+  }, { ...DENSITY_ROUTES, '/two.svg': { ...SVG('0000ff'), cookie: 'signed=1', denied: SVG('00ff00') } }));
+test("MP-10: a viewer candidate that fails to load (not an image) leaves the image on the page's drawn candidate", () => mirrored(
+  `<img id="x" srcset="/one.svg 1x, /two.svg 2x" width="30" height="40">`, async ({ next }) => {
+    const view = imageViews(await next(), ['x']);
+    for (let i = 0; i < 6; i++) view.add(await next(400));
+    assert.deepEqual(view.now(), [['x', 'ff0000', null]]);
+  }, { ...DENSITY_ROUTES, '/two.svg': { type: 'text/html', body: '<p>sign in</p>' } }, { device_scale_factor: 2 }));
+
+// A same-origin frame's image-set() option at the viewer's density loads as that frame loads its CSS images: with the
+// frame's own Referer and referrer policy, not the top document's (here no-referrer), so a Referer-gated host answers it.
+test("MP-10: a same-origin frame's image-set() option at viewer density 2 loads with the frame's referrer", () => mirrored(
+  '<meta name="referrer" content="no-referrer"><iframe id="f" src="/child" width="300" height="200" style="border:0"></iframe>', async ({ next }) => {
+    const delivered = [], fills = () => delivered.map(resource => /fill="#(\w+)"/.exec(Buffer.from(resource.data_base64, 'base64').toString())?.[1]).filter(Boolean);
+    for (let i = 0; i < 24 && !fills().includes('0000ff'); i++) delivered.push(...(await next(500)).resources);
+    assert(fills().includes('0000ff'), `MP-10: the frame's 2x option arrives as the frame loads it (fills ${fills()})`);
+    assert(!fills().includes('00ff00'), 'MP-10: no load of the 2x option without the frame\'s Referer');
+  }, { ...DENSITY_ROUTES,
+    '/child': { type: 'text/html', body: '<!doctype html><div style="width:30px;height:40px;background-image:image-set(url(/one.svg) 1x, url(/set-two.svg) 2x)"></div>' },
+    '/set-two.svg': { ...SVG('0000ff'), referer: '/child', denied: SVG('00ff00') } }, { device_scale_factor: 2 }));
+
+// A same-origin frame's images resolve viewport units, sizes and picture media in the frame (300 px wide), not the page.
+const FRAME_IMAGES = '<img id="w" srcset="/one.svg 300w, /two.svg 600w, /four.svg 1200w" sizes="100vw" width="30" height="40"><picture><source media="(max-width: 400px)" srcset="/one.svg, /two.svg 2x"><img id="p" src="/fallback.svg" width="30" height="40"></picture>';
+for (const scale of [1, 2]) test(`MP-10: a density-${scale} viewer picks a same-origin frame's candidates by the frame's viewport`, () => mirrored(
+  '<iframe id="f" src="/frame" width="300" height="200" style="border:0"></iframe>', async ({ evaluate, subscribe }) => {
+    for (let i = 0; i < 80 && !await evaluate("[...document.getElementById('f').contentDocument?.images ?? []].every(image => image.complete) && document.getElementById('f').contentDocument?.images.length === 2"); i++) await new Promise(resolve => setTimeout(resolve, 25));
+    const viewer = await subscribe({ device_scale_factor: scale }), expected = ['w', 'p'].map(id => [id, scale === 2 ? '0000ff' : 'ff0000', scale === 2 ? '2' : null]);
+    assert.deepEqual(await settleImages(viewer.next, imageViews(await viewer.next(), ['w', 'p']), expected), expected);
+  }, { ...DENSITY_ROUTES, '/frame': { type: 'text/html', body: `<!doctype html><body style="margin:0">${FRAME_IMAGES}` } }));
+
 test("MP-10: past the resource-key budget the least recently used URL mapping goes; new images keep getting keys", () => mirrored(
   `<div id="g"></div><script>const g=document.getElementById("g");for(let i=0;i<4200;i++){const img=document.createElement("img");img.width=1;img.height=1;img.src="data:image/gif;base64,R0lGODlhAQABAAAAACw=#"+i;g.append(img)}</script>`, async ({ next }) => {
     const snapshot = await next(), images = snapshot.nodes.filter(row => row[2] === "img");
@@ -1167,6 +1358,29 @@ test("MP-10: a URL whose key hash matches an evicted URL's key gets its own key 
 
 // Audit 2026-10-10 §4.7: opaque regions as element pixels, not viewport screenshots (R8-3, item 15).
 const { decodePng } = await import("./kernel-browser-pixels.mjs");
+// MP-08/MP-10: a video's poster travels as a resource key with its bytes, as an image's source does: a tile the kernel sends
+// no still for (a transformed or cross-origin video, airbnb's category icons) shows what Chrome draws before playback.
+test("MP-10: a video tile's poster travels as a resource key with its bytes; a new poster sends its key, a removed one none", () => mirrored(
+  '<span style="display:inline-block;transform:scale(2);transform-origin:0 0"><video id="v" poster="/poster.svg" preload="none" playsinline style="display:block;width:36px;height:36px"></video></span>', async ({ next, evaluate }) => {
+    const snapshot = await next();
+    let id = 0, video; for (const row of snapshot.nodes) { id += row[0]; if (row[2] === 5 && row[3]?.id === "v") video = { id: `n${id}`, attrs: row[3], ...(row[4] ?? {}) }; }
+    assert(video, "MP-10: the video is a tile");
+    assert.match(video.res ?? "", /^r[0-9]+$/, "MP-10: the tile carries its poster's key");
+    assert.equal(video.attrs.poster, undefined, "MP-11: the poster URL itself never travels");
+    const delivered = [...snapshot.resources], bytesOf = key => delivered.filter(r => r.key === key).map(r => Buffer.from(r.data_base64, "base64").toString()).join("");
+    for (let i = 0; i < 10 && !bytesOf(video.res).includes("#c0ffee"); i++) delivered.push(...(await next(500)).resources);
+    assert(bytesOf(video.res).includes("#c0ffee"), "MP-10: the poster's bytes reach the viewer under its key");
+    await evaluate("document.getElementById('v').poster = '/other.svg'; true");
+    let key = video.res;
+    for (let i = 0; i < 10 && (key === video.res || !bytesOf(key).includes("#0ff1ce")); i++) { const packet = await next(500); delivered.push(...packet.resources); for (const op of packet.ops ?? []) if (op.op === "res" && op.id === video.id) key = op.res; }
+    assert.notEqual(key, video.res, "MP-10: a new poster sends its key");
+    assert(bytesOf(key).includes("#0ff1ce"), "MP-10: and its bytes");
+    await evaluate("document.getElementById('v').removeAttribute('poster'); true");
+    for (let i = 0; i < 10 && key !== null; i++) for (const op of (await next(500)).ops ?? []) if (op.op === "res" && op.id === video.id) key = op.res;
+    assert.equal(key, null, "MP-10: a removed poster sends no key");
+  }, { "/poster.svg": { type: "image/svg+xml", body: '<svg xmlns="http://www.w3.org/2000/svg" width="36" height="36"><path fill="#c0ffee" d="M0 0h36v36H0z"/></svg>' },
+       "/other.svg": { type: "image/svg+xml", body: '<svg xmlns="http://www.w3.org/2000/svg" width="36" height="36"><path fill="#0ff1ce" d="M0 0h36v36H0z"/></svg>' } }));
+
 const tilePixels = tile => { const png = Buffer.from(tile.data_base64, "base64"), width = png.readUInt32BE(16), height = png.readUInt32BE(20), { pixels } = decodePng(tile.data_base64, 1, { width, height }); let red = 0, blue = 0; for (let i = 0; i < pixels.length; i += 4) { if (pixels[i] > 200 && pixels[i + 2] < 60) red++; if (pixels[i + 2] > 200 && pixels[i] < 60) blue++; } return { width, height, red, blue }; };
 const canvasPage = '<div style="position:relative"><canvas id="c" width="300" height="150"></canvas><div style="position:absolute;left:0;top:0;width:300px;height:40px;background:rgb(0,0,255)">controls</div></div>' +
   '<div style="transform:scale(0.5);transform-origin:0 0;width:400px;height:200px"><canvas id="t" width="200" height="100" style="width:200px;height:100px"></canvas></div>' +
@@ -1240,10 +1454,10 @@ test("MP-10: review #941 R8-2 an SVG image's changed href / xlink:href reaches t
     // To a fragment, then removed: the key goes, the fragment travels as an attribute.
     await evaluate("h.setAttribute('href','#sym');x.removeAttributeNS('http://www.w3.org/1999/xlink','href');true");
     const later = (await next(1000)).ops;
-    // An attribute op by its name: the href, then the value an href selector reads (see sanitizeMirrorCss).
+    // An attribute op by its name; no sheet selects on href, so its value (chariox-href) does not travel.
     const named = op => op.op === "res" ? ["res", op.res] : [op.name, op.value];
-    assert.deepEqual(later.filter(op => op.id === ids.get("h")).map(named), [["res", null], ["href", "#sym"], ["chariox-href", "#sym"]]);
-    assert.deepEqual(later.filter(op => op.id === ids.get("x")).map(named), [["res", null], ["href", null], ["chariox-href", null]]);
+    assert.deepEqual(later.filter(op => op.id === ids.get("h")).map(named), [["res", null], ["href", "#sym"]]);
+    assert.deepEqual(later.filter(op => op.id === ids.get("x")).map(named), [["res", null], ["href", null]]);
   }, {
     "/a.svg": { type: "image/svg+xml", body: svg("#010203") },
     "/b.svg": { type: "image/svg+xml", body: svg("#0a0b0c") },
@@ -1718,10 +1932,10 @@ test("MP-10: protocol 501 an external <use> sprite travels as a sanitized resour
     await evaluate("u.setAttribute('href','/sprite.svg#other');true");
     let ops = (await next(1000)).ops.filter(op => op.id === use.id);
     const named = op => op.op === "res" ? ["res", op.res] : [op.name, op.value];
-    assert.deepEqual(ops.map(named), [["href", "#other"], ["chariox-href", "/sprite.svg#other"]], "MP-10: the same file, another symbol");
+    assert.deepEqual(ops.map(named), [["href", "#other"]], "MP-10: the same file, another symbol");
     await evaluate("u.setAttribute('href','#sym');true");
     ops = (await next(1000)).ops.filter(op => op.id === use.id);
-    assert.deepEqual(ops.map(named), [["res", null], ["href", "#sym"], ["chariox-href", "#sym"]], "MP-10: a local reference drops the file");
+    assert.deepEqual(ops.map(named), [["res", null], ["href", "#sym"]], "MP-10: a local reference drops the file");
   }, { "/sprite.svg": { type: "image/svg+xml", body: spriteFile } }));
 
 // Review #941 @f6fb77245 finding 4: the compositing check walks the frame-owner chain too (a screenshot-only region

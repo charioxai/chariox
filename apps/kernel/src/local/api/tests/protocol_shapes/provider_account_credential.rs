@@ -246,3 +246,21 @@ fn account_copy_recipient_protocol_710_peer_274_snapshot_and_hash() {
         "aaf1b20efdf3c356c5cb04ed0fff7f5955d467eb83abd4bb4a4075a67f268ab9"
     );
 }
+
+#[test]
+fn provider_account_auth_error_shape_is_versioned() {
+    let expected: serde_json::Value =
+        serde_json::from_str(include_str!("provider-auth-error-1014.json")).unwrap();
+    let profile: crate::account_profile::ProviderAccountProfile =
+        serde_json::from_value(expected["response"]["ProviderAccountProfile"]["profile"].clone())
+            .unwrap();
+    let actual = serde_json::json!({
+        "local": LOCAL_DAEMON_PROTOCOL_VERSION,
+        "response": LocalDaemonResponse::ProviderAccountProfile { profile },
+    });
+    assert_eq!(actual, expected);
+    assert_eq!(
+        format!("{:x}", Sha256::digest(serde_json::to_vec(&actual).unwrap())),
+        "52de8eb435027b7227198d9115f613b6e76718fb1409e5026ab7cde1c1cb2974"
+    );
+}

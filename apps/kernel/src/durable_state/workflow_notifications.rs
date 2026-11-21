@@ -350,6 +350,11 @@ pub(crate) enum NotificationOperation {
         subscription: WorkflowNotificationSubscription,
         envelope: WorkflowNotificationEnvelope,
     },
+    DeliverPeerToGrantInbox {
+        subscription: WorkflowNotificationSubscription,
+        envelope: WorkflowNotificationEnvelope,
+        machine: String,
+    },
     /// Disable subscriptions bound to this grant, or to any grant on restart, except the
     /// outside agent subscriptions of the grants named in `keep_outside_agent_of`.
     RetireGrants {
@@ -402,6 +407,7 @@ pub(crate) enum NotificationOutcome {
         subscription: WorkflowNotificationSubscription,
         generation: remote_install::Generation,
     },
+    RemoteFollows(Vec<(WorkflowNotificationSubscription, remote_install::Generation)>),
     /// What a detach ended here: the generation its request to the source carries.
     Detached {
         generation: Option<remote_install::Generation>,
@@ -843,7 +849,20 @@ fn apply(
         NotificationOperation::AppendToGrantInbox {
             subscription,
             envelope,
-        } => outside_agent::append_in(tx, &subscription, &envelope),
+        } => outside_agent::append_in(tx, &subscription, &envelope, None),
+        NotificationOperation::DeliverPeerToGrantInbox {
+            subscription,
+            envelope,
+            machine,
+        } => {
+            let NotificationOutcome::Ack(ack) = accept(tx, &subscription, &envelope)? else {
+                return Err(error("notification admission failed"));
+            };
+            if ack == WorkflowNotificationAck::Accepted {
+                outside_agent::append_in(tx, &subscription, &envelope, Some(machine))?;
+            }
+            Ok(NotificationOutcome::Ack(ack))
+        }
         NotificationOperation::Granted { grant, attach } => {
             let outcome = apply(tx, *attach)?;
             if let NotificationOutcome::Subscription(sub)
@@ -864,16 +883,27 @@ fn apply(
             grant,
             subscriptions,
         } => {
+            let mut remote = Vec::new();
             for subscription in subscriptions {
-                apply(
+                let attach = if subscription.source_kernel_id == subscription.target_kernel_id {
+                    NotificationOperation::RemoteAttach { subscription }
+                } else {
+                    NotificationOperation::AttachToRemoteSource { subscription }
+                };
+                if let NotificationOutcome::RemoteInstalling {
+                    subscription,
+                    generation,
+                } = apply(
                     tx,
                     NotificationOperation::Granted {
                         grant: grant.clone(),
-                        attach: Box::new(NotificationOperation::RemoteAttach { subscription }),
+                        attach: Box::new(attach),
                     },
-                )?;
+                )? {
+                    remote.push((subscription, generation));
+                }
             }
-            Ok(NotificationOutcome::Swept)
+            Ok(NotificationOutcome::RemoteFollows(remote))
         }
         NotificationOperation::RetireGrants {
             grant,
@@ -928,8 +958,19 @@ fn apply(
         NotificationOperation::Cache {
             owner,
             kernel,
-            sources,
+            mut sources,
         } => {
+            let previous = cached_peer_sources(tx, &owner, &kernel)?;
+            for mut source in previous {
+                if !sources
+                    .iter()
+                    .any(|current| current.source_id == source.source_id)
+                    && outside_agent::has_peer_follow(tx, &owner, &source.source_id)?
+                {
+                    source.available = false;
+                    sources.push(source);
+                }
+            }
             tx.execute("INSERT INTO workflow_notification_source_cache VALUES (?1,?2,?3) ON CONFLICT(owner_id,kernel_id) DO UPDATE SET payload_json=excluded.payload_json",params![owner,kernel,encode(&sources)?]).map_err(sql)?;
             Ok(NotificationOutcome::Swept)
         }
@@ -976,6 +1017,22 @@ fn apply(
         }
     }
 }
+fn cached_peer_sources(
+    tx: &Transaction<'_>,
+    owner: &str,
+    kernel: &str,
+) -> Result<Vec<crate::local::WorkflowNotificationSourceSummary>, DaemonError> {
+    let row: Option<String> = tx.query_row(
+        "SELECT payload_json FROM workflow_notification_source_cache WHERE owner_id=?1 AND kernel_id=?2",
+        params![owner, kernel],
+        |row| row.get(0),
+    ).optional().map_err(sql)?;
+    row.as_deref()
+        .map(decode)
+        .transpose()
+        .map(Option::unwrap_or_default)
+}
+
 fn load_source(
     tx: &Transaction<'_>,
     source_id: &str,

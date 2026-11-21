@@ -272,28 +272,11 @@ test("executeShellCommand requests focused-agent semantic recall search", async 
   ])
 })
 
-test("executeShellCommand cancels active prompt through the current session attachment", async () => {
-  const session = makeSession({ attachment_ids: ["attachment-1"] })
-  const requests: Record<string, unknown>[] = []
-  const fake = {
-    client: {
-      send: async (request: Record<string, unknown>) => {
-        requests.push(request)
-        if ("GetSessionState" in request) {
-          return { SessionState: { session } }
-        }
-        return { PromptCancelled: { cancellation: { prompt: { id: "prompt-1" }, started_next: null } } }
-      },
-    },
-  }
+test("stop requires the shell's own Room attachment", async () => {
   const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo", sessionId: "session-1" })
-  const result = await executeShellCommand(parseShellCommand("stop"), context, { client: fake.client })
-  assert.equal(result.ok, true)
-  assert.match(result.message ?? "", /prompt prompt-1/)
-  assert.deepEqual(requests, [
-    { GetSessionState: { session_id: "session-1" } },
-    { CancelActivePrompt: { session_id: "session-1", attachment_id: "attachment-1" } },
-  ])
+  const result = await executeShellCommand(parseShellCommand("stop"), context, { client: { send: async () => { throw new Error("unexpected request") } } })
+  assert.equal(result.ok, false)
+  assert.match(result.message ?? "", /session use/)
 })
 
 test("executeShellCommand cancels active prompt through shell context attachment", async () => {

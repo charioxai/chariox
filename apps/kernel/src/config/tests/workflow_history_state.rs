@@ -6,10 +6,6 @@ fn workflow_code_limits_have_large_defaults() {
     let limits = config.workflow_code_limits();
 
     assert_eq!(
-        config.session_default_max_agents(),
-        crate::session::DEFAULT_SESSION_MAX_AGENTS
-    );
-    assert_eq!(
         config.max_workflow_queues_per_workflow(),
         crate::session::DEFAULT_WORKFLOW_CODE_MAX_QUEUES as usize
     );
@@ -42,9 +38,6 @@ fn workflow_code_limits_can_be_set_and_unset() {
     config.user_config_path = path.clone();
 
     config
-        .set_user_config_value("workflow.session_default_max_agents", "2048")
-        .expect("session agent cap should update");
-    config
         .set_user_config_value("workflow.code.max_concurrent", "64")
         .expect("workflow-code concurrency should update");
     config
@@ -54,7 +47,6 @@ fn workflow_code_limits_can_be_set_and_unset() {
         .set_user_config_value("workflow.code.max_endpoints", "128")
         .expect("workflow-code endpoint cap should update");
 
-    assert_eq!(config.session_default_max_agents(), 2048);
     let limits = config.workflow_code_limits();
     assert_eq!(limits.max_concurrent, 64);
     assert_eq!(limits.max_nodes, 256);

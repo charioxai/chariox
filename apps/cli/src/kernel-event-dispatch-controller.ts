@@ -1,6 +1,6 @@
 import { invalidateClientInventories } from "./client-inventory-cache.js"
 import {
-  normalizeRuntimeSessionWithAgentActivity,
+  normalizeRoomState,
   type RuntimeNoticeRecord,
   type RuntimeProviderRun,
   type RuntimeSession,
@@ -14,7 +14,7 @@ import type { RemoteMachineRecord as KernelRemoteMachineRecord, WorkflowDesignOp
 import type { ProviderCatalog } from "./provider-catalog.js"
 import type { RelayStatusView } from "./relay-api.js"
 import { remoteMachineView } from "./remote-machine-api.js"
-import type { RemoteMachineView } from "./waiting-room-inventory-api.js"
+import type { RemoteMachineView } from "./kernel-inventory-api.js"
 import type { WaitingRoomProjectSummary } from "./waiting-room-projects.js"
 
 type AssistantMessageCompletedEvent = Extract<KernelEvent, { event: "assistant_message_completed" }>
@@ -116,7 +116,7 @@ export function createKernelEventDispatchController(
     deps.recordDaemonActivity("kernel_session_snapshot")
     deps.scheduleSharedPromptInputHistoryRefresh()
     await deps.applyKernelSessionSnapshot(
-      normalizeRuntimeSessionWithAgentActivity({
+      normalizeRoomState({
         session: { ...event.session, room_workflows: event.room_workflows } as RuntimeSession,
         agent_activity: isRecord(event.agent_activity)
           ? event.agent_activity as RuntimeSession["agent_activity"]

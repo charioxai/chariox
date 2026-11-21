@@ -232,6 +232,10 @@ static RECEIVED_WATCHED: Mutex<Vec<crate::runtime::state::WatchedHandover>> =
 static RECEIVED_LOCAL_JOBS: Mutex<Vec<LocalJobHandover>> = Mutex::new(Vec::new());
 static RECEIVED_TERMINALS: Mutex<Vec<TerminalHandover>> = Mutex::new(Vec::new());
 static RECEIVED_PROVIDERS: Mutex<Vec<ProviderHandover>> = Mutex::new(Vec::new());
+// A retained goal approval remains authoritative while its process and reply
+// channel are being adopted, even after its run has been claimed.
+static RETAINED_GOAL_APPROVALS: Mutex<BTreeMap<String, crate::provider::NativeApprovalGoal>> =
+    Mutex::new(BTreeMap::new());
 static RECEIVED_ATTACHMENTS: Mutex<Vec<AttachmentHandover>> = Mutex::new(Vec::new());
 static RECEIVED_USER_DOMAIN: Mutex<Option<crate::runtime::user_domain_access::AccessHandover>> =
     Mutex::new(None);
@@ -347,6 +351,19 @@ pub fn receive() {
         })
         .collect();
     *lock(&RECEIVED_TERMINALS) = handover.terminals;
+    *lock(&RETAINED_GOAL_APPROVALS) = handover
+        .providers
+        .iter()
+        .filter_map(|provider| {
+            let HandedOverProcess::Codex { turn, .. } = &provider.process else {
+                return None;
+            };
+            Some((
+                provider.run_id.clone(),
+                turn.pending_goal_approval()?.clone(),
+            ))
+        })
+        .collect();
     *lock(&RECEIVED_PROVIDERS) = handover.providers;
     *lock(&RECEIVED_ATTACHMENTS) = handover.attachments;
     *lock(&RECEIVED_USER_DOMAIN) = Some(handover.user_domain);
@@ -609,6 +626,31 @@ pub(crate) fn provider_handed_over(session_id: &str, agent_id: &str) -> bool {
         .any(|p| p.session_id == session_id && p.agent_id.as_deref() == Some(agent_id))
 }
 
+pub(crate) fn handed_over_goal_approval(
+    session_id: &str,
+    agent_id: &str,
+) -> Option<(String, crate::provider::NativeApprovalGoal)> {
+    let providers = lock(&RECEIVED_PROVIDERS);
+    let provider = providers.iter().find(|provider| {
+        provider.session_id == session_id && provider.agent_id.as_deref() == Some(agent_id)
+    })?;
+    let HandedOverProcess::Codex { turn, .. } = &provider.process else {
+        return None;
+    };
+    Some((
+        provider.run_id.clone(),
+        turn.pending_goal_approval()?.clone(),
+    ))
+}
+
+pub(crate) fn retained_goal_approval(run_id: &str) -> Option<crate::provider::NativeApprovalGoal> {
+    lock(&RETAINED_GOAL_APPROVALS).get(run_id).cloned()
+}
+
+pub(crate) fn release_retained_goal_approval(run_id: &str) {
+    lock(&RETAINED_GOAL_APPROVALS).remove(run_id);
+}
+
 pub(crate) fn handed_over_run_id(
     session_id: &str,
     agent_id: Option<&str>,
@@ -745,6 +787,7 @@ pub(crate) fn end_unclaimed_providers() {
     let unclaimed = std::mem::take(&mut *lock(&RECEIVED_PROVIDERS));
     lock(&UNCLAIMED_RUNS).clear();
     for provider in unclaimed {
+        release_retained_goal_approval(&provider.run_id);
         crate::logging::warn_with_fields(
             "hot_reload",
             "a handed-over agent turn was not resumed; ending it as after a restart",

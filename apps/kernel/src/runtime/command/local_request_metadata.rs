@@ -800,6 +800,8 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::ListSessions(_) => "session.list",
         LocalDaemonRequest::ResolveSession(_) => "session.resolve",
         LocalDaemonRequest::GetSessionState(_) => "session.state.get",
+        LocalDaemonRequest::ListFinishedRoomTasks(_) => "session.tasks.finished.list",
+        LocalDaemonRequest::GetMachineRoomResources(_) => "machine.room_resources.get",
         LocalDaemonRequest::GetRoomEnvironmentState(_) => "environment.state.get",
         LocalDaemonRequest::PrepareBrowserImport(_) => "browser.import.prepare",
         LocalDaemonRequest::ApproveBrowserImport(_) => "browser.import.approve",

@@ -152,6 +152,31 @@ impl DurableKernelStateStore {
             .map_err(sql)?;
         row.map(|s| decode(&s)).transpose()
     }
+
+    pub(crate) fn leased_wake_launch_task(&self, id: &str) -> Result<Option<String>, DaemonError> {
+        let db = self.lock_connection("agent.leased_wake.launch_task")?;
+        db.query_row(
+            "SELECT json_extract(payload,'$.launch_task_id') FROM agent_leased_wake_bindings WHERE id=?1",
+            [id],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .optional()
+        .map(|row| row.flatten())
+        .map_err(sql)
+    }
+}
+
+pub(super) fn retain_launch_task(
+    tx: &Transaction<'_>,
+    wake: &AgentWake,
+) -> Result<(), DaemonError> {
+    tx.execute(
+        "UPDATE agent_leased_wake_bindings SET payload=json_set(payload,'$.launch_task_id',?2)
+         WHERE id=?1 AND json_extract(payload,'$.launch_task_id') IS NULL",
+        params![wake.id, wake.task_id],
+    )
+    .map_err(sql)?;
+    Ok(())
 }
 
 pub(super) fn create_home_wake(

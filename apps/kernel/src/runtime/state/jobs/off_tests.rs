@@ -16,6 +16,7 @@ async fn offload_job_with_remote_jobs_off_runs_a_heavy_job_locally_and_never_cal
         .set_remote_job_policy(
             &task.room_id,
             Some(&task.agent_id),
+            false,
             &task.owner_user_id,
             Some(crate::local::OffloadPolicy::AlwaysHeavy),
         )

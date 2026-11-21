@@ -219,3 +219,19 @@ async fn real_http_stream_limit_releases_capacity_after_disconnect() {
     }
     server.abort();
 }
+
+#[tokio::test]
+async fn catalog_body_remains_at_eof_after_shutdown() {
+    let (router, _app, _address, server) = fixture().await;
+    let (shutdown, receiver) = tokio::sync::watch::channel(());
+    let mut headers = hyper::HeaderMap::new();
+    headers.insert(AUTHORIZATION, "Bearer catalog-token-a".parse().unwrap());
+    let response = catalog_stream::open(router, &headers, receiver);
+    assert_eq!(response.status(), StatusCode::OK);
+    let mut body = response.into_body();
+    assert!(body.frame().await.unwrap().unwrap().is_data());
+    drop(shutdown);
+    assert!(body.frame().await.is_none());
+    assert!(body.frame().await.is_none());
+    server.abort();
+}

@@ -1291,6 +1291,30 @@ impl KernelRuntimeState {
         effort: Option<Option<String>>,
         context: SettingsContext,
     ) -> Result<(crate::agent::AgentInstance, SettingsApplies), DaemonError> {
+        self.update_agent_profile_with_selections(
+            session_id,
+            agent_id,
+            caller_user_id,
+            super::agent_profile_owned_state::AgentProfileSelections {
+                provider,
+                account_profile,
+                model,
+                effort,
+                continue_limit: None,
+            },
+            context,
+        )
+        .await
+    }
+
+    pub(super) async fn update_agent_profile_with_selections(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        caller_user_id: &str,
+        selections: super::agent_profile_owned_state::AgentProfileSelections,
+        context: SettingsContext,
+    ) -> Result<(crate::agent::AgentInstance, SettingsApplies), DaemonError> {
         let original =
             self.owned
                 .ensure_agent_owner(agent_id, caller_user_id, "update agent profile")?;
@@ -1312,12 +1336,6 @@ impl KernelRuntimeState {
                     .prompt_state_owner
                     .claim_idle_agent_profile_transition(&session, agent_id)?,
             )
-        };
-        let selections = super::agent_profile_owned_state::AgentProfileSelections {
-            provider,
-            account_profile,
-            model,
-            effort,
         };
         let result = async {
             // All owned checks precede the irreversible provider session command.
@@ -1351,10 +1369,11 @@ impl KernelRuntimeState {
                 selections,
             )?;
             for provider_run_id in update.terminated_run_ids {
+                let run_to_remove = provider_run_id.clone();
                 let (_, process_key) = self
-                    .with_app_side_effect(|app| {
+                    .with_app_side_effect_blocking(move |app| {
                         crate::app::ProviderLaunchProcessRuntime::new(app)
-                            .remove_run(&provider_run_id)
+                            .remove_run(&run_to_remove)
                     })
                     .await
                     .unwrap_or((false, None));
@@ -1377,6 +1396,9 @@ impl KernelRuntimeState {
                     .await?;
             } else {
                 agent = self.owned.persist_current_local_agent_profile(agent.id())?;
+                if agent.usage_limit_stop().is_none() {
+                    self.sync_usage_limit_interaction(&agent).await?;
+                }
             }
             self.invalidate_workflow_copies_after_source_agent_change(session_id, agent_id)?;
             Ok(agent)

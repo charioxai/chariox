@@ -3,7 +3,7 @@
 use super::*;
 
 /// Ends a refused, never submitted delivery as failed and tells whoever waits for it:
-/// the sender of a message and the wake receipt. The caller asks the owner.
+/// the sender of a message and the wake receipt.
 pub(super) fn fail_undelivered(
     tx: &Transaction<'_>,
     e: &mut InboxEvent,
@@ -107,26 +107,4 @@ fn tell_sender(
         ),
     )?;
     Ok(())
-}
-
-/// The owner's Resume of an unconfirmed delivery: it goes out again as a fresh attempt.
-pub(super) fn send_again(
-    tx: &Transaction<'_>,
-    e: &mut InboxEvent,
-    now: u64,
-) -> Result<(), DaemonError> {
-    e.state = "pending".into();
-    e.prompt_id = None;
-    e.target_prompt_id = None;
-    e.provider_run_id = None;
-    e.submit_epoch = None;
-    e.attempted_at_ms = None;
-    e.resumed_at_ms = Some(now);
-    tx.execute(
-        "DELETE FROM agent_inbox_refusals WHERE sequence=?1",
-        [sql_integer(e.sequence)?],
-    )
-    .map_err(sql)?;
-    save_event(tx, e)?;
-    wakes::record_delivery(tx, e)
 }

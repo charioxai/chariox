@@ -25,6 +25,15 @@ pub struct SessionProcess {
     pub placement: Option<crate::local::RemoteJobPlacement>,
 }
 
+impl SessionProcess {
+    pub(crate) fn belongs_to_room_agent(&self, session: &crate::session::RuntimeSession) -> bool {
+        matches!(&self.owner, SessionProcessOwner::Agent(agent_id)
+        if session.agents().iter().any(|agent| {
+            agent.id() == agent_id && agent.is_room_agent() && agent.visible_in_freeform()
+        }))
+    }
+}
+
 /// A quiet process is repeated this often, so a client that stops hearing of a row can tell a
 /// finished process from a feed that went silent.
 const REPEAT_QUIET_PROCESS_MS: u64 = 30_000;

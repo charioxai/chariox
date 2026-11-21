@@ -21,13 +21,35 @@ fn semantic_session_activity_protocol_snapshot_and_hash() {
         "schema": 14, "session": {"last_activity_at_ms": decoded.last_activity_at_ms()}});
     assert_eq!(
         snapshot,
-        serde_json::json!({"local":1014,"peer": 450,"schema":14,"session":{"last_activity_at_ms":42}})
+        serde_json::json!({"local":1013,"peer": 450,"schema":14,"session":{"last_activity_at_ms":42}})
     );
     assert_eq!(
         format!(
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "6b2fe305554d59e8574de1d0f4a5288722dc939042d8f30b3516dd72e13092ba"
+        "d253b89059ec0acee0e1b52aa94cbc78fc937419125a184d5f2dc0ebca247051"
+    );
+}
+
+#[test]
+fn provider_failure_and_deadline_status_are_versioned() {
+    use crate::provider::TurnOutcomeKind;
+    use crate::runtime::projection::AgentRuntimeStatus;
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
+    assert_eq!(
+        serde_json::json!(AgentRuntimeStatus::EndedDeadline),
+        "ended_deadline"
+    );
+    assert_eq!(
+        serde_json::json!(TurnOutcomeKind::ModelRefused),
+        "model_refused"
+    );
+    assert_eq!(
+        serde_json::json!(TurnOutcomeKind::StreamEnded),
+        "stream_ended"
     );
 }

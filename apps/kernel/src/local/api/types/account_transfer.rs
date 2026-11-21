@@ -5,6 +5,9 @@ use super::*;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PreflightProviderAccountPortabilityRequest {
     pub provider_accounts: ProviderAccountTransferSelection,
+    /// The launch's kernel-context choice: a copy of this kernel exports its Vault, so its unlock
+    /// is held for the export like a selected Vault login's.
+    pub kernel_context: crate::managed_context::package::ManagedContextKernelSelection,
     /// Names this launch, so the transfer start that carries the same key finds its unlock.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub launch_id: Option<String>,

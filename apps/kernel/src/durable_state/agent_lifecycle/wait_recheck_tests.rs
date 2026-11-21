@@ -111,4 +111,36 @@ fn a_wait_with_nothing_unread_is_rechecked() {
     );
     sweep_at(&f, 10);
     assert_eq!(kinds(&f), ["source_completed", "wait_recheck"]);
+    let recheck = f
+        .store
+        .agent_delivery_front("room", "parent")
+        .unwrap()
+        .unwrap();
+    f.apply(Operation::Attempt {
+        room: "room".into(),
+        agent: "parent".into(),
+        sequence: recheck.sequence,
+        prompt: "refused-recheck".into(),
+        target: None,
+        run: None,
+        now: 10,
+        work: None,
+        through: recheck.sequence,
+    });
+    f.apply(Operation::Receipt {
+        room: "room".into(),
+        agent: "parent".into(),
+        sequence: recheck.sequence,
+        state: "rejected".into(),
+        now: 10,
+    });
+    sweep_at(&f, 10 + DELIVERY_TIMEOUT_MS);
+    sweep_at(&f, 11 + DELIVERY_TIMEOUT_MS);
+    let retry = f
+        .store
+        .agent_delivery_front("room", "parent")
+        .unwrap()
+        .expect("refused recheck stays deliverable");
+    assert_eq!(retry.sequence, recheck.sequence);
+    assert_eq!(retry.state, "pending");
 }

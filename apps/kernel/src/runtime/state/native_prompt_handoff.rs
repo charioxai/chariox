@@ -94,23 +94,17 @@ impl crate::app::NativePromptHandoffPolicy for KernelRuntimeOwnedState {
                 message,
             )?;
         }
+        let failure = crate::provider::TurnOutcome::classify(run.adapter_key(), message);
         if let Some(failed) = self.fail_local_prompt_without_advance_with_termination_if_matches(
             session_id,
             agent_id,
             Some(run_id),
             Some(prompt_id),
             None,
-            crate::provider::TurnOutcome::classify(run.adapter_key(), message),
+            failure.clone(),
         )? {
             self.record_provider_failure_output(session_id, run_id, agent_id, message);
-            self.record_failed_request(
-                session_id,
-                run_id,
-                run.adapter_key(),
-                agent_id,
-                &prompt,
-                message,
-            );
+            self.record_failed_request(session_id, run_id, agent_id, &prompt, Some(&failure));
             self.agent_store.clear_local_prompt_error(agent_id)?;
             self.agent_store
                 .set_agent_state(agent_id, crate::agent::AgentState::Idle)?;

@@ -2,8 +2,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {ensureBrowserAccount,LinuxBrowserUser,browserUserFailure} from './linux-browser-user.mjs';
-import {rootPolicyLaunch,rootPolicyNamespaceAvailable,launchEnvironment} from './kernel-browser-linux.mjs';
-import {hostErrorLabel} from './kernel-browser-error-label.mjs';
+import {rootPolicyLaunch,requireRootPolicyNamespace,launchEnvironment} from './kernel-browser-linux.mjs';
+import {hostErrorLabel,hostFailureMessage} from './kernel-browser-error-label.mjs';
 
 test('MP-08 root provisions a locked system account and tolerates another kernel winning creation',async()=>{
  const calls=[];let lookups=0;
@@ -43,11 +43,23 @@ test('MP-08 root owns policy mounts and drops uid before sandboxed Chrome inheri
 test('MP-11 a host must support private mounts and actually use the dedicated uid',()=>{
  const user=new LinuxBrowserUser('/private/kernel',{uid:991,gid:990});
  let observed;
- assert.equal(rootPolicyNamespaceAvailable(user,(command,args,options)=>{observed={command,args,options};return {status:1}},'/installed/unshare'),false);
+ assert.throws(()=>requireRootPolicyNamespace(user,(command,args,options)=>{observed={command,args,options};return {status:1}},'/installed/unshare'),{code:'browser_user_unavailable'});
  assert.equal(observed.command,'/installed/unshare');
  assert(observed.args.includes('--reuid=991'));assert(observed.args.includes('--clear-groups'));
  assert.equal(observed.options.timeout,5000);
- assert.equal(rootPolicyNamespaceAvailable(user,()=>({status:0}),'/installed/unshare'),true);
+ assert.doesNotThrow(()=>requireRootPolicyNamespace(user,()=>({status:0}),'/installed/unshare'));
+});
+
+test('N4 a denied root browser namespace gives host recovery guidance',()=>{
+ const user=new LinuxBrowserUser('/fixture/kernel',{uid:991,gid:990});
+ assert.throws(()=>requireRootPolicyNamespace(user,()=>({status:1,stderr:'unshare: Operation not permitted private-fixture'}),'/installed/unshare'),error=>{
+  const message=hostFailureMessage(error);
+  assert.equal(error.code,'browser_user_unavailable');
+  assert.match(message,/nested confinement|AppArmor|CAP_SYS_ADMIN/);
+  assert.match(message,/host service|host operator/);
+  assert(!message.includes('private-fixture'));
+  return true;
+ });
 });
 
 test('MP-11 privileged mount construction never writes through the browser-owned temporary directory',()=>{

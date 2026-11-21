@@ -1,4 +1,5 @@
 use super::*;
+use crate::protocol::{RelayMachinePresence, RelayUpdateNeededKernel};
 
 type Socket =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
@@ -294,28 +295,6 @@ async fn heartbeat_cannot_change_the_proven_identity_key() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn old_kernel_gets_upgrade_reason_before_proof_is_decoded() {
-    let relay = Relay::start().await;
-    let (mut kernel, _) = relay.connect().await;
-    let mut registration = victim_registration();
-    registration.local_protocol = Some(1011);
-    kernel
-        .send(Message::Text(
-            serde_json::json!({"kind":"daemon_register", "registration":registration})
-                .to_string()
-                .into(),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(
-        close_reason(&mut kernel).await,
-        "upgrade required: protocol 1011 < minimum 1012"
-    );
-    assert!(relay.live_peer().await.is_none());
-    relay.stop().await;
-}
-
-#[tokio::test(flavor = "multi_thread")]
 async fn malformed_registration_gets_a_close_reason() {
     let relay = Relay::start().await;
     let (mut kernel, _) = relay.connect().await;
@@ -376,5 +355,159 @@ async fn protocol_1012_registers_without_receiving_the_new_envelope() {
         "the L12 kernel must not receive an unknown application envelope"
     );
     assert!(relay.live_peer().await.is_some());
+    relay.stop().await;
+}
+
+/// What a kernel older than the registration proof sends: its registration with no proof, and
+/// with the protocol field only from the kernels that have it.
+fn old_kernel_register(registration: &DaemonRegistration, local_protocol: Option<u32>) -> String {
+    let mut registration = serde_json::to_value(registration).expect("registration serializes");
+    let fields = registration
+        .as_object_mut()
+        .expect("registration is an object");
+    fields.remove("local_protocol");
+    if let Some(protocol) = local_protocol {
+        fields.insert("local_protocol".into(), protocol.into());
+    }
+    serde_json::json!({ "kind": "daemon_register", "registration": registration }).to_string()
+}
+
+/// The machine list a client of the realm reads, as the account's other kernels read it.
+async fn listed_machines(relay: &Relay) -> Vec<RelayMachinePresence> {
+    let mut claims = scoped_claim(
+        "client-token",
+        "client",
+        RelaySubjectKind::Client,
+        "realm",
+        vec![RelayAction::ClientMetadataRead],
+        None,
+    );
+    claims.issuer = "hosted-cloud".to_string();
+    claims.expires_at_ms = 20_000;
+    let (mut client, _) = relay.connect().await;
+    send(
+        &mut client,
+        &RelayEnvelope::ClientMetadataRequest {
+            request_id: "machines".to_string(),
+            auth_token: hosted_kernel_jwt(&claims, ISSUER_SECRET),
+            query: RelayMetadataQuery::ListLiveMachines,
+        },
+    )
+    .await;
+    loop {
+        match timeout(Duration::from_secs(2), client.next())
+            .await
+            .expect("the relay answers the machine list")
+        {
+            Some(Ok(Message::Text(text))) => {
+                if let RelayEnvelope::ClientMetadataResponse {
+                    machines, error, ..
+                } = serde_json::from_str(&text).expect("relay frame decodes")
+                {
+                    assert_eq!(error, None);
+                    return machines.expect("a machine list");
+                }
+            }
+            Some(Ok(Message::Ping(_) | Message::Pong(_))) => {}
+            other => panic!("the relay closed the machine list request: {other:?}"),
+        }
+    }
+}
+
+fn update_needed(
+    machines: &[RelayMachinePresence],
+) -> Vec<(String, usize, Vec<RelayUpdateNeededKernel>)> {
+    machines
+        .iter()
+        .map(|machine| {
+            (
+                machine.machine_id.clone(),
+                machine.kernel_count,
+                machine.update_needed_kernels.clone(),
+            )
+        })
+        .collect()
+}
+
+// A kernel too old for this relay is refused as before, but its own machine entry names it with
+// the protocol it reported, so clients say Update needed instead of losing the kernel.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_kernel_too_old_to_register_is_listed_on_its_machine_as_update_needed() {
+    let relay = Relay::start().await;
+    for (reported, words) in [
+        (None, "reports no protocol"),
+        (Some(1011), "runs protocol 1011"),
+    ] {
+        let (mut old, _) = relay.connect().await;
+        old.send(Message::Text(
+            old_kernel_register(&victim_registration(), reported).into(),
+        ))
+        .await
+        .expect("old registration sends");
+        assert_eq!(
+            close_reason(&mut old).await,
+            format!(
+                "update needed: this kernel {words} and is older than the relay; update Chariox on this machine and restart the kernel"
+            )
+        );
+        assert_eq!(
+            relay.live_peer().await,
+            None,
+            "the old kernel carries no traffic"
+        );
+        assert_eq!(
+            update_needed(&listed_machines(&relay).await),
+            vec![(
+                "machine".to_string(),
+                0,
+                vec![RelayUpdateNeededKernel {
+                    kernel_id: VICTIM.to_string(),
+                    local_protocol: reported,
+                }],
+            )]
+        );
+    }
+
+    // Updated, the kernel registers and is listed as a live kernel only.
+    let (_updated, _) = register_victim(&relay).await;
+    assert_eq!(
+        update_needed(&listed_machines(&relay).await),
+        vec![("machine".to_string(), 1, Vec::new())]
+    );
+    relay.stop().await;
+}
+
+// Only the kernel's own token, machine and key record it: a token bound to another key, or a
+// temporary peer connection of an old kernel, leaves no entry.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_old_registration_that_is_not_the_kernel_itself_is_not_listed() {
+    let relay = Relay::start().await;
+    let (mut other_key, _) = relay.connect().await;
+    let mut registration = victim_registration_bound_to(&test_public_key("attacker-kernel"));
+    registration.public_key = test_public_key(VICTIM);
+    other_key
+        .send(Message::Text(
+            old_kernel_register(&registration, Some(1011)).into(),
+        ))
+        .await
+        .expect("old registration sends");
+    assert_eq!(
+        close_reason(&mut other_key).await,
+        "relay token key does not match daemon registration"
+    );
+
+    let (mut peer_connection, _) = relay.connect().await;
+    let mut registration = victim_registration();
+    registration.capabilities.clear();
+    peer_connection
+        .send(Message::Text(
+            old_kernel_register(&registration, Some(1011)).into(),
+        ))
+        .await
+        .expect("old registration sends");
+    assert!(close_reason(&mut peer_connection)
+        .await
+        .starts_with("update needed: "));
+    assert_eq!(listed_machines(&relay).await, Vec::new());
     relay.stop().await;
 }

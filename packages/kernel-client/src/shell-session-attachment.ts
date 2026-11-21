@@ -1,8 +1,5 @@
 import type { RuntimeSession } from "./kernel-types.js"
-import {
-  attachToSessionRequest,
-  getSessionStateRequest,
-} from "./ipc-requests.js"
+import { attachToSessionRequest } from "./ipc-requests.js"
 import { normalizeRuntimeSessionWithAgentActivity } from "./runtime-session-normalization.js"
 import type { ShellContext } from "./shell-core.js"
 
@@ -13,24 +10,13 @@ type ShellSessionAttachmentDeps = {
   clientId?: string | undefined
 }
 
-export async function resolveShellAttachmentId(
+export function resolveShellAttachmentId(
   context: ShellContext,
-  deps: ShellSessionAttachmentDeps,
-): Promise<{ ok: true; attachmentId: string } | { ok: false; message: string }> {
+): { ok: true; attachmentId: string } | { ok: false; message: string } {
   if (context.attachmentId) {
     return { ok: true, attachmentId: context.attachmentId }
   }
-  const sessionId = context.sessionId
-  if (!sessionId) {
-    return { ok: false, message: "no current session; run `session new` or `session use <ref>` first" }
-  }
-  const response = await deps.client.send(getSessionStateRequest(sessionId))
-  const session = expectVariant<{ session: RuntimeSession }>(response, "SessionState").session
-  const attachmentId = session.attachment_ids[0]
-  if (!attachmentId) {
-    return { ok: false, message: "current session has no attached client; stop/session-config commands require an attachment" }
-  }
-  return { ok: true, attachmentId }
+  return { ok: false, message: "open the Room with `session use <ref>` before running this command" }
 }
 
 export async function attachShellSession(sessionId: string, deps: ShellSessionAttachmentDeps): Promise<string | undefined> {

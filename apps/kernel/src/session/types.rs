@@ -2,8 +2,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 pub use super::metaagent_task::{MetaagentTask, MetaagentTaskStatus};
 pub use super::prompt_queue::{
-    AgentPromptState, PromptAttachment, PromptCancellation, PromptCompletion, PromptDetachEffect,
-    PromptOrigin, PromptQueueItem, PromptStatus, PromptSubmissionOutcome,
+    AgentPromptState, PromptAttachment, PromptCancellation, PromptCompletion, PromptOrigin,
+    PromptQueueItem, PromptStatus, PromptSubmissionOutcome,
 };
 pub(crate) use super::prompt_queue::{
     DurablePromptDeliveryPhase, DurablePromptPrivateState, QueuedNotification,
@@ -68,7 +68,6 @@ pub use super::workflow_turns::{
 };
 pub use super::workspace_links::{WorkspaceLinkAttachment, WorkspaceLinkDefinition};
 
-pub const DEFAULT_SESSION_MAX_AGENTS: i32 = 1024;
 pub const DEFAULT_WORKFLOW_CODE_MAX_CONCURRENT: u32 = 32;
 pub const DEFAULT_WORKFLOW_CODE_MAX_NODES: u32 = 1024;
 pub const DEFAULT_WORKFLOW_CODE_MAX_AGENTS: u32 = 1024;

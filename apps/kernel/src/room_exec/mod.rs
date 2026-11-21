@@ -42,6 +42,9 @@ pub(crate) use place_command::{
     destinations, offer_placement, run_on_kernel, Placement, Requester,
 };
 
+#[cfg(test)]
+pub(crate) const TEST_READER_LEASE: Duration = lease::READER_LEASE;
+
 pub const CHUNK_BYTES: usize = 256 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

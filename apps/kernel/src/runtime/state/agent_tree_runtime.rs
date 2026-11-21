@@ -27,8 +27,9 @@ impl KernelRuntimeState {
             .durable_state_store
             .agent_tasks(Some(&request.session_id), None)?;
         let agents = self.owned.agent_store.list_agents();
+        let active_turns = self.active_turn_snapshot();
         let (tree, _) = self
-            .read_agent_tree(&session, &request.agent_id, &tasks, &agents)
+            .read_agent_tree(&session, &request.agent_id, &tasks, &agents, &active_turns)
             .ok_or_else(|| DaemonError::AgentNotInSession {
                 session_id: request.session_id.clone(),
                 agent_id: request.agent_id.clone(),
@@ -48,6 +49,7 @@ impl KernelRuntimeState {
         root: &str,
         tasks: &[crate::durable_state::agent_lifecycle::AgentTaskExecution],
         agents: &[crate::agent::AgentInstance],
+        active_turns: &std::collections::BTreeMap<String, crate::app::ActiveTurnState>,
     ) -> Option<(AgentTree, u64)> {
         let store = &self.owned.durable_state_store;
         let held_by_agent = self.owned.decisions_held_by_agents(session.id());
@@ -72,25 +74,28 @@ impl KernelRuntimeState {
                     .map(|deadline| deadline.deadline_ms)
             },
             &|agent| {
+                let active = active_turns.values().any(|turn| {
+                    turn.session_id == agent.session_id() && turn.agent_id == agent.id()
+                });
                 let other_tasks;
                 let tasks = if agent.session_id() == session.id() {
                     tasks
                 } else {
                     other_tasks = store
                         .agent_tasks(Some(agent.session_id()), Some(agent.id()))
-                        .ok()?;
+                        .unwrap_or_default();
                     &other_tasks
                 };
-                let task = tasks
-                    .iter()
-                    .rev()
-                    .find(|task| task.agent_id == agent.id())?;
-                let finished =
-                    matches!(task.state, ExecutionState::Done | ExecutionState::Cancelled);
+                let task = tasks.iter().rev().find(|task| task.agent_id == agent.id());
                 Some(NodeTurn {
-                    live: !finished && task.state != ExecutionState::Blocked,
-                    blocked: task.state == ExecutionState::Blocked,
-                    outcome: finished.then(|| self.owned.finished_task_outcome(task, None).kind),
+                    active,
+                    parked: task.is_some_and(|task| task.state == ExecutionState::Waiting),
+                    blocked: task.is_some_and(|task| task.state == ExecutionState::Blocked),
+                    outcome: task
+                        .filter(|task| {
+                            matches!(task.state, ExecutionState::Done | ExecutionState::Cancelled)
+                        })
+                        .map(|task| self.owned.finished_task_outcome(task, None).kind),
                 })
             },
             &|room| self.owned.session_store.get_session(room).ok(),
@@ -113,6 +118,7 @@ impl KernelRuntimeState {
             .iter()
             .filter_map(|agent| agent.parent_agent_id())
             .collect::<std::collections::HashSet<_>>();
+        let active_turns = self.active_turn_snapshot();
         for session in self
             .owned
             .session_store
@@ -143,7 +149,7 @@ impl KernelRuntimeState {
             };
             for root in roots {
                 let Some((tree, fingerprint)) =
-                    self.read_agent_tree(&session, &root, &tasks, &agents)
+                    self.read_agent_tree(&session, &root, &tasks, &agents, &active_turns)
                 else {
                     continue;
                 };

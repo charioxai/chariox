@@ -47,7 +47,7 @@ class RasterBands {
 export class NativeRaster {
  apply(header,pixels){
   const {width,height,serial,length,patch}=header;
-  if(![width,height,serial,length].every(Number.isSafeInteger)||width<1||width>2560||height<1||height>1600||serial<1||length!==pixels.length)throw Error('MD-DISPLAY: raster bound');
+  if(![width,height,serial,length].every(Number.isSafeInteger)||width<1||width>2560||height<1||height>2560||width*height>2560*1600||serial<1||length!==pixels.length)throw Error('MD-DISPLAY: raster bound');
   if(patch){
    if(!Array.isArray(patch)||patch.length!==4||!patch.every(Number.isSafeInteger))throw Error('MD-DISPLAY: patch shape');
    const [left,top,right,bottom]=patch;

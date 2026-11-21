@@ -134,13 +134,38 @@ pub(crate) async fn create_target_room(
     })
     .await
     .map_err(|failure| error(failure.code(), failure.transport_error().message))?;
-    match serde_json::from_value(answer) {
-        Ok(LocalDaemonResponse::SessionCreated { session, .. }) => Ok(session.id().to_owned()),
-        _ => Err(error(
+    let room_id = match serde_json::from_value(answer) {
+        Ok(RoomCreation::SessionCreated(RoomCreationDetails::Gateway { session_id })) => {
+            Some(session_id)
+        }
+        Ok(RoomCreation::SessionCreated(RoomCreationDetails::Direct { session })) => {
+            Some(session.id().to_owned())
+        }
+        Err(_) => None,
+    };
+    room_id.filter(|id| !id.trim().is_empty()).ok_or_else(|| {
+        error(
             "exec_target_unreadable",
             "the other kernel answered with something that is not a new Room",
-        )),
-    }
+        )
+    })
+}
+
+#[derive(serde::Deserialize)]
+enum RoomCreation {
+    SessionCreated(RoomCreationDetails),
+}
+
+#[derive(serde::Deserialize)]
+#[serde(untagged)]
+enum RoomCreationDetails {
+    // The gateway ledger omits Room state from the durable write receipt.
+    Gateway {
+        session_id: String,
+    },
+    Direct {
+        session: Box<crate::session::RuntimeSession>,
+    },
 }
 
 /// Where the other kernel makes a Room when asked for none: the same default its own clients

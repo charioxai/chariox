@@ -55,6 +55,7 @@ pub(crate) struct OpenCodeRuntimeState {
     pub(super) completed_assistant_message_ids: BTreeSet<String>,
     pub(super) active_terminal_assistant_message_id: Option<String>,
     pub(super) active_user_message_id: Option<String>,
+    steered_user_message_ids: BTreeSet<String>,
     pub(in crate::provider) native_approval_origin: Option<crate::session::NativeInteractionOrigin>,
     active_prompt_submitted_at: Option<Instant>,
     prompt_submitted_by_run: bool,
@@ -89,6 +90,7 @@ impl OpenCodeRuntimeState {
             completed_assistant_message_ids: BTreeSet::new(),
             active_terminal_assistant_message_id: None,
             active_user_message_id: None,
+            steered_user_message_ids: BTreeSet::new(),
             active_prompt_submitted_at: None,
             prompt_submitted_by_run: false,
             session_errors_require_prompt_match: false,
@@ -120,11 +122,24 @@ impl OpenCodeRuntimeState {
 
     pub(in crate::provider) fn note_prompt_submitted(&mut self, user_message_id: String) {
         self.active_user_message_id = Some(user_message_id);
+        self.steered_user_message_ids.clear();
         self.active_terminal_assistant_message_id = None;
         self.active_prompt_submitted_at = Some(Instant::now());
         self.prompt_submitted_by_run = true;
         self.unmatched_session_error = None;
         self.unmatched_session_error_idle_since = None;
+    }
+
+    pub(in crate::provider) fn note_steer_submitted(&mut self, user_message_id: String) {
+        self.steered_user_message_ids.insert(user_message_id);
+    }
+
+    pub(super) fn matches_prompt_parent(&self, root: Option<&str>, parent: Option<&str>) -> bool {
+        root.is_some_and(|root| {
+            parent.is_some_and(|parent| {
+                root == parent || self.steered_user_message_ids.contains(parent)
+            })
+        })
     }
 
     pub(in crate::provider) fn has_submitted_prompt(&self) -> bool {
@@ -196,6 +211,7 @@ impl OpenCodeRuntimeState {
         self.preexisting_message_ids.clear();
         self.completed_assistant_message_ids.clear();
         self.active_user_message_id = None;
+        self.steered_user_message_ids.clear();
         self.active_terminal_assistant_message_id = None;
         self.active_prompt_submitted_at = None;
         self.unmatched_session_error = None;
@@ -214,6 +230,8 @@ impl OpenCodeRuntimeState {
         self.message_parent_ids
             .get(message_id)
             .and_then(|parent_id| parent_id.as_deref())
-            .is_none_or(|parent_id| parent_id == active_user_message_id)
+            .is_none_or(|parent_id| {
+                self.matches_prompt_parent(Some(active_user_message_id), Some(parent_id))
+            })
     }
 }

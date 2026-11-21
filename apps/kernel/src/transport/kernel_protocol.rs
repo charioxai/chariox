@@ -153,7 +153,6 @@ pub(crate) enum KernelEvent {
     SessionProcessesChanged {
         session_id: String,
         processes: Vec<crate::runtime::process_resources::SessionProcess>,
-        disk_usage: Vec<crate::runtime::disk_usage::DiskUsageEntry>,
     },
     SessionSnapshot {
         room_workflows: crate::runtime::projection::RoomWorkflowInventory,
@@ -806,14 +805,11 @@ pub(crate) fn session_projection_changed_events(
             !crate::runtime::process_resources::same_to_clients(
                 &previous.processes,
                 &snapshot.processes,
-            ) || previous.disk_usage != snapshot.disk_usage
-        }) && (previous.is_some()
-            || !snapshot.processes.is_empty()
-            || !snapshot.disk_usage.is_empty()))
+            )
+        }) && (previous.is_some() || !snapshot.processes.is_empty()))
         .then(|| KernelEvent::SessionProcessesChanged {
             session_id: snapshot.session.id().to_string(),
             processes: snapshot.processes.clone(),
-            disk_usage: snapshot.disk_usage.clone(),
         }),
         previous
             .is_none_or(|p| p.jobs != snapshot.jobs)
@@ -1242,7 +1238,7 @@ pub(crate) fn map_kernel_error(error: &DaemonError) -> KernelTransportError {
         DaemonError::AgentNotInSession { .. } => kernel_error("agent_not_in_session", error, false),
         DaemonError::AgentNotFound { .. } => kernel_error("agent_not_found", error, false),
         DaemonError::NoActivePrompt { .. } => kernel_error("no_active_prompt", error, false),
-        DaemonError::ProviderPromptSteerRejected { .. } => {
+        DaemonError::ProviderPromptSteerRejected { .. } | DaemonError::OpenCodeSteerConflict => {
             kernel_error("prompt_steer_rejected", error, false)
         }
         DaemonError::LocalTransport {
@@ -1279,6 +1275,9 @@ pub(crate) fn map_kernel_error(error: &DaemonError) -> KernelTransportError {
         }
         DaemonError::ProviderAdapterNotFound { .. } => {
             kernel_error("provider_adapter_not_found", error, false)
+        }
+        DaemonError::ProviderDevStubDisabled => {
+            kernel_error(crate::error::PROVIDER_DEV_STUB_DISABLED_CODE, error, false)
         }
         DaemonError::ProviderProtocol { .. } => {
             kernel_error("provider_protocol_error", error, true)

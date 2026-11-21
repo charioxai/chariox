@@ -82,23 +82,29 @@ fn local_request_api_exposes_queue_config_and_notices() {
     match first {
         LocalDaemonResponse::PromptSubmitted {
             outcome: PromptSubmissionOutcome::Started { .. },
-            session,
-            ..
+            session_id,
         } => {
-            assert!(session.active_prompt().is_some());
+            let state =
+                harness.wait_for_session_where(&session_id, "first prompt is active", |session| {
+                    session.active_prompt().is_some()
+                });
+            assert!(state.active_prompt().is_some());
         }
         _ => panic!("unexpected first prompt response"),
     }
     let queued_prompt = match second {
         LocalDaemonResponse::PromptSubmitted {
             outcome: PromptSubmissionOutcome::Queued { prompt },
-            session,
-            ..
+            session_id,
         } => {
-            assert_eq!(session.queued_prompts().len(), 1);
-            // MP-08/MP-09/MP-10/MP-11: IDs are opaque; the pending
-            // marker, rather than an ID prefix, describes queue membership.
-            assert_eq!(prompt.pending_prompt_id(), Some(prompt.id()));
+            let state = harness.wait_for_session_where(
+                &session_id,
+                "queued prompt in Room state",
+                |session| session.queued_prompts().len() == 1,
+            );
+            let queued = &state.queued_prompts()[0];
+            assert_eq!(queued.id(), prompt.id());
+            assert_eq!(queued.pending_prompt_id(), Some(prompt.id()));
             prompt
         }
         _ => panic!("unexpected second prompt response"),
@@ -202,9 +208,19 @@ fn local_request_api_exposes_queue_config_and_notices() {
             let started_next = completion
                 .started_next
                 .expect("queued prompt should start after completion");
-            assert_eq!(started_next.prompt(), "second");
             assert_eq!(started_next.id(), queued_prompt.id());
-            assert_eq!(started_next.pending_prompt_id(), None);
+            let state = harness.wait_for_session_where(
+                session.id(),
+                "promoted prompt in Room state",
+                |session| {
+                    session
+                        .active_prompt()
+                        .is_some_and(|active| active.id() == started_next.id())
+                },
+            );
+            let promoted = state.active_prompt().unwrap();
+            assert_eq!(promoted.prompt(), "second");
+            assert_eq!(promoted.pending_prompt_id(), None);
             started_next.id().to_string()
         }
         _ => panic!("unexpected completion response"),

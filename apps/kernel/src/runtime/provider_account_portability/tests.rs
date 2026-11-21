@@ -52,6 +52,7 @@ impl Fixture {
                     account_profile: profile.profile_id,
                 }],
             },
+            kernel_context: crate::managed_context::package::ManagedContextKernelSelection::Empty,
             launch_id: None,
         };
         Self {

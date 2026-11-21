@@ -84,6 +84,11 @@ async fn room_overview_excludes_transport_and_provider_private_state_in_both_mcp
 // MP-08 / MP-10 / MP-11: retained runs must not inherit authority from a smaller roster.
 #[tokio::test]
 async fn room_overview_historical_workflow_visibility_survives_foreign_agent_deletion() {
+    use crate::local::{
+        GetSessionStateRequest, GetWorkflowRunRequest, KernelConnectionClass,
+        ListWorkflowRunsRequest, LocalDaemonRequest, LocalDaemonResponse,
+    };
+    use crate::runtime::command::{KernelCommand, KernelCommandSource};
     use crate::session::{
         CollaborationLevel, WorkflowMessage, WorkflowNodeRun, WorkflowNodeRunStatus,
         WorkflowOutputPayload, WorkflowRun, WorkflowRunStatus,
@@ -317,8 +322,8 @@ async fn room_overview_historical_workflow_visibility_survives_foreign_agent_del
         app.sessions_mut()
             .restore_session(serde_json::from_value(serialized.clone()).unwrap());
         let app = std::sync::Arc::new(tokio::sync::Mutex::new(app));
-        let state = crate::runtime::router::CommandRouter::with_interactive_capacity(app, 1)
-            .runtime_state();
+        let router = crate::runtime::router::CommandRouter::with_interactive_capacity(app, 1);
+        let state = router.runtime_state();
         state
             .owned
             .workflow_cleanup_runtime_instances_exclusive(session.id())
@@ -342,8 +347,7 @@ async fn room_overview_historical_workflow_visibility_survives_foreign_agent_del
             .restore_session(serde_json::from_value(retained).unwrap());
         // MP-08 / MP-10 / MP-11: public protocol and subscription projection share Room's policy.
         let retained_session = state.owned.session_snapshot(session.id()).unwrap();
-        // MP-11: production pre-lane reads bypass the general response redactor.
-        // Cover cold and warmed lists, exact/prefix resolution, and settled GetSessionState.
+        // Cover full projections from cold and warmed lists and exact/prefix resolution.
         let read_projection = crate::runtime::projection::SessionStateProjectionStore::default();
         let pending =
             crate::runtime::provider_launch_executor::ProviderLaunchPendingTracker::default();
@@ -359,11 +363,6 @@ async fn room_overview_historical_workflow_visibility_survives_foreign_agent_del
                 session_ref: session.id()[..8].into(),
                 workspace_id: Some(session.workspace_id().into()),
             }),
-            crate::local::LocalDaemonRequest::GetSessionState(
-                crate::local::GetSessionStateRequest {
-                    session_id: session.id().into(),
-                },
-            ),
         ] {
             pre_lane_responses.push(
                 crate::runtime::session_read_control::projected_session_read_response(
@@ -379,6 +378,87 @@ async fn room_overview_historical_workflow_visibility_survives_foreign_agent_del
                 .unwrap(),
             );
         }
+        let room_state = LocalDaemonRequest::GetSessionState(GetSessionStateRequest {
+            session_id: session.id().into(),
+        });
+        let lean = router
+            .dispatch(
+                KernelCommand::from_local_request("room-state", None, None, &room_state),
+                room_state,
+            )
+            .await
+            .expect("Room member can read lean state");
+        let LocalDaemonResponse::SessionState {
+            session: lean_room, ..
+        } = lean
+        else {
+            panic!("expected lean Room state");
+        };
+        assert_eq!(lean_room.id(), session.id());
+        assert!(
+            lean_room.workflow_runs().is_empty(),
+            "lean state omits embedded runs"
+        );
+
+        let list = LocalDaemonRequest::ListWorkflowRuns(ListWorkflowRunsRequest {
+            session_id: session.id().into(),
+            workflow_ref: None,
+            cursor: None,
+            limit: None,
+        });
+        let get = LocalDaemonRequest::GetWorkflowRun(GetWorkflowRunRequest {
+            session_id: session.id().into(),
+            workflow_run_ref: "retired-owned-history-run".into(),
+        });
+        let listed = router
+            .dispatch(
+                KernelCommand::from_local_request("list-history", None, None, &list),
+                list.clone(),
+            )
+            .await
+            .expect("owner can list historical workflow runs");
+        let LocalDaemonResponse::WorkflowRunsListed { workflow_runs, .. } = listed else {
+            panic!("expected workflow run list");
+        };
+        assert!(workflow_runs
+            .iter()
+            .any(|run| run.id() == "retired-owned-history-run"));
+        let got = router
+            .dispatch(
+                KernelCommand::from_local_request("get-history", None, None, &get),
+                get.clone(),
+            )
+            .await
+            .expect("owner can read the retired agent's run");
+        let LocalDaemonResponse::WorkflowRun { workflow_run } = got else {
+            panic!("expected historical workflow run");
+        };
+        assert_eq!(workflow_run.id(), "retired-owned-history-run");
+        assert_eq!(
+            workflow_run.invocation_prompt(),
+            Some("synthetic-authorized-retired-history")
+        );
+        for request in [list, get] {
+            let mut command = KernelCommand::from_local_request_with_source(
+                "outsider-history",
+                KernelCommandSource::RelayClient,
+                None,
+                None,
+                &request,
+            );
+            command.caller.user_id = Some("outside-history-reader".into());
+            command.caller.client_id = Some("outside-history-client".into());
+            command.caller.connection_class = Some(KernelConnectionClass::Terminal);
+            let result = router.dispatch(command, request).await;
+            assert!(
+                matches!(
+                    &result,
+                    Err(crate::error::DaemonError::SessionAccessDenied { .. })
+                ),
+                "a non-member must be refused the Room's workflow history: {result:?}"
+            );
+        }
+
         let projected = retained_session
             .clone()
             .redacted_for_user_with_workflow_history(
@@ -389,7 +469,6 @@ async fn room_overview_historical_workflow_visibility_survives_foreign_agent_del
         let attachment_projection = crate::runtime::projection::SessionSnapshotProjection {
             jobs: Vec::new(),
             processes: Vec::new(),
-            disk_usage: Vec::new(),
             metadata: crate::runtime::projection::ProjectionMetadata::new(
                 crate::runtime::projection::SESSION_SNAPSHOT_PROJECTION_VERSION,
                 0,
@@ -405,30 +484,9 @@ async fn room_overview_historical_workflow_visibility_survives_foreign_agent_del
         }
         .redacted_for_user(actor.owner_user_id(), &state.owned.durable_state_store)
         .unwrap();
-        let response = crate::runtime::response_redaction::redact_response_for_user(
-            crate::local::LocalDaemonResponse::SessionState {
-                room_workflows: crate::runtime::projection::RoomWorkflowInventory::project(
-                    &retained_session,
-                    actor.owner_user_id(),
-                ),
-                session: retained_session,
-                agent_activity: Default::default(),
-                agent_activity_revision: 0,
-                processes: Vec::new(),
-                jobs: Vec::new(),
-                disk_usage: Vec::new(),
-            },
-            actor.owner_user_id(),
-            actor.owner_user_id(),
-            &crate::runtime::projection::ProviderRunProjectionStore::default(),
-            None,
-            Some(&state.owned.durable_state_store),
-        )
-        .unwrap();
         for value in [
             serde_json::to_value(projected).unwrap(),
             serde_json::to_value(attachment_projection).unwrap(),
-            serde_json::to_value(response).unwrap(),
         ]
         .into_iter()
         .chain(

@@ -6,16 +6,16 @@ use super::*;
 use crate::agent::{UsageLimitStop, UsageLimitStopState};
 use crate::local::UsageLimitStopAction;
 
-const USAGE_LIMIT_DECISION_PREFIX: &str = "usage-limit-";
-
 pub(super) fn is_usage_limit_decision(interaction_id: &str) -> bool {
-    interaction_id.starts_with(USAGE_LIMIT_DECISION_PREFIX)
+    interaction_id.starts_with(UsageLimitStop::DECISION_PREFIX)
 }
 
 fn decision_id(agent_id: &str, stop: &UsageLimitStop) -> String {
     format!(
-        "{USAGE_LIMIT_DECISION_PREFIX}{agent_id}-{}-{}",
-        stop.stopped_at_ms, stop.refused
+        "{}{agent_id}-{}-{}",
+        UsageLimitStop::DECISION_PREFIX,
+        stop.stopped_at_ms,
+        stop.refused
     )
 }
 
@@ -95,7 +95,10 @@ impl KernelRuntimeState {
         &'a self,
         agent: &'a crate::agent::AgentInstance,
     ) -> futures_util::future::BoxFuture<'a, Result<(), DaemonError>> {
-        Box::pin(self.raise_usage_limit_decision(agent))
+        Box::pin(async move {
+            let current = self.owned.agent_store.get_agent(agent.id())?;
+            self.raise_usage_limit_decision(&current).await
+        })
     }
 
     async fn raise_usage_limit_decision(
@@ -107,7 +110,7 @@ impl KernelRuntimeState {
             return Ok(());
         };
         let asking = agent
-            .usage_limit_stop()
+            .usage_limit_wait()
             .filter(|stop| stop.state == UsageLimitStopState::Asking);
         let wanted = asking.map(|stop| decision_id(agent.id(), stop));
         for interaction in session
@@ -175,6 +178,16 @@ impl KernelRuntimeState {
         let rx = self
             .create_kernel_operation_interaction(room, session.owner_user_id(), interaction)
             .await?;
+        if self
+            .owned
+            .agent_store
+            .get_agent(agent.id())?
+            .usage_limit_wait()
+            != Some(stop)
+        {
+            self.owned.timeout_runtime_interaction(room, &id)?;
+            return Ok(());
+        }
         let (state, agent_id, owner) = (
             self.as_kernel(),
             agent.id().to_string(),

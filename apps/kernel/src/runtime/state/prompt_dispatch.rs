@@ -370,12 +370,14 @@ impl KernelRuntimeState {
         session_id: &str,
         prompt: &crate::session::PromptQueueItem,
         expected_active_prompt_id: Option<&str>,
+        allow_home_turn_change: bool,
     ) -> Result<Option<String>, DaemonError> {
         self.steer_remote_agent_message_for_turn(
             session_id,
             prompt,
             expected_active_prompt_id,
             None,
+            allow_home_turn_change,
         )
         .await
     }
@@ -386,6 +388,7 @@ impl KernelRuntimeState {
         prompt: &crate::session::PromptQueueItem,
         expected_active_prompt: Option<&str>,
         expected_remote: Option<&crate::agent::RemoteAgentBinding>,
+        allow_home_turn_change: bool,
     ) -> Result<Option<String>, DaemonError> {
         let owned = &self.owned;
         let agent_id = prompt.target_agent_id();
@@ -414,6 +417,9 @@ impl KernelRuntimeState {
             return Ok(None);
         }
         if active_prompt.status() != crate::session::PromptStatus::Running {
+            if allow_home_turn_change {
+                return Ok(None);
+            }
             return Err(DaemonError::LocalTransport {
                 operation: "steer agent message",
                 message: "target agent is stopping; message was not delivered".to_string(),
@@ -461,7 +467,7 @@ impl KernelRuntimeState {
             hidden_system_context: prompt.hidden_system_context().to_string(),
             attachments,
         };
-        let (mut remote_execution, mut relay_config) = self
+        let prepared = self
             .with_app_side_effect(|app| {
                 let current_agent = owned.agent_store.get_agent(agent_id)?;
                 let remote_execution =
@@ -474,10 +480,15 @@ impl KernelRuntimeState {
                 let current_session = owned.session_store.get_session(session_id)?;
                 let current_active = owned
                     .prompt_state_owner
-                    .active_prompt_for_agent(&current_session, agent_id)
-                    .ok_or_else(|| DaemonError::NoActivePrompt {
+                    .active_prompt_for_agent(&current_session, agent_id);
+                let Some(current_active) = current_active else {
+                    if allow_home_turn_change {
+                        return Ok(None);
+                    }
+                    return Err(DaemonError::NoActivePrompt {
                         session_id: session_id.to_string(),
-                    })?;
+                    });
+                };
                 if expected_remote.is_some_and(|expected| {
                     !remote_steer_binding_identity_matches(Some(&remote_execution), Some(expected))
                 }) || current_active.id() != payload.target_home_prompt_id
@@ -485,17 +496,23 @@ impl KernelRuntimeState {
                     || remote_execution.active_worker_provider_run_id.as_deref()
                         != Some(worker_provider_run_id.as_str())
                 {
+                    if allow_home_turn_change {
+                        return Ok(None);
+                    }
                     return Err(DaemonError::LocalTransport {
                         operation: "steer agent message",
                         message: "active remote provider turn changed before delivery".to_string(),
                     });
                 }
-                Ok((
+                Ok(Some((
                     remote_execution.clone(),
                     app.relay_config_for_remote_execution(&remote_execution),
-                ))
+                )))
             })
             .await?;
+        let Some((mut remote_execution, mut relay_config)) = prepared else {
+            return Ok(None);
+        };
         let mut response =
             send_remote_queued_prompt_steer(&relay_config, &remote_execution, &payload, self, None)
                 .await;
@@ -570,9 +587,8 @@ impl KernelRuntimeState {
             &remote_execution.leased_agent_id,
             &provider_run_id,
         );
-        // MP-08 / MP-10 / MP-11: Explicit user steering shares the same
-        // post-receipt home-turn/binding admission and echo as agent messages.
-        // A worker acknowledgement cannot revive a settled home prompt.
+        // The worker has accepted the steer. Ordinary steering can record its
+        // history against that turn even if the home has already moved on.
         self.with_app_side_effect(|_app| {
             let current_agent = owned.agent_store.get_agent(agent_id)?;
             if !remote_steer_binding_identity_matches(
@@ -589,13 +605,14 @@ impl KernelRuntimeState {
             let current_active = owned
                 .prompt_state_owner
                 .active_prompt_for_agent(&current_session, agent_id);
-            if current_active.as_ref().is_none_or(|active| {
-                active.id() != payload.target_home_prompt_id
-                    || active.status() != crate::session::PromptStatus::Running
-            }) || current_agent
-                .remote_execution()
-                .and_then(|binding| binding.active_worker_provider_run_id.as_deref())
-                != Some(worker_provider_run_id.as_str())
+            if !allow_home_turn_change
+                && (current_active.as_ref().is_none_or(|active| {
+                    active.id() != payload.target_home_prompt_id
+                        || active.status() != crate::session::PromptStatus::Running
+                }) || current_agent
+                    .remote_execution()
+                    .and_then(|binding| binding.active_worker_provider_run_id.as_deref())
+                    != Some(worker_provider_run_id.as_str()))
             {
                 return Err(DaemonError::LocalTransport {
                     operation: "commit remote agent message steer",
@@ -727,11 +744,6 @@ impl KernelRuntimeState {
             )
             .await?;
             authorize()?;
-            self.limit_local_run_for_next_turn(
-                &prepared.session_id,
-                prepared.prompt.target_agent_id(),
-            )
-            .await?;
             // A submit that may queue never waits for a person: when the Vault is locked the
             // prompt waits in the queue on the Room's unlock card.
             let vault_use = if allow_queue {
@@ -739,24 +751,48 @@ impl KernelRuntimeState {
             } else {
                 "launch provider run"
             };
-            let refreshed = self
-                .with_external_command_authority(authority)
-                .refresh_project_prompt_provider(
+            let launch_wait = self
+                .owned
+                .prompt_state_owner
+                .provider_launch_wait()
+                .filter(|_| {
+                    !prepared.force_queue
+                        && self
+                            .owned
+                            .agent_store
+                            .get_agent(prepared.prompt.target_agent_id())
+                            .is_ok_and(|agent| agent.remote_execution().is_none())
+                });
+            let awaiting_vault = if launch_wait.is_some() {
+                prepared.prompt.set_launch_wait(launch_wait);
+                false
+            } else {
+                self.limit_local_run_for_next_turn(
                     &prepared.session_id,
                     prepared.prompt.target_agent_id(),
-                    vault_use,
                 )
-                .await;
-            let awaiting_vault = match refreshed {
-                Err(error)
-                    if allow_queue
-                        && super::runtime_vault_unlock_state::is_vault_unlock_card_open(&error) =>
-                {
-                    true
-                }
-                refreshed => {
-                    refreshed?;
-                    false
+                .await?;
+                let refreshed = self
+                    .with_external_command_authority(authority)
+                    .refresh_project_prompt_provider(
+                        &prepared.session_id,
+                        prepared.prompt.target_agent_id(),
+                        vault_use,
+                    )
+                    .await;
+                match refreshed {
+                    Err(error)
+                        if allow_queue
+                            && super::runtime_vault_unlock_state::is_vault_unlock_card_open(
+                                &error,
+                            ) =>
+                    {
+                        true
+                    }
+                    refreshed => {
+                        refreshed?;
+                        false
+                    }
                 }
             };
             authorize()?;

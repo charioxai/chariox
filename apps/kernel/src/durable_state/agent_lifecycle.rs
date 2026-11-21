@@ -80,6 +80,7 @@ mod wait_recheck_tests;
 mod wake_tests;
 mod wakeable;
 mod wakes;
+mod watch_adoption;
 mod workflow_tasks;
 #[cfg(test)]
 mod yield_settled_tests;
@@ -493,6 +494,64 @@ impl DurableKernelStateStore {
                     .unwrap_or_else(|_| quarantine::task(id, room, agent, prompt)))
             })
             .collect()
+    }
+
+    pub(crate) fn finished_room_tasks(
+        &self,
+        room: &str,
+        visible_agents: &[&str],
+        before: Option<i64>,
+    ) -> Result<(Vec<AgentTaskExecution>, Option<i64>), DaemonError> {
+        const PAGE_SIZE: usize = 32;
+        let agents = encode(&visible_agents)?;
+        let db = self.lock_connection("agent.lifecycle.finished_room_tasks")?;
+        // Keep the cursor in the immutable task insertion order, so new tasks do not shift pages.
+        // Apply trace visibility before the page boundary, so every page can use the same cursor.
+        let mut query = db
+            .prepare(
+                "SELECT rowid,task_id,room_id,agent_id,prompt_id,payload FROM agent_tasks WHERE rowid IN (\
+                 SELECT rowid FROM (\
+                  SELECT rowid FROM (SELECT rowid FROM agent_tasks WHERE room_id=?1 AND state='done' \
+                   AND rowid<?2 AND agent_id IN (SELECT value FROM json_each(?3)) ORDER BY rowid DESC LIMIT ?4) \
+                  UNION ALL SELECT rowid FROM (SELECT rowid FROM agent_tasks WHERE room_id=?1 AND state='cancelled' \
+                   AND rowid<?2 AND agent_id IN (SELECT value FROM json_each(?3)) ORDER BY rowid DESC LIMIT ?4) \
+                  ORDER BY rowid DESC LIMIT ?4)) ORDER BY rowid DESC",
+            )
+            .map_err(sql)?;
+        let rows = query
+            .query_map(
+                params![
+                    room,
+                    before.unwrap_or(i64::MAX),
+                    agents,
+                    (PAGE_SIZE + 1) as i64
+                ],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                    ))
+                },
+            )
+            .map_err(sql)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(sql)?;
+        let next = (rows.len() > PAGE_SIZE).then(|| rows[PAGE_SIZE - 1].0);
+        let tasks = rows
+            .into_iter()
+            .take(PAGE_SIZE)
+            .map(|(_, id, room, agent, prompt, payload)| {
+                let mut task = decode_task(&id, &room, &agent, &prompt, &payload)
+                    .unwrap_or_else(|_| quarantine::task(id, room, agent, prompt));
+                task.reason = crate::terminal::public_task_failure_reason(&task.reason);
+                task
+            })
+            .collect();
+        Ok((tasks, next))
     }
     /// Whether the task's terminal outcome is recorded. It is published only once the task's
     /// resources are settled, so a cancelled task that has it needs no further cancellation.
@@ -1198,11 +1257,30 @@ fn save(tx: &Transaction<'_>, task: &AgentTaskExecution) -> Result<(), DaemonErr
         .map_err(sql)?
         .map(|s| decode::<AgentTaskExecution>(&s))
         .transpose()?;
+    write_task(tx, task, previous.as_ref())
+}
+
+fn write_task(
+    tx: &Transaction<'_>,
+    task: &AgentTaskExecution,
+    previous: Option<&AgentTaskExecution>,
+) -> Result<(), DaemonError> {
     tx.execute("INSERT INTO agent_tasks(task_id,room_id,agent_id,prompt_id,payload) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(task_id) DO UPDATE SET prompt_id=excluded.prompt_id,payload=excluded.payload",params![task.task_id,task.room_id,task.agent_id,task.prompt_id,encode(task)?]).map_err(sql)?;
-    outside::publish_task(tx, task, previous.as_ref())?;
+    outside::publish_task(tx, task, previous)?;
     if matches!(task.state, ExecutionState::Done | ExecutionState::Cancelled) {
-        // A follow of a peer belongs to the agent that made it: the turn that made it may end.
-        tx.execute("UPDATE agent_registrations SET payload=json_set(payload,'$.live',json('false')) WHERE task_id=?1 AND json_valid(payload) AND COALESCE(json_extract(payload,'$.peer'),0)=0", [&task.task_id]).map_err(sql)?;
+        // Peer follows and work that continues after a normal turn remain available for adoption.
+        let retained: Vec<_> = task
+            .obligations
+            .iter()
+            .filter(|o| task.state == ExecutionState::Done && o.outlives_turn())
+            .map(|o| &o.id)
+            .collect();
+        tx.execute(
+            "UPDATE agent_registrations SET payload=json_set(payload,'$.live',json('false'))
+             WHERE task_id=?1 AND json_valid(payload) AND COALESCE(json_extract(payload,'$.peer'),0)=0
+             AND NOT EXISTS(SELECT 1 FROM json_each(?2) retained WHERE retained.value=json_extract(payload,'$.obligation_id'))",
+            params![task.task_id, encode(&retained)?],
+        ).map_err(sql)?;
     }
     Ok(())
 }
@@ -1389,7 +1467,14 @@ fn tasks_where(
             Err(_) => {
                 quarantine::retain(tx, "task", &id, &payload)?;
                 let t = quarantine::task(id, room, agent, prompt);
-                save(tx, &t)?;
+                // The original bytes are already retained. Decoding them again
+                // would roll back quarantine and fail the unrelated operation.
+                write_task(tx, &t, None)?;
+                crate::logging::warn_with_fields(
+                    "daemon.agent_task",
+                    "quarantined unreadable task row",
+                    serde_json::json!({"table": "agent_tasks", "task_id": t.task_id}),
+                );
                 result.push(t);
             }
         }
@@ -1750,6 +1835,9 @@ pub(crate) fn delivery_attempt_receipt_state(
     result: &Result<bool, DaemonError>,
     structured: bool,
 ) -> &'static str {
+    if matches!(result, Err(DaemonError::OpenCodeSteerConflict)) {
+        return "failed";
+    }
     let refused_before_sending = result.as_ref().err().is_some_and(|error| {
         !bound_to_provider_io || crate::provider::failed_to_start_before_prompt(error)
     });
@@ -1836,6 +1924,13 @@ pub(crate) fn receipt_notice(event: &InboxEvent) -> String {
     }
 }
 
+pub(crate) fn opencode_steer_conflict_notice(sequence: u64) -> String {
+    format!(
+        "Agent inbox: event {sequence} delivery failed: {}",
+        DaemonError::OpenCodeSteerConflict
+    )
+}
+
 /// MP-08/MP-10/MP-11: both existing provider reapers settle the exact inbox intent.
 /// An enqueue ACK or a changed/ended run cannot substitute for this receipt.
 pub(crate) struct EventSubmitReceipt {
@@ -1883,6 +1978,7 @@ pub(crate) fn finish_provider_event_submit(
     }
     let state = match &finished.result {
         Ok(_) => "accepted",
+        Err(DaemonError::OpenCodeSteerConflict) => "failed",
         Err(DaemonError::ProviderPromptSteerRejected { .. }) => "rejected",
         Err(error) if crate::provider::failed_to_start_before_prompt(error) => "rejected",
         Err(_) => "uncertain",
@@ -1897,7 +1993,11 @@ pub(crate) fn finish_provider_event_submit(
         Outcome::Event(settled) => Ok(Some(EventSubmitReceipt {
             steered,
             stale: false,
-            notice: Some(receipt_notice(&settled)),
+            notice: Some(if state == "failed" {
+                opencode_steer_conflict_notice(settled.sequence)
+            } else {
+                receipt_notice(&settled)
+            }),
             refused: (settled.state == "pending").then_some(settled),
         })),
         _ => Err(error("receipt outcome mismatch")),

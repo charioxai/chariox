@@ -111,7 +111,10 @@ async fn workflow_visibility() {
         else {
             panic!("session state")
         };
-        check(session.workflow_runs());
+        assert!(
+            session.workflow_runs().is_empty(),
+            "Room state omits workflow history"
+        );
         let attach = LocalDaemonRequest::AttachToSession(crate::local::AttachToSessionRequest {
             session_id: id.clone(),
             client_id: format!("client-{user}"),

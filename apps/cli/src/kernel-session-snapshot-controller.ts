@@ -50,10 +50,12 @@ export function createKernelSessionSnapshotController(
       ...projectedSession,
       ...(jobs ? { jobs } : {}),
       ...(processes ? { processes } : {}),
-      workflow_runs: mergeObservedTerminalWorkflowRuns(
-        previousSession.workflow_runs ?? [],
-        projectedSession.workflow_runs ?? [],
-      ),
+      ...(projectedSession.workflow_runs ? {
+        workflow_runs: mergeObservedTerminalWorkflowRuns(
+          previousSession.workflow_runs ?? [],
+          projectedSession.workflow_runs,
+        ),
+      } : {}),
     }
     const refreshTransition = sessionSnapshotRefreshTransition({
       previousSession,

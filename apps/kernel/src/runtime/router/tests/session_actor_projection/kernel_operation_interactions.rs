@@ -294,16 +294,15 @@ async fn a_decision_restored_after_a_restart_is_superseded_by_the_same_subject()
 }
 
 #[tokio::test]
-async fn another_owners_abandoned_decision_still_blocks_the_subject() {
+async fn another_owners_decision_blocks_the_subject_until_abandoned() {
     let (router, session) = setup_with(|session| {
         session.add_member("bob", None, crate::session::CollaborationLevel::Full);
     });
-    let abandoned = router
+    let pending = router
         .runtime_state
         .create_kernel_operation_interaction(&session, "bob", decision("bob", "operation"))
         .await
         .unwrap();
-    drop(abandoned);
     assert!(router
         .runtime_state
         .create_kernel_operation_interaction(
@@ -314,6 +313,18 @@ async fn another_owners_abandoned_decision_still_blocks_the_subject() {
         .await
         .is_err());
     assert_eq!(active_ids(&router, &session).await, ["bob"]);
+    drop(pending);
+    let replacement = router
+        .runtime_state
+        .create_kernel_operation_interaction(
+            &session,
+            DEFAULT_LOCAL_USER_ID,
+            decision("alice", "operation"),
+        )
+        .await
+        .expect("an abandoned decision releases its subject");
+    assert_eq!(active_ids(&router, &session).await, ["alice"]);
+    drop(replacement);
 }
 
 #[tokio::test]

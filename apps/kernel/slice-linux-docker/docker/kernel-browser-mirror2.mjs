@@ -118,10 +118,22 @@ export function cssImports(text) {
   return { layers, imports: out };
 }
 
+// A data: URL's body as the browser reads it (Fetch's data: URL processor): the fragment is not part of it, and a `%` not
+// followed by two hex digits stays a `%` (angular.dev's mask SVG holds `width='100%'`, which decodeURIComponent refuses).
 function dataUrlBytes(url) {
-  const match = /^data:([^,]*?)(;base64)?,(.*)$/s.exec(url);
+  const match = /^data:([^,#]*?)(;\s*base64\s*)?,([^#]*)/is.exec(url);
   if (!match) return null;
-  try { return match[2] ? Buffer.from(match[3], 'base64') : Buffer.from(decodeURIComponent(match[3]), 'utf8'); } catch { return null; }
+  const bytes = percentDecode(match[3]);
+  return match[2] ? Buffer.from(bytes.toString('latin1').replace(/[\t\n\f\r ]/g, ''), 'base64') : bytes;
+}
+function percentDecode(text) {
+  const input = Buffer.from(text, 'utf8'), out = Buffer.alloc(input.length), hex = byte => byte >= 0x30 && byte <= 0x39 || byte >= 0x41 && byte <= 0x46 || byte >= 0x61 && byte <= 0x66;
+  let length = 0;
+  for (let i = 0; i < input.length; i++) {
+    if (input[i] === 0x25 && i + 2 < input.length && hex(input[i + 1]) && hex(input[i + 2])) { out[length++] = parseInt(input.toString('latin1', i + 1, i + 3), 16); i += 2; }
+    else out[length++] = input[i];
+  }
+  return out.subarray(0, length);
 }
 
 // Union-free upper bound is enough for the budget: overlap only overstates.
@@ -206,11 +218,16 @@ export class Mirror2 {
   viewerOps(stream, ops) { return stream.fontRequirements === true ? stream.fontAbsent === true ? ops : ops.map(op => op.op === 'fonts' && op.absent ? { op: op.op, id: op.id, required: op.required } : op) : ops.filter(op => op.op !== 'fonts'); }
   parentWorld(stream) { return stream.world; }
   // Protocol 629: what the subscription negotiated for its snapshots; `visited_links` lists the URLs visited from the page's origin.
+  // `density`: the viewer's device scale factor where it is not the page's (see viewerDensity).
   snapshotOptions(stream, world) {
-    if (!stream.viewportFirst && !stream.visitedLinks) return null;
+    const density = this.viewerDensity(stream);
+    if (!stream.viewportFirst && !stream.visitedLinks && !density) return null;
     let origin = null; try { origin = new URL(world.frame?.url).origin; } catch {}
-    return { ...(stream.viewportFirst ? { viewport_first: true } : {}), ...(stream.visitedLinks ? { visited_links: this.host.visitedLinks?.from(origin) ?? [] } : {}) };
+    return { ...(density ? { density } : {}), ...(stream.viewportFirst ? { viewport_first: true } : {}), ...(stream.visitedLinks ? { visited_links: this.host.visitedLinks?.from(origin) ?? [] } : {}) };
   }
+  // The viewer's density where the page draws at another (the owned desktop's page draws at 1): its images draw
+  // from the candidates the page would pick at the viewer's.
+  viewerDensity(stream) { return stream.density !== undefined && stream.density !== this.host.viewport?.().device_scale_factor ? stream.density : null; }
   // Protocol 629: a page visited after a snapshot re-marks the links to it in each subscription that asked (best effort: a gone world has no links).
   visited(origin, url) {
     const expression = stream => `${stream.world.ref}.visited(${JSON.stringify(origin)},${JSON.stringify(url)})`;
@@ -397,7 +414,7 @@ export class Mirror2 {
     const packet = { wire: 2, subscription_id: command.subscription_id, tab_id: tabId, generation: command.generation,
       document_id: documentId, sequence, base_sequence: null, reset: true, fallback: 'navigation_preview',
       snapshot_complete: false, css_width: this.host.pageSize(tabId).width, css_height: this.host.pageSize(tabId).height, device_scale_factor: this.host.scales.get(tabId) ?? 1,
-      scroll: [0, 0], focused: null, selection: null, resources: [], tiles: [] };
+      scroll: [0, 0], focused: null, focus_visible: false, selection: null, resources: [], tiles: [] };
     this.remember(stream, sequence, packet, true);
     this.host.timing?.('mirror2_navigation_preview', started);
     return packet;
@@ -632,7 +649,7 @@ export class Mirror2 {
     const sequence = stream.issued + 1;
     // Protocol 489 compact delta: the binding, base (sequence - 1) and every
     // header field equal to the base packet's are implied; empty lists omitted.
-    const header = { snapshot_complete: source?.snapshot_complete === true, ...(stream.viewportFirst ? { snapshot_viewport_complete: source?.snapshot_viewport_complete === true } : {}), font_failures: source?.font_failures ?? [], scroll: source?.scroll ?? [0, 0], focused: source?.focused ?? null, selection: source?.selection ?? null, fragment: source?.fragment ?? null }, sent = Object.fromEntries(Object.entries(header).map(([name, value]) => [name, JSON.stringify(value)]));
+    const header = { snapshot_complete: source?.snapshot_complete === true, ...(stream.viewportFirst ? { snapshot_viewport_complete: source?.snapshot_viewport_complete === true } : {}), font_failures: source?.font_failures ?? [], scroll: source?.scroll ?? [0, 0], focused: source?.focused ?? null, focus_visible: source?.focus_visible === true, selection: source?.selection ?? null, fragment: source?.fragment ?? null }, sent = Object.fromEntries(Object.entries(header).map(([name, value]) => [name, JSON.stringify(value)]));
     const packet = reset ? { wire: 2, subscription_id: command.subscription_id, tab_id: tab.tab_id, generation: command.generation, document_id: tab.document_id,
       sequence, base_sequence: null, reset, css_width: this.host.pageSize(tab.tab_id).width, css_height: this.host.pageSize(tab.tab_id).height, device_scale_factor: this.host.scales.get(tab.tab_id) ?? 1, ...header }
       : { wire: 2, sequence, ...Object.fromEntries(Object.entries(header).filter(([name]) => sent[name] !== stream.header?.[name])) };
@@ -711,7 +728,7 @@ export class Mirror2 {
   empty(stream, source) { return this.emptyDom(stream, source) && !this.tilesDue(stream); }
   emptyDom(stream, source) {
     const scroll = JSON.stringify(source.scroll) === stream.ownScrolls.get(null) ? stream.sentScroll : source.scroll;
-    return !source.ops?.length && !source.sheets?.length && JSON.stringify(source.snapshot_complete === true) === stream.header?.snapshot_complete && (!stream.viewportFirst || JSON.stringify(source.snapshot_viewport_complete === true) === stream.header?.snapshot_viewport_complete) && JSON.stringify(source.font_failures ?? []) === stream.header?.font_failures && JSON.stringify(scroll) === stream.header?.scroll && JSON.stringify(source.focused) === stream.header.focused && JSON.stringify(source.selection) === stream.header.selection && JSON.stringify(source.fragment ?? null) === stream.header.fragment;
+    return !source.ops?.length && !source.sheets?.length && JSON.stringify(source.snapshot_complete === true) === stream.header?.snapshot_complete && (!stream.viewportFirst || JSON.stringify(source.snapshot_viewport_complete === true) === stream.header?.snapshot_viewport_complete) && JSON.stringify(source.font_failures ?? []) === stream.header?.font_failures && JSON.stringify(scroll) === stream.header?.scroll && JSON.stringify(source.focused) === stream.header.focused && JSON.stringify(source.focus_visible === true) === stream.header.focus_visible && JSON.stringify(source.selection) === stream.header.selection && JSON.stringify(source.fragment ?? null) === stream.header.fragment;
   }
   // A document that keeps streaming never has an empty credit: its font bytes, which fence the viewer's handover, travel with the DOM chunks.
   fontsDue(stream) { if (stream.fontRequirements !== true) return false; for (const entry of stream.resources.values()) if (entry.kind === 'font' && !entry.sent) return true; return false; }

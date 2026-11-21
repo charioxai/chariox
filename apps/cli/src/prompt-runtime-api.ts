@@ -1,6 +1,4 @@
 import {
-  normalizeRuntimeSession,
-  normalizeRuntimeSessionWithAgentActivity,
   type CliOptions,
   type PromptAttachmentPart,
   type PromptSubmittedPayload,
@@ -28,7 +26,6 @@ import {
   expectPromptSubmittedPayload,
   promptSubmissionOutcomeName,
   promptSubmissionTargetAgentId,
-  promptSubmissionTranscriptMetadata,
 } from "@chariox/kernel-client/prompt-submission"
 
 export {
@@ -36,7 +33,7 @@ export {
 } from "@chariox/kernel-client/prompt-submission"
 
 export type PromptSubmissionResult = {
-  payload: PromptSubmittedPayload
+  payload: Pick<PromptSubmittedPayload, "outcome"> & { session: RuntimeSession }
   targetAgentId: string | null
   outcomeName: string
 }
@@ -53,7 +50,7 @@ export async function submitPromptWithRecovery(
   logger?: CharioxLogger | null,
 ): Promise<PromptSubmissionResult> {
   try {
-    return await submitPrompt(client, sessionId, attachmentId, targetAgentId, prompt, attachments)
+    return await submitPrompt(client, sessionId, attachmentId, targetAgentId, prompt, attachments, getSession)
   } catch (error) {
     if (!isRecoverableProviderError(error)) {
       throw error
@@ -90,7 +87,7 @@ export async function submitPromptWithRecovery(
     logger?.info("relaunched provider after recoverable prompt failure", {
       session_id: sessionId,
     })
-    return submitPrompt(client, sessionId, attachmentId, targetAgentId, prompt, attachments)
+    return submitPrompt(client, sessionId, attachmentId, targetAgentId, prompt, attachments, getSession)
   }
 }
 
@@ -101,19 +98,18 @@ async function submitPrompt(
   targetAgentId: string | null,
   prompt: string,
   attachments: PromptAttachmentPart[],
+  getSession: () => RuntimeSession,
 ): Promise<PromptSubmissionResult> {
   const response = await client.send<Record<string, unknown>>(
     submitPromptRequest(sessionId, attachmentId, targetAgentId, prompt, attachments),
   )
-  const payload = expectPromptSubmittedPayload(response) as PromptSubmittedPayload
-  const normalizedPayload = {
-    ...payload,
-    session: normalizeRuntimeSessionWithAgentActivity(payload),
-  }
+  const payload = expectPromptSubmittedPayload(response)
+  if (payload.session_id !== sessionId) throw new Error("The kernel did not confirm this prompt for its Room.")
+  const session = await getSessionState(client, sessionId).catch(() => getSession())
   return {
-    payload: normalizedPayload,
-    targetAgentId: promptSubmissionTargetAgentId(normalizedPayload),
-    outcomeName: promptSubmissionOutcomeName(normalizedPayload),
+    payload: { outcome: payload.outcome, session },
+    targetAgentId: promptSubmissionTargetAgentId(payload),
+    outcomeName: promptSubmissionOutcomeName(payload),
   }
 }
 
@@ -136,11 +132,11 @@ export async function steerQueuedPrompt(
   const response = await client.send<Record<string, unknown>>(
     steerQueuedPromptRequest(sessionId, attachmentId, targetAgentId, promptId),
   )
-  const payload = expectVariant<QueuedPromptSteeredPayload>(response, "QueuedPromptSteered")
-  return {
-    ...payload,
-    session: normalizeRuntimeSessionWithAgentActivity(payload),
+  const receipt = expectVariant<QueuedPromptSteeredPayload>(response, "QueuedPromptSteered")
+  if (receipt.session_id !== sessionId || receipt.prompt.id !== promptId) {
+    throw new Error("The kernel did not confirm this queued prompt for its Room.")
   }
+  return receipt
 }
 
 export async function cancelQueuedPrompt(
@@ -153,11 +149,11 @@ export async function cancelQueuedPrompt(
   const response = await client.send<Record<string, unknown>>(
     cancelQueuedPromptRequest(sessionId, attachmentId, targetAgentId, promptId),
   )
-  const payload = expectVariant<QueuedPromptCancelledPayload>(response, "QueuedPromptCancelled")
-  return {
-    ...payload,
-    session: normalizeRuntimeSessionWithAgentActivity(payload),
+  const receipt = expectVariant<QueuedPromptCancelledPayload>(response, "QueuedPromptCancelled")
+  if (receipt.session_id !== sessionId || receipt.prompt.id !== promptId) {
+    throw new Error("The kernel did not confirm this queued prompt for its Room.")
   }
+  return receipt
 }
 
 export async function respondToInteraction(

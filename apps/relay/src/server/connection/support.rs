@@ -1498,14 +1498,28 @@ pub(super) fn validate_daemon_registration_identity(
     identity: &VerifiedRelayIdentity,
     registration: &DaemonRegistration,
 ) -> Result<(), &'static str> {
+    validate_registration_identity(
+        identity,
+        &registration.daemon_id,
+        &registration.machine_id,
+        &registration.public_key,
+    )
+}
+
+/// The token names this kernel, its machine and its key.
+pub(super) fn validate_registration_identity(
+    identity: &VerifiedRelayIdentity,
+    daemon_id: &str,
+    machine_id: &str,
+    public_key: &str,
+) -> Result<(), &'static str> {
     if identity.token_id.is_none() {
         return Ok(());
     }
     let subject_matches = match identity.subject_kind {
-        RelaySubjectKind::Kernel => registration_daemon_is_exact_kernel_or_temporary_peer(
-            &registration.daemon_id,
-            &identity.subject,
-        ),
+        RelaySubjectKind::Kernel => {
+            registration_daemon_is_exact_kernel_or_temporary_peer(daemon_id, &identity.subject)
+        }
         // A machine identity does not name a canonical kernel registration.
         // Hosted kernels and slice workers register with their KERNEL token.
         RelaySubjectKind::Machine => false,
@@ -1518,13 +1532,13 @@ pub(super) fn validate_daemon_registration_identity(
     if identity
         .machine_id
         .as_deref()
-        .is_some_and(|machine_id| machine_id != registration.machine_id)
+        .is_some_and(|claimed| claimed != machine_id)
     {
         return Err("relay token machine does not match daemon registration");
     }
     if let Some(expected_thumbprint) = identity.public_key_thumbprint.as_deref() {
         use sha2::{Digest, Sha256};
-        let actual = Sha256::digest(registration.public_key.as_bytes())
+        let actual = Sha256::digest(public_key.as_bytes())
             .iter()
             .map(|byte| format!("{byte:02x}"))
             .collect::<String>();

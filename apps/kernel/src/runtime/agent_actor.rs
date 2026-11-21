@@ -191,25 +191,21 @@ impl AgentRuntime {
         request: crate::local::SubmitPromptsRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         if request.prompts.is_empty() {
-            let session = self.store.session_snapshot(&request.session_id).await?;
+            self.store.session_snapshot(&request.session_id).await?;
             return Ok(LocalDaemonResponse::PromptsSubmitted {
+                session_id: request.session_id,
                 results: Vec::new(),
                 failures: Vec::new(),
-                agent_activity: self.store.agent_activity_for_session(&session).await,
-                agent_activity_revision: self.session_projection.change_sequence(),
-                session,
             });
         }
         if let Some(failures) =
             prompt_batch_preflight_failures(&request.session_id, &request.prompts)
         {
-            let session = self.store.session_snapshot(&request.session_id).await?;
+            self.store.session_snapshot(&request.session_id).await?;
             return Ok(LocalDaemonResponse::PromptsSubmitted {
+                session_id: request.session_id,
                 results: Vec::new(),
                 failures,
-                agent_activity: self.store.agent_activity_for_session(&session).await,
-                agent_activity_revision: self.session_projection.change_sequence(),
-                session,
             });
         }
         let caller_user_id = command_agent_actor_user_id(command);
@@ -222,13 +218,11 @@ impl AgentRuntime {
             )
             .await;
         if !authorization_failures.is_empty() {
-            let session = self.store.session_snapshot(&request.session_id).await?;
+            self.store.session_snapshot(&request.session_id).await?;
             return Ok(LocalDaemonResponse::PromptsSubmitted {
+                session_id: request.session_id,
                 results: Vec::new(),
                 failures: authorization_failures,
-                agent_activity: self.store.agent_activity_for_session(&session).await,
-                agent_activity_revision: self.session_projection.change_sequence(),
-                session,
             });
         }
 
@@ -293,7 +287,6 @@ impl AgentRuntime {
             }
         }
 
-        let mut response_session = None;
         for session_id in prompt_session_ids {
             let session = self.store.session_snapshot(&session_id).await?;
             publish_session_runtime_projection(
@@ -301,30 +294,12 @@ impl AgentRuntime {
                 &self.agent_runtime_projection,
                 &session,
             );
-            if session_id == response_session_id {
-                response_session = Some(session);
-            }
         }
-        let session = match response_session {
-            Some(session) => session,
-            None => {
-                let session = self.store.session_snapshot(&response_session_id).await?;
-                publish_session_runtime_projection(
-                    &self.session_projection,
-                    &self.agent_runtime_projection,
-                    &session,
-                );
-                session
-            }
-        };
-        let agent_activity = self.store.agent_activity_for_session_sync(&session);
 
         Ok(LocalDaemonResponse::PromptsSubmitted {
+            session_id: response_session_id,
             results,
             failures,
-            session,
-            agent_activity,
-            agent_activity_revision: self.session_projection.change_sequence(),
         })
     }
 
@@ -406,11 +381,17 @@ impl AgentRuntime {
                 "steer active prompt",
             )
             .await?;
+        let command_trace = CommandTrace::from_command(command);
         self.dispatch_to_agent(
             request.target_agent_id.clone(),
-            CommandTrace::from_command(command),
+            command_trace.clone(),
             command,
-            AgentCommand::SteerActivePrompt { request },
+            AgentCommand::SteerActivePrompt {
+                request,
+                trace_id: command_trace.trace_id().to_string(),
+                operation_id: command.durable_operation_id(None),
+                operation_fingerprint: command.durable_request_fingerprint(),
+            },
         )
         .await
     }
@@ -765,20 +746,6 @@ impl AgentRuntimeStore {
         session_id: &str,
     ) -> Result<crate::session::RuntimeSession, DaemonError> {
         self.state.session_snapshot(session_id).await
-    }
-
-    async fn agent_activity_for_session(
-        &self,
-        session: &crate::session::RuntimeSession,
-    ) -> std::collections::BTreeMap<String, crate::runtime::projection::AgentRuntimeActivity> {
-        self.state.agent_activity_for_session(session)
-    }
-
-    fn agent_activity_for_session_sync(
-        &self,
-        session: &crate::session::RuntimeSession,
-    ) -> std::collections::BTreeMap<String, crate::runtime::projection::AgentRuntimeActivity> {
-        self.state.agent_activity_for_session(session)
     }
 
     fn prompt_command_service(

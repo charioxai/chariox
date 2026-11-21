@@ -382,12 +382,14 @@ public final class CharioxAppModel {
         ),
         to: try endpointURL()
       )
-      guard case .promptSubmitted(let updatedSession) = response else {
+      guard case .promptSubmitted(let sessionID) = response, sessionID == session.id else {
         throw KernelClientError.unexpectedResponse(String(describing: response))
       }
-      upsert(updatedSession)
-      selectedSessionID = updatedSession.id
       promptDraft = ""
+      if let state = try? await client.send(.getSessionState(sessionID: sessionID), to: endpointURL()),
+         case .sessionState(let updatedSession) = state {
+        upsert(updatedSession)
+      }
       return "Prompt submitted."
     }
   }

@@ -82,13 +82,13 @@ async fn prompt_submit_batch_starts_multiple_agents_with_one_kernel_request() {
     let LocalDaemonResponse::PromptsSubmitted {
         results,
         failures,
-        session,
-        agent_activity,
-        ..
+        session_id: receipt_session_id,
     } = response
     else {
         panic!("unexpected response");
     };
+    assert_eq!(receipt_session_id, session_id);
+    let session = session_projection.get(&session_id).unwrap();
     assert!(failures.is_empty());
     assert_eq!(results.len(), 2);
     assert_eq!(results[0].agent_id, first_agent_id);
@@ -103,12 +103,6 @@ async fn prompt_submit_batch_starts_multiple_agents_with_one_kernel_request() {
     ));
     assert!(session.active_prompt_for_agent(&first_agent_id).is_some());
     assert!(session.active_prompt_for_agent(&second_agent_id).is_some());
-    assert!(agent_activity
-        .get(&first_agent_id)
-        .is_some_and(|activity| activity.busy));
-    assert!(agent_activity
-        .get(&second_agent_id)
-        .is_some_and(|activity| activity.busy));
 }
 
 #[tokio::test]
@@ -183,22 +177,17 @@ async fn prompt_submit_batch_rejects_duplicate_targets_without_partial_submit() 
     let LocalDaemonResponse::PromptsSubmitted {
         results,
         failures,
-        session,
-        agent_activity,
-        ..
+        session_id: receipt_session_id,
     } = response
     else {
         panic!("unexpected response");
     };
+    assert_eq!(receipt_session_id, session_id);
     assert!(results.is_empty());
     assert_eq!(failures.len(), 2);
     assert!(failures
         .iter()
         .all(|failure| failure.message.contains("duplicate target agents")));
-    assert!(session.active_prompt_for_agent(&agent_id).is_none());
-    assert!(agent_activity
-        .get(&agent_id)
-        .is_some_and(|activity| !activity.busy));
     let app = app.lock().await;
     let session_after = crate::app::KernelSessionReadService::new(&app)
         .session_snapshot(&session_id)
@@ -278,22 +267,17 @@ async fn prompt_submit_batch_rejects_invalid_targets_without_partial_submit() {
     let LocalDaemonResponse::PromptsSubmitted {
         results,
         failures,
-        session,
-        agent_activity,
-        ..
+        session_id: receipt_session_id,
     } = response
     else {
         panic!("unexpected response");
     };
+    assert_eq!(receipt_session_id, session_id);
     assert!(results.is_empty());
     assert_eq!(failures.len(), 1);
     assert_eq!(failures[0].index, 1);
     assert_eq!(failures[0].agent_id.as_deref(), Some("missing-agent"));
     assert!(failures[0].message.contains("missing-agent"));
-    assert!(session.active_prompt_for_agent(&agent_id).is_none());
-    assert!(agent_activity
-        .get(&agent_id)
-        .is_some_and(|activity| !activity.busy));
     let app = app.lock().await;
     let session_after = crate::app::KernelSessionReadService::new(&app)
         .session_snapshot(&session_id)
@@ -394,12 +378,13 @@ async fn prompt_submit_batch_accepts_explicit_mixed_sessions() {
     let LocalDaemonResponse::PromptsSubmitted {
         results,
         failures,
-        session,
-        ..
+        session_id: receipt_session_id,
     } = response
     else {
         panic!("unexpected response");
     };
+    assert_eq!(receipt_session_id, first_session_id);
+    let session = session_projection.get(&first_session_id).unwrap();
     assert!(failures.is_empty());
     assert_eq!(results.len(), 2);
     assert_eq!(results[0].index, 0);
@@ -529,12 +514,13 @@ async fn prompt_submit_batch_projects_final_queued_prompt_state() {
     let LocalDaemonResponse::PromptsSubmitted {
         results,
         failures,
-        session,
-        ..
+        session_id: receipt_session_id,
     } = response
     else {
         panic!("unexpected response");
     };
+    assert_eq!(receipt_session_id, session_id);
+    let session = session_projection.get(&session_id).unwrap();
     assert!(failures.is_empty());
     assert_eq!(results.len(), 2);
     assert!(matches!(

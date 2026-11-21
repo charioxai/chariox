@@ -13,7 +13,6 @@ use base64::Engine as _;
 use rand::RngCore;
 use tokio::sync::oneshot;
 
-use super::driver::Admission;
 use super::events::{BoundEvents, CompletionEvents, WatchOwner};
 use super::managed_work::ManagedWork;
 use super::owner::{TerminalOwner, TerminalState};
@@ -425,87 +424,73 @@ impl RoomTerminalService {
             )));
         }
         let owner = self.find(&scope.into(), terminal_id)?;
-        let submits = input.iter().any(|byte| matches!(byte, b'\r' | b'\n'));
-        loop {
-            // Decide from what the shell has already reported, not from the
-            // state of the last tick: a command that just ended still looks
-            // like it drives the terminal until its report is read.
-            self.pump_terminal(&owner, false);
-            {
-                // Held until the input is written and the kernel knows about
-                // the command it starts.
-                let admission = submits.then(|| self.inner.managed.admission());
-                let mut state = owner.lock_open()?;
-                let TerminalState { pty, terminal, .. } = &mut *state;
-                let Some(run_id) = terminal.run_id.clone() else {
-                    return Err(ended_error(terminal));
-                };
-                let now = Instant::now();
-                let shell_foreground = terminal.at_prompt(pty, now);
-                match terminal.driver.admit(actor, shell_foreground, now) {
-                    Admission::Admit => {
-                        // Only a line submitted at the prompt starts a command.
-                        if let (true, Some(Err(error))) = (shell_foreground, &admission) {
-                            return Err(refuse_fenced(error));
-                        }
-                        // Queue it: waiting for the child to read would hold
-                        // this terminal's lock for as long as a program
-                        // ignores its input.
-                        // A lone interrupt key must still stop the program
-                        // when the paste before it is stuck in the queue.
-                        let interrupted = match input {
-                            [key] => pty.signal_key_behind_blocked_input(&run_id, *key)?,
-                            _ => None,
-                        };
-                        if let (true, true, None) = (shell_foreground, submits, &interrupted) {
-                            // The command a line starts belongs to whoever
-                            // pressed its Enter; the shell reports when it
-                            // reads it.
-                            for _ in 0..enters(input) {
-                                crate::runtime::process_resources::submit_line_for_key(
-                                    &run_id,
-                                    *actor != TerminalActor::User,
-                                );
-                            }
-                        }
-                        match interrupted {
-                            Some(dropped) => terminal.dropped_input_bytes += dropped as u64,
-                            None => pty.input_writer(&run_id)?.enqueue_input(input)?,
-                        }
-                        if *actor == TerminalActor::User {
-                            terminal.mark_user_interacted();
-                        }
-                        terminal
-                            .driver
-                            .record_write(actor, shell_foreground, input, now);
-                        let driver = terminal.driver.observe(shell_foreground);
-                        drop(state);
-                        self.pump_soon(&owner);
-                        self.report_work();
-                        return Ok(RoomTerminalInputResult {
-                            accepted: true,
-                            driver,
-                            refusal: None,
-                        });
-                    }
-                    Admission::Refuse(driver) => {
-                        let refusal = match &driver {
-                            RoomTerminalDriver::Busy { driven_by } => {
-                                format!("busy (driven by {driven_by})")
-                            }
-                            RoomTerminalDriver::Free => "busy".to_string(),
-                        };
-                        return Ok(RoomTerminalInputResult {
-                            accepted: false,
-                            driver,
-                            refusal: Some(refusal),
-                        });
-                    }
-                    Admission::Settle => {}
+        let submits = enters(input);
+        // Read the shell's latest prompt report before deciding who can type.
+        self.pump_terminal(&owner, false);
+        let admission = (submits > 0).then(|| self.inner.managed.admission());
+        let mut state = owner.lock_open()?;
+        let TerminalState { pty, terminal, .. } = &mut *state;
+        let Some(run_id) = terminal.run_id.clone() else {
+            return Err(ended_error(terminal));
+        };
+        let now = Instant::now();
+        let at_prompt = terminal.at_prompt(pty, now);
+        let driver = terminal.driver.observe(at_prompt);
+        if let RoomTerminalDriver::Busy { driven_by } = &driver {
+            if *actor != TerminalActor::User && actor != driven_by {
+                return Ok(RoomTerminalInputResult {
+                    accepted: false,
+                    refusal: Some(format!("busy (driven by {driven_by})")),
+                    driver,
+                });
+            }
+        }
+        if let (true, Some(Err(error))) = (at_prompt, &admission) {
+            return Err(refuse_fenced(error));
+        }
+        // Queue input without holding the terminal until the child reads it.
+        // A lone interrupt must still reach the program behind a blocked paste.
+        let interrupted = match input {
+            [key] => pty.signal_key_behind_blocked_input(&run_id, *key)?,
+            _ => None,
+        };
+        let submitted_lines = if at_prompt && interrupted.is_none() {
+            submits
+        } else {
+            0
+        };
+        match interrupted {
+            Some(dropped) => {
+                terminal.dropped_input_bytes += dropped as u64;
+                if dropped > 0 {
+                    terminal.driver.discard_submissions(!at_prompt);
                 }
             }
-            tokio::time::sleep(Duration::from_millis(20)).await;
+            None => {
+                for _ in 0..submitted_lines {
+                    crate::runtime::process_resources::submit_line_for_key(
+                        &run_id,
+                        *actor != TerminalActor::User,
+                    );
+                }
+                pty.input_writer(&run_id)?.enqueue_input(input)?;
+            }
         }
+        if *actor == TerminalActor::User {
+            terminal.mark_user_interacted();
+        }
+        terminal
+            .driver
+            .record_write(actor, submitted_lines, input, now);
+        let driver = terminal.driver.observe(at_prompt);
+        drop(state);
+        self.pump_soon(&owner);
+        self.report_work();
+        Ok(RoomTerminalInputResult {
+            accepted: true,
+            driver,
+            refusal: None,
+        })
     }
 
     pub fn resize(

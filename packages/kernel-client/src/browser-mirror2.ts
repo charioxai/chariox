@@ -19,6 +19,21 @@ export const browserMirror2MinimumProtocolVersion = 550
 const NS = { svg: 'http://www.w3.org/2000/svg', math: 'http://www.w3.org/1998/Math/MathML' } as const
 const resourcePattern = /url\("mr:(r[0-9]{1,9})"\)/g
 const styledResourcePattern = /url\("mr:(r[0-9]{1,9})"\)(\s*(?:format\(\s*(?:"[^"]*"|'[^']*'|[^)]*)\s*\)\s*)?(?:tech\(\s*(?:"[^"]*"|'[^']*'|[^)]*)\s*\))?)?/g
+// The mirror document runs no scripts, so `(scripting: none)` matches in it while the kernel page runs scripts: a
+// page's no-JS variants (Tailwind `js-disabled:`) would show and its scripted ones hide. The viewer evaluates each
+// scripting test as the kernel page does: none -> enabled (false here), enabled or bare -> none (true here).
+const scriptingFeature = /\(\s*scripting\s*(?::\s*(none|enabled)\s*)?\)/gi
+export function kernelScriptingMedia(media: string): string {
+  return media.replace(scriptingFeature, (_match, value?: string) => value?.toLowerCase() === 'none' ? '(scripting: enabled)' : '(scripting: none)')
+}
+// CSS text from the kernel is CSSOM-serialized: a condition sits in an `@media ... {` prelude (imports and adopted media lists
+// arrive wrapped as one); selectors and declarations are left alone. Quoted strings (content, attribute selector values) and
+// comments are matched first and kept as they are, so @media-like text inside them is the page's text.
+const mediaPreludes = /"(?:[^"\\]|\\[\s\S])*"|'(?:[^'\\]|\\[\s\S])*'|\/\*[\s\S]*?\*\/|@media\b[^{};"']*\{/g
+export function kernelScriptingCss(css: string): string {
+  return css.includes('scripting') ? css.replace(mediaPreludes, token => token.startsWith('@') && token.includes('scripting') ? kernelScriptingMedia(token) : token) : css
+}
+const attrValue = (element: Element, name: string, value: string): string => name === 'popover' ? 'manual' : name === 'media' && element.localName === 'style' ? kernelScriptingMedia(value) : value
 // One packet answers one credit and the kernel waits for credits, so a page that changes every frame is limited to
 // window / round trip packets a second: 4 credits over a 74 ms round trip were 54 a second (the drill's DOM mirror
 // animated at 49 against Selkies' 60). Eight cover 60 a second up to 130 ms. The window shrinks to the old four
@@ -55,6 +70,18 @@ async function digest(bytes: Uint8Array): Promise<string> {
 
 export type Mirror2Timing = { stage: string; duration_ms: number; ended_ms: number }
 
+/**
+ * The mirror runs no scripts, so Chromium gives every video, and every audio with `controls`, its own player, even with
+ * controls=false. A mirrored media tile shows the kernel's pixels (or its poster), which already hold the page's controls:
+ * the viewer's player would cover them and take input meant for the kernel.
+ */
+function hideViewerControls(media: Element): void {
+  if (media.querySelector(':scope > style[data-chariox-region-controls]')) return
+  const style = media.ownerDocument.createElement('style')
+  style.setAttribute('data-chariox-region-controls', '')
+  style.textContent = 'video::-webkit-media-controls,audio::-webkit-media-controls{display:none!important}'
+  media.append(style)
+}
 export class BrowserMirror2Renderer {
   private navigation: Mirror2Navigation
   get frame(): HTMLIFrameElement { return this.navigation.frame }
@@ -77,6 +104,7 @@ export class BrowserMirror2Renderer {
   private slices = new Map<string, Mirror2Resource>() // resources still arriving in slices
   private styled = new Map<string, Styled>()
   private tileUrls = new Map<string, string>()
+  private placeholderTiles = new WeakSet<Element>() // tiles showing the black placeholder (neither still nor poster)
   private tileBoxes = new Map<string, Pick<Mirror2Tile, "x" | "y" | "width" | "height">>()
   private selects: Array<[Element, Mirror2Form]> = []
   private states: Element[] = [] // UA state to apply once this packet's DOM is attached
@@ -100,6 +128,7 @@ export class BrowserMirror2Renderer {
   // before it applied: those still naming the old kernel focus leave the viewer's alone (until the window passes).
   private focusHold: { id: string, previous: string | null, until: number } | null = null
   private kernelFocus: string | null = null // the latest packet's focus
+  private kernelFocusVisible = false // whether the page draws a focus ring on it (it matches :focus-visible there)
   private focusWithheld: string | null | undefined // a packet's focus not taken while inputs were pending
   private resetSerial = 0 // local only: IDs and cached focus never cross a snapshot
   private queue: Array<{ resetSerial: number; action: Mirror2Input; epoch: { sequence: number; document_id: string } }> = []
@@ -227,8 +256,13 @@ export class BrowserMirror2Renderer {
     const outside = this.frame.ownerDocument.activeElement, elsewhere = !!outside && outside !== this.frame && outside !== this.frame.ownerDocument.body
     const focused = id && !elsewhere ? this.dom.get(id) as HTMLElement | undefined : undefined, active = this.active() as HTMLElement | null
     this.focusSent = id
+    // The copy draws a focus ring only where the page does: a script focus() alone would draw one after a mouse press.
+    // Focusing the focused element again changes nothing, so a ring that turns on or off takes a blur first.
+    // (TypeScript's DOM types do not name FocusOptions.focusVisible yet; Chrome, Firefox and Safari take it.)
+    const ring = this.kernelFocusVisible
+    if (focused && active === focused && focused.matches(':focus-visible') !== ring) focused.blur()
     // A control built while detached could not take its caret: restore it once focused.
-    if (focused && active !== focused) { focused.focus?.({ preventScroll: true }); const form = this.records.get(id!)?.form; if (form) this.caret(focused as HTMLInputElement, form) }
+    if (focused && this.active() !== focused) { focused.focus?.({ preventScroll: true, focusVisible: ring } as FocusOptions); const form = this.records.get(id!)?.form; if (form) this.caret(focused as HTMLInputElement, form) }
     // The kernel's focus left (blur, a protected field): the viewer's control blurs too.
     else if (!id && !elsewhere && active && this.ids.has(active) && active !== active.ownerDocument.body && active !== active.ownerDocument.documentElement) active.blur()
   }
@@ -410,7 +444,7 @@ export class BrowserMirror2Renderer {
   // A face whose bytes have not arrived points at an empty Blob: Chromium fetches a face only for text in its unicode-range,
   // so the faces the native page never loaded stay `unloaded` as there, and only a face the text needs fails until its bytes arrive.
   // Each resource has its own Blob: Chromium shares a font fetch by URL, so one failed face would fail every face naming the same URL.
-  private substitute(raw: string): string { return raw.replace(styledResourcePattern, (_match, key: string, suffix: string) => `url("${this.resources.get(key) ?? this.placeholder(key)}")${suffix ?? ''}`) }
+  private substitute(raw: string): string { return kernelScriptingCss(raw).replace(styledResourcePattern, (_match, key: string, suffix: string) => `url("${this.resources.get(key) ?? this.placeholder(key)}")${suffix ?? ''}`) }
   private placeholder(key: string): string {
     let url = this.placeholders.get(key)
     if (!url) { url = URL.createObjectURL(new Blob([])); this.placeholders.set(key, url) }
@@ -501,12 +535,13 @@ export class BrowserMirror2Renderer {
     for (const [name, value] of Object.entries(record.attrs ?? {})) {
       if (name === 'style') this.setStyled(record.id, { kind: 'attr', raw: value, node: element, keys: [] })
       // The kernel opens and closes popovers (state ops): the viewer's copy never light-dismisses itself.
-      else try { element.setAttribute(name, name === 'popover' ? 'manual' : value) } catch { /* invalid names were refused by validation */ }
+      else try { element.setAttribute(name, attrValue(element, name, value)) } catch { /* invalid names were refused by validation */ }
     }
     if (record.state) this.states.push(element)
     if (record.kind === 'element' && record.tag === 'style') this.setStyled(record.id, { kind: 'css', raw: record.css ?? '', node: element, keys: [] })
     if (record.res !== undefined) this.image(record.id, element, record.res)
     this.opaqueLayout(record, element)
+    if (record.kind === 'tile' && (record.tag === 'video' || record.tag === 'audio') && !record.ns) hideViewerControls(element)
     if (record.kind === 'frame') { element.setAttribute('sandbox', 'allow-same-origin'); element.setAttribute('referrerpolicy', 'no-referrer') }
     // A select's state waits for its options (the build appends children after their parent).
     if (record.form) { if (element.localName === 'select') this.selects.push([element, record.form]); else this.form(element, record.form) }
@@ -518,10 +553,12 @@ export class BrowserMirror2Renderer {
       const [width, height] = record.size ?? [0, 0]
       style.setProperty('box-sizing', 'border-box', 'important'); style.setProperty('width', `${width}px`, 'important'); style.setProperty('height', `${height}px`, 'important')
       style.setProperty('overflow', 'hidden', 'important'); style.setProperty('color', 'transparent', 'important')
-      if (record.kind === 'mask' || !this.tileUrls.has(record.id)) style.setProperty('background-color', 'black', 'important')
+      // The black placeholder stands only while a tile has neither its still nor a poster to show.
+      if (record.kind === 'mask' || !this.tileUrls.has(record.id) && !this.posterUrl(record)) { style.setProperty('background-color', 'black', 'important'); this.placeholderTiles.add(element) }
+      else this.placeholderTiles.delete(element)
       // A mask keeps the protected box: inline/contents boxes become inline blocks of the source size.
       if (record.kind === 'mask') { style.setProperty('display', record.display === 'none' ? 'none' : !record.display || ['inline', 'contents'].includes(record.display) ? 'inline-block' : record.display, 'important'); style.setProperty('background-image', 'none', 'important'); element.setAttribute('aria-label', 'Protected content') }
-      if (record.kind === 'tile') { if (element.localName === 'iframe') element.setAttribute('sandbox', ''); this.paintTile(record.id, element as HTMLElement) }
+      if (record.kind === 'tile') { if (element.localName === 'iframe') element.setAttribute('sandbox', ''); else if (element.localName === 'video') this.tilePoster(record, element as HTMLElement); this.paintTile(record.id, element as HTMLElement) }
     }
   }
   private uaState(element: Element): void {
@@ -570,10 +607,35 @@ export class BrowserMirror2Renderer {
   }
   private image(id: string, element: Element, key: string | null): void {
     const url = key ? this.resources.get(key) ?? null : null
-    if (element.localName === 'img') { if (url) element.setAttribute('src', url); else element.removeAttribute('src') }
+    // A candidate at another density (`chariox-density`, the kernel's pick for this viewer) keeps that intrinsic size.
+    if (element.localName === 'img') {
+      const density = Number(this.records.get(id)?.attrs?.['chariox-density'] ?? 1), srcset = url && density !== 1 ? `${url} ${density}x` : null
+      if (srcset) element.setAttribute('srcset', srcset); else element.removeAttribute('srcset')
+      if (url && !srcset) element.setAttribute('src', url); else element.removeAttribute('src')
+    }
     else if (element.localName === 'use') { const file = url && key ? this.sprite(key) : null; if (file) element.setAttribute('href', `${file}${this.records.get(id)?.attrs?.href ?? ''}`); else element.removeAttribute('href') }
     else if (element.namespaceURI === NS.svg) { if (url) element.setAttribute('href', url); else element.removeAttribute('href') }
     const record = this.records.get(id); if (record) { if (key) record.res = key; else delete record.res }
+    if (record?.kind === 'tile' && element.localName === 'video') this.tilePoster(record, element as HTMLElement)
+  }
+  // A video tile without a still (a transformed or cross-origin video) shows its poster, what Chrome draws before playback,
+  // over the page's own background for it; with a still the still alone shows (a playing video never shows a frozen poster).
+  private posterUrl(record: Mirror2Record): string | null {
+    return record.kind === 'tile' && record.tag === 'video' && !this.tileUrls.has(record.id) && record.res ? this.resources.get(record.res) ?? null : null
+  }
+  private tilePoster(record: Mirror2Record, element: HTMLElement): void {
+    const url = this.posterUrl(record)
+    if (url) element.setAttribute('poster', url); else element.removeAttribute('poster')
+    // A poster that comes after the placeholder replaces it with the page's own background; one that goes brings the placeholder back.
+    if (url && this.placeholderTiles.has(element)) this.restoreAuthored(record, element)
+    else if (!url && !this.tileUrls.has(record.id) && !this.placeholderTiles.has(element)) this.opaqueLayout(record, element)
+  }
+  // The author's inline style again (shorthand and variable backgrounds included), then the tile's layout and paint over it.
+  private restoreAuthored(record: Mirror2Record, element: HTMLElement): void {
+    const authored = this.styled.get(`${record.id}#style`)
+    if (authored?.kind === 'attr') element.setAttribute('style', this.substitute(authored.raw))
+    else element.removeAttribute('style')
+    this.opaqueLayout(record, element)
   }
   private form(element: Element, form: Mirror2Form): void {
     // An option of a multiple select carries its own selectedness (`checked`).
@@ -741,8 +803,8 @@ export class BrowserMirror2Renderer {
       if (legacyChecks.has(element.ownerDocument) && style && !mirror2RenderedFontReady(element, style)) { this.handoverDiagnostic('wait_fonts'); return false }
       if (imageHold && style?.visibility === 'visible' && [style.backgroundImage, style.maskImage, style.borderImageSource, style.listStyleImage].some(value=>[...value.matchAll(/blob:[^")\s]+/g)].some(url=>[...this.placeholders.values()].includes(url[0])))) { this.handoverDiagnostic('wait_css_image'); return false }
     }
-    if ([...doc.images].some(image=>image.hasAttribute('src')&&!image.complete)) this.handoverDiagnostic('wait_decode')
-    await Promise.all([...doc.images].filter(image=>image.hasAttribute('src')).map(image=>image.decode().catch(()=>{})))
+    if ([...doc.images].some(image=>(image.hasAttribute('src')||image.hasAttribute('srcset'))&&!image.complete)) this.handoverDiagnostic('wait_decode')
+    await Promise.all([...doc.images].filter(image=>image.hasAttribute('src')||image.hasAttribute('srcset')).map(image=>image.decode().catch(()=>{})))
     const ready = !this.disposed && this.doc === doc && this.documentId === documentId && this.sequence === proofSequence && fontVersion === this.fontRequirementsVersion && !this.slices.size
     this.handoverDiagnostic(ready ? 'ready' : 'wait_document')
     return ready
@@ -837,7 +899,7 @@ export class BrowserMirror2Renderer {
       if (packet.document_id !== this.documentId) this.documentAt = performance.now()
       this.sequence = packet.sequence; this.documentId = packet.document_id
       // A focus taken by a pointer still pressed is pending input too (it is sent with its click or drag end).
-      this.kernelFocus = packet.focused
+      this.kernelFocus = packet.focused; this.kernelFocusVisible = packet.focus_visible === true
       rangeRestored = restoreMirror2Range(this.doc, savedRange, node => this.ids.has(node), node => this.records.get(this.ids.get(node) ?? '')?.kind === 'mask')
       const selectionKey = packet.selection ? JSON.stringify({kind:'selection',anchor_id:packet.selection.anchor_id,anchor_offset:packet.selection.anchor_offset,focus_id:packet.selection.focus_id,focus_offset:packet.selection.focus_offset}) : ''
       if (this.selectionHold && (selectionKey === this.selectionHold.key || packet.sequence > this.selectionHold.until)) this.selectionHold = null
@@ -942,9 +1004,10 @@ export class BrowserMirror2Renderer {
         const element = node as Element; const record = this.records.get(op.id)!
         record.attrs ??= {}
         if (op.value === null) { delete record.attrs[op.name]; if (op.name === 'style') this.styled.delete(`${op.id}#style`); element.removeAttribute(op.name) }
-        else { record.attrs[op.name] = op.value; if (op.name === 'style') this.setStyled(op.id, { kind: 'attr', raw: op.value, node: element, keys: [] }); else element.setAttribute(op.name, op.name === 'popover' ? 'manual' : op.value) }
+        else { record.attrs[op.name] = op.value; if (op.name === 'style') this.setStyled(op.id, { kind: 'attr', raw: op.value, node: element, keys: [] }); else element.setAttribute(op.name, attrValue(element, op.name, op.value)) }
         if (op.name === 'style' && op.value === null) this.opaqueLayout(record, element)
         if (op.name === 'href' && record.res !== undefined && element.localName === 'use') this.image(op.id, element, record.res) // its sprite file + the new fragment
+        if (op.name === 'chariox-density' && record.res !== undefined && element.localName === 'img') this.image(op.id, element, record.res)
         break
       }
       case 'text': node.textContent = op.text; this.records.get(op.id)!.text = op.text; break
@@ -967,11 +1030,8 @@ export class BrowserMirror2Renderer {
     this.tileBoxes.set(tile.node_id, { x: tile.x, y: tile.y, width: tile.width, height: tile.height })
     const record = this.records.get(tile.node_id)
     if (!old && record?.kind === 'tile') {
-      // Remove the placeholder by restoring author CSS, including shorthand/variable backgrounds.
-      const authored = this.styled.get(`${tile.node_id}#style`)
-      if (authored?.kind === 'attr') element.setAttribute('style', this.substitute(authored.raw))
-      else element.removeAttribute('style')
-      this.opaqueLayout(record, element)
+      // Remove the placeholder (or a poster's) by restoring author CSS.
+      this.restoreAuthored(record, element)
     } else this.paintTile(tile.node_id, element)
   }
   private paintTile(id: string, element: HTMLElement): void {
@@ -1057,9 +1117,9 @@ export async function attachBrowserMirror2(transport: Mirror2Transport, containe
       return packet
     }
     if (!base) throw Error('MP-08: mirror lost base')
-    const header = (name: 'scroll' | 'focused' | 'selection' | 'fragment' | 'snapshot_complete' | 'font_failures') => Object.hasOwn(body, name) ? body[name] : base![name] ?? (name === 'snapshot_complete' ? false : name === 'font_failures' ? [] : null)
+    const header = (name: 'scroll' | 'focused' | 'focus_visible' | 'selection' | 'fragment' | 'snapshot_complete' | 'font_failures') => Object.hasOwn(body, name) ? body[name] : base![name] ?? (name === 'snapshot_complete' || name === 'focus_visible' ? false : name === 'font_failures' ? [] : null)
     return decodeMirror2Packet({ ...body, ...media, subscription_id, tab_id: binding.tab_id, generation: binding.generation, document_id: base.document_id, base_sequence: wire.sequence - 1, reset: false,
-      css_width: base.css_width, css_height: base.css_height, device_scale_factor: base.device_scale_factor, scroll: header('scroll'), focused: header('focused'), selection: header('selection'), fragment: header('fragment'), snapshot_complete: header('snapshot_complete'), font_failures: header('font_failures') } as Mirror2Packet)
+      css_width: base.css_width, css_height: base.css_height, device_scale_factor: base.device_scale_factor, scroll: header('scroll'), focused: header('focused'), focus_visible: header('focus_visible'), selection: header('selection'), fragment: header('fragment'), snapshot_complete: header('snapshot_complete'), font_failures: header('font_failures') } as Mirror2Packet)
   }
   // MP-08/MP-11: undo/redo keep the mirror's frame, focus and epoch admission.
   const renderer = createRenderer(container, async (action, epoch, onWritten) => { activeAt = performance.now(); fill(); try { return await request({ op: 'mirror_input', tab_id: binding.tab_id, generation: binding.generation, document_id: epoch.document_id, subscription_id, sequence: epoch.sequence, action: 'modifiers' in action ? { kind: 'key', key: action.modifiers & 8 ? 'Ctrl+Shift+Z' : 'Ctrl+Z' } : action },onWritten) } catch(error) { if(!closed){handlers.diagnostic?.('mirror_input_refused',error,epoch.sequence);handlers.inputFailure?.(error)} throw error } }, retention)

@@ -205,27 +205,52 @@ fn a_program_one_agent_started_is_busy_for_the_other() {
             &room,
             first,
             "chariox.terminal_send",
-            serde_json::json!({ "terminal_id": id, "text": "cat", "enter": true }),
+            serde_json::json!({
+                "terminal_id": id,
+                "text": "sh -c 'echo terminal-driver-$((6*7)); exec cat'",
+                "enter": true,
+            }),
         )
         .await;
         assert!(started.ok, "{:?}", started.payload);
-        // The other agent is refused once the program owns the terminal.
-        let mut refusal = None;
-        for _ in 0..100 {
-            let attempt = call(
-                &room,
-                second,
-                "chariox.terminal_send",
-                serde_json::json!({ "terminal_id": id, "text": "echo intruder", "enter": true }),
-            )
-            .await;
-            if !attempt.ok {
-                refusal = attempt.payload["refusal"].as_str().map(str::to_string);
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-        assert_eq!(refusal, Some(format!("busy (driven by {first_id})")));
+        // A second write before the shell launches the command can become the
+        // recorded submitter. Wait for real foreground output without writing.
+        let ready = call(
+            &room,
+            first,
+            "chariox.terminal_wait",
+            serde_json::json!({
+                "terminal_id": id,
+                "until": [{ "text": "terminal-driver-42" }],
+                "after_offset": started.payload["after_offset"],
+                "timeout_seconds": 10,
+            }),
+        )
+        .await;
+        assert_eq!(
+            ready.payload["fired"]["kind"], "output_matched",
+            "{:?}",
+            ready.payload
+        );
+        assert_eq!(
+            ready.payload["terminal"]["driver"],
+            serde_json::json!({
+                "state": "busy",
+                "driven_by": { "kind": "agent", "agent_id": first_id },
+            }),
+        );
+        let refused = call(
+            &room,
+            second,
+            "chariox.terminal_send",
+            serde_json::json!({ "terminal_id": id, "text": "echo intruder", "enter": true }),
+        )
+        .await;
+        assert!(!refused.ok, "{:?}", refused.payload);
+        assert_eq!(
+            refused.payload["refusal"],
+            format!("busy (driven by {first_id})")
+        );
         // It can still read.
         let read = call(
             &room,

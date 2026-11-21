@@ -113,7 +113,7 @@ function session(id: string, overrides: Partial<Parameters<typeof sessionBrowser
     worktree_id: "/workspace",
     status: "Created",
     created_at_ms: 1,
-    attachment_ids: [],
+    connected_cli_count: 0,
     ...overrides,
   }
 }

@@ -57,7 +57,9 @@ fn permission_origin(
     let message_id = request.message_id.as_ref()?;
     let parent = state.message_parent_ids.get(message_id)?.as_deref()?;
     match state.active_user_message_id.as_deref() {
-        Some(active) if parent == active => state.native_approval_origin.clone(),
+        Some(active) if state.matches_prompt_parent(Some(active), Some(parent)) => {
+            state.native_approval_origin.clone()
+        }
         Some(_) => None,
         None => Some(crate::session::NativeInteractionOrigin::NativeTurn {
             provider_run_id: run.id().into(),

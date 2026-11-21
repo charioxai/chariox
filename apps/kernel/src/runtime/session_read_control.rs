@@ -2,8 +2,8 @@ use crate::error::DaemonError;
 use crate::local::{
     GetRoomEnvironmentEventsRequest, GetRoomEnvironmentResourceInventoryRequest,
     GetRoomEnvironmentStateRequest, GetSessionStateRequest, ListAgentsRequest,
-    ListRoomEnvironmentActionHistoryRequest, ListSessionsRequest, LocalDaemonRequest,
-    LocalDaemonResponse, ResolveSessionRequest,
+    ListFinishedRoomTasksRequest, ListRoomEnvironmentActionHistoryRequest, ListSessionsRequest,
+    LocalDaemonRequest, LocalDaemonResponse, ResolveSessionRequest,
 };
 use crate::runtime::projection::{ProviderRunProjectionStore, SessionStateProjectionStore};
 use crate::runtime::provider_launch_executor::ProviderLaunchPendingTracker;
@@ -41,8 +41,7 @@ pub(crate) fn projected_session_state_response(
 ) -> Result<LocalDaemonResponse, DaemonError> {
     // The label is read before the session, so a state is never older than its revision.
     let agent_activity_revision = session_projection.change_sequence();
-    let (session, processes, disk_usage) =
-        runtime_state.session_with_resources(&request.session_id)?;
+    let session = runtime_state.session_for_state_read(&request.session_id)?;
     let caller_user_id =
         &runtime_state.room_member_user_id_in(session.owner_user_id(), caller_user_id);
     if !session.has_member(caller_user_id) {
@@ -66,7 +65,7 @@ pub(crate) fn projected_session_state_response(
         room_workflows,
         agent_activity: redact_agent_activity_for_session(agent_activity, &redacted_session),
         agent_activity_revision,
-        processes,
+        processes: runtime_state.room_agent_processes(&redacted_session),
         jobs: runtime_state
             .session_jobs(redacted_session.id())
             .into_iter()
@@ -77,7 +76,6 @@ pub(crate) fn projected_session_state_response(
                     .any(|a| a.id() == job.agent_id)
             })
             .collect(),
-        disk_usage,
         session: redacted_session,
     })
 }
@@ -169,6 +167,40 @@ pub(crate) async fn projected_session_read_response(
     request: &LocalDaemonRequest,
     caller_user_id: &str,
 ) -> Option<Result<LocalDaemonResponse, DaemonError>> {
+    if let LocalDaemonRequest::GetMachineRoomResources(request) = request {
+        let runtime_state = runtime_state.clone();
+        let caller = caller_user_id.to_owned();
+        let session_id = request.session_id.clone();
+        return Some(
+            tokio::task::spawn_blocking(move || {
+                machine_room_resources_response(&runtime_state, &caller, &session_id)
+            })
+            .await
+            .unwrap_or_else(|error| {
+                Err(DaemonError::LocalTransport {
+                    operation: "read Machine Room resources",
+                    message: error.to_string(),
+                })
+            }),
+        );
+    }
+    if let LocalDaemonRequest::ListFinishedRoomTasks(request) = request {
+        let runtime_state = runtime_state.clone();
+        let caller = caller_user_id.to_owned();
+        let request = request.clone();
+        return Some(
+            tokio::task::spawn_blocking(move || {
+                finished_room_tasks_response(&runtime_state, &caller, request)
+            })
+            .await
+            .unwrap_or_else(|error| {
+                Err(DaemonError::LocalTransport {
+                    operation: "list finished Room tasks",
+                    message: error.to_string(),
+                })
+            }),
+        );
+    }
     if let LocalDaemonRequest::GetSessionState(request) = request {
         if !provider_launch_pending
             .has_unsettled_launch(
@@ -235,6 +267,66 @@ pub(crate) async fn projected_session_read_response(
         );
     }
     None
+}
+
+fn finished_room_tasks_response(
+    runtime_state: &KernelRuntimeState,
+    caller: &str,
+    request: ListFinishedRoomTasksRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    let room = runtime_state.session_with_agents(&request.session_id)?;
+    let caller = runtime_state.room_member_user_id_in(room.owner_user_id(), caller);
+    if !room.has_member(&caller) {
+        return Err(DaemonError::SessionAccessDenied {
+            session_id: request.session_id,
+            user_id: caller,
+        });
+    }
+    let visible_agents = room
+        .agents()
+        .iter()
+        .filter(|agent| {
+            agent.is_room_agent()
+                && room.can_view_tree_agent_owned_by(&caller, agent.owner_user_id())
+        })
+        .map(|agent| agent.id())
+        .collect::<Vec<_>>();
+    let (tasks, next_before) = runtime_state.durable_state_store().finished_room_tasks(
+        room.id(),
+        &visible_agents,
+        request.before,
+    )?;
+    Ok(LocalDaemonResponse::FinishedRoomTasks { tasks, next_before })
+}
+
+fn machine_room_resources_response(
+    runtime_state: &KernelRuntimeState,
+    caller: &str,
+    session_id: &str,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    use crate::runtime::process_resources::SessionProcessOwner;
+    let room = runtime_state.session_with_agents(session_id)?;
+    let caller = runtime_state.room_member_user_id_in(room.owner_user_id(), caller);
+    if !room.has_member(&caller) {
+        return Err(DaemonError::SessionAccessDenied {
+            session_id: session_id.into(),
+            user_id: caller,
+        });
+    }
+    let can_view = |owner: &SessionProcessOwner| match owner {
+        SessionProcessOwner::Terminal(_) => true,
+        SessionProcessOwner::Agent(id) => room.agents().iter().any(|agent| {
+            agent.id() == id && room.can_view_tree_agent_owned_by(&caller, agent.owner_user_id())
+        }),
+    };
+    let mut processes = runtime_state.session_processes(session_id);
+    processes.retain(|row| can_view(&row.owner));
+    let mut disk_usage = runtime_state.session_disk_usage(session_id);
+    disk_usage.retain(|row| row.owner.as_ref().is_none_or(can_view));
+    Ok(LocalDaemonResponse::MachineRoomResources {
+        processes,
+        disk_usage,
+    })
 }
 
 pub(crate) fn projected_session_inspection_response(

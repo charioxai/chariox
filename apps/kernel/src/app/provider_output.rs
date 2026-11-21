@@ -33,10 +33,12 @@ pub(crate) struct ProviderOutputPumpRequest<'a> {
 
 pub(crate) fn should_project_pty_output(
     has_active_prompt: bool,
-    terminal_failure: Option<&str>,
+    has_terminal_diagnostic: bool,
     uses_transient_native_terminal: bool,
 ) -> bool {
-    has_active_prompt || terminal_failure.is_some() || uses_transient_native_terminal
+    // A diagnostic can arrive a poll before the exit that settles the turn.
+    // Keep it out of assistant history while settlement determines the reason.
+    uses_transient_native_terminal || (has_active_prompt && !has_terminal_diagnostic)
 }
 
 pub(crate) fn pump_terminal_output_for_attachment(
@@ -153,17 +155,18 @@ impl<'a> ProviderOutputPump<'a> {
                 return Err(error);
             }
         };
-        let terminal_failure = classify_provider_terminal_failure_output_text(
-            provider_run.adapter_key(),
-            &chunks
-                .iter()
-                .map(|chunk| String::from_utf8_lossy(&chunk.bytes))
-                .collect::<String>(),
-        );
+        let pty_output = chunks
+            .iter()
+            .map(|chunk| String::from_utf8_lossy(&chunk.bytes))
+            .collect::<String>();
+        let terminal_failure =
+            classify_provider_terminal_failure_output_text(provider_run.adapter_key(), &pty_output);
         let has_active_prompt = self
             .context
             .provider_run_has_active_prompt(request.session_id, &provider_run)?;
-        if !should_project_pty_output(has_active_prompt, terminal_failure.as_deref(), false) {
+        let has_terminal_diagnostic = terminal_failure.is_some()
+            || crate::provider::provider_error_frame(&pty_output).is_some();
+        if !should_project_pty_output(has_active_prompt, has_terminal_diagnostic, false) {
             chunks.clear();
         }
         if !chunks.is_empty() {
@@ -791,6 +794,27 @@ impl<'a> ProviderOutputPumpContext<'a> {
         let projected_provider_run = self
             .provider_store
             .preview_structured_output_metadata(provider_run_id, &poll_result)?;
+        if !poll_result.model_usage.is_empty() {
+            if let Some(agent_id) = projected_provider_run.agent_instance_id() {
+                let prompt = self
+                    .app
+                    .prompt_owner_active_prompt_for_agent(session_id, agent_id)?;
+                if let Some(prompt) = prompt.filter(|prompt| {
+                    prompt.durable_delivery_provider_run_id() == Some(provider_run_id)
+                }) {
+                    if let Err(error) = self.app.operational_history_store().save_model_usage(
+                        session_id,
+                        agent_id,
+                        prompt.id(),
+                        provider_run_id,
+                        projected_provider_run.adapter_key(),
+                        &poll_result.model_usage,
+                    ) {
+                        tracing::warn!(session_id, agent_id, %error, "could not record model usage");
+                    }
+                }
+            }
+        }
         super::provider_output_resume::persist_resolved_resume_state(
             self.app,
             &projected_provider_run,
@@ -809,6 +833,20 @@ impl<'a> ProviderOutputPumpContext<'a> {
         self.provider_store
             .apply_structured_output_metadata(provider_run_id, &poll_result)?;
         let provider_run = self.ensure_provider_run_in_session(session_id, provider_run_id)?;
+        if let Some(agent) = provider_run.agent_instance_id() {
+            if let Some(prompt) = self
+                .app
+                .prompt_owner_active_prompt_for_agent(session_id, agent)?
+            {
+                self.app
+                    .durable_state_store()
+                    .record_provider_background_notifications(
+                        provider_run_id,
+                        prompt.id(),
+                        &poll_result.background_notifications,
+                    )?;
+            }
+        }
         self.mark_resolved_external_provider_session_attached(&provider_run);
         self.app
             .update_provider_run_projection(provider_run.clone());

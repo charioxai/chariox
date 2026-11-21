@@ -24,6 +24,15 @@ struct StaleLeaseFixture {
 
 impl StaleLeaseFixture {
     async fn new() -> Self {
+        let worktree = crate::test_support::TestWorktree::new("skills-stale-lease");
+        // Only the managed stub is part of this fixture. Ignore host provider installations.
+        for key in [
+            "CHARIOX_CLAUDE_BIN",
+            "CHARIOX_CODEX_BIN",
+            "CHARIOX_OPENCODE_BIN",
+        ] {
+            std::env::set_var(key, worktree.path().join("missing-provider"));
+        }
         let server = RelayServer::new(RelayConfig {
             host: "127.0.0.1".into(),
             port: 0,
@@ -68,7 +77,6 @@ impl StaleLeaseFixture {
         home_config.relay_token = config.relay_token.clone();
         let skills_home = home_config.user_config_path.parent().unwrap().to_path_buf();
         let mut home = DaemonApp::bootstrap(home_config).unwrap();
-        let worktree = crate::test_support::TestWorktree::new("skills-stale-lease");
         let (session, agent) = crate::app::KernelSessionService::new(&mut home)
             .create_session(worktree.session_request().with_agent_defaults(
                 crate::session::SessionAgentDefaults {
@@ -198,9 +206,10 @@ impl StaleLeaseFixture {
 
 #[test]
 fn skills_picker_catalog_recovers_a_lease_the_restarted_worker_forgot() {
+    // Catalog resolves native provider executables on a blocking thread.
+    // Holding RelayTestHome's environment lock here would deadlock that thread.
+    crate::test_support::isolated_env_test!();
     run_async_with_large_test_stack("skills-stale-lease-catalog", || async {
-        let _relay_guard = relay_client_test_guard().await;
-        let _home = RelayTestHome::new();
         let fixture = StaleLeaseFixture::new().await;
         let response = fixture
             .skills(SkillsV2Request::Catalog {
@@ -223,9 +232,8 @@ fn skills_picker_catalog_recovers_a_lease_the_restarted_worker_forgot() {
 
 #[test]
 fn skill_submit_recovers_a_lease_the_restarted_worker_forgot() {
+    crate::test_support::isolated_env_test!();
     run_async_with_large_test_stack("skills-stale-lease-submit", || async {
-        let _relay_guard = relay_client_test_guard().await;
-        let _home = RelayTestHome::new();
         let fixture = StaleLeaseFixture::new().await;
         let response = fixture
             .skills(SkillsV2Request::Submit {

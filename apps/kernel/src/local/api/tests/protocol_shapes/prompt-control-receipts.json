@@ -1,0 +1,137 @@
+{
+  "local": 1013,
+  "peer": 450,
+  "responses": [
+    {
+      "PromptSubmitted": {
+        "session_id": "room-1",
+        "outcome": {
+          "Started": {
+            "prompt": {
+              "id": "prompt-1",
+              "target_agent_id": "agent-1",
+              "status": "Running",
+              "created_at_ms": 7,
+              "updated_at_ms": 8
+            }
+          }
+        }
+      }
+    },
+    {
+      "PromptsSubmitted": {
+        "session_id": "room-1",
+        "results": [
+          {
+            "index": 0,
+            "agent_id": "agent-1",
+            "outcome": {
+              "Started": {
+                "prompt": {
+                  "id": "prompt-1",
+                  "target_agent_id": "agent-1",
+                  "status": "Running",
+                  "created_at_ms": 7,
+                  "updated_at_ms": 8
+                }
+              }
+            }
+          }
+        ],
+        "failures": []
+      }
+    },
+    {
+      "ActivePromptSteered": {
+        "session_id": "room-1",
+        "agent_id": "agent-1",
+        "active_prompt_id": "prompt-1",
+        "steer_id": "steer-1",
+        "accepted_at_ms": 7
+      }
+    },
+    {
+      "QueuedPromptSteered": {
+        "session_id": "room-1",
+        "prompt": {
+          "id": "prompt-1",
+          "target_agent_id": "agent-1",
+          "status": "Running",
+          "created_at_ms": 7,
+          "updated_at_ms": 8
+        }
+      }
+    },
+    {
+      "QueuedPromptCancelled": {
+        "session_id": "room-1",
+        "prompt": {
+          "id": "prompt-1",
+          "target_agent_id": "agent-1",
+          "status": "Cancelled",
+          "created_at_ms": 7,
+          "updated_at_ms": 8
+        }
+      }
+    },
+    {
+      "QueuedPromptUpdated": {
+        "session_id": "room-1",
+        "prompt": {
+          "id": "prompt-1",
+          "target_agent_id": "agent-1",
+          "status": "Queued",
+          "created_at_ms": 7,
+          "updated_at_ms": 8
+        }
+      }
+    },
+    {
+      "PromptCompleted": {
+        "completion": {
+          "completed": {
+            "id": "prompt-1",
+            "target_agent_id": "agent-1",
+            "status": "Completed",
+            "created_at_ms": 7,
+            "updated_at_ms": 8
+          },
+          "started_next": null
+        }
+      }
+    },
+    {
+      "PromptCancelled": {
+        "cancellation": {
+          "prompt": {
+            "id": "prompt-1",
+            "target_agent_id": "agent-1",
+            "status": "Cancelling",
+            "created_at_ms": 7,
+            "updated_at_ms": 8
+          },
+          "started_next": null
+        }
+      }
+    },
+    {
+      "SkillsV2": {
+        "result": {
+          "kind": "submitted",
+          "session_id": "room-1",
+          "outcome": {
+            "Started": {
+              "prompt": {
+                "id": "prompt-1",
+                "target_agent_id": "agent-1",
+                "status": "Running",
+                "created_at_ms": 7,
+                "updated_at_ms": 8
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

@@ -88,7 +88,7 @@ impl TerminalOwner {
             self.exited.store(true, Ordering::Release);
             return false;
         }
-        if terminal.is_busy(&state.pty) || terminal.driver.launching(Instant::now()) {
+        if terminal.is_busy(&state.pty) || terminal.driver.has_submission() {
             return true;
         }
         let sweep = terminal.session_sweep;

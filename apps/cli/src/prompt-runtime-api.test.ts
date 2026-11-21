@@ -31,52 +31,31 @@ test("an interaction answer is an acknowledgement for the requested interaction 
   assert.deepEqual(sent.map(request => Object.keys(request)[0]), ["RespondToInteraction", "GetSessionState"])
 })
 
-test("submitPromptWithRecovery merges projected agent activity into returned session", async () => {
-  const client = fakeClient({
-    PromptSubmitted: {
-      outcome: {
-        Started: {
-          prompt: {
-            id: "prompt-1",
-            source_attachment_id: "attachment-1",
-            target_agent_id: "agent-1",
-            prompt: "hello",
-            status: "Running",
+test("submitPromptWithRecovery reads Room activity after accepting the receipt", async () => {
+  const activity = { "agent-1": { status: "working", prompt_status: "running", busy: true } }
+  const requests: string[] = []
+  const client = { send: async (request: Record<string, unknown>) => {
+    requests.push(Object.keys(request)[0]!)
+    if ("SubmitPrompt" in request) return {
+      PromptSubmitted: {
+        session_id: "session-1",
+        outcome: {
+          Started: {
+            prompt: { id: "prompt-1", target_agent_id: "agent-1", status: "Running", created_at_ms: 1, updated_at_ms: 1 },
           },
         },
       },
-      session: runtimeSession("session-1"),
-      agent_activity: {
-        "agent-1": {
-          status: "working",
-          prompt_status: "running",
-          busy: true,
-        },
-      },
-      agent_activity_revision: 42,
-    },
-  })
-
+    }
+    return { SessionState: { session: runtimeSession("session-1"), agent_activity: activity, agent_activity_revision: 42, processes: [] } }
+  } } as unknown as LocalIpcClient
   const result = await submitPromptWithRecovery(
-    client,
-    "session-1",
-    "attachment-1",
-    "agent-1",
-    "hello",
-    [],
-    () => runtimeSession("session-1"),
-    {} as CliOptions,
+    client, "session-1", "attachment-1", "agent-1", "hello", [],
+    () => runtimeSession("session-1"), {} as CliOptions,
   )
-
-  assert.deepEqual(result.payload.session.agent_activity, {
-    "agent-1": {
-      status: "working",
-      prompt_status: "running",
-      busy: true,
-    },
-  })
+  assert.deepEqual(result.payload.session.agent_activity, activity)
   assert.equal(result.payload.session.agent_activity_revision, 42)
   assert.equal(result.targetAgentId, "agent-1")
+  assert.deepEqual(requests, ["SubmitPrompt", "GetSessionState"])
 })
 
 test("submitPromptWithRecovery recovers with the stored provider for the prompt target", async () => {
@@ -96,14 +75,14 @@ test("submitPromptWithRecovery recovers with the stored provider for the prompt 
               Started: {
                 prompt: {
                   id: "prompt-1",
-                  source_attachment_id: "attachment-1",
                   target_agent_id: "agent-b",
-                  prompt: "hello",
+                  created_at_ms: 1,
+                  updated_at_ms: 1,
                   status: "Running",
                 },
               },
             },
-            session: runtimeSession("session-1"),
+            session_id: "session-1",
           },
         }
       }
@@ -147,6 +126,7 @@ test("submitPromptWithRecovery recovers with the stored provider for the prompt 
     } as CliOptions,
   )
 
+  assert.equal(submitAttempts, 2, "a state read failure must not repeat the accepted submission")
   const launchRequest = requests.find((request) => "LaunchProviderRun" in request)
   assert.deepEqual(launchRequest, {
     LaunchProviderRun: {
@@ -164,73 +144,21 @@ test("submitPromptWithRecovery recovers with the stored provider for the prompt 
   })
 })
 
-test("steerQueuedPrompt merges projected agent activity into returned session", async () => {
-  const client = fakeClient({
-    QueuedPromptSteered: {
-      prompt: {
-        id: "queued-1",
-        source_attachment_id: "attachment-1",
-        target_agent_id: "agent-1",
-        prompt: "steer",
-        status: "Steered",
-      },
-      session: runtimeSession("session-1"),
-      agent_activity: {
-        "agent-1": {
-          status: "working",
-          prompt_status: "running",
-          busy: true,
-        },
-      },
-      agent_activity_revision: 43,
-    },
+for (const [tag, request, status] of [
+  ["QueuedPromptSteered", steerQueuedPrompt, "Running"],
+  ["QueuedPromptCancelled", cancelQueuedPrompt, "Cancelled"],
+] as const) {
+  test(tag + " consumes the matching queue receipt", async () => {
+    const prompt = { id: "queued-1", target_agent_id: "agent-1", status, created_at_ms: 1, updated_at_ms: 2 }
+    const receipt = { session_id: "session-1", prompt }
+    const result = await request(fakeClient({ [tag]: receipt }), "session-1", "attachment-1", "agent-1", "queued-1")
+    assert.deepEqual(result, receipt)
+    await assert.rejects(
+      request(fakeClient({ [tag]: { ...receipt, session_id: "other" } }), "session-1", "attachment-1", "agent-1", "queued-1"),
+      /did not confirm this queued prompt/,
+    )
   })
-
-  const payload = await steerQueuedPrompt(client, "session-1", "attachment-1", "agent-1", "queued-1")
-
-  assert.deepEqual(payload.session.agent_activity, {
-    "agent-1": {
-      status: "working",
-      prompt_status: "running",
-      busy: true,
-    },
-  })
-  assert.equal(payload.session.agent_activity_revision, 43)
-})
-
-test("cancelQueuedPrompt merges projected agent activity into returned session", async () => {
-  const client = fakeClient({
-    QueuedPromptCancelled: {
-      prompt: {
-        id: "queued-1",
-        source_attachment_id: "attachment-1",
-        target_agent_id: "agent-1",
-        prompt: "cancel",
-        status: "Cancelled",
-      },
-      session: runtimeSession("session-1"),
-      agent_activity: {
-        "agent-1": {
-          status: "idle",
-          prompt_status: "none",
-          busy: false,
-        },
-      },
-      agent_activity_revision: 44,
-    },
-  })
-
-  const payload = await cancelQueuedPrompt(client, "session-1", "attachment-1", "agent-1", "queued-1")
-
-  assert.deepEqual(payload.session.agent_activity, {
-    "agent-1": {
-      status: "idle",
-      prompt_status: "none",
-      busy: false,
-    },
-  })
-  assert.equal(payload.session.agent_activity_revision, 44)
-})
+}
 
 function fakeClient(response: Record<string, unknown>): LocalIpcClient {
   return {
@@ -247,11 +175,10 @@ function runtimeSession(id: string, overrides: Partial<RuntimeSession> = {}): Ru
     created_at_ms: 1,
     status: "Created",
     active_provider_run_id: null,
-    attachment_ids: [],
+    connected_cli_count: 0,
     active_prompt: null,
     queued_prompts: [],
     focused_agent_id: "agent-1",
-    max_agents: 1,
     agents: [agent("agent-1")],
     config_state: {
       version: 1,

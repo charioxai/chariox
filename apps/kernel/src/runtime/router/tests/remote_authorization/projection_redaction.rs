@@ -141,11 +141,27 @@ async fn remote_session_projection_redacts_other_users_private_agent_and_workflo
         .find(|agent| agent.id() == user_two_agent.id())
         .expect("own agent should remain visible");
     assert!(visible_user_two_agent.visible_in_freeform());
-    let redacted_workflow = redacted_session
-        .workflows()
-        .iter()
-        .find(|workflow| workflow.id() == workflow_id)
-        .expect("workflow graph should remain visible");
+    assert!(
+        redacted_session.workflows().is_empty(),
+        "Room state omits workflow graphs"
+    );
+    let get_workflow = LocalDaemonRequest::ResolveWorkflow(crate::local::ResolveWorkflowRequest {
+        session_id: session_id.clone(),
+        workflow_ref: workflow_id.clone(),
+    });
+    let LocalDaemonResponse::WorkflowResolved {
+        workflow: redacted_workflow,
+    } = router
+        .dispatch(
+            remote_command_for_request(&get_workflow, Some("user-2")),
+            get_workflow,
+        )
+        .await
+        .expect("member should read the redacted workflow graph")
+    else {
+        panic!("unexpected workflow response");
+    };
+    assert_eq!(redacted_workflow.id(), workflow_id);
     assert_eq!(redacted_workflow.nodes().len(), 3);
     let redacted_local_node = redacted_workflow
         .node(local_node.id())

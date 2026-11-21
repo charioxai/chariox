@@ -9,6 +9,12 @@ impl KernelRuntimeState {
         failure: Option<&crate::provider::TurnOutcome>,
         mut public_answer: Option<serde_json::Value>,
     ) -> Result<(), DaemonError> {
+        let recovered = if failure.is_none() {
+            self.owned.recover_background_answer_outcome(task)?
+        } else {
+            None
+        };
+        let failure = failure.or(recovered.as_ref());
         let interrupted = if failure.is_none()
             && task.state == ExecutionState::Done
             && self
@@ -35,8 +41,18 @@ impl KernelRuntimeState {
             None
         };
         let failure = failure.or(interrupted.as_ref());
-        let success = self.owned.finished_task_outcome(task, failure).kind
-            == crate::provider::TurnOutcomeKind::Completed;
+        let outcome = self.owned.finished_task_outcome(task, failure);
+        let success = matches!(
+            outcome.kind,
+            crate::provider::TurnOutcomeKind::Completed
+                | crate::provider::TurnOutcomeKind::AnsweredInTurn
+        );
+        let source_answer = public_answer.clone().or_else(|| {
+            outcome
+                .answered_in_turn
+                .is_some()
+                .then(|| serde_json::json!({"outcome": outcome}))
+        });
         let other_unfinished = self
             .owned
             .durable_state_store
@@ -46,7 +62,7 @@ impl KernelRuntimeState {
                 .durable_state_store
                 .agent_lifecycle(Operation::SourceOutcome {
                     now: crate::session::unix_epoch_ms(),
-                    public_answer: public_answer.clone(),
+                    public_answer: source_answer.clone(),
                     room: task.room_id.clone(),
                     source: task.agent_id.clone(),
                     occurrence: format!("task-terminal-{}", task.task_id),
@@ -57,7 +73,7 @@ impl KernelRuntimeState {
             .durable_state_store
             .agent_lifecycle(Operation::SourceOutcome {
                 now: crate::session::unix_epoch_ms(),
-                public_answer: public_answer.clone(),
+                public_answer: source_answer.clone(),
                 room: task.room_id.clone(),
                 source: task.prompt_id.clone(),
                 occurrence: format!("task-terminal-{}", task.task_id),
@@ -70,7 +86,7 @@ impl KernelRuntimeState {
                 .durable_state_store
                 .agent_lifecycle(Operation::SourceOutcome {
                     now: crate::session::unix_epoch_ms(),
-                    public_answer: public_answer.clone(),
+                    public_answer: source_answer.clone(),
                     room: task.room_id.clone(),
                     source: task.task_id.clone(),
                     occurrence: format!("task-terminal-{}", task.task_id),

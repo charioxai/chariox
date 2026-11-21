@@ -72,7 +72,13 @@ impl KernelRuntimeState {
         self.owned.record_woken_waits(&waiting, &attempt);
         self.mark_prompt_events_shown(room, agent, shown)?;
         let result = self
-            .steer_remote_agent_message_for_turn(room, &prompt, Some(active.id()), Some(&binding))
+            .steer_remote_agent_message_for_turn(
+                room,
+                &prompt,
+                Some(active.id()),
+                Some(&binding),
+                false,
+            )
             .await;
         let receipt = leased_steer_receipt(&result);
         if receipt == "accepted" {

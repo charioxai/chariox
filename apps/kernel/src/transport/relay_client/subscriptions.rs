@@ -423,10 +423,7 @@ pub(super) async fn handle_relay_subscribe(
             &session_id,
             &attachment_id,
             resume_from_event_id,
-            !matches!(
-                subscription_scope.as_deref(),
-                Some("session_metadata" | "session_metadata_processes")
-            ),
+            !matches!(subscription_scope.as_deref(), Some("session_metadata")),
         )
         .await
         {
@@ -760,10 +757,8 @@ pub(super) async fn run_relay_subscription_loop(
                         serde_json::json!({"session_id": session_id, "error": error.to_string()}),
                     ),
                 }
-                if !matches!(
-                    subscription_scope.as_deref(),
-                    Some("session_metadata" | "session_metadata_processes")
-                ) && !records.is_empty()
+                if !matches!(subscription_scope.as_deref(), Some("session_metadata"))
+                    && !records.is_empty()
                 {
                     let mut terminal_output_failed = false;
                     for records in terminal_output_event_batches(records) {
@@ -1056,11 +1051,7 @@ async fn record_relay_subscription_attachment_heartbeat(
     phase: &str,
 ) {
     if let Err(error) = router
-        .record_subscription_attachment_heartbeat(
-            session_id,
-            attachment_id,
-            crate::session::unix_epoch_ms(),
-        )
+        .renew_terminal_attachment_lease(session_id, attachment_id, crate::session::unix_epoch_ms())
         .await
     {
         crate::logging::warn_with_fields(

@@ -128,6 +128,12 @@ impl KernelRuntimeState {
                     else {
                         return Ok(None);
                     };
+                    if self
+                        .owned
+                        .hold_queued_provider_turn(&session, agent_id, &queued)?
+                    {
+                        return Ok(None);
+                    }
                     let provider_run_id = match self
                         .with_project_prompt_environment(
                             session_id,

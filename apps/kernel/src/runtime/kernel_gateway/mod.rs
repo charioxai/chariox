@@ -24,6 +24,7 @@ mod requester_watch;
 mod self_hosted;
 mod subscription;
 mod update_needed;
+pub(crate) mod write_receipt;
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};

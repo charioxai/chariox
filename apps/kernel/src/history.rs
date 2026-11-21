@@ -19,6 +19,7 @@ mod compaction_boundary;
 pub(crate) use compaction_boundary::AgentCompactionOrigin;
 mod handoff_brief;
 pub(crate) mod leased_projection;
+mod model_usage;
 mod operational_archive;
 mod operational_legacy_import;
 mod operational_query;
@@ -796,6 +797,7 @@ impl OperationalHistoryStore {
         public_history::initialize_public_history(&connection)?;
         ensure_operational_history_answered_sessions(&connection)?;
         compaction_boundary::migrate(&connection)?;
+        model_usage::migrate(&connection)?;
         remote_lease_context::migrate(&connection)?;
         let max_sequence: u64 = connection
             .query_row(
@@ -1181,8 +1183,14 @@ impl OperationalHistoryStore {
             ),
         ]);
         let outcome = match status {
-            "completed" => crate::provider::TurnOutcome::completed(),
-            "cancelled" => crate::provider::TurnOutcome::cancelled(),
+            "completed" => failure
+                .filter(|outcome| outcome.kind == crate::provider::TurnOutcomeKind::AnsweredInTurn)
+                .cloned()
+                .unwrap_or_else(crate::provider::TurnOutcome::completed),
+            "cancelled" => failure
+                .filter(|outcome| outcome.kind == crate::provider::TurnOutcomeKind::Cancelled)
+                .cloned()
+                .unwrap_or_else(crate::provider::TurnOutcome::cancelled),
             _ => crate::provider::TurnOutcome::settled(
                 crate::git_observer::CompletedTurnSettlementStatus::Failed,
                 failure.cloned(),

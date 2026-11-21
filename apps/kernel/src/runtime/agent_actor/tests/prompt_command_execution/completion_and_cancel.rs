@@ -324,13 +324,12 @@ async fn prompt_complete_advances_queued_prompt_with_owned_runtime_state_without
         .as_ref()
         .expect("queued prompt should promote");
     assert_eq!(started_next.id(), second.id());
-    assert!(started_next.pending_prompt_id().is_none());
-    assert_eq!(started_next.prompt(), second.prompt());
     let projected_active = session_projection
         .get(&session_id)
         .and_then(|session| session.active_prompt_for_agent(&agent_id).cloned())
         .expect("projected active prompt should be updated");
     assert_eq!(projected_active.id(), started_next.id());
+    assert!(projected_active.pending_prompt_id().is_none());
     assert_eq!(projected_active.prompt(), second.prompt());
     let source_records = app
         .lock()

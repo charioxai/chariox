@@ -530,13 +530,18 @@ impl KernelRuntimeState {
                 && !physical_pending
                 && !self.owned.agent_task_resources_unsettled(&task)?
             {
+                let is_root = task.task_id == root.task_id;
+                let recovered = self.owned.recover_background_answer_outcome(&task)?;
+                let source_answer = is_root.then(|| root_answer.clone()).flatten().or_else(|| {
+                    recovered
+                        .as_ref()
+                        .map(|outcome| serde_json::json!({ "outcome": outcome }))
+                });
                 self.owned
                     .durable_state_store
                     .agent_lifecycle(Operation::SourceOutcome {
                         now: crate::session::unix_epoch_ms(),
-                        public_answer: (task.task_id == root.task_id)
-                            .then(|| root_answer.clone())
-                            .flatten(),
+                        public_answer: source_answer,
                         room: task.room_id.clone(),
                         source: task.task_id.clone(),
                         occurrence: format!("task-terminal-{}", task.task_id),
@@ -544,9 +549,9 @@ impl KernelRuntimeState {
                     })?;
                 // A task cancelled from outside (a deadline, the owner, an archive) ends like any other:
                 // the parent hears of it.
-                if task.task_id == root.task_id {
+                if is_root {
                     if let Err(error) = self
-                        .announce_child_finished(&task, None, root_answer.as_ref())
+                        .announce_child_finished(&task, recovered.as_ref(), root_answer.as_ref())
                         .await
                     {
                         tracing::warn!(%error, agent_id=%task.agent_id,

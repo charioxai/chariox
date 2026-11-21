@@ -70,6 +70,7 @@ mod event_reader;
 mod owner;
 mod retired_sessions;
 pub(crate) mod room_environment;
+pub(crate) mod room_setup;
 pub(crate) mod skill_reset;
 mod skill_reset_startup;
 pub(crate) mod storage_full;
@@ -81,6 +82,7 @@ mod writer_fence;
 #[cfg(test)]
 mod writer_latency_tests;
 use writer_fence::fenced_writer_error;
+mod answer_turns;
 pub(crate) mod notification_target;
 mod steered_prompts;
 mod trigger_firings;
@@ -273,6 +275,7 @@ enum DurableWriterRequest {
 enum DurableWriteOperation {
     AcquireChoice(acquire_choices::AcquireChoiceTransition),
     RoomEnvironment(room_environment::RoomEnvironmentWrite),
+    RoomSetup(room_setup::RoomSetupWrite),
     BrowserImport(browser_import::ImportStateWrite),
     RetiredSessionBackfill {
         owner_id: String,
@@ -383,6 +386,28 @@ pub struct DurableStateEvent {
     pub payload: serde_json::Value,
 }
 
+impl DurableStateEvent {
+    /// The inbox owns queued messages. Ignore persisted copies of its Room
+    /// projection before replay decodes any session.
+    pub(crate) fn discard_queued_message_projections(&mut self) {
+        fn discard(session: &mut serde_json::Value) {
+            if let Some(session) = session.as_object_mut() {
+                session.remove("queued_agent_messages");
+            }
+        }
+        if let Some(session) = self.payload.get_mut("session") {
+            discard(session);
+        }
+        if let Some(sessions) = self
+            .payload
+            .get_mut("sessions")
+            .and_then(serde_json::Value::as_array_mut)
+        {
+            sessions.iter_mut().for_each(discard);
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DurableStateSnapshot {
     pub sequence: u64,
@@ -481,14 +506,17 @@ impl DurableKernelStateStore {
                        AND json_type(payload_json,'$.queued_agent_messages') IS NOT NULL;
                      UPDATE durable_state_snapshots AS snapshot
                      SET payload_json=json_set(payload_json,'$.sessions',json((
-                         SELECT json_group_array(json_remove(room.value,'$.queued_agent_messages')
-                                                 ORDER BY room.key)
+                         SELECT json_group_array(json(CASE room.type
+                             WHEN 'object' THEN json_remove(room.value,'$.queued_agent_messages')
+                             ELSE snapshot.payload_json -> room.fullkey END) ORDER BY room.key)
                          FROM json_each(snapshot.payload_json,'$.sessions') AS room
                      )))
                      WHERE json_type(payload_json,'$.sessions')='array'
                        AND EXISTS (
                            SELECT 1 FROM json_each(snapshot.payload_json,'$.sessions') AS room
-                           WHERE json_type(room.value,'$.queued_agent_messages') IS NOT NULL
+                           WHERE CASE WHEN room.type='object'
+                             THEN json_type(room.value,'$.queued_agent_messages') IS NOT NULL
+                             ELSE 0 END
                        );",
                 )?;
                 transaction.commit()
@@ -2008,6 +2036,7 @@ fn commit_durable_write_batch(
             DurableWriteOperation::AcquireChoice(transition) => {
                 acquire_choices::apply(&transaction, transition)
             }
+            DurableWriteOperation::RoomSetup(write) => room_setup::apply(&transaction, write),
             DurableWriteOperation::RoomEnvironment(write) => {
                 room_environment::apply(&transaction, write)
             }
@@ -2355,6 +2384,13 @@ CREATE TABLE IF NOT EXISTS app_restore_receipts (
     owner_id TEXT NOT NULL,
     installation_id TEXT PRIMARY KEY,
     restore_id TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS durable_room_setups (
+    owner_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    agent_id TEXT NOT NULL,
+    state_json TEXT NOT NULL,
+    PRIMARY KEY (owner_id, session_id)
 );
 CREATE TABLE IF NOT EXISTS durable_room_environments (
     owner_id TEXT NOT NULL,
@@ -3178,22 +3214,47 @@ mod tests {
     }
 
     #[test]
+    fn durable_state_checkpoint_strips_message_projections_only_from_objects() {
+        let root = crate::test_support::TestTempDir::new("durable-checkpoint-mixed-rooms");
+        let path = root.path().join("state.db");
+        let store = DurableKernelStateStore::open(path.clone()).unwrap();
+        store
+            .save_snapshot(
+                1,
+                serde_json::json!({
+                    "sessions": ["opaque", {"id": "room", "queued_agent_messages": [{}]}, true]
+                }),
+            )
+            .unwrap();
+        drop(store);
+        let store = DurableKernelStateStore::open(path).unwrap();
+        let checkpoint = store.latest_snapshot().unwrap().unwrap();
+        assert_eq!(
+            checkpoint.payload["sessions"],
+            serde_json::json!(["opaque", {"id": "room"}, true])
+        );
+    }
+
+    #[test]
     fn durable_state_store_appends_events_and_loads_latest_snapshot() {
-        let path = std::env::temp_dir().join(format!(
-            "chariox-durable-state-{}-{}.db",
-            std::process::id(),
-            unix_epoch_ms()
-        ));
-        let _ = std::fs::remove_file(&path);
-        let _ = std::fs::remove_file(path.with_extension("db-wal"));
-        let _ = std::fs::remove_file(path.with_extension("db-shm"));
+        let temp = crate::test_support::TestTempDir::new("durable-state-round-trip");
+        let path = temp.path().join("kernel.db");
         let store = DurableKernelStateStore::open(path.clone()).expect("store should open");
+        let room = crate::session::RuntimeSession::new(
+            "session-1",
+            crate::session::ProjectId::test(),
+            None,
+            "workspace",
+            "worktree",
+            "machine",
+            "kernel",
+        );
 
         let first = store
             .append_event(
                 "session.created",
-                Some("session-1".to_string()),
-                serde_json::json!({"session_id": "session-1"}),
+                Some(room.id().to_string()),
+                serde_json::json!({"session_id": room.id()}),
             )
             .expect("first event should append");
         let second = store
@@ -3212,21 +3273,19 @@ mod tests {
                 .len(),
             1
         );
+        let payload = serde_json::json!({"sessions": [room]});
         store
-            .save_snapshot(
-                second.sequence,
-                serde_json::json!({"sessions": ["session-1"]}),
-            )
+            .save_snapshot(second.sequence, payload.clone())
             .expect("snapshot should save");
 
         drop(store);
-        let store = DurableKernelStateStore::open(path.clone()).expect("store should reopen");
+        let store = DurableKernelStateStore::open(path).expect("store should reopen");
         let latest = store
             .latest_snapshot()
             .expect("latest snapshot should load")
             .expect("snapshot should exist");
         assert_eq!(latest.sequence, second.sequence);
-        assert_eq!(latest.payload["sessions"][0], "session-1");
+        assert_eq!(latest.payload, payload);
         assert_eq!(
             store
                 .latest_event_sequence()
@@ -3239,10 +3298,6 @@ mod tests {
                 .expect("latest snapshot sequence should load"),
             second.sequence
         );
-
-        let _ = std::fs::remove_file(&path);
-        let _ = std::fs::remove_file(path.with_extension("db-wal"));
-        let _ = std::fs::remove_file(path.with_extension("db-shm"));
     }
 
     #[test]

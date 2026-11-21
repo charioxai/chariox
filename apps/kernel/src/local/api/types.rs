@@ -618,4 +618,13 @@ pub use workspace::*;
 /// The machine list separates live/reconnecting machines (presence) from offline_machines.
 /// Machine inventories identify the Cloud directory, and a stale reply can mark an active renewal.
 /// Relay registrations and machine records include each kernel's registered local protocol.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1014;
+/// `PreflightProviderAccountPortability` carries the launch's `kernelContext`, so a copy of this
+/// kernel holds its Vault unlock for the export that follows.
+/// 1013 allows a remote-job policy request to name the Room project with `project: true`.
+/// Provider account profiles carry recovery errors and Inbox notices can offer sign-in on the target kernel.
+/// 1013 moves finished Room tasks to pages and machine samples to a Machine resource. Room views
+/// publish the connection count and workflow inventory alongside current activity.
+/// 1013 links a folded notification outcome to its answering turn.
+/// Local 1013 (relay peer 450): the mirror v2 header carries `focus_visible`, whether the page's focused element
+/// matches `:focus-visible`, so a viewer draws the focus ring only where the page's browser does; absent means no ring.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1013;

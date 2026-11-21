@@ -3362,6 +3362,8 @@ async fn typed_remote_workflow_failure_without_output_settles_home_ownership() {
                 output_chunks: Vec::new(),
                 notices: Vec::new(),
                 completions: vec![crate::transport::relay_peer::RelayProjectedCompletion {
+                    model_usage: Vec::new(),
+                    background_notifications: Vec::new(),
                     message_id: "failed-dispatch".into(),
                     home_prompt_id: Some(prompt.id().into()),
                     completed_at_ms: crate::session::unix_epoch_ms(),

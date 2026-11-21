@@ -167,7 +167,7 @@ fn ea2_75_dispatch_preserves_structured_codex_failure_codes() {
 }
 
 #[test]
-fn ea2_75_exact_capacity_diagnostic_is_typed_and_kept_out_of_person_facing_text() {
+fn ea2_75_exact_capacity_diagnostic_is_typed_and_preserves_the_safe_reason() {
     use crate::provider::{TurnOutcome, TurnOutcomeKind};
     let (endpoint, server) = codex_server(
         "turn/start",
@@ -184,8 +184,9 @@ fn ea2_75_exact_capacity_diagnostic_is_typed_and_kept_out_of_person_facing_text(
     server.join().unwrap();
     assert_eq!(failure.kind, TurnOutcomeKind::Overloaded);
     assert!(failure.retryable);
-    assert_eq!(failure.reason, "The provider is at capacity.");
-    assert!(!failure.notice().contains(REFUSAL));
+    assert_eq!(failure.reason, REFUSAL);
+    assert!(failure.notice().contains(REFUSAL));
+    assert!(!failure.notice().contains("server_overloaded"));
     assert!(failure.notice().contains("another model"));
 }
 
