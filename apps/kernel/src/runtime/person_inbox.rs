@@ -1,12 +1,12 @@
 //! The person's Inbox on this kernel (docs/NOTIFICATION_CENTER_PLAN.md section 4): every card
 //! for the owner, from every Room they own here. A needs-you card is the Room's pending
 //! interaction itself, so it closes everywhere when it is answered anywhere; a notice is what an
-//! agent sent with `chariox.notify_person`. A workflow card is a run of a workflow the person
-//! answers for that failed or holds, and a flag is a subscription that stopped delivering; both
-//! are read live and leave when resolved. Read, snooze and mute are kept by the Room owner's
-//! store so they follow the person to every client.
+//! agent sent with `chariox.notify_person` or a kernel alert about a refused workflow start.
+//! A workflow card is a run of a workflow the person answers for that failed or holds, and a flag
+//! is a subscription that stopped delivering. Read, snooze and mute follow the person to every
+//! client.
 use crate::durable_state::workflow_notifications::naming::workflow_name;
-use crate::durable_state::{PersonInboxState, StoredNotice};
+use crate::durable_state::{PersonInboxState, StoredNotice, WORKFLOW_RELINK_ORIGIN};
 use crate::error::DaemonError;
 use crate::local::{
     InboxCardChange, LocalDaemonResponse, NotificationSubscriptionHealth,
@@ -14,9 +14,11 @@ use crate::local::{
     PersonInboxNotice, PersonInboxPriority, PersonInboxWorkflowRun, SetInboxCardStateRequest,
     SetInboxMuteRequest,
 };
+use crate::runtime::command::{caller_user_id, KernelCaller};
 use crate::runtime::state::KernelRuntimeState;
 use crate::session::{
     unix_epoch_ms, RuntimeSession, WorkflowDefinition, WorkflowRun, WorkflowRunOutcome,
+    DEFAULT_LOCAL_USER_ID,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -30,19 +32,19 @@ pub(crate) struct PersonNotice {
 
 pub(crate) fn execute_person_inbox_request(
     runtime_state: &KernelRuntimeState,
-    caller_user_id: &str,
+    caller: &KernelCaller,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    let inbox = OwnedInbox::read(runtime_state, caller_user_id, unix_epoch_ms())?;
+    let inbox = OwnedInbox::read(runtime_state, caller, unix_epoch_ms())?;
     Ok(inbox.response())
 }
 
 pub(crate) fn execute_set_inbox_card_state(
     runtime_state: &KernelRuntimeState,
     request: SetInboxCardStateRequest,
-    caller_user_id: &str,
+    caller: &KernelCaller,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let now = unix_epoch_ms();
-    let inbox = OwnedInbox::read(runtime_state, caller_user_id, now)?;
+    let inbox = OwnedInbox::read(runtime_state, caller, now)?;
     if let InboxCardChange::Snooze {
         until_ms: Some(until),
     } = request.change
@@ -86,7 +88,7 @@ pub(crate) fn execute_set_inbox_card_state(
         store.set_person_inbox_card_state(&owner, card_ids, request.change.clone(), now)?;
     }
     runtime_state.record_person_inbox_change();
-    execute_person_inbox_request(runtime_state, caller_user_id)
+    execute_person_inbox_request(runtime_state, caller)
 }
 
 /// A mute quiets one agent's notices: they arrive read. Its needs-you cards still show, because
@@ -94,14 +96,18 @@ pub(crate) fn execute_set_inbox_card_state(
 pub(crate) fn execute_set_inbox_mute(
     runtime_state: &KernelRuntimeState,
     request: SetInboxMuteRequest,
-    caller_user_id: &str,
+    caller: &KernelCaller,
 ) -> Result<LocalDaemonResponse, DaemonError> {
+    if request.origin.agent_id == WORKFLOW_RELINK_ORIGIN {
+        return Err(refused("Snooze this kernel notice to hide it for a while."));
+    }
+    let user = caller_user_id(caller);
     let session = runtime_state
         .list_session_health_snapshots()
         .into_iter()
         .find(|session| {
             session.id() == request.origin.session_id
-                && runtime_state.acts_for_room_owner(session, caller_user_id)
+                && runtime_state.acts_for_room_owner(session, &user)
         })
         .ok_or_else(|| {
             refused(format!(
@@ -115,7 +121,7 @@ pub(crate) fn execute_set_inbox_mute(
         request.muted,
     )?;
     runtime_state.record_person_inbox_change();
-    execute_person_inbox_request(runtime_state, caller_user_id)
+    execute_person_inbox_request(runtime_state, caller)
 }
 
 /// Stores a notice from an agent of `session` for the Room's owner; a guest's agent has no
@@ -176,44 +182,48 @@ struct OwnedInbox {
 impl OwnedInbox {
     fn read(
         runtime_state: &KernelRuntimeState,
-        caller_user_id: &str,
+        caller: &KernelCaller,
         now_ms: u64,
     ) -> Result<Self, DaemonError> {
+        let user = caller_user_id(caller);
+        let show_relink = runtime_state.can_read_workflow_relink_notice(caller);
         let sessions = runtime_state
             .list_session_health_snapshots()
             .into_iter()
-            .filter(|session| runtime_state.acts_for_room_owner(session, caller_user_id))
+            .filter(|session| runtime_state.acts_for_room_owner(session, &user))
             .collect::<Vec<_>>();
-        let session_ids = sessions
+        let room_owners = sessions
             .iter()
-            .map(|session| session.id())
-            .collect::<BTreeSet<_>>();
-        let owners = sessions
-            .iter()
-            .map(|session| session.owner_user_id())
-            .collect::<BTreeSet<_>>();
+            .map(|session| (session.id(), session.owner_user_id()))
+            .collect::<BTreeMap<_, _>>();
+        let mut owners = room_owners.values().copied().collect::<BTreeSet<_>>();
+        // The repair notice is also visible to the Room's owner after re-link, until retry.
+        if show_relink || !sessions.is_empty() {
+            owners.insert(DEFAULT_LOCAL_USER_ID);
+        }
         let mut state = PersonInboxState::default();
         for owner in owners {
             let owned = runtime_state
                 .durable_state_store()
                 .person_inbox_state(owner, now_ms)?;
-            state.notices.extend(
-                owned
-                    .notices
-                    .into_iter()
-                    .filter(|notice| session_ids.contains(notice.session_id.as_str())),
-            );
+            state
+                .notices
+                .extend(owned.notices.into_iter().filter(|notice| {
+                    let room_owner = room_owners.get(notice.session_id.as_str());
+                    room_owner == Some(&owner)
+                        || (notice.is_workflow_relink() && (show_relink || room_owner.is_some()))
+                }));
             state.snoozes.extend(owned.snoozes);
             state.mutes.extend(
                 owned
                     .mutes
                     .into_iter()
-                    .filter(|origin| session_ids.contains(origin.session_id.as_str())),
+                    .filter(|origin| room_owners.get(origin.session_id.as_str()) == Some(&owner)),
             );
         }
         state.mutes.sort();
         let flags = runtime_state
-            .notification_subscription_rows(caller_user_id)?
+            .notification_subscription_rows(&user)?
             .into_iter()
             .filter(|row| flagged(row.health))
             .collect();
@@ -275,26 +285,48 @@ impl OwnedInbox {
             })
             .collect::<Vec<_>>();
         cards.extend(self.state.notices.iter().map(|notice| {
-            let agent_name = self
+            let room = self
                 .sessions
                 .iter()
-                .find(|session| session.id() == notice.session_id)
-                .and_then(|session| session.agent_display_name(&notice.agent_id));
-            let title = folded_title(notice, agent_name.as_deref());
+                .find(|session| session.id() == notice.session_id);
+            let (session_id, agent_name) = if notice.is_workflow_relink() {
+                (
+                    room.map_or(WORKFLOW_RELINK_ORIGIN, RuntimeSession::id),
+                    Some("The kernel".to_owned()),
+                )
+            } else {
+                (
+                    notice.session_id.as_str(),
+                    room.and_then(|session| session.agent_display_name(&notice.agent_id)),
+                )
+            };
+            let (title, body, folded) = if notice.is_workflow_start_refusal() {
+                let body = notice
+                    .body
+                    .as_ref()
+                    .map(|body| format!("{body} Attempts: {}", u64::from(notice.folded) + 1));
+                (notice.title.clone(), body, 0)
+            } else {
+                (
+                    folded_title(notice, agent_name.as_deref()),
+                    folded_body(notice),
+                    notice.folded,
+                )
+            };
             PersonInboxCard {
                 card_id: notice.card_id.clone(),
-                session_id: notice.session_id.clone(),
+                session_id: session_id.to_owned(),
                 snoozed_until_ms: snoozed(&notice.card_id),
                 body: PersonInboxCardBody::Notice(PersonInboxNotice {
                     agent_id: notice.agent_id.clone(),
                     agent_name,
                     title,
-                    body: folded_body(notice),
+                    body,
                     link: notice.link.clone(),
                     priority: notice.priority,
                     created_at_ms: notice.created_at_ms,
                     read: notice.read,
-                    folded: notice.folded,
+                    folded,
                 }),
             }
         }));

@@ -28,7 +28,7 @@ impl KernelRuntimeState {
             caller_user_id,
             "invoke workflow endpoint",
         ) {
-            Ok(()) => {
+            Ok(authorized_endpoint) => {
                 let obligation = match caller_agent_id
                     .map(|id| {
                         let actor = self.owned.agent_store.get_agent(id)?;
@@ -58,6 +58,7 @@ impl KernelRuntimeState {
                     Ok(outcome) => outcome,
                     Err(error) => return (Err(error), None),
                 };
+                self.clear_workflow_start_alerts(&request.session_id, authorized_endpoint.id());
                 if let crate::app::workflow_runtime::WorkflowLaunchOutcome::Entry {
                     entry, ..
                 } = &outcome
@@ -150,6 +151,9 @@ impl KernelRuntimeState {
                         session,
                     }),
                 }
+            }
+            Err(error @ DaemonError::OwnershipAccessDenied { .. }) => {
+                Err(self.report_workflow_start_refusal(&request, caller_user_id, error))
             }
             Err(error) => Err(error),
         };
