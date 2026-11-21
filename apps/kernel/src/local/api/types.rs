@@ -628,4 +628,5 @@ pub use workspace::*;
 /// Local 1013 (relay peer 450): the mirror v2 header carries `focus_visible`, whether the page's focused element
 /// matches `:focus-visible`, so a viewer draws the focus ring only where the page's browser does; absent means no ring.
 /// 1014 adds kernel diagnostics to machine status and the machine-only job scope.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1014;
+/// Machine status includes a readable relay failure reason.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1087;
