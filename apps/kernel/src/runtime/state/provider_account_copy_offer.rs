@@ -3,8 +3,8 @@ use super::*;
 use crate::local::CopyProviderAccountFromKernelRequest;
 use crate::provider_account_copy::{
     copy_provider_supported, failure, native_copy_credential_path, ProviderAccountCopyBinding,
-    ProviderAccountCopyOffer, ProviderAccountCopyReceipt, PROVIDER_ACCOUNT_COPY_PULL_CAPABILITY,
-    PROVIDER_ACCOUNT_NATIVE_COPY_CAPABILITY,
+    ProviderAccountCopyOffer, ProviderAccountCopyOutcome, ProviderAccountCopyReceipt,
+    PROVIDER_ACCOUNT_COPY_PULL_CAPABILITY, PROVIDER_ACCOUNT_NATIVE_COPY_CAPABILITY,
 };
 use crate::runtime::command::{command_caller_user_id, KernelCommand};
 use crate::session::{RuntimeInteraction, RuntimeInteractionChoice, RuntimeInteractionChoiceStyle};
@@ -180,7 +180,7 @@ impl KernelRuntimeState {
         &self,
         command: &KernelCommand,
         request: CopyProviderAccountFromKernelRequest,
-    ) -> Result<ProviderAccountCopyReceipt, DaemonError> {
+    ) -> Result<ProviderAccountCopyOutcome, DaemonError> {
         let caller = &command_caller_user_id(command);
         let config = self.config_snapshot().await;
         let owner = enrolled_owner(&config, caller)?;
@@ -247,7 +247,10 @@ impl KernelRuntimeState {
             RelayPeerResponse::ProviderAccountCopyInstalled { receipt }
                 if receipt == ProviderAccountCopyReceipt::installed(&binding) =>
             {
-                Ok(receipt)
+                Ok(ProviderAccountCopyOutcome::Installed(receipt))
+            }
+            RelayPeerResponse::ProviderAccountCopyWaiting { wait } if wait.matches(&binding) => {
+                Ok(ProviderAccountCopyOutcome::Waiting(wait))
             }
             RelayPeerResponse::ProviderAccountCopyFailed { code } => Err(copy_peer_failure(&code)),
             _ => Err(failure("provider_account_copy_unsupported")),
@@ -314,7 +317,7 @@ impl KernelRuntimeState {
         target_key: &str,
         identity: &chariox_relay::protocol::RelayCallerIdentity,
         request: crate::local::CopyProviderAccountToKernelRequest,
-    ) -> Result<ProviderAccountCopyReceipt, DaemonError> {
+    ) -> Result<ProviderAccountCopyOutcome, DaemonError> {
         let config = self.config_snapshot().await;
         let profile = config
             .cloud_relay
@@ -340,10 +343,11 @@ impl KernelRuntimeState {
     }
 }
 
-fn copy_peer_failure(code: &str) -> DaemonError {
+pub(super) fn copy_peer_failure(code: &str) -> DaemonError {
     // Accept only the existing constant public error vocabulary, never peer text.
     match code {
         "provider_account_copy_unauthorized" => failure("provider_account_copy_unauthorized"),
+        "provider_account_copy_cancelled" => failure("provider_account_copy_cancelled"),
         "provider_account_copy_profile" => failure("provider_account_copy_profile"),
         "provider_account_copy_vault_locked" => failure("provider_account_copy_vault_locked"),
         "provider_account_copy_target_vault_locked" => {

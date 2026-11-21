@@ -234,7 +234,7 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// skill delivery (Agent Move no longer lists skills and the per-agent skill grants are gone).
 /// The receiving agent’s deadline refusal is carried in the encrypted peer response.
 /// A peer spawn carries the starter's display name.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 449;
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 451;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
 pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = RELAY_PEER_PROTOCOL_VERSION;
@@ -1479,6 +1479,8 @@ pub enum RelayPeerRequest {
     InstallProviderAccountCopy {
         binding: crate::provider_account_copy::ProviderAccountCopyBinding,
         credential: crate::provider_account_copy::ProviderAccountCopyCredential,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        resume_after_unlock: bool,
     },
     EnsureRemoteProviderAccount {
         context: RemoteProviderAccountSyncContext,
@@ -1906,6 +1908,12 @@ pub enum RelayPeerResponse {
         context: RemoteSkillSyncContext,
         manifest: crate::skill::v2::SkillTransferManifest,
         materialized: Vec<RemoteSkillMaterialization>,
+    },
+    ProviderAccountCopyTargetVaultLocked {
+        expires_at_ms: u64,
+    },
+    ProviderAccountCopyWaiting {
+        wait: crate::provider_account_copy::ProviderAccountCopyWait,
     },
     ProviderAccountCopyFailed {
         code: String,

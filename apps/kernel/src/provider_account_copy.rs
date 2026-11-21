@@ -220,3 +220,52 @@ pub(crate) fn copy_profile_id(
     ));
     format!("copy-{digest:x}")[..45].to_string()
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderAccountCopyWait {
+    pub operation_id: String,
+    pub source_kernel_id: String,
+    pub target_kernel_id: String,
+    pub target_label: String,
+    pub expires_at_ms: u64,
+}
+
+impl ProviderAccountCopyWait {
+    pub(crate) fn matches(&self, binding: &ProviderAccountCopyBinding) -> bool {
+        self.operation_id == binding.operation_id
+            && self.source_kernel_id == binding.source_kernel_id
+            && self.target_kernel_id == binding.target_kernel_id
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum ProviderAccountCopyProgress {
+    WaitingForUnlock { wait: ProviderAccountCopyWait },
+    Installed { receipt: ProviderAccountCopyReceipt },
+    Failed { operation_id: String, code: String },
+}
+
+pub(crate) enum ProviderAccountCopyOutcome {
+    Installed(ProviderAccountCopyReceipt),
+    Waiting(ProviderAccountCopyWait),
+}
+
+impl ProviderAccountCopyOutcome {
+    pub(crate) fn into_response(self) -> crate::local::LocalDaemonResponse {
+        match self {
+            Self::Installed(receipt) => {
+                crate::local::LocalDaemonResponse::ProviderAccountCopied { receipt }
+            }
+            Self::Waiting(wait) => {
+                crate::local::LocalDaemonResponse::ProviderAccountCopyWaiting { wait }
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderAccountCopyUnlockRequest {
+    pub interaction_id: String,
+    pub expires_at_ms: u64,
+}
