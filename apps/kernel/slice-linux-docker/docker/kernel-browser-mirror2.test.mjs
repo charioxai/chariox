@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { sanitizeMirrorCss } from './kernel-browser-mirror2-observer.mjs';
 import { inflateRawSync, constants as zlib } from 'node:zlib';
 import { createHash } from 'node:crypto';
-import { Mirror2, ParsedSheets, BUSY_RENDERER_MS, KERNEL_CONTROLLER_DEADLINE_MS, mirrorResourceType, encodeMirrorRecords, dedupeMirrorSheets, regionArea, regionOverBudget, cssImports } from './kernel-browser-mirror2.mjs';
+import { Mirror2, ParsedSheets, BUSY_RENDERER_MS, KERNEL_CONTROLLER_DEADLINE_MS, mirrorResourceType, encodeMirrorRecords, dedupeMirrorSheets, regionArea, regionOverBudget, cssImports, svgTargetPinned } from './kernel-browser-mirror2.mjs';
 const pageSize=()=>({width:1280,height:800});
 
 const keys = () => { const seen = []; return { seen, resource: (url, base, kind) => { const href = new URL(url, base).href; if (!/^(https?|data):/.test(href)) return null; seen.push([href, kind]); return `r${seen.length}`; } }; };
@@ -1377,4 +1377,17 @@ test('region bounds without a committed owner still read the document before and
  const mirror=new Mirror2({host:{browser:{connection},protection:{unknown:false,values:[],targets:[]}}}),stream={world:{connection,sessionId:'s',ref:'mirror'},frames:new Map()};
  mirror.protectTargets=async()=>{};mirror.frames.regionBoxes=async()=>[];mirror.evaluate=async()=>[];
  await mirror.regionBoxes(stream,{target_id:'T',document_id:'D'});assert.equal(reads,2);
+});
+
+// W0-T1 (tldraw): an SVG stack resource named with a fragment shows that element in a viewer that has no fragment.
+test('W0-T1: an SVG stack pins its :target rules to the fragment the resource was named with', () => {
+  const stack = '<svg xmlns="http://www.w3.org/2000/svg"><style><![CDATA[svg>[id]{display:none}svg>[id]:target{display:inline}]]></style><circle id="color" r="9"/><path id="1x" d="M0 0"/></svg>';
+  assert.equal(svgTargetPinned(stack, 'color'), stack.replace('svg>[id]:target', 'svg>[id][id="color"]'));
+  assert.equal(svgTargetPinned(stack, '1x'), stack.replace('svg>[id]:target', 'svg>[id][id="1x"]'), 'an id starting with a digit');
+  assert.equal(svgTargetPinned(stack, 'a"b'), stack, 'a fragment a selector cannot name plainly keeps the bytes');
+  assert.equal(svgTargetPinned(stack, ''), stack);
+  const plain = '<svg xmlns="http://www.w3.org/2000/svg"><circle r="9"/></svg>';
+  assert.equal(svgTargetPinned(plain, 'color'), plain, 'an SVG without :target rules keeps its bytes');
+  const outside = '<svg xmlns="http://www.w3.org/2000/svg"><text>:target</text></svg>';
+  assert.equal(svgTargetPinned(outside, 'x'), outside, 'only style elements change');
 });
