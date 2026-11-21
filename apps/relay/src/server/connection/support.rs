@@ -1396,16 +1396,42 @@ impl std::io::Write for SerializedSize {
 /// Hands `envelope` to `receiver` on behalf of a different connection (its sender). A
 /// receiver's backlog or departure is reported here and never ends the sender's connection.
 pub(super) fn deliver(receiver: &RelaySender, envelope: &RelayEnvelope) -> Delivery {
+    let peer_reply = match envelope {
+        RelayEnvelope::DaemonPeerResponse {
+            request_id,
+            from_daemon_id,
+            encrypted_response: Some(response),
+            ..
+        } => Some(EncryptedPeerReply {
+            request_id,
+            from_daemon_id,
+            ciphertext_len: response.ciphertext.len(),
+        }),
+        _ => None,
+    };
+    deliver_serialized(receiver, envelope, peer_reply)
+}
+
+pub(super) struct EncryptedPeerReply<'a> {
+    pub(super) request_id: &'a str,
+    pub(super) from_daemon_id: &'a str,
+    pub(super) ciphertext_len: usize,
+}
+
+pub(super) fn deliver_serialized(
+    receiver: &RelaySender,
+    envelope: &impl serde::Serialize,
+    peer_reply: Option<EncryptedPeerReply<'_>>,
+) -> Delivery {
     let to_message = || {
         let payload =
             serde_json::to_string(envelope).expect("a relay envelope is always valid JSON");
         Message::Text(payload.into())
     };
-    let queued = if matches!(
-        envelope,
-        RelayEnvelope::DaemonPeerResponse { encrypted_response: Some(response), .. }
-            if response.ciphertext.len() > crate::frame_transport::CHUNK_BYTES
-    ) {
+    let queued = if peer_reply
+        .as_ref()
+        .is_some_and(|reply| reply.ciphertext_len > crate::frame_transport::CHUNK_BYTES)
+    {
         let mut size = SerializedSize::default();
         serde_json::to_writer(&mut size, envelope).expect("counting JSON bytes cannot fail");
         receiver.try_send_sized(size.0, to_message)
@@ -1418,16 +1444,15 @@ pub(super) fn deliver(receiver: &RelaySender, envelope: &RelayEnvelope) -> Deliv
             receiver.record_dropped_reply();
             // Bulk replies can exhaust the byte budget while the receiver can still accept
             // control traffic. Fail only this request so a retry can use the same connection.
-            if let RelayEnvelope::DaemonPeerResponse {
+            if let Some(EncryptedPeerReply {
                 request_id,
                 from_daemon_id,
-                encrypted_response: Some(_),
                 ..
-            } = envelope
+            }) = peer_reply
             {
                 let refusal = RelayEnvelope::DaemonPeerResponse {
-                    request_id: request_id.clone(),
-                    from_daemon_id: from_daemon_id.clone(),
+                    request_id: request_id.to_owned(),
+                    from_daemon_id: from_daemon_id.to_owned(),
                     encrypted_response: None,
                     error: Some(relay_error(
                         "target_backpressure",
