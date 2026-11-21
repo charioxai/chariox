@@ -774,7 +774,13 @@ impl KernelRuntimeState {
                             message: "The job reached its time limit while uploading the workspace, before the command started. Check chariox.machines.status. Retry with a longer timeout if the machine is reachable. A job status check retries workspace cleanup.".into(),
                         }),
                     },
-                    _ = stop.wait_for(|stopped| *stopped) => {
+                    _ = async {
+                        // Recovery replaces the old supervisor's channel without requesting cancellation.
+                        let requested = stop.wait_for(|stopped| *stopped).await.is_ok();
+                        if !requested {
+                            std::future::pending::<()>().await;
+                        }
+                    } => {
                         return Err(ledger::error("Job cancelled during workspace upload"));
                     }
                 }
