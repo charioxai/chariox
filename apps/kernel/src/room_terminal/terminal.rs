@@ -224,13 +224,18 @@ impl Terminal {
                 if let Some(run_id) = &self.run_id {
                     crate::runtime::process_resources::line_finished_for_key(run_id, &jobs);
                 }
+                let initial_prompt = !self.mark_tracking;
                 self.mark_tracking = true;
                 self.first_prompt_deadline = None;
                 // The first prompt reports before any command has run.
                 if !self.command_in_flight && !self.program_running {
+                    if !initial_prompt {
+                        self.driver.finish_submission();
+                    }
                     return Fired::new();
                 }
                 self.command_in_flight = false;
+                self.driver.finish_submission();
                 let command = Some(self.commands_started);
                 self.record_program_end(ProgramEnd {
                     output_offset: self.log.end_offset(),
@@ -305,6 +310,9 @@ impl Terminal {
     }
 
     pub(super) fn current_driver(&mut self, pty: &PtyManager) -> RoomTerminalDriver {
+        if !self.is_running() {
+            return RoomTerminalDriver::Free;
+        }
         let at_prompt = self.at_prompt(pty, Instant::now());
         self.driver.observe(at_prompt)
     }

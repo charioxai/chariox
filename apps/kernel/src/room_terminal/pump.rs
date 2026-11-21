@@ -101,6 +101,7 @@ impl Terminal {
             }
             if self.program_running && !program_running {
                 self.command_in_flight = false;
+                self.driver.finish_submission();
                 ended_command = Some(self.commands_started);
                 self.record_program_end(ProgramEnd {
                     output_offset: self.log.end_offset(),
@@ -153,6 +154,17 @@ impl Terminal {
             return Fired::new();
         }
         self.driver.settle_lines(self.commands_started);
+        // A marked shell may still have a submitted line waiting to start.
+        // Only a prompt report can release it until a command has run.
+        if !self.mark_tracking
+            || self.last_program_end.as_ref().is_some_and(|end| {
+                self.driver
+                    .last_write()
+                    .is_some_and(|write| end.at >= write)
+            })
+        {
+            self.driver.discard_submissions(false);
+        }
         self.watches
             .on_lines_settled(self.commands_started, self.last_program_end.as_ref())
     }
