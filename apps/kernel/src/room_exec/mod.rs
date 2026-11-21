@@ -586,7 +586,7 @@ impl RoomExecService {
         &self,
         session_id: &str,
         exec_id: &str,
-        before_cancel: impl FnOnce(),
+        before_cancel: impl FnOnce() -> Result<(), DaemonError>,
     ) -> Result<(), DaemonError> {
         let record = self.record(session_id, exec_id)?;
         let state = record.state.lock().expect("exec state poisoned");
@@ -596,7 +596,7 @@ impl RoomExecService {
                 "This command already started and cannot be moved safely",
             ));
         }
-        before_cancel();
+        before_cancel()?;
         record.cancel.send_replace(Some(CancelReason::Canceled));
         Ok(())
     }

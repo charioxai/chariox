@@ -13,6 +13,9 @@ pub(crate) enum GatewayError {
     Offline {
         name: String,
     },
+    Released {
+        name: String,
+    },
     Unreachable {
         name: String,
         detail: String,
@@ -95,7 +98,7 @@ impl GatewayError {
         match self {
             Self::Unknown { .. } => "kernel_unknown",
             Self::Ambiguous { .. } => "kernel_ambiguous",
-            Self::Offline { .. } => "kernel_offline",
+            Self::Offline { .. } | Self::Released { .. } => "kernel_offline",
             Self::Unreachable { .. } | Self::ListUnavailable { .. } => "kernel_unreachable",
             Self::Unpaired { .. } | Self::GatewayRevoked => "kernel_unpaired",
             Self::AccessEnded { .. } => "kernel_access_ended",
@@ -121,6 +124,9 @@ impl GatewayError {
             ),
             Self::Offline { name } => format!(
                 "Kernel \"{name}\" is offline. Start the Chariox kernel there; ssh is only a break-glass."
+            ),
+            Self::Released { name } => format!(
+                "The machine for kernel \"{name}\" was released. Run `chariox kernels` and pick a live kernel."
             ),
             Self::Unreachable { name, detail } => format!(
                 "Could not reach kernel \"{name}\" ({detail}). Retry; check that the relay is reachable."

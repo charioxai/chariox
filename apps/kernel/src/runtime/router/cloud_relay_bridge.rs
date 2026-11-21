@@ -47,10 +47,22 @@ impl CommandRouter {
             return Ok(());
         };
         let registration = self.relay_registration().await;
-        let Some(body) = cloud_kernel_presence_body(&config, profile, online, Some(&registration))
+        let Some(mut body) =
+            cloud_kernel_presence_body(&config, profile, online, Some(&registration))
         else {
             return Ok(());
         };
+        if !online {
+            if let Some(refusal) = self
+                .relay_state
+                .read()
+                .await
+                .registration_refusal(config.relay_url.as_deref())
+            {
+                body["metadata"]["last_relay_refusal"] =
+                    serde_json::to_value(refusal).expect("relay registration refusal serializes");
+            }
+        }
         let _: serde_json::Value = post_cloud_json_with_timeout(
             profile.api_url.clone(),
             "/kernels/presence",

@@ -116,8 +116,13 @@ impl DaemonApp {
 
     fn relay_status_snapshot(&self) -> Result<RelayStatus, DaemonError> {
         let relay_state = self.relay_client_state();
-        let connected = block_on_relay_query(async move {
-            Ok::<bool, DaemonError>(relay_state.read().await.connected())
+        let relay_url = self.config().relay_url.clone();
+        let (connected, registration_refused) = block_on_relay_query(async move {
+            let state = relay_state.read().await;
+            Ok::<_, DaemonError>((
+                state.connected(),
+                state.registration_refusal(relay_url.as_deref()),
+            ))
         })?;
         Ok(RelayStatus {
             local_daemon_protocol_version: crate::local::LOCAL_DAEMON_PROTOCOL_VERSION,
@@ -125,6 +130,7 @@ impl DaemonApp {
             capabilities: crate::runtime::state::control_capabilities(&self.durable_state_store()),
             configured: self.config().relay_url.is_some() && self.config().relay_token.is_some(),
             connected,
+            registration_refused,
             relay_url: self.config().relay_url.clone(),
             relay_token_configured: self.config().relay_token.is_some(),
             daemon_id: self.config().daemon_id.clone(),

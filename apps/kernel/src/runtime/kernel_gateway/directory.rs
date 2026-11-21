@@ -104,6 +104,14 @@ impl Directory {
         }
     }
 
+    pub(super) fn known_kernel_id(&self, name: &str) -> Option<String> {
+        let seen = self.seen.lock().expect("directory poisoned");
+        let known: Vec<&RelayKernelPresence> = seen.values().map(|seen| &seen.kernel).collect();
+        names::find(&known, name)
+            .ok()
+            .map(|kernel| kernel.kernel_id.clone())
+    }
+
     fn refresh_behind(&self) {
         if self.source.is_fresh() || self.refreshing.swap(true, Ordering::AcqRel) {
             return;

@@ -216,6 +216,7 @@ pub(crate) fn cloud_kernel_presence_body(
             "host": config.kernel_websocket_host,
             "port": config.kernel_websocket_port,
             "relay_public_key": config.relay_public_key,
+            "kernel_version": env!("CARGO_PKG_VERSION"),
             "local_daemon_protocol_version": crate::local::LOCAL_DAEMON_PROTOCOL_VERSION,
             "owner_managed_context_transfer_protocol_version": 1,
             "relay_peer_protocol_version": crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,

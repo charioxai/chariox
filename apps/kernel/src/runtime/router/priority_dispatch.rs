@@ -826,6 +826,7 @@ impl CommandRouter {
                             &request.session_id,
                             &command.caller,
                             &request.process_id,
+                            request.kernel.as_deref(),
                         )
                         .await?;
                     Ok(LocalDaemonResponse::SessionProcessRemoteStarted {

@@ -7,6 +7,7 @@ use crate::runtime::cloud_relay_control::cloud_relay_token_unusable;
 
 mod binary_request;
 mod managed_slice_activation;
+mod registration;
 mod socket_thread;
 mod writer;
 #[cfg(test)]
@@ -656,6 +657,7 @@ async fn run_daemon_relay_connector_inner(
     let mut refused_failures = 0_u32;
     let mut refresh_error: Option<String> = None;
     let mut drop_backoff = DropBackoff::default();
+    let mut registration_backoff = registration::RefusalBackoff::default();
 
     'connector: loop {
         if *shutdown.borrow() {
@@ -929,7 +931,7 @@ async fn run_daemon_relay_connector_inner(
                 let mut relay_frames = chariox_relay::frame_transport::FrameReceiver::default();
                 let (upload_receipt_tx, upload_receipt_rx) =
                     mpsc::channel::<(u32, u32)>(chariox_relay::frame_transport::MAX_UNACKED_FRAMES);
-                let (mut inbound, mut reader_end, _reader_task) = socket_thread::spawn_reader(
+                let (mut inbound, mut reader_end, reader_task) = socket_thread::spawn_reader(
                     reader,
                     pong_tx,
                     upload_chunks.then_some(upload_receipt_tx),
@@ -975,27 +977,56 @@ async fn run_daemon_relay_connector_inner(
                     send_outgoing_envelope(&outgoing_tx, register)
                         .map_err(|_| "failed to send relay registration".to_string())
                 });
-                if let Err(reason) = sent {
-                    writer_task.abort();
-                    disconnect_relay(&state, &reason, presence).await;
-                    let delay = relay_reconnect_delay(&daemon_id, reconnect_attempt);
-                    record_relay_reconnect(&router, &relay_url, &reason, delay);
-                    reconnect_attempt = reconnect_attempt.saturating_add(1);
-                    if wait_for_reconnect_delay(shutdown, delay).await {
+                let registration = match sent {
+                    Err(reason) => Some(Err(reason)),
+                    Ok(()) => {
+                        crate::logging::info_with_fields(
+                            "daemon.relay_client",
+                            "relay register sent",
+                            serde_json::json!({
+                                "relay_url": relay_url,
+                                "connect_ms": connect_ms,
+                                "registration_send_ms": registration_started.elapsed().as_millis(),
+                                "connect_to_registration_ms": connect_started.elapsed().as_millis(),
+                            }),
+                        );
+                        registration::await_registration(
+                            &mut inbound,
+                            &mut reader_end,
+                            &mut writer_done_rx,
+                            shutdown,
+                        )
+                        .await
+                    }
+                };
+                match registration {
+                    None => {
+                        writer_task.abort();
                         break 'connector;
                     }
-                    continue;
+                    Some(Err(reason)) => {
+                        writer_task.abort();
+                        drop(reader_task);
+                        let token_refused = relay_refused_token(&reason);
+                        if token_refused {
+                            refused =
+                                Some(RefusedCredentials::new(&relay_url, &active_relay_token));
+                        }
+                        let (delay, changed) = registration_backoff
+                            .record(&router, &state, &relay_url, reason, token_refused)
+                            .await;
+                        if let Some(presence) = presence.filter(|_| changed) {
+                            presence.publish(false, "relay registration refused");
+                        }
+                        if !token_refused && wait_for_reconnect_delay(shutdown, delay).await {
+                            break 'connector;
+                        }
+                        continue;
+                    }
+                    Some(Ok(())) => {
+                        registration_backoff = registration::RefusalBackoff::default();
+                    }
                 }
-                crate::logging::info_with_fields(
-                    "daemon.relay_client",
-                    "relay register sent",
-                    serde_json::json!({
-                        "relay_url": relay_url,
-                        "connect_ms": connect_ms,
-                        "registration_send_ms": registration_started.elapsed().as_millis(),
-                        "connect_to_registration_ms": connect_started.elapsed().as_millis(),
-                    }),
-                );
                 let replayed_display_tunnel_count =
                     match set_connected(&state, outgoing_tx.clone(), relay_url.clone()).await {
                         Ok(count) => count,
@@ -1040,7 +1071,7 @@ async fn run_daemon_relay_connector_inner(
                 reconnect_attempt = 0;
                 let connected_at = Instant::now();
                 if let Some(presence) = presence {
-                    presence.publish(true, "relay registration sent");
+                    presence.publish(true, "relay registration accepted");
                 }
                 let mut cloud_presence_schedule =
                     CloudPresencePublishSchedule::new(Instant::now(), &daemon_id);

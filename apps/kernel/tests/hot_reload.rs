@@ -677,7 +677,13 @@ fn a_reloaded_kernel_publishes_that_it_is_back_on_the_relay() {
         while let Ok((stream, _)) = relay.accept().await {
             tokio::spawn(async move {
                 if let Ok(mut socket) = accept_as_relay(stream).await {
-                    while let Some(Ok(_)) = socket.next().await {}
+                    while let Some(Ok(Message::Text(text))) = socket.next().await {
+                        if text.starts_with("{\"kind\":\"daemon_register\"") {
+                            let _ = socket
+                                .send(Message::Text(r#"{"kind":"daemon_registered"}"#.into()))
+                                .await;
+                        }
+                    }
                 }
             });
         }
@@ -767,6 +773,11 @@ fn a_hot_reload_tells_the_relay_it_is_a_reload() {
                 while let Some(Ok(message)) = socket.next().await {
                     if let Message::Text(text) = message {
                         if let Ok(value) = serde_json::from_str::<Value>(&text) {
+                            if value["kind"] == "daemon_register" {
+                                let _ = socket
+                                    .send(Message::Text(r#"{"kind":"daemon_registered"}"#.into()))
+                                    .await;
+                            }
                             recorded.lock().unwrap()[index].push(value);
                         }
                     }

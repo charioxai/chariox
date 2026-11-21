@@ -1,6 +1,6 @@
 {
-  "local": 1012,
-  "relayPeer": 449,
+  "local": 1014,
+  "relayPeer": 450,
   "tool": "chariox.read_artifact",
   "arguments": {
     "path": "asset.bin",

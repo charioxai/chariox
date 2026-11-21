@@ -214,7 +214,7 @@ async fn offload_job_remote_upload_exec_environment_artifact_and_conflict_return
         router,
         home: home.path().to_owned(),
     });
-    let record = Record { job_id: "job-remote-test".into(), wake_id: "wake-remote-test".into(), registration_id: "completion-wake-remote-test".into(), room_id: "home-room".into(), agent_id: "home-agent".into(), request: RunJobRequest { command: JobCommand::Argv(vec!["/bin/sh".into(), "-c".into(), "printf remote > source.txt; mkdir -p target; printf artifact > target/build.bin; printf '%s' \"$NAMED\"".into()]), cwd: None, env: vec!["NAMED".into()], needs: JobNeeds::default(), timeout_s: 30, wait_s: 0, outputs: vec!["target/*.bin".into()], machine: None }, workspace: source.path().to_owned(), cwd: source.path().to_owned(), placement: JobPlacement::Remote, started_at_ms: crate::session::unix_epoch_ms(), running_at_ms: None, state: "uploading".into(), allocation_ref: None, capability_revision: None, machine_label: Some("offload-test".into()), address: Some("2001:db8::1".into()), result: None, exec_id: None, class_id: None, rate_per_minute: None, estimate_micros: None, deleted: false, remote_available: true, remote_refusal: None, estimated_minutes: None, memory_mib: None, remote: RemoteStage::Idle };
+    let record = Record { job_id: "job-remote-test".into(), wake_id: "wake-remote-test".into(), registration_id: "completion-wake-remote-test".into(), room_id: "home-room".into(), agent_id: "home-agent".into(), request: RunJobRequest { command: JobCommand::Argv(vec!["/bin/sh".into(), "-c".into(), "printf remote > source.txt; mkdir -p target; printf artifact > target/build.bin; printf '%s' \"$NAMED\"".into()]), cwd: None, env: vec!["NAMED".into()], needs: JobNeeds::default(), timeout_s: 30, wait_s: 0, outputs: vec!["target/*.bin".into()], machine: None, machine_only: false }, workspace: source.path().to_owned(), cwd: source.path().to_owned(), placement: JobPlacement::Remote, started_at_ms: crate::session::unix_epoch_ms(), running_at_ms: None, state: "uploading".into(), allocation_ref: None, capability_revision: None, machine_label: Some("offload-test".into()), held_kernel_id: None, address: Some("2001:db8::1".into()), result: None, exec_id: None, class_id: None, rate_per_minute: None, estimate_micros: None, deleted: false, remote_available: true, remote_refusal: None, estimated_minutes: None, memory_mib: None, remote: RemoteStage::Idle };
     let base = crate::jobs::snapshot(source.path(), &record.request.outputs).unwrap();
     let upload = crate::jobs::snapshot(source.path(), &[]).unwrap();
     let (_cancel, cancelled) = watch::channel(false);
@@ -283,6 +283,67 @@ async fn offload_job_remote_upload_exec_environment_artifact_and_conflict_return
         std::fs::read(source.path().join("target/build.bin")).unwrap(),
         b"artifact"
     );
+}
+
+#[tokio::test]
+async fn offload_job_live_output_tail_preserves_lines_and_utf8() {
+    let (state, run, task, _worktree) = fixture().await;
+    let long_line = "'a' * (6 * 1024 - 1) + 'é' + 'x' * (64 * 1024 - 2)";
+    for (output, last_line, expected) in [
+        (
+            "'a' * 70000 + '\\nfirst\\nsecond'".into(),
+            "second\n",
+            "first\nsecond\n".into(),
+        ),
+        (
+            long_line.to_owned(),
+            "x\n",
+            format!("{}\n", "x".repeat(TAIL_BYTES - 2)),
+        ),
+    ] {
+        let script = format!("import time; print({output}, flush=True); time.sleep(60)");
+        let job = state
+            .dispatch_job_tool(
+                Some(&run),
+                "chariox.jobs.run",
+                &serde_json::json!({"command":["python3","-c",script],"wait_s":0}),
+                &task,
+            )
+            .await
+            .unwrap();
+        let args = serde_json::json!({"job_id":job["job_id"]});
+        let observed = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let status = state
+                    .dispatch_job_tool(Some(&run), "chariox.jobs.status", &args, &task)
+                    .await
+                    .unwrap();
+                assert!(
+                    status["result"].is_null(),
+                    "job finished before publishing live output"
+                );
+                if let Some(tail) = status["output_tail"]
+                    .as_str()
+                    .filter(|tail| tail.ends_with(last_line))
+                {
+                    break tail.to_owned();
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await;
+        state
+            .dispatch_job_tool(Some(&run), "chariox.jobs.cancel", &args, &task)
+            .await
+            .unwrap();
+        let observed = observed.expect("running job did not publish a non-empty output tail");
+        assert!(
+            observed == expected,
+            "expected {} bytes of exact output, got {} bytes",
+            expected.len(),
+            observed.len()
+        );
+    }
 }
 
 #[tokio::test]

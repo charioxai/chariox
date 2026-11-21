@@ -9,7 +9,7 @@ fn kernel_trash_1012_snapshot_and_hash() {
     let bytes = include_bytes!("kernel-trash-1012.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "2061cbf2147716223191c2bb854dbc988f44961c7c5bbc513f08d0a4946ba079"
+        "8f62c9365b64b78f8c7487b5f70a754ca7a5b0b6adb22c04b94c78b0d09e9598"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(fixture["local"], LOCAL_DAEMON_PROTOCOL_VERSION);
