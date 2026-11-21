@@ -1128,6 +1128,9 @@ pub(crate) fn apply_managed_provider_isolation(
         launch.pty_env_remove.dedup();
         let mut shared = request.skill_cache_roots.clone();
         if let Some((cli, socket)) = agent_cli(request) {
+            if let Some(path) = agent_cli_search_path(&cli, &launch) {
+                launch.pty_env.insert("PATH".into(), path);
+            }
             launch
                 .pty_env_remove
                 .retain(|name| name != "CHARIOX_CLI" && name != "CHARIOX_DAEMON_SOCKET");
@@ -1374,6 +1377,9 @@ pub(crate) fn apply_managed_provider_isolation(
         append_managed_namespace_environment(&mut args, request);
         if let Some((cli, socket)) = agent_cli(request) {
             append_read_only_bind(&mut args, &cli, &cli, &mut created_directories);
+            if let Some(path) = agent_cli_search_path(&cli, &launch) {
+                args.extend(["--setenv".into(), "PATH".into(), path]);
+            }
             append_read_only_bind(
                 &mut args,
                 socket,
@@ -1414,6 +1420,25 @@ pub(crate) fn apply_managed_provider_isolation(
         launch.process_label = format!("{}:managed-isolated", launch.process_label);
         Ok(launch)
     }
+}
+
+fn agent_cli_search_path(cli: &Path, launch: &ProviderLaunchResult) -> Option<String> {
+    // A differently named developer override is invoked using CHARIOX_CLI.
+    if cli.file_name()? != "chariox" {
+        return None;
+    }
+    let path = launch
+        .pty_env
+        .get("PATH")
+        .map(std::ffi::OsString::from)
+        .or_else(|| std::env::var_os("PATH"))
+        .unwrap_or_default();
+    let bin = cli.parent()?;
+    let inherited = std::env::split_paths(&path).filter(|dir| dir != bin);
+    std::env::join_paths(std::iter::once(bin.to_owned()).chain(inherited))
+        .ok()?
+        .into_string()
+        .ok()
 }
 
 fn agent_cli(request: &LaunchProviderRequest) -> Option<(PathBuf, &Path)> {
