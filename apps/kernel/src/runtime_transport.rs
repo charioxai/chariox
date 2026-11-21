@@ -1311,9 +1311,15 @@ async fn record_connection_subscription_heartbeat(
 /// echoes that id so the client can reject the pending request instead of
 /// waiting for its own timeout.
 fn incoming_frame_decode_error(payload: &[u8], error: &serde_json::Error) -> KernelOutgoingFrame {
-    let request_id = serde_json::from_slice::<Value>(payload)
-        .ok()
+    let frame = serde_json::from_slice::<Value>(payload).ok();
+    let request_id = frame
+        .as_ref()
         .and_then(|value| value.get("request_id")?.as_str().map(str::to_owned));
+    let body = frame.as_ref().and_then(|value| {
+        (value.get("type")?.as_str()? == "request")
+            .then(|| value.get("request"))
+            .flatten()
+    });
     let (request_id, code, message) = match request_id {
         Some(request_id) => (
             request_id,
@@ -1321,6 +1327,7 @@ fn incoming_frame_decode_error(payload: &[u8], error: &serde_json::Error) -> Ker
             crate::transport::request_decode_error::message(
                 crate::transport::request_decode_error::DECODE_PREFIX,
                 error,
+                body,
             ),
         ),
         None => (
@@ -1329,6 +1336,7 @@ fn incoming_frame_decode_error(payload: &[u8], error: &serde_json::Error) -> Ker
             crate::transport::request_decode_error::message(
                 "invalid kernel transport payload",
                 error,
+                None,
             ),
         ),
     };
