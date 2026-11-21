@@ -324,3 +324,21 @@ test("PC3 Setup offers the vendor update for an old install and leaves it in pla
   assert.deepEqual(await readFile(old), before)
   assert.ok(!h.requests.includes("/claude.tgz"))
 })
+
+test("PC2 Setup detects a pnpm provider install even when its bin directory is absent from PATH", async t => {
+  const h = await providerHarness(t)
+  const codex = join(h.home, ".local/share/pnpm/codex")
+  await h.writeExecutable(codex, "2.1.2")
+  await installLocal(h.options)
+  assert.ok((await readFile(h.unit, "utf8")).includes("CHARIOX_CODEX_BIN=" + codex))
+  assert.ok(!h.requests.includes("/codex.tgz"))
+})
+
+test("PC1 Setup refuses to select a managed Codex missing its bundled helpers", async t => {
+  const h = await providerHarness(t)
+  const codex = join(h.providerRoot, "codex", h.paths.codex[0])
+  await h.writeExecutable(codex, "2.1.2")
+  await assert.rejects(installLocal(h.options), /Codex CLI has an incomplete install/)
+  await assert.rejects(lstat(h.unit), { code: "ENOENT" })
+  assert.ok(!h.requests.includes("/codex.tgz"))
+})

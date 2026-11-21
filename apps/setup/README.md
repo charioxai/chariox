@@ -118,9 +118,9 @@ Prepare the Linux x86_64 `bin/` tree from the release commit with the standalone
 [`release-bundle.yml`](../../.github/workflows/release-bundle.yml), including the
 Ubuntu 22.04 build for the supported glibc baseline.
 
-Miguel runs this once from the same release checkout on his signing machine,
-with Bun, GitHub CLI access to the public repository, the approved public pin,
-and his user-only Ed25519 PEM:
+Run this from the release checkout on the signing machine. It requires Bun,
+GitHub CLI access to the public repository, the approved public pin, and the
+release Ed25519 PEM:
 
 ```sh
 ./scripts/publish-linux-setup.mjs --version "$VERSION" \
@@ -133,8 +133,9 @@ Linux bundle and standalone Setup, then uploads the six assets in one GitHub
 release. It prints the versioned HTTPS installer URL. A pre-existing tag must
 point at the release checkout. The signing key stays on the signing machine.
 
-Set Cloud's `CHARIOX_SETUP_INSTALL_URL` to the printed URL after the release is
-public. The published Linux installer with no arguments starts the device-code
+For staging, use a prerelease version and pass `--control-plane-url` with the
+staging HTTPS origin. After confirming the printed URL works without GitHub
+credentials, set Cloud's `CHARIOX_SETUP_INSTALL_URL` to that URL. The published Linux installer with no arguments starts the device-code
 approval flow:
 
 ```sh

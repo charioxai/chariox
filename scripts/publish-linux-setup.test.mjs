@@ -9,7 +9,7 @@ import test from "node:test"
 import { PLATFORMS, verifyBundle } from "./release-bundle.mjs"
 
 const root = fileURLToPath(new URL("../", import.meta.url))
-test("one owner command publishes the verified, versioned Linux Setup and signed bundle without macOS", async t => {
+test("one signing command publishes the verified, versioned Linux Setup and signed bundle without macOS", async t => {
   const scratch = await mkdtemp(join(tmpdir(), "publish-linux-setup-"))
   t.after(() => rm(scratch, { recursive: true, force: true }))
   const { privateKey, publicKey } = generateKeyPairSync("ed25519")
@@ -40,29 +40,32 @@ if [ "$1" = ls-remote ]; then
 fi
 exec "${git}" "$@"
 `, { mode: 0o755 })
-  const argsForPublish = ["scripts/publish-linux-setup.mjs", "--version", "0.7.1",
-    "--public-key", pin, "--signing-key", pem, "--executables", executables]
+  const argsForPublish = ["scripts/publish-linux-setup.mjs", "--version", "0.7.1-staging.1",
+    "--public-key", pin, "--signing-key", pem, "--executables", executables,
+    "--control-plane-url", "https://setup-validation.example.test"]
   const env = { ...process.env, PATH: bin + ":" + process.env.PATH, PUBLISHED: published, SETUP_FIXTURE_TAGS: "" }
   assert.throws(() => execFileSync(process.execPath, argsForPublish, {
-    cwd: root, env: { ...env, SETUP_FIXTURE_TAGS: "0".repeat(40) + "\trefs/tags/v0.7.1\n" },
+    cwd: root, env: { ...env, SETUP_FIXTURE_TAGS: "0".repeat(40) + "\trefs/tags/v0.7.1-staging.1\n" },
     stdio: ["ignore", "pipe", "pipe"], timeout: 10_000,
-  }), /tag v0\.7\.1 belongs to a different commit/)
+  }), /tag v0\.7\.1-staging\.1 belongs to a different commit/)
   assert.deepEqual(await readdir(published), [])
   execFileSync(process.execPath, argsForPublish, { cwd: root, env, timeout: 120_000 })
-  const name = "chariox-0.7.1-linux-x64", setup = "chariox-setup-0.7.1-linux-x64"
+  const name = "chariox-0.7.1-staging.1-linux-x64", setup = "chariox-setup-0.7.1-staging.1-linux-x64"
   assert.deepEqual((await readdir(published)).sort(), [
     "args", "install.sh", setup, setup + ".sig", name + ".manifest.json", name + ".manifest.sig", name + ".tar.gz",
   ].sort())
   const args = await readFile(join(published, "args"), "utf8")
-  assert.match(args, /v0\.7\.1/)
+  assert.match(args, /v0\.7\.1-staging\.1/)
+  assert.ok(args.split("\n").includes("--prerelease"))
   const bytes = await readFile(join(published, setup)), sig = await readFile(join(published, setup + ".sig"), "utf8")
+  assert.ok(bytes.includes(Buffer.from("https://setup-validation.example.test")))
   assert.match(sig, /^[a-f0-9]{128}$/)
   assert.ok(verify(null, bytes, publicKey, Buffer.from(sig, "hex")))
   const bootstrap = await readFile(join(published, "install.sh"), "utf8")
   assert.ok(bootstrap.includes(pin))
   assert.ok(bootstrap.includes("https://github.com/charioxai/chariox/releases/download"))
   assert.match(bootstrap, /Signed macOS Setup is not available/)
-  assert.match(bootstrap, /version='0\.7\.1'/)
+  assert.match(bootstrap, /version='0\.7\.1-staging\.1'/)
   execFileSync("tar", ["-xzf", join(published, name + ".tar.gz"), "-C", published])
   const receipt = await verifyBundle(join(published, name), pin)
   assert.equal(receipt.platform, "linux-x64")
