@@ -73,6 +73,158 @@ impl DaemonApp {
         Ok(provider_run_id)
     }
 
+    /// The same admission as the configured account's own check, except that a
+    /// refusal a configured substitute can answer admits the turn: its launch
+    /// runs on that substitute.
+    pub(crate) fn require_agent_admitted(
+        &self,
+        owner_user_id: &str,
+        agent: &AgentInstance,
+        operation: &'static str,
+    ) -> Result<(), DaemonError> {
+        match self.provider_account_profiles.require_agent_authenticated(
+            owner_user_id,
+            agent,
+            operation,
+        ) {
+            Err(refusal)
+                if crate::substitute_admission::substitute_can_answer(&refusal)
+                    && agent.remote_execution().is_none()
+                    && crate::substitute_admission::first_usable_substitute(
+                        &self.provider_account_profiles,
+                        owner_user_id,
+                        &self.config.daemon_id,
+                        agent,
+                        &[],
+                    )?
+                    .index
+                    .is_some() =>
+            {
+                Ok(())
+            }
+            admitted => admitted,
+        }
+    }
+
+    /// Runs `launch` for the turn `turn_prompt_id` (the agent's active turn
+    /// when absent). When the agent's configured account is refused for a
+    /// reason a substitute can answer, the launch uses the first substitute
+    /// that can run, exactly as a rerun after a failed attempt does.
+    pub(crate) fn with_admission_substitute<T>(
+        &mut self,
+        session_id: &str,
+        agent_id: &str,
+        turn_prompt_id: Option<&str>,
+        launch: impl FnOnce(&mut Self) -> Result<T, DaemonError>,
+    ) -> Result<T, DaemonError> {
+        let engaged = self.engage_admission_substitute(session_id, agent_id, turn_prompt_id)?;
+        let result = launch(self);
+        if engaged {
+            self.turn_substitute_launch = None;
+        }
+        result
+    }
+
+    fn engage_admission_substitute(
+        &mut self,
+        session_id: &str,
+        agent_id: &str,
+        turn_prompt_id: Option<&str>,
+    ) -> Result<bool, DaemonError> {
+        if self
+            .turn_substitute_launch
+            .as_ref()
+            .is_some_and(|launch| launch.agent_id == agent_id)
+        {
+            return Ok(false);
+        }
+        let agent = self.agents.get_agent(agent_id)?;
+        if agent.substitutes().is_empty() || agent.remote_execution().is_some() {
+            return Ok(false);
+        }
+        let owner = self.provider_account_authority_owner_for_agent(&agent)?;
+        let refusal = match self.provider_account_profiles.require_agent_authenticated(
+            &owner,
+            &agent,
+            "admit turn",
+        ) {
+            Ok(()) => return Ok(false),
+            Err(refusal) => refusal,
+        };
+        if !crate::substitute_admission::substitute_can_answer(&refusal) {
+            return Ok(false);
+        }
+        let turn_prompt_id = match turn_prompt_id {
+            Some(id) => id.to_string(),
+            None => match self.prompt_owner_active_prompt_for_agent(session_id, agent_id)? {
+                Some(prompt) if !prompt.is_external() => prompt.id().to_string(),
+                _ => return Ok(false),
+            },
+        };
+        // A live process of the configured profile that holds no turn is idle:
+        // retire it so the substitute's process serves this turn.
+        if let Some(run) = self.providers.get_run_for_agent(session_id, agent_id) {
+            if run.turn_substitute().is_none()
+                && self.provider_run_has_active_prompt(session_id, &run)?
+            {
+                return Ok(false);
+            }
+        }
+        let crate::substitute_admission::SubstituteChoice { index, skipped } =
+            crate::substitute_admission::first_usable_substitute(
+                &self.provider_account_profiles,
+                &owner,
+                &self.config.daemon_id,
+                &agent,
+                &[],
+            )?;
+        for (skipped_index, reason) in skipped {
+            self.record_notice(
+                session_id,
+                None,
+                self.attachments().list_session_attachment_ids(session_id),
+                format!(
+                    "Skipping substitute {} for agent `{agent_id}`: {reason}.",
+                    skipped_index + 1
+                ),
+            );
+        }
+        let Some(index) = index else {
+            return Ok(false);
+        };
+        let profile = agent.substitutes()[index].clone();
+        if self
+            .providers
+            .get_run_for_agent(session_id, agent_id)
+            .is_some_and(|run| run.turn_substitute().is_none())
+        {
+            self.end_agent_provider_run(session_id, agent_id)?;
+        }
+        let label = if profile.model.trim().is_empty() || profile.model == "default" {
+            profile.provider.clone()
+        } else {
+            profile.model.clone()
+        };
+        self.record_notice(
+            session_id,
+            None,
+            self.attachments().list_session_attachment_ids(session_id),
+            format!(
+                "This turn runs on {label} because {}.",
+                refusal.to_string().trim_end_matches('.')
+            ),
+        );
+        self.turn_substitute_launch = Some(TurnSubstituteLaunch {
+            agent_id: agent_id.to_string(),
+            turn: TurnSubstitute {
+                prompt_id: turn_prompt_id,
+                tried: vec![profile.clone()],
+            },
+            profile,
+        });
+        Ok(true)
+    }
+
     /// The profile a provider launch for `agent` uses, with the turn it reruns
     /// when that launch is a substitute's.
     pub(crate) fn agent_launch_profile(

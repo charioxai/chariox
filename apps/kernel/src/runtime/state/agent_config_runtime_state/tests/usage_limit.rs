@@ -492,6 +492,56 @@ async fn tick(runtime: &KernelRuntimeState, now: u64) {
     }
 }
 
+// S7/S8: when the account comes back before its named time, the armed stops on
+// it resume by themselves, and the Room hears of it once.
+#[tokio::test]
+async fn an_early_reset_resumes_the_armed_stops_on_the_account_and_tells_the_room_once() {
+    let team = team(config(UsageLimitResume::Automatic), 1).await;
+    team.hit_the_limit(0).await;
+    let stop = team.stop(0).expect("the limit stops the agent");
+    let UsageLimitStopState::Armed { at_ms } = stop.state else {
+        panic!("the stop is armed: {stop:?}");
+    };
+    let registry = &team.rt().owned.provider_account_profiles;
+    let now = crate::session::unix_epoch_ms();
+    assert!(at_ms > now, "the provider names a reset still ahead");
+    crate::test_support::authenticate_provider_account(registry, OWNER, "claude", "default")
+        .unwrap();
+    registry
+        .mark_usage_refused(OWNER, "claude", "default", Some(at_ms))
+        .unwrap();
+    team.rt().tick_provider_usage_resets(now).await;
+    assert!(
+        matches!(team.stop(0).unwrap().state, UsageLimitStopState::Armed { at_ms: armed } if armed == at_ms),
+        "a blocked account moves nothing"
+    );
+
+    crate::test_support::restore_provider_account(registry, OWNER, "claude", "default").unwrap();
+    team.rt().tick_provider_usage_resets(now + 11_000).await;
+    team.rt().tick_provider_usage_resets(now + 22_000).await;
+
+    assert_eq!(
+        team.stop(0).unwrap().state,
+        UsageLimitStopState::Armed {
+            at_ms: now + 11_000
+        },
+        "the resume is due now"
+    );
+    let notices = team
+        .rt()
+        .owned
+        .terminal_stream
+        .notice_records()
+        .into_iter()
+        .map(|notice| notice.message)
+        .collect::<Vec<_>>();
+    let told = notices
+        .iter()
+        .filter(|notice| notice.contains("reset: 1 item resumes by itself"))
+        .count();
+    assert_eq!(told, 1, "{notices:?}");
+}
+
 fn count_resuming(team: &Team) -> usize {
     (0..team.lanes.len())
         .filter(|lane| {
