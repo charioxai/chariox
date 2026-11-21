@@ -473,10 +473,11 @@ impl RoomListRelayClient {
         client
     }
 
-    async fn inventory(&mut self) -> serde_json::Value {
+    async fn inventory(&mut self) -> (serde_json::Value, usize) {
         tokio::time::timeout(Duration::from_secs(5), async {
             loop {
                 let envelope = self.next_envelope().await;
+                let wire_bytes = serde_json::to_vec(&envelope).unwrap().len();
                 let RelayEnvelope::ClientEvent {
                     encrypted_event, ..
                 } = envelope
@@ -491,7 +492,7 @@ impl RoomListRelayClient {
                 let inventory: serde_json::Value =
                     serde_json::from_slice(&event.plaintext).expect("event should be JSON");
                 if inventory["event"] == "room_list_rows_changed" {
-                    return inventory;
+                    return (inventory, wire_bytes);
                 }
             }
         })
@@ -560,13 +561,15 @@ async fn relay_room_list_subscription_sends_baseline_after_reload_and_observes_m
     config.relay_heartbeat_ms = 50;
     let worktree = crate::test_support::TestWorktree::new("workspace-relay-inventory");
     let mut app = DaemonApp::bootstrap(config.clone()).expect("daemon should bootstrap");
-    // Build an inventory large enough to require bounded frames on any host.
-    for index in 0..80 {
+    // Encryption expands the wire envelope beyond one frame while the state event
+    // and its mutation fit the kernel's event budget.
+    const FIXTURE_ROOM_COUNT: usize = 6;
+    for index in 0..FIXTURE_ROOM_COUNT {
         crate::app::KernelSessionService::new(&mut app)
             .create_session(
                 worktree
                     .session_request()
-                    .with_alias(format!("fixture-room-{index}")),
+                    .with_alias(format!("fixture-room-{index}-{}", "a".repeat(64))),
             )
             .unwrap();
     }
@@ -586,19 +589,23 @@ async fn relay_room_list_subscription_sends_baseline_after_reload_and_observes_m
 
     let url = format!("ws://{}:{}", addr.ip(), addr.port());
     let mut original = RoomListRelayClient::subscribe(&url, &config, "room-list").await;
-    let first_inventory = original.inventory().await;
-    assert_eq!(first_inventory["sessions"].as_array().unwrap().len(), 80);
-    assert!(
-        first_inventory.to_string().len() > chariox_relay::frame_transport::CHUNK_BYTES,
-        "the fixture inventory must require bounded delivery"
+    let (first_inventory, first_wire_bytes) = original.inventory().await;
+    assert_eq!(
+        first_inventory["sessions"].as_array().unwrap().len(),
+        FIXTURE_ROOM_COUNT,
     );
 
     let mut reloaded = RoomListRelayClient::subscribe(&url, &config, "room-list-reload").await;
-    let reloaded_inventory = reloaded.inventory().await;
+    let (reloaded_inventory, reloaded_wire_bytes) = reloaded.inventory().await;
+    assert!(
+        first_wire_bytes.min(reloaded_wire_bytes) > chariox_relay::frame_transport::CHUNK_BYTES,
+        "both encrypted baselines must require bounded delivery ({first_wire_bytes} and {reloaded_wire_bytes} bytes)",
+    );
     assert_eq!(
         reloaded_inventory["inventory_version"], first_inventory["inventory_version"],
         "each null-cursor subscriber should receive the same unchanged inventory baseline",
     );
+    assert_eq!(reloaded_inventory["sessions"], first_inventory["sessions"]);
 
     let request = LocalDaemonRequest::CreateSession(
         worktree
@@ -621,7 +628,7 @@ async fn relay_room_list_subscription_sends_baseline_after_reload_and_observes_m
     ));
 
     for client in [&mut original, &mut reloaded] {
-        let inventory = client.inventory().await;
+        let (inventory, _) = client.inventory().await;
         assert!(
             inventory["sessions"]
                 .as_array()
