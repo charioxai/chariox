@@ -82,6 +82,15 @@ async fn enrolled_lease_worker_materializes_selected_project_via_public_context_
     };
 
     init_test_repository(&source_git, "selected.txt", "selected source\n");
+    // Source that only mentions the Git LFS pointer header (as this repository's
+    // own sources do) is not an LFS pointer and must transfer.
+    fs::write(
+        source_git.join("lfs_header_mention.rs"),
+        "const HEADER: &str = \"version https://git-lfs.github.com/spec/v1\";\n",
+    )
+    .expect("header mention file should exist");
+    run_git(&source_git, &["add", "lfs_header_mention.rs"]);
+    run_git(&source_git, &["commit", "-m", "mention the LFS header"]);
     fs::create_dir_all(&source_directory).expect("selected directory should exist");
     fs::write(
         source_directory.join("supporting.txt"),

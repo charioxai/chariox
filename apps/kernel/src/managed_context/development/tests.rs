@@ -556,6 +556,30 @@ fn rejects_duplicate_sources_external_symlinks_submodules_and_lfs() {
 }
 
 #[test]
+fn accepts_repositories_that_only_mention_the_lfs_pointer_header() {
+    let root = test_root("lfs-header-mention");
+    let repository = root.join("repository");
+    init_repository(&repository, "tracked.txt", "base\n");
+    // Source, docs and a small file that merely quote the header, including
+    // one that has it at the start of a line but not at the start of the file.
+    fs::write(
+        repository.join("detector.rs"),
+        "const HEADER: &[u8] = b\"version https://git-lfs.github.com/spec/v1\\n\";\n",
+    )
+    .expect("write source");
+    fs::write(
+        repository.join("NOTES.md"),
+        "A pointer looks like:\n\nversion https://git-lfs.github.com/spec/v1\noid sha256:aaaa\nsize 1\n",
+    )
+    .expect("write notes");
+    git(&repository, &["add", "."]);
+    git(&repository, &["commit", "-m", "mention the header"]);
+    one_repo_export(&root, &repository, "mention").expect("a mention is not an LFS pointer");
+
+    fs::remove_dir_all(root).expect("remove test root");
+}
+
+#[test]
 fn rejects_dirty_symlinks_and_requires_exactly_one_primary() {
     let root = test_root("selection-and-dirty-symlink");
     let repository = root.join("repository");
