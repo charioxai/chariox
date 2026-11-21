@@ -172,6 +172,7 @@ pub(crate) use mcp_proxy::{
     dispatch_provider_mcp_proxy_request, dispatch_provider_mcp_proxy_request_with_environment,
     shutdown_provider_mcp_proxy_session,
 };
+pub(crate) use opencode::OPENCODE_CATALOG_START;
 pub(crate) use opencode::{
     apply_opencode_discovery_environment, ensure_opencode_account_endpoint,
     invalidate_opencode_account_endpoint, isolate_opencode_discovery_configuration,
