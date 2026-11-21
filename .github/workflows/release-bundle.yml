@@ -98,6 +98,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libx11-dev libxext-dev libxdamage-dev libxcomposite-dev libxtst-dev libx264-dev libavcodec-dev libavutil-dev libyuv-dev libwebp-dev
       - name: Build the kernel, relay and helpers
+        env:
+          CHARIOX_RELEASE_VERSION: ${{ env.VERSION }}
         run: |
           # The kernel opens its WASM App worker only beside itself. One cargo invocation builds both, so
           # they share the profile, the feature set and the dependency features (the worker's seccomp filter
@@ -234,6 +236,7 @@ jobs:
             > "$RUNNER_TEMP/macos-signing-receipt.json"
           # Bun's JIT must still run under the hardened runtime.
           test "$("$RUNNER_TEMP/signed/bin/chariox" --version)" = "chariox $VERSION"
+          test "$("$RUNNER_TEMP/signed/bin/chariox-kernel" --version)" = "chariox-kernel $VERSION"
           # The kernel's WASM App worker must still start under the hardened runtime with only allow-jit.
           "$RUNNER_TEMP/signed/bin/chariox-app-wasm-worker" identity | grep -q worker_build
           # MP-07 / MP-11: exercise Setup's JavaScriptCore after signing too.
