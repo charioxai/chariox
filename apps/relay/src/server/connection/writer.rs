@@ -483,6 +483,7 @@ where
     let mut open = true;
     let mut receipts_open = true;
     let mut controls_open = true;
+    let mut bulk_needs_flush = false;
     loop {
         // A receiver too far behind is closed before anything else is written to it.
         if usage.queue.backlog_closed() {
@@ -494,6 +495,7 @@ where
             if !write(&mut writer, message).await || terminal {
                 return "control_write";
             }
+            bulk_needs_flush = false;
         }
         while let Ok((id, offset)) = receipts.try_recv() {
             if !credit.receipt(id, offset, &mut active) {
@@ -528,6 +530,7 @@ where
             if !write(&mut writer, message).await || terminal {
                 return "control_write";
             }
+            bulk_needs_flush = false;
             continue;
         }
         if !chunks {
@@ -686,6 +689,7 @@ where
                         let bulk = transfer.charge_written(end);
                         credit.sent(transfer.id, end as u32, bytes, transfer.small, bulk);
                         let scope = transfer.scope.clone();
+                        let batch = transfer.peer_reply.is_some() && !transfer.small;
                         active.push_back(transfer);
                         if let Some(binary) = binary {
                             usage.sent(&scope, &binary);
@@ -694,9 +698,14 @@ where
                             }
                         }
                         usage.sent(&scope, &message);
-                        if !write(&mut writer, message).await {
+                        if batch {
+                            if writer.feed(message).await.is_err() {
+                                return "write_failed";
+                            }
+                        } else if !write(&mut writer, message).await {
                             return "write_failed";
                         }
+                        bulk_needs_flush = batch;
                         sent = true;
                         break 'passes;
                     }
@@ -713,6 +722,14 @@ where
         if sent {
             tokio::task::yield_now().await;
             continue;
+        }
+        // Peer replies can share the socket's existing write buffer while the
+        // credit window has room. Flush before waiting for a receipt or more work.
+        if bulk_needs_flush {
+            if writer.flush().await.is_err() {
+                return "write_failed";
+            }
+            bulk_needs_flush = false;
         }
         if !open && pending.is_empty() && active.is_empty() && credit.pending.is_empty() {
             return "drained";
@@ -942,6 +959,78 @@ mod tests {
         assert_eq!(queue.queued_bytes(), RECEIVER_BULK_BUDGET);
         assert!(reply.front().is_some(), "the first reply still has a tail");
     }
+
+    #[tokio::test]
+    async fn peer_reply_flushes_multiple_frames_before_waiting_for_receipts() {
+        use std::pin::Pin;
+        use std::task::{Context, Poll};
+
+        struct RecordingSink {
+            buffered: usize,
+            flushes: mpsc::UnboundedSender<usize>,
+        }
+
+        impl Sink<Message> for RecordingSink {
+            type Error = std::convert::Infallible;
+
+            fn poll_ready(
+                self: Pin<&mut Self>,
+                _: &mut Context<'_>,
+            ) -> Poll<Result<(), Self::Error>> {
+                Poll::Ready(Ok(()))
+            }
+
+            fn start_send(mut self: Pin<&mut Self>, message: Message) -> Result<(), Self::Error> {
+                self.buffered += message.len();
+                Ok(())
+            }
+
+            fn poll_flush(
+                mut self: Pin<&mut Self>,
+                _: &mut Context<'_>,
+            ) -> Poll<Result<(), Self::Error>> {
+                let bytes = std::mem::take(&mut self.buffered);
+                let _ = self.flushes.send(bytes);
+                Poll::Ready(Ok(()))
+            }
+
+            fn poll_close(
+                self: Pin<&mut Self>,
+                cx: &mut Context<'_>,
+            ) -> Poll<Result<(), Self::Error>> {
+                self.poll_flush(cx)
+            }
+        }
+
+        let (sender, rx) = RelaySender::channel(4);
+        let reply = "x".repeat(2 * CHUNK_BYTES);
+        sender.try_send_peer_reply(reply.len() + 2, &reply).unwrap();
+        let (_ack_tx, ack_rx) = mpsc::channel(16);
+        let (control_tx, control_rx) = mpsc::channel(1);
+        let (flush_tx, mut flush_rx) = mpsc::unbounded_channel();
+        let task = tokio::spawn(run_writer(
+            RecordingSink {
+                buffered: 0,
+                flushes: flush_tx,
+            },
+            rx,
+            true,
+            true,
+            false,
+            ack_rx,
+            control_rx,
+            WriterUsage::fixture_with_queue(true, sender.queue()),
+        ));
+        let first_flush = tokio::time::timeout(Duration::from_secs(1), flush_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(first_flush > crate::drain_window::MIN_CHUNK_BYTES);
+        assert!(first_flush <= crate::drain_window::START_WINDOW_BYTES);
+        control_tx.send(Message::Close(None)).await.unwrap();
+        assert_eq!(task.await.unwrap(), "control_write");
+    }
+
     // MP-08/MP-10/MP-11: a fully written small event must not consume an
     // assembly lane until its receipt makes a WAN round trip. Only byte credit
     // remains outstanding; all events keep wire order and the window plus small reserve bound.
