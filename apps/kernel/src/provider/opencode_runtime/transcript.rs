@@ -3,7 +3,7 @@
 use crate::extension::RemoteExtensionManifest;
 use crate::provider::opencode_client::OpenCodePart;
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub(super) struct ToolTranscriptUpdate {
     pub(super) id: String,
     pub(super) tool: String,

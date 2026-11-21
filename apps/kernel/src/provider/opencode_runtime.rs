@@ -18,8 +18,6 @@ pub(crate) use state::OpenCodeRuntimeState;
 pub use state::{OpenCodeAssistantCompletion, OpenCodeOutputChunk};
 
 #[cfg(test)]
-use transcript::ToolTranscriptUpdate;
-
 #[cfg(test)]
 pub(crate) use tests::assert_native_non_retryability;
 
@@ -49,7 +47,7 @@ mod tests {
             render_snapshot_output_chunks,
         },
         transcript::render_tool_transcript_update,
-        OpenCodeAssistantCompletion, OpenCodeRuntimeState, ToolTranscriptUpdate,
+        OpenCodeAssistantCompletion, OpenCodeRuntimeState,
     };
 
     pub(crate) fn assert_native_non_retryability() {
@@ -155,19 +153,14 @@ mod tests {
         .unwrap();
         let payload = render_tool_transcript_update(&part, &RemoteExtensionManifest::default());
 
-        let parsed: ToolTranscriptUpdate =
-            serde_json::from_str(&payload).expect("tool payload should deserialize");
-        assert_eq!(parsed.id, "part-1");
-        assert_eq!(parsed.tool, "bash");
-        assert_eq!(parsed.status, "completed");
-        assert_eq!(parsed.started_at_ms, Some(1_000));
-        assert_eq!(parsed.finished_at_ms, Some(13_000));
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../local/api/tests/protocol_shapes/provider-tool-background-lifecycle.json"
+        ))
+        .unwrap();
         assert_eq!(
-            parsed.description.as_deref(),
-            Some("Shows working tree status")
+            serde_json::from_str::<serde_json::Value>(&payload).unwrap(),
+            fixture["opencode_foreground_completed"]
         );
-        assert_eq!(parsed.output.as_deref(), Some("On branch main"));
-        assert_eq!(parsed.input, Some(json!({ "command": "git status" })));
     }
 
     #[test]
