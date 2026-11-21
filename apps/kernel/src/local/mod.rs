@@ -381,7 +381,10 @@ pub use api::{
     MachineAcquisitionPeriod, MachineAcquisitionTerms, MachineAllocationCapability, MachineOption,
 };
 
-pub use api::{ControlPlaneMachineRow, ControlPlaneSavedStateRow};
+pub use api::{
+    AccountKernel, AccountKernelStatus, AccountKernelsRequest, ControlPlaneMachineRow,
+    ControlPlaneSavedStateRow,
+};
 
 pub use api::{
     CreateCredentialVaultRequest, CredentialVaultOrigin, IssueOwnMachineEnrollmentRequest,

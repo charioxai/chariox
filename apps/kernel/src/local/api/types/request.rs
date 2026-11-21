@@ -263,6 +263,7 @@ pub enum LocalDaemonRequest {
     SealCredentialVaultKey(SealCredentialVaultKeyRequest),
     ManageCredentialVault(ManageCredentialVaultRequest),
     PreflightProviderAccountPortability(PreflightProviderAccountPortabilityRequest),
+    CloudAccountKernels(AccountKernelsRequest),
     ControlPlane(ControlPlaneRequest),
     ObserveKernelRuntimeIdentity(ObserveKernelRuntimeIdentityRequest),
     StartManagedContextTransfer(Box<StartManagedContextTransferRequest>),

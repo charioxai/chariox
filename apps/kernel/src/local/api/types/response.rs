@@ -3,6 +3,8 @@ use super::*;
 #[rustfmt::skip]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum LocalDaemonResponse {
+    AccountKernelsListed { kernels: Vec<AccountKernel> },
+    AccountKernelUnlinked { target_id: String },
     ControlPlane { result: ControlPlaneResponse },
     SessionProcessesStopped { result: crate::runtime::process_resources::ProcessControlResult },
     SessionProcessStartedNow { process_id: String },
