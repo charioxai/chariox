@@ -1,21 +1,22 @@
 use std::collections::BTreeSet;
 use std::io::Read;
 use std::process::Child;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 #[derive(Default)]
-struct Diagnostic {
-    bytes: u64,
+pub(super) struct Diagnostic {
+    pub bytes: u64,
+    prefix: Vec<u8>,
     classes: BTreeSet<&'static str>,
     finished: bool,
 }
 
 // Provider startup output can contain account values, config, URLs or paths.
-// Only closed diagnostic classes and a byte count leave this private reader.
+// Only closed classes, a byte count and exact known diagnostic lines leave this reader.
 pub(super) struct ProviderStartupDiagnostic(Arc<Mutex<Diagnostic>>);
 
 impl ProviderStartupDiagnostic {
-    pub(super) fn capture(child: &mut Child) -> Self {
+    pub(super) fn capture(child: &mut Child, retain_prefix: bool) -> Self {
         let diagnostic = Arc::new(Mutex::new(Diagnostic::default()));
         if let Some(mut stderr) = child.stderr.take() {
             let captured = diagnostic.clone();
@@ -32,6 +33,11 @@ impl ProviderStartupDiagnostic {
                         if let Ok(mut diagnostic) = captured.lock() {
                             diagnostic.bytes = diagnostic.bytes.saturating_add(count as u64);
                             classify(&tail, &mut diagnostic.classes);
+                            if retain_prefix {
+                                const PREFIX_LIMIT: usize = 2048;
+                                let take = count.min(PREFIX_LIMIT - diagnostic.prefix.len());
+                                diagnostic.prefix.extend_from_slice(&chunk[..take]);
+                            }
                         }
                         // Retain overlap for split phrases, never whole output.
                         if tail.len() > 256 {
@@ -53,6 +59,13 @@ impl ProviderStartupDiagnostic {
     }
 
     pub(super) fn summary(&self) -> String {
+        self.read().map_or_else(
+            || "startup diagnostic unavailable".to_string(),
+            |diagnostic| format_summary(&diagnostic),
+        )
+    }
+
+    pub(super) fn read(&self) -> Option<MutexGuard<'_, Diagnostic>> {
         // Called only after early exit or owned timeout cleanup. Give the
         // reader a bounded chance to consume final bytes without joining a
         // potentially inherited pipe writer.
@@ -68,10 +81,32 @@ impl ProviderStartupDiagnostic {
             }
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
-        let Ok(diagnostic) = self.0.lock() else {
-            return "startup diagnostic unavailable".to_string();
-        };
-        format_summary(&diagnostic)
+        self.0.lock().ok()
+    }
+}
+
+impl Diagnostic {
+    pub(super) fn addresses_conflict(&self) -> bool {
+        self.classes.contains("address_in_use")
+    }
+
+    pub(super) fn opencode_stderr_excerpt(&self) -> String {
+        String::from_utf8_lossy(&self.prefix)
+            .split_inclusive('\n')
+            .filter_map(
+                |line| match line.strip_suffix('\n')?.trim_end_matches('\r') {
+                    "\x1b[91m\x1b[1mError: \x1b[0mUnexpected error" => {
+                        Some("Error: Unexpected error")
+                    }
+                    line
+                    @ ("Error: Unexpected error" | "ServeError" | "Address already in use") => {
+                        Some(line)
+                    }
+                    _ => None,
+                },
+            )
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 }
 
@@ -170,7 +205,7 @@ mod tests {
             .stderr(Stdio::piped())
             .spawn()
             .unwrap();
-        let diagnostic = ProviderStartupDiagnostic::capture(&mut child);
+        let diagnostic = ProviderStartupDiagnostic::capture(&mut child, false);
         assert!(child.wait().unwrap().success());
         let deadline = Instant::now() + Duration::from_secs(2);
         while diagnostic.0.lock().unwrap().bytes < 100000 && Instant::now() < deadline {
@@ -195,6 +230,18 @@ mod tests {
         );
         assert!(summary.contains("on by default"));
         assert!(summary.contains("recreate the slice"));
+    }
+
+    #[test]
+    fn opencode_excerpt_keeps_only_complete_known_diagnostic_lines() {
+        let diagnostic = Diagnostic {
+            prefix: b"\x1b[91m\x1b[1mError: \x1b[0mUnexpected error\n\nServeError\nclient_secret=private-value\nServeError with private-value\n".to_vec(),
+            ..Diagnostic::default()
+        };
+        assert_eq!(
+            diagnostic.opencode_stderr_excerpt(),
+            "Error: Unexpected error\nServeError"
+        );
     }
 
     #[test]

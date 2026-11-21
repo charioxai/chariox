@@ -11,6 +11,7 @@ use crate::runtime::{child_shutdown, stall_watchdog};
 pub(super) struct ManagedAccountEndpoint {
     pub endpoint: String,
     pub child: Child,
+    pub opencode_startup: Option<super::opencode::OpenCodeCatalogStartup>,
     #[cfg(target_os = "linux")]
     processes: crate::runtime::owned_process_signals::OwnedProcessHandles,
     #[cfg(target_os = "linux")]
@@ -37,6 +38,7 @@ impl ManagedAccountEndpoint {
         Self {
             endpoint,
             child,
+            opencode_startup: None,
             #[cfg(target_os = "linux")]
             processes: Default::default(),
             #[cfg(target_os = "linux")]
@@ -285,8 +287,11 @@ fn ensure(
         stop(name, endpoint, unreaped)?;
     }
     let mut endpoint = launch()?;
-    let diagnostic =
-        super::startup_diagnostic::ProviderStartupDiagnostic::capture(&mut endpoint.child);
+    let diagnostic = super::startup_diagnostic::ProviderStartupDiagnostic::capture(
+        &mut endpoint.child,
+        endpoint.opencode_startup.is_some(),
+    );
+    let mut startup_exit = None;
     let deadline = Instant::now() + timeout;
     let failure = loop {
         if let Err(error) = endpoint.pin_processes() {
@@ -300,10 +305,11 @@ fn ensure(
         }
         match endpoint.child.try_wait() {
             Ok(Some(status)) => {
+                startup_exit = Some(status);
                 break format!(
                     "helper exited during startup: {status}; {}",
                     diagnostic.summary()
-                )
+                );
             }
             Err(error) => break format!("helper startup poll failed: {error}"),
             Ok(None) => {}
@@ -318,8 +324,12 @@ fn ensure(
     if let Err(error) = endpoint.pin_processes() {
         report(name, "observe_failed_startup", &error.to_string());
     }
+    let opencode_startup = endpoint.opencode_startup.take();
     if let Err(error) = stop(name, endpoint, unreaped) {
         report(name, "startup_cleanup", &error.to_string());
+    }
+    if let Some(opencode_startup) = opencode_startup {
+        return Err(opencode_startup.failure(startup_exit, &diagnostic));
     }
     Err(DaemonError::LocalTransport {
         operation: "ensure_account_endpoint",

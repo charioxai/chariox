@@ -1,12 +1,92 @@
 use std::collections::BTreeMap;
-use std::process::Stdio;
+use std::net::{Ipv4Addr, SocketAddr, TcpStream};
+use std::process::{ExitStatus, Stdio};
 use std::sync::OnceLock;
 use std::time::Duration;
 
 use super::ports::resolve_opencode_catalog_port;
 use crate::error::DaemonError;
 use crate::provider::account_endpoints::{AccountEndpoints, ManagedAccountEndpoint};
+use crate::provider::startup_diagnostic::ProviderStartupDiagnostic;
 use crate::provider::OpenCodeClient;
+
+pub(crate) const OPENCODE_CATALOG_START: &str = "start OpenCode catalog";
+
+pub(in crate::provider) struct OpenCodeCatalogStartup {
+    executable: String,
+    port: u16,
+}
+
+impl OpenCodeCatalogStartup {
+    pub(in crate::provider) fn failure(
+        self,
+        status: Option<ExitStatus>,
+        diagnostic: &ProviderStartupDiagnostic,
+    ) -> DaemonError {
+        let (bytes, stderr, address_in_use) = diagnostic.read().map_or_else(
+            || (0, String::new(), false),
+            |output| {
+                (
+                    output.bytes,
+                    output.opencode_stderr_excerpt(),
+                    output.addresses_conflict(),
+                )
+            },
+        );
+        let address = SocketAddr::from((Ipv4Addr::LOCALHOST, self.port));
+        // OpenCode can report a generic ServeError for a failed bind.
+        let address_in_use = address_in_use
+            || (stderr.lines().any(|line| line == "ServeError")
+                && TcpStream::connect_timeout(&address, Duration::from_millis(100)).is_ok());
+        crate::logging::warn_with_fields(
+            "opencode.catalog",
+            "OpenCode catalog helper failed to start",
+            serde_json::json!({
+                "provider": "opencode",
+                "version": self.version(),
+                "port": self.port,
+                "exit_status": status.map(|status| status.to_string()),
+                "diagnostic_class": if address_in_use { "address_in_use" } else { "unclassified" },
+                "stderr_bytes": bytes,
+                "stderr_excerpt": stderr,
+            }),
+        );
+        let message = if address_in_use {
+            format!(
+                "Another program is using port {}. Retry to start OpenCode on a free port.",
+                self.port
+            )
+        } else {
+            "OpenCode could not start its model catalog. Retry starting OpenCode.".into()
+        };
+        DaemonError::LocalTransport {
+            operation: OPENCODE_CATALOG_START,
+            message,
+        }
+    }
+
+    fn version(&self) -> Option<String> {
+        let command = crate::provider::managed_isolated_utility_command(
+            self.executable.clone(),
+            vec!["--version".into()],
+            BTreeMap::new(),
+            None,
+            "opencode:version",
+        )
+        .ok()?;
+        let output =
+            crate::runtime::bounded_process::capture::capture(command, Duration::from_secs(2))
+                .ok()?;
+        let version = std::str::from_utf8(&output.stdout).ok()?.trim();
+        (output.status.success()
+            && version.len() <= 32
+            && version.split('.').count() == 3
+            && version
+                .split('.')
+                .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit())))
+        .then(|| version.to_string())
+    }
+}
 
 static OPENCODE_ACCOUNT_ENDPOINTS: OnceLock<AccountEndpoints> = OnceLock::new();
 
@@ -39,16 +119,24 @@ pub(crate) fn ensure_opencode_account_endpoint(
                 )
                 .with_owner_user_id(&owner_user_id)
                 .with_provider_account_env(environment);
-                let launch = crate::provider::apply_managed_provider_isolation(
-                    super::plan_opencode_launch(Some(&request))?,
-                    &request,
-                )?;
+                let launch = super::plan_opencode_launch(Some(&request))?;
                 let endpoint = launch.structured_endpoint.clone().ok_or_else(|| {
                     DaemonError::LocalTransport {
                         operation: "ensure_opencode_account_endpoint",
                         message: "OpenCode account launch did not expose an endpoint".to_string(),
                     }
                 })?;
+                let startup = OpenCodeCatalogStartup {
+                    executable: launch
+                        .pty_program
+                        .clone()
+                        .expect("managed OpenCode executable"),
+                    port: endpoint
+                        .rsplit_once(':')
+                        .and_then(|(_, port)| port.parse().ok())
+                        .expect("managed OpenCode port"),
+                };
+                let launch = crate::provider::apply_managed_provider_isolation(launch, &request)?;
                 let mut command = crate::provider::command_from_provider_launch(launch)?;
                 command
                     .stdin(Stdio::null())
@@ -76,7 +164,9 @@ pub(crate) fn ensure_opencode_account_endpoint(
                         ),
                     }
                 })?;
-                Ok(ManagedAccountEndpoint::new(endpoint, child))
+                let mut endpoint = ManagedAccountEndpoint::new(endpoint, child);
+                endpoint.opencode_startup = Some(startup);
+                Ok(endpoint)
             },
         )
 }
