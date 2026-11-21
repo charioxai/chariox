@@ -20,6 +20,50 @@ impl DaemonApp {
         Ok(())
     }
 
+    /// Renewal changes only the relay credentials of the enrollment that requested them.
+    /// Re-enrolling Rooms here would make a heartbeat wait on unrelated durable work.
+    pub(crate) fn install_cloud_relay_renewal(
+        &mut self,
+        previous: &crate::config::DaemonConfig,
+        token: String,
+        expires_at_ms: u64,
+    ) -> Result<(), DaemonError> {
+        let mut next = self.config.clone();
+        let config_changed = next.relay_url != previous.relay_url
+            || next.relay_token != previous.relay_token
+            || next.relay_public_key != previous.relay_public_key
+            || next.host_machine_id != previous.host_machine_id
+            || next.cloud_relay != previous.cloud_relay;
+        if config_changed {
+            return Err(DaemonError::LocalTransport {
+                operation: "install renewed relay token",
+                message: "relay configuration changed during renewal; retry with the current configuration".into(),
+            });
+        }
+        if expires_at_ms <= crate::session::unix_epoch_ms() {
+            return Err(DaemonError::LocalTransport {
+                operation: "install renewed relay token",
+                message: "renewed relay token expired before installation; request another token"
+                    .into(),
+            });
+        }
+        let profile = next
+            .cloud_relay
+            .as_mut()
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "install renewed relay token",
+                message: "Cloud enrollment is unavailable; link this kernel to Cloud again".into(),
+            })?;
+        profile.token_expires_at_ms = Some(expires_at_ms);
+        next.relay_url = Some(profile.relay_url.clone());
+        next.relay_token = Some(token);
+        next.validate()?;
+        next.persist_relay_config()?;
+        self.config = next;
+        self.config_projection.update(self.config.clone());
+        Ok(())
+    }
+
     pub(crate) fn configure_managed_slice_relay(
         &mut self,
         relay_url: String,

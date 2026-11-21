@@ -21,13 +21,25 @@ pub(super) fn initialize(db: &Connection) -> rusqlite::Result<()> {
       subscription_id TEXT PRIMARY KEY, options_json TEXT NOT NULL DEFAULT '{}',
       once INTEGER NOT NULL DEFAULT 0, paused INTEGER NOT NULL DEFAULT 0,
       fired INTEGER NOT NULL DEFAULT 0, last_fired_at_ms INTEGER,
-      loop_stopped_at_ms INTEGER);
+      loop_stopped_at_ms INTEGER, parked_reason TEXT);
     CREATE TABLE IF NOT EXISTS notification_trace (
       subscription_id TEXT NOT NULL, occurrence_id TEXT NOT NULL, at_ms INTEGER NOT NULL,
       outcome TEXT NOT NULL, title TEXT NOT NULL, detail TEXT, turn_agent_id TEXT,
       turn_prompt_id TEXT,
       PRIMARY KEY(subscription_id, occurrence_id));",
-    )
+    )?;
+    let has_parked_reason = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('notification_subscription_settings') WHERE name='parked_reason')",
+        [],
+        |row| row.get::<_, bool>(0),
+    )?;
+    if !has_parked_reason {
+        db.execute(
+            "ALTER TABLE notification_subscription_settings ADD COLUMN parked_reason TEXT",
+            [],
+        )?;
+    }
+    Ok(())
 }
 
 /// The picked values, checked against what the source declares. Each refusal lists the
@@ -113,6 +125,7 @@ pub(super) fn save_in(
 pub(super) fn carry_in(tx: &Transaction<'_>, from: &str, to: &str) -> Result<(), DaemonError> {
     tx.execute(
         "INSERT OR REPLACE INTO notification_subscription_settings
+         (subscription_id, options_json, once, paused, fired, last_fired_at_ms, loop_stopped_at_ms)
          SELECT ?2, options_json, once, paused, fired, last_fired_at_ms, loop_stopped_at_ms
          FROM notification_subscription_settings WHERE subscription_id=?1",
         params![from, to],
@@ -191,6 +204,11 @@ pub(super) fn set_paused_in(
     subscription_id: &str,
     paused: bool,
 ) -> Result<(), DaemonError> {
+    if !paused {
+        if let Some(reason) = parked_reason(tx, subscription_id)? {
+            return Err(error(reason));
+        }
+    }
     tx.execute(
         "INSERT INTO notification_subscription_settings (subscription_id, paused) VALUES (?1, ?2)
          ON CONFLICT(subscription_id) DO UPDATE SET paused=excluded.paused",
@@ -222,6 +240,63 @@ pub(super) fn gate_in(
     Ok(Gate::Skip)
 }
 
+/// The target cannot accept another prompt. Preserve the subscription for the owner
+/// and record only the first refusal, even if several accepted deliveries find it.
+pub(super) fn park_agent_in(
+    tx: &Transaction<'_>,
+    subscription_id: &str,
+    occurrence_id: &str,
+    title: &str,
+    reason: &str,
+    now: u64,
+) -> Result<bool, DaemonError> {
+    let parked = tx
+        .execute(
+            "INSERT INTO notification_subscription_settings(subscription_id, parked_reason)
+         SELECT ?1, ?2 WHERE EXISTS (
+           SELECT 1 FROM app_automations WHERE automation_id=?1 AND status='active'
+             AND (target_kind='agent' OR json_extract(notification_json,'$.target_kind')='agent'))
+         ON CONFLICT(subscription_id) DO UPDATE SET parked_reason=excluded.parked_reason
+         WHERE parked_reason IS NULL",
+            params![subscription_id, reason],
+        )
+        .map_err(sql)?;
+    if parked == 0 {
+        return Ok(false);
+    }
+    // App outbox selection already excludes paused automations. Workflow offers
+    // still need an acknowledgement, so their acceptance gate sees the reason.
+    tx.execute(
+        "UPDATE app_automations SET status='paused'
+         WHERE automation_id=?1 AND source_kind='app_event' AND target_kind='agent' AND status='active'",
+        [subscription_id],
+    ).map_err(sql)?;
+    line_in(
+        tx,
+        subscription_id,
+        occurrence_id,
+        title,
+        NotificationTraceOutcome::Paused,
+        Some(reason.to_owned()),
+        now,
+    )?;
+    Ok(true)
+}
+
+pub(super) fn parked_reason(
+    db: &Connection,
+    subscription_id: &str,
+) -> Result<Option<String>, DaemonError> {
+    db.query_row(
+        "SELECT parked_reason FROM notification_subscription_settings WHERE subscription_id=?1",
+        [subscription_id],
+        |row| row.get::<_, Option<String>>(0),
+    )
+    .optional()
+    .map(Option::flatten)
+    .map_err(sql)
+}
+
 /// Why the subscription would not deliver this occurrence, if it would not. Reads only, so a
 /// dry run asks the same question delivery does.
 fn verdict(
@@ -229,6 +304,9 @@ fn verdict(
     sub: &WorkflowNotificationSubscription,
     env: &WorkflowNotificationEnvelope,
 ) -> Result<Option<(NotificationTraceOutcome, Option<String>)>, DaemonError> {
+    if let Some(reason) = parked_reason(db, &sub.subscription_id)? {
+        return Ok(Some((NotificationTraceOutcome::Paused, Some(reason))));
+    }
     let settings: Option<(String, bool)> = db
         .query_row(
             "SELECT options_json, paused FROM notification_subscription_settings WHERE subscription_id=?1",
@@ -451,7 +529,7 @@ pub(crate) enum Hold {
 fn paused_in(db: &Connection, subscription_id: &str) -> Result<bool, DaemonError> {
     Ok(db
         .query_row(
-            "SELECT paused FROM notification_subscription_settings WHERE subscription_id=?1",
+            "SELECT paused OR parked_reason IS NOT NULL FROM notification_subscription_settings WHERE subscription_id=?1",
             [subscription_id],
             |row| row.get(0),
         )
@@ -623,7 +701,7 @@ impl DurableKernelStateStore {
         let db = self.lock_connection("notification subscription settings")?;
         let row: Option<SettingsColumns> = db
             .query_row(
-                "SELECT options_json, once, paused, fired, last_fired_at_ms, loop_stopped_at_ms
+                "SELECT options_json, once, paused OR parked_reason IS NOT NULL, fired, last_fired_at_ms, loop_stopped_at_ms
                  FROM notification_subscription_settings WHERE subscription_id=?1",
                 [&sub.subscription_id],
                 |row| {

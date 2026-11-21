@@ -666,11 +666,12 @@ pub(super) async fn publish_cloud_presence(
     router: &Arc<CommandRouter>,
     online: bool,
     reason: &str,
+    registration: Option<&chariox_relay::protocol::DaemonRegistration>,
 ) -> CloudPresencePublishOutcome {
     let publish_started = Instant::now();
     match timeout(
         CLOUD_RELAY_PRESENCE_PUBLISH_TIMEOUT,
-        router.publish_cloud_kernel_presence(online),
+        router.publish_cloud_kernel_presence(online, registration),
     )
     .await
     {

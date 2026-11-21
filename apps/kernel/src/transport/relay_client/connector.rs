@@ -1040,6 +1040,7 @@ async fn run_daemon_relay_connector_inner(
                 reconnect_attempt = 0;
                 let connected_at = Instant::now();
                 if let Some(presence) = presence {
+                    presence.update_registration(&registration_template);
                     presence.publish(true, "relay registration sent");
                 }
                 let mut cloud_presence_schedule =
@@ -1237,11 +1238,16 @@ async fn run_daemon_relay_connector_inner(
                         _ = heartbeat_interval.tick() => {
                             heartbeat_tick = heartbeat_tick.wrapping_add(1);
                             let accounts = router.provider_account_generation();
+                            let cloud_presence_due = presence.is_some()
+                                && cloud_presence_schedule.claim_publish_if_due(Instant::now());
                             let mut heartbeat_registration = None;
                             if let Some(refreshed) = registration_refresh.try_join_next() {
                                 match refreshed {
                                     Ok((registration, generation, name)) => {
                                         registration_template = registration;
+                                        if let Some(presence) = presence {
+                                            presence.update_registration(&registration_template);
+                                        }
                                         published_accounts = generation;
                                         published_machine_name = name;
                                         heartbeat_registration = Some(registration_template.clone());
@@ -1253,7 +1259,8 @@ async fn run_daemon_relay_connector_inner(
                                 }
                             }
                             let current_machine_name = router.machine_name();
-                            if (accounts != published_accounts || current_machine_name != published_machine_name)
+                            if (cloud_presence_due || accounts != published_accounts
+                                || current_machine_name != published_machine_name)
                                 && registration_refresh.is_empty()
                             {
                                 let router = Arc::clone(&router);
@@ -1371,7 +1378,7 @@ async fn run_daemon_relay_connector_inner(
                                 ));
                             }
                             if let Some(presence) = presence {
-                                if cloud_presence_schedule.claim_publish_if_due(Instant::now()) {
+                                if cloud_presence_due {
                                     presence.publish(true, "relay heartbeat");
                                 }
                             }

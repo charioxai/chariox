@@ -41,14 +41,13 @@ impl CommandRouter {
     pub(crate) async fn publish_cloud_kernel_presence(
         &self,
         online: bool,
+        registration: Option<&chariox_relay::protocol::DaemonRegistration>,
     ) -> Result<(), DaemonError> {
         let config = self.config_projection.snapshot();
         let Some(profile) = config.cloud_relay.as_ref() else {
             return Ok(());
         };
-        let registration = self.relay_registration().await;
-        let Some(body) = cloud_kernel_presence_body(&config, profile, online, Some(&registration))
-        else {
+        let Some(body) = cloud_kernel_presence_body(&config, profile, online, registration) else {
             return Ok(());
         };
         let _: serde_json::Value = post_cloud_json_with_timeout(
