@@ -94,3 +94,18 @@ async fn an_agent_cannot_take_its_own_usage_limit_decision_body() {
         "{not_stopped:?}"
     );
 }
+
+#[test]
+fn settings_at_turn_end_report_pending_to_the_agent_that_requested_them() {
+    run_large_stack_async_test("settings-at-turn-end", async {
+        let world = world("settings-at-turn-end").await;
+        let result = room_command(&world, "b", "agent settings set --model m-next --at-turn-end").await;
+        assert!(result.ok, "{result:?}");
+        assert_eq!(result.payload["response"]["status"], "pending until this turn ends");
+        assert_ne!(model_of(&world, "b").await.as_deref(), Some("m-next"));
+
+        let read = room_command(&world, "b", "agent settings").await;
+        assert!(read.ok, "{read:?}");
+        assert_eq!(read.payload["response"]["pending"]["model"], "m-next");
+    });
+}
