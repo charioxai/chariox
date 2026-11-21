@@ -68,7 +68,7 @@ impl KernelRuntimeState {
         if carries_passkey(request) {
             return Err(Refusal::HumanOnly.error());
         }
-        refuse_forwarded_exec_place(request)?;
+        authorize_local_only_request(request)?;
         if let Some(user_id) = grant_id.strip_prefix(super::reach::OWNER_GRANT_PREFIX) {
             return if self.is_gateway_owner(user_id) {
                 Ok(())
@@ -147,7 +147,7 @@ impl KernelRuntimeState {
         on_behalf_of: &OnBehalfOf,
         request: &LocalDaemonRequest,
     ) -> Result<(), DaemonError> {
-        refuse_forwarded_exec_place(request)?;
+        authorize_local_only_request(request)?;
         let forbidden = carries_passkey(request)
             || restricted_request(request)
             || self.answers_a_person_only_card(request);
@@ -372,10 +372,12 @@ fn owner_vault_is_not_a_kernel_access_operation() {
     )));
 }
 
-/// A held launch is placed by the kernel that holds it. Forwarded, the request would run
-/// under this kernel's owner grant for a requester that has none here.
-fn refuse_forwarded_exec_place(request: &LocalDaemonRequest) -> Result<(), DaemonError> {
+/// These operations must run on the kernel that holds their authority.
+fn authorize_local_only_request(request: &LocalDaemonRequest) -> Result<(), DaemonError> {
     match request {
+        LocalDaemonRequest::CloudAccountKernels(_) => Err(error(
+            "Manage linked kernels from the owner's enrolled kernel directly",
+        )),
         LocalDaemonRequest::RoomTerminal(terminal)
             if matches!(terminal.operation, crate::local::RoomTerminalOperation::ExecPlace { .. }) =>
         {

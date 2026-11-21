@@ -223,6 +223,8 @@ response_policies! {
         KernelAccessRevoked,
         KernelSudoRequesterRenewed,
         GatewayKernelsListed,
+        AccountKernelsListed,
+        AccountKernelUnlinked,
         AttachmentsHeartbeated,
         GatewayKernelJoined,
         GatewayKernelForgotten,

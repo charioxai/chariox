@@ -10,6 +10,7 @@ use crate::slice::{
 use crate::terminal::{RuntimeNoticeRecord, TerminalOutputKind, TerminalOutputRecord};
 use chariox_relay::protocol::RelayKernelPresence;
 
+mod account_kernels;
 mod account_transfer;
 mod agent_deadline;
 mod agent_lifecycle;
@@ -70,6 +71,7 @@ mod workflow;
 mod workflow_notification;
 mod workspace;
 
+pub use account_kernels::*;
 pub use account_transfer::*;
 pub use agent_deadline::*;
 pub use agent_lifecycle::*;
@@ -618,4 +620,4 @@ pub use workspace::*;
 /// The machine list separates live/reconnecting machines (presence) from offline_machines.
 /// Machine inventories identify the Cloud directory, and a stale reply can mark an active renewal.
 /// Relay registrations and machine records include each kernel's registered local protocol.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1012;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1013;

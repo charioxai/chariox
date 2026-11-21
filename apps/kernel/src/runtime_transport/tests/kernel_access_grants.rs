@@ -1724,6 +1724,44 @@ async fn a_heartbeat_reports_the_lapsed_attachments_and_a_machine_subscription_n
     assert_eq!(subscribed["kernel"], "b3", "{subscribed}");
 }
 
+#[tokio::test]
+async fn account_kernel_access_requires_live_owner_grant_and_local_enrollment() {
+    let mut kernel = Kernel::start().await;
+    let mut holder = Client::start(&kernel.root);
+    for request in [
+        serde_json::json!({"CloudAccountKernels":{"action":"list"}}),
+        serde_json::json!({"CloudAccountKernels":{"action":"unlink","target_id":"target-stale"}}),
+    ] {
+        let refused = holder.request(request.clone());
+        assert_eq!(
+            refused["error"]["code"], "kernel_access_not_covered",
+            "{refused}"
+        );
+    }
+    grant(&mut kernel, &mut holder).await;
+    for request in [
+        serde_json::json!({"CloudAccountKernels":{"action":"list"}}),
+        serde_json::json!({"CloudAccountKernels":{"action":"unlink","target_id":"target-stale"}}),
+    ] {
+        let forwarded = holder.request_on("other-kernel", request.clone());
+        assert!(
+            forwarded["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("directly"),
+            "{forwarded}"
+        );
+        let refused = holder.request(request);
+        assert!(
+            refused["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("Sign this kernel in"),
+            "{refused}"
+        );
+    }
+}
+
 // A subscription routed to another kernel keeps that kernel's own heartbeat interval, so
 // asking for one is refused instead of being dropped without a word.
 #[tokio::test]

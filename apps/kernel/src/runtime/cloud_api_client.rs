@@ -9,6 +9,9 @@ use crate::error::DaemonError;
 use crate::local::CloudRelayProfile;
 use crate::runtime::cloud_relay_control::CLOUD_RELAY_RUNTIME_TOKEN_TTL_MS;
 
+mod account_kernels;
+pub(crate) use account_kernels::{list_account_kernels, unlink_account_kernel};
+
 mod account_client_token;
 pub(crate) use account_client_token::issue_cloud_account_client_runtime_token;
 
