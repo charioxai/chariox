@@ -5,7 +5,7 @@ use crate::auth::{RelaySubjectKind, VerifiedRelayIdentity};
 /// First kernel protocol that can prove its registration identity.
 pub const MINIMUM_KERNEL_REGISTRATION_PROTOCOL: u32 = 1012;
 /// First kernel protocol that reads the registration acknowledgment.
-pub const DAEMON_REGISTERED_PROTOCOL: u32 = 1013;
+pub const DAEMON_REGISTERED_PROTOCOL: u32 = 1014;
 
 const TEMPORARY_PEER_DAEMON_MARKER: &str = ":peer-tmp:daemon-peer-tmp-";
 

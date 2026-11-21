@@ -1,5 +1,5 @@
 use super::*;
-use crate::protocol::{RelayMachinePresence, RelayUpdateNeededKernel};
+use crate::protocol::{RelayMachinePresence, RelayUpdateNeededKernel, DAEMON_REGISTERED_PROTOCOL};
 
 type Socket =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
@@ -299,7 +299,7 @@ async fn malformed_registration_gets_a_close_reason() {
     let relay = Relay::start().await;
     let (mut kernel, _) = relay.connect().await;
     let mut registration = victim_registration();
-    registration.local_protocol = Some(1012);
+    registration.local_protocol = Some(DAEMON_REGISTERED_PROTOCOL);
     kernel
         .send(Message::Text(
             serde_json::json!({"kind":"daemon_register", "registration":registration})
@@ -320,7 +320,7 @@ async fn signed_registration_is_acknowledged() {
     let relay = Relay::start().await;
     let (mut kernel, handshake) = relay.connect().await;
     let mut registration = victim_registration();
-    registration.local_protocol = Some(1013);
+    registration.local_protocol = Some(DAEMON_REGISTERED_PROTOCOL);
     send(
         &mut kernel,
         &signed_register(&relay.url, &handshake, registration),
@@ -338,11 +338,11 @@ async fn signed_registration_is_acknowledged() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn protocol_1012_registers_without_receiving_the_new_envelope() {
+async fn landing_12_1_kernel_registers_without_receiving_the_new_envelope() {
     let relay = Relay::start().await;
     let (mut kernel, handshake) = relay.connect().await;
     let mut registration = victim_registration();
-    registration.local_protocol = Some(1012);
+    registration.local_protocol = Some(1013);
     send(
         &mut kernel,
         &signed_register(&relay.url, &handshake, registration),
@@ -352,7 +352,7 @@ async fn protocol_1012_registers_without_receiving_the_new_envelope() {
         timeout(Duration::from_millis(100), kernel.next())
             .await
             .is_err(),
-        "the L12 kernel must not receive an unknown application envelope"
+        "the Landing 12.1 kernel must not receive an unknown application envelope"
     );
     assert!(relay.live_peer().await.is_some());
     relay.stop().await;

@@ -241,7 +241,7 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// Peer 450 carries native background notification receipts on leased completions.
 /// Peer 450 carries the local 1013 mirror v2 header `focus_visible`.
 /// 451 requires the relay's registration acknowledgment before reporting the kernel online.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 450;
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 451;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
 pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = RELAY_PEER_PROTOCOL_VERSION;
