@@ -618,4 +618,6 @@ pub use workspace::*;
 /// The machine list separates live/reconnecting machines (presence) from offline_machines.
 /// Machine inventories identify the Cloud directory, and a stale reply can mark an active renewal.
 /// Relay registrations and machine records include each kernel's registered local protocol.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1012;
+/// A workflow node run held for a provider account names it (`waiting_account`) and when its usage is back
+/// (`waiting_until_ms`), both absent while nothing waits.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1088;
