@@ -627,4 +627,5 @@ pub use workspace::*;
 /// 1013 links a folded notification outcome to its answering turn.
 /// Local 1013 (relay peer 450): the mirror v2 header carries `focus_visible`, whether the page's focused element
 /// matches `:focus-visible`, so a viewer draws the focus ring only where the page's browser does; absent means no ring.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1013;
+/// Local 1014 (relay peer 451): a workflow run waiting on a workspace claim names the holding run.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1014;
