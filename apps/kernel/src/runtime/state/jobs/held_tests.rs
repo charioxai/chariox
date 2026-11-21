@@ -612,11 +612,15 @@ async fn a_kernel_restart_during_a_held_machine_upload_removes_what_was_uploaded
     restart(&state, &id, true);
     let status = finished(&state, &run, &task, &id).await;
     served(service).await;
-    assert!(
-        !uploaded_copy(home.path(), &id).exists(),
-        "recovery left the half-uploaded workspace on the held machine"
-    );
-    assert!(!plan_saved(&state, &id));
+    // The remote directory can disappear before the removal reply arrives and
+    // its return plan is cleared.
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while uploaded_copy(home.path(), &id).exists() || plan_saved(&state, &id) {
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("recovery did not settle the half-uploaded workspace");
     assert_eq!(status["deleted"], false);
     assert_eq!(saved(&state, &id).remote, RemoteStage::Settled);
 }
