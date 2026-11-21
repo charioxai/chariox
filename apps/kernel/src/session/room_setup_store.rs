@@ -27,7 +27,7 @@ impl RoomSetup {
         self.state.steps.truncate(position + 1);
     }
 
-    fn storage_failed(&mut self, position: usize) {
+    fn fail_on_storage(&mut self, position: usize) {
         self.fail_step(
             position,
             storage_failure_message(self.state.steps[position].id),
@@ -62,7 +62,7 @@ impl RoomSetupStore {
                 )
             }) {
                 if setup.storage_failed {
-                    setup.storage_failed(position);
+                    setup.fail_on_storage(position);
                 } else {
                     let step = setup.state.steps[position].id;
                     setup.fail_step(position, interrupted_message(step));
@@ -73,7 +73,7 @@ impl RoomSetupStore {
                     ) {
                         tracing::error!(session_id, %error, "Room setup recovery could not save progress; repair kernel storage, then retry or dismiss setup");
                         restored.record_storage_failure(&session_id);
-                        setup.storage_failed(position);
+                        setup.fail_on_storage(position);
                     }
                 }
             }
@@ -151,7 +151,7 @@ impl RoomSetupStore {
         };
         if let Some(position) = setup.state.steps.iter().position(|item| item.id == step) {
             self.record_storage_failure(session_id);
-            setup.storage_failed(position);
+            setup.fail_on_storage(position);
         }
     }
 

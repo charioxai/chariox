@@ -85,20 +85,7 @@ async fn open_room(
     let session = response_variant(&created, "SessionCreated")["session"].clone();
     let session_id = session["id"].as_str().unwrap().to_string();
     let agent_id = session["agents"][0]["id"].as_str().unwrap().to_string();
-    let attached = send_request(
-        socket,
-        "attach-session",
-        LocalDaemonRequest::AttachToSession(AttachToSessionRequest {
-            session_id: session_id.clone(),
-            client_id: "room-setup-client".to_string(),
-            capability_level: ClientCapabilityLevel::FullTerminal,
-        }),
-    )
-    .await;
-    let attachment_id = response_variant(&attached, "SessionAttached")["attachment"]["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let attachment_id = attach_room(socket, &session_id).await;
     Room {
         session_id,
         agent_id,
@@ -107,10 +94,27 @@ async fn open_room(
     }
 }
 
+async fn attach_room(socket: &mut Socket, session_id: &str) -> String {
+    let attached = send_request(
+        socket,
+        &format!("attach-session-{}", rand::random::<u64>()),
+        LocalDaemonRequest::AttachToSession(AttachToSessionRequest {
+            session_id: session_id.to_string(),
+            client_id: "room-setup-client".to_string(),
+            capability_level: ClientCapabilityLevel::FullTerminal,
+        }),
+    )
+    .await;
+    response_variant(&attached, "SessionAttached")["attachment"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
 async fn launch_stub_provider(socket: &mut Socket, room: &Room) {
     let launched = send_request(
         socket,
-        "launch-provider",
+        &format!("launch-provider-{}", rand::random::<u64>()),
         LocalDaemonRequest::LaunchProviderRun(LaunchProviderRunRequest {
             session_id: room.session_id.clone(),
             agent_id: Some(room.agent_id.clone()),
@@ -161,7 +165,7 @@ async fn wait_for_state(
 async fn submit(socket: &mut Socket, room: &Room, prompt: &str) -> Value {
     let response = send_request(
         socket,
-        "submit-prompt",
+        &format!("submit-prompt-{}", rand::random::<u64>()),
         LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
             session_id: room.session_id.clone(),
             attachment_id: room.attachment_id.clone(),
@@ -493,7 +497,7 @@ fn rejected_room_setup_progress_survives_restart(
                 .unwrap();
         }
         let mut socket = connect_with_retry(&config.kernel_websocket_url()).await;
-        let room = create_room(
+        let room = open_room(
             &mut socket,
             &workspace,
             RoomSetupRequest {
@@ -523,19 +527,14 @@ fn rejected_room_setup_progress_survives_restart(
             }),
             "{reason}"
         );
-        assert!(
-            submit(&mut socket, &room, "continue after a storage failure").await["Started"]
-                .is_object(),
-            "a rejected progress write must release prompts"
-        );
-
         drop(socket);
         let _ = shutdown.send(());
         server.await.unwrap().unwrap();
         saved.send((config, room, failed, workspace)).unwrap();
     });
 
-    let (mut config, room, failed, _workspace) = restore.recv().unwrap();
+    let (mut config, mut room, failed, _workspace) = restore.recv().unwrap();
+    let (saved_repair, restore_repair) = std::sync::mpsc::sync_channel(1);
     crate::run_kernel_websocket_runtime_test(async move {
         let (port, listener) = reserved_kernel_listener();
         config.kernel_websocket_port = port;
@@ -544,6 +543,18 @@ fn rejected_room_setup_progress_survives_restart(
         let restored = session_state(&mut socket, &room).await;
         assert_eq!(restored["room_setup"], failed["room_setup"]);
         assert_eq!(restored["agents"][0]["id"], room.agent_id);
+        room.attachment_id = attach_room(&mut socket, &room.session_id).await;
+        launch_stub_provider(&mut socket, &room).await;
+        let outcome = submit(
+            &mut socket,
+            &room,
+            "continue after restarting with a storage failure",
+        )
+        .await;
+        assert!(
+            outcome["Started"].is_object(),
+            "the recovered storage failure must release prompts: {outcome}"
+        );
 
         let injection = rusqlite::Connection::open(config.durable_state_path()).unwrap();
         injection
@@ -571,7 +582,48 @@ fn rejected_room_setup_progress_survives_restart(
             )
             .await
         };
-        assert!(response_variant(&recovered, "RoomSetupUpdated")["session"].is_object());
+        let updated = &response_variant(&recovered, "RoomSetupUpdated")["session"];
+        let repaired = if step == "publish" {
+            assert_eq!(updated["room_setup"]["steps"][0]["state"], "pending");
+            wait_for_state(
+                &mut socket,
+                &room,
+                "the publish retry to finish",
+                |session| session["room_setup"]["steps"][0]["state"] == "failed",
+            )
+            .await
+        } else {
+            assert!(updated["room_setup"].is_null());
+            updated.clone()
+        };
+        assert_ne!(repaired["room_setup"], failed["room_setup"]);
+        let storage_failed: bool = injection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM durable_room_setup_storage_failures WHERE session_id = ?1)",
+                [&room.session_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            !storage_failed,
+            "repair must clear the durable failure marker"
+        );
+        drop(socket);
+        let _ = shutdown.send(());
+        server.await.unwrap().unwrap();
+        saved_repair.send((config, room, repaired)).unwrap();
+    });
+
+    let (mut config, room, repaired) = restore_repair.recv().unwrap();
+    crate::run_kernel_websocket_runtime_test(async move {
+        let (port, listener) = reserved_kernel_listener();
+        config.kernel_websocket_port = port;
+        let (config, shutdown, server) = start_kernel_with_config(config, listener).await;
+        let mut socket = connect_with_retry(&config.kernel_websocket_url()).await;
+        let restored = session_state(&mut socket, &room).await;
+        assert_eq!(restored["room_setup"], repaired["room_setup"]);
+        assert_eq!(restored["agents"][0]["id"], room.agent_id);
+        drop(socket);
         let _ = shutdown.send(());
         server.await.unwrap().unwrap();
     });
