@@ -255,8 +255,8 @@ test('without a base ref the guard says loudly that membership was not checked, 
   try {
     const noRef = repo.guard({})
     assert.equal(noRef.status, 0, noRef.stderr)
-    assert.match(noRef.stderr, /WARNING.*whole-file list.*no origin\/main.*membership NOT checked/)
-    assert.match(noRef.stderr, /WARNING.*leak list.*no origin\/main.*membership NOT checked/)
+    assert.match(noRef.stderr, /WARNING.*whole-file list.*could not fetch origin\/main.*membership NOT checked/)
+    assert.match(noRef.stderr, /WARNING.*leak list.*could not fetch origin\/main.*membership NOT checked/)
     const bad = repo.guard({ CHARIOX_BOUNDARY_BASE: 'no-such-ref' })
     assert.equal(bad.status, 1)
     assert.match(bad.stderr, /CHARIOX_BOUNDARY_BASE=no-such-ref is not a commit/)
@@ -281,9 +281,11 @@ test('in CI a checkout without a baseline is red and says how CI provides one; a
     const shallow = shallowCheckout(repo)
     try {
       assert.equal(shallow.git('rev-parse', '--is-shallow-repository'), 'true')
+      // Simulate a checkout without a remote from which to restore the missing baseline.
+      shallow.git('remote', 'remove', 'origin')
       const ci = shallow.guard({ CI: 'true' })
       assert.equal(ci.status, 1, `CI without a base passed:\n${ci.stdout}${ci.stderr}`)
-      assert.match(ci.stderr, /oss-boundary-guard: .*no origin\/main to compare with/)
+      assert.match(ci.stderr, /oss-boundary-guard: .*could not fetch origin\/main/)
       assert.match(ci.stderr, /CI must fetch the commit the change branches from and export CHARIOX_BOUNDARY_BASE=<sha>/)
       assert.doesNotMatch(ci.stdout, /oss-boundary-guard: ok/)
       const local = shallow.guard({})
