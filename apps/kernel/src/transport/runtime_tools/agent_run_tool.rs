@@ -31,7 +31,7 @@ pub fn agent_run_tool_specs() -> Vec<RuntimeToolSpec> {
     vec![RuntimeToolSpec {
         name: AGENTS_RUN_TOOL.to_string(),
         description: format!(
-            "Delegate to sub-agents and get their answers back in this one call: each worker is started as your sub-agent with its brief as its prompt, all run in parallel, and the call returns when they have finished, with each worker's final answer, status and task_id. Give each worker one whole independent area and start no more workers than there are independent areas, never one per file or step. A task you can finish in about 10 tool calls stays with you. No inbox, ack, subscription or yield is needed for a worker answered here. Waits at most {} seconds: a worker still running then is returned as status running with a registration_id; end your turn with chariox.events.yield on those registration_ids and its answer arrives as a child_finished event. For work you already know takes longer, start the worker with `agent spawn` and a message and wait with chariox.events.yield instead. Include the origin_prompt_id supplied in this turn's hidden context.",
+            "Run sub-agents in parallel and return each final answer, status and task_id. Give each worker one independent area; keep tasks you can finish in about 10 calls. After {} seconds a running worker returns a registration_id. Yield on those IDs for child_finished events. For work you know takes longer, use agent spawn and events.yield. Use the origin_prompt_id from this turn's hidden context.",
             crate::room_terminal::MAX_WAIT.as_secs()
         ),
         input_schema: serde_json::json!({
@@ -47,7 +47,7 @@ pub fn agent_run_tool_specs() -> Vec<RuntimeToolSpec> {
                         "required": ["name", "brief"],
                         "properties": {
                             "name": {"type": "string", "description": "Unique alias for the worker: letters, digits, - and _."},
-                            "brief": {"type": "string", "description": "One deliverable: the task, the files it owns, constraints, and the answer as paths and facts in at most 30 lines. For a large file on this kernel, ask the worker to save it in its own TMPDIR, publish with chariox.agents.result and return the artifact_id in its final answer. Pass the artifact ID to the same operation with action fetch."},
+                            "brief": {"type": "string", "description": "One deliverable: the task, the files it owns, constraints, and the answer as paths and facts in at most 30 lines. For a large file on this kernel, have the worker publish it from its TMPDIR with chariox.agents.result and answer with the artifact_id. Fetch it with the same tool."},
                             "model": {"type": "string", "description": "Optional model; defaults to yours."},
                             "effort": {"type": "string", "description": "Optional effort; defaults to yours."}
                         },

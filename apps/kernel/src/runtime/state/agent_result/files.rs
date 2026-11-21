@@ -1,6 +1,6 @@
 use std::ffi::{CStr, CString};
 use std::fs::{File, OpenOptions};
-use std::io::{self, Write as _};
+use std::io::{self, Read as _, Write as _};
 use std::os::fd::{AsRawFd as _, FromRawFd as _};
 use std::os::unix::ffi::OsStrExt as _;
 use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
@@ -24,12 +24,7 @@ pub(super) fn open_source(scratch: &Path, name: &str) -> Result<File, String> {
     Ok(file)
 }
 
-pub(super) fn materialize(
-    scratch: &Path,
-    name: &str,
-    data: &[u8],
-    sha256: &str,
-) -> Result<(), String> {
+pub(super) fn materialize(scratch: &Path, name: &str, data: &[u8]) -> Result<(), String> {
     let directory = scratch_directory(scratch).map_err(scratch_error)?;
     let name = CString::new(name).map_err(|_| "Invalid result filename")?;
     let stage_name = CString::new(format!(".result-{:032x}", rand::random::<u128>())).unwrap();
@@ -42,7 +37,7 @@ pub(super) fn materialize(
     let result = (|| {
         staged.write_all(data)?;
         staged.sync_all()?;
-        // Publish atomically and preserve existing files. Both names are in the pinned directory.
+        // SAFETY: both names are in the pinned directory and all arguments stay valid.
         let status = unsafe {
             libc::linkat(
                 directory.as_raw_fd(),
@@ -61,12 +56,14 @@ pub(super) fn materialize(
         }
         let existing = open_at(&directory, &name, READ_FLAGS)?;
         let meta = existing.metadata()?;
-        if meta.is_file()
-            && meta.len() == data.len() as u64
-            && crate::runtime::kernel_files::sha256_of_open(&existing, Path::new("result"))
-                .is_ok_and(|digest| digest == sha256)
-        {
-            return Ok(());
+        if meta.is_file() && meta.len() == data.len() as u64 {
+            let mut existing_bytes = Vec::with_capacity(data.len());
+            existing
+                .take(data.len() as u64 + 1)
+                .read_to_end(&mut existing_bytes)?;
+            if existing_bytes == data {
+                return Ok(());
+            }
         }
         Err(io::Error::new(
             error.kind(),
