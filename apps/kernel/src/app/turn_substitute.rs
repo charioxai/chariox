@@ -170,37 +170,6 @@ impl DaemonApp {
                 return Ok(false);
             }
         }
-        // A substitute whose usage nobody has read is read now, as its own
-        // launch would, so an exhausted one is not chosen blind.
-        for candidate in agent.substitutes() {
-            let Some(provider) = crate::provider::canonical_provider_family(&candidate.provider)
-            else {
-                continue;
-            };
-            let profile = candidate.account_profile.as_deref().unwrap_or("default");
-            if self
-                .provider_account_profiles
-                .find(&owner, provider, profile)?
-                .is_some()
-            {
-                crate::app::refresh_provider_usage_before_launch(
-                    &self.provider_account_profiles,
-                    &owner,
-                    provider,
-                    profile,
-                    crate::session::unix_epoch_ms(),
-                    || {
-                        crate::local::provider_requests::refresh_provider_account_profile_with_config(
-                            &self.provider_account_profiles,
-                            &owner,
-                            provider,
-                            profile,
-                            &self.config,
-                        )
-                    },
-                )?;
-            }
-        }
         let crate::substitute_admission::SubstituteChoice { index, skipped } =
             crate::substitute_admission::first_usable_substitute(
                 &self.provider_account_profiles,
