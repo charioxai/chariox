@@ -26,38 +26,50 @@ impl AcquireTrace<'_> {
         })
     }
 
-    fn record(&self, outcome: &str, code: Option<&str>, allocation: Option<&str>) {
-        record(
+    fn fields(&self, milestone: &str, outcome: &str) -> Value {
+        trace_fields(
             self.detail(),
             self.room,
             self.agent,
             self.interaction_id,
+            milestone,
             outcome,
-            code,
-            allocation,
-        );
+        )
+    }
+
+    pub(crate) fn service_fields(&self, stage: &str) -> Value {
+        let mut fields = self.fields("service_request_sent", "sent");
+        fields["stage"] = json!(stage);
+        fields
+    }
+
+    fn ended(&self, outcome: &str, reason: &str, code: Option<&str>) {
+        let mut fields = self.fields("ended", outcome);
+        fields["reason"] = json!(reason);
+        if let Some(code) = code {
+            fields["code"] = json!(crate::secret_redaction::redact_secrets(code));
+        }
+        log_milestone(fields);
     }
 }
 
-fn record(
+fn trace_fields(
     mut fields: Value,
     room: &str,
     agent: &str,
     interaction_id: &str,
+    milestone: &str,
     outcome: &str,
-    code: Option<&str>,
-    allocation: Option<&str>,
-) {
+) -> Value {
     fields["session_id"] = json!(room);
     fields["agent_id"] = json!(agent);
     fields["interaction_id"] = json!(interaction_id);
+    fields["milestone"] = json!(milestone);
     fields["outcome"] = json!(outcome);
-    if let Some(code) = code {
-        fields["code"] = json!(code);
-    }
-    if let Some(allocation) = allocation {
-        fields["allocation_ref"] = json!(allocation);
-    }
+    fields
+}
+
+pub(crate) fn log_milestone(fields: Value) {
     crate::logging::info_with_fields("runtime.machine_acquisition", "machine acquire", fields);
 }
 
@@ -77,15 +89,19 @@ pub(in crate::runtime::state) fn record_wake(wake: &AgentWake, outcome: &str) {
         .get(WAKE_TRACE)
         .filter(|fields| fields.is_object())
     {
-        record(
+        let milestone = if outcome == "card_raised" {
+            "card_raised"
+        } else {
+            "card_answered"
+        };
+        log_milestone(trace_fields(
             fields.clone(),
             &wake.room_id,
             &wake.agent_id,
             &wake.id,
+            milestone,
             outcome,
-            None,
-            None,
-        );
+        ));
     }
 }
 
@@ -119,14 +135,16 @@ impl KernelRuntimeState {
             class: args.class_id.clone(),
             interaction_id: &interaction_id,
         };
-        trace.record("requested", None, None);
+        log_milestone(trace.fields("admitted", "requested"));
         match self
             .acquire_machine(origin, &args, service_id, &mut trace)
             .await
         {
             Ok(payload) => {
                 if payload["status"] == "pending" {
-                    trace.record("pending", None, None);
+                    trace.ended("pending", "awaiting_approval", None);
+                } else {
+                    trace.ended("completed", "allocation_returned", None);
                 }
                 Ok(RuntimeToolResult { ok: true, payload })
             }
@@ -143,7 +161,7 @@ impl KernelRuntimeState {
                     | DaemonError::RelayTransport { code, .. } => Some(code.as_str()),
                     _ => None,
                 };
-                trace.record("refused", code, None);
+                trace.ended("refused", "request_refused", code);
                 Err(error)
             }
         }
@@ -273,7 +291,9 @@ impl KernelRuntimeState {
                 "The service returned no allocation. Retry with the same request_id",
             ));
         };
-        trace.record("allocated", None, Some(allocation_ref));
+        let mut fields = trace.fields("allocation_received", "allocated");
+        fields["allocation_ref"] = json!(crate::secret_redaction::redact_secrets(allocation_ref));
+        log_milestone(fields);
         self.accept_acquire_option(trace.agent, trace.request_id, &option, allocation_ref)?;
         let estimate = json!({"kind":"unknown","reason":"No duration was specified; the total depends on when the machine is deleted"});
         Ok(match option {

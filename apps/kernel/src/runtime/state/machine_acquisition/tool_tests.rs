@@ -1597,6 +1597,51 @@ async fn acquire_trace_survives_the_approval_wait() {
         .into_iter()
         .filter(|line| line.contains(request_id) && line.contains("runtime.machine_acquisition"))
         .collect();
+    let records: Vec<serde_json::Value> = entries
+        .iter()
+        .map(|line| {
+            let (_, fields) = line.split_once("machine acquire ").unwrap();
+            serde_json::from_str(fields).unwrap()
+        })
+        .collect();
+    let milestones: Vec<_> = records
+        .iter()
+        .map(|record| {
+            (
+                record["milestone"].as_str().unwrap(),
+                record["stage"].as_str(),
+                record["outcome"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        milestones,
+        [
+            ("admitted", None, "requested"),
+            ("service_request_sent", Some("offer_read"), "sent"),
+            ("service_request_answered", Some("offer_read"), "ok"),
+            ("service_request_sent", Some("offer_recheck"), "sent"),
+            ("service_request_answered", Some("offer_recheck"), "ok"),
+            ("card_raised", None, "card_raised"),
+            ("ended", None, "pending"),
+            ("admitted", None, "requested"),
+            ("ended", None, "pending"),
+            ("card_answered", None, "approved"),
+            ("admitted", None, "requested"),
+            ("service_request_sent", Some("offer_read"), "sent"),
+            ("service_request_answered", Some("offer_read"), "ok"),
+            ("service_request_sent", Some("offer_recheck"), "sent"),
+            ("service_request_answered", Some("offer_recheck"), "ok"),
+            ("service_request_sent", Some("acquire"), "sent"),
+            ("service_request_answered", Some("acquire"), "ok"),
+            ("allocation_received", None, "allocated"),
+            ("ended", None, "completed"),
+        ]
+    );
+    assert_eq!(records[6]["reason"], "awaiting_approval");
+    assert_eq!(records[17]["allocation_ref"], "allocation-1");
+    assert_eq!(records[18]["reason"], "allocation_returned");
+    assert!(!entries.iter().any(|line| line.contains("Run the build")));
     for outcome in ["card_raised", "approved", "allocated"] {
         let matches: Vec<_> = entries
             .iter()
@@ -1674,6 +1719,7 @@ async fn cancelled_acquire_preserves_a_distinct_outcome() {
 
 #[tokio::test]
 async fn acquire_can_recover_a_machine_when_the_commit_reply_stalls() {
+    let logs = crate::logging::capture::start();
     let service = service(two_in_stock(), &[]).await;
     let (state, token, _workspace) = agent_kernel(service.api_url.clone()).await;
     let arrived = Arc::new(tokio::sync::Notify::new());
@@ -1704,6 +1750,20 @@ async fn acquire_can_recover_a_machine_when_the_commit_reply_stalls() {
     assert!(error
         .to_string()
         .contains("Retry with request_id slow-commit"));
+    let entries: Vec<_> = logs
+        .records()
+        .into_iter()
+        .filter(|line| line.contains("slow-commit") && line.contains("runtime.machine_acquisition"))
+        .collect();
+    assert!(entries.iter().any(|line| {
+        line.contains(r#""milestone":"service_request_answered""#)
+            && line.contains(r#""outcome":"timeout""#)
+            && line.contains(r#""stage":"acquire""#)
+    }));
+    assert!(entries.iter().any(|line| {
+        line.contains(r#""milestone":"ended""#)
+            && line.contains(r#""code":"acquisition_service_timeout""#)
+    }));
     arrived.notified().await;
     release.notify_one();
     let result = acquire().await.unwrap();
