@@ -1734,10 +1734,16 @@ async fn cancelled_acquire_preserves_a_distinct_outcome() {
         .unwrap();
 
     let cancelled = store.agent_wake(id).unwrap().unwrap();
-    let (event, _) = store
-        .agent_inbox_event(cancelled.last_sequence.unwrap())
-        .unwrap()
+    assert_eq!(cancelled.state, "cancelled");
+    let receipts = store
+        .agent_inbox_occurrence(&room, &wake.agent_id, &format!("{id}-cancelled"))
         .unwrap();
+    let [event] = receipts.as_slice() else {
+        panic!(
+            "Expected one cancellation receipt, found {}",
+            receipts.len()
+        );
+    };
     assert_eq!(event.payload["public_answer"]["status"], "cancelled");
     assert_eq!(event.payload["public_answer"]["interaction_id"], id);
     assert!(state
