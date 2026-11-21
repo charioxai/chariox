@@ -21,6 +21,7 @@ pub(crate) fn message(code: &str) -> Option<&'static str> {
         "provider_account_name_taken" => "an account with this name already exists on this kernel; choose another name or use the existing account",
         "provider_login_code_incomplete" => "the sign-in code is incomplete; paste the whole code the provider showed and submit it again",
         "provider_login_code_invalid" => "the provider rejected the sign-in code; start the sign-in again and paste the new code",
+        "provider_login_vault_entry_unavailable" => "this Vault entry is no longer available; choose another entry or add one in Vault, then sign in again",
         "agent_not_in_session" => "agent does not belong to this Room; run ListAgents {session_id} and use the Room that owns the agent",
         "agent_not_found" => "agent not found; run ListAgents {session_id} in the intended Room and use its returned agent id",
         "attachment_not_found" => "attachment not found; run AttachToSession {session_id, client_id, capability_level} with --command-id ID and use SessionAttached.attachment.id",
