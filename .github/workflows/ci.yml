@@ -164,8 +164,26 @@ jobs:
           exit "$failed"
 
   rust:
+    name: Rust (${{ matrix.label }})
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
+    timeout-minutes: 330
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: workspace and kernel integration
+            suite: workspace
+            shard: 0
+          - label: kernel library 1 of 3
+            suite: kernel
+            shard: 0
+          - label: kernel library 2 of 3
+            suite: kernel
+            shard: 1
+          - label: kernel library 3 of 3
+            suite: kernel
+            shard: 2
     # MP-08/MP-10: CI does not consume DWARF; retain normal test assertions.
     env:
       CARGO_PROFILE_DEV_DEBUG: 0
@@ -222,15 +240,19 @@ jobs:
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
       - name: Format check
+        if: matrix.suite == 'workspace'
         run: cargo fmt --all --check
 
       - name: Performance drills
+        if: matrix.suite == 'workspace'
         run: node scripts/performance-drills.mjs
 
       - name: Client protocol conformance gate
+        if: matrix.suite == 'workspace'
         run: cargo test -p chariox-kernel client_protocol_conformance -- --nocapture
 
       - name: Release session project assignment regression
+        if: matrix.suite == 'workspace'
         # MP-08/MP-10: partition the large kernel test crate for the CI compiler;
         # keep kernel release optimization and disabled debug assertions unchanged.
         # The dev-only App fixture dependency requires debug assertions; production
@@ -241,6 +263,7 @@ jobs:
           test --release -p chariox-kernel --lib visible_session_project_assignment_survives_release_builds -- --nocapture
 
       - name: Clippy
+        if: matrix.suite == 'workspace'
         run: |
           node --test scripts/clippy-changed-lines-gate.test.mjs
           node scripts/clippy-changed-lines-gate.mjs
@@ -255,13 +278,23 @@ jobs:
           test "$(codex --version)" = "codex-cli 0.159.3"
           test "$(opencode --version)" = "1.18.23"
 
-      - name: Test
-        run: cargo test --workspace
+      - name: Test workspace packages and kernel integration
+        if: matrix.suite == 'workspace'
+        run: >-
+          python3 scripts/ci/run-rust-tests.py workspace
+          --workspace-command cargo test --workspace --exclude chariox-kernel --locked --no-fail-fast
         env:
           RUST_MIN_STACK: 16777216
-          RUST_TEST_THREADS: 1
+
+      - name: Test kernel library shard
+        if: matrix.suite == 'kernel'
+        run: python3 scripts/ci/run-rust-tests.py kernel --shard "$TEST_SHARD" --shards 3
+        env:
+          TEST_SHARD: ${{ matrix.shard }}
+          RUST_MIN_STACK: 16777216
 
       - name: Native display worker
+        if: ${{ !cancelled() && matrix.suite == 'kernel' && matrix.shard == 2 }}
         # MP-08/MP-10/MP-11 (#933 review 8): the Linux kernel's XShm/x264
         # worker (unsafe FFI, sessions, C harnesses on a real Xvfb).
         run: |

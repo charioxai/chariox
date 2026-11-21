@@ -44,6 +44,20 @@
   ],
   "sites": [
     {
+      "path": "scripts/ci/run-rust-tests.py",
+      "kind": "python-group",
+      "text": "os.killpg(process.pid, signal.SIGTERM)",
+      "count": 1,
+      "reason": "CI watchdog stops its own child test process group on a stall or the job cap; CI only."
+    },
+    {
+      "path": "scripts/ci/run-rust-tests.py",
+      "kind": "python-group",
+      "text": "os.killpg(process.pid, signal.SIGKILL)",
+      "count": 1,
+      "reason": "CI watchdog stops its own child test process group on a stall or the job cap; CI only."
+    },
+    {
       "path": "apps/cli/scripts/lib/browser-computer-red-cap.mjs",
       "kind": "name-signal",
       "text": "...plan.docker([\"pkill\", \"-TERM\", \"-f\", processPattern]),",

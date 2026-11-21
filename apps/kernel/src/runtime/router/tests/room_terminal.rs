@@ -225,10 +225,38 @@ fn only_the_room_owner_reaches_terminals_and_drivers_do_not_collide() {
         let a = Some(agent_a.id());
         let b = Some(agent_b.id());
         assert!(
-            type_text(&router, &session_id, &id, a, "cat\r")
-                .await
-                .accepted
+            type_text(
+                &router,
+                &session_id,
+                &id,
+                a,
+                "sh -c 'echo terminal-ready-$((6*7)); exec cat'\r",
+            )
+            .await
+            .accepted
         );
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let result = terminal_request(
+                &router,
+                DEFAULT_LOCAL_USER_ID,
+                &session_id,
+                a,
+                RoomTerminalOperation::Snapshot {
+                    terminal_id: id.clone(),
+                },
+            )
+            .await
+            .expect("read terminal");
+            let RoomTerminalResult::Snapshot { snapshot } = result else {
+                panic!("unexpected terminal result: {result:?}");
+            };
+            if snapshot.screen_text.contains("terminal-ready-42") {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "cat did not start");
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
         until_driver(
             &router,
             &session_id,

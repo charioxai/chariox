@@ -85,7 +85,7 @@ impl std::fmt::Display for TerminalActor {
 pub enum RoomTerminalDriver {
     /// The shell is at its prompt: any Room agent can type.
     Free,
-    /// A foreground program belongs to `driven_by` until it exits.
+    /// A submitted line or foreground program belongs to `driven_by`.
     Busy { driven_by: TerminalActor },
 }
 

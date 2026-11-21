@@ -669,10 +669,7 @@ impl PtyManager {
         );
         env.insert("CHARIOX_PROVIDER_RUN_ID".to_string(), run.id().to_string());
         if let Some(owner) = crate::provider::process_owner::current_marker() {
-            env.insert(
-                crate::provider::process_owner::OWNER_ENV.into(),
-                owner.into(),
-            );
+            env.insert(crate::provider::process_owner::OWNER_ENV.into(), owner);
         }
         env.insert(
             "CHARIOX_PROVIDER_PROCESS_KEY".to_string(),

@@ -19,20 +19,48 @@ test("a quiet process stays listed and its age keeps growing between samples", (
   assert.match(later, /123.*43s/)
 })
 
-test("the live process panel refreshes samples, scrolls, and stops refreshing on close", () => {
+test("the live process panel refreshes samples, scrolls, and stops refreshing on close", async () => {
   let rows = [row(123), row(456)]
   let renderCount = 0
   const timers: Array<() => void> = []
-  const panel = createSessionProcessController({ processes: () => rows, ownerLabel: row => row.owner.id, render: () => { renderCount++ }, schedule: callback => timers.push(callback), pageSize: () => 2 })
+  const panel = createSessionProcessController({ processes: () => rows, sessionId: () => "room-probe", readRoomProcesses: async () => [], ownerLabel: row => row.owner.id, render: () => { renderCount++ }, schedule: callback => timers.push(callback), pageSize: () => 2 })
   panel.open()
+  await new Promise<void>(resolve => setImmediate(resolve))
   assert.match(panel.visibleLines().join("\n"), /123/)
   panel.handleKey({name: "down"}); panel.handleKey({name: "down"})
   assert.match(panel.visibleLines().join("\n"), /456/)
   rows = [row(789), row(800)]
   timers.shift()!()
+  await new Promise<void>(resolve => setImmediate(resolve))
   assert.match(panel.visibleLines().join("\n"), /800/)
   panel.close()
   const afterClose = renderCount
   timers.shift()!()
   assert.equal(renderCount, afterClose)
+})
+
+test("the process overlay includes terminal jobs from Room resources", async () => {
+  const terminal: SessionProcess = { ...row(321), owner: { kind: "terminal", id: "term-probe" } }
+  const reads: string[] = []
+  const deps = {
+    processes: () => [row(123)],
+    sessionId: () => "room-probe",
+    readRoomProcesses: async (sessionId: string) => {
+      reads.push(sessionId)
+      return [terminal, row(444)]
+    },
+    ownerLabel: (process: SessionProcess) => process.owner.id,
+    render: () => {},
+    schedule: () => {},
+    pageSize: () => 20,
+  }
+  const panel = createSessionProcessController(deps)
+  panel.open()
+  await new Promise<void>(resolve => setImmediate(resolve))
+  const visible = panel.visibleLines().join("\n")
+  assert.match(visible, /term-probe.*321/)
+  assert.match(visible, /agent-a.*123/)
+  assert.doesNotMatch(visible, /444/)
+  assert.deepEqual(reads, ["room-probe"])
+  panel.close()
 })

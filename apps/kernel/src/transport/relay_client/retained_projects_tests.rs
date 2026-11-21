@@ -513,6 +513,9 @@ fn a_retained_project_keeps_its_new_commits_through_every_retry() {
         assert_no_orphaned_records(&projects);
         let first = PathBuf::from(&projects[0].workspace_ids()[0]);
 
+        // The copied repository does not inherit the fixture source’s Git identity.
+        git(&first, &["config", "user.email", "tests@chariox.local"]);
+        git(&first, &["config", "user.name", "Chariox Tests"]);
         // The person works in the exposed Project before retrying.
         commit_work(&first);
         let work_head = git_text(&first, &["rev-parse", "HEAD"]);

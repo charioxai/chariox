@@ -480,8 +480,11 @@ async fn dropping_managed_runtime_releases_durable_state_owner() {
 
 #[tokio::test]
 async fn abandoned_exec_expiry_reports_idle_and_allows_the_managed_stop() {
+    let reader_lease = crate::room_exec::TEST_READER_LEASE;
+    let scheduling_margin = std::time::Duration::from_secs(2);
     for script in ["cat", "head -c 8388608 /dev/zero"] {
         let fixture = fixture("exec-expiry-stop");
+        let deadline = tokio::time::Instant::now() + reader_lease + scheduling_margin;
         let opened = fixture
             .terminal(RoomTerminalOperation::ExecOpen {
                 command: vec!["/bin/bash".into(), "-c".into(), script.into()],
@@ -491,22 +494,27 @@ async fn abandoned_exec_expiry_reports_idle_and_allows_the_managed_stop() {
         assert!(matches!(opened, RoomTerminalResult::ExecOpened { .. }));
         assert_eq!(fixture.runtime.managed_working_agent_count(), 1);
         assert!(!fixture.reserve(), "busy exec prevents a managed stop");
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         tokio::time::pause();
-        tokio::time::advance(std::time::Duration::from_secs(301)).await;
+        tokio::time::advance(reader_lease).await;
         tokio::time::resume();
-        tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            while fixture.runtime.managed_working_agent_count() != 0 {
-                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        tokio::time::timeout_at(deadline, async {
+            loop {
+                let listed = fixture
+                    .terminal(RoomTerminalOperation::ExecList)
+                    .await
+                    .expect("read the Room's execs");
+                let RoomTerminalResult::ExecListed { execs } = listed else {
+                    panic!("unexpected exec list result: {listed:?}");
+                };
+                // An exited command can stop counting as work before its reader lease is removed.
+                if execs.is_empty() && fixture.runtime.managed_working_agent_count() == 0 {
+                    break;
+                }
+                tokio::task::yield_now().await;
             }
         })
         .await
-        .unwrap();
-        let listed = fixture
-            .terminal(RoomTerminalOperation::ExecList)
-            .await
-            .unwrap();
-        assert!(matches!(listed, RoomTerminalResult::ExecListed { execs } if execs.is_empty()));
+        .expect("the expired exec should leave the list and stop counting as managed work");
         assert!(
             fixture.reserve(),
             "reaped expiry reports idle and allows the managed stop"

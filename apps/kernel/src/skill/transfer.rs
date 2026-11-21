@@ -318,6 +318,28 @@ mod tests {
         assert!(!f.home.join("state").exists());
     }
     #[test]
+    fn skills_v2_transfer_refuses_provider_account_files_before_installing() {
+        let f = Fixture::new();
+        for path in ["auth.json", ".credentials.json", "opencode/AUTH.JSON"] {
+            let mut package = f.package.clone();
+            let mut file = package.files[0].clone();
+            file.path = path.into();
+            package.files.push(file);
+            package.version_hash = super::super::package::package_digest(&package.files);
+            let mut manifest = f.manifest.clone();
+            manifest.skills[0].digest.clone_from(&package.version_hash);
+            let error = f
+                .send(&f.context, "lease1", &manifest, &[package])
+                .expect_err("incoming account file must prevent installation");
+            assert!(
+                error.to_string().contains(path.rsplit('/').next().unwrap()),
+                "{error}"
+            );
+            assert!(!f.home.join("state").exists());
+        }
+    }
+
+    #[test]
     fn skills_v2_transfer_is_private_to_the_whole_execution_binding_without_a_catalog_or_grant() {
         let f = Fixture::new();
         let first = f

@@ -56,9 +56,12 @@ async fn submit(socket: &mut Socket, room: &str, agent: &str) -> Result<Value, V
 }
 
 fn start(scratch: &Path) -> real_kernel::Kernel {
+    // The trace provider launches Node.js from the test runner's installation.
+    let path = std::env::var_os("PATH").expect("PATH must include Node.js for trace tests");
     real_kernel::start(
         scratch,
         &[
+            ("PATH", path),
             ("CHARIOX_PROVIDER_DEV_STUB", "1".into()),
             ("CHARIOX_ROOM_AGENT_TOOLS", "1".into()),
             ("CHARIOX_LOADLAB_TRACE_DIR", scratch.as_os_str().to_owned()),

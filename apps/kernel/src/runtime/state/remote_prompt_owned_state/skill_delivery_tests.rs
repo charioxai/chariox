@@ -1923,7 +1923,7 @@ async fn leased_typed_skill_load_is_recorded_only_for_a_current_effective_skill(
 async fn claude_hook_delivery_receipt_records_the_local_run_load_once() {
     use crate::skill::service::SkillCatalogService;
     let (runtime, session_id, agent_id, attachment, run) =
-        super::tests::local_claude_fixture(crate::DaemonConfig::for_tests()).await;
+        super::tests::local_claude_fixture(crate::DaemonConfig::for_tests(), None).await;
     let config = runtime.owned.config_projection.snapshot();
     let storage = SkillCatalogStorage::new(
         config.user_config_path.parent().unwrap(),
@@ -2031,8 +2031,12 @@ async fn claude_hook_delivery_receipt_records_the_local_run_load_once() {
 #[tokio::test]
 async fn a_streamed_claude_compaction_re_attaches_the_held_load() {
     use crate::skill::service::SkillCatalogService;
+    crate::test_support::isolated_env_test!();
+    #[cfg(unix)]
+    let _claude = crate::test_support::TestClaudeExecutable::new();
+    let worktree = crate::test_support::TestWorktree::new("claude-compaction");
     let (runtime, session_id, agent_id, attachment, run) =
-        super::tests::local_claude_fixture(crate::DaemonConfig::for_tests()).await;
+        super::tests::local_claude_fixture(crate::DaemonConfig::for_tests(), Some(&worktree)).await;
     let config = runtime.owned.config_projection.snapshot();
     let storage = SkillCatalogStorage::new(
         config.user_config_path.parent().unwrap(),

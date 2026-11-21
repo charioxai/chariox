@@ -1,5 +1,7 @@
 import { getRelayStatus } from "./relay-api.js"
 import { createSessionProcessController } from "./session-process-controller.js"
+import { expectVariant } from "./ipc-response.js"
+import type { SessionProcess } from "@chariox/kernel-client/kernel-events"
 import { dialogPageSize, dialogTextWidth } from "./cli-dialog-panel-size.js"
 import { createProjectEnvironmentController } from "./project-environment-controller.js"
 import { randomUUID } from "node:crypto"
@@ -105,6 +107,13 @@ export function createCliOverlayInteractionComposition(deps: CliOverlayInteracti
 
   const processController = createSessionProcessController({
     processes: () => deps.isAttached() ? deps.sessionState().processes ?? [] : [],
+    sessionId: () => deps.isAttached() ? deps.sessionState().id : null,
+    readRoomProcesses: async sessionId => {
+      const response = await deps.client.currentClient().send({
+        GetMachineRoomResources: { session_id: sessionId },
+      })
+      return expectVariant<{ processes: SessionProcess[] }>(response, "MachineRoomResources").processes
+    },
     ownerLabel: row => row.owner.kind === "agent"
       ? deps.sessionState().agents?.find((agent: {id: string}) => agent.id === row.owner.id)?.alias ?? row.owner.id
       : row.owner.id,
