@@ -236,6 +236,7 @@ impl KernelRuntimeState {
             specs.push(super::file_copy_tool::file_copy_spec());
             specs.extend(super::machine_files_tools::files_tool_specs());
             specs.extend(super::machine_acquisition::machine_tool_specs());
+            specs.extend(super::kernel_enrollment::kernel_enrollment_tool_specs());
         }
         if provider_runs.len() == 1 && self.skills_v2_runtime_available() {
             specs.extend(crate::transport::runtime_tools::skill_runtime_tool_specs());
@@ -410,6 +411,9 @@ impl KernelRuntimeState {
                 | "chariox.machines.release"
         ) {
             return self.machine_tool(auth_token, tool_name, arguments).await;
+        }
+        if tool_name == super::kernel_enrollment::ENROLL_TOOL {
+            return self.kernel_enrollment_tool(auth_token, arguments).await;
         }
 
         for run in self

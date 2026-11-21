@@ -393,7 +393,8 @@ impl KernelRuntimeState {
             && connection_class
                 .is_some_and(|class| class != crate::local::KernelConnectionClass::Terminal)
             && (interaction_id.starts_with("capability-request-")
-                || interaction_id.starts_with("machine-acquisition-"))
+                || interaction_id.starts_with("machine-acquisition-")
+                || interaction_id.starts_with("kernel-enrollment-"))
             && self
                 .owned
                 .pending_interactions

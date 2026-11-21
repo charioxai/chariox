@@ -420,4 +420,4 @@ mod choice;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
-mod tool_tests;
+pub(in crate::runtime::state) mod tool_tests;
