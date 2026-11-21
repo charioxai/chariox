@@ -659,7 +659,7 @@ async fn refused_vault_wake_start() {
         None,
     );
     f.runtime
-        .arm_interaction_wake(&f.room, &f.agent, question)
+        .arm_interaction_wake(&f.room, &f.agent, question, None)
         .unwrap();
     let wake = f
         .store()

@@ -485,7 +485,7 @@ impl KernelRuntimeState {
             session_id: Some(session_id.to_owned()),
         });
         self.vault_payment_asks().insert(id.clone(), payment);
-        let asked = match self.arm_interaction_wake(session_id, agent_id, interaction) {
+        let asked = match self.arm_interaction_wake(session_id, agent_id, interaction, None) {
             Ok(asked) => asked,
             Err(refused) => {
                 self.vault_payment_asks().remove(&id);

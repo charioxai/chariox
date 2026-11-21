@@ -7499,6 +7499,14 @@ list, so a change of stock or rate needs a fresh decision. Agents use the same l
 Give a short reason for the machine. The owner's approval card and interaction list
 name the requesting agent, its Room, the reason and the chosen option. The shape is pinned by the `machine_options_1011_shapes_and_hash` protocol test.
 
+When the native agent needs owner approval, acquire returns `status: "pending"`,
+`request_id`, `interaction_id`, `registration_id` and `expires_at_ms`. Yield on the
+registration for the approval event. An approved agent submits acquire again with
+the same request ID. A denied, expired or cancelled approval ends that request ID.
+When a service reply is too slow to confirm an allocation, retry with the same
+request ID to recover any allocation already accepted by the service.
+
+
 Protocol 993 (peer 432) adds optional task `owner_action: "browser_access"` and a kernel decision `related_agent_id`. Browser approval stays attached to the blocked task revision and grants access only after an owner answer. Task owner decisions have no automatic expiry; ordinary interaction deadlines are unchanged. Clients place these decisions with the referenced agent and remove them when the authoritative task leaves Blocked.
 
 Local 994 / peer 433 also identifies kernel notification sources with

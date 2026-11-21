@@ -183,18 +183,12 @@ impl KernelRuntimeState {
             match store.acquire_choice(agent_id, request_id, crate::session::unix_epoch_ms())? {
                 Some(choice) => {
                     let option = choice.option.clone();
-                    let differs = |named: &Option<String>, kept: Option<&str>| {
-                        named.is_some() && named.as_deref() != kept
-                    };
-                    if differs(&class_id, option.class_id()) || differs(&region, option.region()) {
-                        return Err(acquisition_error(
-                            "invalid_request",
-                            &format!(
-                                "request_id {request_id} already asked for {}; retry it without class_id and region. Use a new request_id only when the service closes this one.",
-                                option_name(&option),
-                            ),
-                        ));
-                    }
+                    check_acquire_option(
+                        request_id,
+                        &option,
+                        class_id.as_deref(),
+                        region.as_deref(),
+                    )?;
                     return Ok(option);
                 }
                 None => {
@@ -260,6 +254,26 @@ impl KernelRuntimeState {
             &format!("The service returned another allocation for request_id {request_id} than it accepted before; check chariox.machines.status for both"),
         ))
     }
+}
+
+pub(super) fn check_acquire_option(
+    request_id: &str,
+    option: &AcquireOption,
+    class: Option<&str>,
+    region: Option<&str>,
+) -> Result<(), DaemonError> {
+    if class.is_some_and(|class| Some(class) != option.class_id())
+        || region.is_some_and(|region| Some(region) != option.region())
+    {
+        return Err(acquisition_error(
+            "invalid_request",
+            &format!(
+                "request_id {request_id} already asked for {}; retry it without class_id and region. Use a new request_id only when the service closes this one.",
+                option_name(option),
+            ),
+        ));
+    }
+    Ok(())
 }
 
 fn option_name(option: &AcquireOption) -> String {
