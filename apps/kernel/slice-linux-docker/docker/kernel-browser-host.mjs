@@ -84,8 +84,8 @@ export function scheduleHostRequest(request, browser, viewport = hostViewport(),
 const TAB_LIMIT = 128;
 // A Tab the person types or clicks in is theirs until they have been idle this long (an agent's input to it waits).
 export const PERSON_IDLE_MS = 2000;
-// B3: a viewer's hover move (no button) is the person's pointer, not the person acting in the Tab.
-const hoverMove = command => command.op === 'input' && command.input?.kind === 'mirror' && command.input.action?.kind === 'move';
+// B3: a viewer's hover move or leave (no button) is the person's pointer, not the person acting in the Tab.
+const hoverMove = command => command.op === 'input' && command.input?.kind === 'mirror' && ['move', 'leave'].includes(command.input.action?.kind);
 const SHOW_TAB_WAIT_MS = 1000;
 // The answer to a Show tab carries the state read if it finishes in time; a busy renderer of another Tab never holds it.
 const SHOW_TAB_OBSERVE_MS = 500;

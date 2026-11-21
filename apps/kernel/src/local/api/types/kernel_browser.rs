@@ -375,6 +375,8 @@ pub enum KernelBrowserMirrorAction {
         x: f64,
         y: f64,
     },
+    /// B3: the viewer's pointer left the page: the kernel's mouse leaves it too (mouseout/leave, :hover ends).
+    Leave {},
     Focus {
         node_id: String,
     },

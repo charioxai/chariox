@@ -1124,6 +1124,7 @@ export class Mirror2 {
     const retryOffscreen = async resolve => { for (let attempt = 0; ; attempt++) { try { return await resolve(); } catch (error) { if (error?.mirrorReason !== 'offscreen_node' || attempt >= 3) throw error; assertNotCancelled(signal); await new Promise(done => setTimeout(done, 150)); } } };
     // B3: a hover move aims like a click but never scrolls the page to its node and has no hit fence. A node off the kernel's
     // viewport, inside a mirrored frame, or changed since the viewer's view drops the move: it has no outcome to report.
+    if (action.kind === 'leave') return { input: { kind: 'leave' }, guard: async () => { assertEpoch(); assertNotCancelled(signal); } };
     if (action.kind === 'move') {
       const skip = { perform: async () => {}, fenced: true };
       if (slotOf(action.node_id) || (stream.attrSequence.get(action.node_id) ?? 0) > input.sequence) return skip;
@@ -1183,9 +1184,10 @@ export class Mirror2 {
         else await call(`${m}.hitCheck(${JSON.stringify(at)},${JSON.stringify(action.node_id)})`);
         checked = true;
       };
-      // B4: Chrome's own menu would open in the kernel's window, where no viewer shows it: a one-shot listener in this
-      // isolated world cancels the contextmenu the right click fires (after the page's own listeners saw it).
-      if (action.kind === 'click' && action.button === 'right') return { input: { kind: 'click', ...at, button: 'right' }, guard: async () => { await guard(); await call(`(()=>{const f=e=>e.preventDefault();addEventListener('contextmenu',f,{once:true});setTimeout(()=>removeEventListener('contextmenu',f),1000);return true})()`); } };
+      // B4: Chrome's own menu would open in the kernel's window, where no viewer shows it: a one-shot listener in the
+      // target document's window (its frame's world for a mirrored frame) cancels the contextmenu the right click fires,
+      // after the page's own listeners saw it.
+      if (action.kind === 'click' && action.button === 'right') return { input: { kind: 'click', ...at, button: 'right' }, guard: async () => { await guard(); if (entry) await inFrame(entry, `${m}.menuOff(${JSON.stringify(localId(action.node_id))})`); else await call(`${m}.menuOff(${JSON.stringify(action.node_id)})`); } };
       if (action.kind === 'click') return { input: { kind: 'click', ...at }, guard };
       if (!Number.isInteger(action.delta_x) || !Number.isInteger(action.delta_y)) throw new Error('MP-11: invalid mirror input');
       return { input: { kind: 'scroll', ...at, delta_x: action.delta_x, delta_y: action.delta_y }, guard };

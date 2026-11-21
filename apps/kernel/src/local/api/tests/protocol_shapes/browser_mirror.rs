@@ -194,7 +194,7 @@ fn browser_mirror_protocol_443_shapes_and_hash() {
         "MP-11: no retained mirror DOM/media receipts"
     );
 }
-// B3/B4: a hover move and a right click are mirror actions of their own shape; a middle-button page click is not one.
+// B3/B4: a hover move, a leave and a right click are mirror actions of their own shape; a middle-button page click is not one.
 #[test]
 fn browser_mirror_move_and_right_click_shapes() {
     for (value, ok) in [
@@ -206,6 +206,8 @@ fn browser_mirror_move_and_right_click_shapes() {
             serde_json::json!({"kind":"click","node_id":"n1","x":4.5,"y":2.0,"button":"right"}),
             true,
         ),
+        (serde_json::json!({"kind":"leave"}), true),
+        (serde_json::json!({"kind":"leave","node_id":"n1"}), false),
         (serde_json::json!({"kind":"move","node_id":"n1"}), false),
         (
             serde_json::json!({"kind":"move","node_id":"n1","x":1.0,"y":1.0,"button":"right"}),

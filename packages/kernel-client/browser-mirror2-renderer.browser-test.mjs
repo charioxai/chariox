@@ -1676,6 +1676,33 @@ test('B3/B4: a hover sends the newest move, a right click sends a right click (n
   } finally { await page.close(); }
 });
 
+// B3 review: the pointer leaving the viewer straight from a hovered node leaves the kernel's page too (its mouseleave and :hover
+// end); behind an unanswered move the leave replaces the queued position, so the page is not hovered again after it.
+test('B3: leaving the viewer from a hovered node sends a leave, which replaces a queued move behind an unanswered one', async () => {
+  const page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
+  try {
+    await page.goto(url);
+    await page.evaluate(async () => { window.sent = []; window.release = []; window.r = new Mirror2.BrowserMirror2Renderer(document.getElementById('c'), (action, _epoch, written) => { window.sent.push(action); written?.(); return new Promise(resolve => window.release.push(resolve)); }); await window.r.ready(); });
+    await apply(page, snapshot([{ id: 'n1', parent: null, kind: 'document' }, { id: 'n2', parent: 'n1', kind: 'element', tag: 'html' }, { id: 'n3', parent: 'n2', kind: 'element', tag: 'body', attrs: { style: 'margin:0' } },
+      { id: 'n4', parent: 'n3', kind: 'element', tag: 'div', attrs: { style: 'width:400px;height:40px' } }]));
+    await page.waitForFunction(() => window.r.acceptsInput, {}, { timeout: 3000 });
+    const box = await page.evaluate(() => { const r = window.r.frame.getBoundingClientRect(); return { x: r.x, y: r.y, outside: r.y > 10 ? { x: r.x + 10, y: r.y - 5 } : { x: r.x + 10, y: r.bottom + 5 } }; });
+    const sent = () => page.evaluate(() => window.sent.filter(a => a.kind !== 'scroll_to').map(a => a.kind === 'move' ? `move:${a.x}` : a.kind));
+    const releaseAll = () => page.evaluate(() => { for (const resolve of window.release.splice(0)) resolve(); });
+    await page.mouse.move(box.x + 10, box.y + 20); await frames(); await releaseAll();
+    await page.mouse.move(box.outside.x, box.outside.y); await frames(); await frames();
+    assert.deepEqual(await sent(), ['move:10', 'leave'], 'B3: the move, then the leave once the pointer is out of the viewer');
+    await releaseAll(); await page.evaluate(() => { window.sent = []; }); await frames();
+    // A move unanswered, the next position queued behind it: leaving now replaces that queued move.
+    await page.mouse.move(box.x + 30, box.y + 20); await frames();
+    await page.mouse.move(box.x + 60, box.y + 20); await frames();
+    await page.mouse.move(box.outside.x, box.outside.y); await frames(); await frames();
+    assert.deepEqual(await sent(), ['move:30'], 'the first move is unanswered; the rest waits');
+    await releaseAll(); await frames(); await frames(); await releaseAll(); await frames();
+    assert.deepEqual(await sent(), ['move:30', 'leave'], 'B3: the leave replaced the queued move; the page is not hovered again after it');
+  } finally { await page.close(); }
+});
+
 // B3: hover moves never hold a click, a key or the kernel's focus back. With replies slow (held) and each input written at once,
 // a click right after the pointer moved is written next, and an unanswered move is no pending input for the kernel's focus.
 test('B3: a click right after unanswered hover moves is written at once, and the kernel focus still applies while moves are unanswered', async () => {

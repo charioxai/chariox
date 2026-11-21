@@ -52,6 +52,8 @@ export type Mirror2Action =
   | { kind: 'click'; node_id: string; x: number; y: number; button?: 'right' }
   // B3: the pointer over the page with no button held (hover menus, tooltips, mouseenter/leave), as the kernel's one mouse.
   | { kind: 'move'; node_id: string; x: number; y: number }
+  // B3: the viewer's pointer left the page; the kernel's mouse leaves it too (mouseleave, :hover ends).
+  | { kind: 'leave' }
   | { kind: 'scroll'; node_id: string; x: number; y: number; delta_x: number; delta_y: number }
   | { kind: 'scroll_to'; node_id: string | null; x: number; y: number }
   | { kind: 'focus'; node_id: string }

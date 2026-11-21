@@ -462,6 +462,34 @@ test("B3/B4: a hover move opens a :hover submenu whose item takes the click; a r
   assert(events.includes("ctx:false"), `the page sees its contextmenu uncancelled (${events})`);
 }));
 
+// B3 review: the viewer's pointer leaving the page leaves the kernel page too: mouseleave runs and :hover ends.
+test("B3: a leave after a hover move ends the page's hover (mouseleave, :hover off)", () => mirrored(hover.replace('m.addEventListener("mouseover",()=>ev.push("over"));', 'm.addEventListener("mouseover",()=>ev.push("over"));m.addEventListener("mouseleave",()=>ev.push("leave"));'), async ({ next, evaluate, input }) => {
+  const first = await next(), ids = Object.fromEntries(elements(first).filter(([, , attrs]) => attrs.id).map(([id, , attrs]) => [attrs.id, id]));
+  await input(first.sequence, { kind: "move", node_id: ids.m, x: 20, y: 10 });
+  for (let i = 0; i < 40 && await evaluate("getComputedStyle(sub).display") !== "block"; i++) await settle(25);
+  assert.equal(await evaluate("getComputedStyle(sub).display"), "block", "the kernel page hovers the menu");
+  await input(first.sequence, { kind: "leave" });
+  for (let i = 0; i < 40 && await evaluate("getComputedStyle(sub).display") !== "none"; i++) await settle(25);
+  assert.equal(await evaluate("getComputedStyle(sub).display"), "none", "the hover ended with the leave");
+  assert((await evaluate("ev")).includes("leave"), "the page's mouseleave ran");
+}));
+
+// B4 review: a right click inside a frame (same-origin or mirrored cross-origin) cancels Chrome's menu in that frame's
+// own window (a frame's contextmenu never reaches its parent), after the page's listeners saw it uncancelled.
+const frameMenu = '<!doctype html><body style="margin:0"><button id="r" style="width:80px;height:30px">r</button><script>window.ev=[];r.addEventListener("contextmenu",e=>{ev.push("ctx:"+e.defaultPrevented);setTimeout(()=>{ev.push("final:"+e.defaultPrevented);parent.postMessage(ev.join(),"*")})})</script>';
+test("B4: a right click inside a same-origin and a cross-origin frame leaves no native menu (contextmenu cancelled in the frame)", () => mirrored(
+  `<body style="margin:0"><iframe id="same" srcdoc='${frameMenu}' style="position:absolute;left:10px;top:10px;width:200px;height:60px;border:0"></iframe><iframe id="cross" src="http://localhost:PORT/menu" style="position:absolute;left:10px;top:200px;width:200px;height:60px;border:0"></iframe><script>window.got=[];addEventListener("message",e=>got.push(e.data))</script></body>`, async ({ next, evaluate, input }) => {
+    await settle(600);
+    const snapshot = await next(600), buttons = elements(snapshot).filter(([, tag, attrs]) => tag === "button" && attrs.id === "r").map(([id]) => id);
+    const same = buttons.find(id => Number(id.slice(1)) < 1e9), cross = buttons.find(id => Number(id.slice(1)) >= 1e9);
+    assert(same && cross, `both frames' buttons are mirrored (${buttons})`);
+    for (const node_id of [same, cross]) await input(snapshot.sequence, { kind: "click", node_id, x: 10, y: 10, button: "right" });
+    for (let i = 0; i < 40 && (await evaluate("got")).length < 2; i++) await settle(25);
+    assert.deepEqual((await evaluate("got")).toSorted(), ["ctx:false,final:true", "ctx:false,final:true"], "each frame's page saw its contextmenu, then it was cancelled");
+  }, {
+    "/menu": { type: "text/html", body: frameMenu },
+  }));
+
 // browserfidelity r4 (vimeo): a consent banner lives in a closed root whose host has no box of its own (0x0, the content is
 // position: fixed). The region's still covers what the closed content paints, placed relative to the host, and a click
 // on it reaches the content.

@@ -228,6 +228,12 @@ export async function inputHostTab(browser, tab, input, { viewport=canonicalView
         assertNotCancelled(signal);
         onDispatch?.()?.();
       } else {
+        // B3: the viewer's pointer left the page: the mouse moves off the page (Chrome fires mouseout/leave, :hover ends).
+        if (input.kind === "leave" && resolved) {
+          await mirrorGuard?.(); onDispatch?.();
+          await connection.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: -1, y: -1, button: "none", buttons: 0, ...stamp }, sessionId);
+          assertNotCancelled(signal); return;
+        }
         if (!Number.isInteger(input.x) || input.x < 0 || input.x >= viewport.css_width || !Number.isInteger(input.y) || input.y < 0 || input.y >= viewport.css_height) throw new PointerOutsideViewport();
         // Protocol 530: middle/right buttons are the band's (Chrome's own UI), never a page click; B4: a mirror's
         // resolved right click is the page's.
