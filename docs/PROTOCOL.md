@@ -4698,7 +4698,10 @@ action, done, or owner-cancelled. Cancellation is never successful completion.
 
 Obligation/registration, wait intent, event admission and delivery intent commit
 through the shared SQLite writer. Native provider settlement commits the wait;
-a result racing it remains in the inbox. Done requires public output and no
+a result racing it remains in the inbox. In the same running turn after yield,
+`inbox` and `ack` still work. A second yield or a new timer is refused with the
+accepted wait's reason. If the agent handles the last outcome before the turn
+ends, settlement can finish the wait immediately. Done requires public output and no
 unresolved obligation, except open watched processes, jobs, terminal watches and
 delegates: the turn ends done and their end wakes the agent as an `after_turn`
 event. For any other unresolved obligation one persisted correction is permitted;
