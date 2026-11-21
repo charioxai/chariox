@@ -1991,6 +1991,82 @@ fn mp08_webrtc_answer_offers_the_address_the_relay_stun_responder_sees() {
     });
 }
 
+/// Row 252 (webperf-r18 lab): the kernel's grant waited for its STUN lookup (300 + 400 ms when nothing answers) before it answered,
+/// and the browser's first transcript waited for the grant. An unanswered lookup no longer holds the answer: it carries the host
+/// candidates at once, and the host path still connects.
+#[test]
+fn row252_an_unanswered_stun_lookup_does_not_hold_the_webrtc_answer() {
+    large_stack(async {
+        // A STUN responder that never answers.
+        let silent = tokio::net::UdpSocket::bind(("127.0.0.2", 0)).await.unwrap();
+        let stun_port = silent.local_addr().unwrap().port();
+        let kernel = Kernel::build_with_rtc(
+            true,
+            Some(0),
+            rtc::RtcEndpoint::new(Some(0), Arc::new(rtc::host_addresses)).with_stun_port(stun_port),
+        );
+        let mut config = kernel.projection.snapshot();
+        config.relay_url = Some("wss://127.0.0.2:8443/".into());
+        kernel.projection.update(config);
+        let browser = Browser::new();
+        for round in 0..2 {
+            let (mut client, offer) = RtcClient::offer();
+            let started = std::time::Instant::now();
+            let issued = kernel.mint_rtc(&browser, &offer).await;
+            let waited = started.elapsed();
+            assert!(waited < std::time::Duration::from_millis(250), "round {round}: the answer waited {waited:?} for STUN");
+            let answer = issued["answer"].as_str().expect("an SDP answer");
+            assert!(answer.lines().any(|line| line.contains(" typ host")), "{answer}");
+            client.accept(answer);
+            let grant = issued["grant"].as_str().unwrap().to_owned();
+            let verdict = rtc_handshake(&kernel, &browser, &mut client, &issued, &grant).await;
+            assert_eq!(verdict["kind"], "local_connected", "round {round}: {verdict}");
+        }
+        drop(silent);
+    });
+}
+
+/// Row 252: the reflexive address is learned once per endpoint and reused, so later answers neither wait for nor repeat the lookup.
+#[test]
+fn row252_a_later_webrtc_answer_reuses_the_reflexive_address_without_asking_again() {
+    large_stack(async {
+        let mapped_ip: std::net::IpAddr = "203.0.113.9".parse().unwrap();
+        let responder = tokio::net::UdpSocket::bind(("127.0.0.2", 0)).await.unwrap();
+        let stun_port = responder.local_addr().unwrap().port();
+        let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = Arc::clone(&asked);
+        tokio::spawn(async move {
+            let mut buf = [0_u8; 1500];
+            while let Ok((len, source)) = responder.recv_from(&mut buf).await {
+                counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let mapped = std::net::SocketAddr::new(mapped_ip, source.port());
+                if let Some(answer) = chariox_relay::stun::binding_response(&buf[..len], mapped) {
+                    let _ = responder.send_to(&answer, source).await;
+                }
+            }
+        });
+        let kernel = Kernel::build_with_rtc(
+            true,
+            Some(0),
+            rtc::RtcEndpoint::new(Some(0), Arc::new(rtc::host_addresses)).with_stun_port(stun_port),
+        );
+        let mut config = kernel.projection.snapshot();
+        config.relay_url = Some("wss://127.0.0.2:8443/".into());
+        kernel.projection.update(config);
+        let browser = Browser::new();
+        let (_first_client, first_offer) = RtcClient::offer();
+        let first = kernel.mint_rtc(&browser, &first_offer).await;
+        assert!(first["answer"].as_str().unwrap().lines().any(|line| line.contains(" typ srflx")), "{first}");
+        let after_first = asked.load(std::sync::atomic::Ordering::SeqCst);
+        let (_second_client, second_offer) = RtcClient::offer();
+        let started = std::time::Instant::now();
+        let second = kernel.mint_rtc(&browser, &second_offer).await;
+        assert!(started.elapsed() < std::time::Duration::from_millis(100), "the second answer waited {:?}", started.elapsed());
+        assert!(second["answer"].as_str().unwrap().lines().any(|line| line.contains(" typ srflx") && line.contains("203.0.113.9")), "{second}");
+        assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), after_first, "the known reflexive address is not asked for again");
+    });
+}
+
 /// MP-08 protocol 917: an RTC-only kernel (no loopback grant ever minted)
 /// still retires an admitted data channel when the Cloud pairing is cleared.
 #[test]
