@@ -123,16 +123,32 @@ async fn cards() {
 fn room_cards_pages_by_bytes_and_keeps_a_cursor_after_the_previous_card_closes() {
     run_large_stack_async_test("xroom-paged", || async {
         let world = coordinator("xroom-paged").await;
+        let owner = world
+            .app
+            .lock()
+            .await
+            .sessions()
+            .get_session(&world.other_room)
+            .unwrap()
+            .owner_user_id()
+            .to_owned();
         let mut answers = Vec::new();
         for index in 0..6 {
             let id = format!("page-card-{index}");
-            let interaction =
-                card(&id, &world.ids["q"], false).with_message("Details ".repeat(600));
+            let interaction = RuntimeInteraction::for_kernel_operation(
+                &id,
+                format!("access-grant:{id}"),
+                "Allow command?",
+                "Details ".repeat(600),
+                vec![RuntimeInteractionChoice::new(
+                    "allow", "Allow", "allow", None,
+                )],
+            );
             answers.push(
                 world
                     .router
                     .runtime_state
-                    .create_runtime_interaction(&world.other_room, interaction)
+                    .create_kernel_operation_interaction(&world.other_room, &owner, interaction)
                     .await
                     .unwrap(),
             );

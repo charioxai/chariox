@@ -747,9 +747,9 @@ async fn asking_waits_for_the_person_and_an_agent_cannot_take_the_decision() {
     team.hit_the_limit(0).await;
     let reset = team.stop(0).unwrap().resumes_at_ms.unwrap();
 
-    // Nothing fires without the person's decision, however late.
-    tick(team.rt(), reset + 3_600_000).await;
+    tick(team.rt(), reset - 1).await;
     assert_eq!(team.stop(0).unwrap().state, UsageLimitStopState::Asking);
+    assert!(!team.has_turn(0));
 
     // A parent cannot arm it under Ask me.
     let refused = team
