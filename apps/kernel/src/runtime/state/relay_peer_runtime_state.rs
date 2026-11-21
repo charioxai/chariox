@@ -778,9 +778,18 @@ impl KernelRuntimeState {
                 // A prior profile acknowledgement may have been lost. Home remains
                 // authoritative, including when this is a retry of an active prompt.
                 if let Err(error) = profile_update {
+                    // A worker that lost the account leaves the prompt open: the home
+                    // hands the account over again and submits the same prompt, which
+                    // a rejection receipt would fence.
+                    let account_missing = matches!(
+                        &error,
+                        DaemonError::LocalTransport { operation, .. }
+                            if *operation
+                                == crate::transport::relay_peer::REMOTE_PROVIDER_ACCOUNT_MISSING_OPERATION
+                    );
                     if let Some(home_prompt_id) = profile_home_prompt_id
                         .as_deref()
-                        .filter(|_| profile_receipt_is_new)
+                        .filter(|_| profile_receipt_is_new && !account_missing)
                     {
                         // A permanent profile refusal needs a durable receipt.
                         runtime
