@@ -186,7 +186,7 @@ impl KernelRuntimeState {
                 let run = self.watched_process_run(run.id())?;
                 let cwd =
                     super::super::agent_process_watch::workspace_cwd(&run, args["cwd"].as_str())?;
-                let argv = super::super::agent_process_watch::command_argv(&args["argv"])?;
+                let argv = super::super::agent_process_watch::command_argv(&args["argv"], false)?;
                 let match_text = match args["match_text"].as_str() {
                     Some(m) if m.is_empty() || m.len() > 200 => {
                         return Err(ledger::error("match_text of 1-200 bytes required"))
