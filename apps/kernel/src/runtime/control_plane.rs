@@ -64,25 +64,13 @@ pub(crate) async fn execute(
         ControlPlaneRequest::Acquire { request_id, .. } => Some(request_id.as_str()),
         _ => None,
     });
-    if let ControlPlaneRequest::AcquireJob { job_ref, .. } = request {
-        let Some(job_id) = command.caller.caller_id.strip_prefix("job:") else {
-            return Err(unavailable(
-                "job_acquisition_required",
-                "Start the work as a job so the kernel can manage its machine",
-            ));
-        };
-        let (room, agent, owner) = state.job_acquisition_subject(job_id)?;
-        if job_ref != job_id
-            || command.session_id.as_deref() != Some(room.as_str())
-            || command.agent_id.as_deref() != Some(agent.as_str())
-            || command.caller.metaagent_id.as_deref() != Some(agent.as_str())
-            || command.caller.user_id.as_deref() != Some(owner.as_str())
-        {
-            return Err(unavailable(
-                "control_plane_binding_invalid",
-                "The accepted job no longer matches its Room, agent and owner",
-            ));
-        }
+    if matches!(request, ControlPlaneRequest::AcquireJob { .. })
+        && !command.caller.caller_id.starts_with("job:")
+    {
+        return Err(unavailable(
+            "job_acquisition_required",
+            "Start the work as a job so the kernel can manage its machine",
+        ));
     }
     let post = |request: &ControlPlaneRequest| {
         let body = cloud_request_body(&profile.account_id, credential, request);
@@ -178,6 +166,23 @@ pub(crate) async fn execute(
             state.authorize_external_request(grant, &request_shape)?;
         } else if let Some(reach) = command.reach_caller_id() {
             state.authorize_gateway_request(&reach, &request_shape)?;
+        }
+        if let (ControlPlaneRequest::AcquireJob { job_ref, .. }, Some(job_id)) =
+            (request, command.caller.caller_id.strip_prefix("job:"))
+        {
+            // Owner approval can outlive the job that requested it.
+            let (room, agent, owner) = state.job_acquisition_subject(job_id)?;
+            if job_ref != job_id
+                || command.session_id.as_deref() != Some(room.as_str())
+                || command.agent_id.as_deref() != Some(agent.as_str())
+                || command.caller.metaagent_id.as_deref() != Some(agent.as_str())
+                || command.caller.user_id.as_deref() != Some(owner.as_str())
+            {
+                return Err(unavailable(
+                    "control_plane_binding_invalid",
+                    "The accepted job no longer matches its Room, agent and owner",
+                ));
+            }
         }
     }
     let service_response = post(request).await;
