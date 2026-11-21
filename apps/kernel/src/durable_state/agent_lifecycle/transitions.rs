@@ -64,6 +64,27 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
     let question = matches!(&op, Operation::BlockForQuestion { .. });
     let interrupted = matches!(&op, Operation::BlockInterrupted { .. });
     match op {
+        Operation::DismissTaskCard {
+            room,
+            task,
+            blocked_revision,
+        } => {
+            let current = load(tx, &task)?;
+            if current.room_id != room
+                || current.state != ExecutionState::Blocked
+                || current.blocked_revision != blocked_revision
+            {
+                return Err(error(
+                    "The task no longer waits on this card. Read the Room again.",
+                ));
+            }
+            tx.execute(
+                "UPDATE agent_tasks SET dismissed_card_revision=?2 WHERE task_id=?1",
+                params![task, sql_integer(blocked_revision)?],
+            )
+            .map_err(sql)?;
+            Ok(Outcome::Saved)
+        }
         Operation::Outside(mutation) => super::outside::apply(tx, mutation),
         Operation::SetDeadline {
             room,
