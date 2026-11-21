@@ -10,9 +10,9 @@ impl KernelRuntimeState {
         request: RunJobRequest,
     ) -> Result<serde_json::Value, DaemonError> {
         let agent = self.owned.agent_store.get_agent(&task.agent_id)?;
-        let remote = agent.remote_execution().ok_or_else(|| {
-            ledger::error("Jobs require an active Build turn on the execution kernel")
-        })?;
+        let remote = agent
+            .remote_execution()
+            .ok_or_else(|| ledger::error(super::refusal::BUILD_TURN_REQUIRED))?;
         if request.machine.is_some() {
             return Err(ledger::error(
                 "A placed agent runs jobs on its current machine; omit the machine argument",
@@ -96,7 +96,7 @@ impl KernelRuntimeState {
         }
         let mut result = execute::failed(
             &record,
-            format!("Job supervision on the execution kernel ended: {reason}"),
+            format!("The Room lost contact with this job on its execution kernel. Check that machine for the original job before starting it again. {reason}"),
         );
         result.outcome = JobOutcome::MachineLost;
         self.store_placed_job_result(wake, record, result)

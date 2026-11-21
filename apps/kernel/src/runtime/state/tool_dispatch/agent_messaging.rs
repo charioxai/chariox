@@ -56,19 +56,36 @@ impl KernelRuntimeState {
         let agents = self.session_agents(session.id());
         let activity = self.agent_activity_for_session(session);
         match resolve_session_agent(&agents, &args.agent) {
-            Ok(agent) => crate::transport::runtime_tools::RuntimeToolResult {
-                ok: true,
-                payload: serde_json::json!({
-                    "session_id": session.id(),
-                    "agent": session_agent_description(
-                            session,
-                            requester,
-                            agent,
-                            self.owned.agent_store.effective_execution_config(session, agent, &self.owned.session_store),
-                            &activity,
-                        ),
-                }),
-            },
+            Ok(agent) => {
+                let mut description = session_agent_description(
+                    session,
+                    requester,
+                    agent,
+                    self.owned.agent_store.effective_execution_config(
+                        session,
+                        agent,
+                        &self.owned.session_store,
+                    ),
+                    &activity,
+                );
+                if agent.id() == requester.id()
+                    || (agent.parent_agent_id() == Some(requester.id())
+                        && agent.owner_user_id() == requester.owner_user_id())
+                {
+                    description["jobs"] = serde_json::json!(self
+                        .session_jobs(session.id())
+                        .into_iter()
+                        .filter(|job| job.agent_id == agent.id())
+                        .collect::<Vec<_>>());
+                }
+                crate::transport::runtime_tools::RuntimeToolResult {
+                    ok: true,
+                    payload: serde_json::json!({
+                        "session_id": session.id(),
+                        "agent": description,
+                    }),
+                }
+            }
             Err(message) => agent_message_failure(message),
         }
     }

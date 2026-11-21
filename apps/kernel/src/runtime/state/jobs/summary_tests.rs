@@ -55,6 +55,24 @@ async fn job_summary_lists_counts_without_returning_retained_output_or_paths() {
 }
 
 #[tokio::test]
+async fn job_summary_keeps_the_reason_when_a_named_execution_machine_is_lost() {
+    let ((state, _run, task, _workspace), mut record) = completed().await;
+    record.placement = JobPlacement::Remote;
+    record.machine_label = Some("worker".into());
+    let result = record.result.as_mut().unwrap();
+    result.exit_code = None;
+    result.outcome = JobOutcome::MachineLost;
+    let reason = "The Room lost contact with this job on its execution kernel.";
+    result.output_tail = reason.into();
+    state.job_driver().unwrap().save(&record).unwrap();
+
+    let rows = state.session_jobs(&task.room_id);
+    let summary = rows[0].result.as_ref().unwrap();
+    assert_eq!(summary.outcome, JobOutcome::MachineLost);
+    assert_eq!(summary.reason.as_deref(), Some(reason));
+}
+
+#[tokio::test]
 async fn job_summary_estimates_are_room_scoped_and_do_not_open_full_results() {
     let ((state, _run, task, _workspace), mut record) = completed().await;
     let driver = state.job_wake_driver.as_ref().unwrap();

@@ -152,16 +152,23 @@ impl DurableKernelStateStore {
         id: &str,
     ) -> Result<Option<LeasedProcessBinding>, DaemonError> {
         let db = self.lock_connection("agent.leased_wake.binding")?;
-        let row: Option<String> = db
-            .query_row(
-                "SELECT payload FROM agent_leased_wake_bindings WHERE id=?1",
-                [id],
-                |r| r.get(0),
-            )
-            .optional()
-            .map_err(sql)?;
-        row.map(|s| decode(&s)).transpose()
+        read_wake_binding(&db, id)
     }
+}
+
+pub(super) fn read_wake_binding(
+    db: &Connection,
+    id: &str,
+) -> Result<Option<LeasedProcessBinding>, DaemonError> {
+    let row: Option<String> = db
+        .query_row(
+            "SELECT payload FROM agent_leased_wake_bindings WHERE id=?1",
+            [id],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(sql)?;
+    row.map(|s| decode(&s)).transpose()
 }
 
 pub(super) fn create_home_wake(
