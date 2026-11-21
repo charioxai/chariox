@@ -1434,7 +1434,7 @@ pub(super) fn deliver_serialized(
     {
         let mut size = SerializedSize::default();
         serde_json::to_writer(&mut size, envelope).expect("counting JSON bytes cannot fail");
-        receiver.try_send_sized(size.0, to_message)
+        receiver.try_send_peer_reply(size.0, envelope)
     } else {
         receiver.try_send(to_message())
     };

@@ -4,6 +4,8 @@
 //! count and, for bulk messages, by bytes, so one slow receiver holds at most a fixed amount
 //! of relay memory however much the other side sends. A sender whose message is refused
 //! learns it from the result; it never has to give up its own connection for it.
+use std::collections::VecDeque;
+use std::io::{self, Write};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 
@@ -17,6 +19,103 @@ use crate::frame_transport::CHUNK_BYTES;
 /// Bulk bytes one receiver may have queued: about one second at 64 Mbit/s, enough to keep a
 /// fast client's pipe full. A single message larger than this still passes an empty bulk queue.
 pub(crate) const RECEIVER_BULK_BUDGET: usize = 8 * 1024 * 1024;
+
+pub(crate) enum Outgoing {
+    Frame(Message),
+    PeerReply(PeerReplyText),
+}
+
+impl Outgoing {
+    pub(crate) fn len(&self) -> usize {
+        match self {
+            Self::Frame(message) => message.len(),
+            Self::PeerReply(reply) => reply.len(),
+        }
+    }
+
+    #[cfg(test)]
+    fn into_test_frame(self) -> Message {
+        match self {
+            Self::Frame(message) => message,
+            Self::PeerReply(reply) => {
+                Message::Text(reply.blocks.into_iter().collect::<String>().into())
+            }
+        }
+    }
+}
+
+/// Serialize into independently owned pieces so writing one does not keep
+/// every earlier byte alive until the entire reply has been written.
+#[derive(Default)]
+pub(crate) struct PeerReplyText {
+    blocks: VecDeque<Box<str>>,
+    prefix: String,
+    len: usize,
+    written: usize,
+}
+
+impl PeerReplyText {
+    fn serialize(value: &impl serde::Serialize) -> Self {
+        let mut reply = Self::default();
+        serde_json::to_writer(&mut reply, value).expect("a relay envelope is always valid JSON");
+        reply.finish_block();
+        reply
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.len
+    }
+
+    pub(crate) fn front(&self) -> Option<(&str, usize)> {
+        self.blocks
+            .front()
+            .map(|block| (block.as_ref(), self.written))
+    }
+
+    pub(crate) fn written(&mut self, end: usize) -> Option<usize> {
+        let len = self.blocks.front()?.len();
+        if end != self.written + len {
+            return None;
+        }
+        drop(self.blocks.pop_front());
+        self.written = end;
+        Some(len)
+    }
+
+    fn finish_block(&mut self) {
+        if !self.prefix.is_empty() {
+            self.blocks
+                .push_back(std::mem::take(&mut self.prefix).into_boxed_str());
+        }
+    }
+}
+
+impl Write for PeerReplyText {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        let mut text = std::str::from_utf8(bytes).map_err(io::Error::other)?;
+        while !text.is_empty() {
+            let mut end = text.len().min(CHUNK_BYTES - self.prefix.len());
+            while !text.is_char_boundary(end) {
+                end -= 1;
+            }
+            if end == 0 {
+                self.finish_block();
+                continue;
+            }
+            if self.prefix.is_empty() {
+                self.prefix.reserve_exact(CHUNK_BYTES);
+            }
+            self.prefix.push_str(&text[..end]);
+            text = &text[end..];
+        }
+        self.len += bytes.len();
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
 
 /// Why a message was not queued.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -96,8 +195,8 @@ impl OutgoingQueue {
         self.release_bytes(len);
     }
 
-    /// The writer took the message slot. A bulk transfer retains its byte
-    /// reservation until WireCredit receives the last chunk's receipt.
+    /// The writer took the message slot. WireCredit still owns the byte
+    /// reservation until the writer receives the corresponding exact receipt.
     pub(crate) fn start_transfer(self: &Arc<Self>, len: usize) -> Option<BulkCharge> {
         self.messages.fetch_sub(1, Ordering::Relaxed);
         if len > CHUNK_BYTES {
@@ -152,27 +251,40 @@ pub(crate) struct BulkCharge {
 
 impl Drop for BulkCharge {
     fn drop(&mut self) {
-        self.queue.release_bytes(self.bytes);
+        self.queue.bytes.fetch_sub(self.bytes, Ordering::Relaxed);
+        self.queue
+            .bulk_bytes
+            .fetch_sub(self.bytes, Ordering::Relaxed);
+    }
+}
+
+impl BulkCharge {
+    pub(crate) fn split(&mut self, bytes: usize) -> Self {
+        self.bytes -= bytes;
+        Self {
+            queue: Arc::clone(&self.queue),
+            bytes,
+        }
     }
 }
 
 /// The sending half of one connection's queue plus the means to close that connection.
 #[derive(Debug, Clone)]
 pub(crate) struct RelaySender {
-    tx: mpsc::Sender<Message>,
+    tx: mpsc::Sender<Outgoing>,
     queue: Arc<OutgoingQueue>,
 }
 
 /// A sender that does not keep its connection's queue open.
 #[derive(Debug, Clone)]
 pub(crate) struct WeakRelaySender {
-    tx: mpsc::WeakSender<Message>,
+    tx: mpsc::WeakSender<Outgoing>,
     queue: Arc<OutgoingQueue>,
 }
 
 impl RelaySender {
     /// A queue of at most `max_messages` messages, and the receiver its writer drains.
-    pub(crate) fn channel(max_messages: usize) -> (Self, mpsc::Receiver<Message>) {
+    pub(crate) fn channel(max_messages: usize) -> (Self, mpsc::Receiver<Outgoing>) {
         let (tx, rx) = mpsc::channel(max_messages);
         (
             Self {
@@ -185,7 +297,7 @@ impl RelaySender {
 
     /// A sender whose connection nobody closes, for tests that read its queue directly.
     #[cfg(test)]
-    pub(crate) fn detached(tx: mpsc::Sender<Message>) -> Self {
+    pub(crate) fn detached(tx: mpsc::Sender<Outgoing>) -> Self {
         Self {
             queue: Arc::new(OutgoingQueue::new(tx.max_capacity())),
             tx,
@@ -206,14 +318,22 @@ impl RelaySender {
     }
 
     pub(crate) fn try_send(&self, message: Message) -> Result<(), SendRefused> {
-        self.try_send_sized(message.len(), || message)
+        self.try_send_sized(message.len(), || Outgoing::Frame(message))
     }
 
     /// Reserve capacity before allocating a serialized reply that might be refused.
-    pub(crate) fn try_send_sized(
+    pub(crate) fn try_send_peer_reply(
         &self,
         len: usize,
-        message: impl FnOnce() -> Message,
+        reply: &impl serde::Serialize,
+    ) -> Result<(), SendRefused> {
+        self.try_send_sized(len, || Outgoing::PeerReply(PeerReplyText::serialize(reply)))
+    }
+
+    fn try_send_sized(
+        &self,
+        len: usize,
+        message: impl FnOnce() -> Outgoing,
     ) -> Result<(), SendRefused> {
         if self.tx.is_closed() {
             return Err(SendRefused::Gone);
@@ -284,7 +404,7 @@ pub(crate) fn backlog_close_frame() -> Message {
 /// What stands in for a writer in tests: a message leaves the queue when it is received.
 #[cfg(test)]
 pub(crate) struct DetachedReceiver {
-    rx: mpsc::Receiver<Message>,
+    rx: mpsc::Receiver<Outgoing>,
     queue: Arc<OutgoingQueue>,
 }
 
@@ -293,12 +413,12 @@ impl DetachedReceiver {
     pub(crate) async fn recv(&mut self) -> Option<Message> {
         let message = self.rx.recv().await?;
         self.queue.release(message.len());
-        Some(message)
+        Some(message.into_test_frame())
     }
 
     pub(crate) fn try_recv(&mut self) -> Result<Message, mpsc::error::TryRecvError> {
         let message = self.rx.try_recv()?;
         self.queue.release(message.len());
-        Ok(message)
+        Ok(message.into_test_frame())
     }
 }
