@@ -113,7 +113,7 @@ MP-08 / MP-11: `claude`, `claude-p`, and `claude-headless` share one account cre
 
 ## Explicit account copy to another kernel
 
-MP-08 / MP-09 / MP-10 / MP-11: `CopyProviderAccountToKernel` copies one authenticated Vault-backed Claude account to an enrolled same-owner kernel over the encrypted peer channel. Ordinary owner Copy stays credential-free. The target verifies with official Claude and owns an independent managed profile and provider-only Vault handle. See [the account-copy drill](drills/PROVIDER_ACCOUNT_COPY.md) for the request, conflict/retry rules and real acceptance requirements.
+MP-08 / MP-09 / MP-10 / MP-11: `CopyProviderAccountToKernel` copies one authenticated Vault-backed Claude account to an enrolled same-owner kernel over the encrypted peer channel. Ordinary owner Copy stays credential-free. An enrolled same-owner kernel includes the owner's own rented Chariox machine: it enrolls with its machine credential instead of a kernel credential, and Cloud lists it for account copy (and only for account copy) while the rental is live, owned by the person copying, and its relay key still matches the key Cloud pinned for the machine. The target verifies with official Claude and owns an independent managed profile and provider-only Vault handle. See [the account-copy drill](drills/PROVIDER_ACCOUNT_COPY.md) for the request, conflict/retry rules and real acceptance requirements.
 
 ## Signing in from a Vault entry
 

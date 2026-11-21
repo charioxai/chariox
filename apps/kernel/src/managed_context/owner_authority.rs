@@ -11,6 +11,10 @@ use serde_json::{json, Value};
 use zeroize::Zeroize;
 
 pub(crate) const TICKET_ENDPOINT: &str = "/v1/kernels/context/ticket";
+const PEERS_ENDPOINT: &str = "/v1/owner-managed-context-tickets/peers";
+/// Account copy also reaches the owner's rented machines, which hold no kernel grant.
+const ACCOUNT_COPY_PEERS_ENDPOINT: &str =
+    "/v1/owner-managed-context-tickets/peers?purpose=provider_account_copy";
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct DirectoryPeer {
@@ -170,8 +174,7 @@ pub(crate) async fn authorize_export(
             }
         }
     }
-    let directory: Directory =
-        kernel_cloud_request(profile, "/v1/owner-managed-context-tickets/peers", None).await?;
+    let directory: Directory = kernel_cloud_request(profile, PEERS_ENDPOINT, None).await?;
     let peer = directory
         .peers
         .into_iter()
@@ -224,8 +227,7 @@ pub(crate) async fn authorize_import(
         .as_ref()
         .ok_or_else(|| admission_error("Target kernel has no enrolled owner"))?;
     let target = source_peer(config)?;
-    let directory: Directory =
-        kernel_cloud_request(profile, "/v1/owner-managed-context-tickets/peers", None).await?;
+    let directory: Directory = kernel_cloud_request(profile, PEERS_ENDPOINT, None).await?;
     let source = directory
         .peers
         .into_iter()
@@ -306,10 +308,9 @@ pub(crate) async fn account_copy_peers(
     let denied = || crate::provider_account_copy::failure("provider_account_copy_unauthorized");
     let profile = config.cloud_relay.as_ref().ok_or_else(denied)?;
     let source = source_peer(config).map_err(|_| denied())?;
-    let directory: Directory =
-        kernel_cloud_request(profile, "/v1/owner-managed-context-tickets/peers", None)
-            .await
-            .map_err(|_| denied())?;
+    let directory: Directory = kernel_cloud_request(profile, ACCOUNT_COPY_PEERS_ENDPOINT, None)
+        .await
+        .map_err(|_| denied())?;
     if !directory.peers.iter().any(|peer| peer.peer == source) {
         return Err(denied());
     }
