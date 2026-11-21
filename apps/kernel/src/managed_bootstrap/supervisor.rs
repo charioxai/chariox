@@ -1258,6 +1258,7 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
             managed_repository_root: None,
             confirmation_evidence: None,
             authority_data: None,
+            kernel_id: None,
         }
     }
 

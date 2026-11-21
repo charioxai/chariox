@@ -446,6 +446,7 @@ fn schema_three_exchange_receipt_and_confirmation_preserve_the_exact_repository_
         managed_repository_root: Some(repository_root.to_string()),
         confirmation_evidence: None,
         authority_data: None,
+        kernel_id: None,
     };
     let identity = ManagedRuntimeIdentity {
         machine_id: "machine-1".to_string(),
@@ -1662,6 +1663,7 @@ fn path1_test_envelope(
         runtime_release_digest: runtime_release_digest.to_string(),
         managed_repository_root: Some(managed_repository_root.to_string()),
         authority_data: None,
+        kernel_id: None,
         confirmation_evidence: None,
     }
 }
@@ -2270,6 +2272,7 @@ fn local_disk_exchange_confirm_and_restore_bind_the_protected_grant() {
         managed_repository_root: Some(repository_root.to_string()),
         confirmation_evidence: None,
         authority_data: None,
+        kernel_id: None,
     };
     envelope
         .validate(true)
@@ -2445,4 +2448,49 @@ fn bootstrap_forwards_authority_evidence_without_interpreting_its_policy() {
             .as_ref(),
         Some(&evidence)
     );
+}
+
+#[test]
+fn an_assigned_kernel_identity_is_what_the_home_exchanges_and_a_conflicting_home_refuses() {
+    crate::test_support::isolated_env_test!();
+    let _env = crate::env_lock::lock();
+    let fixture = Fixture::new("assigned-kernel-identity");
+    let _restore = EnvironmentRestoreGuard::capture(["CHARIOX_HOME"]);
+    std::env::set_var("CHARIOX_HOME", &fixture.config.chariox_home);
+    let assign = |kernel_id: &str| {
+        let mut envelope: serde_json::Value =
+            serde_json::from_slice(&fs::read(&fixture.config.envelope_path).unwrap()).unwrap();
+        envelope["kernelId"] = serde_json::json!(kernel_id);
+        fs::write(
+            &fixture.config.envelope_path,
+            serde_json::to_vec(&envelope).unwrap(),
+        )
+        .unwrap();
+    };
+    assign("bad id with spaces");
+    let cloud = FakeCloud::new(fixture.exchange_response());
+    assert!(prepare_managed_kernel(&fixture.config, &cloud, fixture.now).is_err());
+    assert!(cloud.exchange_calls.lock().unwrap().is_empty());
+    assign("kernel-assigned-1");
+    prepare_managed_kernel(&fixture.config, &cloud, fixture.now).unwrap();
+    assert_eq!(
+        cloud.exchange_calls.lock().unwrap()[0].kernel_id,
+        "kernel-assigned-1"
+    );
+    // The home now holds that identity: assigning another one to it is refused.
+    let other = Fixture::new("assigned-kernel-identity-conflict");
+    std::env::set_var("CHARIOX_HOME", &other.config.chariox_home);
+    let first = crate::config::load_or_create_managed_runtime_identity(
+        &other.config.kernel_host,
+        other.config.kernel_port,
+        None,
+    )
+    .unwrap();
+    assert_ne!(first.kernel_id, "kernel-assigned-2");
+    assert!(crate::config::load_or_create_managed_runtime_identity(
+        &other.config.kernel_host,
+        other.config.kernel_port,
+        Some("kernel-assigned-2"),
+    )
+    .is_err());
 }

@@ -55,6 +55,10 @@ pub(super) struct ManagedBootstrapEnvelope {
     pub(super) confirmation_evidence: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) authority_data: Option<serde_json::Value>,
+    /// The kernel identity the installation assigns to this home, for a machine that continues
+    /// or forks a saved kernel. Without one the home mints its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) kernel_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

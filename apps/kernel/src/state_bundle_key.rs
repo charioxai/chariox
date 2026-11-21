@@ -2,19 +2,16 @@
 //! owner's Vault. This module makes the identity, proves possession of it to Cloud and seals it
 //! for one destination kernel. The only dependency on `age` in the kernel lives here.
 use crate::error::DaemonError;
-use crate::transport::relay_crypto;
 use age::secrecy::ExposeSecret;
 use age::x25519::{Identity, Recipient};
-use age::Decryptor;
+use age::{Decryptor, Encryptor};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
-use chariox_relay::protocol::EncryptedRelayPayload;
 use serde::{Deserialize, Serialize};
-use std::io::Read;
+use std::io::{Read, Write};
 use std::str::FromStr;
 use zeroize::Zeroizing;
 
-const PURPOSE: &[u8] = b"chariox-state-bundle-key-v1";
 const SCHEMA_VERSION: u32 = 1;
 const MAX_CHALLENGE_BYTES: usize = 4096;
 
@@ -65,20 +62,9 @@ pub fn answer_challenge(
         .map_err(|_| error("the recovery challenge could not be read"))
 }
 
-/// A bundle key sealed from the owner kernel's relay key to the destination's.
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct SealedBundleKey(EncryptedRelayPayload);
-
-impl std::fmt::Debug for SealedBundleKey {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("SealedBundleKey([SEALED])")
-    }
-}
-
-/// What a seal is bound to. The destination builds it from its own expected launch, never from the item.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
+/// What a seal is bound to. The destination checks it against its own expected launch, never against the item.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BundleKeyBinding {
     pub key_id: String,
     pub launch_id: String,
@@ -86,65 +72,52 @@ pub struct BundleKeyBinding {
     pub target_kernel_id: String,
 }
 
-impl BundleKeyBinding {
-    fn aad(&self) -> Result<Vec<u8>, DaemonError> {
-        serde_json::to_vec(self).map_err(|_| error("the bundle key binding could not be encoded"))
-    }
+/// The bundle key and its binding, as encrypted to the destination.
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SealedPayload {
+    binding: BundleKeyBinding,
+    identity: String,
 }
 
+/// An age file, in unpadded URL-safe base64, that only the destination's one-time recipient can open.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BundleKeyMaterialization {
     pub schema_version: u32,
-    pub sealed: SealedBundleKey,
+    pub ciphertext: String,
 }
 
+/// Hands the key to the one-time age recipient the destination machine made for this restore.
 pub fn seal(
-    source_private_key: &str,
-    target_public_key: &str,
+    destination_recipient: &str,
     binding: &BundleKeyBinding,
     identity: &str,
 ) -> Result<BundleKeyMaterialization, DaemonError> {
     parse_identity(identity)?;
-    let sealed = relay_crypto::encrypt_payload_for_peer_bound(
-        source_private_key,
-        target_public_key,
-        PURPOSE,
-        &binding.aad()?,
-        identity.as_bytes(),
-    )?;
+    let recipient = Recipient::from_str(destination_recipient)
+        .map_err(|_| error("the destination restore key is invalid"))?;
+    let payload = Zeroizing::new(
+        serde_json::to_vec(&SealedPayload {
+            binding: binding.clone(),
+            identity: identity.to_string(),
+        })
+        .map_err(|_| error("the bundle key could not be encoded"))?,
+    );
+    let encryptor = Encryptor::with_recipients(std::iter::once(&recipient as &dyn age::Recipient))
+        .map_err(|_| error("the destination restore key is invalid"))?;
+    let mut ciphertext = Vec::new();
+    let mut writer = encryptor
+        .wrap_output(&mut ciphertext)
+        .map_err(|_| error("the bundle key could not be sealed"))?;
+    writer
+        .write_all(&payload)
+        .and_then(|()| writer.finish().map(|_| ()))
+        .map_err(|_| error("the bundle key could not be sealed"))?;
     Ok(BundleKeyMaterialization {
         schema_version: SCHEMA_VERSION,
-        sealed: SealedBundleKey(sealed),
+        ciphertext: URL_SAFE_NO_PAD.encode(ciphertext),
     })
-}
-
-pub fn open(
-    target_private_key: &str,
-    source_key_thumbprint: &str,
-    binding: &BundleKeyBinding,
-    key: &BundleKeyMaterialization,
-) -> Result<Zeroizing<String>, DaemonError> {
-    if key.schema_version != SCHEMA_VERSION {
-        return Err(error("the bundle key does not match the launch"));
-    }
-    if crate::runtime::terminal_pairings::public_key_thumbprint(&key.sealed.0.sender_public_key)
-        != source_key_thumbprint
-    {
-        return Err(error("the bundle key was not sealed by the owner's kernel"));
-    }
-    let opened = relay_crypto::decrypt_payload_for_private_key_bound(
-        target_private_key,
-        &key.sealed.0,
-        PURPOSE,
-        &binding.aad()?,
-    )?;
-    let mut plaintext = opened.plaintext;
-    let identity = String::from_utf8(std::mem::take(&mut *plaintext))
-        .map(Zeroizing::new)
-        .map_err(|_| error("the bundle key could not be read"))?;
-    parse_identity(&identity)?;
-    Ok(identity)
 }
 
 /// The Vault slot of one owner's bundle key. Handle-less: no agent can name or read it.
@@ -194,8 +167,8 @@ pub(crate) fn read_from_vault(
         .ok_or_else(|| error("this Vault does not hold the bundle key"))
 }
 
-/// The owner kernel hands the stored key to one destination kernel, sealed from its relay key to
-/// the destination's and bound to the launch, so no other kernel or launch can open it.
+/// The owner kernel hands the stored key to one destination machine's one-time restore key, bound
+/// to the launch, so a copy of the sealed item names the launch it was made for.
 pub(crate) fn seal_from_vault(
     config: &crate::config::DaemonConfig,
     secrets: &crate::secret::RuntimeSecretService,
@@ -203,7 +176,7 @@ pub(crate) fn seal_from_vault(
     key_id: &str,
     launch_id: &str,
     target_kernel_id: &str,
-    target_public_key: &str,
+    destination_recipient: &str,
 ) -> Result<BundleKeyMaterialization, DaemonError> {
     let identity = read_from_vault(secrets, owner_user_id, key_id)?;
     let binding = BundleKeyBinding {
@@ -212,12 +185,7 @@ pub(crate) fn seal_from_vault(
         source_kernel_id: config.daemon_id.clone(),
         target_kernel_id: target_kernel_id.to_string(),
     };
-    seal(
-        &config.relay_private_key,
-        target_public_key,
-        &binding,
-        &identity,
-    )
+    seal(destination_recipient, &binding, &identity)
 }
 
 #[derive(Debug, Deserialize)]

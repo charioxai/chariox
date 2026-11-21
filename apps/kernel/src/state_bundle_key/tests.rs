@@ -36,45 +36,63 @@ fn only_the_holder_of_the_identity_answers_the_challenge() {
     assert!(answer_challenge("AGE-SECRET-KEY-1BAD", &ciphertext).is_err());
 }
 
+/// What the destination's restore helper does with its one-time age key: open the item and check its binding.
+fn open(
+    destination: &Identity,
+    expected: &BundleKeyBinding,
+    key: &BundleKeyMaterialization,
+) -> Result<String, String> {
+    let bytes = URL_SAFE_NO_PAD
+        .decode(&key.ciphertext)
+        .map_err(|_| "malformed")?;
+    let decryptor = Decryptor::new(&bytes[..]).map_err(|_| "malformed")?;
+    let mut reader = decryptor
+        .decrypt(std::iter::once(destination as &dyn age::Identity))
+        .map_err(|_| "not for this restore")?;
+    let mut plaintext = Vec::new();
+    reader
+        .read_to_end(&mut plaintext)
+        .map_err(|_| "unreadable")?;
+    let payload: SealedPayload = serde_json::from_slice(&plaintext).map_err(|_| "malformed")?;
+    if &payload.binding != expected {
+        return Err("another launch".into());
+    }
+    Ok(payload.identity)
+}
+
 #[test]
-fn a_sealed_key_opens_only_for_its_destination_and_binding() {
+fn a_sealed_key_opens_only_for_its_destination_restore_and_launch() {
     let key = generate();
-    let owner = relay_crypto::generate_private_key_base64();
-    let destination = relay_crypto::generate_private_key_base64();
-    let stranger = relay_crypto::generate_private_key_base64();
-    let owner_public = relay_crypto::public_key_from_private_key_base64(&owner).unwrap();
-    let destination_public =
-        relay_crypto::public_key_from_private_key_base64(&destination).unwrap();
+    let destination = Identity::generate();
+    let stranger = Identity::generate();
     let binding = BundleKeyBinding {
         key_id: "key-1".into(),
         launch_id: "launch-1".into(),
         source_kernel_id: "owner-kernel".into(),
         target_kernel_id: "target-kernel".into(),
     };
-    let sealed = seal(&owner, &destination_public, &binding, &key.identity).unwrap();
-    let thumbprint = crate::runtime::terminal_pairings::public_key_thumbprint(&owner_public);
+    let recipient = destination.to_public().to_string();
+    let sealed = seal(&recipient, &binding, &key.identity).unwrap();
     assert_eq!(
-        &*open(&destination, &thumbprint, &binding, &sealed).unwrap(),
-        &*key.identity
+        open(&destination, &binding, &sealed).unwrap(),
+        *key.identity
     );
     assert!(
-        open(&stranger, &thumbprint, &binding, &sealed).is_err(),
-        "another kernel cannot open it"
+        open(&stranger, &binding, &sealed).is_err(),
+        "another restore cannot open it"
     );
     let other_launch = BundleKeyBinding {
         launch_id: "launch-2".into(),
         ..binding.clone()
     };
-    assert!(
-        open(&destination, &thumbprint, &other_launch, &sealed).is_err(),
-        "a seal is bound to its launch"
+    assert_eq!(
+        open(&destination, &other_launch, &sealed).unwrap_err(),
+        "another launch",
+        "a seal names its launch"
     );
     assert!(
-        open(&destination, "someone-else", &binding, &sealed).is_err(),
-        "only the owner's kernel may seal it"
+        !sealed.ciphertext.contains("AGE-SECRET") && !format!("{sealed:?}").contains("AGE-SECRET")
     );
-    assert!(
-        format!("{sealed:?}").contains("SEALED") && !format!("{sealed:?}").contains("AGE-SECRET")
-    );
-    assert!(seal(&owner, &destination_public, &binding, "not an identity").is_err());
+    assert!(seal(&recipient, &binding, "not an identity").is_err());
+    assert!(seal("age1invalid", &binding, &key.identity).is_err());
 }

@@ -73,7 +73,7 @@ pub struct SealStateBundleKeyRequest {
     pub key_id: String,
     pub launch_id: String,
     pub target_kernel_id: String,
-    pub target_public_key: String,
+    pub target_recipient: String,
 }
 
 /// Answers Cloud's recovery challenge with a stored bundle key, proving this kernel's Vault

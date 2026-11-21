@@ -258,6 +258,15 @@ mod protected_retention_tests {
 }
 
 pub(super) fn load_or_create_runtime_identity(host: &str, port: u16) -> RuntimeIdentity {
+    load_or_create_assigned_runtime_identity(host, port, None)
+}
+
+/// A home with no identity for this endpoint takes `assigned` when the installation names one.
+fn load_or_create_assigned_runtime_identity(
+    host: &str,
+    port: u16,
+    assigned: Option<&str>,
+) -> RuntimeIdentity {
     let machine_id = resolve_machine_id();
     let endpoint_key = kernel_identity_key(host, port);
     let registry_path = DaemonConfig::default_kernel_registry_path();
@@ -278,7 +287,9 @@ pub(super) fn load_or_create_runtime_identity(host: &str, port: u16) -> RuntimeI
                 relay_crypto::public_key_from_private_key_base64(&relay_private_key)
                     .unwrap_or_default();
             KernelIdentityRecord {
-                kernel_id: format!("kernel-{}", generate_identity_suffix()),
+                kernel_id: assigned
+                    .map(str::to_string)
+                    .unwrap_or_else(|| format!("kernel-{}", generate_identity_suffix())),
                 host: host.trim().to_string(),
                 port,
                 relay_public_key,
@@ -329,12 +340,22 @@ fn resolve_machine_id() -> String {
     })
 }
 
+/// `assigned_kernel_id` is the identity the installation gave this home, for a machine that
+/// continues or forks a saved kernel; a home that already holds another identity refuses it.
 pub(crate) fn load_or_create_managed_runtime_identity(
     host: &str,
     port: u16,
+    assigned_kernel_id: Option<&str>,
 ) -> Result<ManagedRuntimeIdentity, crate::error::DaemonError> {
-    let identity = load_or_create_runtime_identity(host, port);
-    let persisted = load_or_create_runtime_identity(host, port);
+    let identity = load_or_create_assigned_runtime_identity(host, port, assigned_kernel_id);
+    let persisted = load_or_create_assigned_runtime_identity(host, port, assigned_kernel_id);
+    if assigned_kernel_id.is_some_and(|assigned| assigned != identity.daemon_id) {
+        return Err(crate::error::DaemonError::LocalTransport {
+            operation: "persist managed runtime identity",
+            message: "this home already holds a different kernel identity than the one assigned"
+                .to_string(),
+        });
+    }
     if identity != persisted || identity_is_invalid(&identity) {
         return Err(crate::error::DaemonError::LocalTransport {
             operation: "persist managed runtime identity",
@@ -406,7 +427,7 @@ pub fn prepare_protected_slice_identity(
     {
         return Err(refuse());
     }
-    let identity = load_or_create_managed_runtime_identity(host, port)?;
+    let identity = load_or_create_managed_runtime_identity(host, port, None)?;
     Ok(serde_json::json!({"kernel_id": identity.kernel_id,
         "machine_id": identity.machine_id, "relay_public_key": identity.relay_public_key}))
 }

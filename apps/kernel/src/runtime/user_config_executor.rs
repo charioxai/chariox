@@ -260,7 +260,7 @@ async fn execute_seal_state_bundle_key_request(
         &request.key_id,
         &request.launch_id,
         &request.target_kernel_id,
-        &request.target_public_key,
+        &request.target_recipient,
     )?;
     Ok(LocalDaemonResponse::StateBundleKeySealed { sealed })
 }

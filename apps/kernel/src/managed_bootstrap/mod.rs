@@ -327,8 +327,21 @@ fn prepare_managed_kernel_with_documents(
         expected_digest,
         &config.kernel_binary,
     )?;
-    let identity =
-        load_or_create_managed_runtime_identity(&config.kernel_host, config.kernel_port)?;
+    let assigned_kernel_id = envelope
+        .as_ref()
+        .and_then(|value| value.kernel_id.as_deref());
+    if let Some(assigned) = assigned_kernel_id {
+        if !valid_identifier(assigned) {
+            return Err(bootstrap_error(
+                "managed bootstrap envelope assigns an invalid kernel identity",
+            ));
+        }
+    }
+    let identity = load_or_create_managed_runtime_identity(
+        &config.kernel_host,
+        config.kernel_port,
+        assigned_kernel_id,
+    )?;
     let confirmation = match (receipt, envelope) {
         (Some(receipt), envelope) => {
             if let Some(value) = envelope.as_ref() {
