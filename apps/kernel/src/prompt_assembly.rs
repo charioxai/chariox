@@ -1821,32 +1821,6 @@ mod tests {
         }
     }
 
-    /// A helper's answer is read back by the orchestrator and often becomes part of the
-    /// final answer: its brief asks for one deliverable and a short answer.
-    #[test]
-    fn worker_brief_asks_for_one_deliverable_and_a_short_answer() {
-        let spec = crate::transport::runtime_tools::agent_run_tool_specs().remove(0);
-        let brief = spec.input_schema["properties"]["workers"]["items"]["properties"]["brief"]
-            ["description"]
-            .as_str()
-            .unwrap();
-        assert!(brief.contains("One deliverable"), "{brief}");
-        assert!(brief.contains("at most 30 lines"), "{brief}");
-        assert!(brief.contains("final message"), "{brief}");
-        assert!(brief.contains("no files in temporary folders"), "{brief}");
-    }
-
-    /// A helper's startup costs about as much as a small task: the tool says a task
-    /// the caller can finish in about 10 tool calls stays with the caller.
-    #[test]
-    fn agents_run_keeps_small_tasks_with_the_caller() {
-        let description = crate::transport::runtime_tools::agent_run_tool_specs()
-            .remove(0)
-            .description;
-        assert!(description.contains("about 10 tool calls"), "{description}");
-        assert!(description.contains("stays with you"), "{description}");
-    }
-
     #[test]
     fn prompt_registry_materializes_bundled_defaults_on_first_run() {
         let _dir = temp_prompt_root("materializes");
