@@ -408,7 +408,7 @@ pub(super) fn identity_values(binding: &QuiescenceBinding) -> BTreeMap<&'static 
     ])
 }
 
-pub(super) fn hmac_signature(
+pub(crate) fn hmac_signature(
     credential: &str,
     values: &BTreeMap<&'static str, Value>,
 ) -> Result<String, DaemonError> {
