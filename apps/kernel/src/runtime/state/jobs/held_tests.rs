@@ -251,10 +251,10 @@ enum Fault {
     None,
     /// The nth upload chunk fails as a relay outage would.
     FailUpload(usize),
+    /// Every reply from the nth upload chunk onward is lost.
+    LoseUploadReplies(usize),
     /// The nth upload chunk never gets its reply: the home kernel dies waiting for it.
     HangUpload(usize),
-    /// The nth upload chunk waits for `resume`, so the test can act while the upload is under way.
-    PauseUpload(usize),
     /// Every cleanup request fails.
     CleanupDown,
     /// The workspace removal runs on the machine but its reply never comes back.
@@ -274,7 +274,6 @@ struct Machine {
     chunks: std::sync::atomic::AtomicUsize,
     /// Told when a fault was reached.
     reached: tokio::sync::Notify,
-    resume: tokio::sync::Notify,
 }
 
 impl Machine {
@@ -289,7 +288,6 @@ impl Machine {
             fault: fault.into(),
             chunks: 0.into(),
             reached: Default::default(),
-            resume: Default::default(),
         });
         super::super::job_compute::stand_in_kernels()
             .lock()
@@ -385,13 +383,16 @@ impl crate::room_exec::gateway_placement::GrantedSend for Machine {
                 let chunk = self.chunks.fetch_add(1, SeqCst);
                 match fault {
                     Fault::FailUpload(at) if at == chunk => return Err(outage()),
+                    Fault::LoseUploadReplies(at) if chunk >= at => {
+                        return Err(
+                            crate::runtime::kernel_gateway::GatewayError::ConnectionLost {
+                                name: "held worker".into(),
+                            },
+                        );
+                    }
                     Fault::HangUpload(at) if at == chunk => {
                         self.reached.notify_one();
                         std::future::pending::<()>().await
-                    }
-                    Fault::PauseUpload(at) if at == chunk => {
-                        self.reached.notify_one();
-                        self.resume.notified().await
                     }
                     _ => {}
                 }
@@ -501,7 +502,7 @@ async fn cancelling_a_held_machine_job_during_its_upload_removes_what_was_upload
     let (state, run, task, workspace) = super::tests::remote_fixture().await;
     three_files(workspace.path());
     let home = crate::test_support::TestWorktree::new("held-cancel-upload-home");
-    let machine = Machine::stand_in("held-kernel-cancel", home.path(), Fault::PauseUpload(1));
+    let machine = Machine::stand_in("held-kernel-cancel", home.path(), Fault::HangUpload(1));
     let service = service(&state, two_gets("held-kernel-cancel")).await;
     let started = run_on_held(
         &state,
@@ -522,30 +523,13 @@ async fn cancelling_a_held_machine_job_during_its_upload_removes_what_was_upload
         "where the upload goes is saved before it starts"
     );
     assert_eq!(saved(&state, &id).remote, RemoteStage::Planned);
-    let cancel = {
-        let (state, run, task, id) = (state.clone(), run.clone(), task.clone(), id.clone());
-        tokio::spawn(
-            async move { job_status(&state, &run, &task, "chariox.jobs.cancel", &id).await },
-        )
-    };
-    let wake_id = saved(&state, &id).wake_id;
-    let driver = state.job_wake_driver.as_ref().unwrap();
-    tokio::time::timeout(Duration::from_secs(10), async {
-        while !driver
-            .live
-            .lock()
-            .unwrap()
-            .get(&wake_id)
-            .is_some_and(|cancel| *cancel.borrow())
-        {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        job_status(&state, &run, &task, "chariox.jobs.cancel", &id),
+    )
     .await
-    .expect("the cancel never reached the job");
-    machine.resume.notify_one();
+    .expect("a stalled upload must respond to cancellation");
     let status = finished(&state, &run, &task, &id).await;
-    cancel.await.unwrap();
     served(service).await;
     assert_eq!(status["result"]["outcome"], "cancelled", "{status}");
     assert!(
@@ -813,4 +797,57 @@ async fn a_kernel_restart_removes_what_a_finished_held_machine_job_could_not() {
     .await
     .expect("the restart left the workspace on the held machine");
     served(service).await;
+}
+
+async fn job_with_upload_fault(kernel_id: &str, fault: Fault) -> (serde_json::Value, usize) {
+    let (state, run, task, workspace) = super::tests::remote_fixture().await;
+    three_files(workspace.path());
+    let home = crate::test_support::TestWorktree::new("held-upload-fault");
+    let machine = Machine::stand_in(kernel_id, home.path(), fault);
+    let service = service(&state, two_gets(kernel_id)).await;
+    let job = run_on_held(
+        &state,
+        &run,
+        &task,
+        serde_json::json!({"command":["/bin/true"],"machine":"held-1","timeout_s":1,"wait_s":6}),
+    )
+    .await
+    .unwrap();
+    served(service).await;
+    let writes = machine.chunks.load(std::sync::atomic::Ordering::SeqCst);
+    (job, writes)
+}
+
+#[tokio::test]
+async fn a_stalled_held_upload_finishes_with_a_time_limit_and_a_next_step() {
+    let (job, writes) =
+        job_with_upload_fault("held-kernel-stalled-upload", Fault::HangUpload(1)).await;
+    assert_eq!(writes, 2);
+    assert_eq!(job["state"], "finished", "{job}");
+    assert_eq!(job["result"]["outcome"], "time_limit", "{job}");
+    assert!(job["result"]["exit_code"].is_null());
+    let output = job["result"]["output_tail"].as_str().unwrap();
+    assert!(
+        output.contains("uploading the workspace") && output.contains("chariox.machines.status"),
+        "{output}"
+    );
+}
+
+#[tokio::test]
+async fn a_missing_held_upload_reply_is_retried_and_reported() {
+    let (job, writes) =
+        job_with_upload_fault("held-kernel-missing-reply", Fault::LoseUploadReplies(1)).await;
+    assert_eq!(
+        writes, 3,
+        "the second chunk was retried after its reply was lost"
+    );
+    assert_eq!(job["state"], "finished", "{job}");
+    assert!(job["result"]["exit_code"].is_null());
+    let output = job["result"]["output_tail"].as_str().unwrap();
+    assert!(
+        output.contains("reply could not be recovered")
+            && output.contains("before the command started")
+            && output.contains("chariox.machines.status"),
+        "{output}"
+    );
 }
