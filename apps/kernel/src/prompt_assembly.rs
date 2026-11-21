@@ -1831,6 +1831,17 @@ mod tests {
         assert!(brief.contains("at most 30 lines"), "{brief}");
     }
 
+    /// A helper's startup costs about as much as a small task: the tool says a task
+    /// the caller can finish in about 10 tool calls stays with the caller.
+    #[test]
+    fn agents_run_keeps_small_tasks_with_the_caller() {
+        let description = crate::transport::runtime_tools::agent_run_tool_specs()
+            .remove(0)
+            .description;
+        assert!(description.contains("about 10 tool calls"), "{description}");
+        assert!(description.contains("stays with you"), "{description}");
+    }
+
     #[test]
     fn prompt_registry_materializes_bundled_defaults_on_first_run() {
         let _dir = temp_prompt_root("materializes");
