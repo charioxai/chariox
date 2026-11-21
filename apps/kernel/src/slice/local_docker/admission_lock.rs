@@ -205,7 +205,11 @@ mod tests {
             return;
         }
         if unsafe { libc::geteuid() } != 0 {
-            return; // Cross-UID proof runs on the disposable root builder.
+            eprintln!("SKIP provisioned_root_lock_uses_kernel_opener_as_ordinary_uid: needs a root builder to launch UID 65534");
+            return;
+        }
+        if !crate::test_support::test_binary_allows_other_execute() {
+            return;
         }
         // The filesystem root is traversable by the probe even when TMPDIR or
         // host temp directories have private ancestors. Only this owned fixture

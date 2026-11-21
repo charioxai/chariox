@@ -2279,6 +2279,9 @@ fn open_terminal(f: &Fixture, command: &str) -> String {
 /// Delivering the wake turn is the ledger's and is covered by the driver tests above.
 #[tokio::test]
 async fn terminal_finish_reports_once_to_the_waiting_agent_with_exit_code_and_screen() {
+    if !crate::test_support::has_user_namespaces() {
+        return;
+    }
     let f = fixture("terminal-wake-finish", true).await;
     let task = f.begin(&f.prompt_id);
     let token = runtime_token(&f).await;
@@ -2325,6 +2328,9 @@ async fn terminal_finish_reports_once_to_the_waiting_agent_with_exit_code_and_sc
 /// write must not discard the occurrence: it is retried until it commits.
 #[tokio::test]
 async fn a_rejected_terminal_occurrence_is_retried_until_the_ledger_commits() {
+    if !crate::test_support::has_user_namespaces() {
+        return;
+    }
     let f = fixture("terminal-wake-retry", true).await;
     let received = f._worktree.path().join("provider-input");
     {
