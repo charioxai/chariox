@@ -200,6 +200,7 @@ mod tests {
             .unwrap();
         let materialization = ProviderAccountMaterialization {
             profile: ProviderAccountReplicaMetadata {
+                provider_account_id: None,
                 owner_user_id: "owner".into(),
                 provider: "codex".into(),
                 profile_id: profile.profile_id.clone(),

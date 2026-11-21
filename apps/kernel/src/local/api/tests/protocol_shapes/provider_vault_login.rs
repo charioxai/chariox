@@ -41,6 +41,7 @@ fn vault_login_1000_shapes_are_pinned() {
         &target.relay_public_key,
         &binding,
         ProviderAccountReplicaMetadata {
+            provider_account_id: None,
             owner_user_id: "owner".into(),
             provider: "claude".into(),
             profile_id: "work".into(),

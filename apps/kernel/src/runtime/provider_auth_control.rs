@@ -709,7 +709,7 @@ where
         return Ok(initial);
     }
     let mut siblings = registry
-        .list(owner_user_id, Some(provider))?
+        .list_bindings(owner_user_id, provider)?
         .into_iter()
         .filter(|profile| profile.profile_id != account_profile)
         .collect::<Vec<_>>();
