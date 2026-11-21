@@ -57,7 +57,10 @@ pub(crate) async fn execute_provider_account_request(
                 &config.user_config.credential_vault,
                 &mut profiles,
             )?;
-            Ok(LocalDaemonResponse::ProviderAccountProfilesListed { profiles })
+            Ok(LocalDaemonResponse::ProviderAccountProfilesListed {
+                profiles,
+                copies: runtime_for_checks.provider_account_copy_progress(&owner_user_id),
+            })
         }
         LocalDaemonRequest::GetProviderAccountProfile(request) => {
             Ok(LocalDaemonResponse::ProviderAccountProfile {

@@ -128,6 +128,7 @@ enum FeedResource {
     VaultStatus,
     VaultEntries,
     ProviderAccounts,
+    ProviderAccountCopies,
     AppInstallations {
         session_id: Option<String>,
     },
@@ -152,6 +153,7 @@ impl FeedResource {
             "vault_status" => allow_only(&[]).map(|()| Self::VaultStatus),
             "vault_entries" => allow_only(&[]).map(|()| Self::VaultEntries),
             "provider_accounts" => allow_only(&[]).map(|()| Self::ProviderAccounts),
+            "provider_account_copies" => allow_only(&[]).map(|()| Self::ProviderAccountCopies),
             "person_inbox" => allow_only(&[]).map(|()| Self::PersonInbox),
             "app_installations" => {
                 allow_only(&["session_id"])?;
@@ -336,8 +338,22 @@ impl Feed {
                         ListProviderAccountProfilesRequest { provider: None },
                     ))
                     .await?;
+                if let Some(accounts) = accounts.as_object_mut() {
+                    accounts.remove("copies");
+                }
                 without_validation_times(&mut accounts);
                 Ok(accounts)
+            }
+            FeedResource::ProviderAccountCopies => {
+                let mut accounts = self
+                    .read_request(LocalDaemonRequest::ListProviderAccountProfiles(
+                        ListProviderAccountProfilesRequest { provider: None },
+                    ))
+                    .await?;
+                Ok(accounts
+                    .get_mut("copies")
+                    .map(Value::take)
+                    .unwrap_or_else(|| serde_json::json!([])))
             }
             FeedResource::AppInstallations { session_id } => {
                 self.read_app_installations(session_id.clone()).await

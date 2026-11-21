@@ -1479,6 +1479,8 @@ pub enum RelayPeerRequest {
     InstallProviderAccountCopy {
         binding: crate::provider_account_copy::ProviderAccountCopyBinding,
         credential: crate::provider_account_copy::ProviderAccountCopyCredential,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        resume_after_unlock: bool,
     },
     EnsureRemoteProviderAccount {
         context: RemoteProviderAccountSyncContext,
@@ -1906,6 +1908,12 @@ pub enum RelayPeerResponse {
         context: RemoteSkillSyncContext,
         manifest: crate::skill::v2::SkillTransferManifest,
         materialized: Vec<RemoteSkillMaterialization>,
+    },
+    ProviderAccountCopyTargetVaultLocked {
+        expires_at_ms: u64,
+    },
+    ProviderAccountCopyWaiting {
+        wait: crate::provider_account_copy::ProviderAccountCopyWait,
     },
     ProviderAccountCopyFailed {
         code: String,

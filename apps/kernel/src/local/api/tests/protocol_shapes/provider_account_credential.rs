@@ -246,3 +246,45 @@ fn account_copy_recipient_protocol_710_peer_274_snapshot_and_hash() {
         "aaf1b20efdf3c356c5cb04ed0fff7f5955d467eb83abd4bb4a4075a67f268ab9"
     );
 }
+
+#[test]
+fn account_copy_wait_protocol_shape_and_hash() {
+    use crate::provider_account_copy::{ProviderAccountCopyProgress, ProviderAccountCopyWait};
+    use crate::transport::relay_peer::RelayPeerResponse;
+
+    let wait = ProviderAccountCopyWait {
+        operation_id: "op-1".into(),
+        source_kernel_id: "source".into(),
+        target_kernel_id: "target".into(),
+        target_label: "Target".into(),
+        expires_at_ms: 600_001,
+    };
+    let snapshot = serde_json::json!([
+        LocalDaemonResponse::ProviderAccountCopyWaiting { wait: wait.clone() },
+        RelayPeerResponse::ProviderAccountCopyTargetVaultLocked {
+            expires_at_ms: wait.expires_at_ms
+        },
+        RelayPeerResponse::ProviderAccountCopyWaiting { wait: wait.clone() },
+        ProviderAccountCopyProgress::WaitingForUnlock { wait },
+        ProviderAccountCopyProgress::Failed {
+            operation_id: "op-1".into(),
+            code: "provider_account_copy_cancelled".into(),
+        },
+        crate::provider_account_copy::ProviderAccountCopyUnlockRequest {
+            interaction_id: "account-copy-unlock:test".into(),
+            expires_at_ms: 600_001,
+        },
+    ]);
+    let shape = include_str!("provider-account-copy-wait.json");
+    assert_eq!(
+        snapshot,
+        serde_json::from_str::<serde_json::Value>(shape).unwrap()
+    );
+    assert_eq!(
+        format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
+        ),
+        "6722a628131e179427e15b970710d68f73e63396cefb5c4a57dabec8986b5710"
+    );
+}
