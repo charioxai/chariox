@@ -10,6 +10,7 @@
           "blob_id": "history:11:11",
           "entry_count": 1,
           "kind": "provider_tool",
+          "revision": "blob-revision",
           "sequence_end": 11,
           "sequence_start": 11,
           "summary": "$ ls",

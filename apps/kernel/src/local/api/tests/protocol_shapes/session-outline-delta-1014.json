@@ -1,0 +1,141 @@
+{
+  "local_protocol": 1014,
+  "request": {
+    "GetSessionHistoryOutline": {
+      "session_id": "s",
+      "agent_ids": [
+        "a"
+      ],
+      "latest_prompt_count": 2,
+      "after_sequence": {
+        "a": {
+          "after_sequence": 12,
+          "revision": "previous-revision"
+        }
+      }
+    }
+  },
+  "full": {
+    "SessionHistoryOutline": {
+      "agents": [
+        {
+          "agent_id": "a",
+          "turns": [
+            {
+              "turn_id": "p",
+              "prompt_origin": "chariox",
+              "started_at_ms": 10,
+              "lifecycle": "open",
+              "completed_at_ms": null,
+              "user_prompt": {
+                "entry_index": 10,
+                "fragment_start": 0,
+                "fragment_end": 10,
+                "total_chars": 10,
+                "entry": {
+                  "session_id": "s",
+                  "provider_run_id": "r",
+                  "agent_id": "a",
+                  "source_attachment_id": null,
+                  "kind": "user_prompt",
+                  "text": "Write this",
+                  "timestamp_ms": 10
+                }
+              },
+              "entries": [],
+              "blobs": [],
+              "summary": {
+                "entry_index": 11,
+                "fragment_start": 0,
+                "fragment_end": 7,
+                "total_chars": 7,
+                "entry": {
+                  "session_id": "s",
+                  "provider_run_id": "r",
+                  "agent_id": "a",
+                  "source_attachment_id": null,
+                  "kind": "provider_output",
+                  "text": "working",
+                  "timestamp_ms": 10
+                }
+              }
+            }
+          ],
+          "delta_cursor": {
+            "after_sequence": 12,
+            "revision": "previous-revision"
+          }
+        }
+      ]
+    }
+  },
+  "delta": {
+    "SessionHistoryOutline": {
+      "agents": [
+        {
+          "agent_id": "a",
+          "turns": [],
+          "turn_deltas": [
+            {
+              "header": 0,
+              "summary": {
+                "append_to": 1,
+                "suffix": {
+                  "entry_index": 11,
+                  "fragment_start": 0,
+                  "fragment_end": 11,
+                  "total_chars": 11,
+                  "entry": {
+                    "session_id": "s",
+                    "provider_run_id": "r",
+                    "agent_id": "a",
+                    "source_attachment_id": null,
+                    "kind": "provider_output",
+                    "text": " now",
+                    "timestamp_ms": 10
+                  },
+                  "sequence_end": 13
+                }
+              },
+              "entries": [
+                {
+                  "entry_index": 12,
+                  "fragment_start": 0,
+                  "fragment_end": 8,
+                  "total_chars": 8,
+                  "entry": {
+                    "session_id": "s",
+                    "provider_run_id": "r",
+                    "agent_id": "a",
+                    "source_attachment_id": null,
+                    "kind": "notice",
+                    "text": "Answered",
+                    "timestamp_ms": 10
+                  }
+                }
+              ],
+              "blobs": [
+                {
+                  "blob_id": "history:12:12",
+                  "revision": "blob-revision",
+                  "kind": "provider_tool",
+                  "title": "Shell",
+                  "summary": "Completed",
+                  "sequence_start": 12,
+                  "sequence_end": 12,
+                  "entry_count": 1,
+                  "total_chars": 5,
+                  "timestamp_ms": 11
+                }
+              ]
+            }
+          ],
+          "delta_cursor": {
+            "after_sequence": 13,
+            "revision": "current-revision"
+          }
+        }
+      ]
+    }
+  }
+}
