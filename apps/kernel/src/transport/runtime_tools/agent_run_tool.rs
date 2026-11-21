@@ -47,7 +47,7 @@ pub fn agent_run_tool_specs() -> Vec<RuntimeToolSpec> {
                         "required": ["name", "brief"],
                         "properties": {
                             "name": {"type": "string", "description": "Unique alias for the worker: letters, digits, - and _."},
-                            "brief": {"type": "string", "description": "One deliverable: the task, the files it owns, constraints, and the answer as paths and facts in at most 30 lines."},
+                            "brief": {"type": "string", "description": "One deliverable: the task, the files it owns, constraints, and the answer as paths and facts in at most 30 lines. For a large file on this kernel, ask the worker to save it in its own TMPDIR, publish with chariox.agents.result and return the artifact_id in its final answer. Pass the artifact ID to the same operation with action fetch."},
                             "model": {"type": "string", "description": "Optional model; defaults to yours."},
                             "effort": {"type": "string", "description": "Optional effort; defaults to yours."}
                         },

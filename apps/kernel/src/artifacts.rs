@@ -40,8 +40,8 @@ pub struct ArtifactRecord {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StoreArtifactRequest {
-    pub source_path: PathBuf,
+pub struct StoreArtifactRequest<S = PathBuf> {
+    pub source_path: S,
     pub display_name: String,
     pub source_kind: String,
     pub media_type: Option<String>,
@@ -100,6 +100,26 @@ impl OperationalArtifactStore {
         request: StoreArtifactRequest,
     ) -> Result<ArtifactRecord, DaemonError> {
         let (sha256, size_bytes, blob_path) = blob::store(&self.root, &request.source_path)?;
+        self.record(request, sha256, size_bytes, blob_path)
+    }
+
+    pub(crate) fn store_open_file(
+        &self,
+        mut request: StoreArtifactRequest<fs::File>,
+        max_bytes: u64,
+    ) -> Result<ArtifactRecord, DaemonError> {
+        let (sha256, size_bytes, blob_path) =
+            blob::store_open(&self.root, &mut request.source_path, max_bytes)?;
+        self.record(request, sha256, size_bytes, blob_path)
+    }
+
+    fn record<S>(
+        &self,
+        request: StoreArtifactRequest<S>,
+        sha256: String,
+        size_bytes: u64,
+        blob_path: PathBuf,
+    ) -> Result<ArtifactRecord, DaemonError> {
         let created_at_ms = unix_epoch_ms();
         // Equal bytes can belong to different Rooms or attachments. Only the
         // blob is deduplicated; each admission gets its own opaque identity.
