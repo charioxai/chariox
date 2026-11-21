@@ -55,6 +55,7 @@ const currentSnapshots = [
   "apps/kernel/src/local/api/tests/protocol_shapes/remote-agent-binding-worktree-1000.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/room-pin-588.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/session-feed-596.json",
+  "apps/kernel/src/local/api/tests/protocol_shapes/session-outline-delta-1014.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/session-outline-tool-image-count-1000.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/session-processes-954.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/web-bot-auth-946.json",
