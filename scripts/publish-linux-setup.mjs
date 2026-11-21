@@ -14,15 +14,16 @@ const root = fileURLToPath(new URL("../", import.meta.url))
 const platform = "linux-x64"
 
 function parseArgs(args) {
-  const fields = ["--version", "--public-key", "--signing-key", "--executables"]
+  const required = ["--version", "--public-key", "--signing-key", "--executables"]
+  const fields = [...required, "--control-plane-url"]
   const options = {}
   for (let i = 0; i < args.length; i += 2) {
     if (!fields.includes(args[i]) || !args[i + 1] || Object.hasOwn(options, args[i])) {
-      throw new Error("Expected --version VERSION --public-key PUBLIC_HEX --signing-key PRIVATE_PEM --executables DIRECTORY")
+      throw new Error("Expected --version VERSION --public-key PUBLIC_HEX --signing-key PRIVATE_PEM --executables DIRECTORY [--control-plane-url URL]")
     }
     options[args[i]] = args[i + 1]
   }
-  if (!fields.every(key => options[key])) throw new Error(`Required arguments: ${fields.join(" ")}`)
+  if (!required.every(key => options[key])) throw new Error(`Required arguments: ${required.join(" ")}`)
   if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(options["--version"])) throw new Error("Use a semantic version without the v")
   return options
 }
@@ -80,7 +81,8 @@ export async function stageLinuxSetupRelease({ version, pin, signingKey, binarie
 }
 
 async function publish(args) {
-  const { "--version": version, "--public-key": pin, "--signing-key": pem, "--executables": binaries } = parseArgs(args)
+  const { "--version": version, "--public-key": pin, "--signing-key": pem,
+    "--executables": binaries, "--control-plane-url": controlPlaneUrl } = parseArgs(args)
   const tag = `v${version}`
   const sourceCommit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim()
   verifyRemoteTag(tag, sourceCommit)
@@ -88,11 +90,11 @@ async function publish(args) {
   const output = await mkdtemp(join(tmpdir(), "chariox-linux-release-"))
   try {
     const assets = await stageLinuxSetupRelease({
-      version, pin, signingKey: resolve(pem), binaries: resolve(binaries), sourceCommit, releaseBase, output,
+      version, pin, signingKey: resolve(pem), binaries: resolve(binaries), sourceCommit, releaseBase, controlPlaneUrl, output,
     })
     execFileSync("gh", ["release", "create", tag, "--repo", repository, "--target", sourceCommit, "--title", `Chariox ${version}`,
       "--notes", "Signed Chariox Setup and release bundle for Linux x86_64.",
-      ...assets],
+      ...(version.includes("-") ? ["--prerelease"] : []), ...assets],
     { stdio: "inherit", timeout: 900_000 })
     console.log(`Linux installer: ${releaseBase}/${tag}/install.sh`)
   } finally {
