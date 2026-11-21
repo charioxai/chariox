@@ -365,7 +365,9 @@ fn the_machine_tools_list_options_and_acquire_takes_the_chosen_class() {
             "chariox.machines.options",
             "chariox.machines.acquire",
             "chariox.machines.status",
-            "chariox.machines.release"
+            "chariox.machines.release",
+            "chariox.machines.exec",
+            "chariox.machines.copy"
         ]
     );
     let acquire = specs

@@ -7672,6 +7672,12 @@ control-plane acquire that needs approval returns `acquisition_waiting`, with th
 card ID in `registration_id`. After the Room decision, repeat the request with
 the same ID to read the outcome or complete the allocation.
 
+The acquiring agent can use `chariox.machines.exec` for a short command on its ready
+rental and `chariox.machines.copy` for verified uploads and downloads. Both
+operations take that allocation's ID and check the canonical target. The scope
+belongs to the requesting agent until release and grants no other kernel access.
+
+
 
 Protocol 993 (peer 432) adds optional task `owner_action: "browser_access"` and a kernel decision `related_agent_id`. Browser approval stays attached to the blocked task revision and grants access only after an owner answer. Task owner decisions have no automatic expiry; ordinary interaction deadlines are unchanged. Clients place these decisions with the referenced agent and remove them when the authoritative task leaves Blocked.
 

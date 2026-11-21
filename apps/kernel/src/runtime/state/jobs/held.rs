@@ -62,7 +62,7 @@ impl HeldRelease {
 impl KernelRuntimeState {
     /// The held machine `allocation_ref` names, proven ready and reachable now, or the refusal that
     /// says what to do next.
-    pub(super) async fn job_held_machine(
+    pub(in crate::runtime::state) async fn job_held_machine(
         &self,
         allocation_ref: &str,
         origin: &Origin,
@@ -87,6 +87,7 @@ impl KernelRuntimeState {
         let ControlPlaneResponse::Machine {
             state,
             kernel_target,
+            access_state,
             machine_label,
             address,
             purpose,
@@ -143,6 +144,7 @@ impl KernelRuntimeState {
             machine_label: machine_label.unwrap_or_else(|| "held machine".into()),
             address,
             kernel_id: target.kernel_id,
+            target_verified: access_state == "available",
             grant,
             class: None,
         })
