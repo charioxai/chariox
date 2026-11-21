@@ -651,17 +651,26 @@ async fn promoted_mixed_notifications_resume_the_timer_task_and_settle_its_recei
         .session_store
         .get_session(&rig.session_id)
         .unwrap();
-    rig.runtime
+    let next = rig
+        .runtime
         .owned
         .prompt_state_owner
-        .complete_active_prompt_only(&room, &rig.agent_id)
+        .peek_next_queued_prompt(&room, &rig.agent_id)
         .unwrap();
     let batch = rig
         .runtime
-        .owned
-        .advance_next_queued_prompt_dispatch(&rig.session_id, &rig.agent_id, &rig.run_id)
+        .complete_local_prompt_with_queued_advance_if_matches(
+            &rig.session_id,
+            &rig.agent_id,
+            Some(&rig.run_id),
+            &next,
+            Some(&rig.active_prompt_id),
+        )
+        .await
         .unwrap()
-        .expect("one notification batch starts");
+        .expect("the busy turn completes")
+        .dispatch
+        .expect("the mixed batch uses receipt-aware dispatch");
     assert!(batch.prompt.contains("5 new messages:"), "{}", batch.prompt);
     for row in &arrived {
         assert!(batch
