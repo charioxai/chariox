@@ -1216,6 +1216,9 @@ pub(crate) fn map_kernel_error(error: &DaemonError) -> KernelTransportError {
         DaemonError::ProviderLoginCodeInvalid => {
             kernel_error("provider_login_code_invalid", error, false)
         }
+        DaemonError::ProviderLoginVaultEntryUnavailable => {
+            kernel_error("provider_login_vault_entry_unavailable", error, false)
+        }
         DaemonError::ProviderAccountCopy {
             code, retryable, ..
         } => kernel_error(code, error, *retryable),
