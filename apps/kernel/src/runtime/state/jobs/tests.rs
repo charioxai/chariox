@@ -286,6 +286,67 @@ async fn offload_job_remote_upload_exec_environment_artifact_and_conflict_return
 }
 
 #[tokio::test]
+async fn offload_job_live_output_tail_preserves_lines_and_utf8() {
+    let (state, run, task, _worktree) = fixture().await;
+    let long_line = "'a' * (6 * 1024 - 1) + 'é' + 'x' * (64 * 1024 - 2)";
+    for (output, last_line, expected) in [
+        (
+            "'a' * 70000 + '\\nfirst\\nsecond'".into(),
+            "second\n",
+            "first\nsecond\n".into(),
+        ),
+        (
+            long_line.to_owned(),
+            "x\n",
+            format!("{}\n", "x".repeat(TAIL_BYTES - 2)),
+        ),
+    ] {
+        let script = format!("import time; print({output}, flush=True); time.sleep(60)");
+        let job = state
+            .dispatch_job_tool(
+                Some(&run),
+                "chariox.jobs.run",
+                &serde_json::json!({"command":["python3","-c",script],"wait_s":0}),
+                &task,
+            )
+            .await
+            .unwrap();
+        let args = serde_json::json!({"job_id":job["job_id"]});
+        let observed = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let status = state
+                    .dispatch_job_tool(Some(&run), "chariox.jobs.status", &args, &task)
+                    .await
+                    .unwrap();
+                assert!(
+                    status["result"].is_null(),
+                    "job finished before publishing live output"
+                );
+                if let Some(tail) = status["output_tail"]
+                    .as_str()
+                    .filter(|tail| tail.ends_with(last_line))
+                {
+                    break tail.to_owned();
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await;
+        state
+            .dispatch_job_tool(Some(&run), "chariox.jobs.cancel", &args, &task)
+            .await
+            .unwrap();
+        let observed = observed.expect("running job did not publish a non-empty output tail");
+        assert!(
+            observed == expected,
+            "expected {} bytes of exact output, got {} bytes",
+            expected.len(),
+            observed.len()
+        );
+    }
+}
+
+#[tokio::test]
 async fn offload_job_large_output_has_durable_completion_and_bounded_manifest_receipt() {
     let (state, run, task, _worktree) = fixture().await;
     let value = state

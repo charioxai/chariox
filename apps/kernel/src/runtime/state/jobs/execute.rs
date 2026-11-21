@@ -53,10 +53,12 @@ impl Output {
         let first = if start == 0 {
             0
         } else {
-            bytes
+            // A newline at the end leaves no later line to show.
+            bytes[..bytes.len().saturating_sub(1)]
                 .iter()
                 .position(|&byte| byte == b'\n')
-                .map_or(bytes.len(), |i| i + 1)
+                .map(|i| i + 1)
+                .unwrap_or_else(|| bytes.iter().take_while(|&byte| byte & 0xc0 == 0x80).count())
         };
         Ok(String::from_utf8_lossy(&bytes[first..]).into_owned())
     }
