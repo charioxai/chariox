@@ -425,6 +425,62 @@ for (const tainted of [false, true]) for (const device_scale_factor of [1, 2]) t
   assert.equal(tiles, 1, "MP-10: the canvas still reaches the viewer");
 }, { "/dot.png": dot }, {}, { ...process.env, CHARIOX_KERNEL_BROWSER_HEADLESS: "1" }));
 
+// T3 (subvysion, browserfidelity r21): a still over the budget travels at the density its measured size predicts, not at half
+// again and again: a frame that missed the budget by a little arrived at a quarter of its density. Noise does not compress, so
+// its PNG size follows its area: the still keeps more than a quarter of the canvas's width and still fits the budget.
+for (const device_scale_factor of [1, 2]) test(`T3: the still of a canvas over the still budget keeps the density that fits it, not a quarter (DPR${device_scale_factor})`, () => mirrored(noise(false), async ({ subscribe, evaluate }) => {
+  const canvasWidth = await evaluate('document.querySelector("#c").width');
+  const { next } = await subscribe({ device_scale_factor });
+  let still = null;
+  for (let i = 0; i < 6 && !still; i++) still = (await next(1100)).tiles[0] ?? null;
+  assert(still, "the canvas still reaches the viewer");
+  assert(still.data_base64.length <= 512 * 1024, `the still fits the packet's still budget (${still.data_base64.length})`);
+  const share = Buffer.from(still.data_base64, "base64").readUInt32BE(16) / canvasWidth;
+  assert(share > 0.27 && share < 0.5, `the still keeps the density that fits (width share ${share.toFixed(3)}; halving gave 0.25)`);
+}, {}, {}, { ...process.env, CHARIOX_KERNEL_BROWSER_HEADLESS: "1" }));
+
+// T3 (subvysion): two stills over one packet's budget share it: the first (there, a hidden video under the canvas that paints
+// it) cannot leave the second at a lower density. Two noise canvases side by side arrive in one packet at about the same density.
+const noisePair = `<style>body{margin:0;display:flex}canvas{display:block;width:50vw;height:100vh}</style><canvas id="a"></canvas><canvas id="b"></canvas><script>for(const c of document.querySelectorAll("canvas")){c.width=innerWidth/2*devicePixelRatio;c.height=innerHeight*devicePixelRatio;const g=c.getContext("2d"),d=g.createImageData(c.width,c.height);for(let i=0;i<d.data.length;i++)d.data[i]=i%4===3?255:Math.random()*256|0;g.putImageData(d,0,0)}</script>`;
+for (const device_scale_factor of [1, 2]) test(`T3: two stills over the budget share it evenly (DPR${device_scale_factor})`, () => mirrored(noisePair, async ({ subscribe, evaluate }) => {
+  const canvasWidth = await evaluate('document.querySelector("#a").width');
+  const { next } = await subscribe({ device_scale_factor });
+  let tiles = [];
+  for (let i = 0; i < 6 && tiles.length < 2; i++) tiles = (await next(1100)).tiles;
+  assert.equal(tiles.length, 2, "both stills arrive in one packet");
+  assert(tiles.reduce((n, t) => n + t.data_base64.length, 0) <= 512 * 1024, "together within the still budget");
+  const shares = tiles.map(t => Buffer.from(t.data_base64, "base64").readUInt32BE(16) / canvasWidth).sort();
+  assert(shares[0] > 0.8 * shares[1] && shares[0] > 0.27, `about the same density, above a quarter (${shares.map(v => v.toFixed(3))})`);
+}, {}, {}, { ...process.env, CHARIOX_KERNEL_BROWSER_HEADLESS: "1" }));
+
+// T3 (subvysion): a still another region's opaque still covers from above is never seen; the one on top takes the whole budget.
+// Guards: a half-transparent cover, a cover with a hole and a smaller cover cover nothing, and both stills still travel.
+const noiseStack = ({ top = "", bottom = "", hole = false, small = false } = {}) => `<style>body{margin:0}canvas{position:absolute;left:0;top:0;width:100vw;height:100vh}#t{z-index:1;${top}}#b{${bottom}}${small ? "#t{width:90vw}" : ""}</style><canvas id="b"></canvas><canvas id="t"></canvas><script>for(const c of document.querySelectorAll("canvas")){c.width=innerWidth*devicePixelRatio;c.height=innerHeight*devicePixelRatio;const g=c.getContext("2d"),d=g.createImageData(c.width,c.height);for(let i=0;i<d.data.length;i++)d.data[i]=i%4===3?255:Math.random()*256|0;g.putImageData(d,0,0)}${hole ? 'document.querySelector("#t").getContext("2d").clearRect(innerWidth*devicePixelRatio/2-40,innerHeight*devicePixelRatio/2-40,80,80)' : ''}</script>`;
+const stackStills = async ({ subscribe, evaluate }, device_scale_factor) => {
+  const canvasWidth = await evaluate('document.querySelector("#b").width'), { next } = await subscribe({ device_scale_factor });
+  let tiles = [];
+  for (let i = 0; i < 6 && !tiles.length; i++) tiles = (await next(1100)).tiles;
+  // A second refresh shows whether the covered still follows later (it must not while its cover's still stands).
+  await new Promise(resolve => setTimeout(resolve, 1100)); for (let i = 0; i < 2; i++) tiles = [...tiles, ...(await next(1100)).tiles];
+  return { tiles, shares: tiles.map(t => Buffer.from(t.data_base64, "base64").readUInt32BE(16) / canvasWidth), bytes: tiles.reduce((n, t) => n + t.data_base64.length, 0) };
+};
+for (const device_scale_factor of [1, 2]) {
+  test(`T3: a still an opaque still covers from above is skipped; the one on top takes the budget (DPR${device_scale_factor})`, () => mirrored(noiseStack(), async (page) => {
+    const { tiles, shares } = await stackStills(page, device_scale_factor);
+    assert.equal(new Set(tiles.map(t => t.node_id)).size, 1, `only the covering still travels (${tiles.length} stills)`);
+    assert(tiles[0].data_base64.length <= 512 * 1024 && shares[0] > 0.27, `the cover keeps the whole budget's density (a lone canvas's) (${shares[0].toFixed(3)})`);
+  }, {}, {}, { ...process.env, CHARIOX_KERNEL_BROWSER_HEADLESS: "1" }));
+  // subvysion's own shape: the covered one cannot be hit (pointer-events:none) and paints at z-index -1 in the root context.
+  test(`T3: an unhittable still at a negative z-index under an opaque still is skipped (DPR${device_scale_factor})`, () => mirrored(noiseStack({ bottom: "pointer-events:none;z-index:-1", top: "transform:translateX(0)" }), async (page) => {
+    const { tiles } = await stackStills(page, device_scale_factor);
+    assert.equal(new Set(tiles.map(t => t.node_id)).size, 1, `only the covering still travels (${tiles.length} stills)`);
+  }, {}, {}, { ...process.env, CHARIOX_KERNEL_BROWSER_HEADLESS: "1" }));
+  for (const [name, options] of [["a half-transparent cover", { top: "opacity:.5" }], ["a cover with a hole", { hole: true }], ["a smaller cover", { small: true }], ["an unhittable still that paints above", { bottom: "pointer-events:none;z-index:2" }], ["a rotated cover", { top: "transform:rotate(1deg)" }]]) test(`T3: under ${name} both stills still travel (DPR${device_scale_factor})`, () => mirrored(noiseStack(options), async (page) => {
+    const { tiles } = await stackStills(page, device_scale_factor);
+    assert.equal(new Set(tiles.map(t => t.node_id)).size, 2, "both stills reach the viewer");
+  }, {}, {}, { ...process.env, CHARIOX_KERNEL_BROWSER_HEADLESS: "1" }));
+}
+
 // browserfidelity r16 (YC sites, three.js): an opaque WebGL canvas (alpha:false, three.js's default) read after
 // compositing is opaque black, not transparent, so its own-pixels still was black. Its still must show what the page
 // shows; a 2D canvas the page fills black stays black.
