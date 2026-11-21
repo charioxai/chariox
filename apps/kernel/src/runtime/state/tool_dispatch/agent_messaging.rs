@@ -26,10 +26,25 @@ impl KernelRuntimeState {
             Err(message) => return agent_message_failure(message),
         };
         match self.session_agent_description(session, requester, agent, activity.get(agent.id())) {
-            Ok(agent) => crate::transport::runtime_tools::RuntimeToolResult {
-                ok: true,
-                payload: serde_json::json!({"session_id": session.id(), "agent": agent}),
-            },
+            Ok(mut description) => {
+                if agent.id() == requester.id()
+                    || (agent.parent_agent_id() == Some(requester.id())
+                        && agent.owner_user_id() == requester.owner_user_id())
+                {
+                    description["jobs"] = serde_json::json!(self
+                        .session_jobs(session.id())
+                        .into_iter()
+                        .filter(|job| job.agent_id == agent.id())
+                        .collect::<Vec<_>>());
+                }
+                crate::transport::runtime_tools::RuntimeToolResult {
+                    ok: true,
+                    payload: serde_json::json!({
+                        "session_id": session.id(),
+                        "agent": description,
+                    }),
+                }
+            }
             Err(error) => agent_message_failure(error.to_string()),
         }
     }

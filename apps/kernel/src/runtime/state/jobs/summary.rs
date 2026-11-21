@@ -62,8 +62,7 @@ impl Summary {
                         exit_code: result.exit_code,
                         reason: ((record.placement == JobPlacement::Remote
                             && record.machine_label.is_none())
-                            || (record.placement == JobPlacement::Local
-                                && result.outcome == crate::local::JobOutcome::MachineLost))
+                            || result.outcome == crate::local::JobOutcome::MachineLost)
                             .then(|| {
                                 let reason =
                                     if result.output_tail.starts_with(super::local::RESTART_REASON)

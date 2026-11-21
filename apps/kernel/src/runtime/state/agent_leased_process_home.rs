@@ -195,10 +195,15 @@ impl KernelRuntimeState {
             execution_lease_id: remote.execution_lease_id.clone(),
             leased_agent_id: remote.leased_agent_id.clone(),
             home_prompt_id: prompt.into(),
-            worker_provider_run_id: remote
-                .active_worker_provider_run_id
-                .clone()
-                .ok_or_else(|| ledger::error("leased process needs an active worker run"))?,
+            worker_provider_run_id: remote.active_worker_provider_run_id.clone().ok_or_else(
+                || {
+                    ledger::error(if job.is_some() {
+                        super::jobs::refusal::BUILD_TURN_REQUIRED
+                    } else {
+                        "leased process needs an active worker run"
+                    })
+                },
+            )?,
         };
         self.authorize_current_external_command()?;
         let admission = LeasedProcessPoll::reserve(&self.owned.agent_wakes, &wake.id)

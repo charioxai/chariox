@@ -147,6 +147,27 @@ impl KernelRuntimeState {
         };
         let driver = self.job_wake_driver.as_ref().expect("job driver");
         if record.result.is_none() {
+            let store = &self.owned.durable_state_store;
+            if store.leased_wake_binding(&record.wake_id)?.is_some() {
+                let owner = self
+                    .owned
+                    .session_store
+                    .get_session(room)?
+                    .owner_user_id()
+                    .to_owned();
+                let ledger::Outcome::Wakes(wakes) =
+                    store.agent_lifecycle(ledger::Operation::CancelOwnerWake {
+                        id: record.wake_id,
+                        room: room.into(),
+                        owner,
+                    })?
+                else {
+                    unreachable!()
+                };
+                self.ensure_leased_process_poll(&wakes[0]);
+                self.refresh_wake_projection(room);
+                return Ok(true);
+            }
             driver
                 .owner_stops
                 .lock()

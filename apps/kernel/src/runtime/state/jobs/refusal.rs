@@ -1,6 +1,8 @@
 use crate::{error::DaemonError, transport::runtime_tools::RuntimeToolResult};
 
 const JOB_REFUSED: &str = "job_refused";
+pub(in crate::runtime::state) const BUILD_TURN_REQUIRED: &str =
+    "Jobs need an active Build turn with workspace write access. Switch this agent to Build mode and start a new turn with write access, then run the job again.";
 
 pub(in crate::runtime::state) fn is_job_tool(name: &str) -> bool {
     name.starts_with("chariox.jobs.")

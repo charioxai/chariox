@@ -41,9 +41,12 @@ impl KernelRuntimeState {
             return Err(ledger::error("room event tools are disabled"));
         }
         if context.home_prompt_id.is_none() {
-            return Err(ledger::error(
-                "leased event tools need the running home prompt",
-            ));
+            let error = if super::super::jobs::refusal::is_job_tool(name) {
+                super::super::jobs::refusal::BUILD_TURN_REQUIRED
+            } else {
+                "leased event tools need the running home prompt"
+            };
+            return super::super::jobs::refusal::tool_reply(name, Err(ledger::error(error)));
         }
         let agent = self.authorize_forwarded_workspace_context(context)?;
         let reply = self
