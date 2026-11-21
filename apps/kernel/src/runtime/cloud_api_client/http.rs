@@ -46,7 +46,21 @@ pub(crate) async fn post_cloud_json_with_timeout<T>(
 where
     T: serde::de::DeserializeOwned + Send + 'static,
 {
+    post_cloud_json_with_dispatch(api_url, path, body, timeout, || {}).await
+}
+
+pub(crate) async fn post_cloud_json_with_dispatch<T>(
+    api_url: String,
+    path: &'static str,
+    body: serde_json::Value,
+    timeout: std::time::Duration,
+    on_dispatch: impl FnOnce() + Send + 'static,
+) -> Result<T, DaemonError>
+where
+    T: serde::de::DeserializeOwned + Send + 'static,
+{
     tokio::task::spawn_blocking(move || {
+        on_dispatch();
         post_cloud_json_blocking_with_timeout(api_url, path, body, timeout)
     })
     .await

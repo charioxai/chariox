@@ -3,8 +3,9 @@ use crate::config::DaemonConfig;
 use crate::error::DaemonError;
 use crate::local::{ControlPlaneRequest, ControlPlaneResponse, LocalDaemonResponse};
 use crate::runtime::command::KernelCommand;
-use crate::runtime::state::machine_acquisition::direct::AcquireTrace;
+use crate::runtime::state::machine_acquisition::direct::{log_milestone, AcquireTrace};
 use crate::runtime::state::KernelRuntimeState;
+use serde_json::json;
 use std::time::Duration;
 
 const OFFER_TIMEOUT: Duration = Duration::from_secs(2);
@@ -98,12 +99,15 @@ pub(crate) async fn execute(
             "Start the work as a job so the kernel can manage its machine",
         ));
     }
-    let post = |request: &ControlPlaneRequest| {
+    let post = |request: &ControlPlaneRequest, stage: &str| {
         let body = cloud_request_body(&profile.account_id, credential, request);
         let api_url = profile.api_url.clone();
         let offer = matches!(request, ControlPlaneRequest::Capabilities {});
+        let fields = trace.map(|trace| trace.service_fields(stage));
         async move {
-            use crate::runtime::cloud_api_client::{post_cloud_json, post_cloud_json_with_timeout};
+            use crate::runtime::cloud_api_client::{
+                cloud_error_code, post_cloud_json, post_cloud_json_with_dispatch,
+            };
             let Some(request_id) = acquire_id else {
                 return post_cloud_json(api_url, "/control-plane", body).await;
             };
@@ -113,16 +117,32 @@ pub(crate) async fn execute(
                 ACQUIRE_TIMEOUT
             };
             // Bound blocking-executor queue time as well as the HTTP request.
+            let dispatch = fields.clone();
             let response = tokio::time::timeout(
                 deadline,
-                post_cloud_json_with_timeout(
+                post_cloud_json_with_dispatch(
                     api_url,
                     "/control-plane",
                     body,
                     deadline + Duration::from_millis(250),
+                    move || {
+                        if let Some(fields) = dispatch {
+                            log_milestone(fields);
+                        }
+                    },
                 ),
             )
             .await;
+            if let Some(mut fields) = fields {
+                fields["milestone"] = json!("service_request_answered");
+                fields["outcome"] = json!(match &response {
+                    Ok(Ok(_)) => "ok",
+                    Ok(Err(error)) if cloud_error_code(error).is_some() => "service_error",
+                    Ok(Err(_)) => "transport_error",
+                    Err(_) => "timeout",
+                });
+                log_milestone(fields);
+            }
             if offer {
                 return response
                     .ok()
@@ -162,7 +182,7 @@ pub(crate) async fn execute(
         request,
         ControlPlaneRequest::Acquire { .. } | ControlPlaneRequest::AcquireJob { .. }
     ) {
-        let offered = post(&ControlPlaneRequest::Capabilities {}).await.map_err(|error| {
+        let offered = post(&ControlPlaneRequest::Capabilities {}, "offer_recheck").await.map_err(|error| {
             if acquire_id.is_some() {
                 return error;
             }
@@ -211,7 +231,12 @@ pub(crate) async fn execute(
             }
         }
     }
-    let service_response = post(request).await;
+    let stage = if capabilities {
+        "offer_read"
+    } else {
+        "acquire"
+    };
+    let service_response = post(request, stage).await;
     if let Err(error) = state.machine_approval_sent(command, request) {
         tracing::warn!(%error, "could not close the machine approval receipt");
     }
