@@ -139,36 +139,29 @@ mod tests {
 
     #[test]
     fn renders_structured_tool_update_with_input_and_output() {
-        let payload = render_tool_transcript_update(
-            &OpenCodePart {
-                id: "part-1".to_string(),
-                session_id: "session-1".to_string(),
-                message_id: "message-1".to_string(),
-                kind: "tool".to_string(),
-                text: String::new(),
-                tool: "bash".to_string(),
-                state: Some(OpenCodeToolState {
-                    status: "completed".to_string(),
-                    input: json!({ "command": "git status" }),
-                    output: String::new(),
-                    title: String::new(),
-                    metadata: json!({
-                        "output": "On branch main",
-                        "description": "Shows working tree status"
-                    }),
-                    error: String::new(),
-                    raw: String::new(),
-                }),
-                time: None,
-            },
-            &RemoteExtensionManifest::default(),
-        );
+        let part: OpenCodePart = serde_json::from_value(json!({
+            "id": "part-1", "sessionID": "session-1", "messageID": "message-1",
+            "type": "tool", "tool": "bash",
+            "state": {
+                "status": "completed",
+                "input": {"command": "git status"},
+                "metadata": {
+                    "output": "On branch main",
+                    "description": "Shows working tree status"
+                },
+                "time": {"start": 1000, "end": 13000}
+            }
+        }))
+        .unwrap();
+        let payload = render_tool_transcript_update(&part, &RemoteExtensionManifest::default());
 
         let parsed: ToolTranscriptUpdate =
             serde_json::from_str(&payload).expect("tool payload should deserialize");
         assert_eq!(parsed.id, "part-1");
         assert_eq!(parsed.tool, "bash");
         assert_eq!(parsed.status, "completed");
+        assert_eq!(parsed.started_at_ms, Some(1_000));
+        assert_eq!(parsed.finished_at_ms, Some(13_000));
         assert_eq!(
             parsed.description.as_deref(),
             Some("Shows working tree status")
@@ -211,6 +204,7 @@ mod tests {
                     metadata: json!({}),
                     error: String::new(),
                     raw: String::new(),
+                    time: None,
                 }),
                 time: None,
             },
@@ -1549,6 +1543,7 @@ mod tests {
                         metadata: json!({}),
                         error: String::new(),
                         raw: String::new(),
+                        time: None,
                     }),
                     time: None,
                 }),
@@ -1585,6 +1580,7 @@ mod tests {
                         metadata: json!({}),
                         error: String::new(),
                         raw: String::new(),
+                        time: None,
                     }),
                     time: None,
                 }),
