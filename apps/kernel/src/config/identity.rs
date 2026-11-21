@@ -269,6 +269,13 @@ pub(super) fn load_or_create_runtime_identity(host: &str, port: u16) -> RuntimeI
     registry.machine_id = machine_id.clone();
 
     let now_ms = now_unix_ms();
+    let newest_other_endpoint = registry
+        .kernels
+        .iter()
+        .filter(|(key, record)| key.as_str() != endpoint_key && !is_pinned_local_kernel(record))
+        .map(|(_, record)| record.last_seen_at_ms)
+        .max()
+        .unwrap_or_default();
     let record = registry
         .kernels
         .entry(endpoint_key.clone())
@@ -293,7 +300,11 @@ pub(super) fn load_or_create_runtime_identity(host: &str, port: u16) -> RuntimeI
     if record.port == 0 {
         record.port = port;
     }
-    record.last_seen_at_ms = now_ms;
+    // The timestamp orders evictable identities. A pinned entry or an entry
+    // already newest keeps its rank without another durable write at boot.
+    if !is_pinned_local_kernel(record) && record.last_seen_at_ms <= newest_other_endpoint {
+        record.last_seen_at_ms = now_ms.max(newest_other_endpoint.saturating_add(1));
+    }
     let record_snapshot = record.clone();
     let identity = RuntimeIdentity {
         daemon_id: record_snapshot.kernel_id.clone(),
@@ -303,7 +314,7 @@ pub(super) fn load_or_create_runtime_identity(host: &str, port: u16) -> RuntimeI
     };
 
     prune_kernel_registry(&mut registry, &endpoint_key);
-    persist_kernel_registry(&registry_path, &registry);
+    persist_identity_document(&registry_path, &registry);
     persist_kernel_identity(&identity, &record_snapshot);
     identity
 }
@@ -464,15 +475,6 @@ fn identity_is_invalid(identity: &RuntimeIdentity) -> bool {
         || identity.relay_private_key.trim().is_empty()
 }
 
-fn persist_kernel_registry(path: &Path, registry: &KernelRegistry) {
-    if let Some(parent) = path.parent() {
-        let _ = fs::create_dir_all(parent);
-    }
-    if let Ok(contents) = serde_json::to_string_pretty(registry) {
-        let _ = write_private_file(path, contents.as_bytes());
-    }
-}
-
 fn persist_kernel_identity(identity: &RuntimeIdentity, record: &KernelIdentityRecord) {
     let path = default_config_dir()
         .join("kernels")
@@ -495,9 +497,55 @@ fn persist_kernel_identity(identity: &RuntimeIdentity, record: &KernelIdentityRe
             }
         }
     }
-    if let Ok(contents) = serde_json::to_string_pretty(record) {
-        let _ = write_private_file(&path, contents.as_bytes());
+    persist_identity_document(&path, record);
+}
+
+fn persist_identity_document(path: &Path, document: &impl Serialize) {
+    if let Ok(contents) = serde_json::to_vec_pretty(document) {
+        if !identity_document_matches(path, &contents) {
+            let _ = write_private_file(path, &contents);
+        }
     }
+}
+
+#[cfg(unix)]
+fn identity_document_matches(path: &Path, expected: &[u8]) -> bool {
+    use std::io::Read;
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+
+    let Ok(file) = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)
+    else {
+        return false;
+    };
+    let Ok(metadata) = file.metadata() else {
+        return false;
+    };
+    // Reuse only an ordinary private file that the current user owns. The
+    // existing atomic publication still repairs missing or unsafe records.
+    if !metadata.is_file()
+        || metadata.uid() != unsafe { libc::geteuid() }
+        || metadata.permissions().mode() & 0o777 != 0o600
+        || metadata.len() != expected.len() as u64
+    {
+        return false;
+    }
+    let mut contents = Vec::with_capacity(expected.len());
+    file.take(expected.len() as u64 + 1)
+        .read_to_end(&mut contents)
+        .is_ok()
+        && contents == expected
+}
+
+#[cfg(not(unix))]
+fn identity_document_matches(path: &Path, expected: &[u8]) -> bool {
+    fs::symlink_metadata(path).is_ok_and(|metadata| {
+        metadata.is_file()
+            && metadata.len() == expected.len() as u64
+            && fs::read(path).is_ok_and(|contents| contents == expected)
+    })
 }
 
 fn kernel_identity_key(host: &str, port: u16) -> String {
@@ -520,6 +568,54 @@ pub(super) fn generate_identity_suffix() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn current_kernel_identity_reopens_without_rewriting_private_records() {
+        crate::test_support::isolated_env_test!();
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+        let home = crate::test_support::TestTempDir::new("kernel-identity-cold-reopen");
+        std::env::set_var("CHARIOX_HOME", home.join("home"));
+        std::env::remove_var("CHARIOX_SLICE_PRIVATE_ROOT");
+        let host = "127.0.0.1";
+        let port = 51_101;
+        let identity = load_or_create_runtime_identity(host, port);
+        let registry_path = DaemonConfig::default_kernel_registry_path();
+        let identity_path = default_config_dir()
+            .join("kernels")
+            .join(&identity.daemon_id)
+            .join("identity.json");
+        let registry_file = fs::File::open(&registry_path).unwrap();
+        let identity_file = fs::File::open(&identity_path).unwrap();
+
+        assert!(load_or_create_runtime_identity(host, port) == identity);
+        assert_eq!(
+            registry_file.metadata().unwrap().ino(),
+            fs::metadata(&registry_path).unwrap().ino()
+        );
+        assert_eq!(
+            identity_file.metadata().unwrap().ino(),
+            fs::metadata(&identity_path).unwrap().ino()
+        );
+
+        let other_port = 51_102;
+        assert_ne!(
+            load_or_create_runtime_identity(host, other_port).daemon_id,
+            identity.daemon_id
+        );
+        assert!(load_or_create_runtime_identity(host, port) == identity);
+        let current: KernelRegistry =
+            serde_json::from_slice(&fs::read(&registry_path).unwrap()).unwrap();
+        assert!(
+            current.kernels[&kernel_identity_key(host, port)].last_seen_at_ms
+                > current.kernels[&kernel_identity_key(host, other_port)].last_seen_at_ms
+        );
+
+        fs::set_permissions(&identity_path, fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(load_or_create_runtime_identity(host, port) == identity);
+        assert_eq!(fs::metadata(identity_path).unwrap().mode() & 0o777, 0o600);
+    }
 
     #[test]
     fn kernel_registry_retains_current_pinned_and_recent_identities_only() {
