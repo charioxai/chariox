@@ -10,7 +10,7 @@ fn provider_catalog_aliases_1012_snapshot_and_hash() {
     let bytes = include_bytes!("provider-catalog-aliases-1012.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "22f40e13cddaa65f51f3fa5f8b65f482ab8eb10e9dcebe48078668c6e9841d68"
+        "5abab6e38bc0ddd0b15582c61991d638eeed3dee3a27e8b34e0dfb27e01c37f6"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(fixture["local"], LOCAL_DAEMON_PROTOCOL_VERSION);

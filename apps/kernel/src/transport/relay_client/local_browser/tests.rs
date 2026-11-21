@@ -209,6 +209,8 @@ struct Grant {
     kernel_id: String,
     endpoint_epoch: String,
     expires_at_ms: u64,
+    #[serde(default)]
+    expires_in_ms: Option<u64>,
 }
 
 type ClientSocket =
@@ -2027,6 +2029,50 @@ fn row236_grant_and_renewal_answers_carry_the_remaining_lifetime() {
         let renewed = answer["LocalBrowserLeaseRenewed"]["expires_in_ms"].as_u64().expect("the renewal answer says how long it lasts");
         assert!(renewed > 14_000 && renewed <= 15_000, "a grant shortened by its identity lasts what remains of it: {answer}");
     });
+}
+
+/// Local 1014 (provisional): the snapshot pins the four grant answers that carry `expires_in_ms`, and the kernel's own answers
+/// carry every field it names.
+#[test]
+fn mp08_local_browser_expires_in_1014_snapshot_and_hash() {
+    use sha2::{Digest, Sha256};
+    let bytes = include_bytes!("../../../local/api/tests/protocol_shapes/local-browser-expires-in-1014.json");
+    assert_eq!(
+        format!("{:x}", Sha256::digest(bytes)),
+        "74c749fe8226dfe091763e76d8339b353f1cce15a4dd70d4ca9fe8fb295b6740"
+    );
+    let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    assert_eq!(fixture["local_protocol"], crate::local::LOCAL_DAEMON_PROTOCOL_VERSION);
+    let fields = |name: &str| -> Vec<String> {
+        fixture[name].as_array().unwrap().iter().map(|field| field.as_str().unwrap().to_owned()).collect()
+    };
+    let connect_fields = fields("LocalBrowserConnectIssued");
+    let mut renew_fields = fields("LocalBrowserLeaseRenewed");
+    renew_fields.sort();
+    large_stack(async move {
+        let kernel = Kernel::new();
+        let browser = Browser::new();
+        let (_client, offer) = RtcClient::offer();
+        let issued = kernel.mint_rtc(&browser, &offer).await;
+        for field in ["answer", "grant", "kernel_id", "endpoint_epoch", "expires_at_ms", "expires_in_ms"] {
+            assert!(issued.get(field).is_some(), "WebRTC connect answer lacks {field}: {issued}");
+        }
+        // The loopback connect answer is the snapshot's LocalBrowserConnectIssued: Grant parses every other field it names.
+        let mut pinned = connect_fields.clone();
+        pinned.sort();
+        assert_eq!(pinned, ["endpoint", "endpoint_epoch", "expires_at_ms", "expires_in_ms", "grant", "kernel_id"]);
+        let grant = kernel.mint(&browser, browser.identity()).await.unwrap();
+        assert!(grant.expires_in_ms.is_some_and(|ms| ms > 29_000 && ms <= GRANT_TTL_MS), "{grant:?}");
+        let _socket = redeemed(&kernel, &browser, &grant).await;
+        let outcome = renew(&kernel, &browser, browser.identity(), &grant, 1, true).await;
+        let renewed = renewed_lease(&browser, outcome);
+        let mut keys: Vec<String> = renewed.as_object().unwrap().keys().cloned().collect();
+        keys.sort();
+        assert_eq!(keys, renew_fields, "{renewed}");
+    });
+    for name in ["LocalTerminalConnectIssued", "LocalTerminalLeaseRenewed"] {
+        assert!(fields(name).iter().any(|field| field == "expires_in_ms"), "{name}");
+    }
 }
 
 /// Row 252 (webperf-r18 lab): the kernel's grant waited for its STUN lookup (300 + 400 ms when nothing answers) before it answered,
