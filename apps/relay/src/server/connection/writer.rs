@@ -517,7 +517,17 @@ where
                 .or_else(|| (0..pending.len()).find(|&i| startable(i)))
             {
                 let queued = pending.remove(index).unwrap();
-                let bulk = usage.queue.start_transfer(queued.admitted);
+                // Peer replies can retry without losing the connection when
+                // a previous reply still owns the bulk budget.
+                let bulk = if matches!(
+                    &queued.message,
+                    Message::Text(text) if text.starts_with(r#"{"kind":"daemon_peer_response""#)
+                ) {
+                    usage.queue.start_transfer(queued.admitted)
+                } else {
+                    usage.released(&queued);
+                    None
+                };
                 let class = queued.lane;
                 let key = queued.key.clone();
                 let scope = queued.scope.clone();
