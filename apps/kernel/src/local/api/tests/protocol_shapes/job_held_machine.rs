@@ -1,13 +1,13 @@
-//! Local 1012: a job request may name a machine the agent already holds.
+//! Local 1013: an explicit job machine can name an enrolled kernel.
 use super::*;
 use sha2::{Digest, Sha256};
 
 #[test]
-fn job_held_machine_1012_snapshot_and_hash() {
-    let bytes = include_bytes!("job-held-machine-1012.json");
+fn job_machine_1013_snapshot_and_hash() {
+    let bytes = include_bytes!("job-machines-1013.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "e76665ce4be1c4fc554fe98604aad3ac31f4d9ca7221ca4be277ef82a2fe75a0"
+        "3c49d129359b80dba27858e168419dd3ca989d77cf835a818ce57d6f3c207605"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(fixture["local"], LOCAL_DAEMON_PROTOCOL_VERSION);
@@ -15,6 +15,9 @@ fn job_held_machine_1012_snapshot_and_hash() {
         let parsed: crate::local::RunJobRequest = serde_json::from_value(wire.clone()).unwrap();
         assert_eq!(serde_json::to_value(parsed).unwrap(), *wire);
     }
+    let wire = &fixture["run_process"];
+    let parsed: LocalDaemonRequest = serde_json::from_value(wire.clone()).unwrap();
+    assert_eq!(serde_json::to_value(parsed).unwrap(), *wire);
 }
 
 /// A request that names no machine is the one every job had before: it is placed by policy.

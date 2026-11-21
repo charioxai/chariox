@@ -35,6 +35,8 @@ pub struct RemoteJobPolicy {
 pub struct RunSessionProcessRemotelyRequest {
     pub session_id: String,
     pub process_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kernel: Option<String>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemoteJobEstimate {

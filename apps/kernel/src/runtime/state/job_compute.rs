@@ -10,7 +10,6 @@ use crate::runtime::command::{KernelCaller, KernelCallerKind, KernelCommand, Ker
 use crate::runtime::kernel_gateway::Origin;
 
 pub(super) struct JobMachine {
-    pub(super) allocation_ref: String,
     pub(super) machine_label: String,
     pub(super) address: Option<String>,
     pub(super) kernel_id: String,
@@ -20,6 +19,7 @@ pub(super) struct JobMachine {
 }
 
 pub(super) struct JobClass {
+    pub(super) allocation_ref: String,
     pub(super) capability_revision: String,
     pub(super) class_id: String,
     pub(super) rate_per_minute: JobMachineRate,
@@ -412,12 +412,12 @@ impl KernelRuntimeState {
                     )
                 })?;
                 return Ok(JobMachine {
-                    allocation_ref: allocation_ref.into(),
                     machine_label: machine_label.unwrap_or_else(|| "remote job".into()),
                     address,
                     grant: self.job_machine_grant(&target.kernel_id, &origin.harness)?,
                     kernel_id: target.kernel_id,
                     class: Some(JobClass {
+                        allocation_ref: allocation_ref.into(),
                         capability_revision: capability_revision.into(),
                         class_id: class.class_id,
                         rate_per_minute: class.rate_per_minute,
@@ -572,7 +572,7 @@ impl KernelRuntimeState {
             return Ok(());
         };
         self.job_compute_cleanup_request(&ControlPlaneRequest::JobStarted {
-            allocation_ref: machine.allocation_ref.clone(),
+            allocation_ref: class.allocation_ref.clone(),
             capability_revision: class.capability_revision.clone(),
         })
         .await?;

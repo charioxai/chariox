@@ -48,7 +48,21 @@ impl KernelRuntimeState {
                     .collect()
             })
             .unwrap_or_default();
+        let live_output = if record.result.is_none() {
+            match super::execute::Output::read_tail(self, &record) {
+                Ok(tail) => Some(tail),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(error) => {
+                    return Err(ledger::error(format!("Cannot read job output: {error}")))
+                }
+            }
+        } else {
+            None
+        };
         let mut value = public_record(record)?;
+        if let Some(tail) = live_output {
+            value["output_tail"] = tail.into();
+        }
         if let Some(wait) = wait {
             value["waiting"] = serde_json::to_value(wait).expect("launch wait");
             value["running_job_ids"] = serde_json::json!(running);

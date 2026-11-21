@@ -40,6 +40,29 @@ impl Output {
         path.is_file().then(|| path.to_string_lossy().into_owned())
     }
 
+    pub(super) fn read_tail(
+        state: &KernelRuntimeState,
+        record: &Record,
+    ) -> std::io::Result<String> {
+        use std::io::{Read, Seek, SeekFrom};
+        let mut file = std::fs::File::open(Self::path(state, record))?;
+        let start = file.metadata()?.len().saturating_sub(TAIL_BYTES as u64);
+        file.seek(SeekFrom::Start(start))?;
+        let mut bytes = Vec::new();
+        file.take(TAIL_BYTES as u64).read_to_end(&mut bytes)?;
+        let first = if start == 0 {
+            0
+        } else {
+            // A newline at the end leaves no later line to show.
+            bytes[..bytes.len().saturating_sub(1)]
+                .iter()
+                .position(|&byte| byte == b'\n')
+                .map(|i| i + 1)
+                .unwrap_or_else(|| bytes.iter().take_while(|&byte| byte & 0xc0 == 0x80).count())
+        };
+        Ok(String::from_utf8_lossy(&bytes[first..]).into_owned())
+    }
+
     pub(super) fn new(state: &KernelRuntimeState, record: &Record) -> Result<Self, DaemonError> {
         let path = Self::path(state, record);
         std::fs::create_dir_all(path.parent().expect("job output has a directory"))
@@ -253,7 +276,7 @@ impl KernelRuntimeState {
             Err(error) => {
                 if record.remote.awaits_command() {
                     // Without its output the command cannot be followed: stop it and its worker.
-                    self.stop_held_command(&record).await;
+                    self.stop_named_command(&record).await;
                     self.give_up_pending_return(&mut record);
                     self.settle_or_warn(&record).await;
                     if let (Some(allocation), Some(revision)) =
@@ -270,7 +293,7 @@ impl KernelRuntimeState {
                 return;
             }
         };
-        let result = if let Some((active, progress)) = progress {
+        let mut result = if let Some((active, progress)) = progress {
             self.resume_local_job(&mut record, &mut output, &mut cancelled, active, progress)
                 .await
         } else if matches!(record.remote, RemoteStage::Running { .. }) {
@@ -280,17 +303,17 @@ impl KernelRuntimeState {
             match selected_environment(self, &record) {
                 Err(error) => Err(error),
                 Ok(environment) => {
-                    self.run_job(
-                        &mut record,
-                        &environment,
-                        &mut output,
-                        &mut cancelled,
-                        false,
-                    )
-                    .await
+                    self.run_job(&mut record, &environment, &mut output, &mut cancelled, None)
+                        .await
                 }
             }
         };
+        if matches!(&result, Err(DaemonError::MachineRequest { code, .. }) if code == "job_move_remote")
+        {
+            result = self
+                .move_queued_job(&mut record, &mut output, &mut cancelled)
+                .await;
+        }
         if record.allocation_ref.is_none() {
             if let Some(receipt) = self
                 .job_wake_driver
@@ -356,17 +379,53 @@ impl KernelRuntimeState {
         self.finish_job(&wake, &mut record, result).await;
     }
 
+    async fn move_queued_job(
+        &self,
+        record: &mut Record,
+        output: &mut Output,
+        cancelled: &mut watch::Receiver<bool>,
+    ) -> Result<JobResult, DaemonError> {
+        let destination = self
+            .job_wake_driver
+            .as_ref()
+            .and_then(|driver| {
+                driver
+                    .remote_moves
+                    .lock()
+                    .expect("job moves")
+                    .remove(&record.job_id)
+            })
+            .ok_or_else(|| {
+                ledger::error("The queued job's destination was lost. Run the job again.")
+            })?;
+        let requested_origin = match destination {
+            RemoteMove::Allocate(origin) => Some(origin),
+            RemoteMove::Enrolled { kernel } => {
+                record.request.machine = Some(JobMachineTarget::Enrolled {
+                    kernel,
+                    directory: None,
+                });
+                record.placement = JobPlacement::Remote;
+                save_record(self, record)?;
+                None
+            }
+        };
+        let environment = selected_environment(self, record)?;
+        self.run_job(record, &environment, output, cancelled, requested_origin)
+            .await
+    }
+
     async fn run_job(
         &self,
         record: &mut Record,
         environment: &BTreeMap<String, Zeroizing<String>>,
         output: &mut Output,
         cancelled: &mut watch::Receiver<bool>,
-        force_remote: bool,
+        requested_origin: Option<crate::runtime::kernel_gateway::Origin>,
     ) -> Result<JobResult, DaemonError> {
-        if let Some(held) = record.request.machine.clone() {
+        if let Some(target) = record.request.machine.clone() {
             return self
-                .run_job_on_held_machine(record, &held, environment, output, cancelled)
+                .run_job_on_named_machine(record, &target, environment, output, cancelled)
                 .await;
         }
         let command = validate(&record.request)?;
@@ -381,13 +440,6 @@ impl KernelRuntimeState {
             || record.request.needs.cpus.is_some_and(|cpus| cpus > 1)
             || admission.is_heavy(&command, &record.cwd);
         let policy = self.effective_remote_jobs_policy(&record.room_id, &record.agent_id)?;
-        let requested = self.job_wake_driver.as_ref().is_some_and(|driver| {
-            driver
-                .remote_requested
-                .lock()
-                .expect("job move")
-                .remove(&record.job_id)
-        });
         // A job this machine can never run still asks other machines first, whatever the policy.
         let shortfall = Shortfall::of(
             &record.request.needs,
@@ -395,8 +447,7 @@ impl KernelRuntimeState {
             std::thread::available_parallelism().map_or(u32::MAX, |cpus| cpus.get() as u32),
         );
         let remote = self.remote_jobs_enabled()
-            && (force_remote
-                || requested
+            && (requested_origin.is_some()
                 || shortfall.is_some()
                 || match policy {
                     OffloadPolicy::Off => false,
@@ -415,13 +466,6 @@ impl KernelRuntimeState {
             );
         }
         if remote {
-            let requested_origin = self.job_wake_driver.as_ref().and_then(|driver| {
-                driver
-                    .remote_origins
-                    .lock()
-                    .expect("job move origins")
-                    .remove(&record.job_id)
-            });
             let origin = match requested_origin {
                 Some(origin) => origin,
                 None => {
@@ -463,7 +507,7 @@ impl KernelRuntimeState {
                         .class
                         .as_ref()
                         .expect("a job allocation carries its class");
-                    record.allocation_ref = Some(machine.allocation_ref.clone());
+                    record.allocation_ref = Some(class.allocation_ref.clone());
                     record.capability_revision = Some(class.capability_revision.clone());
                     record.machine_label = Some(machine.machine_label.clone());
                     record.address = machine.address.clone();
@@ -505,15 +549,8 @@ impl KernelRuntimeState {
                 Err(error) => return Err(error),
             }
         }
-        match self
-            .run_local_job(record, environment, output, cancelled)
+        self.run_local_job(record, environment, output, cancelled)
             .await
-        {
-            Err(DaemonError::MachineRequest { code, .. }) if code == "job_move_remote" => {
-                Box::pin(self.run_job(record, environment, output, cancelled, true)).await
-            }
-            result => result,
-        }
     }
 
     /// The one result every client shows for a job no machine can ever run.
@@ -545,11 +582,14 @@ impl KernelRuntimeState {
         cancelled: bool,
     ) -> Result<JobResult, DaemonError> {
         let result = match result {
-            Err(_) if cancelled => uncollected_stop(self, record, output, JobOutcome::Cancelled),
+            Err(_) if cancelled => {
+                self.stop_named_command(record).await;
+                uncollected_stop(self, record, output, JobOutcome::Cancelled)
+            }
             Err(error) if record.remote.awaits_command() => {
                 // Its end was never read: stop it by deleting its worker (a held machine is not
                 // deleted, so its command is stopped by name); nothing is collected.
-                if let Some(notice) = self.stop_held_command(record).await {
+                if let Some(notice) = self.stop_named_command(record).await {
                     let _ = output.push(self, &record.room_id, notice.as_bytes(), true);
                 }
                 self.give_up_pending_return(record);
@@ -626,26 +666,25 @@ impl KernelRuntimeState {
         if *cancelled.borrow() {
             return Ok(cancelled_result(record));
         }
-        record.state = "uploading".into();
-        save_record(self, record)?;
-        let base = crate::jobs::snapshot(&record.workspace, &record.request.outputs)?;
-        let upload = crate::jobs::snapshot(&record.workspace, &[])?;
-        let located = Remote::locate(machine.grant.clone(), &record.job_id).await?;
-        // From here the machine may come to hold the only copy of the outputs, and a held machine
-        // keeps the uploaded workspace until it is removed: keep where it is and what collecting
-        // needs before the first byte goes up, so nothing after it can lose them or leave them
-        // behind. The worker is released only once the command's end is read and its files are
-        // home, or it is stopped; a held machine's workspace is removed then.
-        let plan = PendingReturn {
-            root: located.root.clone(),
-            kernel_id: machine.kernel_id.clone(),
-            base,
-            uploaded: upload,
+        let directory = record.request.target_directory().is_some();
+        let (located, plan) = if directory {
+            (None, None)
+        } else {
+            record.state = "uploading".into();
+            save_record(self, record)?;
+            let located = Remote::locate(machine.grant.clone(), &record.job_id).await?;
+            let plan = PendingReturn {
+                root: located.root.clone(),
+                kernel_id: machine.kernel_id.clone(),
+                base: crate::jobs::snapshot(&record.workspace, &record.request.outputs)?,
+                uploaded: crate::jobs::snapshot(&record.workspace, &[])?,
+            };
+            // Persist the return plan before any bytes can reach a machine.
+            plan.save(self, &record.job_id)?;
+            (Some(located), Some(plan))
         };
-        plan.save(self, &record.job_id)?;
         record.advance(StageEvent::Plan)?;
         if let Err(error) = save_record(self, record) {
-            // Nothing is uploaded yet, so nothing is left on the machine.
             self.give_up_pending_return(record);
             self.forget_pending_return(&record.job_id);
             return Err(error);
@@ -657,14 +696,18 @@ impl KernelRuntimeState {
                 .expect("job return grants")
                 .insert(record.job_id.clone(), machine.grant.clone());
         }
-        let remote = Remote::prepare(
-            machine.grant.clone(),
-            record,
-            &located,
-            &plan.uploaded,
-            cancelled,
-        )
-        .await?;
+        let remote = if let Some((located, plan)) = located.as_ref().zip(plan.as_ref()) {
+            Remote::prepare(
+                machine.grant.clone(),
+                record,
+                located,
+                &plan.uploaded,
+                cancelled,
+            )
+            .await?
+        } else {
+            Remote::in_directory(machine.grant.clone(), record).await?
+        };
         if *cancelled.borrow() {
             return Err(ledger::error("Job cancelled during workspace upload"));
         }
@@ -688,7 +731,7 @@ impl KernelRuntimeState {
         self.job_compute_started(machine).await?;
         record.state = "running".into();
         save_record(self, record)?;
-        self.supervise_remote(record, &remote, &plan, &exec_id, output, cancelled)
+        self.supervise_remote(record, &remote, plan.as_ref(), &exec_id, output, cancelled)
             .await
     }
 
@@ -704,10 +747,14 @@ impl KernelRuntimeState {
             return Err(ledger::error("The job has no running command to resume"));
         };
         let result = async {
-            let plan = PendingReturn::load(self, &record.job_id)?;
+            let plan = if record.request.target_directory().is_some() {
+                None
+            } else {
+                Some(PendingReturn::load(self, &record.job_id)?)
+            };
             let since = tokio::time::Instant::now();
             let grant = loop {
-                match self.return_grant(record, &plan.kernel_id).await {
+                match self.return_grant(record, plan.as_ref()).await {
                     Ok(grant) => break grant,
                     Err(error) if *cancelled.borrow() || since.elapsed() >= WORKER_PATIENCE => {
                         return Err(error)
@@ -726,7 +773,7 @@ impl KernelRuntimeState {
                     .insert(record.job_id.clone(), grant.clone());
             }
             let remote = Remote::new(grant, room, record.job_id.clone());
-            self.supervise_remote(record, &remote, &plan, &exec_id, output, cancelled)
+            self.supervise_remote(record, &remote, plan.as_ref(), &exec_id, output, cancelled)
                 .await
         }
         .await;
@@ -740,7 +787,7 @@ impl KernelRuntimeState {
         &self,
         record: &mut Record,
         remote: &Remote,
-        plan: &PendingReturn,
+        plan: Option<&PendingReturn>,
         exec_id: &str,
         output: &mut Output,
         cancelled: &mut watch::Receiver<bool>,
@@ -828,6 +875,11 @@ impl KernelRuntimeState {
         let mut result = result_from_exit(record, outcome, stopped);
         // The command's end is saved before any of its files are accepted.
         record.advance(StageEvent::End(result.outcome))?;
+        let Some(plan) = plan else {
+            record.advance(StageEvent::Home)?;
+            return Ok(result);
+        };
+
         record.state = "returning".into();
         save_record(self, record)?;
         match remote
@@ -855,7 +907,7 @@ impl KernelRuntimeState {
 /// How long a worker may stay out of reach, while its command runs, before it is stopped and reaped.
 const WORKER_PATIENCE: Duration = Duration::from_secs(if cfg!(test) { 3 } else { 600 });
 
-pub(super) const HELD_COMMAND_MAY_RUN: &str = "The command may still run on the held machine; stop it from your Room before you release the machine.\n";
+pub(super) const NAMED_COMMAND_MAY_RUN: &str = "The command may still run on the other machine. Reconnect to it and stop the command from its Room.\n";
 
 fn kept_worker_notice(record: &Record) -> &'static str {
     if record.request.machine.is_some() {
@@ -943,7 +995,7 @@ fn uncollected_stop(
     };
     output.notice(state, &record.room_id, notice)?;
     if record.request.machine.is_some() && command_opened {
-        output.notice(state, &record.room_id, HELD_COMMAND_MAY_RUN)?;
+        output.notice(state, &record.room_id, NAMED_COMMAND_MAY_RUN)?;
     }
     let mut result = failed(record, String::new());
     result.outcome = outcome;

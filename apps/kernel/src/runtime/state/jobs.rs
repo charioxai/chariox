@@ -4,7 +4,9 @@ use super::*;
 use crate::durable_state::agent_lifecycle::{
     self as ledger, AgentTaskExecution, AgentWake, WakeEnd,
 };
-use crate::local::{JobOutcome, JobPlacement, JobRanOn, JobResult, RunJobRequest};
+use crate::local::{
+    JobMachineTarget, JobOutcome, JobPlacement, JobRanOn, JobResult, RunJobRequest,
+};
 use tokio::sync::watch;
 
 #[cfg(test)]
@@ -15,6 +17,7 @@ mod approval_tests;
 mod cleanup_tests;
 mod control;
 mod driver;
+mod enrolled;
 mod execute;
 mod held;
 #[cfg(test)]
@@ -71,13 +74,17 @@ pub(super) struct JobDriver {
     pending: std::sync::Mutex<BTreeMap<String, Pending>>,
     live: Arc<std::sync::Mutex<BTreeMap<String, watch::Sender<bool>>>>,
     local: Arc<local::LocalJobs>,
-    remote_requested: std::sync::Mutex<BTreeSet<String>>,
+    remote_moves: std::sync::Mutex<BTreeMap<String, RemoteMove>>,
     owner_stops: std::sync::Mutex<BTreeSet<String>>,
     remote_samples:
         std::sync::Mutex<BTreeMap<String, Vec<crate::runtime::process_resources::SessionProcess>>>,
-    remote_origins: std::sync::Mutex<BTreeMap<String, crate::runtime::kernel_gateway::Origin>>,
     /// Grants to workers that still hold files not yet returned; rebuilt from the saved plan after a restart.
     return_grants: std::sync::Mutex<
         BTreeMap<String, Arc<dyn crate::room_exec::gateway_placement::GrantedSend>>,
     >,
+}
+
+enum RemoteMove {
+    Allocate(crate::runtime::kernel_gateway::Origin),
+    Enrolled { kernel: String },
 }

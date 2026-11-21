@@ -147,10 +147,10 @@ impl KernelRuntimeState {
                 execs.close(&record.room_id, exec_id)?;
                 if self.job_wake_driver.as_ref().is_some_and(|driver| {
                     driver
-                        .remote_requested
+                        .remote_moves
                         .lock()
-                        .expect("job move")
-                        .remove(&record.job_id)
+                        .expect("job moves")
+                        .contains_key(&record.job_id)
                 }) {
                     record.exec_id = None;
                     return Err(DaemonError::MachineRequest {
