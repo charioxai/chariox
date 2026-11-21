@@ -82,8 +82,9 @@ impl KernelRuntimeOwnedState {
             },
         )?;
         if let Some(updated) = changed {
-            self.notice_usage_limit_stop(&updated, &event_notice(&event, None));
-            self.close_usage_limit_decision(&updated, stop)?;
+            let notice = event_notice(&event, None);
+            self.notice_usage_limit_stop(&updated, &notice);
+            self.close_usage_limit_decision(&updated, stop, notice)?;
             let _ = self.session_snapshot(agent.session_id());
         }
         Ok(())
@@ -237,6 +238,10 @@ impl KernelRuntimeState {
             return Ok(None);
         };
         let notice = event_notice(event, agent.usage_limit_stop());
+        if let StopEvent::Reset { selected, .. } = event {
+            self.owned
+                .close_usage_limit_decision(&agent, selected, notice.clone())?;
+        }
         self.announce_usage_limit_stop(&agent, &notice).await?;
         Ok(Some(AppliedStop { before }))
     }
@@ -265,6 +270,17 @@ impl KernelRuntimeState {
             let Some(stop) = agent.usage_limit_stop().cloned() else {
                 continue;
             };
+            if stop.state == UsageLimitStopState::Asking && stop.reset_reached(now) {
+                self.apply_stop_event(
+                    agent.id(),
+                    &StopEvent::Reset {
+                        selected: &stop,
+                        now,
+                    },
+                )
+                .await?;
+                continue;
+            }
             // A decision a restart left without its reply channel is raised again. A board that
             // cannot take it (eight decisions pending) must not hold back another agent's resume.
             if let Err(error) = self.sync_usage_limit_interaction(&agent).await {
@@ -749,8 +765,14 @@ pub(super) struct AppliedStop {
 
 /// The line the session gets when `event` moved the stop to `stop`; empty for a move that is not news.
 fn event_notice(event: &StopEvent<'_>, stop: Option<&UsageLimitStop>) -> String {
-    if let StopEvent::Continued { account_label, .. } = event {
-        return format!("Continued on {account_label}.");
+    match event {
+        StopEvent::Continued { account_label, .. } => {
+            return format!("Continued on {account_label}.")
+        }
+        StopEvent::Reset { selected, .. } => {
+            return format!("Usage is back on {}.", selected.account_label)
+        }
+        _ => {}
     }
     let Some(stop) = stop else {
         return String::new();

@@ -2047,6 +2047,27 @@ impl Team {
 }
 
 #[tokio::test]
+async fn an_unanswered_card_closes_at_the_named_reset_without_resuming_work() {
+    let team = team(config(UsageLimitResume::Ask), 1).await;
+    team.hit_the_limit(0).await;
+    let reset = team.stop(0).unwrap().resumes_at_ms.unwrap();
+    tick(team.rt(), reset - 1).await;
+    assert_eq!(team.cards(0).len(), 1);
+
+    tick(team.rt(), reset).await;
+    assert!(team.stop(0).is_none());
+    assert!(team.cards(0).is_empty());
+    assert!(!team.has_turn(0));
+    assert!(team
+        .rt()
+        .owned
+        .terminal_stream
+        .notice_records()
+        .iter()
+        .any(|notice| { notice.message.starts_with("Usage is back on ") }));
+}
+
+#[tokio::test]
 async fn a_turn_on_another_account_ends_the_stop_and_closes_its_card_with_the_reason() {
     let team = team(config(UsageLimitResume::Ask), 1).await;
     team.hit_the_limit(0).await;

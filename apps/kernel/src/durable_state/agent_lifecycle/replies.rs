@@ -1,6 +1,86 @@
 //! A turn can supply a requested reply only when the request started it.
 use super::*;
 
+/// A named reply is committed with the ordinary outgoing message. A sequence
+/// alone conveys no authority: both endpoints must match the original request.
+pub(super) fn settle_named_reply(
+    tx: &Transaction<'_>,
+    reply: &InboxEvent,
+) -> Result<(), DaemonError> {
+    let Some((sequence, text)) = reply.payload["message"]
+        .as_str()
+        .and_then(|message| message.strip_prefix("Reply to message "))
+        .and_then(|message| message.split_once(':'))
+        .and_then(|(sequence, text)| {
+            Some((
+                u64::try_from(sequence.parse::<i64>().ok()?).ok()?,
+                text.trim(),
+            ))
+        })
+        .filter(|(_, text)| !text.is_empty())
+    else {
+        return Ok(());
+    };
+    let Some(room) = reply.payload["sender_room_id"].as_str() else {
+        return Ok(());
+    };
+    let Some(request) = super::delivery::find_event(tx, room, &reply.source_id, sequence)? else {
+        return Ok(());
+    };
+    if !request.reply_requested
+        || request.kind != "message"
+        || request.source_id != reply.agent_id
+        || request.payload["sender_room_id"]
+            .as_str()
+            .unwrap_or(&request.room_id)
+            != reply.room_id
+        || !request.payload["sender_kernel_id"].is_null()
+    {
+        return Ok(());
+    }
+    // Bound the public excerpt even when JSON escaping expands every character.
+    let excerpt: String = text.chars().take(1_000).collect();
+    settle_request(
+        tx,
+        &request,
+        crate::session::unix_epoch_ms(),
+        true,
+        Some(serde_json::json!({"agent_id": reply.source_id, "excerpt": excerpt})),
+    )
+}
+
+pub(super) fn withdraw(
+    tx: &Transaction<'_>,
+    room: &str,
+    agent: &str,
+    sequence: u64,
+    now: u64,
+) -> Result<(), DaemonError> {
+    let recipient = tx
+        .query_row(
+            "SELECT room_id,agent_id FROM agent_inbox WHERE sequence=?1 AND source_id=?2
+             AND COALESCE(json_extract(payload,'$.payload.sender_room_id'),room_id)=?3
+             AND json_extract(payload,'$.payload.sender_kernel_id') IS NULL
+             AND json_extract(payload,'$.kind')='message'
+             AND json_extract(payload,'$.reply_requested')=1",
+            params![sql_integer(sequence)?, agent, room],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .optional()
+        .map_err(sql)?;
+    let Some((recipient_room, recipient_agent)) = recipient else {
+        return Err(error("No reply request you sent has this message ID."));
+    };
+    let request = get_event(tx, &recipient_room, &recipient_agent, sequence)?;
+    settle_request(
+        tx,
+        &request,
+        now,
+        true,
+        Some(serde_json::json!({"kind": "reply_withdrawn", "excerpt": "Reply request withdrawn."})),
+    )
+}
+
 pub(super) fn bind(
     tx: &Transaction<'_>,
     event: &InboxEvent,
