@@ -544,6 +544,11 @@ impl KernelRuntimeState {
         result: Result<JobResult, DaemonError>,
         cancelled: bool,
     ) -> Result<JobResult, DaemonError> {
+        let upload_timed_out = !cancelled
+            && matches!(
+                &result,
+                Err(DaemonError::MachineRequest { code, .. }) if code == "job_upload_time_limit"
+            );
         let result = match result {
             Err(_) if cancelled => uncollected_stop(self, record, output, JobOutcome::Cancelled),
             Err(error) if record.remote.awaits_command() => {
@@ -569,6 +574,9 @@ impl KernelRuntimeState {
             }
             failed(record, "Job failed; see the protected output log".into())
         });
+        if upload_timed_out {
+            result.outcome = JobOutcome::TimeLimit;
+        }
         output
             .file
             .flush()
@@ -589,7 +597,10 @@ impl KernelRuntimeState {
             // whole result are saved before the uploaded workspace goes, so a restart between the
             // two finds a finished job whose cleanup is left, never a pending return.
             save_record(self, record)?;
-            self.settle_or_warn(record).await;
+            // Status or recovery retries the saved cleanup plan after an upload deadline.
+            if !upload_timed_out {
+                self.settle_or_warn(record).await;
+            }
             return Ok(result);
         }
         self.forget_pending_return(&record.job_id);
@@ -628,8 +639,80 @@ impl KernelRuntimeState {
         }
         record.state = "uploading".into();
         save_record(self, record)?;
-        let base = crate::jobs::snapshot(&record.workspace, &record.request.outputs)?;
-        let upload = crate::jobs::snapshot(&record.workspace, &[])?;
+        let held = record.request.machine.is_some();
+        let limit = Duration::from_secs(record.request.timeout_s);
+        let mut stop = cancelled.clone();
+        let preparation = self.prepare_remote_workspace(record, machine, cancelled);
+        let (remote, plan) = if held {
+            tokio::select! {
+                answer = tokio::time::timeout(limit, preparation) => match answer {
+                    Ok(Ok(prepared)) => prepared,
+                    Ok(Err(error)) => return Err(ledger::error(format!(
+                        "The job stopped before the command started while uploading the workspace. {error} Check chariox.machines.status and retry once the machine is reachable."
+                    ))),
+                    Err(_) => return Err(DaemonError::MachineRequest {
+                        code: "job_upload_time_limit".into(),
+                        message: "The job reached its time limit while uploading the workspace, before the command started. Check chariox.machines.status. Retry with a longer timeout if the machine is reachable. A job status check retries workspace cleanup.".into(),
+                    }),
+                },
+                _ = async {
+                    // Recovery replaces the old supervisor's channel without requesting cancellation.
+                    let requested = stop.wait_for(|stopped| *stopped).await.is_ok();
+                    if !requested {
+                        std::future::pending::<()>().await;
+                    }
+                } => {
+                    return Err(ledger::error("Job cancelled during workspace upload"));
+                }
+            }
+        } else {
+            preparation.await?
+        };
+        if *cancelled.borrow() {
+            return Err(ledger::error("Job cancelled during workspace upload"));
+        }
+        record.state = "starting".into();
+        save_record(self, record)?;
+        let exec_id = remote
+            .open(
+                validate(&record.request)?,
+                Some(effective_needs(record)),
+                "command-open",
+            )
+            .await?;
+        // The command runs from its open: keep which execution it is before anything else can fail.
+        record.advance(StageEvent::Open {
+            room: remote.room().into(),
+            exec_id: exec_id.clone(),
+        })?;
+        record.running_at_ms = Some(crate::session::unix_epoch_ms());
+        save_record(self, record)?;
+        let input = command_input(&record.request, environment, &record.job_id)?;
+        let next = remote.write(&exec_id, 0, input.as_bytes()).await?;
+        remote.close_stdin(&exec_id, next).await?;
+        self.job_compute_started(machine).await?;
+        record.state = "running".into();
+        save_record(self, record)?;
+        self.supervise_remote(record, &remote, &plan, &exec_id, output, cancelled)
+            .await
+    }
+
+    async fn prepare_remote_workspace(
+        &self,
+        record: &mut Record,
+        machine: &super::super::job_compute::JobMachine,
+        cancelled: &watch::Receiver<bool>,
+    ) -> Result<(Remote, PendingReturn), DaemonError> {
+        let workspace = record.workspace.clone();
+        let outputs = record.request.outputs.clone();
+        let (base, upload) = tokio::task::spawn_blocking(move || {
+            Ok::<_, DaemonError>((
+                crate::jobs::snapshot(&workspace, &outputs)?,
+                crate::jobs::snapshot(&workspace, &[])?,
+            ))
+        })
+        .await
+        .map_err(|error| ledger::error(format!("Cannot read the job workspace. {error}")))??;
         let located = Remote::locate(machine.grant.clone(), &record.job_id).await?;
         // From here the machine may come to hold the only copy of the outputs, and a held machine
         // keeps the uploaded workspace until it is removed: keep where it is and what collecting
@@ -665,31 +748,7 @@ impl KernelRuntimeState {
             cancelled,
         )
         .await?;
-        if *cancelled.borrow() {
-            return Err(ledger::error("Job cancelled during workspace upload"));
-        }
-        let exec_id = remote
-            .open(
-                validate(&record.request)?,
-                Some(effective_needs(record)),
-                "command-open",
-            )
-            .await?;
-        // The command runs from its open: keep which execution it is before anything else can fail.
-        record.advance(StageEvent::Open {
-            room: remote.room().into(),
-            exec_id: exec_id.clone(),
-        })?;
-        record.running_at_ms = Some(crate::session::unix_epoch_ms());
-        save_record(self, record)?;
-        let input = command_input(&record.request, environment, &record.job_id)?;
-        let next = remote.write(&exec_id, 0, input.as_bytes()).await?;
-        remote.close_stdin(&exec_id, next).await?;
-        self.job_compute_started(machine).await?;
-        record.state = "running".into();
-        save_record(self, record)?;
-        self.supervise_remote(record, &remote, &plan, &exec_id, output, cancelled)
-            .await
+        Ok((remote, plan))
     }
 
     /// After a restart: reattaches to the command the record names and waits for its end, so no
