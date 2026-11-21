@@ -1,5 +1,6 @@
 use super::*;
 
+const MAINTENANCE_STALL_THRESHOLD: Duration = Duration::from_secs(1);
 const STALE_TERMINAL_ATTACHMENT_TIMEOUT_MS: u64 = 30_000;
 const MAX_PROVIDER_PROCESS_GC_INTERVAL_MS: u64 = 30_000;
 const MIN_PROVIDER_PROCESS_GC_INTERVAL_MS: u64 = 250;
@@ -45,6 +46,14 @@ impl KernelRuntimeState {
     }
 
     pub(crate) async fn pump_transport_runtime(&self) {
+        let progress = crate::runtime::stall_watchdog::progress_watch(
+            "kernel.runtime",
+            "transport_maintenance",
+            MAINTENANCE_STALL_THRESHOLD,
+        );
+        progress.stage("kernel access", MAINTENANCE_STALL_THRESHOLD);
+        self.pump_kernel_access();
+        progress.stage("schedule runtime services", MAINTENANCE_STALL_THRESHOLD);
         self.owned.announce_durable_writer_condition();
         self.refresh_user_domain_grants();
         self.schedule_room_browser_health();
@@ -91,9 +100,12 @@ impl KernelRuntimeState {
         self.owned.withdraw_stale_agent_interactions();
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
         self.resume_app_view_pumps();
+        progress.stage("publish Apps", MAINTENANCE_STALL_THRESHOLD);
         self.app_control().publishers().pump(self).await;
+        progress.stage("install Apps", MAINTENANCE_STALL_THRESHOLD);
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
         self.app_control().installs().pump(self).await;
+        progress.stage("sync development App bindings", MAINTENANCE_STALL_THRESHOLD);
         if let Err(error) = self.sync_dev_app_bindings().await {
             tracing::warn!(%error, "MP-08/MP-10/MP-11: dev App binding failed; retrying after the next maintenance pass");
         }
@@ -102,12 +114,25 @@ impl KernelRuntimeState {
             .lifecycle()
             .schedule_recovery(tokio::runtime::Handle::current());
         let now_ms = crate::session::unix_epoch_ms();
+        progress.stage(
+            "sweep stale terminal attachments",
+            MAINTENANCE_STALL_THRESHOLD,
+        );
         self.sweep_stale_terminal_attachments(now_ms).await;
+        progress.stage(
+            "reconcile agent trigger gateways",
+            MAINTENANCE_STALL_THRESHOLD,
+        );
         self.reconcile_agent_trigger_gateways().await;
+        progress.stage(
+            "reconcile workflow publication runtimes",
+            MAINTENANCE_STALL_THRESHOLD,
+        );
         super::workflow_publication_runtime_lifecycle::reconcile_bound_workflow_publication_runtimes(
             self,
         )
         .await;
+        progress.stage("provider process maintenance", MAINTENANCE_STALL_THRESHOLD);
         self.schedule_due_provider_launch_failure_retries(now_ms);
         if self.claim_provider_process_gc(now_ms) {
             if let Err(error) = self.reap_idle_provider_processes(now_ms).await {
@@ -124,6 +149,10 @@ impl KernelRuntimeState {
         // MP-08 / MP-10: only the independent output scheduler consumes ready
         // run IDs. A serial maintenance pass must not strand ready siblings
         // behind one run's history acknowledgement or provider lane.
+        progress.stage(
+            "dispatch workflow and agent triggers",
+            MAINTENANCE_STALL_THRESHOLD,
+        );
         let watchdog_dispatches = self
             .owned
             .workflow_collect_due_watchdog_dispatches(crate::session::unix_epoch_ms());
@@ -221,7 +250,7 @@ impl KernelRuntimeState {
         let idle_ttl_ms = config.provider_process_idle_ttl_ms;
         let orphan_ttl_ms = config.provider_process_orphan_ttl_ms;
         let summary = self
-            .with_app_side_effect(move |app| {
+            .with_app_side_effect_blocking(move |app| {
                 app.reap_idle_provider_processes(now_ms, idle_ttl_ms, orphan_ttl_ms)
             })
             .await?;

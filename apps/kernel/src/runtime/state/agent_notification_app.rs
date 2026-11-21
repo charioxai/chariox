@@ -500,6 +500,17 @@ impl KernelRuntimeState {
                     // The delivery's line names its turn on the person's Inbox.
                     self.record_person_inbox_change();
                 }
+                Err(error) if crate::error::is_agent_deadline_refusal(&error) => {
+                    self.park_agent_notification(
+                        &receipt.automation_id,
+                        &receipt.occurrence_id,
+                        subscription_settings::app_event_title(
+                            receipt.invocation.as_deref(),
+                            &config.event_name,
+                        ),
+                        error.to_string(),
+                    );
+                }
                 result => {
                     if let Err(error) = result {
                         crate::logging::warn_with_fields(

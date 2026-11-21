@@ -703,32 +703,60 @@ where
         let progress = crate::runtime::stall_watchdog::progress_watch(
             "kernel.runtime",
             "transport_pump",
-            Duration::from_secs(10),
+            Duration::from_secs(1),
         );
+        let mut maintenance = tokio::task::JoinSet::new();
+        let mut next_pass = tokio::time::Instant::now();
+        let mut pass_requested = true;
         loop {
-            progress.progress();
-            // MP-08 / MP-10: capture readiness before draining, so an arrival
-            // during the pump cannot be hidden by the post-pump sleep.
+            progress.stage("schedule maintenance", Duration::from_secs(1));
             let output_ready_sequence = pump_state.provider_output_ready_sequence();
             let provider_actor_completion_sequence =
                 pump_router.provider_run_actor_completion_sequence();
-            pump_router.runtime_state().pump_kernel_access();
-            pump_router.pump_transport_runtime().await;
             let change_sequence = pump_router.transport_runtime_pump_change_sequence();
             let pty_output_sequence = pump_router.pty_output_change_sequence();
-            let delay_ms = pump_router.transport_runtime_pump_interval_ms(
-                PUMP_INTERVAL_MS,
-                IDLE_PUMP_INTERVAL_MS,
-                crate::session::unix_epoch_ms(),
-            );
+            if pass_requested && maintenance.is_empty() {
+                let router = Arc::clone(&pump_router);
+                // Slow I/O and waits for subordinate services are supervised separately.
+                // The join set limits them to one pass and cancels it on shutdown.
+                maintenance.spawn(async move {
+                    router.pump_transport_runtime().await;
+                    let interval_ms = router.transport_runtime_pump_interval_ms(
+                        PUMP_INTERVAL_MS,
+                        IDLE_PUMP_INTERVAL_MS,
+                        crate::session::unix_epoch_ms(),
+                    );
+                    tokio::time::Instant::now() + Duration::from_millis(interval_ms)
+                });
+                pass_requested = false;
+            }
+            let delay = if maintenance.is_empty() {
+                next_pass.saturating_duration_since(tokio::time::Instant::now())
+            } else {
+                Duration::from_millis(PUMP_INTERVAL_MS)
+            };
+            progress.stage("wait for runtime activity", delay + Duration::from_secs(1));
             tokio::select! {
-                _ = sleep(Duration::from_millis(delay_ms)) => {}
-                _ = pump_router.wait_for_transport_runtime_pump_change_after(change_sequence) => {}
-                _ = pump_router.wait_for_pty_output_change_after(pty_output_sequence) => {}
-                _ = pump_router.wait_for_provider_run_actor_completion_after(provider_actor_completion_sequence) => {}
-                _ = pump_router.wait_for_started_app_refreshes() => {}
-                _ = pump_state.wait_for_provider_output_ready_after(output_ready_sequence) => {}
-                _ = pump_state.wait_for_kernel_access_holder_exit() => {}
+                Some(result) = maintenance.join_next(), if !maintenance.is_empty() => {
+                    next_pass = match result {
+                        Ok(next) => next,
+                        Err(error) => {
+                            crate::logging::error_with_fields(
+                                "kernel.runtime",
+                                "transport maintenance task failed",
+                                serde_json::json!({"error": error.to_string()}),
+                            );
+                            tokio::time::Instant::now() + Duration::from_millis(PUMP_INTERVAL_MS)
+                        }
+                    };
+                }
+                _ = sleep(delay) => pass_requested |= maintenance.is_empty(),
+                _ = pump_router.wait_for_transport_runtime_pump_change_after(change_sequence) => pass_requested = true,
+                _ = pump_router.wait_for_pty_output_change_after(pty_output_sequence) => pass_requested = true,
+                _ = pump_router.wait_for_provider_run_actor_completion_after(provider_actor_completion_sequence) => pass_requested = true,
+                _ = pump_router.wait_for_started_app_refreshes() => pass_requested = true,
+                _ = pump_state.wait_for_provider_output_ready_after(output_ready_sequence) => pass_requested = true,
+                _ = pump_state.wait_for_kernel_access_holder_exit() => pass_requested = true,
             }
         }
     });
