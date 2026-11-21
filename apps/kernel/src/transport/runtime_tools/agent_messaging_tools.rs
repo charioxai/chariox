@@ -37,6 +37,16 @@ pub struct GetSessionAgentArgs {
 pub fn agent_messaging_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
     vec![
         RuntimeToolSpec {
+            name: OWNER_VIEW_TOOL.to_string(),
+            description: "Watch the owner's hosted Web Navigator and Settings. The owner sees who is watching and can end the view. Use watch to attach, read for the latest presentation, and leave to detach.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["operation"],
+                "properties": { "operation": { "enum": ["watch", "read", "leave"] } },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
             name: LIST_SESSION_AGENTS_TOOL.to_string(),
             description: "List the agents in the current Chariox session with their stable ids, unique aliases, provider configuration, runtime availability, queue depth, extension capabilities, and local or remote placement. Use this before addressing another agent.".to_string(),
             input_schema: serde_json::json!({
@@ -144,6 +154,9 @@ pub fn agent_messaging_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
 
 pub fn canonical_agent_messaging_tool_name(tool_name: &str) -> Option<&'static str> {
     match tool_name {
+        OWNER_VIEW_TOOL | "chariox_owner_view" | "mcp__chariox__chariox_owner_view" => {
+            Some(OWNER_VIEW_TOOL)
+        }
         LIST_SESSION_AGENTS_TOOL
         | "chariox_list_session_agents"
         | "mcp__chariox__list_session_agents"

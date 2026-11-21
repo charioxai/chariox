@@ -164,6 +164,7 @@ mod legacy_room_owner;
 mod metadata_utility_scratch;
 mod native_catalog_refresh;
 mod owner_context_review;
+mod owner_view;
 mod project_environment;
 mod project_environment_check;
 mod project_environment_draft;
@@ -446,6 +447,7 @@ struct KernelRuntimeOwnedState {
     skill_inventories: Arc<skills_native_inventory::SkillInventories>,
     installed_skill_inventories: Arc<skills_installed_inventory::InstalledSkillInventories>,
     settled_worker_runs: Arc<skills_settled_worker_runs::SettledWorkerRuns>,
+    owner_view: Arc<owner_view::OwnerView>,
     person_inbox_changes: Arc<RuntimeChangeSignal>,
     workflow_design_events: WorkflowDesignEventStore,
     workspace_coordinator: crate::runtime::workspace_coordinator::WorkspaceCoordinator,
@@ -1374,6 +1376,7 @@ impl KernelRuntimeState {
                 skill_inventories: Arc::default(),
                 installed_skill_inventories: Arc::default(),
                 settled_worker_runs: Arc::default(),
+                owner_view: Arc::new(owner_view::OwnerView::default()),
                 person_inbox_changes: Arc::new(RuntimeChangeSignal::default()),
                 workflow_design_events,
                 workspace_coordinator,

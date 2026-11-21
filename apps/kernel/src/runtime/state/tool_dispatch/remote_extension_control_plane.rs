@@ -592,6 +592,9 @@ impl KernelRuntimeState {
                 Box::pin(self.handle_skill_runtime_tool(&session, &agent, tool_name, arguments))
                     .await
             }
+            crate::transport::runtime_tools::OWNER_VIEW_TOOL => {
+                self.owner_view_runtime_tool(&session, &agent, arguments)
+            }
             // The stored session has no agents and no prompt state: the activity and
             // liveness these tools report are read from the projected room.
             crate::transport::runtime_tools::LIST_SESSION_AGENTS_TOOL => Ok(self
