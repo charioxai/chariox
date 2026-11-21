@@ -4,7 +4,7 @@ use super::*;
 use crate::durable_state::agent_lifecycle::{
     self as ledger, AgentTaskExecution, ExecutionState, Operation,
 };
-use crate::provider::TurnOutcome;
+use crate::provider::{TurnOutcome, TurnOutcomeKind};
 
 impl KernelRuntimeState {
     /// Records `child_finished` for the parent of the agent whose task just ended and
@@ -64,6 +64,7 @@ impl KernelRuntimeState {
         {
             return Ok(None);
         }
+        let event_answer = child_finished_answer(task, &outcome, deadline_reached, public_answer);
         let mut event = ledger::occurrence(
             parent.session_id(),
             parent.id(),
@@ -81,7 +82,7 @@ impl KernelRuntimeState {
                     crate::agent::UsageLimitStopState::Armed { at_ms } => Some(at_ms),
                     _ => None,
                 }),
-                "public_answer": public_answer,
+                "public_answer": event_answer,
             }),
         );
         event.urgent = true;
@@ -107,6 +108,39 @@ impl KernelRuntimeState {
             parent.id().to_owned(),
         )))
     }
+}
+
+fn child_finished_answer(
+    task: &AgentTaskExecution,
+    outcome: &TurnOutcome,
+    deadline_reached: bool,
+    public_answer: Option<&serde_json::Value>,
+) -> serde_json::Value {
+    let mut answer = public_answer.cloned().unwrap_or_default();
+    if answer["excerpt"]
+        .as_str()
+        .is_some_and(|excerpt| !excerpt.trim().is_empty())
+    {
+        return answer;
+    }
+    let reason = match outcome.kind {
+        TurnOutcomeKind::Completed => "The child finished without a text answer.".into(),
+        TurnOutcomeKind::Cancelled if deadline_reached => {
+            "The child was cancelled when its deadline was reached.".into()
+        }
+        TurnOutcomeKind::Cancelled => "The child was cancelled.".into(),
+        _ => outcome.notice(),
+    };
+    answer["agent_id"] = task.agent_id.as_str().into();
+    answer["task_id"] = task.task_id.as_str().into();
+    answer["prompt_id"] = task.prompt_id.as_str().into();
+    // A continued task keeps its original id. History needs the prompt that just ended.
+    answer["excerpt"] = format!(
+        "{reason} Read the child's turn with chariox.history.turn (agent_ref: {}, turn_ref: {}).",
+        task.agent_id, task.prompt_id,
+    )
+    .into();
+    answer
 }
 
 impl KernelRuntimeState {
