@@ -1428,13 +1428,18 @@ pub(super) fn deliver_serialized(
             serde_json::to_string(envelope).expect("a relay envelope is always valid JSON");
         Message::Text(payload.into())
     };
-    let queued = if peer_reply
+    let queued = if let Some(reply) = peer_reply
         .as_ref()
-        .is_some_and(|reply| reply.ciphertext_len > crate::frame_transport::CHUNK_BYTES)
+        .filter(|reply| reply.ciphertext_len > crate::frame_transport::CHUNK_BYTES)
     {
-        let mut size = SerializedSize::default();
-        serde_json::to_writer(&mut size, envelope).expect("counting JSON bytes cannot fail");
-        receiver.try_send_peer_reply(size.0, envelope)
+        receiver
+            .check_peer_reply_size(reply.ciphertext_len)
+            .and_then(|()| {
+                let mut size = SerializedSize::default();
+                serde_json::to_writer(&mut size, envelope)
+                    .expect("counting JSON bytes cannot fail");
+                receiver.try_send_peer_reply(size.0, envelope)
+            })
     } else {
         receiver.try_send(to_message())
     };
