@@ -826,16 +826,11 @@ impl SessionRuntimeStore {
             request.capability_level,
             member_user_id,
         );
-        let result = match self
+        let result = self
             .state
             .attach_for_caller(attach_request, terminal_caller)
             .await
-        {
-            Ok(attachment) => self
-                .reconcile_room_environment_actors_if_started(attachment.session_id())
-                .map(|()| LocalDaemonResponse::SessionAttached { attachment }),
-            Err(error) => Err(error),
-        };
+            .map(|attachment| LocalDaemonResponse::SessionAttached { attachment });
         self.with_session_projection_action_result(result).await
     }
 
@@ -853,13 +848,18 @@ impl SessionRuntimeStore {
         {
             return (Err(error), None);
         }
-        let result = match self.state.detach(&request.attachment_id).await {
-            Ok(attachment) => self
-                .reconcile_room_environment_actors_if_started(attachment.session_id())
-                .map(|()| LocalDaemonResponse::SessionDetached { attachment }),
-            Err(error) => Err(error),
-        };
-        self.with_session_projection_action_result(result).await
+        let result = self
+            .state
+            .detach_attachment(&request.attachment_id)
+            .map(|attachment| LocalDaemonResponse::SessionDetached { attachment });
+        (result, None)
+    }
+
+    pub(super) async fn finish_attachment_detach(
+        &self,
+        attachment: &crate::attachment::RuntimeAttachment,
+    ) -> Result<(), DaemonError> {
+        self.state.refresh_kernel_browser_audience(attachment).await
     }
 
     /// MP-08 / MP-11: an attachment is one member's client, so only who acts for that member
@@ -1243,7 +1243,6 @@ impl SessionRuntimeStore {
             .map(|session| LocalDaemonResponse::SessionDeleted { session });
         self.with_session_projection_action_result(result).await
     }
-
     fn reconcile_room_environment_actors_if_started(
         &self,
         session_id: &str,

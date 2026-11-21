@@ -81,7 +81,13 @@ export async function unfollowSource(send: SendRequest, reference: string): Prom
 }
 
 export async function runEventsVerb(verb: EventVerb, flags: EventFlags, args: readonly string[], send: SendRequest, write: (value: unknown) => void): Promise<number> {
-  if (verb === "sources") { write({ sources: await listSources(send) }); return 0 }
+  if (verb === "sources") {
+    const kernel = flags.get("--kernel")
+    if (kernel !== undefined && (typeof kernel !== "string" || kernel.length === 0)) throw new CommandFailure("usage", "events sources --kernel needs a kernel id")
+    const sources = await listSources(send)
+    write({ sources: kernel === undefined ? sources : sources.filter(source => source.kernel_id === kernel) })
+    return 0
+  }
   if (verb === "subscribe" && flags.has("--like")) {
     const like = flags.get("--like")
     if (typeof like !== "string" || !like || ["--kernel", "--session", "--agent", "--source"].some(flag => flags.has(flag))) throw new CommandFailure("usage", "events subscribe --like takes an earlier grant id and no other target flag")

@@ -286,13 +286,23 @@ fn load_scoped_agent_outline(
                 prompt.sequence,
                 sequence_end,
             )?;
-        if !events
-            .iter()
-            .any(|event| persisted_prompt_settlement_at_ms(event).is_some())
-        {
-            if let Some(prompt_id) = prompt.prompt_id.as_deref().or(prompt.turn_id.as_deref()) {
-                if let Some(settlement) = operational_history
-                    .load_prompt_settlement_event(session_id, agent_id, prompt_id)?
+        if let Some(prompt_id) = prompt.prompt_id.as_deref().or(prompt.turn_id.as_deref()) {
+            // A held task may settle after a newer prompt starts. Its latest outcome belongs
+            // to its own turn, regardless of which sequence range contains that settlement.
+            events.retain(|event| {
+                persisted_prompt_settlement_at_ms(event).is_none()
+                    || event
+                        .prompt_id
+                        .as_deref()
+                        .or(event.turn_id.as_deref())
+                        .is_none_or(|owner| owner == prompt_id)
+            });
+            if let Some(settlement) =
+                operational_history.load_prompt_settlement_event(session_id, agent_id, prompt_id)?
+            {
+                if !events
+                    .iter()
+                    .any(|event| event.event_id == settlement.event_id)
                 {
                     events.push(settlement);
                     events.sort_by_key(|event| event.sequence);
@@ -980,7 +990,7 @@ fn outline_turn_outcome(
     if lifecycle == Lifecycle::Open {
         return None;
     }
-    let saved = events.iter().find_map(|event| {
+    let saved = events.iter().rev().find_map(|event| {
         if let Some(outcome) = event
             .metadata
             .get(crate::history::TURN_OUTCOME_METADATA_KEY)

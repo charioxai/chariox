@@ -24,7 +24,7 @@ export function formatSessionList(sessions: RuntimeSession[], currentSessionId?:
     ...sessions.map((session) => {
       const name = session.alias ? `\`${session.alias}\` (\`${session.id}\`)` : `\`${session.id}\``
       const location = basename(session.worktree_id) || session.worktree_id
-      const attachments = `${session.attachment_ids.length} ${session.attachment_ids.length === 1 ? "CLI" : "CLIs"}`
+      const attachments = `${session.connected_cli_count} ${session.connected_cli_count === 1 ? "CLI" : "CLIs"}`
       const runtime = formatSessionRuntimeSummary(session)
       const remote = formatSessionRemoteRuntime(session)
       const current = session.id === currentSessionId ? " current" : ""

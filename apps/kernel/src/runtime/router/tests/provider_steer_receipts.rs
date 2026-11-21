@@ -73,11 +73,12 @@ async fn an_active_steer_the_provider_rejects_leaves_no_success_effects() {
 
     let result = router
         .runtime_state()
-        .steer_active_prompt(crate::local::SteerActivePromptRequest {
+        .steer_active_prompt(&crate::local::SteerActivePromptRequest {
             session_id: session.id().to_string(),
             attachment_id: attachment.id().to_string(),
             target_agent_id: agent.id().to_string(),
             expected_active_prompt_id: active.id().to_string(),
+            require_exact_turn: true,
             prompt: "REJECTED_ACTIVE_STEER".into(),
             attachments: vec![],
         })

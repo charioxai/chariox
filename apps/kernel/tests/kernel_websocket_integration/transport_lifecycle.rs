@@ -218,6 +218,20 @@ async fn kernel_websocket_detaches_terminal_attachment_on_connection_close() {
     let subscribe_response = wait_for_response(&mut socket, "subscribe-session").await;
     assert_eq!(subscribe_response["response"]["ok"].as_bool(), Some(true));
 
+    let state_before_close = send_request(
+        &mut socket,
+        "session-state-before-close",
+        LocalDaemonRequest::GetSessionState(GetSessionStateRequest {
+            session_id: session_id.clone(),
+        }),
+    )
+    .await;
+    assert_eq!(
+        response_variant(&state_before_close, "SessionState")["session"]["connected_cli_count"]
+            .as_u64(),
+        Some(1),
+    );
+
     socket
         .close(None)
         .await
@@ -233,12 +247,12 @@ async fn kernel_websocket_detaches_terminal_attachment_on_connection_close() {
         }),
     )
     .await;
-    let attachment_ids =
-        &response_variant(&state_response, "SessionState")["session"]["attachment_ids"];
+    let session = &response_variant(&state_response, "SessionState")["session"];
+    assert!(session.get("attachment_ids").is_none());
     assert_eq!(
-        attachment_ids.as_array().map(Vec::len),
+        session["connected_cli_count"].as_u64(),
         Some(0),
-        "closed websocket attachment should not remain in session state: {state_response}"
+        "the closed WebSocket should no longer count as a connected CLI: {state_response}"
     );
 
     let _ = shutdown_tx.send(());

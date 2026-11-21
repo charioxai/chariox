@@ -66,7 +66,7 @@ async fn room_list() {
         &world,
         "a",
         &format!(
-            "agent spawn px --provider dev-stub --room {} --no-follow",
+            "agent spawn px --provider dev-stub --room {}",
             world.other_room
         ),
     )

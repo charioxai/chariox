@@ -413,6 +413,12 @@ fn validate_package_relative_path(path: &str) -> Result<(), DaemonError> {
         ));
     }
     for part in path.split('/') {
+        if part.eq_ignore_ascii_case("auth.json") || part.eq_ignore_ascii_case(".credentials.json")
+        {
+            return Err(failure(&format!(
+                "skill package cannot include provider account file `{part}`; remove it from the skill folder and try again"
+            )));
+        }
         let stem = part
             .split('.')
             .next()

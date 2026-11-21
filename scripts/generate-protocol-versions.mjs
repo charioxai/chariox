@@ -12,6 +12,7 @@ update("fixtures/protocol-versions.json", JSON.stringify({ local: localProtocolV
 // These snapshots compare their allocation with the current runtime pair.
 // Their shape hashes remain explicit in the focused protocol tests.
 const currentSnapshots = [
+  "apps/kernel/src/local/api/tests/protocol_shapes/folded-answer-1013.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/files-watch-1011.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/watcher-1012.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/event-follow-1012.json",
@@ -20,6 +21,7 @@ const currentSnapshots = [
   "apps/kernel/src/local/api/tests/protocol_shapes/job-held-machine-1012.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/agent-max-context-1009.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/provider-login-vault-entry-1012.json",
+  "apps/kernel/src/local/api/tests/protocol_shapes/provider-auth-error-1014.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/app-accounts-1011.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/app-event-routing-1011.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/app-standing-1011.json",
@@ -28,11 +30,13 @@ const currentSnapshots = [
   "apps/kernel/src/agent_move/protocol-639-241.json",
   "fixtures/cross-room-cards-protocol.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/room-list-1011.json",
+  "apps/kernel/src/local/api/tests/protocol_shapes/prompt-control-receipts.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/person-inbox-1012.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/app-dev-push-933.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/app-dev-register-933.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/app-view-inspection-933.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/browser-mirror2-completion-550.json",
+  "apps/kernel/src/local/api/tests/protocol_shapes/browser-mirror2-focus-visible-1013.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/browser-state-wait-unchanged-1008.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/browser-mirror2-font-absent-567.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/browser-mirror2-font-cache-1011.json",
@@ -57,6 +61,7 @@ const currentSnapshots = [
   "apps/kernel/src/local/api/tests/protocol_shapes/session-feed-596.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/session-outline-tool-image-count-1000.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/session-processes-954.json",
+  "apps/kernel/src/local/api/tests/protocol_shapes/lean-room-state-1013.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/web-bot-auth-946.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/workflow-gate-1002.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/room-terminal-stream-1006.json",

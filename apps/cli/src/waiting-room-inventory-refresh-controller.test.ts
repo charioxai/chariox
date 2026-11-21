@@ -14,8 +14,8 @@ import type { WaitingRoomState } from "./waiting-room-types.js"
 import type {
   RemoteKernelView,
   RemoteMachineView,
-  WaitingRoomInventory,
-} from "./waiting-room-inventory-api.js"
+  KernelInventory,
+} from "./kernel-inventory-api.js"
 import { createWaitingRoomInventoryRefreshController } from "./waiting-room-inventory-refresh-controller.js"
 import { LocalIpcError } from "./ipc.js"
 import {
@@ -217,7 +217,7 @@ test("in-flight inventory from the previous Cloud scope is discarded before retr
       kernelId: "kernel-a",
       sessions: [{ ...session("session-cached-a"), alias: "pr_reviewer" }],
     }))
-    const firstFetch = deferred<WaitingRoomInventory>()
+    const firstFetch = deferred<KernelInventory>()
     let fetchCount = 0
     const harness = createHarness({
       directTargetKernelId: "kernel-b",
@@ -256,8 +256,8 @@ test("in-flight inventory from the previous Cloud scope is discarded before retr
 
 test("repeated in-flight scope changes settle the refresh as an error", async () => {
   let scope = "scope-a"
-  const firstFetch = deferred<WaitingRoomInventory>()
-  const secondFetch = deferred<WaitingRoomInventory>()
+  const firstFetch = deferred<KernelInventory>()
+  const secondFetch = deferred<KernelInventory>()
   const secondStarted = deferred<void>()
   let fetchCount = 0
   const harness = createHarness({
@@ -305,7 +305,7 @@ test("direct target projection follows a kernel pivot and rollback", () => {
 
 test("old client rejection during a target pivot retries the new target", async () => {
   let directTargetKernelId = "kernel-a"
-  const firstFetch = deferred<WaitingRoomInventory>()
+  const firstFetch = deferred<KernelInventory>()
   let fetchCount = 0
   const harness = createHarness({
     getDirectTargetKernelId: () => directTargetKernelId,
@@ -362,7 +362,7 @@ test("waiting room inventory refresh reports failures", async () => {
 })
 
 test("waiting room inventory refresh coalesces concurrent refreshes", async () => {
-  const pendingInventory = deferred<WaitingRoomInventory>()
+  const pendingInventory = deferred<KernelInventory>()
   const harness = createHarness({
     getInventory: () => pendingInventory.promise,
   })
@@ -652,7 +652,7 @@ test("transport closure immediately marks retained inventory as reconnecting", a
 })
 
 test("MP-08 / MP-11 reconnect replaces the closed transport row baseline", async () => {
-  const persisted: WaitingRoomInventory[] = []
+  const persisted: KernelInventory[] = []
   const harness = createHarness({
     snapshots: [inventory("before", { sessions: [session("deleted"), session("kept")], projects: [project("deleted-project", "Deleted"), project("kept-project", "Kept")] }), inventory("after", {sessions: [session("kept")], projects: [project("kept-project", "Kept")]})],
     cachedInventories: [inventory("other", {kernelId: "kernel-other", sessions: [session("other-session")]})],
@@ -682,8 +682,8 @@ test("MP-08 / MP-11 reconnect replaces the closed transport row baseline", async
 })
 
 test("MP-08 / MP-11 rejects a pre-disconnect snapshot resolved before the replacement baseline", async () => {
-  const persisted: WaitingRoomInventory[] = []
-  const oldRead = deferred<WaitingRoomInventory>()
+  const persisted: KernelInventory[] = []
+  const oldRead = deferred<KernelInventory>()
   let reads = 0
   const harness = createHarness({
     getInventory: async () => ++reads === 1 ? inventory("before", { sessions: [session("deleted"), session("kept")] }) : reads === 2 ? oldRead.promise : inventory("after", {sessions: [session("kept")], projects: [project("kept-project", "Kept")]}),
@@ -720,17 +720,17 @@ function createHarness(options: {
   connected?: boolean
   nowMs?: () => number
   hiddenKernelIds?: Set<string>
-  snapshots?: WaitingRoomInventory[]
+  snapshots?: KernelInventory[]
   getSessionPage?: (cursor: string | null, inventoryVersion: string) => Promise<{ sessions: RoomListSessionSummary[]; next_cursor: string | null }>
-  getInventory?: () => Promise<WaitingRoomInventory>
+  getInventory?: () => Promise<KernelInventory>
   localKernelPresences?: readonly LocalKernelPresence[]
-  cachedInventories?: readonly WaitingRoomInventory[]
+  cachedInventories?: readonly KernelInventory[]
   directTargetKernelId?: string | null
   getDirectTargetKernelId?: () => string | null | undefined
   getCacheScopeKey?: () => string
-  loadCachedInventories?: () => readonly WaitingRoomInventory[]
-  persistInventory?: (inventory: WaitingRoomInventory) => void
-  getMachineAllocationCapabilityScope?: (inventory: WaitingRoomInventory) => string
+  loadCachedInventories?: () => readonly KernelInventory[]
+  persistInventory?: (inventory: KernelInventory) => void
+  getMachineAllocationCapabilityScope?: (inventory: KernelInventory) => string
 } = {}) {
   const catalog = fallbackProviderCatalog()
   const hiddenKernelIds = options.hiddenKernelIds ?? new Set<string>()
@@ -744,7 +744,7 @@ function createHarness(options: {
   let externalProviderSessions: ExternalProviderSessionRecord[] = []
   let externalProviderSessionsPage = { hasMore: false, nextCursor: null as string | null }
   let machineAllocationCapability: MachineAllocationCapability | null | undefined
-  let launchTarget: WaitingRoomInventory["launchTarget"]
+  let launchTarget: KernelInventory["launchTarget"]
   let inventoryCalls = 0
   let reconcileCount = 0
   const warnings: Array<{ message: string; fields: Record<string, unknown> }> = []
@@ -858,8 +858,8 @@ function externalProviderSession(
 
 function inventory(
   inventoryVersion: string,
-  overrides: Partial<WaitingRoomInventory> = {},
-): WaitingRoomInventory {
+  overrides: Partial<KernelInventory> = {},
+): KernelInventory {
   return {
     schemaVersion: 13,
     inventoryVersion,

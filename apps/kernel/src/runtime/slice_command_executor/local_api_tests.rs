@@ -34,6 +34,24 @@ impl SliceDockerEnv {
         std::env::set_var("CHARIOX_SLICE_DOCKER_PROVISIONER", path);
         Self(previous)
     }
+
+    /// What a managed bootstrap hands a kernel on a machine without a slice broker.
+    fn managed_without_slice_broker() -> Self {
+        let names = [
+            "CHARIOX_SLICE_DOCKER_BROKER_SOCKET",
+            "CHARIOX_SLICE_DOCKER_BROKER_FD",
+            "CHARIOX_SLICE_DOCKER_BROKER_REQUIRED",
+        ];
+        let previous = names
+            .into_iter()
+            .map(|name| (name, std::env::var_os(name)))
+            .collect();
+        for name in &names[..2] {
+            std::env::remove_var(*name);
+        }
+        std::env::set_var("CHARIOX_SLICE_DOCKER_BROKER_REQUIRED", "1");
+        Self(previous)
+    }
 }
 
 #[cfg(unix)]
@@ -158,6 +176,56 @@ async fn save_api_rejects_unsupported_layout_before_snapshot_or_park() {
         .await
         .expect("independent attachment reconciliation should remain supported");
     assert!(reconciled.agent_ids.contains(&agent_id));
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "current_thread")]
+async fn create_api_refuses_a_machine_without_a_slice_service_before_writing_state() {
+    crate::test_support::isolated_env_test!();
+    let _environment_lock = SLICE_DOCKER_ENV_LOCK.lock().await;
+    let _broker_env = SliceDockerEnv::managed_without_slice_broker();
+    let app = Arc::new(Mutex::new(
+        crate::app::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed"),
+    ));
+    let runtime = owned_runtime_state(&app).await;
+    let config_projection = app.lock().await.config_projection_store();
+
+    let error = execute_slice_request(
+        &runtime,
+        &config_projection,
+        None,
+        &crate::runtime::command::KernelCaller::default(),
+        None,
+        crate::local::LocalDaemonRequest::CreateSlice(crate::local::CreateSliceRequest {
+            source_slice_ref: None,
+            name: "linux-dev".to_string(),
+            backend: crate::slice::SliceBackendKind::LocalDocker,
+            os: "linux".to_string(),
+            display_mode: crate::slice::SliceDisplayMode::Headed,
+            display_backend: Default::default(),
+            workspace_id: Some("workspace-1".to_string()),
+            worktree_id: Some("worktree-1".to_string()),
+            workspace_mount: None,
+            development: None,
+            worker_kernel_ref: None,
+            display_url: None,
+            provider_auth: Vec::new(),
+            from_saved_state: None,
+            base: Some(crate::local::SliceCreateBase::Clean),
+        }),
+    )
+    .await
+    .expect_err("a machine without a slice service must refuse CreateSlice");
+
+    assert!(
+        error
+            .to_string()
+            .contains("This machine cannot run slices: its Chariox release has no slice service."),
+        "{error}"
+    );
+    assert!(runtime.list_slices().is_empty());
+    assert!(app.lock().await.slices().list().is_empty());
 }
 
 #[cfg(unix)]

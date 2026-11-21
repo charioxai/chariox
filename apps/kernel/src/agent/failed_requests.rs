@@ -33,10 +33,12 @@ impl FailedRequest {
     }
 }
 
-/// The same calm explanation used by the turn outcome, without provider text.
-pub(crate) fn failed_request_reason(adapter_key: &str, failure_message: &str) -> String {
-    crate::provider::TurnOutcome::classify(adapter_key, failure_message)
-        .reason
+/// The public reason already recorded for the turn, or the fallback for an internal failure.
+pub(crate) fn failed_request_reason(failure: Option<&crate::provider::TurnOutcome>) -> String {
+    failure
+        .map(|outcome| outcome.reason.as_str())
+        .filter(|reason| !reason.is_empty())
+        .unwrap_or("The provider could not complete this request.")
         .trim_end_matches('.')
         .to_string()
 }
@@ -166,57 +168,60 @@ mod tests {
         FailedRequest::new(prompt_id, prompt, "usage limit reached".to_string())
     }
 
+    fn reason_for_provider_error(adapter: &str, message: &str) -> String {
+        failed_request_reason(Some(&crate::provider::TurnOutcome::classify(
+            adapter, message,
+        )))
+    }
+
     #[test]
     fn provider_limits_read_as_usage_limit_reached() {
-        // Claude's usage limit keeps its bounded, redacted reset detail for people.
+        // Keep each provider’s reset or billing detail.
         assert_eq!(
-            failed_request_reason(
+            reason_for_provider_error(
                 "claude",
                 "Provider prompt dispatch failed: You've hit your session limit · resets 8:30am"
             ),
             "You've hit your session limit · resets 8:30am"
         );
         assert_eq!(
-            failed_request_reason(
+            reason_for_provider_error(
                 "claude",
                 "Claude StopFailure [rate_limit]: You've hit your session limit · resets 8:30am"
             ),
             "You've hit your session limit · resets 8:30am"
         );
         assert_eq!(
-            failed_request_reason(
+            reason_for_provider_error(
                 "codex",
                 "Provider prompt dispatch failed: You exceeded your current quota, please check your plan and billing details."
             ),
-            "The provider's usage limit was reached"
+            "You exceeded your current quota, please check your plan and billing details"
         );
         assert_eq!(
-            failed_request_reason(
+            reason_for_provider_error(
                 "opencode",
                 "Provider prompt dispatch failed: insufficient_quota"
             ),
-            "The provider's usage limit was reached"
+            "insufficient_quota"
         );
     }
 
     #[test]
-    fn other_failures_keep_native_diagnostics_out_of_the_notice() {
+    fn failed_requests_keep_provider_detail_and_fall_back_when_it_is_empty() {
         assert_eq!(
-            failed_request_reason(
+            reason_for_provider_error(
                 "codex",
                 "Provider prompt dispatch failed: stream disconnected\n before completion."
             ),
-            "The connection to the provider was interrupted"
+            "stream disconnected"
         );
         assert_eq!(
-            failed_request_reason("claude", "  "),
+            reason_for_provider_error("claude", "  "),
             "The provider could not complete this request"
         );
-        let long = format!("Provider prompt dispatch failed: {}", "x".repeat(400));
-        assert_eq!(
-            failed_request_reason("codex", &long),
-            "The provider could not complete this request"
-        );
+        let long = format!("Provider prompt dispatch failed: {}", "x".repeat(600));
+        assert_eq!(reason_for_provider_error("codex", &long), "x".repeat(512));
     }
 
     #[test]

@@ -141,7 +141,7 @@ async fn a_cancelled_turn_says_cancelled_and_is_not_an_error() {
 }
 
 #[tokio::test]
-async fn a_failed_turn_carries_the_same_outcome_in_event_history_and_state() {
+async fn provider_failure_reason_is_shared_by_event_history_and_state() {
     let turn = failing_turn(&[]).await;
     follow(&turn);
 
@@ -150,7 +150,7 @@ async fn a_failed_turn_carries_the_same_outcome_in_event_history_and_state() {
     let expected = json!({
         "kind": "overloaded",
         "retryable": true,
-        "reason": "The provider is at capacity."
+        "reason": "Selected model is at capacity. Please try a different model."
     });
     let events = followed_agent_events(&turn);
     let last = events.last().expect("the follower hears the turn end");
@@ -165,24 +165,32 @@ async fn a_failed_turn_carries_the_same_outcome_in_event_history_and_state() {
 }
 
 #[tokio::test]
-async fn a_credential_in_the_provider_error_never_reaches_the_outcome_reason() {
+async fn provider_failure_reason_masks_credentials() {
     let turn = failing_turn(&[]).await;
     follow(&turn);
 
+    let opaque_vault_value = "synthetic vault phrase";
+    turn.runtime
+        .owned
+        .room_secret_observations
+        .register(&turn.session_id, opaque_vault_value)
+        .unwrap();
     turn.fail_run(
         &turn.failed_run_id,
-        "Provider prompt dispatch failed: Claude StopFailure [server_error]: API Error: 500 \
-         for Authorization: Bearer sk-ant-abcdefghijklmnop0123456789",
+        &format!("Provider prompt dispatch failed: Claude StopFailure [server_error]: API Error: 500 with {opaque_vault_value} under Authorization: Bearer sk-ant-abcdefghijklmnop0123456789"),
     )
     .await;
 
     let events = followed_agent_events(&turn);
     let outcome = &events.last().expect("the turn ends")["outcome"];
     let reason = outcome["reason"].as_str().expect("a reason for people");
-    assert_eq!(reason, "The provider could not complete this request.");
+    assert!(reason.contains("API Error: 500"), "{reason}");
+    assert!(reason.contains("[redacted]"), "{reason}");
     assert!(!reason.contains("abcdefghijklmnop"), "{reason}");
+    assert!(!reason.contains(opaque_vault_value), "{reason}");
     for stored in [history_outcome(&turn), state_outcome(&turn)] {
         assert!(!stored.to_string().contains("abcdefghijklmnop"), "{stored}");
+        assert!(!stored.to_string().contains(opaque_vault_value), "{stored}");
     }
 }
 

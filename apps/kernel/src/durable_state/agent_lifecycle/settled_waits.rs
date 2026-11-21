@@ -20,6 +20,14 @@ pub(super) fn is_settled(
     let Some(wait) = task.wait.as_ref() else {
         return Ok(false);
     };
+    sources_settled(tx, task, wait)
+}
+
+pub(super) fn sources_settled(
+    tx: &Transaction<'_>,
+    task: &AgentTaskExecution,
+    wait: &AgentWait,
+) -> Result<bool, DaemonError> {
     let regs = registrations(tx, &task.task_id)?;
     if !wait
         .registration_ids
@@ -46,6 +54,15 @@ pub(super) fn finish(
             return Ok(false);
         }
     }
+    close(tx, task, RESOLVED_WAIT_REASON.into())?;
+    Ok(true)
+}
+
+pub(super) fn close(
+    tx: &Transaction<'_>,
+    task: &mut AgentTaskExecution,
+    reason: String,
+) -> Result<(), DaemonError> {
     // A pending deadline/recheck is no longer work once the wait has ended.
     // Admitted or uncertain deliveries retain their normal reconciliation.
     let mut query = tx.prepare(
@@ -76,8 +93,8 @@ pub(super) fn finish(
     }
     task.state = ExecutionState::Done;
     task.wait = None;
-    task.reason = RESOLVED_WAIT_REASON.into();
-    Ok(true)
+    task.reason = reason;
+    Ok(())
 }
 
 /// A turn that ends may have been the work that held back another task's finished wait.

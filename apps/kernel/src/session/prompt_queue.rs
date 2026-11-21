@@ -133,6 +133,8 @@ pub struct PromptQueueItem {
     #[serde(skip)]
     remote_steer_reservation: RemoteSteerReservation,
     status: PromptStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    launch_wait: Option<String>,
     #[serde(default)]
     prompt_origin: PromptOrigin,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -351,6 +353,8 @@ pub struct PendingPromptSubmission {
     private_metadata: Option<Box<PromptPrivateMetadata>>,
     #[serde(skip)]
     remote_steer_reservation: RemoteSteerReservation,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    launch_wait: Option<String>,
     prompt_origin: PromptOrigin,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     prompt_author: Option<String>,
@@ -377,6 +381,7 @@ impl PendingPromptSubmission {
             updated_at_ms: now,
             private_metadata: prompt.private_metadata,
             remote_steer_reservation: prompt.remote_steer_reservation,
+            launch_wait: prompt.launch_wait,
             prompt_origin: prompt.prompt_origin,
             prompt_author: prompt.prompt_author,
             external_provider: prompt.external_provider,
@@ -400,6 +405,7 @@ impl PendingPromptSubmission {
             private_metadata: self.private_metadata,
             remote_steer_reservation: self.remote_steer_reservation,
             status: PromptStatus::Queued,
+            launch_wait: self.launch_wait,
             prompt_origin: self.prompt_origin,
             prompt_author: self.prompt_author,
             external_provider: self.external_provider,
@@ -432,6 +438,7 @@ impl PromptQueueItem {
             private_metadata: None,
             remote_steer_reservation: RemoteSteerReservation::default(),
             status,
+            launch_wait: None,
             prompt_origin: PromptOrigin::Chariox,
             prompt_author: None,
             external_provider: None,
@@ -1238,6 +1245,26 @@ impl PromptQueueItem {
 
     pub fn set_status(&mut self, status: PromptStatus) {
         self.status = status;
+        if status != PromptStatus::Queued {
+            self.launch_wait = None;
+        }
+    }
+
+    pub(crate) fn launch_wait(&self) -> Option<&str> {
+        self.launch_wait.as_deref()
+    }
+
+    pub(crate) fn set_launch_wait(&mut self, wait: Option<String>) {
+        self.launch_wait = wait;
+    }
+
+    /// Keep the person's turn ahead of automated work while admission is held.
+    pub(crate) fn comes_from_person(&self) -> bool {
+        self.prompt_origin == PromptOrigin::Chariox
+            && self.workflow_run_id.is_none()
+            && self.source_client_id().is_some_and(|client| {
+                !client.starts_with("agent:") && !client.starts_with("metaagent:")
+            })
     }
 
     pub fn set_prompt(&mut self, prompt: impl Into<String>) {
@@ -1247,9 +1274,9 @@ impl PromptQueueItem {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum PromptSubmissionOutcome {
-    Started { prompt: PromptQueueItem },
-    Queued { prompt: PromptQueueItem },
+pub enum PromptSubmissionOutcome<T = PromptQueueItem> {
+    Started { prompt: T },
+    Queued { prompt: T },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -1281,21 +1308,15 @@ impl AgentPromptState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PromptCompletion {
-    pub completed: PromptQueueItem,
-    pub started_next: Option<PromptQueueItem>,
+pub struct PromptCompletion<T = PromptQueueItem> {
+    pub completed: T,
+    pub started_next: Option<T>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PromptCancellation {
-    pub prompt: PromptQueueItem,
-    pub started_next: Option<PromptQueueItem>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
-pub struct PromptDetachEffect {
-    pub removed_active_prompt: bool,
-    pub removed_queued_prompt_count: usize,
+pub struct PromptCancellation<T = PromptQueueItem> {
+    pub prompt: T,
+    pub started_next: Option<T>,
 }
 
 #[cfg(test)]

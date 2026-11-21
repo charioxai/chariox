@@ -16,16 +16,29 @@ fn only_unacknowledged_outcomes(task: &AgentTaskExecution) -> bool {
 pub(super) const INVALID_TURN_END_REASON: &str =
     "Repeated invalid turn end; owner must resume or cancel";
 
-fn registration_by_id(tx: &Transaction<'_>, id: &str) -> Result<Option<Registration>, DaemonError> {
-    tx.query_row(
-        "SELECT payload FROM agent_registrations WHERE id=?1",
-        params![id],
-        |r| r.get::<_, String>(0),
-    )
-    .optional()
-    .map_err(sql)?
-    .map(|payload| decode(&payload))
-    .transpose()
+pub(super) fn registration_by_id(
+    tx: &Transaction<'_>,
+    id: &str,
+) -> Result<Option<Registration>, DaemonError> {
+    let row = tx
+        .query_row(
+            "SELECT r.task_id,r.payload FROM agent_registrations r
+         JOIN agent_tasks t ON t.task_id=r.task_id WHERE r.id=?1",
+            params![id],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+        )
+        .optional()
+        .map_err(sql)?;
+    let Some((task_id, payload)) = row else {
+        return Ok(None);
+    };
+    let reg: Registration = decode(&payload)?;
+    if reg.id != id || reg.task_id != task_id || reg.source_id.is_empty() {
+        return Err(error(
+            "source registration identity corrupt; quarantine required",
+        ));
+    }
+    Ok(Some(reg))
 }
 
 /// A registration the task no longer follows. A wait that held it must wake, rather than sleep on a dead registration.
@@ -538,9 +551,9 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             if reason.trim().is_empty() {
                 return Err(error("reason required: say in a few words what this wait is for; it is shown with the waiting task"));
             }
-            let regs = registrations(tx, &task)?;
+            let mut regs = registrations(tx, &task)?;
             if ids.iter().any(|id| !regs.iter().any(|r| &r.id == id)) {
-                return Err(error(unknown_registrations(tx, &t, &ids, &regs)?));
+                super::watch_adoption::adopt(tx, &mut t, &ids, &mut regs)?;
             }
             // A source that already ended is not something to wait on: its outcome is in the
             // inbox and the kernel delivers it. Naming it is harmless, so it is dropped.
@@ -961,42 +974,6 @@ pub(super) fn recover_source(
         }
     }
     Ok(())
-}
-
-/// A02-S02: a message wakes a yielded agent in a new turn. Waiting again on
-/// the registrations of its earlier task is not this turn's wait: that task
-/// still waits, so the turn only has to end.
-fn unknown_registrations(
-    tx: &Transaction<'_>,
-    t: &AgentTaskExecution,
-    ids: &[String],
-    own: &[Registration],
-) -> Result<String, DaemonError> {
-    let foreign: Vec<&String> = ids
-        .iter()
-        .filter(|id| !own.iter().any(|r| &r.id == *id))
-        .collect();
-    let unresolved = t
-        .obligations
-        .iter()
-        .any(AgentObligation::requires_resolution);
-    if !foreign.is_empty() && !unresolved {
-        for other in live_tasks(tx, &t.room_id, &t.agent_id)?
-            .into_iter()
-            .filter(|o| {
-                o.task_id != t.task_id
-                    && o.room_id == t.room_id
-                    && o.agent_id == t.agent_id
-                    && o.state == ExecutionState::Waiting
-            })
-        {
-            let theirs = registrations(tx, &other.task_id)?;
-            if foreign.iter().all(|id| theirs.iter().any(|r| &r.id == *id)) {
-                return Ok("Your earlier task is still waiting on these registrations; this turn has nothing of its own to wait on. Do not yield: finish this turn now (an answer is optional) and the earlier wait continues.".into());
-            }
-        }
-    }
-    Ok(format!("unknown registration_ids: {}. chariox.events.subscriptions lists the registrations of this task; use subscribe first to follow a source.", encode(&foreign)?))
 }
 
 /// Questions are the only source allowed to outlive a normal turn without an

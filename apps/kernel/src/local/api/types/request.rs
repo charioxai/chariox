@@ -142,6 +142,8 @@ pub enum LocalDaemonRequest {
     ListSessions(ListSessionsRequest),
     ResolveSession(ResolveSessionRequest),
     GetSessionState(GetSessionStateRequest),
+    ListFinishedRoomTasks(ListFinishedRoomTasksRequest),
+    GetMachineRoomResources(GetMachineRoomResourcesRequest),
     GetRoomEnvironmentState(GetRoomEnvironmentStateRequest),
     PrepareBrowserImport(PrepareBrowserImportRequest),
     ApproveBrowserImport(ApproveBrowserImportRequest),

@@ -158,7 +158,11 @@ impl RemoteQueueFixture {
             .unwrap_or_else(|error| panic!("{command_id} should succeed: {error}"))
     }
 
-    async fn submit(&self, attachment_id: &str, prompt: &str) -> PromptSubmissionOutcome {
+    async fn submit(
+        &self,
+        attachment_id: &str,
+        prompt: &str,
+    ) -> PromptSubmissionOutcome<crate::local::PromptReceipt> {
         let request = LocalDaemonRequest::SubmitPrompt(crate::local::SubmitPromptRequest {
             session_id: self.session_id.clone(),
             attachment_id: attachment_id.to_string(),
@@ -316,6 +320,8 @@ fn remote_completion_dispatches_prompts_queued_by_detached_clients() {
             output_chunks: Vec::new(),
             notices: Vec::new(),
             completions: vec![RelayProjectedCompletion {
+                model_usage: Vec::new(),
+                background_notifications: Vec::new(),
                 failure: None,
                 message_id: "first-remote-turn-completed".to_string(),
                 completed_at_ms: crate::session::unix_epoch_ms(),

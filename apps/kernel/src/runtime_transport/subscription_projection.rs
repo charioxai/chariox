@@ -21,8 +21,7 @@ pub(crate) fn session_projection_events(
             crate::runtime::process_resources::same_to_clients(
                 &before.processes,
                 &snapshot.processes,
-            ) && before.disk_usage == snapshot.disk_usage
-                && before.jobs == snapshot.jobs
+            ) && before.jobs == snapshot.jobs
         })
     {
         return Vec::new();
@@ -59,7 +58,7 @@ pub(crate) fn session_projection_events(
     if !can_skip_session_snapshot(snapshot, previous, replaces_snapshot) {
         let full_snapshot = KernelEvent::SessionSnapshot {
             room_workflows: snapshot.room_workflows.clone(),
-            session: Box::new(snapshot.session.clone()),
+            session: Box::new(snapshot.session.clone().without_room_workflow_details()),
             provider_run: Box::new(
                 snapshot
                     .provider_run
@@ -108,19 +107,13 @@ pub(crate) fn session_projection_events_for_scope(
         })
         .map(|mut event| {
             if scope == Some("session_metadata") {
-                if let KernelEvent::SessionProcessesChanged {
-                    processes,
-                    disk_usage,
-                    ..
-                } = &mut event
-                {
+                if let KernelEvent::SessionProcessesChanged { processes, .. } = &mut event {
                     processes.retain(|process| {
                         !matches!(
                             process.state,
                             crate::runtime::process_resources::SessionProcessState::Running
                         )
                     });
-                    disk_usage.clear();
                 }
             }
             event
@@ -172,7 +165,6 @@ mod tests {
         SessionSnapshotProjection {
             jobs: Vec::new(),
             processes: Vec::new(),
-            disk_usage: Vec::new(),
             room_workflows: crate::runtime::projection::RoomWorkflowInventory::project(
                 &session,
                 crate::session::DEFAULT_LOCAL_USER_ID,
@@ -355,22 +347,12 @@ mod tests {
     fn initial_snapshot_precedes_its_resource_samples() {
         let mut current = snapshot();
         add_process(&mut current);
-        current
-            .disk_usage
-            .push(crate::runtime::disk_usage::DiskUsageEntry {
-                id: "workspace".into(),
-                path: Some("/work".into()),
-                used_bytes: Some(8192),
-                sampled_at_ms: 10,
-                owner: None,
-                process_id: None,
-            });
         let events = session_projection_events(&current, None, false);
         assert!(matches!(
             events.first(),
             Some(KernelEvent::SessionSnapshot { .. })
         ));
-        assert!(events.iter().skip(1).any(|event| matches!(event, KernelEvent::SessionProcessesChanged { disk_usage, .. } if !disk_usage.is_empty())));
+        assert!(events.iter().skip(1).any(|event| matches!(event, KernelEvent::SessionProcessesChanged { processes, .. } if !processes.is_empty())));
     }
 
     #[test]
@@ -570,7 +552,7 @@ mod tests {
     }
 
     #[test]
-    fn metadata_keeps_admission_waits_while_health_keeps_samples() {
+    fn metadata_keeps_admission_waits() {
         let before = snapshot();
         let mut running = before.clone();
         add_process(&mut running);
@@ -581,16 +563,6 @@ mod tests {
             Some("session_metadata")
         )
         .is_empty());
-        assert!(matches!(
-            session_projection_events_for_scope(
-                &running,
-                Some(&before),
-                false,
-                Some("session_metadata_processes")
-            )
-            .as_slice(),
-            [KernelEvent::SessionProcessesChanged { .. }]
-        ));
         let mut held = running.clone();
         held.processes[0].state = crate::runtime::process_resources::SessionProcessState::Held(
             crate::runtime::process_resources::Waiting {
@@ -662,14 +634,7 @@ mod tests {
         add_process(&mut current);
         let events =
             session_projection_events_for_scope(&current, None, false, Some("session_metadata"));
-        assert!(events.iter().all(|event| !matches!(event, KernelEvent::SessionProcessesChanged { processes, disk_usage, .. } if !processes.is_empty() || !disk_usage.is_empty())));
-        let health = session_projection_events_for_scope(
-            &current,
-            None,
-            false,
-            Some("session_metadata_processes"),
-        );
-        assert!(health.iter().any(|event| matches!(event, KernelEvent::SessionProcessesChanged { processes, .. } if !processes.is_empty())));
+        assert!(events.iter().all(|event| !matches!(event, KernelEvent::SessionProcessesChanged { processes, .. } if !processes.is_empty())));
     }
 
     /// A snapshot holding one running process of `rss` bytes, sampled at `sampled_at_ms`.

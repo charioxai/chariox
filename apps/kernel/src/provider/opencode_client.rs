@@ -432,6 +432,7 @@ mod tests {
                 AgentExecutionMode::Plan,
                 false,
                 false,
+                false,
             )
             .expect("prompt should be accepted");
         server.join().expect("server thread should join");
@@ -507,6 +508,7 @@ mod tests {
                 AgentExecutionMode::Build,
                 true,
                 true,
+                false,
             )
             .expect("prompt should be accepted");
         server.join().expect("server thread should join");

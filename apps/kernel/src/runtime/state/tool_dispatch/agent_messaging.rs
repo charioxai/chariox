@@ -14,25 +14,23 @@ impl KernelRuntimeState {
                 .then_with(|| left.id().cmp(right.id()))
         });
         let activity = self.agent_activity_for_session(session);
-        crate::transport::runtime_tools::RuntimeToolResult {
-            ok: true,
-            payload: serde_json::json!({
-                "session_id": session.id(),
-                "focused_agent_id": session.focused_agent_id(),
-                "agent_tasks": self.owned.durable_state_store.agent_tasks(Some(session.id()),None).unwrap_or_default(),
-                "agents": agents
-                    .iter()
-                    .map(|agent| {
-                        session_agent_description(
-                            session,
-                            requester,
-                            agent,
-                            self.owned.agent_store.effective_execution_config(session, agent, &self.owned.session_store),
-                            &activity,
-                        )
-                    })
-                    .collect::<Vec<_>>(),
-            }),
+        let descriptions = agents
+            .iter()
+            .map(|agent| {
+                self.session_agent_description(session, requester, agent, activity.get(agent.id()))
+            })
+            .collect::<Result<Vec<_>, _>>();
+        match descriptions {
+            Ok(agents) => crate::transport::runtime_tools::RuntimeToolResult {
+                ok: true,
+                payload: serde_json::json!({
+                    "session_id": session.id(),
+                    "focused_agent_id": session.focused_agent_id(),
+                    "agent_tasks": self.owned.durable_state_store.agent_tasks(Some(session.id()),None).unwrap_or_default(),
+                    "agents": agents,
+                }),
+            },
+            Err(error) => agent_message_failure(error.to_string()),
         }
     }
 
@@ -55,22 +53,40 @@ impl KernelRuntimeState {
         };
         let agents = self.session_agents(session.id());
         let activity = self.agent_activity_for_session(session);
-        match resolve_session_agent(&agents, &args.agent) {
+        let agent = match resolve_session_agent(&agents, &args.agent) {
+            Ok(agent) => agent,
+            Err(message) => return agent_message_failure(message),
+        };
+        match self.session_agent_description(session, requester, agent, activity.get(agent.id())) {
             Ok(agent) => crate::transport::runtime_tools::RuntimeToolResult {
                 ok: true,
-                payload: serde_json::json!({
-                    "session_id": session.id(),
-                    "agent": session_agent_description(
-                            session,
-                            requester,
-                            agent,
-                            self.owned.agent_store.effective_execution_config(session, agent, &self.owned.session_store),
-                            &activity,
-                        ),
-                }),
+                payload: serde_json::json!({"session_id": session.id(), "agent": agent}),
             },
-            Err(message) => agent_message_failure(message),
+            Err(error) => agent_message_failure(error.to_string()),
         }
+    }
+
+    fn session_agent_description(
+        &self,
+        session: &crate::session::RuntimeSession,
+        requester: &crate::agent::AgentInstance,
+        agent: &crate::agent::AgentInstance,
+        activity: Option<&crate::runtime::projection::AgentRuntimeActivity>,
+    ) -> Result<serde_json::Value, DaemonError> {
+        let deadline = self
+            .owned
+            .durable_state_store
+            .agent_deadline(session.id(), agent.id())?;
+        let (state, failure) = self.agent_inspection_status(agent, activity, deadline.as_ref())?;
+        let effective = self.owned.agent_store.effective_execution_config(
+            session,
+            agent,
+            &self.owned.session_store,
+        );
+        let mut description =
+            session_agent_description(session, requester, agent, effective, activity, state);
+        description["failure"] = serde_json::json!(failure);
+        Ok(description)
     }
 
     /// A room command's message: the tool's own path, on behalf of the provider run that ran it.
@@ -403,7 +419,7 @@ impl KernelRuntimeState {
             ));
         }
         if let Some(provider_run_id) = self
-            .steer_remote_agent_message(session.id(), &prompt, None)
+            .steer_remote_agent_message(session.id(), &prompt, None, false)
             .await?
         {
             let result = crate::transport::runtime_tools::RuntimeToolResult {
@@ -581,7 +597,8 @@ fn session_agent_description(
     requester: &crate::agent::AgentInstance,
     agent: &crate::agent::AgentInstance,
     effective: crate::session::EffectiveAgentExecutionConfig,
-    activity: &std::collections::BTreeMap<String, crate::runtime::projection::AgentRuntimeActivity>,
+    activity: Option<&crate::runtime::projection::AgentRuntimeActivity>,
+    state: &str,
 ) -> serde_json::Value {
     let location = agent.remote_execution().map_or_else(
         || serde_json::json!({ "kind": "local" }),
@@ -618,7 +635,7 @@ fn session_agent_description(
             crate::agent::AgentOperatingMode::Regular => "regular",
             crate::agent::AgentOperatingMode::Meta => "meta",
         },
-        "state": crate::runtime::projection::agent_state_label(agent, activity.get(agent.id())),
+        "state": state,
         "is_processing": agent.is_processing(),
         "has_active_prompt": session.active_prompt_for_agent(agent.id()).is_some(),
         "queued_prompt_count": session
@@ -626,7 +643,7 @@ fn session_agent_description(
             .map_or(0, std::collections::VecDeque::len),
         // What it waits on and since when, and when it last wrote: a quiet
         // agent is never an unexplained one.
-        "liveness": activity.get(agent.id()).map(|activity| &activity.liveness),
+        "liveness": activity.map(|activity| &activity.liveness),
         "parent_agent_id": agent.parent_agent_id(),
         "parent_room_id": agent.parent_room_id(),
         "visible_in_freeform": agent.visible_in_freeform(),

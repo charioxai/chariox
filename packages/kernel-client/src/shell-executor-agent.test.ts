@@ -435,39 +435,18 @@ test("executeShellCommand submits prompt without waiting", async () => {
     if ("SubmitPrompt" in request) {
       return {
         PromptSubmitted: {
+          session_id: "session-1",
           outcome: {
             Started: {
               prompt: {
                 id: "prompt-1",
-                source_attachment_id: "attach-1",
                 target_agent_id: "agent-1",
-                prompt: "hello\n",
                 status: "Running",
+                created_at_ms: 1,
+                updated_at_ms: 1,
               },
             },
           },
-          session: makeSession({
-            prompt_states: {
-              "agent-1": {
-                active_prompt: {
-                  id: "prompt-1",
-                  source_attachment_id: "attach-1",
-                  target_agent_id: "agent-1",
-                  prompt: "hello\n",
-                  status: "Running",
-                },
-                queued_prompts: [],
-              },
-            },
-          }),
-          agent_activity: {
-            "agent-1": {
-              status: "working",
-              prompt_status: "running",
-              busy: true,
-            },
-          },
-          agent_activity_revision: 12,
         },
       }
     }
@@ -478,14 +457,7 @@ test("executeShellCommand submits prompt without waiting", async () => {
 
   assert.equal(result.ok, true)
   assert.match(result.message ?? "", /prompt prompt-1 submitted/)
-  assert.deepEqual((result.data as { session?: { agent_activity?: unknown } } | undefined)?.session?.agent_activity, {
-    "agent-1": {
-      status: "working",
-      prompt_status: "running",
-      busy: true,
-    },
-  })
-  assert.equal((result.data as { session?: { agent_activity_revision?: unknown } } | undefined)?.session?.agent_activity_revision, 12)
+  assert.equal((result.data as { prompt: { id: string } }).prompt.id, "prompt-1")
   assert.deepEqual(result.contextUpdates, { agentId: "agent-1" })
   assert.deepEqual(fake.requests.map((request) => Object.keys(request)[0]), ["ListAgents", "SubmitPrompt"])
 })

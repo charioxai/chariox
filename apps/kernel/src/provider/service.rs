@@ -29,8 +29,18 @@ pub struct ProviderProcessService {
 
 impl ProviderProcessService {
     pub fn new() -> Self {
+        Self::with_registry(ProviderRegistry::new())
+    }
+
+    pub(crate) fn with_test_fixtures() -> Self {
+        Self::with_registry(ProviderRegistry {
+            dev_stub_enabled: true,
+        })
+    }
+
+    fn with_registry(registry: ProviderRegistry) -> Self {
         Self {
-            registry: ProviderRegistry::new(),
+            registry,
             run_actor_mailbox: ProviderRunActorMailbox::default(),
             runs: BTreeMap::new(),
             next_run_number: 0,

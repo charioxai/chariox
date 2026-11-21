@@ -262,6 +262,12 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::GetSessionState(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
+        LocalDaemonRequest::ListFinishedRoomTasks(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::GetMachineRoomResources(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
         LocalDaemonRequest::GetRoomEnvironmentState(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),

@@ -14,11 +14,10 @@ const session: RuntimeSession = {
   created_at_ms: 1,
   status: "Active",
   active_provider_run_id: null,
-  attachment_ids: ["attachment-vault"],
+  connected_cli_count: 1,
   active_prompt: null,
   queued_prompts: [],
   focused_agent_id: "agent-vault",
-  max_agents: 6,
   agents: [{
     id: "agent-vault",
     agent_ref: "agent-vault",

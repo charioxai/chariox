@@ -1,3 +1,12 @@
+export const browserUserMessages = Object.freeze({
+ account: 'MP-08: cannot use the unprivileged browser account. Check that useradd and getent are installed and that chariox-browser is a locked system account, then retry',
+ nested: 'MP-08: browser confinement could not start because the kernel is already inside Bubblewrap (nested confinement). For a drill, ask the host operator to start a dedicated drill kernel as a host service with its own Chariox home, or use a dedicated lab machine',
+ namespaceCapability: 'MP-08: browser confinement could not create a private mount namespace. The root kernel service lacks effective CAP_SYS_ADMIN. Ask the host operator to check the service configuration or use a dedicated lab machine',
+ ownershipCapability: 'MP-08: browser confinement could not prepare its private account directory. The root kernel service lacks effective CAP_CHOWN. Ask the host operator to check the service configuration or use a dedicated lab machine',
+ host: 'MP-08: Linux denied browser confinement. Ask the host operator to check AppArmor, user namespace policy and the kernel service capabilities, then retry',
+ probe: 'MP-08: the browser namespace probe did not complete successfully. Ask the host operator to check the service configuration and the Bubblewrap and util-linux installation, then retry',
+ launcher: 'MP-08: the browser namespace launcher is unavailable. Install util-linux or repair the Chariox host installation, then retry',
+});
 // MP-11: opt-in diagnostics identify public code, never exception/page values.
 const names=new Set(['Error','TypeError','RangeError','ReferenceError','SyntaxError']);
 const files=new Set(['linux-owned-desktop.mjs','native-keyboard-channel.mjs','kernel-browser-host.mjs','kernel-browser-process.mjs','kernel-browser-owned-display.mjs','kernel-browser-linux.mjs','kernel-browser-display.mjs','kernel-browser-motion.mjs','kernel-browser-native.mjs','kernel-browser-native-worker.mjs','kernel-browser-native-pipe.mjs','kernel-browser-native-credit.mjs','kernel-browser-refiner.mjs','kernel-browser-pixels.mjs','kernel-browser-pixel-worker.mjs','kernel-browser-display-capture.mjs','kernel-browser-display-credit.mjs','browser-controller-cdp.mjs','browser-controller-actions.mjs','browser-controller-compatibility.mjs','kernel-browser-mirror2.mjs','native-computer.mjs','browser-protection-regions.mjs']);
@@ -70,7 +79,7 @@ const fixedReasons=new Map([
  ['MP-11: frame observer unavailable','mirror_frame_observer_unavailable'],
  ['MP-11: mirror observation unavailable','mirror_observation_unavailable'],
  ['MP-11: closed-root frame snapshot unavailable','mirror_frame_snapshot_unavailable'],
- ['MP-08: cannot use the unprivileged browser account; install useradd/getent/setpriv/unshare and allow root to create chariox-browser and private mount namespaces, then retry','browser_user_unavailable'],
+ ...Object.values(browserUserMessages).map(message=>[message,'browser_user_unavailable']),
  ['MD-2: install native Chromium or set CHARIOX_KERNEL_BROWSER_EXECUTABLE','browser_executable_unavailable'],
  ['MD-2: browser profile is already owned by a live process','browser_profile_in_use'],
  ['MD-2: host tab limit reached','browser_tab_limit'],

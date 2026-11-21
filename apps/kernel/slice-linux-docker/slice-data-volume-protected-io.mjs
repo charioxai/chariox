@@ -3,18 +3,21 @@ import {
   closeSync,
   constants,
   fsyncSync,
+  ftruncateSync,
   lstatSync,
   mkdirSync,
   openSync,
   readFileSync,
   readdirSync,
   renameSync,
+  statfsSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs"
 import { dirname } from "node:path"
 
 import { DATA_ROOT, MAX_VOLUME_SIZE_GB, MIN_VOLUME_SIZE_GB } from "./slice-data-volume-device.mjs"
+import { BACKING_FILE_PATH } from "./slice-data-volume-file.mjs"
 
 export const PROTECTED_BOOTSTRAP_ROOT = "/etc/chariox/bootstrap"
 export const MANAGED_BOOTSTRAP_PATH = `${PROTECTED_BOOTSTRAP_ROOT}/managed-bootstrap.json`
@@ -103,41 +106,69 @@ function readProtectedInput(path, schemaVersion, expectedGid) {
   if (!value || typeof value !== "object" || Array.isArray(value) || value.schemaVersion !== schemaVersion) {
     fail("protected bootstrap input has an unsupported schema version")
   }
-  const serial = value.authorityData?.storage?.expectedDataVolumeSerial
-  const sizeGb = value.authorityData?.storage?.expectedDataVolumeSizeGb
-  if (
-    typeof serial !== "string" || serial.length > 16 || !/^[1-9][0-9]*$/.test(serial) ||
-    BigInt(serial) > BigInt(MAX_SAFE_INTEGER) ||
-    !Number.isSafeInteger(sizeGb) || sizeGb < MIN_VOLUME_SIZE_GB || sizeGb > MAX_VOLUME_SIZE_GB
-  ) {
-    fail("protected bootstrap data-volume identity or size is invalid")
-  }
-  return { serial, sizeGb }
+  return parseStorageInput(value.authorityData?.storage)
 }
 
-function parseBinding(value) {
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+function keysOf(value) {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? Object.keys(value).sort().join(",")
+    : ""
+}
+
+function validSerial(value) {
+  return typeof value === "string" && value.length <= 16 && /^[1-9][0-9]*$/.test(value) &&
+    BigInt(value) <= BigInt(MAX_SAFE_INTEGER)
+}
+
+function validSizeGb(value) {
+  return Number.isSafeInteger(value) && value >= MIN_VOLUME_SIZE_GB && value <= MAX_VOLUME_SIZE_GB
+}
+
+function validBackingFile(value) {
+  return keysOf(value) === "inode,majorMinor" &&
+    typeof value.majorMinor === "string" && /^\d+:\d+$/.test(value.majorMinor) &&
+    typeof value.inode === "string" && /^[1-9][0-9]*$/.test(value.inode)
+}
+
+// The storage a machine's managed bootstrap names: a provider volume found by its serial,
+// or a file-backed volume on the root filesystem. Exactly one shape is accepted.
+export function parseStorageInput(storage) {
+  switch (keysOf(storage)) {
+    case "expectedDataVolumeSerial,expectedDataVolumeSizeGb":
+      if (validSerial(storage.expectedDataVolumeSerial) && validSizeGb(storage.expectedDataVolumeSizeGb)) {
+        return { kind: "providerVolume", serial: storage.expectedDataVolumeSerial, sizeGb: storage.expectedDataVolumeSizeGb }
+      }
+      break
+    case "fileDataVolumeSizeGb":
+      if (validSizeGb(storage.fileDataVolumeSizeGb)) {
+        return { kind: "fileVolume", sizeGb: storage.fileDataVolumeSizeGb }
+      }
+      break
+  }
+  fail("protected bootstrap data-volume identity or size is invalid")
+}
+
+// The binding keeps the identity admission formatted, so a later boot uses only that volume.
+export function parseBinding(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) fail("data-volume binding is malformed")
-  const keys = Object.keys(value).sort().join(",")
-  if (keys !== "expectedDataVolumeSerial,expectedDataVolumeSizeGb,filesystemUuid,schemaVersion") {
-    fail("data-volume binding has an unsupported shape")
-  }
-  if (
-    value.schemaVersion !== 1 || typeof value.expectedDataVolumeSerial !== "string" ||
-    !/^[1-9][0-9]*$/.test(value.expectedDataVolumeSerial) ||
-    BigInt(value.expectedDataVolumeSerial) > BigInt(MAX_SAFE_INTEGER) ||
-    !Number.isSafeInteger(value.expectedDataVolumeSizeGb) ||
-    value.expectedDataVolumeSizeGb < MIN_VOLUME_SIZE_GB ||
-    value.expectedDataVolumeSizeGb > MAX_VOLUME_SIZE_GB ||
-    typeof value.filesystemUuid !== "string" ||
-    !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value.filesystemUuid)
-  ) {
-    fail("data-volume binding fields are invalid")
-  }
-  return {
-    schemaVersion: 1,
-    expectedDataVolumeSerial: value.expectedDataVolumeSerial,
-    expectedDataVolumeSizeGb: value.expectedDataVolumeSizeGb,
-    filesystemUuid: value.filesystemUuid,
+  const common = value.schemaVersion === 1 && validSizeGb(value.expectedDataVolumeSizeGb) &&
+    typeof value.filesystemUuid === "string" && UUID_PATTERN.test(value.filesystemUuid)
+  const shape = { schemaVersion: 1, expectedDataVolumeSizeGb: value.expectedDataVolumeSizeGb, filesystemUuid: value.filesystemUuid }
+  switch (keysOf(value)) {
+    case "expectedDataVolumeSerial,expectedDataVolumeSizeGb,filesystemUuid,schemaVersion":
+      if (!common || !validSerial(value.expectedDataVolumeSerial)) fail("data-volume binding fields are invalid")
+      return { kind: "providerVolume", ...shape, expectedDataVolumeSerial: value.expectedDataVolumeSerial }
+    case "backingFile,expectedDataVolumeSizeGb,filesystemUuid,schemaVersion":
+      if (!common || !validBackingFile(value.backingFile)) fail("data-volume binding fields are invalid")
+      return {
+        kind: "fileVolume",
+        ...shape,
+        backingFile: { majorMinor: value.backingFile.majorMinor, inode: value.backingFile.inode },
+      }
+    default:
+      fail("data-volume binding has an unsupported shape")
   }
 }
 
@@ -195,8 +226,10 @@ function validateObservationFile(path) {
 function validateObservation(value) {
   if (
     !value || typeof value !== "object" || Array.isArray(value) ||
-    value.schemaVersion !== 1 || typeof value.dataVolumeSerial !== "string" ||
-    !/^[1-9][0-9]{0,15}$/.test(value.dataVolumeSerial) ||
+    value.schemaVersion !== 1 ||
+    (value.backingFile === undefined
+      ? typeof value.dataVolumeSerial !== "string" || !/^[1-9][0-9]{0,15}$/.test(value.dataVolumeSerial)
+      : value.dataVolumeSerial !== undefined || !validBackingFile(value.backingFile)) ||
     !Number.isSafeInteger(value.dataVolumeSizeGb) ||
     value.dataVolumeSizeGb < MIN_VOLUME_SIZE_GB || value.dataVolumeSizeGb > MAX_VOLUME_SIZE_GB ||
     typeof value.filesystemUuid !== "string" ||
@@ -207,6 +240,27 @@ function validateObservation(value) {
   ) {
     fail("data-volume admission observation fields are invalid")
   }
+}
+
+// The backing file's filesystem device as the kernel's major:minor, the pair losetup
+// reports for it, and its inode.
+function backingFileIdentity() {
+  let metadata
+  try {
+    metadata = lstatSync(BACKING_FILE_PATH, { bigint: true })
+  } catch (error) {
+    if (error.code === "ENOENT") return undefined
+    throw error
+  }
+  if (
+    metadata.isSymbolicLink() || !metadata.isFile() || metadata.uid !== 0n || metadata.gid !== 0n ||
+    (metadata.mode & 0o7777n) !== 0o600n || metadata.nlink !== 1n
+  ) {
+    fail("file-backed data volume must be a root-only regular file with one link")
+  }
+  const major = ((metadata.dev >> 8n) & 0xfffn) | ((metadata.dev >> 32n) & ~0xfffn)
+  const minor = (metadata.dev & 0xffn) | ((metadata.dev >> 12n) & ~0xffn)
+  return { majorMinor: `${major}:${minor}`, inode: String(metadata.ino), sizeBytes: Number(metadata.size) }
 }
 
 export const systemIo = {
@@ -239,6 +293,26 @@ export const systemIo = {
     renameSync(temporary, BINDING_PATH)
     const directoryFd = openSync(parent, constants.O_RDONLY)
     try { fsyncSync(directoryFd) } finally { closeSync(directoryFd) }
+  },
+  backingFile() {
+    validateBindingDirectory()
+    return backingFileIdentity()
+  },
+  backingFileSpace() {
+    validateBindingDirectory()
+    const space = statfsSync(dirname(BACKING_FILE_PATH), { bigint: true })
+    return Number(space.bavail * space.bsize)
+  },
+  createBackingFile(bytes) {
+    validateBindingDirectory()
+    const fd = openSync(BACKING_FILE_PATH, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600)
+    try {
+      ftruncateSync(fd, bytes)
+      fsyncSync(fd)
+    } finally { closeSync(fd) }
+    const directoryFd = openSync(dirname(BACKING_FILE_PATH), constants.O_RDONLY)
+    try { fsyncSync(directoryFd) } finally { closeSync(directoryFd) }
+    return backingFileIdentity()
   },
   clearObservation() {
     validateObservationDirectory()

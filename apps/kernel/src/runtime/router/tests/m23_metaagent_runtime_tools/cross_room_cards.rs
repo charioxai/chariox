@@ -115,8 +115,59 @@ async fn cards() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "e6af1639ff15590f3878df899c7bea6f04a97de09284566074299c3d0b477c41"
+        "7845b65f0c8245f0faef1f160d25dc0b4cb64cb3a9f0ad76bb8340df007ce62f"
     );
+}
+
+#[test]
+fn decisioncap_owner_lists_open_kernel_decision_metadata() {
+    run_large_stack_async_test("decisioncap-owner-list", kernel_decision_metadata);
+}
+
+async fn kernel_decision_metadata() {
+    let world = coordinator("decisioncap-owner-list").await;
+    let owner = world
+        .app
+        .lock()
+        .await
+        .sessions()
+        .get_session(&world.room)
+        .unwrap()
+        .owner_user_id()
+        .to_owned();
+    let state = &world.router.runtime_state;
+    let mut receivers = Vec::new();
+    for (id, card_owner, asker) in [
+        ("own-decision", owner.as_str(), world.ids["q"].as_str()),
+        ("foreign-decision", "foreign-owner", world.ids["a"].as_str()),
+        ("closed-decision", owner.as_str(), world.ids["q"].as_str()),
+    ] {
+        let decision = RuntimeInteraction::for_kernel_operation(
+            id,
+            format!("subject:{id}"),
+            "Private decision title",
+            "Private decision detail",
+            vec![RuntimeInteractionChoice::new("deny", "Deny", "deny", None)],
+        )
+        .with_timeout_sec(300)
+        .with_related_agent_id(asker.into());
+        receivers.push(
+            state
+                .create_kernel_operation_interaction("", card_owner, decision)
+                .await
+                .unwrap(),
+        );
+    }
+    drop(receivers.pop().unwrap());
+    let result = room_command(&world, "a", "room cards").await;
+    assert!(result.ok, "{result:?}");
+    let cards = result.payload["response"]["cards"].as_array().unwrap();
+    assert_eq!(cards.len(), 1, "{cards:?}");
+    assert_eq!(cards[0]["id"], "own-decision");
+    assert_eq!(cards[0]["kind"], "permission");
+    assert!(cards[0]["age_ms"].as_u64().is_some());
+    assert_eq!(cards[0]["requester"]["agent_id"], world.ids["q"]);
+    assert!(cards[0].get("message").is_none());
 }
 
 #[test]
@@ -212,6 +263,7 @@ async fn guest() {
     for command in [
         format!("room agents {}", world.other_room),
         format!("room cards {}", world.other_room),
+        "room cards".to_owned(),
         format!("agent answer xroom-perm allow --room {}", world.other_room),
     ] {
         let result = room_command(&world, "guest", &command).await;

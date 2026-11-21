@@ -53,6 +53,14 @@ pub enum LocalDaemonResponse {
     /// Protocol 568: the gateway paired with a self-hosted kernel.
     GatewayKernelJoined { kernel: GatewayKernel, },
     GatewayKernelForgotten { kernel_id: String, },
+    /// A forwarded write succeeded and its complete reply exceeded the durable receipt limit.
+    GatewayWriteCompleted {
+        response_kind: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        session_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        exit_code: Option<i32>,
+    },
     /// Protocol 568: the machine file requests.
     KernelFileStat { stat: KernelFileStat, },
     KernelDirectoryListed { path: String, entries: Vec<KernelDirectoryEntry>, truncated: bool, },
@@ -170,7 +178,14 @@ pub enum LocalDaemonResponse {
         agent_activity_revision: u64,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         jobs: Vec<JobView>,
-        /// The rows the live `session_processes_changed` feed shows.
+        /// Only processes owned by an agent visible in this Room.
+        processes: Vec<crate::runtime::process_resources::SessionProcess>,
+    },
+    FinishedRoomTasks {
+        tasks: Vec<crate::durable_state::agent_lifecycle::AgentTaskExecution>,
+        next_before: Option<i64>,
+    },
+    MachineRoomResources {
         processes: Vec<crate::runtime::process_resources::SessionProcess>,
         disk_usage: Vec<crate::runtime::disk_usage::DiskUsageEntry>,
     },
@@ -432,46 +447,25 @@ pub enum LocalDaemonResponse {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         callback: Option<CredentialEnrollmentCallback>,
     },
-    PromptSubmitted {
-        outcome: PromptSubmissionOutcome,
-        session: RuntimeSession,
-        agent_activity: BTreeMap<String, crate::runtime::projection::AgentRuntimeActivity>,
-        #[serde(default)]
-        agent_activity_revision: u64,
-    },
+    PromptSubmitted { session_id: String, outcome: PromptSubmissionOutcome<PromptReceipt>, },
     PromptsSubmitted {
+        session_id: String,
         results: Vec<PromptBatchSubmissionResult>,
         failures: Vec<BatchOperationFailure>,
-        session: RuntimeSession,
-        agent_activity: BTreeMap<String, crate::runtime::projection::AgentRuntimeActivity>,
-        #[serde(default)]
-        agent_activity_revision: u64,
     },
-    PromptCompleted { completion: PromptCompletion, },
-    PromptCancelled { cancellation: PromptCancellation, },
+    PromptCompleted { completion: PromptCompletion<PromptReceipt>, },
+    PromptCancelled { cancellation: PromptCancellation<PromptReceipt>, },
     NothingToStop { session_id: String, agent_id: String, },
-    ActivePromptSteered { prompt: PromptQueueItem, },
-    QueuedPromptSteered {
-        prompt: PromptQueueItem,
-        session: RuntimeSession,
-        agent_activity: BTreeMap<String, crate::runtime::projection::AgentRuntimeActivity>,
-        #[serde(default)]
-        agent_activity_revision: u64,
+    ActivePromptSteered {
+        session_id: String,
+        agent_id: String,
+        active_prompt_id: String,
+        steer_id: String,
+        accepted_at_ms: u64,
     },
-    QueuedPromptCancelled {
-        prompt: PromptQueueItem,
-        session: RuntimeSession,
-        agent_activity: BTreeMap<String, crate::runtime::projection::AgentRuntimeActivity>,
-        #[serde(default)]
-        agent_activity_revision: u64,
-    },
-    QueuedPromptUpdated {
-        prompt: PromptQueueItem,
-        session: RuntimeSession,
-        agent_activity: BTreeMap<String, crate::runtime::projection::AgentRuntimeActivity>,
-        #[serde(default)]
-        agent_activity_revision: u64,
-    },
+    QueuedPromptSteered { session_id: String, prompt: PromptReceipt, },
+    QueuedPromptCancelled { session_id: String, prompt: PromptReceipt, },
+    QueuedPromptUpdated { session_id: String, prompt: PromptReceipt, },
     SessionConfigUpdated { config: SessionConfigState, session: RuntimeSession, },
     AgentConfigUpdated {
         agent: AgentInstance,

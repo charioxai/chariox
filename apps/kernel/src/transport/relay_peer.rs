@@ -234,7 +234,13 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// skill delivery (Agent Move no longer lists skills and the per-agent skill grants are gone).
 /// The receiving agent’s deadline refusal is carried in the encrypted peer response.
 /// A peer spawn carries the starter's display name.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 449;
+/// Peer 450 includes kernels refused as too old on their machine entry, with the protocol each
+/// reported, so clients show them as Update needed.
+/// Peer 450 carries native Codex credentials in encrypted provider account copy packages.
+/// 450 carries the lean Room state and independently read Room history and machine samples.
+/// Peer 450 carries native background notification receipts on leased completions.
+/// Peer 450 carries the local 1013 mirror v2 header `focus_visible`.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 450;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
 pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = RELAY_PEER_PROTOCOL_VERSION;
@@ -777,6 +783,7 @@ pub struct LeasedSudoGrant {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LeasedPromptReceiptPhase {
+    WaitingForMemory,
     Active,
     Completed,
     SteerDispatching,
@@ -1946,6 +1953,11 @@ pub struct RelayProjectedOutputChunk {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RelayProjectedCompletion {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub model_usage: Vec<crate::provider::ModelTurnUsage>,
+    /// Native background notifications consumed by this exact answering turn.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub background_notifications: Vec<crate::provider::ProviderBackgroundNotification>,
     pub message_id: String,
     pub completed_at_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2065,6 +2077,8 @@ mod tests {
     fn a_notification_end_is_told_by_its_id_whatever_prompt_the_drain_scopes_it_to() {
         let completion =
             |message_id: &str, home_prompt_id: Option<&str>| RelayProjectedCompletion {
+                model_usage: Vec::new(),
+                background_notifications: Vec::new(),
                 message_id: message_id.into(),
                 completed_at_ms: 1,
                 home_prompt_id: home_prompt_id.map(str::to_owned),
@@ -2087,6 +2101,8 @@ mod tests {
             crate::test_support::expected_relay_peer_protocol_version()
         );
         let completion = RelayProjectedCompletion {
+            model_usage: Vec::new(),
+            background_notifications: Vec::new(),
             failure: None,
             message_id: "assistant-msg-1".to_string(),
             completed_at_ms: 1_234,
@@ -2118,13 +2134,15 @@ mod tests {
         let hash = Sha256::digest(serialized.as_bytes());
         assert_eq!(
             format!("{hash:x}"),
-            "0d86c18bf510a18529d2304a1aa8c56035268d59f44f513f494856e9d77dc479",
+            "d0df0d2af63d62087d580760492db0cd6e113689fbf940e5bf08e63e4cfc37c3",
         );
     }
 
     #[test]
     fn leased_failure_without_termination_shape_is_versioned() {
         let completion = RelayProjectedCompletion {
+            model_usage: Vec::new(),
+            background_notifications: Vec::new(),
             message_id: "failed-turn".into(),
             completed_at_ms: 1234,
             home_prompt_id: Some("home-prompt".into()),
@@ -2132,6 +2150,7 @@ mod tests {
             failure: Some(crate::provider::TurnOutcome {
                 kind: crate::provider::TurnOutcomeKind::UsageLimit,
                 retryable: false,
+                answered_in_turn: None,
                 reason: "You've hit your usage limit.".into(),
             }),
         };
@@ -2177,6 +2196,8 @@ mod tests {
 
         for (provider_termination, category) in cases {
             let completion = RelayProjectedCompletion {
+                model_usage: Vec::new(),
+                background_notifications: Vec::new(),
                 failure: None,
                 message_id: "assistant-msg-1".to_string(),
                 completed_at_ms: provider_termination.timestamp_ms,
@@ -2298,6 +2319,10 @@ mod tests {
         );
 
         for (phase, phase_wire) in [
+            (
+                LeasedPromptReceiptPhase::WaitingForMemory,
+                "waiting_for_memory",
+            ),
             (
                 LeasedPromptReceiptPhase::SteerDispatching,
                 "steer_dispatching",

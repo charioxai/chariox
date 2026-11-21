@@ -442,14 +442,6 @@ impl DaemonConfig {
             .unwrap_or(crate::session::DEFAULT_WORKFLOW_CODE_MAX_QUEUES) as usize
     }
 
-    pub fn session_default_max_agents(&self) -> i32 {
-        self.user_config
-            .workflow
-            .session_default_max_agents
-            .unwrap_or(crate::session::DEFAULT_SESSION_MAX_AGENTS as u32)
-            .min(i32::MAX as u32) as i32
-    }
-
     pub fn workflow_code_limits(&self) -> WorkflowCodeLimitsConfig {
         let mut limits = self.user_config.workflow.code_limits();
         limits.max_queues = limits
@@ -666,8 +658,6 @@ pub struct UserKernelConfig {
 pub struct UserWorkflowConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_queues_per_workflow: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub session_default_max_agents: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub code: Option<UserWorkflowCodeConfig>,
 }

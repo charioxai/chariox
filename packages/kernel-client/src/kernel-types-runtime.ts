@@ -29,7 +29,7 @@ export type AgentPromptState = {
 }
 
 export type AgentRuntimeActivity = {
-  status: "idle" | "working" | "error"
+  status: "idle" | "working" | "error" | "ended_deadline"
   prompt_status: "none" | "queued" | "dispatching" | "running" | "cancelling" | "settling"
   busy: boolean
   active_prompt_count?: number
@@ -118,6 +118,7 @@ export type ProviderRunTermination = {
  */
 export type TurnOutcomeKind =
   | "completed"
+  | "answered_in_turn"
   | "cancelled"
   | "interrupted_by_restart"
   | "overloaded"
@@ -125,14 +126,22 @@ export type TurnOutcomeKind =
   | "sign_in_required"
   | "provider_crashed"
   | "network"
+  | "model_refused"
+  | "stream_ended"
   | "other"
   | "unknown"
 
+export type AnsweredTurnReceipt = {
+  session_id: string
+  agent_id: string
+  prompt_id: string
+  task_id: string
+}
+
 export type TurnOutcome = {
-  kind: TurnOutcomeKind
   retryable: boolean
   reason: string
-}
+} & ({ kind: Exclude<TurnOutcomeKind, "answered_in_turn">; answered_in_turn?: AnsweredTurnReceipt } | { kind: "answered_in_turn"; answered_in_turn: AnsweredTurnReceipt })
 
 export type WorkspaceLiveSyncApplyStatus = "applied" | "rebased" | "skipped_conflict" | "failed_io"
 
@@ -471,7 +480,6 @@ export type CharioxUserConfig = {
   }
   workflow?: {
     max_queues_per_workflow?: number
-    session_default_max_agents?: number
     code?: {
       max_concurrent?: number
       max_nodes?: number
@@ -652,6 +660,7 @@ export type PromptQueueItem = {
   created_at_ms?: number
   updated_at_ms?: number
   status: string
+  launch_wait?: string
   prompt_origin?: "chariox" | "external" | string
   external_provider?: string | null
   external_provider_session_id?: string | null

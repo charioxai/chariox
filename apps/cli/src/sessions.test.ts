@@ -24,7 +24,7 @@ test("formatSessionList renders aliases, attachment counts, and current session 
           workspace_live_sync_mode: "tracked",
           status: "Active",
           created_at_ms: 2,
-          attachment_ids: ["attachment-1", "attachment-2"],
+          connected_cli_count: 2,
           activity: {
             agent_count: 2,
             working_agent_count: 1,
@@ -42,7 +42,7 @@ test("formatSessionList renders aliases, attachment counts, and current session 
           worktree_id: "/tmp/demo",
           status: "Ended",
           created_at_ms: 1,
-          attachment_ids: [],
+          connected_cli_count: 0,
         },
       ],
       "session-2",
@@ -70,7 +70,7 @@ test("formatSessionList surfaces home-proxy sync blockers", () => {
         workspace_live_sync_mode: "managed",
         status: "Active",
         created_at_ms: 3,
-        attachment_ids: ["attachment-1"],
+        connected_cli_count: 1,
         activity: {
           agent_count: 3,
           working_agent_count: 0,
@@ -102,7 +102,7 @@ test("formatSessionList routes aggregate stale home-proxy blockers through remot
         workspace_live_sync_mode: "tracked",
         status: "Active",
         created_at_ms: 3,
-        attachment_ids: ["attachment-1"],
+        connected_cli_count: 1,
         activity: {
           agent_count: 2,
           working_agent_count: 0,
@@ -164,7 +164,7 @@ test("selectAttachableSession ignores ended sessions and prefers the newest work
         worktree_id: "/Users/miguel/chariox",
         status: "Ended",
         created_at_ms: 99,
-        attachment_ids: [],
+        connected_cli_count: 0,
       },
       {
         id: "deadbeef00000002",
@@ -173,7 +173,7 @@ test("selectAttachableSession ignores ended sessions and prefers the newest work
         worktree_id: "/Users/miguel/chariox",
         status: "Parked",
         created_at_ms: 10,
-        attachment_ids: [],
+        connected_cli_count: 0,
       },
       {
         id: "deadbeef00000003",
@@ -182,7 +182,7 @@ test("selectAttachableSession ignores ended sessions and prefers the newest work
         worktree_id: "/Users/miguel/chariox",
         status: "Active",
         created_at_ms: 20,
-        attachment_ids: [],
+        connected_cli_count: 0,
       },
     ],
     "/Users/miguel/chariox",

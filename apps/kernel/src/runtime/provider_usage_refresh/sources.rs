@@ -39,11 +39,16 @@ impl ProviderUsageReader for KernelUsageSources {
             }
             Some("claude") => {
                 let mut environment = environment;
+                let source_profile = self.registry.credential_source_profile_id(
+                    &account.owner_user_id,
+                    &account.provider,
+                    &account.profile_id,
+                )?;
                 for (name, value) in crate::provider::resolve_provider_account_credentials(
                     &self.config.snapshot(),
                     &account.owner_user_id,
                     &account.provider,
-                    &account.profile_id,
+                    &source_profile,
                 )?
                 .iter()
                 {

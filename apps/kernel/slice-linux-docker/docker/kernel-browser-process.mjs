@@ -1,4 +1,4 @@
-import {displayGeometry as geometry, pageLimit, chromeBandHeight, featureOn} from './kernel-browser-geometry.mjs';
+import {displayGeometry as geometry, pageBound, chromeBandHeight, featureOn} from './kernel-browser-geometry.mjs';
 // MD-2: host Chromium lifetime. Never touches a slice or an existing Chrome.
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -16,7 +16,7 @@ import { writePolicyLayer } from './kernel-browser-policy.mjs';
 import { browserLaunchFailureReason } from './kernel-browser-error-label.mjs';
 import { isOwnedAlive, validOwnedPid } from './linux-owned-process.mjs';
 import { requireBrowserMemory } from './browser-memory.mjs';
-import { rootBrowserUser, browserUserFailure } from './linux-browser-user.mjs';
+import { rootBrowserUser } from './linux-browser-user.mjs';
 import { readBrowserMajor, headlessIdentityArguments } from './kernel-browser-identity.mjs';
 
 function platformPolicy(platform) {
@@ -125,7 +125,7 @@ export class HostChromium {
     // A resized browser window must remain inside its owned screen. Its page
     // renders at native density; screenshot DPR does not enlarge this desktop.
     this.desktop = process.platform === "linux" ? new LinuxOwnedDesktop(root, { environment,
-      size:{width:pageLimit.width,height:pageLimit.height+chromeBandHeight} }) : null;
+      size:{width:pageBound.headed.side,height:pageBound.headed.side+chromeBandHeight} }) : null;
     // MP-08/MP-10: on the shared owned desktop Chromium is one window at the
     // desktop's scale; only a private owned display may rescale it.
     this.scale = this.desktop ? 1 : geometry.dpr;
@@ -161,7 +161,7 @@ export class HostChromium {
     requireBrowserMemory();
     if (!keepDesktop) { await this.display?.close(); this.display = null; }
     this.browserUser ??= this.desktop?.browserUser ?? await rootBrowserUser(this.root);
-    if(this.browserUser && !linux.rootPolicyNamespaceAvailable(this.browserUser))throw browserUserFailure();
+    if(this.browserUser)linux.requireRootPolicyNamespace(this.browserUser);
     const filesRoot = this.browserUser?.root ?? this.root;
     this.filesRoot = filesRoot;
     if (this.browserUser && this.desktop) {

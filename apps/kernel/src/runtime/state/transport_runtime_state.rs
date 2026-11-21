@@ -142,8 +142,8 @@ impl KernelRuntimeState {
             .record_heartbeat(session_id, attachment_id, now_ms)
     }
 
-    /// The heartbeat of the subscription an attachment is watched through: it expires with that subscription.
-    pub(crate) async fn record_subscription_attachment_heartbeat(
+    /// A Room view becomes leased when its reply is ready, then its subscription renews it.
+    pub(crate) async fn renew_terminal_attachment_lease(
         &self,
         session_id: &str,
         attachment_id: &str,
@@ -151,7 +151,7 @@ impl KernelRuntimeState {
     ) -> Result<(), DaemonError> {
         self.owned
             .attachment_store
-            .record_subscription_heartbeat(session_id, attachment_id, now_ms)
+            .renew_lease(session_id, attachment_id, now_ms)
     }
 
     pub(crate) async fn sweep_stale_terminal_attachments(&self, now_ms: u64) {
@@ -219,11 +219,8 @@ impl KernelRuntimeState {
     ) -> Result<crate::app::ProviderProcessReapSummary, DaemonError> {
         let config = self.owned.config_projection.snapshot();
         let idle_ttl_ms = config.provider_process_idle_ttl_ms;
-        let orphan_ttl_ms = config.provider_process_orphan_ttl_ms;
         let summary = self
-            .with_app_side_effect(move |app| {
-                app.reap_idle_provider_processes(now_ms, idle_ttl_ms, orphan_ttl_ms)
-            })
+            .with_app_side_effect(move |app| app.reap_idle_provider_processes(now_ms, idle_ttl_ms))
             .await?;
         if summary.tracked_processes_reaped > 0 || summary.orphan_processes_reaped > 0 {
             crate::logging::warn_with_fields(
@@ -636,7 +633,6 @@ impl KernelRuntimeState {
             self.agent_activity_for_session_with_unread(&session, unread_for_user_id);
         Ok(crate::runtime::projection::SessionSnapshotProjection {
             jobs: self.session_jobs(session_id),
-            disk_usage: self.session_disk_usage(session_id),
             processes: self.session_processes(session_id),
             room_workflows: crate::runtime::projection::RoomWorkflowInventory::project(
                 &session,

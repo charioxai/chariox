@@ -1154,7 +1154,7 @@ async fn sudo_cached_mcp_catalog_never_grants_authority_without_the_live_turn() 
             .authorize_sudo_request(
                 &turn.entry_id,
                 &LocalDaemonRequest::SetUserConfigValue(SetUserConfigValueRequest {
-                    path: "workflow.session_default_max_agents".into(),
+                    path: "workflow.max_queues_per_workflow".into(),
                     value: "16".into()
                 })
             )
@@ -1225,7 +1225,12 @@ async fn sudo_fresh_popup_starts_one_separate_turn_through_normal_admission() {
         panic!("sudo should start separately");
     };
     assert_ne!(started.id(), prompt.interaction_id);
-    assert_eq!(started.prompt(), "protected task");
+    let session = f.state.session_snapshot(&prompt.session_id).await.unwrap();
+    let active = session
+        .active_prompt_for_agent(started.target_agent_id())
+        .unwrap();
+    assert_eq!(active.id(), started.id());
+    assert_eq!(active.prompt(), "protected task");
     let events = f
         .state
         .owned

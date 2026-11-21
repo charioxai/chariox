@@ -23,10 +23,6 @@ fn creates_gets_and_lists_sessions() {
     assert_eq!(created.host_daemon_id(), "daemon-test");
     assert_eq!(created.status(), SessionStatus::Created);
     assert!(created.active_provider_run_id().is_none());
-    assert_eq!(
-        created.max_agents(),
-        crate::session::DEFAULT_SESSION_MAX_AGENTS
-    );
     assert!(created.attachment_ids().is_empty());
     assert!(created.active_prompt().is_none());
     assert!(created.queued_prompts().is_empty());
@@ -44,19 +40,6 @@ fn creates_gets_and_lists_sessions() {
         .expect("lookup should succeed");
     assert_eq!(fetched, created);
     assert_eq!(service.list_sessions(), vec![created]);
-}
-
-#[test]
-fn create_session_uses_configured_default_agent_cap() {
-    let mut config = test_config();
-    config.user_config.workflow.session_default_max_agents = Some(2048);
-    let mut service = SessionService::new(&config);
-
-    let created = service
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
-        .expect("session should be created");
-
-    assert_eq!(created.max_agents(), 2048);
 }
 
 #[test]
@@ -1333,10 +1316,10 @@ fn prompt_queue_starts_then_queues_then_advances() {
         .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
         .expect("session should be created");
     service
-        .add_attachment_to_session(created.id(), "attachment-1")
+        .add_attachment_to_session(created.id(), "attachment-1", DEFAULT_LOCAL_USER_ID)
         .expect("attachment should be added");
     service
-        .add_attachment_to_session(created.id(), "attachment-2")
+        .add_attachment_to_session(created.id(), "attachment-2", DEFAULT_LOCAL_USER_ID)
         .expect("attachment should be added");
 
     let (_, first) = service
@@ -1411,10 +1394,10 @@ fn activating_expected_queued_prompt_validates_queue_front() {
         .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
         .expect("session should be created");
     service
-        .add_attachment_to_session(created.id(), "attachment-1")
+        .add_attachment_to_session(created.id(), "attachment-1", DEFAULT_LOCAL_USER_ID)
         .expect("attachment should be added");
     service
-        .add_attachment_to_session(created.id(), "attachment-2")
+        .add_attachment_to_session(created.id(), "attachment-2", DEFAULT_LOCAL_USER_ID)
         .expect("attachment should be added");
     service
         .submit_prompt(
@@ -1470,7 +1453,7 @@ fn config_updates_are_versioned() {
         .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
         .expect("session should be created");
     service
-        .add_attachment_to_session(created.id(), "attachment-1")
+        .add_attachment_to_session(created.id(), "attachment-1", DEFAULT_LOCAL_USER_ID)
         .expect("attachment should be added");
 
     let mut changes = BTreeMap::new();
@@ -1494,7 +1477,7 @@ fn config_update_idle_admission_is_not_owned_by_session_service() {
         .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
         .expect("session should be created");
     service
-        .add_attachment_to_session(created.id(), "attachment-1")
+        .add_attachment_to_session(created.id(), "attachment-1", DEFAULT_LOCAL_USER_ID)
         .expect("attachment should be added");
     service
         .submit_prompt(
@@ -1520,7 +1503,7 @@ fn detaching_an_attachment_keeps_its_active_prompt_running() {
         .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
         .expect("session should be created");
     service
-        .add_attachment_to_session(created.id(), "attachment-1")
+        .add_attachment_to_session(created.id(), "attachment-1", DEFAULT_LOCAL_USER_ID)
         .expect("attachment should be added");
 
     let (_, outcome) = service
@@ -1537,12 +1520,9 @@ fn detaching_an_attachment_keeps_its_active_prompt_running() {
         other => panic!("expected running prompt, got {other:?}"),
     };
 
-    let (session, effect) = service
+    let session = service
         .remove_attachment_from_session(created.id(), "attachment-1")
         .expect("detach should succeed");
-
-    assert!(!effect.removed_active_prompt);
-    assert_eq!(effect.removed_queued_prompt_count, 0);
     assert!(session.attachment_ids().is_empty());
     assert_eq!(
         session.active_prompt().map(|prompt| prompt.id()),
@@ -1558,7 +1538,7 @@ fn detaching_an_attachment_keeps_its_queued_prompts() {
         .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
         .expect("session should be created");
     service
-        .add_attachment_to_session(created.id(), "attachment-1")
+        .add_attachment_to_session(created.id(), "attachment-1", DEFAULT_LOCAL_USER_ID)
         .expect("attachment should be added");
 
     let (_, active) = service
@@ -1585,11 +1565,9 @@ fn detaching_an_attachment_keeps_its_queued_prompts() {
         other => panic!("expected queued prompt, got {other:?}"),
     };
 
-    let (session, effect) = service
+    let session = service
         .remove_attachment_from_session(created.id(), "attachment-1")
         .expect("detach should succeed");
-
-    assert_eq!(effect.removed_queued_prompt_count, 0);
     assert_eq!(session.queued_prompts().len(), 1);
     assert_eq!(session.queued_prompts()[0].id(), queued_prompt_id);
     assert_eq!(session.queued_prompts()[0].prompt(), "queued prompt");
@@ -2003,7 +1981,7 @@ fn borrowed_session_scans_preserve_durable_and_retry_scope() {
 }
 
 #[test]
-fn kernel_restart_reconciliation_clears_agent_decisions_without_authorizing_them() {
+fn card_rules_cold_restart_discards_saved_task_and_agent_cards() {
     use crate::session::{RuntimeInteraction, RuntimeInteractionChoice};
     let mut service = SessionService::new(&test_config());
     let mut session = service
@@ -2032,9 +2010,23 @@ fn kernel_restart_reconciliation_clears_agent_decisions_without_authorizing_them
     );
     session.add_active_interaction(decision.clone());
     session.add_active_interaction(agent_approval);
+    for (id, title) in [
+        ("task-blocked-old-attempt-2", "Agent needs your action"),
+        ("task-blocked-answered-question-3", "Question"),
+    ] {
+        session.add_active_interaction(RuntimeInteraction::for_kernel_operation(
+            id,
+            id,
+            title,
+            "Saved without a live responder",
+            vec![RuntimeInteractionChoice::new(
+                "cancel", "Dismiss", "cancel", None,
+            )],
+        ));
+    }
     let persisted = serde_json::to_value(&session).expect("persist actual session shape");
     let mut restored: RuntimeSession = serde_json::from_value(persisted).expect("restore session");
-    assert_eq!(restored.active_interactions().len(), 2);
+    assert_eq!(restored.active_interactions().len(), 4);
     let reconciliation = restored.reconcile_after_kernel_restart();
     assert!(
         restored.active_interaction_for_agent("agent-1").is_none(),

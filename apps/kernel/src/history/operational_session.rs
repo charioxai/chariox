@@ -387,6 +387,23 @@ impl OperationalHistoryStore {
         agent_id: &str,
         prompt_id: &str,
     ) -> Result<Option<HistoryEvent>, DaemonError> {
+        self.load_settlement_event(session_id, agent_id, Some(prompt_id))
+    }
+
+    pub(crate) fn load_latest_agent_settlement_event(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Result<Option<HistoryEvent>, DaemonError> {
+        self.load_settlement_event(session_id, agent_id, None)
+    }
+
+    fn load_settlement_event(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        prompt_id: Option<&str>,
+    ) -> Result<Option<HistoryEvent>, DaemonError> {
         self.delay_read_if_configured();
         let connection = self.lock_read_connection(Some(session_id))?;
         let mut statement = connection
@@ -395,9 +412,9 @@ impl OperationalHistoryStore {
                  FROM history_events
                  WHERE session_id = ?1
                    AND agent_id = ?2
-                   AND prompt_id = ?3
+                   AND (?3 IS NULL OR prompt_id = ?3)
                    AND kind = 'provider_status'
-                   AND event_json LIKE ?4
+                   AND json_extract(event_json, ?4) IS NOT NULL
                  ORDER BY sequence DESC
                  LIMIT 1",
             )
@@ -411,7 +428,7 @@ impl OperationalHistoryStore {
                 session_id,
                 agent_id,
                 prompt_id,
-                format!("%\"{}\"%", super::PROMPT_SETTLED_AT_MS_METADATA_KEY),
+                format!("$.metadata.{}", super::PROMPT_SETTLED_AT_MS_METADATA_KEY),
             ])
             .map_err(|error| DaemonError::SessionHistoryFailed {
                 session_id: Some(session_id.to_string()),

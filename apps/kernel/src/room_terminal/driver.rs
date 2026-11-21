@@ -1,21 +1,22 @@
 //! The one-driver rule, decided from the kernel's side of the PTY.
 //!
-//! At the prompt any Room agent can type. A foreground program (foreground
-//! process group other than the shell) belongs to the actor who submitted the
-//! command that started it until it exits. The user can always type.
+//! A submitted line belongs to its submitter while it waits for the shell and
+//! while its program runs. The user can always type.
 
-use std::collections::HashMap;
-use std::time::{Duration, Instant};
+use std::collections::{HashMap, VecDeque};
+use std::time::Instant;
 
 use super::types::{RoomTerminalDriver, TerminalActor};
 
-/// A command may take this long to become the foreground process group.
-pub(super) const LAUNCH_SETTLE: Duration = Duration::from_millis(250);
+struct Submission {
+    actor: TerminalActor,
+    lines: usize,
+}
 
 #[derive(Default)]
 pub(super) struct DriverTracker {
-    last_submit: Option<(TerminalActor, Instant)>,
-    program_owner: Option<TerminalActor>,
+    submissions: VecDeque<Submission>,
+    opener: Option<TerminalActor>,
     /// Lines written to the terminal so far. The shell turns them into
     /// commands in this order, so the n-th line is normally the n-th command.
     lines_written: u64,
@@ -23,70 +24,46 @@ pub(super) struct DriverTracker {
     /// wait of that agent is about.
     agent_lines: HashMap<String, u64>,
     last_write: Option<Instant>,
-}
-
-pub(super) enum Admission {
-    Admit,
-    Refuse(RoomTerminalDriver),
-    /// A different actor just submitted a command that may not have started
-    /// yet: look again shortly.
-    Settle,
+    last_submission: Option<Instant>,
+    last_finish_report: Option<Instant>,
 }
 
 impl DriverTracker {
     /// A program the terminal was opened with belongs to its opener.
     pub(super) fn owned_by(actor: TerminalActor) -> Self {
         Self {
-            last_submit: None,
-            program_owner: Some(actor),
+            opener: Some(actor),
             ..Self::default()
         }
     }
 
     /// A command was just submitted at the prompt and may not be the
     /// foreground program yet.
-    pub(super) fn launching(&self, now: Instant) -> bool {
-        self.last_submit
-            .as_ref()
-            .is_some_and(|(_, at)| now.duration_since(*at) < LAUNCH_SETTLE)
+    pub(super) fn has_submission(&self) -> bool {
+        !self.submissions.is_empty()
     }
 
-    pub(super) fn observe(&mut self, shell_is_foreground: bool) -> RoomTerminalDriver {
-        if shell_is_foreground {
-            self.program_owner = None;
+    pub(super) fn observe(&self, at_prompt: bool) -> RoomTerminalDriver {
+        if let Some(submission) = self.submissions.front() {
+            return RoomTerminalDriver::Busy {
+                driven_by: submission.actor.clone(),
+            };
+        }
+        if at_prompt {
             return RoomTerminalDriver::Free;
         }
-        let owner = self.program_owner.get_or_insert_with(|| {
-            self.last_submit
-                .as_ref()
-                .map(|(actor, _)| actor.clone())
-                .unwrap_or(TerminalActor::User)
-        });
         RoomTerminalDriver::Busy {
-            driven_by: owner.clone(),
+            driven_by: self.opener.clone().unwrap_or(TerminalActor::User),
         }
     }
 
-    pub(super) fn admit(
-        &mut self,
-        actor: &TerminalActor,
-        shell_is_foreground: bool,
-        now: Instant,
-    ) -> Admission {
-        if *actor == TerminalActor::User {
-            return Admission::Admit;
-        }
-        if shell_is_foreground {
-            if let Some((submitter, at)) = &self.last_submit {
-                if submitter != actor && now.duration_since(*at) < LAUNCH_SETTLE {
-                    return Admission::Settle;
-                }
+    pub(super) fn finish_submission(&mut self, now: Instant) {
+        self.last_finish_report = Some(now);
+        if let Some(submission) = self.submissions.front_mut() {
+            submission.lines -= 1;
+            if submission.lines == 0 {
+                self.submissions.pop_front();
             }
-        }
-        match self.observe(shell_is_foreground) {
-            RoomTerminalDriver::Free => Admission::Admit,
-            RoomTerminalDriver::Busy { driven_by } if driven_by == *actor => Admission::Admit,
-            busy => Admission::Refuse(busy),
         }
     }
 
@@ -103,10 +80,16 @@ impl DriverTracker {
         self.last_write
     }
 
+    pub(super) fn finish_since_last_submission(&self) -> Option<Instant> {
+        let submitted = self.last_submission?;
+        self.last_finish_report
+            .filter(|finished| *finished >= submitted)
+    }
+
     pub(super) fn record_write(
         &mut self,
         actor: &TerminalActor,
-        shell_is_foreground: bool,
+        submitted_lines: usize,
         input: &[u8],
         now: Instant,
     ) {
@@ -120,8 +103,17 @@ impl DriverTracker {
             self.agent_lines
                 .insert(agent_id.clone(), self.lines_written);
         }
-        if shell_is_foreground {
-            self.last_submit = Some((actor.clone(), now));
+        if submitted_lines > 0 {
+            self.last_submission = Some(now);
+            match self.submissions.back_mut() {
+                Some(submission) if submission.actor == *actor => {
+                    submission.lines += submitted_lines;
+                }
+                _ => self.submissions.push_back(Submission {
+                    actor: actor.clone(),
+                    lines: submitted_lines,
+                }),
+            }
         }
     }
 
@@ -132,6 +124,13 @@ impl DriverTracker {
         self.lines_written = self.lines_written.min(commands_started);
         for line in self.agent_lines.values_mut() {
             *line = (*line).min(commands_started);
+        }
+    }
+
+    pub(super) fn discard_submissions(&mut self, keep_running: bool) {
+        self.submissions.truncate(usize::from(keep_running));
+        if let Some(submission) = self.submissions.front_mut() {
+            submission.lines = 1;
         }
     }
 }
@@ -160,55 +159,28 @@ mod tests {
     }
 
     #[test]
-    fn foreground_program_belongs_to_the_agent_that_started_it() {
+    fn queued_lines_keep_their_submitter_until_each_line_finishes() {
         let mut tracker = DriverTracker::default();
-        let start = Instant::now();
-        assert!(matches!(
-            tracker.admit(&agent("a"), true, start),
-            Admission::Admit
-        ));
-        tracker.record_write(&agent("a"), true, b"python3\n", start);
-        let later = start + LAUNCH_SETTLE * 2;
-        assert!(matches!(
-            tracker.admit(&agent("b"), false, later),
-            Admission::Refuse(RoomTerminalDriver::Busy { driven_by }) if driven_by == agent("a")
-        ));
-        assert!(matches!(
-            tracker.admit(&agent("a"), false, later),
-            Admission::Admit
-        ));
-        assert!(matches!(
-            tracker.admit(&TerminalActor::User, false, later),
-            Admission::Admit
-        ));
-        assert!(matches!(
-            tracker.admit(&agent("b"), true, later),
-            Admission::Admit
-        ));
-    }
+        let now = Instant::now();
+        tracker.record_write(&agent("a"), 2, b"first\rsecond\r", now);
+        tracker.record_write(&TerminalActor::User, 1, b"third\r", now);
 
-    #[test]
-    fn another_actor_waits_for_a_command_that_is_still_launching() {
-        let mut tracker = DriverTracker::default();
-        let start = Instant::now();
-        tracker.record_write(&agent("a"), true, b"python3\r", start);
-        assert!(matches!(
-            tracker.admit(&agent("b"), true, start),
-            Admission::Settle
-        ));
-    }
-
-    #[test]
-    fn a_program_the_user_started_is_driven_by_the_user() {
-        let mut tracker = DriverTracker::default();
-        let start = Instant::now();
-        tracker.record_write(&TerminalActor::User, true, b"top\r", start);
-        assert!(matches!(
-            tracker.admit(&agent("a"), false, start + LAUNCH_SETTLE * 2),
-            Admission::Refuse(RoomTerminalDriver::Busy {
+        let agent_driving = RoomTerminalDriver::Busy {
+            driven_by: agent("a"),
+        };
+        assert_eq!(tracker.observe(true), agent_driving);
+        assert_eq!(tracker.observe(false), agent_driving);
+        tracker.finish_submission(now);
+        assert_eq!(tracker.observe(true), agent_driving);
+        tracker.finish_submission(now);
+        assert_eq!(
+            tracker.observe(true),
+            RoomTerminalDriver::Busy {
                 driven_by: TerminalActor::User
-            })
-        ));
+            }
+        );
+        tracker.finish_submission(now);
+        assert_eq!(tracker.observe(true), RoomTerminalDriver::Free);
     }
 
     #[test]
@@ -222,9 +194,9 @@ mod tests {
     fn an_agent_waits_for_the_command_of_its_latest_line() {
         let mut tracker = DriverTracker::default();
         let start = Instant::now();
-        tracker.record_write(&agent("a"), true, b"sleep 2\r", start);
-        tracker.record_write(&agent("b"), false, b"x\r", start);
-        tracker.record_write(&agent("a"), false, b"true\r", start);
+        tracker.record_write(&agent("a"), 1, b"sleep 2\r", start);
+        tracker.record_write(&agent("b"), 0, b"x\r", start);
+        tracker.record_write(&agent("a"), 0, b"true\r", start);
         assert_eq!(tracker.latest_line("a"), Some(3));
         assert_eq!(tracker.latest_line("b"), Some(2));
         tracker.settle_lines(1);

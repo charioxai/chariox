@@ -12,6 +12,12 @@ pub(crate) use profile_transition::AgentProfileTransitionClaim;
 
 pub(crate) const PROMPT_QUEUE_LIMIT: usize = 128;
 
+pub(crate) enum RemotePromptDelivery<'a> {
+    Delivered(&'a str),
+    WaitingForMemory(&'a str),
+    Rejected,
+}
+
 pub(crate) fn prompt_claims_provider_run(
     prompt: &PromptQueueItem,
     provider_run_id: &str,
@@ -227,6 +233,14 @@ pub(crate) const TARGET_BUSY_MESSAGE: &str =
 pub(crate) struct PromptStateOwner {
     state: Arc<StdMutex<PromptStateOwnerState>>,
     delivery_settlement_claims: Arc<StdMutex<BTreeSet<PromptStateKey>>>,
+    provider_launch_admission: Arc<std::sync::RwLock<ProviderLaunchAdmission>>,
+    has_provider_launch_waiters: Arc<std::sync::atomic::AtomicBool>,
+}
+
+#[derive(Debug, Default)]
+struct ProviderLaunchAdmission {
+    wait: Option<String>,
+    held_turns_ready: bool,
 }
 
 pub(crate) struct PromptDeliverySettlementClaim {
@@ -253,6 +267,122 @@ struct PromptStateOwnerState {
 }
 
 impl PromptStateOwner {
+    pub(crate) fn provider_launch_wait(&self) -> Option<String> {
+        self.provider_launch_admission
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .wait
+            .clone()
+    }
+
+    pub(crate) fn set_provider_launch_wait(&self, wait: Option<String>) {
+        let mut admission = self
+            .provider_launch_admission
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        admission.wait = wait;
+        admission.held_turns_ready = false;
+    }
+
+    pub(crate) fn set_held_provider_turns_ready(&self, ready: bool) {
+        let mut admission = self
+            .provider_launch_admission
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        admission.held_turns_ready = ready && admission.wait.is_none();
+    }
+
+    pub(crate) fn queued_provider_launch_wait(&self, prompt: &PromptQueueItem) -> Option<String> {
+        let admission = self
+            .provider_launch_admission
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        admission
+            .wait
+            .as_deref()
+            .or_else(|| prompt.launch_wait().filter(|_| !admission.held_turns_ready))
+            .map(str::to_owned)
+    }
+
+    /// Only queues with a durable resource wait are retried by the resource scheduler.
+    pub(crate) fn provider_launch_waiters(&self) -> Vec<(String, String)> {
+        use std::sync::atomic::Ordering;
+        if !self.has_provider_launch_waiters.load(Ordering::Acquire) {
+            return Vec::new();
+        }
+        let owner = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut waiting: Vec<_> = owner
+            .states
+            .iter()
+            .filter_map(|(key, state)| {
+                let head = state.queued_prompts.front()?;
+                (state.active_prompt.is_none() && head.launch_wait().is_some()).then_some((
+                    !head.comes_from_person(),
+                    head.created_at_ms(),
+                    key,
+                ))
+            })
+            .collect();
+        if waiting.is_empty()
+            && !owner.states.values().any(|state| {
+                state
+                    .queued_prompts
+                    .iter()
+                    .any(|prompt| prompt.launch_wait().is_some())
+            })
+        {
+            self.has_provider_launch_waiters
+                .store(false, Ordering::Release);
+        }
+        waiting.sort_unstable();
+        waiting
+            .into_iter()
+            .map(|(_, _, key)| (key.session_id.clone(), key.agent_id.clone()))
+            .collect()
+    }
+
+    pub(crate) fn note_provider_launch_wait(
+        &self,
+        session: &RuntimeSession,
+        agent_id: &str,
+        prompt_id: &str,
+        message: &str,
+    ) -> bool {
+        let mut owner = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let state = owner.ensure_agent_state(session, agent_id);
+        let queue = &mut state.queued_prompts;
+        if queue.front().is_none_or(|head| head.id() != prompt_id) {
+            return false;
+        }
+        let mut after_submitted_steer = 0;
+        let mut changed = false;
+        for (index, prompt) in queue.iter_mut().enumerate() {
+            if prompt.remote_steer_reserved() {
+                after_submitted_steer = index + 1;
+            } else if prompt.launch_wait() != Some(message) {
+                prompt.set_launch_wait(Some(message.to_owned()));
+                changed = true;
+            }
+        }
+        // No waiting turn can overtake a reserved steer or change its position.
+        let eligible = &mut queue.make_contiguous()[after_submitted_steer..];
+        if !eligible.is_sorted_by_key(|prompt| !prompt.comes_from_person()) {
+            eligible.sort_by_key(|prompt| !prompt.comes_from_person());
+            changed = true;
+        }
+        if changed {
+            self.has_provider_launch_waiters
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
+        changed
+    }
+
     /// Commit delivery settlement while admission/cancellation cannot replace
     /// this prompt. The callback must not reenter this owner.
     pub(crate) fn settle_active_remote_dispatch_if_matches(
@@ -260,9 +390,10 @@ impl PromptStateOwner {
         session: &RuntimeSession,
         agent_id: &str,
         prompt_id: &str,
-        delivered_run_id: Option<&str>,
+        delivery: RemotePromptDelivery<'_>,
         commit: impl FnOnce(
             &PromptQueueItem,
+            &VecDeque<PromptQueueItem>,
             Option<PromptQueueItem>,
             VecDeque<PromptQueueItem>,
         ) -> Result<bool, DaemonError>,
@@ -283,24 +414,61 @@ impl PromptStateOwner {
             return Ok(None);
         };
         let mut settled = current.clone();
-        let next = if let Some(run_id) = delivered_run_id {
-            settled.set_durable_delivery(
-                crate::session::DurablePromptDeliveryPhase::Delivered,
-                Some(run_id.to_string()),
-                None,
-            );
-            if settled.status() == PromptStatus::Dispatching {
-                settled.set_status(PromptStatus::Running);
+        let mut queued = state.queued_prompts.clone();
+        let next = match delivery {
+            RemotePromptDelivery::Delivered(run_id) => {
+                settled.set_durable_delivery(
+                    crate::session::DurablePromptDeliveryPhase::Delivered,
+                    Some(run_id.to_string()),
+                    None,
+                );
+                if settled.status() == PromptStatus::Dispatching {
+                    settled.set_status(PromptStatus::Running);
+                }
+                Some(settled.clone())
             }
-            Some(settled.clone())
-        } else {
-            settled.set_status(PromptStatus::Cancelled);
-            None
+            RemotePromptDelivery::WaitingForMemory(reason) => {
+                settled.set_durable_delivery(
+                    crate::session::DurablePromptDeliveryPhase::Accepted,
+                    None,
+                    None,
+                );
+                settled.set_durable_delivery_failure_pending(false);
+                settled.set_durable_delivery_reconciliation_pending(false);
+                if settled.status() == PromptStatus::Cancelling {
+                    // The worker proved that no provider turn needs to be cancelled.
+                    // Keep the durable cancellation intent for the normal finalizer.
+                    Some(settled.clone())
+                } else {
+                    settled.set_status(PromptStatus::Queued);
+                    settled.set_launch_wait(Some(reason.to_owned()));
+                    let after_submitted_steer = queued
+                        .iter()
+                        .rposition(PromptQueueItem::remote_steer_reserved)
+                        .map_or(0, |index| index + 1);
+                    queued.insert(after_submitted_steer, settled.clone());
+                    let eligible = &mut queued.make_contiguous()[after_submitted_steer..];
+                    eligible.sort_by_key(|prompt| !prompt.comes_from_person());
+                    for prompt in eligible {
+                        prompt.set_launch_wait(Some(reason.to_owned()));
+                    }
+                    None
+                }
+            }
+            RemotePromptDelivery::Rejected => {
+                settled.set_status(PromptStatus::Cancelled);
+                None
+            }
         };
-        if !commit(current, next.clone(), state.queued_prompts.clone())? {
+        if !commit(current, &state.queued_prompts, next.clone(), queued.clone())? {
             return Ok(None);
         }
-        state.active_prompt = next;
+        if settled.launch_wait().is_some() {
+            self.has_provider_launch_waiters
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
+        state.set_active_prompt(next);
+        state.queued_prompts = queued;
         Ok(Some(settled))
     }
 
@@ -645,8 +813,16 @@ impl PromptStateOwner {
         let backlog_parked = session
             .metaagent_task(&agent_id)
             .is_some_and(|task| task.status() == crate::session::MetaagentTaskStatus::Paused);
+        let state = owner.ensure_agent_state(session, &agent_id);
+        if let Some(reason) = state
+            .queued_prompts
+            .iter()
+            .find_map(PromptQueueItem::launch_wait)
+            .filter(|_| !backlog_parked)
+        {
+            prompt.set_launch_wait(Some(reason.to_owned()));
+        }
         let should_start = {
-            let state = owner.ensure_agent_state(session, &agent_id);
             // Detached queue promotion can still be preparing Project/Vault
             // inputs after a profile claim is released or a run becomes ready.
             // Its backlog reserves admission until the oldest turn is activated.
@@ -709,7 +885,20 @@ impl PromptStateOwner {
                 None,
             );
             prompt = prompt.into_pending_queue_item(pending_prompt_id);
-            if prompt.workflow_run_id().is_some() {
+            if prompt.launch_wait().is_some() {
+                self.has_provider_launch_waiters
+                    .store(true, std::sync::atomic::Ordering::Release);
+            }
+            if prompt.launch_wait().is_some() && prompt.comes_from_person() {
+                let after_submitted_steer = state
+                    .queued_prompts
+                    .iter()
+                    .rposition(PromptQueueItem::remote_steer_reserved)
+                    .map_or(0, |index| index + 1);
+                state.queued_prompts.push_back(prompt.clone());
+                state.queued_prompts.make_contiguous()[after_submitted_steer..]
+                    .sort_by_key(|queued| !queued.comes_from_person());
+            } else if prompt.workflow_run_id().is_some() {
                 state.queued_prompts.push_back(prompt.clone());
             } else {
                 let insert_at = state
@@ -1919,6 +2108,10 @@ impl PromptStateOwner {
             .lock()
             .expect("prompt state owner lock should not be poisoned");
         let queue = &mut owner.ensure_agent_state(session, agent_id).queued_prompts;
+        if prompt.launch_wait().is_some() {
+            self.has_provider_launch_waiters
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
         queue.insert(position.min(queue.len()), prompt);
     }
 
@@ -2073,6 +2266,14 @@ impl PromptStateOwner {
         });
         for agent_id in session.prompt_states().keys() {
             let mut restored = OwnedAgentPromptState::from_session(session, agent_id);
+            if restored
+                .queued_prompts
+                .iter()
+                .any(|prompt| prompt.launch_wait().is_some())
+            {
+                self.has_provider_launch_waiters
+                    .store(true, std::sync::atomic::Ordering::Release);
+            }
             // A live sudo hold is kernel memory, not mirror state: keep the fence.
             if let Some(previous) = owner
                 .states

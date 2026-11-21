@@ -262,7 +262,6 @@ async fn regular_spawn_and_direct_child_control() {
     let workspace = env.root.join("workspace");
     std::fs::create_dir_all(&workspace).unwrap();
     let mut config = DaemonConfig::for_tests();
-    config.user_config.workflow.session_default_max_agents = Some(1);
     config.room_agent_tools = true;
     let mut app = DaemonApp::bootstrap(config).unwrap();
     let (session, a) = crate::app::KernelSessionService::new(&mut app)

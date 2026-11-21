@@ -15,6 +15,8 @@ export function sessionProcessLines(processes: SessionProcess[], now = Date.now(
 
 export function createSessionProcessController(deps: {
   processes: () => SessionProcess[]
+  sessionId: () => string | null
+  readRoomProcesses: (sessionId: string) => Promise<SessionProcess[]>
   ownerLabel: (row: SessionProcess) => string
   render: () => void
   schedule: (callback: () => void, delay: number) => unknown
@@ -23,8 +25,18 @@ export function createSessionProcessController(deps: {
   let open = false
   let generation = 0
   let offset = 0
+  let terminalResources: { sessionId: string; processes: SessionProcess[] | undefined } | null = null
   let confirmation: {agent: string; selected: number; resolve: (value: boolean) => void} | null = null
-  const lines = () => sessionProcessLines(deps.processes(), Date.now(), deps.ownerLabel)
+  const lines = () => {
+    const resources = terminalResources?.sessionId === deps.sessionId() ? terminalResources : null
+    const processes = deps.processes()
+    const rows = resources?.processes
+      ? [...processes.filter(row => row.owner.kind !== "terminal"), ...resources.processes]
+      : processes
+    const visible = sessionProcessLines(rows, Date.now(), deps.ownerLabel)
+    if (resources && !resources.processes) visible.push("Terminal processes unavailable.")
+    return visible
+  }
   const controller = {
     isOpen: () => open,
     confirming: () => confirmation !== null,
@@ -34,12 +46,29 @@ export function createSessionProcessController(deps: {
       return new Promise(resolve => { confirmation = {agent, selected: 1, resolve}; deps.render() })
     },
     visibleLines: () => { if (confirmation) return [`Stop all processes of ${confirmation.agent}?`, "", `${confirmation.selected === 0 ? ">" : " "} Stop       ${confirmation.selected === 1 ? ">" : " "} Cancel`]; const all = lines(); return [all[0]!, ...all.slice(1 + offset, 1 + offset + Math.max(1, deps.pageSize() - 1))] },
-    close() { confirmation?.resolve(false); confirmation = null; open = false; generation++; deps.render() },
+    close() { confirmation?.resolve(false); confirmation = null; open = false; generation++; terminalResources = null; deps.render() },
     open() {
       open = true; offset = 0
+      terminalResources = null
       const current = ++generation
-      const refresh = () => { if (!open || current !== generation) return; deps.render(); deps.schedule(refresh, 1000) }
-      refresh()
+      const isCurrent = () => open && current === generation
+      const refresh = async () => {
+        if (!isCurrent()) return
+        const sessionId = deps.sessionId()
+        if (!sessionId) return
+        let processes: SessionProcess[] | undefined
+        try {
+          processes = (await deps.readRoomProcesses(sessionId)).filter(row => row.owner.kind === "terminal")
+        } catch {
+          // Keep the agent samples available when the separate Room resource read fails.
+        }
+        if (!isCurrent()) return
+        if (sessionId === deps.sessionId()) terminalResources = { sessionId, processes }
+        deps.render()
+        deps.schedule(() => { void refresh() }, 1000)
+      }
+      deps.render()
+      void refresh()
     },
     handleKey(event: { name: string; eventType?: string; ctrl?: boolean }) {
       if (!open) return false

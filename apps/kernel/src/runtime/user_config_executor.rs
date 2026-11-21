@@ -115,13 +115,18 @@ pub(crate) async fn execute_set_provider_account_credential_request(
     config_projection: &DaemonConfigProjectionStore,
     runtime_state: &KernelRuntimeState,
     command: &KernelCommand,
-    request: SetProviderAccountCredentialRequest,
+    mut request: SetProviderAccountCredentialRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
+    let owner_user_id =
+        runtime_state.provider_account_authority_owner_user_id(&command_caller_user_id(command));
+    if crate::provider::canonical_provider_family(&request.provider) == Some("claude") {
+        request.account_profile = runtime_state
+            .provider_account_profile_registry()
+            .credential_source_profile_id(&owner_user_id, "claude", &request.account_profile)?;
+    }
     if request.run {
         return claude_setup_token_login::start(runtime_state, command, request).await;
     }
-    let owner_user_id =
-        runtime_state.provider_account_authority_owner_user_id(&command_caller_user_id(command));
     let provider = crate::provider::validate_provider_account_credential_input(
         &request.provider,
         &request.value,

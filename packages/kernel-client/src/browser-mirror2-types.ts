@@ -39,6 +39,8 @@ export type Mirror2Packet = {
   sequence: number; base_sequence: number | null; reset: boolean; fallback?: string
   root?: string; nodes?: Mirror2Record[]; ops?: Mirror2Op[]; sheets?: Record<string, string>
   scroll: [number, number]; focused: string | null; selection: Mirror2Selection | null; fragment?: string | null
+  /** Whether the page's focused element matches :focus-visible (its browser draws a focus ring there); absent: no ring. */
+  focus_visible?: boolean
   resources: Mirror2Resource[]; tiles: Mirror2Tile[]; css_width: number; css_height: number; device_scale_factor: 1 | 2
 }
 // Protocol 489 wire form: a delta omits the binding, its base (sequence - 1),

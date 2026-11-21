@@ -744,10 +744,14 @@ impl KernelRuntimeState {
             }
             result => result?,
         };
-        let new_receipt = home_prompt_id.is_some() && existing_receipt.is_none();
+        let replaying_receipt = existing_receipt
+            .as_ref()
+            .is_some_and(|receipt| receipt.receipt.phase == WorkerPromptReceiptPhase::Accepted);
+        let new_receipt = home_prompt_id.is_some() && !replaying_receipt;
         if let Some(receipt) = existing_receipt.as_ref() {
             match receipt.receipt.phase {
-                WorkerPromptReceiptPhase::Accepted => {}
+                WorkerPromptReceiptPhase::Accepted | WorkerPromptReceiptPhase::WaitingForMemory => {
+                }
                 WorkerPromptReceiptPhase::Dispatching => {
                     return Err(DaemonError::LocalTransport {
                         operation: "submit remote leased prompt",
@@ -762,6 +766,22 @@ impl KernelRuntimeState {
                             .to_string(),
                     });
                 }
+            }
+        }
+
+        if !replaying_receipt {
+            if let Some(reason) = self.owned.prompt_state_owner.provider_launch_wait() {
+                if let Some(home_prompt_id) = home_prompt_id.clone() {
+                    let leased_agent_id = leased_agent_id.clone();
+                    self.with_app_side_effect(move |app| {
+                        RemoteLeaseRuntime::new(app)
+                            .wait_for_leased_prompt_memory(&leased_agent_id, &home_prompt_id)
+                    })
+                    .await?;
+                }
+                return Err(super::provider_turn_admission::provider_memory_wait_error(
+                    reason,
+                ));
             }
         }
 
@@ -818,7 +838,7 @@ impl KernelRuntimeState {
         if let Some(replayed) = profile_replay {
             return Ok(replayed);
         }
-        if existing_receipt.is_some() {
+        if replaying_receipt {
             return Err(DaemonError::LocalTransport {
                 operation: "submit remote leased prompt",
                 message: "accepted worker receipt cannot replay from current live state"
@@ -1462,6 +1482,16 @@ impl KernelRuntimeState {
             ..
         } = &event;
         let worker_provider_run_id = worker_provider_run_id.clone();
+        let background_notifications = completions
+            .iter()
+            .filter(|completion| !completion.is_notification_end())
+            .filter_map(|completion| {
+                completion
+                    .home_prompt_id
+                    .as_ref()
+                    .map(|prompt| (prompt.clone(), completion.background_notifications.clone()))
+            })
+            .collect::<Vec<_>>();
 
         let provider_auth_observation = provider_run.as_ref().and_then(|run| {
             remote_provider_auth_observation(
@@ -1491,6 +1521,25 @@ impl KernelRuntimeState {
             .ok()
             .and_then(|agent| agent.remote_execution().map(|r| r.leased_agent_id.clone()))
         {
+            let projected_run = crate::provider::projected_leased_provider_run_id(
+                &leased_agent_id,
+                &worker_provider_run_id,
+            );
+            // Only a completion accepted for this home prompt can carry its native consumption.
+            for completion in &outcome.completions {
+                let notifications = background_notifications
+                    .iter()
+                    .filter(|(prompt, _)| prompt == completion.completed.id())
+                    .flat_map(|(_, notifications)| notifications.iter().cloned())
+                    .collect::<Vec<_>>();
+                self.owned.record_background_answer_turn(
+                    &session_id,
+                    &agent_id,
+                    &projected_run,
+                    &completion.completed,
+                    &notifications,
+                )?;
+            }
             self.settle_held_tasks_after_projection(
                 &session_id,
                 &agent_id,

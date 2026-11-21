@@ -73,7 +73,8 @@ async function tuiRequests(args: string[]): Promise<unknown[]> {
   return requests
 }
 
-test("every command both surfaces share sends the same kernel request from the CLI and the TUI", async () => {
+test("every command both surfaces share sends the same kernel request from the CLI and the TUI", async ({ mock }) => {
+  mock.method(Date, "now", () => 1_800_000_000_000)
   const sharedVerbs = appCommandCatalog.filter((entry) => entry.cli && entry.tui && !["install", "update"].includes(entry.verb)).map((entry) => entry.verb)
   assert.deepEqual(Object.keys(shared).sort(), [...sharedVerbs].sort())
   for (const invocations of Object.values(shared)) {

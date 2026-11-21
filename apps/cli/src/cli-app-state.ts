@@ -55,7 +55,7 @@ import { DEFAULT_THEME_REGISTRY } from "./theme-registry.js"
 import type {
   RemoteKernelView,
   RemoteMachineView,
-} from "./waiting-room-inventory-api.js"
+} from "./kernel-inventory-api.js"
 import { createWaitingRoomHiddenKernelController } from "./waiting-room-hidden-kernel-controller.js"
 import { createWaitingRoomState } from "./waiting-room-state.js"
 import type { WaitingRoomState } from "./waiting-room-types.js"

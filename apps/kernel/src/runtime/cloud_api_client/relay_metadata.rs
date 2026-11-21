@@ -1,5 +1,6 @@
 use crate::config::DaemonConfig;
 use crate::error::DaemonError;
+use crate::transport::relay_discovery::authorization::GrantedKernels;
 
 // MP-08 / MP-10 / MP-11: hosted metadata reads use the client-scoped grant
 // (owner-visible targets); peer registration keeps the kernel grant. A
@@ -7,11 +8,19 @@ use crate::error::DaemonError;
 pub(crate) async fn relay_metadata_discovery_config(
     config: &DaemonConfig,
 ) -> Result<DaemonConfig, DaemonError> {
+    relay_metadata_discovery_config_granting(config, GrantedKernels::Online).await
+}
+
+/// `relay_metadata_discovery_config` with the hosted grant naming `granted`.
+pub(crate) async fn relay_metadata_discovery_config_granting(
+    config: &DaemonConfig,
+    granted: GrantedKernels,
+) -> Result<DaemonConfig, DaemonError> {
     let hosted = config
         .relay_url
         .as_deref()
         .is_some_and(|url| config.relay_url_uses_cloud_profile(url));
-    scoped_metadata_config(config, hosted).await
+    scoped_metadata_config(config, hosted.then_some(granted)).await
 }
 
 // A read of one named target. A hosted slice worker never reports presence to
@@ -44,12 +53,13 @@ pub(crate) async fn relay_metadata_discovery_config_for(
 // discovery reads it as-is rather than issuing a second grant.
 async fn scoped_metadata_config(
     config: &DaemonConfig,
-    issue_cloud_grant: bool,
+    cloud_grant: Option<GrantedKernels>,
 ) -> Result<DaemonConfig, DaemonError> {
     let mut discovery = config.clone();
-    if let Some(profile) = config.cloud_relay.as_ref().filter(|_| issue_cloud_grant) {
+    if let (Some(profile), Some(granted)) = (config.cloud_relay.as_ref(), cloud_grant) {
         let targets =
-            crate::transport::relay_discovery::authorization::visible_targets(profile).await?;
+            crate::transport::relay_discovery::authorization::granted_targets(profile, granted)
+                .await?;
         // MP-08 / MP-10 / MP-11: defer large inventories to the query's bounded
         // grants. A single API grant can authorize at most 64 targets.
         if targets.as_ref().is_some_and(|targets| targets.len() > 64) {

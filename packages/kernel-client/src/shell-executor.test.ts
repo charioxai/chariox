@@ -37,7 +37,7 @@ test("executeShellCommand help advertises workspace live sync config values", as
   const result = await executeShellCommand(parseShellCommand("help"), context, { client: fakeClient(() => ({})).client })
 
   assert.equal(result.ok, true)
-  assert.match(result.message ?? "", /session list\|status\|new\|attach\|use\|members\|invites\|invite\|join\|revoke-invite\|mode\|permissions/)
+  assert.match(result.message ?? "", /session list\|status\|tasks\|new\|attach\|use\|members\|invites\|invite\|join\|revoke-invite\|mode\|permissions/)
   assert.match(result.message ?? "", /kernel health\|status\|remote-runtime\|runtime\|debug-bundle \[label\]\|delete/)
   assert.match(result.message ?? "", /agent list\|spawn \[--count <n>\]\|focus\|inspect\|cycle\|mode\|permissions\|substitute/)
   assert.match(result.message ?? "", /extension import providers\|grant\|revoke\|grants\|sync-status\|sync-retry\|audit/)
@@ -838,7 +838,7 @@ test("executeShellCommand lists sessions with home kernel ownership", async () =
       host_daemon_id: "home-kernel-1",
       host_machine_id: "home-machine-1",
       owner_user_id: "user-1",
-      attachment_ids: ["attachment-1"],
+      connected_cli_count: 1,
       worktree_id: "/repo/main",
       workspace_live_sync_mode: "managed",
     }),
@@ -847,7 +847,7 @@ test("executeShellCommand lists sessions with home kernel ownership", async () =
       alias: null,
       host_machine_id: "home-machine-2",
       owner_user_id: "user-2",
-      attachment_ids: [],
+      connected_cli_count: 0,
       worktree_id: "/repo/feature",
       status: "Parked",
       workspace_live_sync_mode: "tracked",

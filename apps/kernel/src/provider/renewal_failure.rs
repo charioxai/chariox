@@ -41,7 +41,13 @@ pub(crate) fn claude_api_auth_failure(error: &str) -> bool {
 
 pub(crate) fn oauth_renewal_evidence(error: &str) -> bool {
     let error = error.to_ascii_lowercase();
-    error.contains("refresh_token_reused")
+    // Codex can report a refresh refusal as prose without the OAuth error code.
+    (error.contains("your access token could not be refreshed")
+        && error.contains("please log out and sign in again"))
+        || error.contains("refresh token was already used")
+        || error.contains("refresh token has expired")
+        || error.contains("refresh token was revoked")
+        || error.contains("refresh_token_reused")
         || error.contains("refresh_token_expired")
         || error.contains("refresh_token_invalidated")
         || ((error.contains("refresh") || error.contains("renew"))

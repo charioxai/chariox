@@ -140,6 +140,84 @@ async fn offload_automatic_setting_off_awaits_one_human_decision_before_returnin
 }
 
 #[tokio::test]
+async fn machine_acquisition_reclaims_stale_owner_decisions_before_admission() {
+    let (state, command, request, caps, _workspace) = fixture(false);
+    let room = command.session_id.clone().unwrap();
+    let owner = state
+        .owned
+        .session_store
+        .get_session(&room)
+        .unwrap()
+        .owner_user_id()
+        .to_owned();
+    let mut expired = Vec::new();
+    let mut abandoned = Vec::new();
+    for index in 0..8 {
+        let id = format!("{room}-stale-{index}");
+        let interaction = RuntimeInteraction::for_kernel_operation(
+            &id,
+            &id,
+            "Unrelated action",
+            "Review this action",
+            vec![RuntimeInteractionChoice::new("deny", "Deny", "deny", None)],
+        )
+        .with_timeout_sec(300);
+        let receiver = state
+            .create_kernel_operation_interaction("", &owner, interaction)
+            .await
+            .unwrap();
+        if index < 4 {
+            expired.push((id, receiver));
+        } else {
+            abandoned.push(receiver);
+        }
+    }
+    for (id, _) in &expired {
+        state
+            .owned
+            .pending_interactions
+            .write()
+            .get_mut(id)
+            .unwrap()
+            .kernel_operation_deadline = Some(std::time::Instant::now());
+    }
+    drop(abandoned);
+
+    let gate_state = state.clone();
+    let mut gate = tokio::spawn(async move {
+        gate_state
+            .approve_machine_acquisition(&command, &request, Some(&caps))
+            .await
+    });
+    let card = tokio::select! {
+        result = &mut gate => panic!("machine approval ended without a card: {result:?}"),
+        card = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let session = state.owned.session_store.get_session(&room).unwrap();
+                if let Some(card) = session.active_interactions().first() {
+                    break card.id().to_owned();
+                }
+                tokio::task::yield_now().await;
+            }
+        }) => card.expect("machine approval card is missing"),
+    };
+    assert_eq!(state.list_owner_interactions(&owner).len(), 1);
+    for (_, mut receiver) in expired {
+        assert_eq!(receiver.try_recv().unwrap().status, "timed_out");
+    }
+    state
+        .resolve_terminal_runtime_interaction(&room, &card, "deny", None, Some(&owner))
+        .await
+        .unwrap();
+    assert!(gate
+        .await
+        .unwrap()
+        .unwrap_err()
+        .to_string()
+        .contains("denied"));
+}
+
+#[tokio::test]
 async fn offload_automatic_setting_on_has_no_decision_and_off_applies_to_next_request() {
     let (state, command, request, caps, _workspace) = fixture(true);
     state

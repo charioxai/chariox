@@ -118,6 +118,129 @@ impl Drop for Fixture {
     }
 }
 
+#[test]
+fn waitprior_rejects_the_second_wait_and_keeps_one_receipt_across_restart() {
+    let mut f = Fixture::new();
+    f.create("timer", "timer", Some(1_000), None);
+    f.wait_on(&["timer"]);
+    let original = f.task();
+
+    let temporary = DurableKernelStateStore::open_owned(f.root.join("temporary.sqlite")).unwrap();
+    drop(std::mem::replace(&mut f.store, temporary));
+    f.store = DurableKernelStateStore::open_owned(f.root.join("state.sqlite")).unwrap();
+    f.apply(Operation::Begin {
+        owner: "owner".into(),
+        room: "room".into(),
+        agent: "agent".into(),
+        prompt: "later".into(),
+        run: Some("run".into()),
+        now: 40,
+    });
+    let prior = f
+        .store
+        .agent_registrations_of_other_tasks("room", "agent", "later")
+        .unwrap();
+    assert_eq!(prior.len(), 1);
+    let refuse = |store: &DurableKernelStateStore| {
+        store
+            .agent_lifecycle(Operation::Yield {
+                task: "later".into(),
+                prompt: "later".into(),
+                registrations: vec![prior[0].id.clone()],
+                cursor: 0,
+                deadline: Some(20_000_000),
+                reason: "reuse the earlier timer".into(),
+                now: 50,
+            })
+            .unwrap_err()
+            .to_string()
+    };
+    let error = refuse(&f.store);
+    assert!(error.contains("completion-timer"), "{error}");
+    assert!(error.contains("finish this turn"), "{error}");
+    assert_eq!(f.task(), original);
+    assert!(f.store.agent_registrations("later").unwrap().is_empty());
+
+    for _ in 0..2 {
+        f.apply(Operation::FireWakes { now: 1_000 });
+    }
+    let inbox = f.inbox();
+    assert_eq!(inbox.len(), 1);
+    assert_eq!(inbox[0].kind, "source_completed");
+    assert_eq!(inbox[0].payload["task_id"], original.task_id);
+    assert_eq!(f.wake("timer").fire_count, 1);
+    let ended = refuse(&f.store);
+    assert!(ended.contains("chariox.events.inbox"), "{ended}");
+}
+
+#[test]
+fn waitprior_cold_writer_adopts_a_retained_watch_and_delivers_once() {
+    let mut f = Fixture::new();
+    f.create("process", "process", None, None);
+    f.apply(Operation::ProcessStarted {
+        id: "process".into(),
+        pid: 42,
+        now: 20,
+    });
+    f.apply(Operation::Settle {
+        room: "room".into(),
+        agent: "agent".into(),
+        prompt: "p".into(),
+        run: "run".into(),
+        has_answer: true,
+        cancelled: false,
+        now: 30,
+    });
+    let reopen = |f: &mut Fixture| {
+        let temporary =
+            DurableKernelStateStore::open_owned(f.root.join("temporary.sqlite")).unwrap();
+        drop(std::mem::replace(&mut f.store, temporary));
+        f.store = DurableKernelStateStore::open_owned(f.root.join("state.sqlite")).unwrap();
+    };
+    reopen(&mut f);
+    f.apply(Operation::Begin {
+        owner: "owner".into(),
+        room: "room".into(),
+        agent: "agent".into(),
+        prompt: "later".into(),
+        run: Some("run".into()),
+        now: 40,
+    });
+    f.apply(Operation::Yield {
+        task: "later".into(),
+        prompt: "later".into(),
+        registrations: vec!["completion-process".into()],
+        cursor: 0,
+        deadline: Some(60_000),
+        reason: "retained watch".into(),
+        now: 50,
+    });
+    f.apply(Operation::Settle {
+        room: "room".into(),
+        agent: "agent".into(),
+        prompt: "later".into(),
+        run: "run".into(),
+        has_answer: false,
+        cancelled: false,
+        now: 60,
+    });
+    reopen(&mut f);
+    assert_eq!(f.wake("process").task_id, "later");
+    assert_eq!(f.task().reason, "adopted by task later");
+    for _ in 0..2 {
+        f.apply(Operation::ProcessExited {
+            id: "process".into(),
+            exit_code: Some(0),
+            tail: String::new(),
+            now: 70,
+        });
+    }
+    let inbox = f.inbox();
+    assert_eq!(inbox.len(), 1);
+    assert_eq!(inbox[0].payload["task_id"], "later");
+    assert_eq!(f.wake("process").fire_count, 1);
+}
+
 // MP-08 / MP-09 / MP-10 / MP-11: a new user turn remains a separate task,
 // but may explicitly cancel this same agent's retained watcher.
 #[test]

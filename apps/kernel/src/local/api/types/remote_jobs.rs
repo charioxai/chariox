@@ -14,6 +14,9 @@ pub struct GetRemoteJobPolicyRequest {
     pub session_id: String,
     #[serde(default)]
     pub agent_id: Option<String>,
+    /// The project's own setting instead of the Room's or an agent's; not with `agent_id`.
+    #[serde(default)]
+    pub project: bool,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -21,6 +24,9 @@ pub struct SetRemoteJobPolicyRequest {
     pub session_id: String,
     #[serde(default)]
     pub agent_id: Option<String>,
+    /// The project's own setting instead of the Room's or an agent's; not with `agent_id`.
+    #[serde(default)]
+    pub project: bool,
     pub policy: Option<OffloadPolicy>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

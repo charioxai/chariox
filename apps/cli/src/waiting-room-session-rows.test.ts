@@ -48,7 +48,7 @@ test("waiting room session rows render active sessions with stable columns", () 
   assert.equal(rows[1]?.title, "* session-working (frontend)")
   assert.equal(rows[1]?.value, "Working")
   assert.equal(rows[1]?.columns?.[1]?.trim(), "home-kernel@home-machine")
-  assert.equal(rows[1]?.columns?.[2]?.trim(), "1 working")
+  assert.equal(rows[1]?.columns?.[2]?.trim(), "1 top-level agent working")
   assert.equal(rows[1]?.columns?.[3]?.trim(), "run /kernel remote-runtime; identify the affected remote/slice agent and worker before sending prompts to that agent")
   assert.equal(rows[1]?.columns?.[4]?.trim(), roomListTimestampLabel(Date.UTC(2026, 0, 2, 10, 0)))
   assert.equal(rows[1]?.focused, true)
@@ -74,7 +74,7 @@ test("waiting room session rows surface active and queued prompt counts", () => 
 
   assert.equal(rows[0]?.columns?.[2]?.trim(), "Work")
   assert.equal(rows[1]?.value, "Working")
-  assert.equal(rows[1]?.columns?.[2]?.trim(), "1 working, 1 active prompt, 2 queued prompts")
+  assert.equal(rows[1]?.columns?.[2]?.trim(), "1 top-level agent working, 1 active prompt, 2 queued prompts")
 })
 
 test("waiting room session rows render queued-only sessions as queued, not working", () => {

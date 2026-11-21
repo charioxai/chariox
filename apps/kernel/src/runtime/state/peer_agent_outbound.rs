@@ -108,10 +108,6 @@ fn refused(kernel: &str, refusal_reason: PeerAgentRefusal) -> DaemonError {
             "not_permitted",
             "only a room agent reaches agents on another kernel",
         ),
-        PeerAgentRefusal::RoomFull => refusal(
-            "room_full",
-            format!("that room on kernel `{kernel}` has no room for another agent"),
-        ),
         PeerAgentRefusal::AttachmentsLocalOnly => attachments_local_only(),
         PeerAgentRefusal::AgentDeadlineReached { message } => DaemonError::MachineRequest {
             code: crate::error::AGENT_DEADLINE_REACHED.into(),

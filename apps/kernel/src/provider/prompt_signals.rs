@@ -37,6 +37,8 @@ pub struct ProviderPromptSignalBatch {
     pub hook_context_delivered: bool,
     /// Claude streamed these native compactions, by the ID its transcript observer uses.
     pub native_compactions: Vec<String>,
+    /// Native notifications consumed inside the current provider turn, without a new turn boundary.
+    pub background_notifications: Vec<ProviderBackgroundNotification>,
     pub chunks: Vec<ProviderPromptChunk>,
     pub completions: Vec<ProviderAssistantCompletion>,
     pub prompt_completed: bool,
@@ -56,6 +58,7 @@ pub struct ProviderPromptSignalBatch {
     pub resolved_variant: Option<String>,
     pub resolved_usage_tokens_total: Option<u64>,
     pub resolved_usage: Option<ProviderRunTokenUsage>,
+    pub model_usage: Vec<super::ModelTurnUsage>,
     pub account_usage: Option<crate::account_profile::ProviderAccountUsageSnapshot>,
     pub resolved_resume_state: Option<ProviderResumeState>,
     /// The model reasons without visible output; the provider's token estimate so far.
@@ -63,6 +66,12 @@ pub struct ProviderPromptSignalBatch {
     /// What this batch reports of a turn the provider runs with no prompt asking for it, such as
     /// Claude reporting a finished background command.
     pub provider_own_turn: ProviderOwnTurnSignal,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ProviderBackgroundNotification {
+    pub tool_use_id: Option<String>,
+    pub task_id: Option<String>,
 }
 
 /// A batch's report of the provider's own turn: its start edge as well as its level, so a turn
@@ -84,6 +93,7 @@ impl ProviderPromptSignalBatch {
     /// The provider wrote something: text, a finished message or a notice.
     pub(crate) fn has_output(&self) -> bool {
         !self.chunks.is_empty()
+            || !self.background_notifications.is_empty()
             || !self.completions.is_empty()
             || !self.notices.is_empty()
             || self.prompt_completed
@@ -164,6 +174,13 @@ pub(crate) fn classify_provider_terminal_failure_output_text(
     adapter_key: &str,
     text: &str,
 ) -> Option<String> {
+    find_provider_terminal_failure_output(adapter_key, text).map(|(_, message)| message)
+}
+
+pub(crate) fn find_provider_terminal_failure_output<'a>(
+    adapter_key: &str,
+    text: &'a str,
+) -> Option<(&'a str, String)> {
     text.lines().find_map(|line| {
         let normalized = line.trim().to_lowercase();
         let exact_provider_dialog = adapter_key == "claude"
@@ -174,8 +191,25 @@ pub(crate) fn classify_provider_terminal_failure_output_text(
         if !provider_normalized_text_has_error_frame(&normalized) && !exact_provider_dialog {
             return None;
         }
-        classify_provider_terminal_failure_text(adapter_key, line)
+        classify_provider_terminal_failure_text(adapter_key, line).map(|message| (line, message))
     })
+}
+
+/// A final error frame from a process that exited. Ordinary PTY output can
+/// contain the conversation and must stay out of the turn's failure reason.
+pub(crate) fn provider_exit_error_message(output: &str) -> Option<String> {
+    provider_error_frame(output)
+        .map(|message| super::termination::sanitize_provider_failure_message(&message))
+}
+
+pub(crate) fn provider_error_frame(output: &str) -> Option<String> {
+    let output = super::termination::strip_terminal_sequences(output);
+    output
+        .lines()
+        .rev()
+        .map(str::trim)
+        .find(|line| provider_normalized_text_has_error_frame(&line.to_ascii_lowercase()))
+        .map(str::to_owned)
 }
 
 fn provider_normalized_text_has_error_frame(normalized: &str) -> bool {
@@ -272,18 +306,6 @@ pub(crate) fn classify_provider_substitutable_failure_text(
 /// assistant text. Claude's native `StopFailure` frame has the same shape.
 pub(crate) fn provider_coded_failure_text(provider: &str, code: &str, message: &str) -> String {
     format!("{provider} error [{code}]: {message}")
-}
-
-/// The same calm reason used by the failed turn, including in substitute notices.
-pub(crate) fn provider_turn_failure_reason(
-    adapter_key: &str,
-    message: &str,
-    termination: Option<&super::ProviderRunTermination>,
-) -> String {
-    let failure = termination
-        .and_then(|termination| termination.failure.clone())
-        .unwrap_or_else(|| super::TurnOutcome::classify(adapter_key, message));
-    failure.reason.trim_end_matches('.').to_string()
 }
 
 pub(super) fn split_coded_failure(detail: &str) -> Option<(&str, &str, Option<bool>)> {
@@ -390,52 +412,8 @@ mod tests {
     use super::{
         classify_provider_substitutable_failure_text,
         classify_provider_terminal_failure_output_text, classify_provider_terminal_failure_text,
-        claude_native_stop_failure, provider_retry_status, provider_turn_failure_reason,
-        CLAUDE_ROOT_YOLO_REFUSAL,
+        claude_native_stop_failure, provider_retry_status, CLAUDE_ROOT_YOLO_REFUSAL,
     };
-    use crate::provider::ProviderRunTermination;
-
-    #[test]
-    fn failure_reasons_do_not_repeat_provider_words_or_codes() {
-        for (adapter, text, reason) in [
-            (
-                "codex",
-                "Codex error [server_overloaded]: Selected model is at capacity. Please try a different model.",
-                "The provider is at capacity",
-            ),
-            (
-                "claude",
-                "Claude StopFailure [rate_limit]: You've hit your session limit",
-                "You've hit your session limit",
-            ),
-            (
-                "opencode",
-                "Insufficient balance. Manage your billing here.",
-                "The provider's usage limit was reached",
-            ),
-            (
-                "codex",
-                "stream disconnected",
-                "The connection to the provider was interrupted",
-            ),
-            (
-                "codex",
-                "upstream failed Authorization: Bearer sk-live-0123456789abcdef",
-                "The provider could not complete this request",
-            ),
-        ] {
-            assert_eq!(provider_turn_failure_reason(adapter, text, None), reason);
-        }
-        assert_eq!(
-            provider_turn_failure_reason(
-                "codex",
-                "",
-                Some(&ProviderRunTermination::process_exit(1, 1))
-            ),
-            "provider process exited with status 1"
-        );
-    }
-
     #[test]
     fn retry_status_uses_one_provider_neutral_message_shape() {
         assert_eq!(

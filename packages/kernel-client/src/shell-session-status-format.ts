@@ -45,7 +45,7 @@ export function formatSessionRuntimeStatus(
     "authority: home owns sessions, prompts, and grants; workers execute leases and projected tools",
     `workspace: ${session.workspace_id}`,
     `worktree: ${session.worktree_id}`,
-    `attachments: ${session.attachment_ids.length}`,
+    `attachments: ${session.connected_cli_count}`,
     `focused agent: ${focusedAgent ? formatAgentLabel(focusedAgent) : "-"}`,
     `prompts: ${promptSummary}`,
     `agents: ${agentSummary}`,

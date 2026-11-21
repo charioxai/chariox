@@ -38,6 +38,8 @@ mod return_tests;
 mod stage;
 #[cfg(test)]
 mod stage_tests;
+#[cfg(test)]
+mod storage_tests;
 mod summary;
 #[cfg(test)]
 mod summary_tests;

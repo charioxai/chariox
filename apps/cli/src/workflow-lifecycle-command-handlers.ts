@@ -1,6 +1,7 @@
 import type {
   RuntimeSession,
   WorkflowDefinition,
+  WorkflowRun,
 } from "./cli-types.js"
 
 type FooterTone = "info" | "error"
@@ -34,6 +35,7 @@ export type WorkflowLifecycleCommandDeps = {
   createWorkflow: (alias?: string | null) => Promise<WorkflowCreatePayload>
   listWorkflows: () => Promise<WorkflowDefinition[]>
   resolveWorkflow: (workflowRef: string) => Promise<WorkflowResolvePayload>
+  getWorkflowRun?: (workflowRunId: string) => Promise<{ workflow_run: WorkflowRun }>
   assignWorkflowAlias: (workflowId: string, alias: string) => Promise<WorkflowDefinition | null>
   deleteWorkflow?: (workflowRef: string) => Promise<WorkflowDeletePayload>
   applySessionState: (session: RuntimeSession) => void
@@ -118,11 +120,23 @@ export async function handleWorkflowShowCommand(
     deps.flashFooter("usage: /workflow show [workflow-ref]", "error")
     return
   }
+  const sessionId = deps.sessionState().id
   const payload = await deps.resolveWorkflow(workflowRef)
+  if (deps.sessionState().id !== sessionId) return
   deps.upsertWorkflowDefinition(payload.workflow)
   deps.selectWorkflowCanvas(payload.workflow.id)
   deps.showWorkflowScreen()
   deps.flashFooter(`workflow ${formatWorkflowWithAlias(payload.workflow)}`, "info")
+  const getRun = deps.getWorkflowRun
+  const session = deps.sessionState()
+  const summary = session.room_workflows?.workflows.find(workflow => workflow.workflow_id === payload.workflow.id)
+  const missing = summary?.runs.filter(run => !session.workflow_runs?.some(loaded => loaded.id === run.run_id)) ?? []
+  if (!getRun || missing.length === 0) return
+  const details = await Promise.all(missing.map(async run => (await getRun(run.run_id)).workflow_run))
+  const current = deps.sessionState()
+  if (current.id !== sessionId || !current.workflows?.some(workflow => workflow.id === payload.workflow.id)) return
+  const seen = current.workflow_runs ?? []
+  deps.applySessionState({ ...current, workflow_runs: [...seen, ...details.filter(run => !seen.some(loaded => loaded.id === run.id))] })
 }
 
 export async function handleWorkflowNewCommand(

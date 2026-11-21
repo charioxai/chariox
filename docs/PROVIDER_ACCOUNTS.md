@@ -113,10 +113,34 @@ MP-08 / MP-11: `claude`, `claude-p`, and `claude-headless` share one account cre
 
 ## Explicit account copy to another kernel
 
-MP-08 / MP-09 / MP-10 / MP-11: `CopyProviderAccountToKernel` copies one authenticated Vault-backed Claude account to an enrolled same-owner kernel over the encrypted peer channel. Ordinary owner Copy stays credential-free. The target verifies with official Claude and owns an independent managed profile and provider-only Vault handle. See [the account-copy drill](drills/PROVIDER_ACCOUNT_COPY.md) for the request, conflict/retry rules and real acceptance requirements.
+MP-08 / MP-09 / MP-10 / MP-11: `CopyProviderAccountToKernel` copies one authenticated Claude or Codex account to an enrolled same-owner kernel over the encrypted peer channel. Ordinary owner Copy stays credential-free. Claude uses its provider-only Vault handle. Codex exports the current native credential through the credential-only account materialization path; the target checks a private staging profile with the official CLI, stores the transfer in the Vault and publishes its own native auth file. Later launches use that file, and completed retries never replay the original transfer over a refreshed target.
+
+A copy works immediately. Copies of one Codex login initially share a refresh lineage, so the target notification advises signing in there once through its own device sign-in. That creates a separate login. If a copy later expires, the Inbox says **Sign in again on <machine>** and starts sign-in on that target kernel. Kernels have no refresh dependency on each other.
+
+On the same kernel, a copy request creates a linked profile sharing the source credential scope. Codex aliases share one catalog helper; a change to the native auth file retires the cached helper. A retained login that the provider cannot use saves an actionable `auth_error`, instead of silently becoming unconfigured. Local link offers are available while relay is disconnected. See [the account-copy drill](drills/PROVIDER_ACCOUNT_COPY.md) for the request, conflict/retry rules and real acceptance requirements.
 
 ## Signing in from a Vault entry
 
 An API-key provider sign-in (OpenCode Go and Zen) takes a Vault entry instead of a pasted key. `provider login <provider> [account-profile] --method opencode_go_api_key --vault <credential_id>` starts the sign-in and sends the entry; Web Provider Accounts offers **Use a Vault entry** next to the paste field, listing the owner's entries for the provider's site. The kernel reads the value, types it into the provider's own login terminal and lets `opencode auth login` finish; the value never reaches a model, the status, history, a log or a tool result, and the login screen stays masked.
 
 The provider-to-site map is one function, `provider_enrollment_vault_origin` (OpenCode: `https://opencode.ai`). The entry must be a secret bound to exactly that site for browser or HTTP use, so an entry the owner created for the site and one `chariox.vault.copy_for_use` made for it both work, with no copy step. An entry for another site is refused with the site it must be bound to. No other Vault use widens: the entry is read only for this sign-in.
+
+### Run a private Linux drill kernel
+
+An agent shell already runs inside Bubblewrap. A drill kernel started in that
+shell inherits the Linux confinement even if its environment is cleared. If
+Bubblewrap cannot create a nested mount namespace, provider startup stops at
+the confinement check. The browser may also fail to prepare its dedicated
+account or private mount namespace for the same reason.
+
+Use an authorized host operator session or a dedicated lab machine to start the
+drill. On a systemd host, the operator can run the drill command as a dedicated,
+time-bounded transient service with `systemd-run`. Give it a fresh environment,
+its own `CHARIOX_HOME`, separate local ports and sockets, and fixture accounts.
+Use the host's normal service account and Bubblewrap policy. Run the provider
+through the drill kernel and stop the dedicated service after the drill.
+
+If the same check fails from the host service, have the operator check the
+AppArmor policy for Bubblewrap's user namespaces and the service's effective
+namespace restrictions and capabilities. Keep the production provider
+confinement policy in place.

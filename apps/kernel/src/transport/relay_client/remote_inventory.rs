@@ -262,6 +262,10 @@ async fn live_pass(
         None
     };
     let live_machines = relay_discovery::list_live_machines_over(runtime_config, main).await?;
+    let update_needed = update_needed_kernels(
+        &live_machines,
+        directory_read.as_ref().map(|read| &read.linked),
+    );
     let mut remote_machines = crate::local::provider_requests::remote_machine_records(
         live_machines,
         &runtime_config.host_machine_id,
@@ -301,6 +305,12 @@ async fn live_pass(
                 kernel_id: kernel.kernel_id.clone(),
                 local_protocol: kernel.local_protocol,
             })
+            .chain(
+                update_needed
+                    .iter()
+                    .filter(|(machine_id, _)| *machine_id == machine.machine_id)
+                    .map(|(_, kernel)| kernel.clone()),
+            )
             .collect();
         machine.kernel_count = machine.kernels.len();
     }
@@ -314,6 +324,31 @@ async fn live_pass(
         remote_kernels,
         directory_read,
     })
+}
+
+/// Kernels the relay refused because they are too old for it, by machine. They join their
+/// machine's entry, whose clients show them as Update needed, and never the kernels a client can
+/// reach. Cloud has them offline, so they are matched against the kernels the account still
+/// links rather than the online ones.
+fn update_needed_kernels(
+    live_machines: &[chariox_relay::protocol::RelayMachinePresence],
+    linked_kernel_ids: Option<&std::collections::BTreeSet<String>>,
+) -> Vec<(String, crate::local::RemoteMachineKernel)> {
+    live_machines
+        .iter()
+        .flat_map(|machine| {
+            machine.update_needed_kernels.iter().map(|kernel| {
+                (
+                    machine.machine_id.clone(),
+                    crate::local::RemoteMachineKernel {
+                        kernel_id: kernel.kernel_id.clone(),
+                        local_protocol: kernel.local_protocol,
+                    },
+                )
+            })
+        })
+        .filter(|(_, kernel)| linked_kernel_ids.is_none_or(|ids| ids.contains(&kernel.kernel_id)))
+        .collect()
 }
 
 /// A machine is listed for the kernels a client can reach on it. This kernel is "local" to its

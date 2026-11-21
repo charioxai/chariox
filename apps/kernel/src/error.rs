@@ -2,7 +2,9 @@ use thiserror::Error;
 mod actionable_refusals;
 mod provider_profile_refusal;
 mod user_domain_refusal;
-pub(crate) use actionable_refusals::message as actionable_refusal_message;
+pub(crate) use actionable_refusals::{
+    message as actionable_refusal_message, PROVIDER_DEV_STUB_DISABLED_CODE,
+};
 pub use provider_profile_refusal::ProviderProfileRefusal;
 pub(crate) use user_domain_refusal::HostFailure;
 pub use user_domain_refusal::UserDomainRefusalReason;
@@ -387,6 +389,8 @@ pub enum DaemonError {
     ConfigChangeRejectedWhilePromptRunning { session_id: String },
     #[error("provider adapter `{adapter_key}` was not found")]
     ProviderAdapterNotFound { adapter_key: String },
+    #[error("{}", actionable_refusals::PROVIDER_DEV_STUB_DISABLED_MESSAGE)]
+    ProviderDevStubDisabled,
     #[error("provider adapter `{adapter_key}` does not support managed workspace live sync write enforcement: {message}")]
     ProviderWorkspaceLiveSyncUnsupported {
         adapter_key: String,
@@ -424,6 +428,9 @@ pub enum DaemonError {
     PtyProcessNotFound { provider_run_id: String },
     #[error("idle provider process for run `{provider_run_id}` exited before prompt submission")]
     IdleProviderProcessExited { provider_run_id: String },
+
+    #[error("OpenCode rejected the steering prompt with HTTP 409 Conflict")]
+    OpenCodeSteerConflict,
 
     /// Internal proof that a steer was not submitted or was explicitly rejected.
     /// Unclassified errors may follow a provider write and cannot authorize replay.
@@ -554,8 +561,6 @@ pub enum DaemonError {
     },
     #[error("agent alias `{alias}` is already in use for session `{session_id}`")]
     AgentAliasConflict { session_id: String, alias: String },
-    #[error("session `{session_id}` has reached the maximum of {max_agents} agents")]
-    AgentLimitReached { session_id: String, max_agents: i32 },
 }
 
 impl DaemonError {

@@ -60,9 +60,38 @@ pub(crate) async fn cloud_metadata_token_for_targets(
 pub(crate) async fn visible_targets(
     profile: &crate::config::PersistedCloudRelayProfile,
 ) -> Result<Option<std::collections::BTreeSet<String>>, DaemonError> {
+    granted_targets(profile, GrantedKernels::Online).await
+}
+
+/// The kernels a metadata grant names. The machine list also names kernels too old for the
+/// relay, which Cloud has offline, so it is granted every kernel the account links; the relay
+/// still lists only the kernels connected or refused now. Kernel queries are granted the online
+/// ones: an offline kernel is never a target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GrantedKernels {
+    Online,
+    Linked,
+}
+
+impl GrantedKernels {
+    pub(crate) fn for_query(query: &chariox_relay::protocol::RelayMetadataQuery) -> Self {
+        match query {
+            chariox_relay::protocol::RelayMetadataQuery::ListLiveMachines => Self::Linked,
+            _ => Self::Online,
+        }
+    }
+}
+
+pub(crate) async fn granted_targets(
+    profile: &crate::config::PersistedCloudRelayProfile,
+    granted: GrantedKernels,
+) -> Result<Option<std::collections::BTreeSet<String>>, DaemonError> {
     Ok(visible_directory(profile)
         .await?
-        .map(|directory| directory.online))
+        .map(|directory| match granted {
+            GrantedKernels::Online => directory.online,
+            GrantedKernels::Linked => directory.linked,
+        }))
 }
 
 /// What the owner's Cloud directory lists: the kernels that are online, and every kernel still

@@ -90,7 +90,8 @@ async fn a_codex_overload_reaches_the_follower_and_history_as_a_retryable_cause(
     let expected = TurnOutcome {
         kind: TurnOutcomeKind::Overloaded,
         retryable: true,
-        reason: "The provider is at capacity.".to_string(),
+        answered_in_turn: None,
+        reason: "Selected model is at capacity. Please try a different model.".to_string(),
     };
     assert_eq!(followed_error_failure(&turn), Some(expected.clone()));
     assert_eq!(settled_history_failure(&turn), Some(expected));
@@ -110,7 +111,10 @@ async fn a_claude_session_limit_reaches_the_follower_as_a_usage_limit_that_will_
     let failure = followed_error_failure(&turn).expect("typed cause");
     assert_eq!(failure.kind, TurnOutcomeKind::UsageLimit);
     assert!(!failure.retryable);
-    assert_eq!(failure.reason, "The provider's usage limit was reached.");
+    assert_eq!(
+        failure.reason,
+        "You've hit your session limit · resets 8:30am"
+    );
     assert_eq!(settled_history_failure(&turn), Some(failure));
 }
 
@@ -140,17 +144,16 @@ async fn a_declined_login_recovery_preserves_the_native_error_in_events_and_hist
         provider_error_outputs(&turn),
         vec![
             native.notice(),
-            crate::agent::failed_request_notice(&crate::agent::failed_request_reason(
-                "dev-stub",
-                "Provider login did not complete; retry after logging in on this machine.",
-            )),
+            crate::agent::failed_request_notice(&crate::agent::failed_request_reason(Some(
+                &native
+            ))),
         ],
         "the transcript says what the history says"
     );
 }
 
 #[tokio::test]
-async fn a_long_multiline_structured_error_stays_out_of_person_facing_text() {
+async fn a_structured_error_keeps_its_summary_without_multiline_diagnostics() {
     let turn = subscribed_failing_turn().await;
     let native = format!(
         "First line\n{}\nlast line",
@@ -177,7 +180,7 @@ async fn a_long_multiline_structured_error_stays_out_of_person_facing_text() {
 
     turn.assert_turn_failed();
     let failure = followed_error_failure(&turn).expect("typed cause");
-    assert!(!failure.reason.contains("native diagnostic"));
+    assert_eq!(failure.reason, "First line");
     assert!(!failure.notice().contains("native diagnostic"));
     assert!(owner_visible_history_texts(&turn)
         .iter()
@@ -190,7 +193,7 @@ async fn a_long_multiline_structured_error_stays_out_of_person_facing_text() {
 }
 
 #[tokio::test]
-async fn a_long_multiline_native_hook_error_stays_out_of_person_facing_text() {
+async fn a_native_hook_error_keeps_its_summary_without_multiline_diagnostics() {
     let turn = subscribed_failing_turn().await;
     let native = format!(
         "You've hit your session limit\n{}resets 4am (Europe/Madrid)",
@@ -221,7 +224,7 @@ async fn a_long_multiline_native_hook_error_stays_out_of_person_facing_text() {
 
     turn.assert_turn_failed();
     let failure = followed_error_failure(&turn).expect("typed cause");
-    assert!(!failure.reason.contains("native diagnostic"));
+    assert_eq!(failure.reason, "You've hit your session limit");
     assert!(!failure.notice().contains("native diagnostic"));
     assert!(owner_visible_history_texts(&turn)
         .iter()

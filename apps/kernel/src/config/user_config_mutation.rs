@@ -405,13 +405,6 @@ impl CharioxUserConfig {
                     true,
                 )?)
             }
-            "workflow.session_default_max_agents" => {
-                self.workflow.session_default_max_agents = Some(parse_config_u32(
-                    "workflow.session_default_max_agents",
-                    &value,
-                    true,
-                )?)
-            }
             path if path.starts_with("workflow.code.") => {
                 let code = self.workflow.code.get_or_insert_with(Default::default);
                 match path {
@@ -674,9 +667,6 @@ impl CharioxUserConfig {
             "kernel.runtime_mcp_host" => self.kernel.runtime_mcp_host = None,
             "kernel.runtime_mcp_port" => self.kernel.runtime_mcp_port = None,
             "workflow.max_queues_per_workflow" => self.workflow.max_queues_per_workflow = None,
-            "workflow.session_default_max_agents" => {
-                self.workflow.session_default_max_agents = None
-            }
             path if path.starts_with("workflow.code.") => {
                 if let Some(code) = self.workflow.code.as_mut() {
                     match path {

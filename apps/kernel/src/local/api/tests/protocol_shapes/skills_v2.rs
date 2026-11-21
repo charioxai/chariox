@@ -24,7 +24,7 @@ fn skills_v2_protocol_allocation_and_contract_hash() {
             "{:x}",
             Sha256::digest(include_str!("../../../../skill/v2.rs"))
         ),
-        "eb1b16521dd27d0fffc02e208de3d10ceba637d35d739ce515f9fb434c0e532d"
+        "499d28ccddd81da1b27bb4b476f3886ad809f102b6ea3d4eeee52ae8f1ffb866"
     );
 }
 

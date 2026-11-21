@@ -250,7 +250,9 @@ pathlib.Path(result).write_text("PASS DONE")
 
   if (scenario === "runaway") {
     const before = df()
-    note("volume", { ...before, floor_gib: Math.max(before.total / 20, 10 * GIB) / GIB })
+    const floor = Math.min(Math.max(before.total / 100, 64 * 2 ** 20), 512 * 2 ** 20)
+    assert(before.total < 8 * GIB, "the runaway volume must be smaller than the hog's 9000 MB cap, or it ends by its own cap (run with --disk-gb 3)")
+    note("volume", { ...before, floor_mib: floor / 2 ** 20, stops_below_mib: floor / 2 ** 21 })
     report.volume = before
   }
 
@@ -282,7 +284,8 @@ pathlib.Path(result).write_text("PASS DONE")
     check("the other owners' builds finished", finished.every(Boolean), { finished })
     // A build that starts while the disk is below its floor waits in line (held, it has written nothing yet); a running writer is never paused.
     check("no other owner's running build was paused for it", paused.size === 0, { paused: [...paused], held: [...held] })
-    check("free disk never reached zero", least > 256 * 2 ** 20, { least_free_mb: Math.round(least / 2 ** 20) })
+    // The kernel ends the writer below half the floor (32 MiB on this volume): the disk is never filled to the last byte.
+    check("free disk never reached zero", least > 2 ** 20, { least_free_mb: Math.round(least / 2 ** 20) })
     await ask("Read hog-b1.log in the current folder and tell me in one sentence why your background job hog.py ended; write that sentence into answer-why-b1.txt", agents[0])
     await until(() => existsSync(join(work, "answer-why-b1.txt")), "the owner to read why", 600000).then(() => check("the agent read why its job ended", /fill|disk/i.test(readFileSync(join(work, "answer-why-b1.txt"), "utf8")), { answer: readFileSync(join(work, "answer-why-b1.txt"), "utf8").slice(0, 300) }), () => check("the agent read why its job ended", false))
     watching.stop = true

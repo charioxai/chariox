@@ -60,15 +60,11 @@ impl PendingProviderReloadStore {
 }
 
 #[derive(Debug, Clone)]
-pub(super) struct PendingGoalApproval {
-    pub(super) task_id: String,
-    pub(super) prompt_id: String,
-    pub(super) blocked_revision: u64,
-}
-
-#[derive(Debug, Clone)]
 pub(super) struct PendingInteraction {
-    pub(super) goal_approval: Option<PendingGoalApproval>,
+    pub(super) goal_approval: Option<crate::provider::NativeApprovalGoal>,
+    /// Its local Codex request can keep waiting on the inherited connection.
+    pub(super) codex_approval_transfer:
+        Option<crate::runtime::native_interaction_bridge::CodexApprovalTransfer>,
     pub(super) async_task_id: Option<String>,
     /// Kernel-wide decisions live on the same interaction board without a session.
     pub(super) kernel_wide_interaction: Option<crate::session::RuntimeInteraction>,
@@ -126,6 +122,7 @@ impl PendingInteraction {
     pub(super) fn for_test() -> Self {
         Self {
             goal_approval: None,
+            codex_approval_transfer: None,
             async_task_id: None,
             kernel_wide_interaction: None,
             session_id: String::new(),
@@ -187,6 +184,12 @@ impl PendingInteraction {
 
     pub(super) fn belongs_to(&self, sessions: &crate::session::SessionStateStore) -> bool {
         sessions.matches_identity(&self.session_store_identity)
+    }
+
+    pub(super) fn decision_still_waits(&self, now: std::time::Instant) -> bool {
+        self.kernel_operation_deadline
+            .is_none_or(|deadline| now < deadline)
+            && !self.nobody_waits()
     }
 
     /// The component that asked is gone or the interaction was answered: no

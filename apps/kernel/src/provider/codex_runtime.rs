@@ -6,6 +6,7 @@ mod handover;
 mod input;
 mod interrupt;
 mod lifecycle;
+mod model_usage;
 mod output_ready;
 mod prompt;
 mod run_config;

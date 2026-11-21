@@ -447,6 +447,18 @@ impl RoomEnvironment {
         Ok(())
     }
 
+    pub(crate) fn disconnect_actor(&mut self, actor_id: &str) {
+        let Some(actor) = self.actors.get_mut(actor_id) else {
+            return;
+        };
+        if actor.presence == EnvironmentActorPresence::Disconnected {
+            return;
+        }
+        actor.presence = EnvironmentActorPresence::Disconnected;
+        self.emit(EnvironmentEventKind::ActorsChanged);
+        self.remove_pointer(actor_id);
+    }
+
     pub fn update_pointer(
         &mut self,
         actor_id: &str,

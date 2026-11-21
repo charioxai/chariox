@@ -337,6 +337,7 @@ impl DaemonApp {
             );
         }
         let reconciliation_started = Instant::now();
+        self.reconcile_restored_usage_limit_stops()?;
         self.recover_pending_slice_backup_restores()?;
         self.reconcile_slice_backup_restore_acknowledgements()?;
         self.restore_normalized_workflow_runtime_state()?;
@@ -380,6 +381,25 @@ impl DaemonApp {
                 "total_ms": restore_started.elapsed().as_millis(),
             }),
         );
+        Ok(())
+    }
+
+    fn reconcile_restored_usage_limit_stops(&mut self) -> Result<(), DaemonError> {
+        let mut updated_rooms = BTreeSet::new();
+        for agent in self.agents.list_agents() {
+            let Some(stop) = agent.usage_limit_stop() else {
+                continue;
+            };
+            if agent.matches_usage_limit_profile(&stop.provider, &stop.account_profile) {
+                continue;
+            }
+            self.agents
+                .change_usage_limit_stop_durably(&self.durable_state, agent.id(), |_| Some(None))?;
+            updated_rooms.insert(agent.session_id().to_string());
+        }
+        for room in updated_rooms {
+            self.refresh_restored_agent_session_projection(&room)?;
+        }
         Ok(())
     }
 
@@ -1010,8 +1030,9 @@ impl DaemonApp {
             if events.is_empty() {
                 break;
             }
-            for event in events {
+            for mut event in events {
                 replay_cursor = event.sequence;
+                event.discard_queued_message_projections();
                 attachment_state.apply_event(&event);
             }
         }
@@ -1249,9 +1270,10 @@ impl DaemonApp {
 
     fn restore_durable_state_event(
         &mut self,
-        event: DurableStateEvent,
+        mut event: DurableStateEvent,
         diagnostics: &mut DurableRestoreDiagnostics,
     ) -> Result<(), DaemonError> {
+        event.discard_queued_message_projections();
         match event.kind.as_str() {
             "project.created" | "project.updated" => {
                 let project: RuntimeProject = decode_durable_payload_field(
@@ -1339,8 +1361,11 @@ impl DaemonApp {
                             message: error.to_string(),
                         })?;
                 let session = match self.sessions.get_session(&prompt_state.session_id) {
-                    Ok(session) => session,
-                    Err(DaemonError::SessionNotFound { .. }) => {
+                    Ok(session) if session.status() != crate::session::SessionStatus::Ended => {
+                        session
+                    }
+                    Ok(_) | Err(DaemonError::SessionNotFound { .. }) => {
+                        // A retired Room is readable after its runtime agents are gone.
                         diagnostics.record_missing_prompt_session(prompt_state.session_id);
                         return Ok(());
                     }
@@ -2081,6 +2106,80 @@ mod tests {
         );
     }
 
+    fn append_session_event_with_message_projection(
+        app: &mut DaemonApp,
+        predecessor: bool,
+    ) -> (String, DurableStateEvent) {
+        let (session, agent) = crate::app::KernelSessionService::new(app)
+            .create_session(crate::session::CreateSessionRequest::new(
+                "workspace",
+                "tree",
+            ))
+            .unwrap();
+        let mut payload = serde_json::to_value(&session).unwrap();
+        let mut message = serde_json::json!({
+            "id": "agent-message-1",
+            "agent_id": agent.id(),
+            "sender": "peer"
+        });
+        if predecessor {
+            message["prompt"] = "old projection".into();
+        } else {
+            message["preview"] = "current projection".into();
+            message["truncated"] = false.into();
+        }
+        payload["queued_agent_messages"] = serde_json::json!([message]);
+        let event = app
+            .durable_state_store()
+            .append_event(
+                "session.updated",
+                Some(session.id().into()),
+                serde_json::json!({"session": payload}),
+            )
+            .unwrap();
+        (session.id().into(), event)
+    }
+
+    #[test]
+    fn eventlogpreview_boots_with_predecessor_session_event() {
+        let config = crate::config::DaemonConfig::for_tests();
+        let room = {
+            let mut app = DaemonApp::bootstrap(config.clone()).unwrap();
+            append_session_event_with_message_projection(&mut app, true).0
+        };
+        let app = DaemonApp::bootstrap(config).expect("predecessor session event should restore");
+        let session = app.sessions().get_session(&room).unwrap();
+        assert!(session.queued_agent_messages().is_empty());
+    }
+
+    #[test]
+    fn eventlogpreview_restores_predecessor_session_event_without_restart() {
+        let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+        let (room, event) = append_session_event_with_message_projection(&mut app, true);
+        app.restore_durable_state_event(event, &mut DurableRestoreDiagnostics::default())
+            .unwrap();
+        let session = app.sessions().get_session(&room).unwrap();
+        assert!(session.queued_agent_messages().is_empty());
+    }
+
+    #[test]
+    fn eventlogpreview_preserves_current_persisted_event_payload() {
+        let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+        let (room, event) = append_session_event_with_message_projection(&mut app, false);
+        app.restore_durable_state_event(event.clone(), &mut DurableRestoreDiagnostics::default())
+            .unwrap();
+        assert_eq!(
+            app.durable_state_store()
+                .load_events_after(event.sequence - 1)
+                .unwrap()[0]
+                .payload,
+            event.payload
+        );
+        let restored = app.sessions().get_session(&room).unwrap();
+        assert_eq!(restored.id(), room);
+        assert!(restored.queued_agent_messages().is_empty());
+    }
+
     // MP-08/MP-10: a completed Copy creates its Named Project before the first
     // target session. Restart must not turn that successful copy into an orphan.
     #[test]
@@ -2293,6 +2392,53 @@ mod tests {
             .expect("Room restores");
         assert_eq!(restored.project_id(), project_id);
         assert!(app.sessions().get_project(&project_id).is_ok());
+    }
+
+    #[test]
+    fn durable_restore_ignores_late_prompt_state_for_a_retired_room() {
+        let config = crate::config::DaemonConfig::for_tests();
+        let (session_id, agent_id) = {
+            let mut app = DaemonApp::bootstrap(config.clone()).expect("daemon should boot");
+            let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+                .create_session(crate::session::CreateSessionRequest::new(
+                    "workspace-1",
+                    "workspace-1",
+                ))
+                .expect("Room should be created");
+            crate::app::KernelSessionService::new(&mut app)
+                .end_session(session.id())
+                .expect("Room should end");
+
+            let mut late = DurablePromptStateEventPayload::capture(&session, agent.id());
+            late.active_prompt = Some(crate::session::PromptQueueItem::new(
+                "late-prompt",
+                "attachment-1",
+                agent.id(),
+                "late prompt",
+                crate::session::PromptStatus::Running,
+            ));
+            app.durable_state_store()
+                .append_event(
+                    DURABLE_PROMPT_STATE_EVENT_KIND,
+                    Some(session.id().to_string()),
+                    serde_json::to_value(late).expect("prompt state should encode"),
+                )
+                .expect("late prompt state should persist");
+            (session.id().to_string(), agent.id().to_string())
+        };
+
+        let app = DaemonApp::bootstrap(config).expect("late prompt must not prevent boot");
+        let retired = app
+            .sessions()
+            .get_session(&session_id)
+            .expect("retired Room should remain readable");
+        assert_eq!(retired.status(), crate::session::SessionStatus::Ended);
+        assert!(retired.active_prompt_for_agent(&agent_id).is_none());
+        assert!(!app.sessions().has_session(&session_id));
+        assert!(matches!(
+            app.agents.get_agent(&agent_id),
+            Err(DaemonError::AgentNotFound { .. })
+        ));
     }
 
     #[test]

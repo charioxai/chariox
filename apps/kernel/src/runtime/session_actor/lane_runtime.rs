@@ -168,6 +168,9 @@ impl SessionRuntime {
                 operation: "await session kernel command",
                 message: error.to_string(),
             })??;
+        if let LocalDaemonResponse::SessionDetached { attachment } = &response {
+            self.store.finish_attachment_detach(attachment).await?;
+        }
         if matches!(
             response,
             LocalDaemonResponse::SessionEnded { .. } | LocalDaemonResponse::SessionDeleted { .. }

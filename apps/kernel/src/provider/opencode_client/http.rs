@@ -50,8 +50,12 @@ impl OpenCodeClient {
         &self,
         path: &str,
         body: &serde_json::Value,
+        steering: bool,
     ) -> Result<(), DaemonError> {
         let (status_code, response_body) = self.send_request("POST", path, Some(body))?;
+        if steering && status_code == 409 {
+            return Err(DaemonError::OpenCodeSteerConflict);
+        }
         if status_code >= 400 {
             if let Some(message) = provider_error_message(&response_body) {
                 return Err(DaemonError::ProviderRefusal { message });

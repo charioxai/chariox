@@ -4,6 +4,7 @@
 //! lifecycle remains in `prompt`.
 
 use super::*;
+use crate::runtime::prompt_state::RemotePromptDelivery;
 
 pub(super) enum RemotePromptDispatchSettlement {
     Settled(crate::session::PromptQueueItem),
@@ -17,6 +18,36 @@ impl KernelRuntimeOwnedState {
         dispatch: &crate::app::KernelRemotePromptDispatch,
         delivered_run_id: Option<&str>,
     ) -> Result<RemotePromptDispatchSettlement, DaemonError> {
+        self.commit_remote_dispatch_if_current(
+            dispatch,
+            delivered_run_id.map_or(
+                RemotePromptDelivery::Rejected,
+                RemotePromptDelivery::Delivered,
+            ),
+        )
+    }
+
+    pub(super) fn defer_remote_dispatch_for_memory(
+        &self,
+        dispatch: &crate::app::KernelRemotePromptDispatch,
+        reason: &str,
+    ) -> Result<RemotePromptDispatchSettlement, DaemonError> {
+        self.commit_remote_dispatch_if_current(
+            dispatch,
+            RemotePromptDelivery::WaitingForMemory(reason),
+        )
+    }
+
+    fn commit_remote_dispatch_if_current(
+        &self,
+        dispatch: &crate::app::KernelRemotePromptDispatch,
+        delivery: RemotePromptDelivery<'_>,
+    ) -> Result<RemotePromptDispatchSettlement, DaemonError> {
+        let delivered_run_id = match delivery {
+            RemotePromptDelivery::Delivered(run_id) => Some(run_id),
+            _ => None,
+        };
+        let waiting_for_memory = matches!(delivery, RemotePromptDelivery::WaitingForMemory(_));
         let activity_mutation = self.begin_managed_activity_mutation();
         let mut sessions = self.session_store.write();
         let session = sessions.get_session(&dispatch.session_id)?;
@@ -27,8 +58,8 @@ impl KernelRuntimeOwnedState {
                 &session,
                 &dispatch.agent_id,
                 &dispatch.prompt_id,
-                delivered_run_id,
-                |previous, active, queued| {
+                delivery,
+                |previous, previous_queue, active, queued| {
                     // Lock order: activity -> session -> prompt owner -> agent.
                     // No projection/history helper may reenter prompt ownership here.
                     let mut agents = self.agent_store.write();
@@ -47,7 +78,7 @@ impl KernelRuntimeOwnedState {
                         &dispatch.session_id,
                         &dispatch.agent_id,
                         active,
-                        queued.clone(),
+                        queued,
                     )?;
                     // Persist under the ownership locks so a successor cannot
                     // race the durable commit. This briefly blocks readers.
@@ -58,7 +89,7 @@ impl KernelRuntimeOwnedState {
                             &dispatch.session_id,
                             &dispatch.agent_id,
                             Some(previous.clone()),
-                            queued,
+                            previous_queue.clone(),
                         )?;
                         return Err(error);
                     }
@@ -75,8 +106,12 @@ impl KernelRuntimeOwnedState {
                         }
                     } else {
                         agents.set_agent_processing(&dispatch.agent_id, false)?;
-                        agents
-                            .set_agent_state(&dispatch.agent_id, crate::agent::AgentState::Error)?;
+                        let state = if waiting_for_memory {
+                            crate::agent::AgentState::Idle
+                        } else {
+                            crate::agent::AgentState::Error
+                        };
+                        agents.set_agent_state(&dispatch.agent_id, state)?;
                     }
                     Ok(true)
                 },
@@ -860,6 +895,7 @@ mod tests {
     /// structured Claude provider run.
     pub(super) async fn local_claude_fixture(
         config: crate::DaemonConfig,
+        worktree: Option<&crate::test_support::TestWorktree>,
     ) -> (
         KernelRuntimeState,
         String,
@@ -869,7 +905,10 @@ mod tests {
     ) {
         let mut app = DaemonApp::bootstrap(config).unwrap();
         let (session, agent) = KernelSessionService::new(&mut app)
-            .create_session(CreateSessionRequest::new("local-home", "local-home"))
+            .create_session(worktree.map_or_else(
+                || CreateSessionRequest::new("local-home", "local-home"),
+                |worktree| worktree.session_request(),
+            ))
             .unwrap();
         let attachment = KernelSessionService::new(&mut app)
             .attach(AttachRequest::new(
@@ -881,7 +920,7 @@ mod tests {
         let request = crate::provider::LaunchProviderRequest::new(
             session.id(),
             "claude",
-            "claude-code",
+            "claude",
             "default",
             "sonnet",
         )
@@ -895,9 +934,17 @@ mod tests {
                 pty_target: None,
                 pty_program: None,
                 pty_args: Vec::new(),
-                pty_env: std::collections::BTreeMap::new(),
+                pty_env: worktree
+                    .map(|root| {
+                        [(
+                            "CLAUDE_CONFIG_DIR".into(),
+                            root.path().join("claude-config").display().to_string(),
+                        )]
+                        .into()
+                    })
+                    .unwrap_or_default(),
                 pty_env_remove: Vec::new(),
-                working_directory: None,
+                working_directory: worktree.map(|root| root.path().to_path_buf()),
                 structured_endpoint: None,
             },
         );
@@ -1726,6 +1773,8 @@ mod tests {
                     }],
                     notices: Vec::new(),
                     completions: vec![RelayProjectedCompletion {
+                        model_usage: Vec::new(),
+                        background_notifications: Vec::new(),
                         failure: None,
                         message_id: "partial-answer".into(),
                         completed_at_ms: now,
@@ -1752,7 +1801,7 @@ mod tests {
         );
         assert_eq!(
             task.reason,
-            "provider process terminated by signal SIGKILL The provider process ended; send the request again to start it."
+            "provider process terminated by signal SIGKILL. The provider process ended; send the request again to start it."
         );
         assert!(
             completion::evaluation(&task).is_none(),
@@ -1873,6 +1922,8 @@ mod tests {
                     output_chunks: chunks,
                     notices: Vec::new(),
                     completions: vec![RelayProjectedCompletion {
+                        model_usage: Vec::new(),
+                        background_notifications: Vec::new(),
                         failure: None,
                         message_id: "check-completed".into(),
                         completed_at_ms: now,
@@ -2912,6 +2963,8 @@ mod tests {
                     output_chunks: Vec::new(),
                     notices: Vec::new(),
                     completions: vec![crate::transport::relay_peer::RelayProjectedCompletion {
+                        model_usage: Vec::new(),
+                        background_notifications: Vec::new(),
                         message_id: "failed-turn".into(),
                         completed_at_ms: crate::session::unix_epoch_ms(),
                         home_prompt_id: Some(prompt.id().into()),

@@ -346,7 +346,6 @@ fn mp11_amfix_snapshot_recomputes_inventory_for_private_recipient() {
     let projection = super::SessionSnapshotProjection {
         jobs: Vec::new(),
         processes: Vec::new(),
-        disk_usage: Vec::new(),
         room_workflows: inventory,
         metadata: super::ProjectionMetadata::new(super::SESSION_SNAPSHOT_PROJECTION_VERSION, 0),
         session: room,

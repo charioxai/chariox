@@ -256,6 +256,20 @@ impl DurableKernelStateStore {
         let db = self.lock_connection("agent.deadline")?;
         deadline_clock::awaiting_rearm(&db)
     }
+    pub(crate) fn stopped_deadline_agents(&self, room: &str) -> Result<Vec<String>, DaemonError> {
+        let db = self.lock_connection("agent.deadline")?;
+        let mut query = db
+            .prepare(
+                "SELECT agent_id FROM agent_deadlines
+                 WHERE room_id = ?1 AND json_extract(payload, '$.stopped_at_ms') IS NOT NULL",
+            )
+            .map_err(sql)?;
+        let rows = query
+            .query_map(params![room], |row| row.get(0))
+            .map_err(sql)?;
+        rows.collect::<Result<_, _>>().map_err(sql)
+    }
+
     pub(crate) fn agent_deadlines(&self) -> Result<Vec<AgentDeadline>, DaemonError> {
         let db = self.lock_connection("agent.deadline")?;
         let mut query = db

@@ -26,6 +26,7 @@ mod events;
 mod handover;
 mod hook_receipts;
 mod input;
+mod model_usage;
 mod plan_exit;
 mod process;
 pub(crate) use plan_exit::publish_claude_plan;
@@ -169,6 +170,7 @@ pub(crate) fn initialize_claude_runtime_with_credentials(
             active_turn_id: None,
             active_prompt_message: None,
             own_turn: false,
+            background_notification_pending: false,
             turn_watchdog: Default::default(),
             cancelled_turn_pending_settlement: false,
             runtime_tools_unavailable: None,
@@ -574,6 +576,7 @@ fn clear_active_claude_turn(state: &mut ClaudeRuntimeState) {
     state.active_turn_id = None;
     state.active_prompt_message = None;
     state.own_turn = false;
+    state.background_notification_pending = false;
     state.turn_watchdog.settle();
 }
 
@@ -770,6 +773,7 @@ fn restart_claude_runtime(
     state.active_turn_id = None;
     state.active_prompt_message = None;
     state.own_turn = false;
+    state.background_notification_pending = false;
     state.turn_watchdog.settle();
     state.emitted_text_by_block.clear();
     state.completed_text_blocks.clear();
@@ -886,7 +890,7 @@ mod tests {
         write_claude_hidden_context, ClaudeRuntimeState, PromptEnvelope, ProviderPromptSignalBatch,
     };
 
-    fn parser_state() -> (ClaudeRuntimeState, ProviderPromptSignalBatch) {
+    pub(super) fn parser_state() -> (ClaudeRuntimeState, ProviderPromptSignalBatch) {
         let mut child = crate::process_spawn::command("/bin/sh")
             .arg("-c")
             .arg("cat >/dev/null")
@@ -933,6 +937,7 @@ mod tests {
                 active_turn_id: Some("turn-1".to_string()),
                 active_prompt_message: None,
                 own_turn: false,
+                background_notification_pending: false,
                 turn_watchdog: Default::default(),
                 cancelled_turn_pending_settlement: false,
                 runtime_tools_unavailable: None,
@@ -1874,7 +1879,7 @@ done
             TurnOutcome::classify("claude", &batch.terminal_failure.expect("failure"))
         };
         let expected =
-            |kind, retryable, _diagnostic: &str| TurnOutcome::provider_failure(kind, retryable);
+            |kind, retryable, diagnostic: &str| TurnOutcome::new(kind, retryable, diagnostic);
         assert_eq!(
             result_error("Not logged in · Please run /login"),
             expected(SignInRequired, false, "Not logged in · Please run /login")

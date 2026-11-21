@@ -28,7 +28,6 @@ import {
   resolveShellAttachmentId,
 } from "./shell-session-attachment.js"
 import { sessionHasPendingPrompt } from "./session-prompt-identity.js"
-import { normalizeRuntimeSessionWithAgentActivity } from "./runtime-session-normalization.js"
 import { promptSubmissionPrompt } from "./prompt-submission.js"
 
 type ShellKernelClient = {
@@ -55,7 +54,7 @@ export async function executePromptCommand(
   if (!context.sessionId) {
     return { ok: false, message: "no current session; run `session new` or `session use <ref>` first" }
   }
-  const attachmentId = await resolveShellAttachmentId(context, deps)
+  const attachmentId = resolveShellAttachmentId(context)
   if (!attachmentId.ok) {
     return { ok: false, message: attachmentId.message }
   }
@@ -74,9 +73,7 @@ export async function executePromptCommand(
     promptText,
     [],
   ))
-  const payload = promptSubmittedPayloadWithActivity(
-    expectVariant<PromptSubmittedPayload>(response, "PromptSubmitted"),
-  )
+  const payload = expectVariant<PromptSubmittedPayload>(response, "PromptSubmitted")
   const prompt = promptSubmissionPrompt(payload, target.id)
   const promptId = prompt?.id ?? "unknown-prompt"
   const waitForCompletion = promptArgs.options.wait || promptArgs.options.showReply || promptArgs.options.showSummary
@@ -84,7 +81,7 @@ export async function executePromptCommand(
     return {
       ok: true,
       message: `prompt ${promptId} submitted to ${formatAgentRef(target)}`,
-      data: { prompt, session: payload.session },
+      data: { prompt },
       contextUpdates: { agentId: target.id },
     }
   }
@@ -163,17 +160,6 @@ async function parsePromptArgs(
 
 function normalizeShellFlag(value: string): string {
   return value.startsWith("—") ? `--${value.slice(1)}` : value
-}
-
-function promptSubmittedPayloadWithActivity(payload: PromptSubmittedPayload): PromptSubmittedPayload {
-  return {
-    ...payload,
-    session: sessionWithAgentActivity(payload),
-  }
-}
-
-function sessionWithAgentActivity(payload: PromptSubmittedPayload): RuntimeSession {
-  return normalizeRuntimeSessionWithAgentActivity(payload)
 }
 
 async function waitForPromptCompletion(

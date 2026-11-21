@@ -18,7 +18,7 @@ mod ports;
 
 pub use catalog_endpoint::codex_catalog_endpoint;
 pub(crate) use catalog_endpoint::{
-    ensure_codex_account_endpoint, invalidate_codex_account_endpoint,
+    ensure_codex_account_endpoint, invalidate_codex_account_endpoint, retain_codex_account_login,
     shutdown_codex_account_endpoints,
 };
 

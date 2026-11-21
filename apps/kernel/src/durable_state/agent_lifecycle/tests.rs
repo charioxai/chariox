@@ -1689,6 +1689,44 @@ fn a02_review_failed_turn_on_blocked_task_does_not_abort_settlement() {
 }
 
 #[test]
+fn spawn_receipt_quarantines_an_unreadable_historical_task() {
+    let f = Fixture::new();
+    f.begin("old");
+    f.settle("old", true);
+    f.begin("p");
+    f.register();
+    let db = rusqlite::Connection::open(f.root.join("state.sqlite")).unwrap();
+    let raw: String = db
+        .query_row(
+            "UPDATE agent_tasks SET payload=json_set(payload,'$.state','cancelled','$.owner_action','browser_access') WHERE task_id='old' RETURNING payload",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+
+    f.apply(Operation::DispatchReceipt {
+        id: "obligation".into(),
+        accepted: true,
+        resource: Some("child".into()),
+    });
+    let tasks = f.store.agent_tasks(Some("room"), Some("parent")).unwrap();
+    let historical = tasks.iter().find(|task| task.task_id == "old").unwrap();
+    let spawning = tasks.iter().find(|task| task.task_id == "p").unwrap();
+    assert_eq!(historical.state, ExecutionState::Blocked);
+    assert!(historical.reason.contains("agent_tasks"));
+    assert!(historical.reason.contains("old"));
+    assert_eq!(spawning.obligations[0].dispatch_state, "accepted");
+    let retained: String = db
+        .query_row(
+            "SELECT payload FROM agent_lifecycle_quarantine WHERE kind='task' AND id='old'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(retained, raw);
+}
+
+#[test]
 fn a02_review_late_rejected_dispatch_receipt_cannot_corrupt_done_task() {
     let f = Fixture::new();
     f.begin("p");
@@ -1839,7 +1877,7 @@ fn a02_r3_reverse_parent_creation_binds_in_delegation_order() {
 
 // MP-08/MP-10/MP-11: rejected attempts must not renew their timeout indefinitely.
 #[test]
-fn a02_r3_rejected_first_message_escalates_without_task_rows() {
+fn a02_r3_rejected_first_message_settles_without_task_rows() {
     let f = Fixture::new();
     let Outcome::Event(e) = f.apply(Operation::Occur(occurrence(
         "room",
@@ -1889,13 +1927,11 @@ fn a02_r3_rejected_first_message_escalates_without_task_rows() {
     }) else {
         panic!()
     };
-    assert_eq!(
-        changed.len(),
-        1,
-        "a repeatedly refused message must reach the owner"
+    assert!(
+        changed.is_empty(),
+        "a failed start cannot create an owner decision"
     );
-    assert_eq!(changed[0].state, ExecutionState::Blocked);
-    assert_eq!(changed[0].task_id, format!("delivery-{}", e.sequence));
+    assert!(f.store.agent_tasks(None, None).unwrap().is_empty());
     assert_eq!(
         f.store.agent_inbox("room", "child", 0).unwrap()[0].state,
         "failed",
@@ -1916,7 +1952,7 @@ fn a02_r3_rejected_first_message_escalates_without_task_rows() {
     };
     assert!(
         changed.is_empty(),
-        "one timeout must emit one owner transition"
+        "the terminal delivery does not emit an owner transition"
     );
 }
 
@@ -2349,8 +2385,8 @@ fn damaged_refusal_clock_is_quarantined(clock: rusqlite::types::Value) {
     };
     assert_eq!(
         changed.len(),
-        2,
-        "one damaged row must not stop another Room's owner transition"
+        1,
+        "only the damaged delivery requires an owner transition"
     );
     let damaged = changed
         .iter()
@@ -3846,6 +3882,56 @@ fn visible_tasks_are_unfinished_and_recent_finished_ones_in_ledger_order() {
     assert_eq!(ids.len(), 34);
     assert_eq!((ids[0].as_str(), ids[1].as_str()), ("t0", "t8"));
     assert_eq!((ids[32].as_str(), ids[33].as_str()), ("t39", "broken"));
+}
+
+#[test]
+fn finished_room_tasks_continue_before_the_last_visible_task() {
+    let f = Fixture::new();
+    let db = Connection::open(f.root.join("state.sqlite")).unwrap();
+    let insert = |id: &str, room: &str, agent: &str, state: &str| {
+        let payload = serde_json::json!({"task_id":id,"room_id":room,"agent_id":agent,"prompt_id":id,"provider_run_id":null,"revision":1,"state":state,"reason":"","obligations":[],"wait":null,"last_progress_at_ms":1,"correction_used":false,"pending_prompt_id":null});
+        db.execute(
+            "INSERT INTO agent_tasks(task_id,room_id,agent_id,prompt_id,payload) VALUES(?1,?2,?3,?1,?4)",
+            params![id, room, agent, payload.to_string()],
+        )
+        .unwrap();
+    };
+    for index in 0..70 {
+        insert(
+            &format!("t{index}"),
+            "room",
+            "a",
+            if index % 2 == 0 { "done" } else { "cancelled" },
+        );
+        insert(&format!("private{index}"), "room", "b", "done");
+    }
+    insert("working", "room", "a", "working");
+    insert("another-room", "other", "a", "done");
+    let (first, next) = f.store.finished_room_tasks("room", &["a"], None).unwrap();
+    assert_eq!(first.len(), 32);
+    insert("new-task", "room", "a", "done");
+    let (second, next) = f
+        .store
+        .finished_room_tasks("room", &["a"], Some(next.unwrap()))
+        .unwrap();
+    assert_eq!(second.len(), 32);
+    let (last, next) = f
+        .store
+        .finished_room_tasks("room", &["a"], Some(next.unwrap()))
+        .unwrap();
+    assert_eq!(next, None);
+    assert_eq!(
+        first
+            .into_iter()
+            .chain(second)
+            .chain(last)
+            .map(|task| task.task_id)
+            .collect::<Vec<_>>(),
+        (0..70)
+            .rev()
+            .map(|index| format!("t{index}"))
+            .collect::<Vec<_>>()
+    );
 }
 
 /// Virtual machine steps one snapshot read takes in a room with `done` finished tasks and one waiting.

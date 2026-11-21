@@ -528,6 +528,8 @@ fn default_external_provider_account_profile() -> String {
 pub struct LaunchProviderRequest {
     pub session_id: String,
     pub agent_id: Option<String>,
+    #[serde(skip)]
+    pub(crate) dev_trace_agent_alias: Option<String>,
     #[serde(default = "default_provider_owner_user_id")]
     pub owner_user_id: String,
     pub adapter_key: String,
@@ -757,6 +759,7 @@ impl LaunchProviderRequest {
         Self {
             session_id: session_id.into(),
             agent_id: None,
+            dev_trace_agent_alias: None,
             owner_user_id: default_provider_owner_user_id(),
             adapter_key: adapter_key.into(),
             provider: provider.into(),
@@ -879,7 +882,10 @@ impl LaunchProviderRequest {
     }
 
     /// What the agent's own settings decide about its provider run.
-    pub(crate) fn with_agent_settings(self, agent: &crate::agent::AgentInstance) -> Self {
+    pub(crate) fn with_agent_settings(mut self, agent: &crate::agent::AgentInstance) -> Self {
+        if super::is_dev_trace(&self.adapter_key, &self.model) {
+            self.dev_trace_agent_alias = agent.alias().map(str::to_owned);
+        }
         self.with_max_context_tokens(agent.max_context_tokens())
             .with_sub_agent(agent.is_sub_agent())
     }

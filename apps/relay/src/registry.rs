@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::hash::{Hash, Hasher};
 use std::net::SocketAddr;
 use std::sync::{Arc, RwLock as StdRwLock};
+use std::time::{Duration, Instant};
 
 use tokio::sync::mpsc;
 
@@ -9,6 +10,7 @@ use crate::auth::{RelayAction, DEFAULT_RELAY_REALM_ID};
 use crate::protocol::{
     DaemonRegistration, RelayCallerIdentity, RelayConnectionRole, RelayDisplayTunnelHeader,
     RelayError, RelayKernelPresence, RelayMachinePresence, RelayProviderAccountSummary,
+    RelayUpdateNeededKernel,
 };
 
 use crate::outgoing::QueueStats;
@@ -321,8 +323,12 @@ impl DaemonKey {
 }
 
 pub(crate) fn daemon_registration_is_kernel_target(registration: &DaemonRegistration) -> bool {
-    registration
-        .capabilities
+    capabilities_name_kernel_target(&registration.capabilities)
+}
+
+/// A kernel itself, not a temporary peer connection one opened.
+pub(crate) fn capabilities_name_kernel_target(capabilities: &[String]) -> bool {
+    capabilities
         .iter()
         .any(|capability| capability == "kernel_websocket" || capability == "kernel_ws")
 }
@@ -420,10 +426,25 @@ pub(crate) struct PendingDisplayStream {
     pub(crate) sender: DisplayStreamSender,
 }
 
+/// How long a refused registration of a kernel too old for this relay stays listed. Such a
+/// kernel retries at least once a minute, so a stopped one leaves the list within this time.
+pub(crate) const UPDATE_NEEDED_KERNEL_TTL: Duration = Duration::from_secs(150);
+
+/// A kernel the relay refused because its registration is older than the relay reads.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct UpdateNeededKernel {
+    pub(crate) machine_id: String,
+    pub(crate) machine_alias: Option<String>,
+    pub(crate) local_protocol: Option<u32>,
+    pub(crate) refused_at: Instant,
+}
+
 #[derive(Debug)]
 pub struct RelayRegistry {
     pub(crate) peers: BTreeMap<SocketAddr, PeerHandle>,
     pub(crate) daemons: BTreeMap<DaemonKey, DaemonRegistration>,
+    /// Never routable: only machine lists read it, so clients can show Update needed.
+    update_needed_kernels: BTreeMap<DaemonKey, UpdateNeededKernel>,
     pub(crate) daemon_peers: BTreeMap<DaemonKey, SocketAddr>,
     pub(crate) subscriptions: BTreeMap<String, ActiveSubscription>,
     pub(crate) display_tunnels: BTreeMap<String, DisplayTunnelRegistration>,
@@ -437,6 +458,7 @@ impl Default for RelayRegistry {
         Self {
             peers: BTreeMap::new(),
             daemons: BTreeMap::new(),
+            update_needed_kernels: BTreeMap::new(),
             daemon_peers: BTreeMap::new(),
             subscriptions: BTreeMap::new(),
             display_tunnels: BTreeMap::new(),
@@ -670,6 +692,41 @@ impl RelayRegistry {
         })
     }
 
+    /// Records a kernel the relay refused for its age. A live registration of the same kernel
+    /// wins: the refusal is then someone else's attempt and says nothing about the kernel.
+    pub(crate) fn record_update_needed_kernel(
+        &mut self,
+        daemon_key: DaemonKey,
+        kernel: UpdateNeededKernel,
+    ) {
+        self.update_needed_kernels
+            .retain(|_, kernel| kernel.refused_at.elapsed() < UPDATE_NEEDED_KERNEL_TTL);
+        if !self.daemons.contains_key(&daemon_key) {
+            self.update_needed_kernels.insert(daemon_key, kernel);
+        }
+    }
+
+    /// The kernel registered: it is no longer too old.
+    pub(crate) fn clear_update_needed_kernel(&mut self, daemon_key: &DaemonKey) {
+        self.update_needed_kernels.remove(daemon_key);
+    }
+
+    fn update_needed_kernels_in_realm<'a>(
+        &'a self,
+        realm_id: &'a str,
+        targets: Option<&'a [String]>,
+    ) -> impl Iterator<Item = (&'a str, &'a UpdateNeededKernel)> + 'a {
+        self.update_needed_kernels
+            .iter()
+            .filter(move |(key, kernel)| {
+                key.realm_id == realm_id
+                    && kernel.refused_at.elapsed() < UPDATE_NEEDED_KERNEL_TTL
+                    && !self.daemons.contains_key(key)
+                    && targets.is_none_or(|targets| targets.contains(&key.daemon_id))
+            })
+            .map(|(key, kernel)| (key.daemon_id.as_str(), kernel))
+    }
+
     pub fn live_machines(&self) -> Vec<RelayMachinePresence> {
         self.live_machines_in_realm(DEFAULT_RELAY_REALM_ID)
     }
@@ -694,6 +751,21 @@ impl RelayRegistry {
                 .or_default()
                 .push(registration);
         }
+        let mut update_needed =
+            BTreeMap::<String, (Option<String>, Vec<RelayUpdateNeededKernel>)>::new();
+        for (kernel_id, kernel) in self.update_needed_kernels_in_realm(realm_id, targets) {
+            let (alias, kernels) = update_needed.entry(kernel.machine_id.clone()).or_default();
+            if alias.is_none() {
+                alias.clone_from(&kernel.machine_alias);
+            }
+            kernels.push(RelayUpdateNeededKernel {
+                kernel_id: kernel_id.to_string(),
+                local_protocol: kernel.local_protocol,
+            });
+        }
+        for machine_id in update_needed.keys() {
+            grouped.entry(machine_id.clone()).or_default();
+        }
         grouped
             .into_iter()
             .map(|(machine_id, registrations)| {
@@ -708,13 +780,19 @@ impl RelayRegistry {
                         .iter()
                         .flat_map(|registration| registration.provider_accounts.iter().cloned()),
                 );
-                let machine_alias = machine_names.get(&machine_id).map(MachineName::label);
+                let (refused_alias, update_needed_kernels) =
+                    update_needed.remove(&machine_id).unwrap_or_default();
+                let machine_alias = machine_names
+                    .get(&machine_id)
+                    .map(MachineName::label)
+                    .or(refused_alias);
                 RelayMachinePresence {
                     machine_alias,
                     machine_id,
                     kernel_count: registrations.len(),
                     available_providers,
                     provider_accounts,
+                    update_needed_kernels,
                 }
             })
             .collect()

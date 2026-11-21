@@ -115,16 +115,10 @@ async function unlock(r) {
   const made = (await r.rpc({ CreateSession: { workspace_id: join(r.dir, "work"), worktree_id: join(r.dir, "work"), alias: "health-drill-owner" } })).SessionCreated
   const att = (await r.rpc({ AttachToSession: { session_id: made.session.id, client_id: "health-drill", capability_level: "FullTerminal" } })).SessionAttached
   await r.client.subscribeToKernelEvents(made.session.id, att.attachment.id)
-  const pending = r.rpc({ ManageCredentialVault: { session_id: made.session.id, agent_id: made.agent.id } })
-  pending.catch(() => {})
-  let interaction
-  await until(async () => {
-    const st = (await r.rpc({ GetSessionState: { session_id: made.session.id } })).SessionState.session
-    interaction = st.active_interactions?.find(x => x.id.startsWith("vault-unlock-"))
-    return interaction
-  }, "disposable vault prompt")
-  await r.rpc({ RespondToInteraction: { session_id: made.session.id, interaction_id: interaction.id, choice_id: "passphrase", custom_reply: r.passkey } })
-  await pending
+  await r.rpc({ CreateCredentialVault: { origin: { kind: "passphrase", passphrase: r.passkey } } })
+  await r.rpc({ UnlockCredentialVault: {
+    passphrase: r.passkey, duration: { kind: "until_kernel_stops" }, surface: "terminal",
+  } })
   r.client.onKernelEvent(async event => {
     if (event.event !== "passkey_prompts_changed") return
     for (const prompt of event.prompts || []) if (prompt.kind === "access_grant") {
@@ -189,7 +183,7 @@ try {
     assert(!r.value.Error)
     return r.value
   }
-  const session = (await remote({ CreateSession: { workspace_id: join(worker.dir, "work"), worktree_id: join(worker.dir, "work"), alias: "stall-target", no_subscribe: true } })).SessionCreated.session.id
+  const session = (await remote({ CreateSession: { workspace_id: join(worker.dir, "work"), worktree_id: join(worker.dir, "work"), alias: "stall-target", no_subscribe: true } })).SessionCreated.session_id
   if (scenario === "stall") {
     const agent = (await remote({ SpawnAgent: { session_id: session, provider: "codex", alias: null, model: null, effort: null, execution_mode: null, permission_level: null, worktree_id: null, kernel_ref: null, slice_ref: null, worktree_placement: null, no_subscribe: true } })).AgentSpawned.agent.id
     for (const extra of [[], ["--agent", agent]]) {
@@ -244,7 +238,7 @@ try {
     assert.equal((await cli(home, ["events", "unsubscribe", "--all"])).code, 0)
   } else if (scenario === "retarget") {
     // The last followed target goes away while the target kernel is slow to confirm the cleanup, and a new one is followed meanwhile.
-    const second = (await remote({ CreateSession: { workspace_id: join(worker.dir, "work"), worktree_id: join(worker.dir, "work"), alias: "retarget-second", no_subscribe: true } })).SessionCreated.session.id
+    const second = (await remote({ CreateSession: { workspace_id: join(worker.dir, "work"), worktree_id: join(worker.dir, "work"), alias: "retarget-second", no_subscribe: true } })).SessionCreated.session_id
     assert.equal((await cli(home, ["events", "subscribe", "--kernel", target, "--session", session])).code, 0)
     let cursor = (await cli(home, ["events", "wait", "--since", "0", "--timeout", "2"])).value.next_cursor
     signal(worker.child, "SIGSTOP")
@@ -277,7 +271,7 @@ try {
     const small = await run("head -c 120000 /dev/zero | tr '\\0' x")
     check("a 120 KB answer is returned", small.code === 0 && small.value?.ShellCommandCompleted?.result?.exit_code === 0, { code: small.code, error: failure(small) })
     const big = await run("head -c 300000 /dev/zero | tr '\\0' x")
-    check("a 300 KB answer is a typed too-large refusal, not an unknown outcome", big.code === 1 && failure(big).code === "kernel_response_too_large", { code: big.code, error: failure(big) })
+    check("a 300 KB answer returns a successful write receipt", big.code === 0 && big.value?.GatewayWriteCompleted?.response_kind === "ShellCommandCompleted", { code: big.code, error: failure(big) })
     const long = await run("sleep 40", 60000)
     check("--timeout and timeout_ms keep a 40 s command waiting past 30 s", long.code === 0 && long.ms >= 39000, { code: long.code, ms: long.ms, error: failure(long) })
   }

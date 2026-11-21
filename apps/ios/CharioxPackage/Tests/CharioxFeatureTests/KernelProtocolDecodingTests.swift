@@ -281,55 +281,24 @@ import Testing
     #expect(session.configState?.values["agents.mode"] == "plan")
 }
 
-@Test func promptSubmittedResponseAllowsMissingQueuedPromptState() throws {
+@Test func promptSubmittedResponseDecodesReceipt() throws {
     let json = """
     {
       "type": "response",
       "request_id": "request-submit",
       "response": {
         "PromptSubmitted": {
+          "session_id": "session-1",
           "outcome": {
             "Started": {
               "prompt": {
                 "id": "prompt-1",
-                "source_attachment_id": "attachment-1",
                 "target_agent_id": "agent-1",
-                "prompt": "hello\\n",
                 "status": "Running",
-                "attachments": []
+                "created_at_ms": 1777111200000,
+                "updated_at_ms": 1777111200000
               }
             }
-          },
-          "session": {
-            "id": "session-1",
-            "alias": null,
-            "workspace_id": "/repo",
-            "worktree_id": "/repo",
-            "status": "Active",
-            "active_prompt": {
-              "id": "prompt-1",
-              "source_attachment_id": "attachment-1",
-              "target_agent_id": "agent-1",
-              "prompt": "hello\\n",
-              "status": "Running",
-              "attachments": []
-            },
-            "prompt_states": {
-              "agent-1": {
-                "active_prompt": {
-                  "id": "prompt-1",
-                  "source_attachment_id": "attachment-1",
-                  "target_agent_id": "agent-1",
-                  "prompt": "hello\\n",
-                  "status": "Running",
-                  "attachments": []
-                }
-              }
-            },
-            "focused_agent_id": "agent-1",
-            "created_at_ms": 1777111200000,
-            "last_used_at_ms": 1777111201000,
-            "agents": []
           }
         }
       },
@@ -338,13 +307,12 @@ import Testing
     """
 
     let frame = try KernelProtocolCodec.decodeResponseFrame(Data(json.utf8))
-    guard case let .promptSubmitted(session) = frame.response else {
+    guard case let .promptSubmitted(sessionID) = frame.response else {
         Issue.record("Expected PromptSubmitted response")
         return
     }
 
-    #expect(session.activePrompt?.id == "prompt-1")
-    #expect(session.promptStates["agent-1"]?.queuedPrompts == [])
+    #expect(sessionID == "session-1")
 }
 
 @Test func providerCatalogResponseDecodesProvidersAndModels() throws {

@@ -530,30 +530,33 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 {
                     // A delivery with a provider attempt but no receipt is settled by the
                     // kernel before this sweep (`settle_interrupted_deliveries`). What is
-                    // left refused before any provider I/O: nothing is unconfirmed, so it
-                    // ends as failed and cannot fence the recipient's later wakes.
-                    let reason = if clock_quarantined {
-                        format!(
-                            "Delivery {} refusal clock is quarantined; owner must restore authoritative state or cancel",
-                            e.sequence
-                        )
-                    } else {
-                        format!(
-                            "Delivery {} failed: the agent did not start. Resume sends it again, or Cancel",
-                            e.sequence
-                        )
-                    };
+                    // left refused before any provider I/O, so nothing is unconfirmed.
                     if !clock_quarantined {
+                        if matches!(e.kind.as_str(), "deadline_reached" | "wait_recheck") {
+                            // The wait can only produce this occurrence once. Keep a refused
+                            // wake deliverable so the wait resumes after the workspace returns.
+                            tx.execute(
+                                "UPDATE agent_inbox_refusals SET first_refused_at_ms=?2 WHERE sequence=?1",
+                                params![sql_integer(e.sequence)?, sql_integer(now)?],
+                            )
+                            .map_err(sql)?;
+                            continue;
+                        }
                         super::delivery_failure::fail_undelivered(
                             tx,
                             &mut e,
                             DelegateGoneReason::FailedStart,
                             now,
                         )?;
-                    } else {
-                        e.state = "blocked".into();
-                        save_event(tx, &e)?;
+                        settle_refused_wake(tx, &e, &mut changed)?;
+                        continue;
                     }
+                    let reason = format!(
+                        "Delivery {} refusal clock is quarantined; owner must restore authoritative state or cancel",
+                        e.sequence
+                    );
+                    e.state = "blocked".into();
+                    save_event(tx, &e)?;
                     // Only the task this delivery belongs to waits on its
                     // reconciliation; unrelated work of the recipient continues.
                     let mut matched = false;
@@ -674,25 +677,6 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             }
             if resume {
                 registrations(tx, &t.task_id)?;
-            }
-            if resume {
-                // The card exists only for this delivery: Resume is the owner's word to send it again.
-                let own = t
-                    .task_id
-                    .strip_prefix("delivery-")
-                    .and_then(|n| n.parse::<u64>().ok());
-                if let Some(own) = own {
-                    let mut event = get_event(tx, &t.room_id, &t.agent_id, own)?;
-                    if event.state == "failed" {
-                        super::delivery_failure::send_again(tx, &mut event, now)?;
-                        t.state = ExecutionState::Done;
-                        t.reason = "Delivery sent again".into();
-                        t.owner_action = None;
-                        t.revision += 1;
-                        save(tx, &t)?;
-                        return Ok(Outcome::Task(t));
-                    }
-                }
             }
             let mut q = tx.prepare("SELECT sequence FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND json_extract(payload,'$.state') IN ('blocked','submitting','uncertain')").map_err(sql)?;
             let deliveries = q
@@ -982,6 +966,44 @@ fn delivery_belongs_to_task(
         }
     }
     Ok(false)
+}
+
+/// A terminal receipt cannot leave its source outcome waiting for a turn.
+fn settle_refused_wake(
+    tx: &Transaction<'_>,
+    event: &InboxEvent,
+    changed: &mut Vec<AgentTaskExecution>,
+) -> Result<(), DaemonError> {
+    if !event.is_source_outcome() {
+        return Ok(());
+    }
+    for mut task in live_tasks(tx, &event.room_id, &event.agent_id)? {
+        if task.state != ExecutionState::Waiting || !delivery_belongs_to_task(tx, event, &task)? {
+            continue;
+        }
+        let mut released = false;
+        for obligation in &mut task.obligations {
+            if matches!(obligation.status.as_str(), "settling" | "failed")
+                && obligation
+                    .completion_source()
+                    .is_some_and(|source| event.reports_source(source))
+            {
+                obligation.status = "cancelled".into();
+                released = true;
+            }
+        }
+        let finished = super::settled_waits::finish(tx, &mut task)?;
+        if finished {
+            task.state = ExecutionState::Cancelled;
+            task.reason = "Wake delivery failed: the agent could not start.".into();
+        }
+        if released || finished {
+            task.revision += 1;
+            save(tx, &task)?;
+            changed.push(task);
+        }
+    }
+    Ok(())
 }
 
 fn refused_wake(event: &InboxEvent) -> bool {

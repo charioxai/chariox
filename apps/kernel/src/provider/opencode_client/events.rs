@@ -268,7 +268,7 @@ mod failure_cause_tests {
     #[test]
     fn opencode_errors_are_typed_from_name_and_status() {
         let expected =
-            |kind, retryable, _diagnostic: &str| TurnOutcome::provider_failure(kind, retryable);
+            |kind, retryable, diagnostic: &str| TurnOutcome::new(kind, retryable, diagnostic);
         assert_eq!(
             session_error(serde_json::json!({
                 "name": "ProviderAuthError",
@@ -305,13 +305,13 @@ mod failure_cause_tests {
                 "data": {"message": "Model not found: opencode/glm-5.3-flash. Did you mean: glm-5.3-flash-free?"}
             })),
             expected(
-                Other,
+                ModelRefused,
                 false,
                 "Model not found: opencode/glm-5.3-flash. Did you mean: glm-5.3-flash-free?"
             )
         );
         for (status, message, cause) in [
-            (403, "permission_error: model access denied", Other),
+            (403, "permission_error: model access denied", ModelRefused),
             (403, "Invalid API key", SignInRequired),
             (401, "Request rejected", SignInRequired),
         ] {

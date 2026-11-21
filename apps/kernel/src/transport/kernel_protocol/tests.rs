@@ -714,7 +714,6 @@ fn session_snapshot_with_agent() -> SessionSnapshotProjection {
     SessionSnapshotProjection {
         jobs: Vec::new(),
         processes: Vec::new(),
-        disk_usage: Vec::new(),
         room_workflows: crate::runtime::projection::RoomWorkflowInventory::project(
             &session,
             crate::session::DEFAULT_LOCAL_USER_ID,
@@ -752,7 +751,6 @@ fn session_snapshot_with_workflow_status(status: WorkflowRunStatus) -> SessionSn
     SessionSnapshotProjection {
         jobs: Vec::new(),
         processes: Vec::new(),
-        disk_usage: Vec::new(),
         room_workflows: crate::runtime::projection::RoomWorkflowInventory::project(
             &session,
             crate::session::DEFAULT_LOCAL_USER_ID,
@@ -812,6 +810,7 @@ fn provider_account_profile() -> crate::account_profile::ProviderAccountProfile 
         origin: crate::account_profile::ProviderAccountProfileOrigin::Linked,
         is_default: false,
         auth_state: crate::account_profile::ProviderAccountAuthState::Authenticated,
+        auth_error: None,
         identity_summary: None,
         plan: Some("pro".to_string()),
         detected_provider_version: None,

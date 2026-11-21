@@ -79,7 +79,6 @@ pub(crate) fn redact_response_for_user(
             agent_activity_revision,
             processes,
             jobs,
-            disk_usage,
         } => {
             let room_workflows =
                 crate::runtime::projection::RoomWorkflowInventory::project_with_history(
@@ -92,13 +91,15 @@ pub(crate) fn redact_response_for_user(
                 room_workflows,
                 agent_activity: redact_agent_activity_for_session(agent_activity, &session),
                 agent_activity_revision,
-                processes,
+                processes: processes
+                    .into_iter()
+                    .filter(|process| process.belongs_to_room_agent(&session))
+                    .collect(),
                 jobs: jobs
                     .into_iter()
                     .filter(|job| session.agents().iter().any(|a| a.id() == job.agent_id))
                     .collect(),
-                disk_usage,
-                session,
+                session: session.without_room_workflow_details(),
             }
         }
         LocalDaemonResponse::MetaagentTaskUpdated { session, task } => {
@@ -165,62 +166,6 @@ pub(crate) fn redact_response_for_user(
                 effects,
             }
         }
-        LocalDaemonResponse::PromptSubmitted {
-            outcome,
-            session,
-            agent_activity,
-            agent_activity_revision,
-        } => {
-            let session = redact_session(session)?;
-            LocalDaemonResponse::PromptSubmitted {
-                outcome,
-                agent_activity: redact_agent_activity_for_session(agent_activity, &session),
-                agent_activity_revision,
-                session,
-            }
-        }
-        LocalDaemonResponse::QueuedPromptSteered {
-            prompt,
-            session,
-            agent_activity,
-            agent_activity_revision,
-        } => {
-            let session = redact_session(session)?;
-            LocalDaemonResponse::QueuedPromptSteered {
-                prompt,
-                agent_activity: redact_agent_activity_for_session(agent_activity, &session),
-                agent_activity_revision,
-                session,
-            }
-        }
-        LocalDaemonResponse::QueuedPromptCancelled {
-            prompt,
-            session,
-            agent_activity,
-            agent_activity_revision,
-        } => {
-            let session = redact_session(session)?;
-            LocalDaemonResponse::QueuedPromptCancelled {
-                prompt,
-                agent_activity: redact_agent_activity_for_session(agent_activity, &session),
-                agent_activity_revision,
-                session,
-            }
-        }
-        LocalDaemonResponse::QueuedPromptUpdated {
-            prompt,
-            session,
-            agent_activity,
-            agent_activity_revision,
-        } => {
-            let session = redact_session(session)?;
-            LocalDaemonResponse::QueuedPromptUpdated {
-                prompt,
-                agent_activity: redact_agent_activity_for_session(agent_activity, &session),
-                agent_activity_revision,
-                session,
-            }
-        }
         LocalDaemonResponse::SessionConfigUpdated { config, session } => {
             LocalDaemonResponse::SessionConfigUpdated {
                 config,
@@ -232,7 +177,7 @@ pub(crate) fn redact_response_for_user(
             session,
             applies,
         } => LocalDaemonResponse::AgentConfigUpdated {
-            agent,
+            agent: agent.without_inactive_usage_limit_stop(),
             session: redact_session(session)?,
             applies,
         },
@@ -241,7 +186,7 @@ pub(crate) fn redact_response_for_user(
             session,
             applies,
         } => LocalDaemonResponse::AgentProfileUpdated {
-            agent,
+            agent: agent.without_inactive_usage_limit_stop(),
             session: redact_session(session)?,
             applies,
         },
@@ -270,6 +215,7 @@ pub(crate) fn redact_response_for_user(
                     agent.owner_user_id() == caller_user_id
                         || agent.owner_user_id() == authenticated_user_id
                 })
+                .map(crate::agent::AgentInstance::without_inactive_usage_limit_stop)
                 .collect(),
         },
         LocalDaemonResponse::ProviderRun { provider_run } => {
@@ -956,7 +902,6 @@ mod tests {
             agent_activity_revision: 0,
             processes: Vec::new(),
             jobs: Vec::new(),
-            disk_usage: Vec::new(),
         }
     }
 

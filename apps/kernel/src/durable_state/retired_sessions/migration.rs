@@ -67,7 +67,7 @@ impl DurableKernelStateStore {
             if events.is_empty() {
                 break;
             }
-            for event in events {
+            for mut event in events {
                 if !checkpoint_applied
                     && snapshot.is_some_and(|snapshot| event.sequence > snapshot.sequence)
                 {
@@ -75,6 +75,7 @@ impl DurableKernelStateStore {
                     checkpoint_applied = true;
                 }
                 cursor = event.sequence;
+                event.discard_queued_message_projections();
                 if matches!(
                     event.kind.as_str(),
                     "session.created" | "session.updated" | "session.ended" | "session.deleted"

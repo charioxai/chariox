@@ -181,6 +181,53 @@ for (const authored of ['', 'background:rgb(12,34,56)', 'background-color:rgb(12
   } finally { await page.close(); }
 });
 
+// A video tile without a still (the kernel sends none for a transformed or cross-origin video, airbnb's icons) shows its poster,
+// what Chrome draws before playback, with the page beneath its transparent pixels; a still then replaces the poster.
+test('MP-08/MP-10: a video tile without a still shows its poster over the page beneath; a still replaces it uncovered; no poster stays black', async () => {
+  const page = await viewer();
+  try {
+    const ring = '<svg xmlns="http://www.w3.org/2000/svg" width="36" height="36"><circle cx="18" cy="18" r="13" fill="none" stroke="rgb(220,0,0)" stroke-width="8"/></svg>';
+    const bytes = Buffer.from(ring), poster = { key: 'r1', resource_id: createHash('sha256').update(bytes).digest('hex'), mime_type: 'image/svg+xml', data_base64: bytes.toString('base64') };
+    await apply(page, { ...snapshot([{ id: 'n1', parent: null, kind: 'document' }, { id: 'n2', parent: 'n1', kind: 'element', tag: 'html' }, { id: 'n3', parent: 'n2', kind: 'element', tag: 'body', attrs: { style: 'margin:0' } },
+      { id: 'n4', parent: 'n3', kind: 'element', tag: 'div', attrs: { style: 'position:absolute;left:0;top:0;width:100px;height:40px;background:rgb(200,200,0)' } },
+      { id: 'n5', parent: 'n3', kind: 'tile', tag: 'video', attrs: { style: 'position:absolute;left:0;top:0;width:36px;height:36px;object-fit:contain' }, size: [36, 36], res: 'r1' },
+      { id: 'n6', parent: 'n3', kind: 'tile', tag: 'video', attrs: { style: 'position:absolute;left:50px;top:0;width:36px;height:36px' }, size: [36, 36] },
+      { id: 'n7', parent: 'n3', kind: 'tile', tag: 'video', attrs: { style: 'position:absolute;left:0;top:60px;width:36px;height:36px;object-fit:contain;background:rgb(12,34,56)' }, size: [36, 36], res: 'r1' }]), resources: [poster] });
+    await frames(); await new Promise(resolve => setTimeout(resolve, 200));
+    // The poster tile's box in page px (the viewer scales the 1280 px page into its frame).
+    const box = await page.evaluate(() => { const o = window.r.frame.getBoundingClientRect(), s = o.width / window.r.frame.contentDocument.defaultView.innerWidth, b = window.r.frame.contentDocument.querySelector('video').getBoundingClientRect(); return [o.x + b.x * s, o.y + b.y * s, b.width * s, b.height * s]; });
+    const pixel = async (fx, fy) => { const shot = await page.screenshot({ clip: { x: Math.round(box[0] + fx * box[2]), y: Math.round(box[1] + fy * box[3]), width: 1, height: 1 } }); return page.evaluate(async b64 => { const img = new Image(); img.src = 'data:image/png;base64,' + b64; await img.decode(); const c = document.createElement('canvas'); c.width = c.height = 1; const g = c.getContext('2d'); g.drawImage(img, 0, 0); return [...g.getImageData(0, 0, 1, 1).data.slice(0, 3)]; }, shot.toString('base64')); };
+    const state = () => page.evaluate(() => [...window.r.frame.contentDocument.querySelectorAll('video')].map(v => [v.getAttribute('poster')?.slice(0, 5) ?? null, getComputedStyle(v).backgroundColor]));
+    assert.deepEqual((await state()).slice(0, 2), [['data:', 'rgba(0, 0, 0, 0)'], [null, 'rgb(0, 0, 0)']], 'MP-10: the poster shows on a transparent tile; a tile with no poster stays a black placeholder');
+    assert.deepEqual(await pixel(0.5, 0.5), [200, 200, 0], `MP-10: the page beneath shows through the poster's transparent middle (box ${box})`);
+    const authored = await page.evaluate(() => { const o = window.r.frame.getBoundingClientRect(), s = o.width / window.r.frame.contentDocument.defaultView.innerWidth, b = window.r.frame.contentDocument.querySelectorAll('video')[2].getBoundingClientRect(); return [o.x + (b.x + b.width / 2) * s, o.y + (b.y + b.height / 2) * s]; });
+    const behind = await page.evaluate(async b64 => { const img = new Image(); img.src = 'data:image/png;base64,' + b64; await img.decode(); const c = document.createElement('canvas'); c.width = c.height = 1; const g = c.getContext('2d'); g.drawImage(img, 0, 0); return [...g.getImageData(0, 0, 1, 1).data.slice(0, 3)]; }, (await page.screenshot({ clip: { x: Math.round(authored[0]), y: Math.round(authored[1]), width: 1, height: 1 } })).toString('base64'));
+    assert.deepEqual(behind, [12, 34, 56], 'MP-10: an authored background stays behind the poster (review 5986714841)');
+    const red = await pixel(0.5, 0.2); assert(red[0] > 180 && red[1] < 60, `MP-10: the poster's ring is drawn (${red})`);
+    const png = await page.evaluate(() => { const c = document.createElement('canvas'); c.width = c.height = 36; const g = c.getContext('2d'); g.fillStyle = 'rgb(0,160,0)'; g.fillRect(0, 0, 36, 36); return c.toDataURL('image/png').split(',')[1]; });
+    await apply(page, { ...delta(2), tiles: [{ node_id: 'n5', x: 0, y: 0, width: 36, height: 36, data_base64: png }] });
+    await frames(); await new Promise(resolve => setTimeout(resolve, 200));
+    assert.equal((await state())[0][0], null, 'MP-10: a still replaces the poster (a playing video never shows a frozen poster)');
+    assert.deepEqual(await pixel(0.5, 0.5), [0, 160, 0], 'MP-10: the still shows, not covered by Chromium\'s own empty player');
+  } finally { await page.close(); }
+});
+
+// The mirror runs no scripts, so Chromium gives an audio with `controls` its own player: the kernel's still already holds the
+// page's player, and the viewer's would cover it (and take presses meant for the kernel).
+test('MP-08/MP-10: an audio tile with controls shows its still, not Chromium\'s own player', async () => {
+  const page = await viewer();
+  try {
+    await apply(page, snapshot(page2([{ id: 'n4', parent: 'n3', kind: 'tile', tag: 'audio', attrs: { controls: '', style: 'display:block;width:300px;height:54px' }, size: [300, 54] }])));
+    const png = await page.evaluate(() => { const c = document.createElement('canvas'); c.width = 300; c.height = 54; const g = c.getContext('2d'); g.fillStyle = 'rgb(241,243,244)'; g.fillRect(0, 0, 300, 54); return c.toDataURL('image/png').split(',')[1]; });
+    await apply(page, { ...delta(2), tiles: [{ node_id: 'n4', x: 0, y: 0, width: 300, height: 54, data_base64: png }] });
+    await frames(); await new Promise(resolve => setTimeout(resolve, 300));
+    const box = await page.evaluate(() => { const o = window.r.frame.getBoundingClientRect(), s = o.width / window.r.frame.contentDocument.defaultView.innerWidth, b = window.r.frame.contentDocument.querySelector('audio').getBoundingClientRect(); return [o.x + b.x * s, o.y + b.y * s, b.width * s, b.height * s]; });
+    const shot = await page.screenshot({ clip: { x: box[0], y: box[1], width: box[2], height: box[3] } });
+    const off = await page.evaluate(async b64 => { const img = new Image(); img.src = 'data:image/png;base64,' + b64; await img.decode(); const c = document.createElement('canvas'); c.width = img.width; c.height = img.height; const g = c.getContext('2d'); g.drawImage(img, 0, 0); const d = g.getImageData(0, 0, c.width, c.height).data; let n = 0; for (let i = 0; i < d.length; i += 4) if (Math.abs(d[i] - 241) > 12 || Math.abs(d[i + 1] - 243) > 12 || Math.abs(d[i + 2] - 244) > 12) n++; return n; }, shot.toString('base64'));
+    assert.equal(off, 0, `MP-10: every audio box pixel is its still (${off} differ: Chromium's player)`);
+  } finally { await page.close(); }
+});
+
 test('MP-10: review #941-2 a multiple select shows every selected option (snapshot, a secondary option changing, replaced options)', async () => {
   const page = await viewer();
   try {
@@ -413,6 +460,25 @@ test('MP-08: protocol 492 the kernel\'s blur (focused: null) blurs the viewer\'s
     const box = await page.evaluate(() => { const f = window.r.frame.getBoundingClientRect(), t = window.r.frame.contentDocument.querySelector('p').getBoundingClientRect(); return [f.x + t.x + 3, f.y + t.y + 3]; });
     await page.mouse.click(box[0], box[1]); await frames();
     assert.deepEqual((await sent()).filter(action => action.kind === 'blur'), [{ kind: 'blur', node_id: 'n4' }], 'MP-08: clicking plain text leaves the control in the kernel too');
+  } finally { await page.close(); }
+});
+
+// browserfidelity r14 (F7): the kernel's focus_visible decides the copy's focus ring; a script focus() alone draws one.
+test('MP-08: the viewer focuses the kernel\'s focus with its ring only where the page draws one (focus_visible), also when only the ring changes; nothing is echoed', async () => {
+  const page = await viewer();
+  try {
+    await apply(page, { ...snapshot(page2([{ id: 'n4', parent: 'n3', kind: 'element', tag: 'button' }, { id: 'n5', parent: 'n3', kind: 'element', tag: 'div', attrs: { tabindex: '0' } }])), focused: 'n4', focus_visible: false });
+    const ring = () => page.evaluate(() => { const e = window.r.frame.contentDocument.activeElement; return [e.localName, e.matches(':focus-visible')]; });
+    const sent = () => page.evaluate(() => window.sent.splice(0).filter(action => action.kind !== 'scroll_to'));
+    assert.deepEqual(await ring(), ['button', false], 'MP-08: a focus the page took by a mouse press draws no ring');
+    await apply(page, delta(2, [], { focused: 'n4', focus_visible: true }));
+    assert.deepEqual(await ring(), ['button', true], 'MP-08: a key on the page turns the ring on, the focus unchanged');
+    await apply(page, delta(3, [], { focused: 'n5', focus_visible: true }));
+    assert.deepEqual(await ring(), ['div', true], 'MP-08: Tab moves the focus with its ring');
+    await apply(page, delta(4, [], { focused: 'n5', focus_visible: false }));
+    assert.deepEqual(await ring(), ['div', false], 'MP-08: a press on the focused element turns the ring off');
+    await frames();
+    assert.deepEqual(await sent(), [], 'MP-08: the kernel-driven focus and ring changes are not echoed');
   } finally { await page.close(); }
 });
 

@@ -48,6 +48,10 @@ struct BrokerConnection {
 static BROKER: OnceLock<Mutex<Option<BrokerConnection>>> = OnceLock::new();
 #[cfg(unix)]
 static BROKER_CONFIGURED: OnceLock<bool> = OnceLock::new();
+/// Set at start when the managed bootstrap that started this kernel found no
+/// slice broker on its machine: the installed release has no slice service.
+#[cfg(unix)]
+static SLICE_SERVICE_MISSING: OnceLock<bool> = OnceLock::new();
 /// The descriptor of the connection the supervisor handed this program
 /// (`CHARIOX_SLICE_DOCKER_BROKER_FD`); after a hot reload the environment
 /// names the same number again.
@@ -183,6 +187,7 @@ pub fn initialize() {
             || inherited_fd.is_some()
             || std::env::var_os(BROKER_REQUIRED_ENV).is_some();
         let _ = BROKER_CONFIGURED.set(configured);
+        let _ = SLICE_SERVICE_MISSING.set(slice_service_missing_from_env());
         std::env::remove_var(BROKER_SOCKET_ENV);
         std::env::remove_var(BROKER_FD_ENV);
         std::env::remove_var(BROKER_REQUIRED_ENV);
@@ -407,6 +412,27 @@ fn broker_is_configured() -> bool {
 
 pub(super) fn configured() -> bool {
     broker_is_configured()
+}
+
+/// The managed bootstrap hands a kernel a broker connection when its machine
+/// runs the slice broker, and only the requirement when it found none.
+#[cfg(unix)]
+fn slice_service_missing_from_env() -> bool {
+    std::env::var_os(BROKER_REQUIRED_ENV).is_some()
+        && std::env::var_os(BROKER_SOCKET_ENV).is_none()
+        && std::env::var_os(BROKER_FD_ENV).is_none()
+}
+
+pub(super) fn slice_service_missing() -> bool {
+    #[cfg(unix)]
+    {
+        SLICE_SERVICE_MISSING
+            .get()
+            .copied()
+            .unwrap_or_else(slice_service_missing_from_env)
+    }
+    #[cfg(not(unix))]
+    false
 }
 
 pub(super) fn provider_auth_protected(container: &str) -> io::Result<bool> {

@@ -200,6 +200,116 @@ fn an_agent_may_type_while_the_login_files_still_run() {
         });
 }
 
+#[test]
+fn a_submitted_line_owns_the_terminal_before_the_shell_starts_it() {
+    let _environment = crate::env_lock::lock();
+    let root = TempDir::new();
+    let home = root.path().join("home");
+    std::fs::create_dir(&home).unwrap();
+    let login = root.path().join("login");
+    let release_login = root.path().join("release-login");
+    let release_command = root.path().join("release-command");
+    std::fs::write(
+        home.join(".bash_profile"),
+        "touch login\nfor ((i=0; i<500; i++)); do\n  [ ! -e release-login ] || break\n  sleep 0.02\ndone\n",
+    )
+    .unwrap();
+    let _home = RestoreHome(std::env::var_os("HOME"));
+    std::env::set_var("HOME", &home);
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let service = service(root.path());
+            service.use_shell_for_test("/bin/bash");
+            let id = open(&service, root.path()).terminal_id;
+            let first = agent("a");
+            let second = agent("b");
+            until("the shell to reach the login file", || async { login.exists() }).await;
+            let started = type_as(
+                &service,
+                &id,
+                &first,
+                "echo READY-$((6*7)); for ((i=0; i<500; i++)); do [ ! -e release-command ] || break; sleep 0.02; done\r",
+            )
+            .await;
+            assert!(started.accepted, "{started:?}");
+
+            let blocked = type_as(&service, &id, &second, "echo TOO-EARLY\r").await;
+            assert_eq!(blocked.refusal.as_deref(), Some("busy (driven by a)"));
+            assert_eq!(started.driver, RoomTerminalDriver::Busy { driven_by: first });
+
+            std::fs::write(&release_login, "").unwrap();
+            until("the first agent's command to start", || {
+                screen_has(&service, &id, "READY-42")
+            })
+            .await;
+            let blocked = type_as(&service, &id, &second, "echo TOO-EARLY\r").await;
+            assert_eq!(blocked.refusal.as_deref(), Some("busy (driven by a)"));
+
+            std::fs::write(&release_command, "").unwrap();
+            until("the shell to return to the prompt", || async {
+                service.pump_once();
+                service.list("room-1")[0].driver == RoomTerminalDriver::Free
+            })
+            .await;
+            assert!(type_as(&service, &id, &second, "true\r").await.accepted);
+            service.end_scope("room-1");
+        });
+}
+
+#[tokio::test]
+async fn a_completed_continuation_releases_terminal_ownership() {
+    let root = TempDir::new();
+    let service = service(root.path());
+    service.use_shell_for_test("/bin/bash");
+    let id = open(&service, root.path()).terminal_id;
+    let terminal_owner = service.terminal_for_test(&id);
+    until("the first prompt", || async {
+        service.pump_once();
+        terminal_owner.lock().terminal.mark_tracking
+    })
+    .await;
+
+    let first = agent("a");
+    let second = agent("b");
+    assert!(
+        type_as(&service, &id, &first, "if true; then\r")
+            .await
+            .accepted
+    );
+    // Quiet at a continuation prompt still leaves the submitted line with A.
+    tokio::time::sleep(Duration::from_millis(650)).await;
+    let blocked = type_as(&service, &id, &second, "true\r").await;
+    assert_eq!(blocked.refusal.as_deref(), Some("busy (driven by a)"));
+
+    assert!(
+        type_as(&service, &id, &first, "echo continuation-$((6*7)); fi\r",)
+            .await
+            .accepted
+    );
+    until("the completed command's output", || {
+        screen_has(&service, &id, "continuation-42")
+    })
+    .await;
+    until("the shell to report completion", || async {
+        service.pump_once();
+        let state = terminal_owner.lock();
+        state.terminal.commands_started > 0 && !state.terminal.command_in_flight
+    })
+    .await;
+    assert!(type_as(&service, &id, &first, " ").await.accepted);
+    until("the completed command to release its driver", || async {
+        service.pump_once();
+        service.list("room-1")[0].driver == RoomTerminalDriver::Free
+    })
+    .await;
+    assert!(!terminal_owner.has_running_work());
+    assert!(type_as(&service, &id, &second, "true\r").await.accepted);
+    service.end_scope("room-1");
+}
+
 /// zsh installs its finish hook while the first prompt's hooks run, so the
 /// first mark it reports is the start of the first command.
 #[test]
@@ -323,7 +433,20 @@ async fn one_driver_rule_protects_a_foreground_program() {
     let service = service(root.path());
     let id = open(&service, root.path()).terminal_id;
 
-    assert!(type_as(&service, &id, &agent("a"), "cat\r").await.accepted);
+    assert!(
+        type_as(
+            &service,
+            &id,
+            &agent("a"),
+            "sh -c 'echo terminal-ready-$((6*7)); exec cat'\r",
+        )
+        .await
+        .accepted
+    );
+    until("cat's command to start", || {
+        screen_has(&service, &id, "terminal-ready-42")
+    })
+    .await;
     until("cat to own the foreground", || async {
         service.pump_once();
         service.list("room-1")[0].driver
@@ -443,6 +566,16 @@ async fn who_owns(
             })
             .await;
             input = text.to_string();
+        }
+        if let TerminalActor::Agent(_) = actor {
+            until("the submitting agent to be allowed to type", || async {
+                service.pump_once();
+                match &service.list("room-1")[0].driver {
+                    RoomTerminalDriver::Free => true,
+                    RoomTerminalDriver::Busy { driven_by } => driven_by == *actor,
+                }
+            })
+            .await;
         }
         assert!(
             type_as(&service, &id, actor, &input).await.accepted,
@@ -688,8 +821,7 @@ async fn an_agents_background_job_stays_the_agents_when_a_person_submits_before_
 }
 
 #[tokio::test]
-async fn a_persons_background_job_stays_the_persons_when_an_agent_submits_before_the_shell_launches_it(
-) {
+async fn a_persons_background_job_stays_the_persons_when_an_agent_submits_at_the_next_prompt() {
     assert!(
         !who_owns_the_job_two_lines_launch(&TerminalActor::User, &agent("a")).await,
         "the agent's later line took the person's job"
@@ -2020,7 +2152,7 @@ fn the_shell_does_not_name_a_kernel_as_its_provider_owner() {
                 &service,
                 &id,
                 &TerminalActor::User,
-                "echo OWNER=${CHARIOX_PROVIDER_OWNER_PID:-none}\r",
+                "echo OWNER=${CHARIOX_PROVIDER_OWNER_INSTANCE:-none}\r",
             )
             .await;
             until("the environment", || async {

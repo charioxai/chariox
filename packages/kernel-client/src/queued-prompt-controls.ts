@@ -51,6 +51,7 @@ export type ProjectedQueuedPrompt = QueuedPromptActionability & {
   readonly externalProviderSessionId?: string | null
   readonly externalProviderTurnId?: string | null
   readonly createdAtMs?: number | null
+  readonly launchWait?: string
   readonly attachmentCount: number
 }
 
@@ -127,6 +128,7 @@ export function projectedQueuedPromptMatches(
     && current.externalProviderSessionId === next.externalProviderSessionId
     && current.externalProviderTurnId === next.externalProviderTurnId
     && (current.createdAtMs ?? null) === (next.createdAtMs ?? null)
+    && current.launchWait === next.launchWait
     && current.attachmentCount === next.attachmentCount
     && queuedPromptActionabilityMatches(current, next)
 }
@@ -201,18 +203,20 @@ export function queuedPromptProjectionForAgent(
     return { action: "preserve" }
   }
   const controls = sessionAgentActivityRecordForAgent(session, agentId)?.queued_prompt_controls
+  const projected = prompts.flatMap((prompt): ProjectedQueuedPrompt[] => {
+    const row = projectQueuedPrompt(prompt, {
+      fallbackTargetAgentId: agentId,
+      control: queuedPromptControlForPromptIds(controls, [
+        prompt.pending_prompt_id,
+        prompt.id,
+      ]),
+    })
+    return row ? [row] : []
+  })
   return {
     action: "replace",
-    prompts: sortProjectedQueuedPrompts(prompts.flatMap((prompt): ProjectedQueuedPrompt[] => {
-      const projected = projectQueuedPrompt(prompt, {
-        fallbackTargetAgentId: agentId,
-        control: queuedPromptControlForPromptIds(controls, [
-          prompt.pending_prompt_id,
-          prompt.id,
-        ]),
-      })
-      return projected ? [projected] : []
-    })),
+    // Admission gives a person's held prompt priority over automated turns.
+    prompts: projected.some(prompt => prompt.launchWait) ? projected : sortProjectedQueuedPrompts(projected),
   }
 }
 
@@ -229,6 +233,7 @@ export function projectQueuedPrompt(
   }
   const pendingPromptId = nonBlankString(prompt.pending_prompt_id)
   const createdAtMs = finiteNumber(prompt.created_at_ms)
+  const launchWait = nonBlankString(prompt.launch_wait)
   const metadata = promptQueueItemTranscriptMetadata(prompt)
   return {
     id: pendingPromptId ?? promptId,
@@ -243,6 +248,7 @@ export function projectQueuedPrompt(
       : {}),
     ...(metadata.externalProviderTurnId !== undefined ? { externalProviderTurnId: metadata.externalProviderTurnId } : {}),
     ...(createdAtMs !== null ? { createdAtMs } : {}),
+    ...(launchWait ? { launchWait } : {}),
     attachmentCount: Array.isArray(prompt.attachments) ? prompt.attachments.length : 0,
     ...queuedPromptActionability(prompt.status, options.control),
   }
@@ -274,9 +280,11 @@ export function queuedPromptMetaLabel(
   item: {
     readonly status?: string | null | undefined
     readonly attachmentCount?: number | null | undefined
+    readonly launchWait?: string | undefined
   },
 ): string {
-  return `${queuedPromptStatusLabel(item.status)}${queuedPromptAttachmentLabel(item.attachmentCount)}`
+  const status = item.launchWait ?? queuedPromptStatusLabel(item.status)
+  return `${status}${queuedPromptAttachmentLabel(item.attachmentCount)}`
 }
 
 export function queuedPromptTitleLabel(count: number, focused: boolean): string {

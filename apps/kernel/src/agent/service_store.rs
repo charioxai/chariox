@@ -562,11 +562,11 @@ impl AgentServiceStore {
         &self,
         durable_state_store: &DurableKernelStateStore,
         agent_id: &str,
-        next: impl FnOnce(Option<&UsageLimitStop>) -> Option<Option<UsageLimitStop>>,
+        next: impl FnOnce(&AgentInstance) -> Option<Option<UsageLimitStop>>,
     ) -> Result<Option<AgentInstance>, DaemonError> {
         let mut agents = self.write();
         let previous = agents.get_agent(agent_id)?;
-        let Some(updated) = agents.change_usage_limit_stop(agent_id, next)? else {
+        let Some(updated) = agents.change_usage_limit_stop(agent_id, |_| next(&previous))? else {
             return Ok(None);
         };
         if let Err(error) = durable_state_store.append_event(

@@ -14,6 +14,8 @@ pub(super) struct Output {
     file: std::fs::File,
     pub(super) log: String,
     discarding_line: bool,
+    /// Lines the log could not keep since its last successful write, and why.
+    unkept: Option<(usize, String)>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -21,6 +23,7 @@ pub(super) struct OutputCheckpoint {
     pending: Vec<u8>,
     tail: String,
     discarding_line: bool,
+    unkept: Option<(usize, String)>,
 }
 
 impl Output {
@@ -52,6 +55,7 @@ impl Output {
             file,
             log: path.to_string_lossy().into_owned(),
             discarding_line: false,
+            unkept: None,
         })
     }
 
@@ -60,6 +64,7 @@ impl Output {
             pending: std::mem::take(&mut self.pending),
             tail: std::mem::take(&mut self.tail),
             discarding_line: self.discarding_line,
+            unkept: self.unkept.take(),
         }
     }
 
@@ -75,6 +80,7 @@ impl Output {
             file,
             log: Self::path(state, record).to_string_lossy().into_owned(),
             discarding_line: checkpoint.discarding_line,
+            unkept: checkpoint.unkept,
         }
     }
 
@@ -82,6 +88,8 @@ impl Output {
         self.file.try_clone().map(Into::into)
     }
 
+    /// Every complete line reaches the tail and the pending buffer stays bounded even while the log
+    /// cannot be written; the first failed log write is returned once the bytes are processed.
     fn push(
         &mut self,
         state: &KernelRuntimeState,
@@ -103,6 +111,7 @@ impl Output {
             bytes
         };
         self.pending.extend_from_slice(bytes);
+        let mut kept = Ok(());
         while let Some(end) = self
             .pending
             .iter()
@@ -122,27 +131,67 @@ impl Output {
                 .scrub(room, text)
                 .unwrap_or_else(|_| "[sensitive job output withheld]".into());
             text.push('\n');
-            self.file
-                .write_all(text.as_bytes())
-                .map_err(|e| ledger::error(format!("Cannot keep job output: {e}")))?;
-            self.tail.push_str(&text);
-            if self.tail.len() > TAIL_BYTES {
-                let mut start = self.tail.len() - TAIL_BYTES;
-                while !self.tail.is_char_boundary(start) {
-                    start += 1;
-                }
-                self.tail.drain(..start);
-            }
+            self.add_to_tail(&text);
+            kept = kept.and(self.keep(&text));
         }
         // A producer cannot consume unbounded memory with one unterminated line.
         if self.pending.len() > 1024 * 1024 {
             self.pending.clear();
             self.discarding_line = true;
-            self.file
-                .write_all(b"[job output line withheld: over 1 MiB]\n")
-                .map_err(|e| ledger::error(e.to_string()))?;
+            kept = kept.and(self.keep("[job output line withheld: over 1 MiB]\n"));
         }
-        Ok(())
+        kept
+    }
+    fn add_to_tail(&mut self, text: &str) {
+        self.tail.push_str(text);
+        if self.tail.len() > TAIL_BYTES {
+            let mut start = self.tail.len() - TAIL_BYTES;
+            while !self.tail.is_char_boundary(start) {
+                start += 1;
+            }
+            self.tail.drain(..start);
+        }
+    }
+    /// Writes one line to the log. A line the log cannot take stays only in the tail; the tail
+    /// says when the log first fails, and the log marks the gap once it takes lines again.
+    fn keep(&mut self, text: &str) -> Result<(), DaemonError> {
+        let line = match &self.unkept {
+            Some((count, reason)) => {
+                format!("[{count} lines of job output not kept: {reason}]\n{text}")
+            }
+            None => text.to_owned(),
+        };
+        match self.file.write_all(line.as_bytes()) {
+            Ok(()) => {
+                self.unkept = None;
+                Ok(())
+            }
+            Err(error) => {
+                let reason = error.to_string();
+                match &mut self.unkept {
+                    Some((count, _)) => *count += 1,
+                    None => {
+                        self.add_to_tail(&format!(
+                            "[job output log not kept: {reason}; lines from here on may be missing from the log]\n"
+                        ));
+                        self.unkept = Some((1, reason.clone()));
+                    }
+                }
+                Err(ledger::error(format!("Cannot keep job output: {reason}")))
+            }
+        }
+    }
+    /// Flushes the log; when lines are missing from it, the tail ends with how many and why.
+    fn close(&mut self) -> Result<(), DaemonError> {
+        let flushed = self.file.flush().map_err(|e| ledger::error(e.to_string()));
+        if let Some((count, reason)) = &self.unkept {
+            let notice =
+                format!("[{count} lines of job output were not kept in the log: {reason}]\n");
+            if !self.tail.ends_with(&notice) {
+                self.add_to_tail(&notice);
+            }
+        }
+        flushed
     }
     /// Writes a notice of the kernel's own. A line the producer left unfinished ends first and the
     /// discard of an over-long line stops, so the notice is neither joined to it nor swallowed.
@@ -153,8 +202,8 @@ impl Output {
         text: &str,
     ) -> Result<(), DaemonError> {
         self.discarding_line = false;
-        self.push(state, room, &[], true)?;
-        self.push(state, room, text.as_bytes(), true)
+        let pending = self.push(state, room, &[], true);
+        pending.and(self.push(state, room, text.as_bytes(), true))
     }
     pub(super) fn page(
         &mut self,
@@ -162,6 +211,7 @@ impl Output {
         room: &str,
         page: &ExecOutput,
     ) -> Result<(), DaemonError> {
+        let mut kept = Ok(());
         for chunk in &page.chunks {
             let bytes = base64::engine::general_purpose::STANDARD
                 .decode(&chunk.data_base64)
@@ -170,15 +220,19 @@ impl Output {
             if chunk.stream == ExecStream::Stderr
                 && bytes.as_slice() == OUTPUT_LOSS_NOTICE.as_bytes()
             {
-                self.notice(state, room, OUTPUT_LOSS_NOTICE)?;
+                kept = kept.and(self.notice(state, room, OUTPUT_LOSS_NOTICE));
             } else {
-                self.push(state, room, &bytes, false)?;
+                kept = kept.and(self.push(state, room, &bytes, false));
             }
         }
         if page.outcome.is_some() {
-            self.push(state, room, &[], true)?;
+            kept = kept.and(self.push(state, room, &[], true));
         }
-        Ok(())
+        kept
+    }
+    #[cfg(test)]
+    pub(super) fn pending_bytes(&self) -> usize {
+        self.pending.len()
     }
 }
 
@@ -244,31 +298,35 @@ impl KernelRuntimeState {
             super::local::LocalProgress,
         )>,
     ) {
-        let (output, progress) = match local {
-            Some((output, active, progress)) => (Ok(output), Some((active, progress))),
-            None => (Output::new(self, &record), None),
-        };
-        let mut output = match output {
-            Ok(output) => output,
-            Err(error) => {
-                if record.remote.awaits_command() {
-                    // Without its output the command cannot be followed: stop it and its worker.
-                    self.stop_held_command(&record).await;
-                    self.give_up_pending_return(&mut record);
-                    self.settle_or_warn(&record).await;
-                    if let (Some(allocation), Some(revision)) =
-                        (&record.allocation_ref, &record.capability_revision)
-                    {
-                        record.deleted = self
-                            .job_compute_release_ref(allocation, revision)
-                            .await
-                            .is_ok();
+        let (mut output, progress) = match local {
+            Some((output, active, progress)) => (output, Some((active, progress))),
+            None => loop {
+                match Output::new(self, &record) {
+                    Ok(output) => break (output, None),
+                    Err(error) if record.remote.awaits_command() && !*cancelled.borrow() => {
+                        tracing::warn!(%error, job_id = %record.job_id, "job output log cannot be opened; retrying");
+                        tokio::time::sleep(LOCAL_STORAGE_RETRY).await;
+                    }
+                    Err(error) => {
+                        if record.remote.awaits_command() {
+                            self.stop_held_command(&record).await;
+                            self.give_up_pending_return(&mut record);
+                            self.settle_or_warn(&record).await;
+                            if let (Some(allocation), Some(revision)) =
+                                (&record.allocation_ref, &record.capability_revision)
+                            {
+                                record.deleted = self
+                                    .job_compute_release_ref(allocation, revision)
+                                    .await
+                                    .is_ok();
+                            }
+                        }
+                        let result = failed(&record, error.to_string());
+                        self.finish_job(&wake, &mut record, result).await;
+                        return;
                     }
                 }
-                let result = failed(&record, error.to_string());
-                self.finish_job(&wake, &mut record, result).await;
-                return;
-            }
+            },
         };
         let result = if let Some((active, progress)) = progress {
             self.resume_local_job(&mut record, &mut output, &mut cancelled, active, progress)
@@ -308,7 +366,7 @@ impl KernelRuntimeState {
                 failed(&record, "Job failed; see the protected output log".into())
             })
         });
-        output.file.flush().ok();
+        output.close().ok();
         let config = self.owned.config_projection.snapshot();
         let artifact = crate::artifacts::OperationalArtifactStore::open(
             config.operational_artifact_root(),
@@ -488,18 +546,16 @@ impl KernelRuntimeState {
                     let shortfall = shortfall.as_ref().expect("guarded");
                     return self.refuse_never_fit(record, output, shortfall, &answer);
                 }
-                Err(error) if is_capacity_failure(&error) => {
+                Err(error) if local_fallback_notice(&error).is_some() => {
+                    let capacity = is_capacity_failure(&error);
                     record.placement = JobPlacement::Local;
-                    record.remote_refusal = record.remote_available.then(|| "no_capacity".into());
+                    record.remote_refusal =
+                        (record.remote_available && capacity).then(|| "no_capacity".into());
                     record.state = "queued".into();
                     save_record(self, record)?;
                     if record.remote_available {
-                        output.push(
-                            self,
-                            &record.room_id,
-                            b"No remote machine free; waiting locally.\n",
-                            false,
-                        )?;
+                        let notice = local_fallback_notice(&error).expect("checked by the guard");
+                        output.push(self, &record.room_id, notice.as_bytes(), false)?;
                     }
                 }
                 Err(error) => return Err(error),
@@ -569,10 +625,7 @@ impl KernelRuntimeState {
             }
             failed(record, "Job failed; see the protected output log".into())
         });
-        output
-            .file
-            .flush()
-            .map_err(|e| ledger::error(e.to_string()))?;
+        output.close()?;
         result.output_tail = output.tail.clone();
         result.log = output.log.clone();
         result.duration_ms = crate::session::unix_epoch_ms()
@@ -681,13 +734,13 @@ impl KernelRuntimeState {
             exec_id: exec_id.clone(),
         })?;
         record.running_at_ms = Some(crate::session::unix_epoch_ms());
-        save_record(self, record)?;
+        self.save_held_record(record, cancelled).await?;
         let input = command_input(&record.request, environment, &record.job_id)?;
         let next = remote.write(&exec_id, 0, input.as_bytes()).await?;
         remote.close_stdin(&exec_id, next).await?;
         self.job_compute_started(machine).await?;
         record.state = "running".into();
-        save_record(self, record)?;
+        self.save_held_record(record, cancelled).await?;
         self.supervise_remote(record, &remote, &plan, &exec_id, output, cancelled)
             .await
     }
@@ -733,6 +786,25 @@ impl KernelRuntimeState {
         let was_cancelled = *cancelled.borrow();
         self.complete_remote_job(record, output, result, was_cancelled)
             .await
+    }
+
+    /// Saves the record of a job whose worker holds its command or files. Local storage can come
+    /// back, so a failed save waits for it instead of giving the worker up; only a stop ends it.
+    async fn save_held_record(
+        &self,
+        record: &Record,
+        cancelled: &watch::Receiver<bool>,
+    ) -> Result<(), DaemonError> {
+        loop {
+            match save_record(self, record) {
+                Ok(()) => return Ok(()),
+                Err(error) if *cancelled.borrow() => return Err(error),
+                Err(error) => {
+                    tracing::warn!(%error, job_id = %record.job_id, "job record not saved; retrying");
+                    tokio::time::sleep(LOCAL_STORAGE_RETRY).await;
+                }
+            }
+        }
     }
 
     /// Follows the command on the worker to its end, then brings its files home.
@@ -802,10 +874,13 @@ impl KernelRuntimeState {
                 Ok(page) => {
                     if disconnected.take().is_some() {
                         record.state = "running".into();
-                        save_record(self, record)?;
+                        self.save_held_record(record, cancelled).await?;
                     }
                     cursor = page.next_cursor;
-                    output.page(self, &record.room_id, &page)?;
+                    // Lost log lines are not worth the command or its files.
+                    if let Err(error) = output.page(self, &record.room_id, &page) {
+                        tracing::warn!(%error, job_id = %record.job_id, "remote job output not kept");
+                    }
                     if let Some(outcome) = page.outcome {
                         break outcome;
                     }
@@ -819,7 +894,7 @@ impl KernelRuntimeState {
                         return Err(error);
                     }
                     record.state = "reconnecting".into();
-                    save_record(self, record)?;
+                    self.save_held_record(record, cancelled).await?;
                     tokio::time::sleep(Duration::from_secs(2)).await;
                 }
             }
@@ -829,7 +904,7 @@ impl KernelRuntimeState {
         // The command's end is saved before any of its files are accepted.
         record.advance(StageEvent::End(result.outcome))?;
         record.state = "returning".into();
-        save_record(self, record)?;
+        self.save_held_record(record, cancelled).await?;
         match remote
             .return_files(&plan.root, record, &plan.base, &plan.uploaded)
             .await
@@ -844,13 +919,18 @@ impl KernelRuntimeState {
                     "The command finished, but its files could not all be returned: {error}. {}",
                     kept_worker_notice(record)
                 );
-                output.push(self, &record.room_id, notice.as_bytes(), true)?;
+                if let Err(error) = output.push(self, &record.room_id, notice.as_bytes(), true) {
+                    tracing::warn!(%error, job_id = %record.job_id, "remote job output not kept");
+                }
                 result.outcome = JobOutcome::OutsideEnd;
             }
         }
         Ok(result)
     }
 }
+
+/// How often a held job tries its local storage again after a write failed.
+const LOCAL_STORAGE_RETRY: Duration = Duration::from_millis(if cfg!(test) { 100 } else { 2000 });
 
 /// How long a worker may stay out of reach, while its command runs, before it is stopped and reaped.
 const WORKER_PATIENCE: Duration = Duration::from_secs(if cfg!(test) { 3 } else { 600 });
@@ -891,6 +971,10 @@ pub(super) fn command_input(
 fn is_capacity_failure(error: &DaemonError) -> bool {
     match error {
         DaemonError::MachineRequest { code, .. } if code == "control_plane_unavailable" => true,
+        // The service's own refusal of an account at its machine limit reaches the kernel as a transport error.
+        DaemonError::LocalTransport { .. } => {
+            crate::runtime::cloud_api_client::cloud_error_code(error) == Some("capacity_exceeded")
+        }
         DaemonError::RelayTransport { code, .. } | DaemonError::MachineRequest { code, .. } => {
             matches!(
                 code.as_str(),
@@ -898,6 +982,22 @@ fn is_capacity_failure(error: &DaemonError) -> bool {
             )
         }
         _ => false,
+    }
+}
+/// The sentence a job prints when the machine service cannot give it a machine and it runs here instead.
+fn local_fallback_notice(error: &DaemonError) -> Option<&'static str> {
+    if is_capacity_failure(error) {
+        return Some("No remote machine free; waiting locally.\n");
+    }
+    match crate::runtime::cloud_api_client::cloud_error_code(error)? {
+        "rate_limited" => Some("Remote machines are rate limited right now; waiting locally.\n"),
+        "dependency_unavailable" => {
+            Some("The remote machine service is unavailable right now; waiting locally.\n")
+        }
+        "internal_error" => {
+            Some("The remote machine service had an internal error; waiting locally.\n")
+        }
+        _ => None,
     }
 }
 pub(super) fn cancelled_result(record: &Record) -> JobResult {

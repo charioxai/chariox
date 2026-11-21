@@ -170,6 +170,12 @@ pub(crate) async fn execute_provider_account_request(
                 &request.provider,
                 &request.account_profile,
             )?;
+            registry.ensure_profile_removable(
+                &owner_user_id,
+                &request.provider,
+                &request.account_profile,
+                false,
+            )?;
             invalidate_profile_endpoint(
                 &owner_user_id,
                 &request.provider,
@@ -190,6 +196,12 @@ pub(crate) async fn execute_provider_account_request(
                 &owner_user_id,
                 &request.provider,
                 &request.account_profile,
+            )?;
+            registry.ensure_profile_removable(
+                &owner_user_id,
+                &request.provider,
+                &request.account_profile,
+                true,
             )?;
             invalidate_profile_endpoint(
                 &owner_user_id,
@@ -227,6 +239,18 @@ pub(crate) async fn execute_provider_account_request(
             "Provider account request failed",
             serde_json::json!({ "error": error.to_string() }),
         );
+    }
+    if let Ok(LocalDaemonResponse::ProviderAccountProfile { profile }) = &response {
+        runtime_state
+            .reconcile_provider_account_sign_in_notice(profile)
+            .await?;
+    }
+    if let Ok(LocalDaemonResponse::ProviderAccountProfilesListed { profiles }) = &response {
+        for profile in profiles {
+            runtime_state
+                .reconcile_provider_account_sign_in_notice(profile)
+                .await?;
+        }
     }
     response
 }

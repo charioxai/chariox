@@ -17,6 +17,7 @@ pub struct CodexPollResult {
     pub terminal_failure: Option<String>,
     pub notices: Vec<String>,
     pub resolved_usage: Option<ProviderRunTokenUsage>,
+    pub model_usage: Vec<crate::provider::ModelTurnUsage>,
     pub account_rate_limits: Vec<serde_json::Value>,
 }
 
@@ -50,7 +51,11 @@ pub struct CodexRuntimeState {
     pub(super) buffered_notifications: Vec<CodexNotification>,
     pub(super) active_turn_id: Option<String>,
     pub(crate) native_approval_origin: Option<crate::session::NativeInteractionOrigin>,
+    pub(super) unavailable_workspace_sandbox:
+        Option<super::super::codex_client::UnavailableWorkspaceSandbox>,
     pub(super) turn_tracker: CodexTurnTracker,
+    pub(super) usage_tracker: super::model_usage::CodexUsageTracker,
+    pub(super) selected_model: Option<String>,
     pub(super) authoritative_backfill_gate: CodexAuthoritativeBackfillGate,
     pub(super) text_items: BTreeMap<String, CodexTextTranscriptState>,
     pub(super) tool_items: BTreeMap<String, CodexToolTranscriptState>,
@@ -124,7 +129,10 @@ impl CodexRuntimeState {
             buffered_notifications: Vec::new(),
             active_turn_id: None,
             native_approval_origin: None,
+            unavailable_workspace_sandbox: None,
             turn_tracker: CodexTurnTracker::default(),
+            usage_tracker: Default::default(),
+            selected_model: None,
             authoritative_backfill_gate: CodexAuthoritativeBackfillGate::default(),
             text_items: BTreeMap::new(),
             tool_items: BTreeMap::new(),
@@ -141,30 +149,14 @@ impl CodexRuntimeState {
         socket: CodexSocket,
         next_request_id: u64,
     ) -> Self {
-        Self {
+        let mut state = Self::new(
             endpoint,
-            thread_id: thread_id.unwrap_or_default(),
-            thread_ready: false,
-            read_only_discovery_permissions: false,
-            ephemeral: false,
-            metadata_only_discovery: false,
-            notification_only: false,
+            thread_id.unwrap_or_default(),
             socket,
-            #[cfg(unix)]
-            output_readiness: None,
             next_request_id,
-            buffered_notifications: Vec::new(),
-            active_turn_id: None,
-            native_approval_origin: None,
-            turn_tracker: CodexTurnTracker::default(),
-            authoritative_backfill_gate: CodexAuthoritativeBackfillGate::default(),
-            text_items: BTreeMap::new(),
-            tool_items: BTreeMap::new(),
-            tool_snapshots: Default::default(),
-            output_notifier: Default::default(),
-            #[cfg(unix)]
-            adopted_turn: None,
-        }
+        );
+        state.thread_ready = false;
+        state
     }
 
     pub(crate) fn bind_output_ready(

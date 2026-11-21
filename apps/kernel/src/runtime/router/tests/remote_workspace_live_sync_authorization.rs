@@ -1,4 +1,5 @@
 use super::*;
+mod managed_slice;
 
 #[tokio::test]
 async fn remote_workspace_live_sync_requests_require_membership_and_record_member_identity() {

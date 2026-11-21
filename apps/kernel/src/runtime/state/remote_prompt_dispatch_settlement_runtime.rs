@@ -18,10 +18,49 @@ impl KernelRuntimeState {
         result: Result<String, DaemonError>,
         mut after_failed_ack: impl FnMut() + Send,
     ) -> Result<(), DaemonError> {
+        use super::remote_prompt_owned_state::RemotePromptDispatchSettlement;
+        if let Some(reason) = result
+            .as_ref()
+            .err()
+            .and_then(super::provider_turn_admission::provider_memory_wait_reason)
+        {
+            match self
+                .owned
+                .defer_remote_dispatch_for_memory(&dispatch, reason)?
+            {
+                RemotePromptDispatchSettlement::Settled(prompt)
+                    if prompt.status() == crate::session::PromptStatus::Cancelling =>
+                {
+                    self.finalize_remote_prompt_cancellation_and_advance(
+                        &dispatch.session_id,
+                        &dispatch.agent_id,
+                        prompt.source_attachment_id(),
+                    )?;
+                }
+                RemotePromptDispatchSettlement::Settled(_) => {
+                    self.owned
+                        .update_metaagent_event_prompt_delivery_for_prompt(
+                        &dispatch.prompt_id,
+                        crate::runtime::metaagent_event::MetaagentEventPromptDeliveryStatus::Queued,
+                        Some(reason.to_owned()),
+                    );
+                    let _ = self.owned.session_snapshot(&dispatch.session_id)?;
+                }
+                RemotePromptDispatchSettlement::Superseded => {}
+                RemotePromptDispatchSettlement::BindingChanged(_) => {
+                    return Err(DaemonError::LocalTransport {
+                        operation: "wait for provider memory",
+                        message:
+                            "the worker binding changed while its memory receipt was being settled"
+                                .into(),
+                    });
+                }
+            }
+            return Ok(());
+        }
         let session_id = dispatch.session_id.clone();
         let agent_id = dispatch.agent_id.clone();
         let delivery_succeeded = result.is_ok();
-        use super::remote_prompt_owned_state::RemotePromptDispatchSettlement;
         let mut append_retry = 0_u8;
         let settlement = loop {
             match self.owned.settle_remote_dispatch_if_current(

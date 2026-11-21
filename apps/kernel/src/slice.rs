@@ -19,7 +19,6 @@ pub(crate) use worker_identity::{
 
 #[cfg(unix)]
 pub(crate) use local_docker::hand_over_managed_docker_broker;
-pub(crate) use local_docker::managed_docker_broker_configured;
 pub(crate) use local_docker::{
     acknowledge_protected_home_restore, cleanup_replaced_saved_state_generation,
     fresh_local_docker_observation_environment, reconcile_local_docker_restore_acknowledgements,
@@ -44,6 +43,7 @@ use local_docker::{
     ensure_local_docker_slice_ports_available, local_docker_slice_action_log_path,
     relay_url_for_container,
 };
+pub(crate) use local_docker::{local_docker_slices_unavailable, managed_docker_broker_configured};
 pub use model::{
     CreateSliceInput, LocalDockerSliceAction, SliceBackendKind, SliceBackupRecord,
     SliceBackupRestoreAcknowledgementRecord, SliceBackupRestoreTransactionRecord,

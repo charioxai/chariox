@@ -8,6 +8,39 @@ use crate::local::{
 };
 use crate::transport::kernel_protocol::{KernelEvent, KernelIncomingFrame, KernelOutgoingFrame};
 
+#[test]
+fn gateway_write_receipt_shapes() {
+    use crate::runtime::kernel_gateway::write_receipt::compact;
+    use serde_json::json;
+
+    let session = json!({"id": "room", "agents": ["unrelated"]});
+    let prompt = json!({
+        "id": "prompt", "target_agent_id": "agent", "status": "Running",
+        "prompt": "user text", "attachments": [{"url": "data:image/png;base64,large"}],
+    });
+    let workflow = json!({"id": "workflow", "alias": "build"});
+    let mut receipts = [
+        json!({"PromptSubmitted": {
+            "session": session, "agent_activity": {"other": {}}, "agent_activity_revision": 42,
+            "outcome": {"Started": {"prompt": prompt}},
+        }}),
+        json!({"ActivePromptSteered": {"prompt": prompt}}),
+        json!({"WorkflowCreated": {"session": session, "workflow": workflow}}),
+        json!({"ProjectRestored": {"project": {"id": "project"}, "sessions": [session]}}),
+        json!(LocalDaemonResponse::GatewayWriteCompleted {
+            response_kind: "ShellCommandCompleted".into(),
+            session_id: Some("room".into()),
+            exit_code: Some(17),
+        }),
+    ];
+    for receipt in &mut receipts {
+        compact(receipt);
+    }
+    let expected: serde_json::Value =
+        serde_json::from_str(include_str!("gateway-write-receipts.json")).unwrap();
+    assert_eq!(json!(receipts), expected);
+}
+
 // EA2-04/05: the shapes an external agent and a forwarding kernel depend on.
 #[test]
 fn kernel_gateway_protocol_568_shapes_and_hash() {
@@ -229,7 +262,7 @@ fn outside_events_snapshot_and_hash() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "81aa549b8cd25370a746681fcaac8eccd8bb2eb844f2484ae90956d335f9c21b"
+        "26ce306402489cf0016a582cd8c6ac483ca9f85f362ae61c854da791fd3005ba"
     );
 }
 

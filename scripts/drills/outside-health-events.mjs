@@ -113,16 +113,10 @@ async function unlock(r) {
   const made = (await r.rpc({ CreateSession: { workspace_id: join(r.dir, "work"), worktree_id: join(r.dir, "work"), alias: "health-drill-owner" } })).SessionCreated
   const att = (await r.rpc({ AttachToSession: { session_id: made.session.id, client_id: "health-drill", capability_level: "FullTerminal" } })).SessionAttached
   await r.client.subscribeToKernelEvents(made.session.id, att.attachment.id)
-  const pending = r.rpc({ ManageCredentialVault: { session_id: made.session.id, agent_id: made.agent.id } })
-  pending.catch(() => {})
-  let interaction
-  await until(async () => {
-    const st = (await r.rpc({ GetSessionState: { session_id: made.session.id } })).SessionState.session
-    interaction = st.active_interactions?.find(x => x.id.startsWith("vault-unlock-"))
-    return interaction
-  }, "disposable vault prompt")
-  await r.rpc({ RespondToInteraction: { session_id: made.session.id, interaction_id: interaction.id, choice_id: "passphrase", custom_reply: r.passkey } })
-  await pending
+  await r.rpc({ CreateCredentialVault: { origin: { kind: "passphrase", passphrase: r.passkey } } })
+  await r.rpc({ UnlockCredentialVault: {
+    passphrase: r.passkey, duration: { kind: "until_kernel_stops" }, surface: "terminal",
+  } })
   r.client.onKernelEvent(async event => {
     if (event.event !== "passkey_prompts_changed") return
     for (const prompt of event.prompts || []) if (prompt.kind === "access_grant") {
@@ -336,7 +330,7 @@ try {
     // Pause only this owned home process before that pump installs its new
     // targets, then end the added Room. Reinstallation is persistently refused.
     assert.equal((await cli(home, ["events", "ack", String(cursor)])).code, 0)
-    const second = (await remote({ CreateSession: { workspace_id: join(worker.dir, "work"), worktree_id: join(worker.dir, "work"), alias: "health-pump-target", no_subscribe: true } })).SessionCreated.session.id
+    const second = (await remote({ CreateSession: { workspace_id: join(worker.dir, "work"), worktree_id: join(worker.dir, "work"), alias: "health-pump-target", no_subscribe: true } })).SessionCreated.session_id
     const imported = cli(home, ["events", "wait", "--since", String(cursor), "--timeout", "10"])
     assert.equal((await cli(home, ["terminal", "open", "--kernel", target, "--session", session, "--", "/bin/sh", "-c", "exit 41"])).code, 0)
     const established = await imported

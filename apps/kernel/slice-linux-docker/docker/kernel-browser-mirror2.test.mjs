@@ -64,6 +64,17 @@ test('MP-11: every url() spelling becomes a kernel resource key (custom properti
   assert.ok(seen.some(([href, kind]) => href === 'https://site.example/css/f.woff2' && kind === 'font'));
 });
 
+// Chrome serializes a style attribute's `image-set(url(a) 1x)` as `image-set(url("a") 1x)`: that string was wrapped in a
+// second url(), neutralized as `urlx(`, and the background vanished at every density.
+test('MP-11: an image-set() string inside url() or type() is not a second URL', () => {
+  const { seen, resource } = keys();
+  const out = sanitizeMirrorCss('.f { background-image: image-set(url("q.png") 1x, url( \'r.png\' ) type("image/png") 2x, "s.png" 3x); }', 'https://site.example/', resource);
+  assert.ok(onlyKernelUrls(out), out);
+  assert.ok(!/urlx/.test(out), out);
+  assert.match(out, /^\.f \{ background-image: image-set\(url\("mr:r\d+"\) 1x, url\("mr:r\d+"\) type\("image\/png"\) 2x, url\("mr:r\d+"\) 3x\); \}$/);
+  assert.deepEqual(seen.map(([href]) => href), ['https://site.example/q.png', 'https://site.example/r.png', 'https://site.example/s.png']);
+});
+
 test('MP-11: CSS-escaped fetching function names are decoded before the url() rewrite', () => {
   const { seen, resource } = keys();
   // Custom properties keep raw tokens; `u\\72l(` is a url() token once substituted.
@@ -95,6 +106,15 @@ test('MP-10: an href value selector reads chariox-href; strings, comments, other
     + '.label::after { content: "[href=help]"; } .q::before { content: \'[href^="#"]\'; } [data-example="[href=help]"] { color: red; } '
     + '/* a[href$=".zip"] */ .c { --x: [href=help]; grid-template-areas: "[href=x]"; } a[data-href="x"] { color: red; } [x\\[href="y"] { color: red; }');
   assert.equal(sanitizeMirrorCss('color: red; --x: [href=help]', 'https://site.example/', () => null), 'color: red; --x: [href=help]', 'a style attribute has no selector');
+});
+
+// w3.org (browserfidelity r12): an element's src travels as a resource key, so a selector on its value reads `chariox-src`.
+test('MP-10: a src value selector reads chariox-src; a presence test, strings, comments and declarations stay', () => {
+  const css = '.head img[src*="logos/W3C"] { width: 120px; } img[ SRC ^= "/c/" ], img[src$=".svg" i]:not([src*="red"]) { width: 9px; } img[src] { width: 3px; } iframe[srcdoc="x"] { color: red; } '
+    + '.a::after { content: "[src=x]"; } /* img[src*="y"] */ .c { --x: [src=help]; } img[data-src="x"] { color: red; } a[href*="x"] img[src="/e.png"] { color: blue; }';
+  assert.equal(sanitizeMirrorCss(css, 'https://site.example/', () => null),
+    '.head img[chariox-src*="logos/W3C"] { width: 120px; } img[ chariox-src ^= "/c/" ], img[chariox-src$=".svg" i]:not([chariox-src*="red"]) { width: 9px; } img[src] { width: 3px; } iframe[srcdoc="x"] { color: red; } '
+    + '.a::after { content: "[src=x]"; } /* img[src*="y"] */ .c { --x: [src=help]; } img[data-src="x"] { color: red; } a[chariox-href*="x"] img[chariox-src="/e.png"] { color: blue; }');
 });
 
 // Owner rule (2026-10-09): no value scanning in page CSS; only Vault-filled
@@ -235,6 +255,28 @@ test('MP-10: resources travel in 4-aligned slices within the packet budget (64 K
   assert.ok(packets.filter(p => p.input).every(p => p.bytes <= 64 * 1024 && p.bytes > 0), JSON.stringify(packets));
   assert.ok(packets.every(p => p.bytes <= 256 * 1024), JSON.stringify(packets));
   for (const [key, url] of [['r1', 'https://x/a.png'], ['r2', 'https://x/b.png'], ['r3', 'https://x/big.png']]) assert.equal(whole.get(key), bodies[url].toString('base64'), key);
+});
+
+// browserfidelity r12 (angular.dev): a data: URL decodes as the browser decodes it (Fetch's percent-decode, without the fragment),
+// so an SVG mask holding `width='100%'` reaches the viewer; the URLs are the observer's (`new URL(raw).href`).
+test('MP-10: a data: resource travels as the bytes the browser decodes from it (a bare %, %XX bytes, no fragment, base64)', async () => {
+  const raw = [
+    "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='10'><rect width='100%' height='100%'/></svg>",
+    "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg'><defs><pattern id='p'/></defs><rect width='100%' fill='url(%23p)'/></svg>",
+    "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg'><rect fill='url(#p)'/></svg>",
+    "data:image/svg+xml;charset=utf-8,<svg xmlns='http://www.w3.org/2000/svg'><text>%E2%9C%93 \u2713 50%25</text></svg>",
+    'data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnLz4=#frag',
+  ].map(url => new URL(url).href);
+  const mirror = new Mirror2({ host: {} }), world = { connection: { send: async () => { throw new Error('a data: URL is never fetched'); } }, sessionId: 's', ref: 'm', frame: { id: 'f' } };
+  mirror.evaluate = async (w, expression) => expression.includes('nearImages') ? { near: [], all: [] } : expression.includes('loadedCount') ? 1 : [];
+  const stream = { resources: new Map(), frameSlots: new Map(), movedAt: 0, inputAt: 0 };
+  mirror.register(stream, { resources: raw.map((url, i) => ({ key: `r${i + 1}`, url, kind: 'image' })) });
+  const delivered = new Map();
+  for (let i = 0; i < 5 && delivered.size < raw.length; i++) for (const r of await mirror.materialize(world, stream, null)) delivered.set(r.key, r.data_base64);
+  for (const [i, url] of raw.entries()) {
+    const browser = Buffer.from(await (await fetch(url)).arrayBuffer()).toString('base64');
+    assert.equal(delivered.get(`r${i + 1}`), browser, `${url.slice(0, 90)}: the browser's bytes`);
+  }
 });
 
 test('MP-10: while the view moves a large near image travels as a preview, even mid-slices; its exact slices continue once settled', async () => {
@@ -463,7 +505,7 @@ test('MP-08/MP-10: an empty drain re-arms the long poll without a separate loade
   const calls = [], tab = { tab_id: 't', target_id: 'T', document_id: 'D1' };
   const connection = { isOpen: () => true, send: async () => ({}) };
   const world = { connection, sessionId: 'S', frame: { loaderId: 'D1' }, ref: 'm' };
-  const header = { snapshot_complete: 'false', font_failures:'[]', scroll: '[0,0]', focused: 'null', selection: 'null', fragment: 'null' };
+  const header = { snapshot_complete: 'false', font_failures:'[]', scroll: '[0,0]', focused: 'null', focus_visible: 'false', selection: 'null', fragment: 'null' };
   const stream = { tab_id: 't', world, issued: 1, document_id: 'D1', policy: 'p', fallback: null, header, sentScroll: [0, 0], resources: new Map(), attrSequence: new Map(), ownScrolls: new Map(), frames: new Map(), frameSlots: new Map(), frameSlot: 0, tileKeys: '', movedAt: 0 };
   const host = { protection: 'p', generation: 1, pageSize, scales: new Map(), tabs: new Map([['t', tab]]), displayTarget: async () => tab,
     browser: { connection, documentIdsByTarget: new Map([['T', 'D1']]), sessionsByTarget: new Map([['T', 'S']]) } };
@@ -513,7 +555,7 @@ test('MP-08/MP-10: a navigation ends a waiting long poll before its deadline', a
   const documents = new Map([['T', 'D1']]);
   const connection = { isOpen: () => true, send: async () => ({ frameTree: { frame: { loaderId: documents.get('T') } } }) };
   const world = { connection, sessionId: 'S', frame: { loaderId: 'D1' }, ref: 'm' };
-  const stream = { tab_id: 't', world, issued: 1, document_id: 'D1', policy, fallback: null, resources: new Map(), attrSequence: new Map(), ownScrolls: new Map(), frames: new Map(), frameSlots: new Map(), frameSlot: 0, tileKeys: '', hurry: 0, header: { scroll: '[0,0]', focused: 'null', selection: 'null', fragment: 'null' } };
+  const stream = { tab_id: 't', world, issued: 1, document_id: 'D1', policy, fallback: null, resources: new Map(), attrSequence: new Map(), ownScrolls: new Map(), frames: new Map(), frameSlots: new Map(), frameSlot: 0, tileKeys: '', hurry: 0, header: { scroll: '[0,0]', focused: 'null', focus_visible: 'false', selection: 'null', fragment: 'null' } };
   const host = { protection: policy, generation: 1, pageSize, scales: new Map(), tabs: new Map([['t', tab]]), displayTarget: async () => tab,
     browser: { connection, documentIdsByTarget: documents, sessionsByTarget: new Map([['T', 'S']]) } };
   const mirror = new Mirror2({ host, require: () => stream, assertWebTab: () => {}, streams: new Map([['s', stream]]) });

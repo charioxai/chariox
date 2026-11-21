@@ -26,10 +26,29 @@ pub struct Kernel {
     token: String,
 }
 
+impl Kernel {
+    pub async fn terminate_within(&mut self, budget: Duration) -> std::process::ExitStatus {
+        let pid = self.child.id() as i32;
+        assert!(pid > 1);
+        // SAFETY: pid is the kernel process owned by this fixture.
+        assert_eq!(unsafe { libc::kill(pid, libc::SIGTERM) }, 0);
+        tokio::time::timeout(budget, async {
+            loop {
+                if let Some(status) = self.child.try_wait().unwrap() {
+                    return status;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("kernel must exit within its shutdown budget")
+    }
+}
+
 impl Drop for Kernel {
     fn drop(&mut self) {
         let pid = self.child.id() as i32;
-        if pid > 1 {
+        if pid > 1 && self.child.try_wait().unwrap().is_none() {
             unsafe { libc::kill(pid, libc::SIGTERM) };
         }
         let deadline = Instant::now() + Duration::from_secs(10);
@@ -39,6 +58,12 @@ impl Drop for Kernel {
         let _ = self.child.kill();
         let _ = self.child.wait();
         let _ = std::fs::remove_dir_all(&self.scratch);
+    }
+}
+
+impl Kernel {
+    pub fn try_wait(&mut self) -> Option<std::process::ExitStatus> {
+        self.child.try_wait().unwrap()
     }
 }
 
