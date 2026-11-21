@@ -3,6 +3,7 @@ use chariox_kernel::local::{
     DeleteSessionRequest, ListProjectsRequest, ListSessionsRequest, LocalDaemonRequest,
 };
 use chariox_kernel::runtime_transport::run_kernel_websocket_server_on_listener;
+use chariox_kernel::session::ProjectId;
 use chariox_kernel::{DaemonApp, DaemonConfig};
 use tokio::sync::oneshot;
 
@@ -88,10 +89,11 @@ fn kernel_websocket_keeps_projects_bound_to_visible_sessions() {
             LocalDaemonRequest::CreateSession(workspace.session_request().with_hidden(true)),
         )
         .await;
-        assert_eq!(
-            response_variant(&hidden, "SessionCreated")["session"]["project_id"].as_str(),
-            Some("")
-        );
+        let scope: ProjectId = serde_json::from_value(
+            response_variant(&hidden, "SessionCreated")["session"]["project_id"].clone(),
+        )
+        .expect("hidden Room must have a Project scope");
+        assert!(scope.is_hidden_scope(), "{scope}");
 
         let sessions = send_request(
             &mut socket,
