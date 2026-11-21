@@ -65,9 +65,10 @@ way. Unset, no cap applies.
 
 On Linux, when the existing cgroup-v2 hierarchy permits delegation, the kernel
 creates an accounting cgroup `chariox-<pid>-<id>` beside its own, an owner
-`unit-*` below it, and a `process-*` leaf per workload. These groups impose no
-`memory.max`, `memory.high`, swap prohibition, CPU weighting or per-owner memory
-reservation. Ancestor limits and OS OOM handling remain authoritative. Explicit
+`unit-*` below it, and a `process-*` leaf per workload. Miguel's 2026-11-21 decision disables
+swap for this workload cgroup (`memory.swap.max=0`). The budget leaves
+`memory.max` and `memory.high` unset. Ancestor limits and OS OOM handling
+remain authoritative. Explicit
 owner caps use the same monitor as the portable watchdog. Workload children clear
 inherited OOM protection; the kernel stays outside workload cgroups. Empty owned
 cgroups are removed after their workloads end.
