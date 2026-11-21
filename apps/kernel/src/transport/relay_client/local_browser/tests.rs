@@ -813,12 +813,12 @@ fn mp08_mp11_local_browser_wire_is_bound_to_protocol473() {
         "request": {"local_browser_connect": {}},
         "terminal_request": {"local_terminal_connect": {}},
         "terminal_renew_request": {"local_terminal_renew": {"grant": "grant", "sequence": 1}},
-        "terminal_response": ["LocalTerminalConnectIssued", "endpoint", "grant", "kernel_id", "endpoint_epoch", "expires_at_ms", "paired_origin"],
-        "terminal_renew_response": ["LocalTerminalLeaseRenewed", "expires_at_ms", "next_sequence"],
+        "terminal_response": ["LocalTerminalConnectIssued", "endpoint", "grant", "kernel_id", "endpoint_epoch", "expires_at_ms", "expires_in_ms", "paired_origin"],
+        "terminal_renew_response": ["LocalTerminalLeaseRenewed", "expires_at_ms", "expires_in_ms", "next_sequence"],
         "renew_request": {"local_browser_renew": {"grant": "grant", "sequence": 1}},
-        "renew_response": ["LocalBrowserLeaseRenewed", "expires_at_ms", "next_sequence"],
+        "renew_response": ["LocalBrowserLeaseRenewed", "expires_at_ms", "expires_in_ms", "next_sequence"],
         "lease_ms": GRANT_TTL_MS,
-        "response": ["LocalBrowserConnectIssued", "endpoint", "grant", "kernel_id", "endpoint_epoch", "expires_at_ms"],
+        "response": ["LocalBrowserConnectIssued", "endpoint", "grant", "kernel_id", "endpoint_epoch", "expires_at_ms", "expires_in_ms"],
         "proof": ["grant", "challenge", "origin", "kernel_id", "endpoint_epoch"],
         "kernel_proof": ["grant", "challenge"],
         "client": connect,
@@ -826,7 +826,7 @@ fn mp08_mp11_local_browser_wire_is_bound_to_protocol473() {
     });
     assert_eq!(
         format!("{:x}", Sha256::digest(serde_json::to_vec(&wire).unwrap())),
-        "1d76b5e7fa463afc67e4222a1b7ef74061b906c5846356b12fd2035422bdc473"
+        "a7aa8101f39b0aa2f17c80e6e9a5c03692b206453bdf5460e13874ea6bb6fe7a"
     );
 }
 
