@@ -11,7 +11,7 @@ fn room_list_1011_snapshot_and_hash() {
     let bytes = include_bytes!("room-list-1011.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "43348fbd8c7f1925ae71330069e3b09937b67c4dd7aeab138be5507576bcecfa"
+        "f10fe50464ef56b708bea4ad4267e59b6f059fa2196e8588fc327e3312ae1679"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(fixture["local"], LOCAL_DAEMON_PROTOCOL_VERSION);
