@@ -7504,7 +7504,10 @@ When the native agent needs owner approval, acquire returns `status: "pending"`,
 registration for the approval event. An approved agent submits acquire again with
 the same request ID. A denied, expired or cancelled approval ends that request ID.
 When a service reply is too slow to confirm an allocation, retry with the same
-request ID to recover any allocation already accepted by the service.
+request ID to recover any allocation already accepted by the service. A standalone
+control-plane acquire that needs approval returns `acquisition_waiting`, with the
+card ID in `registration_id`. After the Room decision, repeat the request with
+the same ID to read the outcome or complete the allocation.
 
 
 Protocol 993 (peer 432) adds optional task `owner_action: "browser_access"` and a kernel decision `related_agent_id`. Browser approval stays attached to the blocked task revision and grants access only after an owner answer. Task owner decisions have no automatic expiry; ordinary interaction deadlines are unchanged. Clients place these decisions with the referenced agent and remove them when the authoritative task leaves Blocked.
