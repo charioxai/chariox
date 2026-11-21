@@ -3,11 +3,11 @@
 use crate::drain_window::START_WINDOW_BYTES;
 use crate::drain_window::{DrainWindow, SendStamp};
 use crate::frame_transport::{
-    binary_chunk, binary_chunk_payload, text_chunk, TransportFrame, CHUNK_BYTES,
+    binary_chunk, binary_chunk_payload, text_chunk, text_chunk_from, TransportFrame, CHUNK_BYTES,
     MAX_ASSEMBLY_BYTES, MAX_MESSAGE_BYTES, MAX_TRANSFERS, PEER_RECEIPT_FRAMES, SMALL_RESERVE_BYTES,
 };
 use crate::meter::{ConnectionMeter, Direction, CONTROL_SCOPE, DISPLAY_TUNNEL_SCOPE};
-use crate::outgoing::{backlog_close_frame, BulkCharge, OutgoingQueue};
+use crate::outgoing::{backlog_close_frame, BulkCharge, Outgoing, OutgoingQueue, PeerReplyText};
 use futures_util::{Sink, SinkExt};
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -107,6 +107,7 @@ struct Transfer {
     small: bool,
     text: Utf8Bytes,
     binary: Option<Message>,
+    peer_reply: Option<PeerReplyText>,
     offset: usize,
     lane: Lane,
     waiting: usize,
@@ -116,6 +117,17 @@ impl Transfer {
     /// The next frame; a text frame stays within `limit` bytes, and so does a binary one toward a
     /// receiver that takes chunks shorter than a full one (`adaptive`).
     fn next_chunk(&self, limit: usize, adaptive: bool) -> Option<(Message, usize)> {
+        if let Some(reply) = &self.peer_reply {
+            let (block, start) = reply.front()?;
+            return text_chunk_from(
+                self.id,
+                &block[self.offset - start..],
+                self.offset,
+                reply.len(),
+                limit,
+            )
+            .map(|(frame, end)| (Message::Text(frame.into()), end));
+        }
         if let Some(Message::Binary(binary)) = &self.binary {
             if binary.len() > CHUNK_BYTES {
                 if self.offset == binary.len() {
@@ -151,9 +163,29 @@ impl Transfer {
         // MP-08/MP-10/MP-11: assembly/lane occupancy ends when all bytes are
         // written in FIFO order, not a WAN receipt later. WireCredit retains
         // every unacknowledged byte independently, including binary checkpoints.
-        match &self.binary {
-            Some(binary) => binary.len() > CHUNK_BYTES && self.offset == binary.len(),
-            None => self.offset == self.text.len(),
+        match (&self.peer_reply, &self.binary) {
+            (Some(reply), _) => self.offset == reply.len(),
+            (_, Some(binary)) => binary.len() > CHUNK_BYTES && self.offset == binary.len(),
+            _ => self.offset == self.text.len(),
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.peer_reply.as_ref().map_or_else(
+            || self.binary.as_ref().map_or(self.text.len(), Message::len),
+            PeerReplyText::len,
+        )
+    }
+
+    fn charge_written(&mut self, end: usize) -> Option<BulkCharge> {
+        if let Some(reply) = &mut self.peer_reply {
+            let released = reply.written(end)?;
+            return self.bulk.as_mut().map(|charge| charge.split(released));
+        }
+        if self.finished() {
+            self.bulk.take()
+        } else {
+            None
         }
     }
 }
@@ -355,7 +387,7 @@ impl WriterUsage {
     }
 }
 struct Queued {
-    message: Message,
+    message: Outgoing,
     /// The size the sender queued it at; `receiver_message` may change the message.
     admitted: usize,
     lane: Lane,
@@ -363,16 +395,29 @@ struct Queued {
     scope: Arc<str>,
 }
 impl Queued {
-    fn new(message: Message, admitted: usize, usage: &WriterUsage) -> Self {
-        let (lane, key, stream) = lane(&message, usage);
+    fn prepare(
+        message: Outgoing,
+        binary_events: bool,
+        binary_requests: bool,
+        usage: &WriterUsage,
+    ) -> Option<Self> {
+        let admitted = message.len();
+        let (message, lane, key, stream) = match message {
+            Outgoing::Frame(message) => {
+                let message = receiver_message(message, binary_events, binary_requests)?;
+                let (lane, key, stream) = lane(&message, usage);
+                (Outgoing::Frame(message), lane, key, stream)
+            }
+            message @ Outgoing::PeerReply(_) => (message, Lane::Reply, None, None),
+        };
         let scope = usage.scope(stream.as_ref());
-        Self {
+        Some(Self {
             message,
             admitted,
             lane,
             key,
             scope,
-        }
+        })
     }
     // A single-chunk message: interactive frames, never bulk.
     fn small(&self) -> bool {
@@ -417,7 +462,7 @@ const SMALL_STREAK: usize = 4;
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn run_writer<S>(
     mut writer: S,
-    mut outgoing: mpsc::Receiver<Message>,
+    mut outgoing: mpsc::Receiver<Outgoing>,
     chunks: bool,
     binary_events: bool,
     binary_requests: bool,
@@ -458,9 +503,8 @@ where
         while pending.len() < capacity {
             match outgoing.try_recv() {
                 Ok(message) => {
-                    let admitted = message.len();
-                    match receiver_message(message, binary_events, binary_requests) {
-                        Some(m) => pending.push_back(Queued::new(m, admitted, &usage)),
+                    match Queued::prepare(message, binary_events, binary_requests, &usage) {
+                        Some(queued) => pending.push_back(queued),
                         None => return "bad_outgoing_message",
                     }
                 }
@@ -471,10 +515,14 @@ where
                 Err(mpsc::error::TryRecvError::Empty) => break,
             }
         }
-        if let Some(index) = pending.iter().position(|queued| control(&queued.message)) {
+        if let Some(index) = pending.iter().position(
+            |queued| matches!(&queued.message, Outgoing::Frame(message) if control(message)),
+        ) {
             let queued = pending.remove(index).unwrap();
             usage.released(&queued);
-            let message = queued.message;
+            let Outgoing::Frame(message) = queued.message else {
+                unreachable!("a control frame is an ordinary outgoing message");
+            };
             let terminal = matches!(message, Message::Close(_));
             if !write(&mut writer, message).await || terminal {
                 return "control_write";
@@ -484,11 +532,13 @@ where
         if !chunks {
             if let Some(queued) = pending.pop_front() {
                 usage.released(&queued);
-                let message = queued.message;
-                if message.len() > CHUNK_BYTES {
+                if queued.message.len() > CHUNK_BYTES {
                     upgrade(&mut writer).await;
                     return "unchunked_oversize";
                 }
+                let Outgoing::Frame(message) = queued.message else {
+                    unreachable!("a segmented peer reply exceeds one frame");
+                };
                 usage.sent(&queued.scope, &message);
                 if !write(&mut writer, message).await {
                     return "write_failed";
@@ -496,10 +546,7 @@ where
                 continue;
             }
         } else if active.len() < MAX_TRANSFERS {
-            let reserved: usize = active
-                .iter()
-                .map(|t| t.binary.as_ref().map_or(t.text.len(), Message::len))
-                .sum();
+            let reserved: usize = active.iter().map(Transfer::len).sum();
             // Start small messages first, otherwise in enqueue order; replies and
             // the event/request lanes can pass blocked transfers but never
             // reorder members of their FIFO. A barrier ends the small-first scan.
@@ -519,10 +566,14 @@ where
                 let queued = pending.remove(index).unwrap();
                 // Peer replies can retry without losing the connection when
                 // a previous reply still owns the bulk budget.
-                let bulk = if matches!(
-                    &queued.message,
-                    Message::Text(text) if text.starts_with(r#"{"kind":"daemon_peer_response""#)
-                ) {
+                let keep_charge = match &queued.message {
+                    Outgoing::Frame(Message::Text(text)) => {
+                        text.starts_with(r#"{"kind":"daemon_peer_response""#)
+                    }
+                    Outgoing::PeerReply(_) => true,
+                    _ => false,
+                };
+                let bulk = if keep_charge {
                     usage.queue.start_transfer(queued.admitted)
                 } else {
                     usage.released(&queued);
@@ -538,10 +589,13 @@ where
                     return "message_too_large";
                 }
                 let id = 0; // Assigned on the first wire write, not queue admission.
-                let (text, binary) = match message {
-                    Message::Text(s) => (s, None),
-                    Message::Binary(_) => (Utf8Bytes::default(), Some(message)),
-                    _ => {
+                let (text, binary, peer_reply) = match message {
+                    Outgoing::Frame(Message::Text(text)) => (text, None, None),
+                    Outgoing::Frame(message @ Message::Binary(_)) => {
+                        (Utf8Bytes::default(), Some(message), None)
+                    }
+                    Outgoing::PeerReply(reply) => (Utf8Bytes::default(), None, Some(reply)),
+                    Outgoing::Frame(message) => {
                         if !write(&mut writer, message).await {
                             return "write_failed";
                         }
@@ -555,6 +609,7 @@ where
                     small,
                     text,
                     binary,
+                    peer_reply,
                     offset: 0,
                     lane: class,
                     waiting: 0,
@@ -627,11 +682,7 @@ where
                         } else {
                             None
                         };
-                        let bulk = if transfer.finished() {
-                            transfer.bulk.take()
-                        } else {
-                            None
-                        };
+                        let bulk = transfer.charge_written(end);
                         credit.sent(transfer.id, end as u32, bytes, transfer.small, bulk);
                         let scope = transfer.scope.clone();
                         active.push_back(transfer);
@@ -679,7 +730,13 @@ where
                 if !credit.receipt(id,offset,&mut active){return "bad_receipt";}
             }
             message=outgoing.recv(),if open && pending.len()<capacity=>{
-                match message {Some(message)=>{let admitted=message.len();match receiver_message(message,binary_events,binary_requests){Some(m)=>pending.push_back(Queued::new(m,admitted,&usage)),None=>return "bad_outgoing_message"}},None=>open=false}
+                match message {
+                    Some(message) => match Queued::prepare(message, binary_events, binary_requests, &usage) {
+                        Some(queued) => pending.push_back(queued),
+                        None => return "bad_outgoing_message",
+                    },
+                    None => open = false,
+                }
             }
         }
     }
@@ -812,6 +869,7 @@ mod tests {
                 small: true,
                 text: "x".into(),
                 binary: None,
+                peer_reply: None,
                 offset: 1,
                 lane: Lane::Reply,
                 waiting: 1,
@@ -824,6 +882,7 @@ mod tests {
                 small: true,
                 text: "y".into(),
                 binary: None,
+                peer_reply: None,
                 offset: 1,
                 lane: Lane::Event,
                 waiting: 1,
@@ -839,6 +898,47 @@ mod tests {
         assert!(!credit.receipt(1, 1, &mut active));
         assert!(credit.receipt(2, 1, &mut active));
         assert_eq!(credit.bytes, 0);
+    }
+
+    #[test]
+    fn exact_receipts_reopen_reply_budget_before_the_entire_reply_finishes() {
+        use crate::outgoing::{SendRefused, RECEIVER_BULK_BUDGET};
+        let (sender, mut outgoing) = RelaySender::channel(4);
+        let queue = sender.queue();
+        let mut credit = WireCredit::new();
+        let mut active = VecDeque::new();
+        let first = "x".repeat(RECEIVER_BULK_BUDGET - CHUNK_BYTES - 2);
+        let second = "y".repeat(2 * CHUNK_BYTES - 2);
+        let first_len = first.len() + 2;
+        let second_len = second.len() + 2;
+        sender.try_send_peer_reply(first_len, &first).unwrap();
+        let Outgoing::PeerReply(mut reply) = outgoing.try_recv().unwrap() else {
+            panic!("expected an opaque peer reply");
+        };
+        let mut remaining = queue.start_transfer(first_len).unwrap();
+        assert_eq!(reply.written(CHUNK_BYTES - 1), None);
+        let written = reply.written(CHUNK_BYTES).unwrap();
+        credit.sent(
+            1,
+            written as u32,
+            written,
+            false,
+            Some(remaining.split(written)),
+        );
+
+        assert_eq!(
+            sender.try_send_peer_reply(second_len, &second),
+            Err(SendRefused::Backlogged)
+        );
+        assert!(!credit.receipt(1, (written - 1) as u32, &mut active));
+        assert_eq!(
+            sender.try_send_peer_reply(second_len, &second),
+            Err(SendRefused::Backlogged)
+        );
+        assert!(credit.receipt(1, written as u32, &mut active));
+        sender.try_send_peer_reply(second_len, &second).unwrap();
+        assert_eq!(queue.queued_bytes(), RECEIVER_BULK_BUDGET);
+        assert!(reply.front().is_some(), "the first reply still has a tail");
     }
     // MP-08/MP-10/MP-11: a fully written small event must not consume an
     // assembly lane until its receipt makes a WAN round trip. Only byte credit

@@ -76,27 +76,47 @@ pub fn text_chunk(
     offset: usize,
     limit: usize,
 ) -> Option<(String, usize)> {
-    if offset == text.len() {
-        return None;
+    text_chunk_from(transfer_id, text.get(offset..)?, offset, text.len(), limit)
+}
+
+pub(crate) fn text_chunk_from(
+    transfer_id: u32,
+    text: &str,
+    offset: usize,
+    total_bytes: usize,
+    limit: usize,
+) -> Option<(String, usize)> {
+    #[derive(Serialize)]
+    struct Chunk<'a> {
+        kind: &'static str,
+        transfer_id: u32,
+        offset: u32,
+        total_bytes: u32,
+        payload: &'a str,
     }
     let limit = limit.min(CHUNK_BYTES);
-    let mut end = (offset + limit).min(text.len());
-    loop {
+    let mut end = limit.min(text.len());
+    while end > 0 {
         while !text.is_char_boundary(end) {
             end -= 1;
         }
-        let frame = serde_json::to_string(&TransportFrame::TransportChunk {
+        if end == 0 {
+            return None;
+        }
+        let frame = serde_json::to_string(&Chunk {
+            kind: "transport_chunk",
             transfer_id,
             offset: offset as u32,
-            total_bytes: text.len() as u32,
-            payload: text[offset..end].to_string(),
+            total_bytes: total_bytes as u32,
+            payload: &text[..end],
         })
         .ok()?;
         if frame.len() <= limit {
-            return Some((frame, end));
+            return Some((frame, offset + end));
         }
-        end = offset + (end - offset) / 2;
+        end /= 2;
     }
+    None
 }
 
 #[derive(Serialize, Deserialize)]
