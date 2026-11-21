@@ -118,28 +118,39 @@ Prepare the Linux x86_64 `bin/` tree from the release commit with the standalone
 [`release-bundle.yml`](../../.github/workflows/release-bundle.yml), including the
 Ubuntu 22.04 build for the supported glibc baseline.
 
-Miguel runs this once from the same release checkout on his signing machine,
-with Bun, GitHub CLI access to the public repository, the approved public pin,
-and his user-only Ed25519 PEM:
+From the release checkout, prepare the unsigned bundle with a version, approved
+release public pin, and the HTTPS release and control-plane origins. This command
+uses Bun to compile Setup and emits the small signing documents separately.
 
 ```sh
-./scripts/publish-linux-setup.mjs --version "$VERSION" \
-  --public-key "$RELEASE_PUBLIC_HEX" --signing-key "$RELEASE_PRIVATE_PEM_PATH" \
-  --executables "$UNSIGNED_LINUX_DIRECTORY"
+node scripts/prepare-linux-setup.mjs prepare --version "$VERSION" \
+  --public-key "$RELEASE_PUBLIC_HEX" --executables "$UNSIGNED_LINUX_DIRECTORY" \
+  --release-base "$RELEASE_BASE" --control-plane-url "$CONTROL_PLANE_URL" \
+  --output "$OUTPUT"
 ```
 
-The command compiles Setup with the public pin, signs and verifies both the
-Linux bundle and standalone Setup, then uploads the six assets in one GitHub
-release. It prints the versioned HTTPS installer URL. A pre-existing tag must
-point at the release checkout. The signing key stays on the signing machine.
-
-Set Cloud's `CHARIOX_SETUP_INSTALL_URL` to the printed URL after the release is
-public. The published Linux installer with no arguments starts the device-code
-approval flow:
+Transfer only the `signing/` documents and `scripts/sign-linux-setup-documents.mjs`
+to the signing machine. Verify the independently recorded request checksum.
 
 ```sh
-curl -fsSL "https://github.com/charioxai/chariox/releases/download/v$VERSION/install.sh" | sh
+node sign-linux-setup-documents.mjs signing "$REQUEST_SHA256" "$RELEASE_PEM" signed
 ```
+
+Return the three signatures to the release builder. The Linux bootstrap verifies
+its detached signature over the domain-separated SHA-256 of Setup. The bundle
+manifest signature covers the original manifest bytes. Assemble and verify the
+assets before handing them to the authorized publication process.
+
+```sh
+node scripts/prepare-linux-setup.mjs assemble --version "$VERSION" \
+  --public-key "$RELEASE_PUBLIC_HEX" --output "$OUTPUT" --signed signed
+```
+
+Use a separate staging prerelease version and staging origin for rental
+validation. Use a staging artifact host for the drill. Public versions and
+production origins are signed from their final release checkout, and public
+publication is a separate operator step. The Linux installer starts the
+device-code approval flow when run with no arguments.
 
 The Add this machine command passes `--enroll` and supplies a browser-issued code
 on stdin. Both forms install and start the kernel. Use `--install-only --login`

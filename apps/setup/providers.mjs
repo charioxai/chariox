@@ -46,9 +46,11 @@ async function findExisting(home, cli, provider, env, variable, systemBins) {
   }
 
   const userBins = [".local/bin", ".npm-global/bin", ".bun/bin", ".cargo/bin"]
+  const pnpmHome = env.PNPM_HOME ?? join(env.XDG_DATA_HOME || join(home, ".local/share"), "pnpm")
+  if (isAbsolute(pnpmHome)) userBins.push(pnpmHome)
   const candidates = [
     ...(env.PATH ?? "").split(":").filter(isAbsolute).map(dir => join(dir, cli)),
-    ...userBins.map(dir => join(home, dir, cli)),
+    ...userBins.map(dir => join(isAbsolute(dir) ? dir : join(home, dir), cli)),
     ...provider.userPaths.map(path => join(home, path)),
     ...systemBins.map(dir => join(dir, cli)),
   ]
@@ -77,8 +79,9 @@ async function installProvider({ home, cli, provider, artifact, env, variable, s
   const store = await tree(home, ".local/share/chariox/providers")
   const target = join(store, cli)
   const binary = join(target, provider.binary)
-  const owned = () => executable(binary)
-  if (await owned()) return binary
+  const files = [provider.binary, ...(provider.helpers ?? [])]
+  const complete = async dir => (await Promise.all(files.map(file => executable(join(dir, file))))).every(Boolean)
+  if (await complete(target)) return binary
   if (await lstat(target).then(() => true, error => error.code === "ENOENT" ? false : Promise.reject(error))) {
     throw new Error(`${provider.name} has an incomplete install at ${target}. Move it aside and retry Setup.`)
   }
@@ -93,9 +96,7 @@ async function installProvider({ home, cli, provider, artifact, env, variable, s
 
     // Only extract the official archive identified by the integrity pin compiled into Setup.
     await command("tar", ["-xzf", archive, "--no-same-owner", "--no-same-permissions", "-C", scratch])
-    for (const path of [provider.binary, ...(provider.helpers ?? [])]) {
-      if (!(await executable(join(scratch, path)))) throw new Error("package is missing an executable")
-    }
+    if (!(await complete(scratch))) throw new Error("package is missing an executable")
     if (await readVersion(join(scratch, provider.binary), env) !== artifact.version) {
       throw new Error("package did not start or reported an unexpected version")
     }
@@ -105,7 +106,7 @@ async function installProvider({ home, cli, provider, artifact, env, variable, s
     try {
       await rename(scratch, target)
     } catch (error) {
-      if (!["EEXIST", "ENOTEMPTY"].includes(error.code) || !(await owned())) throw error
+      if (!["EEXIST", "ENOTEMPTY"].includes(error.code) || !(await complete(target))) throw error
     }
     return binary
   } catch (error) {
