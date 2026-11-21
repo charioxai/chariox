@@ -3468,6 +3468,11 @@ Workflow trigger and deployment direction:
 - protocol 1012: an agent's `active_turn.phase` is `thinking` while the model reasons and streams nothing a
   person can read (Claude reports only a thinking-token count then); `awaiting_first_output` is the provider still
   reading the context. Clients show "Thinking" or "Reading context" with the time since `started_at_ms`, not a bare spinner.
+- protocol 1014 (provisional, renumber after L12.1) / relay peer 451: an `AgentTreeNode` of `ListDescendants` carries
+  `has_active_prompt` (a prompt of the node is running, whatever `state` says), `waiting_on` (what it waits on and
+  since when, as `liveness.waiting_on` of the single-agent read) and `stalled`. A node whose turn the owner
+  resumed reads `running` while that turn runs, and a stalled child shows `stalled` with its wait within one
+  refresh. The agent state label of `get_session_agent` and `agent children` is `working` while a prompt is active.
 - protocol 1012: machine list membership and renewal. `RemoteMachineRecord` and
   `OfflineMachineRecord` carry `directory`, the Cloud directory (API, account, realm) whose live list
   first recorded the machine; absent for a machine of a private relay, a pairing or an approval. A

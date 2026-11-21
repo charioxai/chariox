@@ -116,7 +116,7 @@ pub(super) fn delivery_kind(operation: &Operation) -> Option<&'static str> {
             Some("completion")
         }
         Operation::OwnerResponse { .. } => Some("owner_response"),
-        Operation::Receipt { .. } => Some("delivery_receipt"),
+        Operation::Receipt { .. } | Operation::StartFailed { .. } => Some("delivery_receipt"),
         _ => None,
     }
 }

@@ -22,6 +22,7 @@
       "needs_user": false,
       "deadline_ms": null,
       "created_at_ms": 2,
+      "has_active_prompt": false,
       "workspace_id": "workspace",
       "worktree_id": "worktree"
     },
@@ -40,6 +41,7 @@
       "needs_user": false,
       "deadline_ms": null,
       "created_at_ms": 3,
+      "has_active_prompt": false,
       "workspace_id": "workspace",
       "worktree_id": "worktree"
     }

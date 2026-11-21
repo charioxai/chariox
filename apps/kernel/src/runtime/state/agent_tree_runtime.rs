@@ -2,11 +2,12 @@
 //! the tree change event followers get when what that read returns differs.
 use super::*;
 use crate::agent::tree_rev;
-use crate::durable_state::agent_lifecycle::ExecutionState;
 use crate::local::{
     AgentTree, EventRefs, ListDescendantsRequest, LocalDaemonResponse, OutsideEventValue,
 };
-use crate::runtime::agent_tree_projection::{project_agent_tree, tree_for_viewer, NodeTurn};
+use crate::runtime::agent_tree_projection::{
+    mark_nodes_with_active_prompt, node_turn, project_agent_tree, tree_for_viewer,
+};
 use std::hash::{Hash, Hasher};
 
 impl KernelRuntimeState {
@@ -81,20 +82,34 @@ impl KernelRuntimeState {
                         .ok()?;
                     &other_tasks
                 };
-                let task = tasks
-                    .iter()
-                    .rev()
-                    .find(|task| task.agent_id == agent.id())?;
-                let finished =
-                    matches!(task.state, ExecutionState::Done | ExecutionState::Cancelled);
-                Some(NodeTurn {
-                    live: !finished && task.state != ExecutionState::Blocked,
-                    blocked: task.state == ExecutionState::Blocked,
-                    outcome: finished.then(|| self.owned.finished_task_outcome(task, None).kind),
+                node_turn(tasks, agent.id(), &|task| {
+                    self.owned.finished_task_outcome(task, None).kind
                 })
             },
             &|room| self.owned.session_store.get_session(room).ok(),
         )?;
+        // What each node is doing right now, as the single-agent read says it: a client lists the
+        // tree and must see a busy or stalled child without reading every agent.
+        let mut room_activity = std::collections::HashMap::new();
+        for node in &mut tree.nodes {
+            let room_id = node
+                .room_id
+                .clone()
+                .unwrap_or_else(|| session.id().to_owned());
+            let activity = room_activity.entry(room_id.clone()).or_insert_with(|| {
+                self.owned
+                    .session_store
+                    .get_session(&room_id)
+                    .map(|room| self.agent_activity_for_session(&room))
+                    .unwrap_or_default()
+            });
+            if let Some(activity) = activity.get(&node.agent_id) {
+                node.has_active_prompt = activity.active_prompt_count > 0;
+                node.waiting_on = activity.liveness.waiting_on.clone();
+                node.stalled = activity.liveness.stalled;
+            }
+        }
+        mark_nodes_with_active_prompt(&mut tree);
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         serde_json::to_string(&(&tree.totals, &tree.nodes))
             .unwrap_or_default()

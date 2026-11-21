@@ -275,8 +275,50 @@ impl KernelRuntimeState {
             .map(|agent| agent.id())
             .or(request.agent_id.as_deref())
             .unwrap_or("provider");
+        self.say_launch_waits_on_vault(
+            session.id(),
+            agent_id,
+            &profile.label,
+            &expand_vault_path(&config.user_config.credential_vault.path),
+        );
         self.ensure_vault_unlocked_for_agent(session.id(), agent_id, operation)
             .await
+    }
+
+    /// A start that needs the Vault while it is locked says so in the agent's pane at once, naming
+    /// the account. A start that finds the Room's unlock card already open joins it silently: the
+    /// person is told once, not on every retry.
+    pub(super) fn say_launch_waits_on_vault(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        account: &str,
+        vault_path: &std::path::Path,
+    ) {
+        if crate::secret::chariox_encrypted_vault_status(vault_path).is_ok_and(|s| s.unlocked) {
+            return;
+        }
+        let card_open = self
+            .owned
+            .session_store
+            .get_session(session_id)
+            .is_ok_and(|session| {
+                session
+                    .active_interaction_for_agent(agent_id)
+                    .is_some_and(|card| card.id().starts_with("vault-unlock-"))
+            });
+        if card_open {
+            return;
+        }
+        self.owned.record_notice_for_agent(
+            session_id,
+            None,
+            Some(agent_id),
+            self.owned
+                .attachment_store
+                .list_session_attachment_ids(session_id),
+            format!("Vault locked: unlock to start (account {account})."),
+        );
     }
 
     pub(super) async fn resolve_provider_account_credentials_for_run_with_vault(

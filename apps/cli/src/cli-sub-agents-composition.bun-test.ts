@@ -6,7 +6,7 @@ import type { AgentTree, AgentTreeNode, AgentTreeState } from "@chariox/kernel-c
 import { createCliSubAgentsComposition } from "./cli-sub-agents-composition.js"
 
 const node = (id: string, parent: string, state: AgentTreeState, n: number): AgentTreeNode => ({
-  agent_id: id, parent_agent_id: parent, kernel_id: null, alias: id, provider: "p", model: null, depth: 1, state, outcome: null, deadline_ms: null, created_at_ms: n, needs_user: false,
+  agent_id: id, parent_agent_id: parent, kernel_id: null, alias: id, provider: "p", model: null, depth: 1, state, outcome: null, deadline_ms: null, created_at_ms: n, needs_user: false, has_active_prompt: false,
 })
 const tree: AgentTree = { root: "room", rev: 1, totals: { live: 3, running: 3, needs_user: 0 }, nodes: [node("a1", "room", "running", 1), node("a2", "a1", "running", 2), node("a3", "room", "running", 3)] }
 const key = (name: string, extra: { ctrl?: boolean } = {}) => { const event = { name, ...extra, prevented: false, preventDefault() { this.prevented = true } }; return event }

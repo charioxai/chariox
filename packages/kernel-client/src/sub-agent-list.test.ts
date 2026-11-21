@@ -6,7 +6,7 @@ import { subAgentPanels, subAgentRows, subAgentStripe, visibleSubAgentRows } fro
 
 const node = (id: string, parent: string | null, state: AgentTreeState, extra: Partial<AgentTreeNode> = {}): AgentTreeNode => ({
   agent_id: id, parent_agent_id: parent ?? "room-agent", kernel_id: null, alias: id, provider: "p", model: null,
-  depth: 1, state, outcome: null, deadline_ms: null, created_at_ms: Number(id.replace(/\D/g, "")) || 0, needs_user: false, ...extra,
+  depth: 1, state, outcome: null, deadline_ms: null, created_at_ms: Number(id.replace(/\D/g, "")) || 0, needs_user: false, has_active_prompt: false, ...extra,
 })
 const tree = (nodes: AgentTreeNode[]): AgentTree => ({
   root: "room-agent", rev: 1, nodes,

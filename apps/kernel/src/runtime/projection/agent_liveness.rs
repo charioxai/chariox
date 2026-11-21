@@ -162,19 +162,25 @@ pub enum AgentWaitKind {
 
 /// The state `agent children` and the session agent inspection name for an
 /// agent. One that yielded on a job, timer or source is waiting, not idle: its
-/// `liveness.waiting_on` says on what and since when.
+/// `liveness.waiting_on` says on what and since when. An agent with an active prompt is working
+/// whatever its stored state says: a turn the owner resumed runs before anything stores that.
 pub(crate) fn agent_state_label(
     agent: &crate::agent::AgentInstance,
     activity: Option<&AgentRuntimeActivity>,
+    has_active_prompt: bool,
 ) -> &'static str {
     use crate::agent::AgentState;
     let yielded = activity.is_some_and(|activity| {
         activity.status == AgentRuntimeStatus::Idle && activity.liveness.waiting_on.is_some()
     });
     match agent.state() {
+        AgentState::Idle | AgentState::Focused if has_active_prompt => "working",
         AgentState::Idle | AgentState::Focused if yielded => "waiting",
         AgentState::Idle => "idle",
-        AgentState::Working => "working",
+        // A stored Working with no prompt running and no turn processing is a stale mark: the
+        // tree and the clients show such an agent idle, and so does this label.
+        AgentState::Working if has_active_prompt || agent.is_processing() => "working",
+        AgentState::Working => "idle",
         AgentState::Focused => "focused",
         AgentState::Error => "error",
     }
@@ -470,6 +476,73 @@ mod tests {
             "active_prompt_count":1,"queued_prompt_count":0
         }))
         .unwrap()
+    }
+
+    fn stored_idle_agent() -> crate::agent::AgentInstance {
+        crate::agent::AgentInstance::new(
+            "agent",
+            "agent",
+            "room",
+            None,
+            "codex",
+            None,
+            None,
+            None,
+            crate::agent::GridPosition::new(0, 0, 1, 1),
+        )
+    }
+
+    // A turn the owner resumed runs before anything stores the agent as working: the label
+    // follows the prompt, so a watcher never reads a running agent as idle.
+    #[test]
+    fn an_agent_with_an_active_prompt_is_working_whatever_its_stored_state() {
+        let agent = stored_idle_agent();
+        assert_eq!(agent_state_label(&agent, None, false), "idle");
+        assert_eq!(agent_state_label(&agent, None, true), "working");
+        let mut stale = stored_idle_agent();
+        stale.set_state(crate::agent::AgentState::Working);
+        assert_eq!(
+            agent_state_label(&stale, None, false),
+            "idle",
+            "a stale Working mark"
+        );
+        stale.set_processing(true);
+        assert_eq!(agent_state_label(&stale, None, false), "working");
+        assert_eq!(
+            agent_state_label(&agent, Some(&idle_activity()), true),
+            "working"
+        );
+    }
+
+    // The cellsweep scenario on L12.1 (`agent children` against the tree), one label each: a stale
+    // Working mark with no prompt, a stale processing flag with no admitted turn (the tree and the
+    // clients show both idle), a child whose new turn is admitted (running everywhere, `agent
+    // children` showed it idle) and a parked child.
+    #[test]
+    fn the_children_of_one_room_read_as_the_tree_and_the_clients_read_them() {
+        let mut was_working = stored_idle_agent();
+        was_working.set_state(crate::agent::AgentState::Working);
+        let mut stale_processing_flag = stored_idle_agent();
+        stale_processing_flag.set_processing(true);
+        let admitted_new_turn = stored_idle_agent();
+        let parked = stored_idle_agent();
+        let parked_activity: AgentRuntimeActivity = serde_json::from_value(serde_json::json!({
+            "status":"idle","prompt_status":"none","busy":false,
+            "active_prompt_count":0,"queued_prompt_count":0,
+            "liveness":{"waiting_on":{"kind":"timer","detail":"t","since_ms":1}}
+        }))
+        .unwrap();
+        assert_eq!(agent_state_label(&was_working, None, false), "idle");
+        assert_eq!(
+            agent_state_label(&stale_processing_flag, None, false),
+            "idle",
+            "a processing flag with no admitted turn"
+        );
+        assert_eq!(agent_state_label(&admitted_new_turn, None, true), "working");
+        assert_eq!(
+            agent_state_label(&parked, Some(&parked_activity), false),
+            "waiting"
+        );
     }
 
     fn row(agent: &str, state: SessionProcessState) -> SessionProcess {

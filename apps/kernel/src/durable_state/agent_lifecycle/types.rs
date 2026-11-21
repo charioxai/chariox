@@ -603,6 +603,18 @@ pub(crate) enum Operation {
         state: String,
         now: u64,
     },
+    /// The agent could not start for this delivery: it is pending again, with the attempt, the
+    /// error and the time of the next try kept.
+    StartFailed {
+        room: String,
+        agent: String,
+        sequence: u64,
+        error: String,
+        /// The start waits on a person (a locked Vault): it is tried again soon and spends no
+        /// attempt, because the person may be away for hours.
+        waits_on_owner: bool,
+        now: u64,
+    },
     Ack {
         room: String,
         agent: String,

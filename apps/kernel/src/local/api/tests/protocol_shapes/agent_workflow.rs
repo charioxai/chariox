@@ -332,6 +332,14 @@ fn the_agent_tree_read_and_change_event_have_their_shapes() {
                 refused: 0,
                 state: crate::agent::UsageLimitStopState::Asking,
             }),
+            has_active_prompt: true,
+            waiting_on: Some(crate::runtime::projection::AgentWaitingOn {
+                kind: crate::runtime::projection::AgentWaitKind::Provider,
+                detail: String::new(),
+                resource: None,
+                since_ms: 4,
+            }),
+            stalled: true,
         }],
     };
     assert_eq!(
@@ -345,7 +353,8 @@ fn the_agent_tree_read_and_change_event_have_their_shapes() {
                 "workspace_id":"app","worktree_id":"app-2","worker_kernel_id":"worker","depth":1,
                 "state":"waiting","outcome":null,"needs_user":true,"deadline_ms":null,"created_at_ms":5,
                 "usage_limit_stop":{"prompt_id":"p","provider":"codex","account_profile":"work",
-                    "account_label":"work","stopped_at_ms":3,"resumes_at_ms":9,"state":{"state":"asking"}}}]}}})
+                    "account_label":"work","stopped_at_ms":3,"resumes_at_ms":9,"state":{"state":"asking"}},
+                "has_active_prompt":true,"waiting_on":{"kind":"provider","since_ms":4},"stalled":true}]}}})
     );
     assert_eq!(
         serde_json::to_value(crate::local::OutsideEventValue::AgentTree {

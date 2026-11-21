@@ -480,6 +480,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     continue;
                 }
                 let mut clock_quarantined = false;
+                let mut start_failure = None;
                 let deadline_start = if e.state == "pending" {
                     // Busy refusals are normal queueing, not missing receipts.
                     // The next idle refusal starts a new bounded window.
@@ -497,7 +498,16 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                             [sql_integer(e.sequence)?],
                         )
                         .map_err(sql)?;
+                        super::start_failures::clear(tx, e.sequence)?;
                         continue;
+                    }
+                    // A start that keeps failing has its own budget: attempts with growing
+                    // pauses, not the refusal window of an agent that merely did not answer.
+                    start_failure = super::start_failures::get(tx, e.sequence)?;
+                    if let Some(failure) = &start_failure {
+                        if failure.attempts < super::start_failures::START_ATTEMPTS {
+                            continue;
+                        }
                     }
                     let at = tx.query_row(
                         "SELECT first_refused_at_ms, typeof(first_refused_at_ms) || ':' || hex(CAST(first_refused_at_ms AS BLOB)) FROM agent_inbox_refusals WHERE sequence=?1",
@@ -520,6 +530,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 };
                 if e.state == "pending"
                     && (clock_quarantined
+                        || start_failure.is_some()
                         || deadline_start.is_some_and(|at| {
                             // Receipt time can advance during Sweep's awaited pre-work.
                             // Tolerate that race (and small clock rollbacks), but
@@ -536,6 +547,11 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                         format!(
                             "Delivery {} refusal clock is quarantined; owner must restore authoritative state or cancel",
                             e.sequence
+                        )
+                    } else if let Some(failure) = &start_failure {
+                        format!(
+                            "Delivery {} failed: the agent could not start after {} attempts: {}. Resume sends it again, or Cancel",
+                            e.sequence, failure.attempts, failure.error
                         )
                     } else {
                         format!(
