@@ -523,18 +523,15 @@ pub(crate) async fn handle_connection(
                             _ => { end_reason = "invalid_receipt"; break; }
                         }
                     }
-                    if registered_daemon_key.is_none() {
-                        if let Some(reason) = registration_version_refusal(&text) {
-                            send_close(&outgoing_tx, reason);
-                            end_reason = "registration_protocol_refused";
-                            break;
-                        }
-                    }
                     first_message_received = true;
                     let envelope: RelayEnvelope = match serde_json::from_str(&text) {
                         Ok(envelope) => envelope,
                         Err(_) => {
-                            if registered_daemon_key.is_none() {
+                            // Only a kernel older than the proof (or reporting no protocol) is
+                            // told to update; a current kernel that omits the proof is malformed.
+                            if registered_daemon_key.is_none()
+                                && registration_version_refusal(&text).is_some()
+                            {
                                 if let Some(reason) = update_needed::refuse_old_registration(
                                     &text,
                                     &auth_verifier,
@@ -553,6 +550,15 @@ pub(crate) async fn handle_connection(
                             break;
                         }
                     };
+                    // A registration that reads but names an old or unknown protocol. One that no
+                    // longer reads went through update_needed above, which lists the kernel.
+                    if registered_daemon_key.is_none() {
+                        if let Some(reason) = registration_version_refusal(&text) {
+                            send_close(&outgoing_tx, reason);
+                            end_reason = "registration_protocol_refused";
+                            break;
+                        }
+                    }
                     let scope = match &envelope {
                         RelayEnvelope::DaemonEvent { subscription_id, .. } => routes
                             .subscription(subscription_id)
