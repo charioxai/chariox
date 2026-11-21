@@ -276,7 +276,7 @@ enum DurableWriteOperation {
     BrowserImport(browser_import::ImportStateWrite),
     RetiredSessionBackfill {
         owner_id: String,
-        records: Vec<(String, String, String)>,
+        records: Option<Vec<(String, String, String)>>,
         sequence: u64,
     },
     Event {
@@ -2018,7 +2018,12 @@ fn commit_durable_write_batch(
                 owner_id,
                 records,
                 sequence,
-            } => retired_sessions::commit_backfill(&transaction, owner_id, records, *sequence),
+            } => retired_sessions::commit_backfill(
+                &transaction,
+                owner_id,
+                records.as_deref(),
+                *sequence,
+            ),
             DurableWriteOperation::AcquireChoice(transition) => {
                 acquire_choices::apply(&transaction, transition)
             }

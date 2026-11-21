@@ -638,7 +638,8 @@ pub(super) fn write_workflow_runtime_migration(
          ) VALUES (?1, ?2, ?3, ?4)
          ON CONFLICT(owner_id, metadata_key) DO UPDATE SET
             metadata_value = excluded.metadata_value,
-            updated_at_ms = excluded.updated_at_ms",
+            updated_at_ms = excluded.updated_at_ms
+         WHERE metadata_value <> excluded.metadata_value",
         params![
             owner_id,
             WORKFLOW_RUNTIME_STORAGE_VERSION_KEY,
@@ -663,7 +664,8 @@ pub(super) fn write_workflow_history_migration_chunk(
          ) VALUES (?1, 'workflow_history_migration_status', ?2, ?3)
          ON CONFLICT(owner_id, metadata_key) DO UPDATE SET
             metadata_value = excluded.metadata_value,
-            updated_at_ms = excluded.updated_at_ms",
+            updated_at_ms = excluded.updated_at_ms
+         WHERE metadata_value <> excluded.metadata_value",
         params![
             owner_id,
             if completed { "verified" } else { "in_progress" },
@@ -1496,6 +1498,38 @@ mod tests {
             .is_empty());
 
         drop(store);
+    }
+
+    #[test]
+    fn completed_workflow_migrations_keep_their_committed_markers() {
+        let (_dir, store, path) = temp_store("workflow-reopen-markers");
+        let session = session_with_runs();
+        let migrate = || {
+            store
+                .migrate_legacy_workflow_runtime("kernel-1", std::slice::from_ref(&session))
+                .unwrap();
+            store
+                .migrate_legacy_workflow_history_chunk("kernel-1", &[], true)
+                .unwrap();
+        };
+        migrate();
+        let connection = rusqlite::Connection::open(path).unwrap();
+        let changed = connection
+            .execute(
+                "UPDATE durable_state_metadata SET updated_at_ms=1 WHERE owner_id='kernel-1'",
+                [],
+            )
+            .unwrap();
+        assert_eq!(changed, 2);
+        migrate();
+        let updated: i64 = connection
+            .query_row(
+                "SELECT MAX(updated_at_ms) FROM durable_state_metadata WHERE owner_id='kernel-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(updated, 1);
     }
 
     #[test]
