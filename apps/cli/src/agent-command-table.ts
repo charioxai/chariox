@@ -52,6 +52,9 @@ export const COMMANDS: readonly CommandSpec[] = [
     args: ["INTERACTION_ID", "CHOICE_ID"],
     summary: "answer one of those cards for the person; --reply TEXT with the card's reply_choice_id. Secret entry, Vault unlock, passkeys and payments stay the person's own"
   },
+  { name: "notifications list", flags: [KERNEL, SOCKET, { name: "--kernel-url", value: "URL" }], summary: "list notifications subscribed to on this kernel, with subscription IDs and pause state" },
+  { name: "notifications pause", flags: [KERNEL, SOCKET, { name: "--kernel-url", value: "URL" }, { name: "--command-id", value: "ID" }], args: ["SUBSCRIPTION_ID"], summary: "pause delivery for a notification subscription" },
+  { name: "notifications resume", flags: [KERNEL, SOCKET, { name: "--kernel-url", value: "URL" }, { name: "--command-id", value: "ID" }], args: ["SUBSCRIPTION_ID"], summary: "resume delivery for a paused notification subscription" },
   { name: "secret status", flags: [SOCKET], args: ["INTERACTION_ID"], summary: "pending, stored, cancelled or timed_out for a secret request you made" },
   { name: "kernels", flags: [SOCKET], summary: "list the kernels this kernel can reach" },
   {
