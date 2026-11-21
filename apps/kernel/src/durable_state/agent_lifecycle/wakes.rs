@@ -919,10 +919,11 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 )));
             }
             if !terminal(&wake) && wake.state != "cancelling" {
-                // A watched process settles on its physical exit; any other source settles now,
-                // while the obligation is open, so its source receipt survives even when the
-                // agent unsubscribed from it.
-                let physical = wake.kind == "process" && wake.state != "scheduled";
+                // A watched process or placed job settles once its supervisor confirms exit.
+                let physical = wake.state != "scheduled"
+                    && (wake.kind == "process"
+                        || (wake.kind == "job"
+                            && super::leased_processes::read_wake_binding(tx, &id)?.is_some()));
                 if physical {
                     wake.state = "cancelling".into();
                     save_wake(tx, &wake)?;

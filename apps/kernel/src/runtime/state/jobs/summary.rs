@@ -62,8 +62,7 @@ impl Summary {
                         exit_code: result.exit_code,
                         reason: ((record.placement == JobPlacement::Remote
                             && record.machine_label.is_none())
-                            || (record.placement == JobPlacement::Local
-                                && result.outcome == crate::local::JobOutcome::MachineLost))
+                            || result.outcome == crate::local::JobOutcome::MachineLost)
                             .then(|| result.output_tail.chars().take(512).collect()),
                         files_back_count: result.files_back.len() as u64,
                         conflicts_count: result.conflicts.len() as u64,

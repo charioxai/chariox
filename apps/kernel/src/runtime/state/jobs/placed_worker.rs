@@ -31,9 +31,7 @@ impl KernelRuntimeState {
         let (room, agent, prompt) = self.placed_job_target(&wake, &binding).await?;
         let run = self.job_build_run(&binding.worker_provider_run_id)?;
         if run.agent_instance_id() != Some(agent.as_str()) || run.session_id() != room {
-            return Err(ledger::error(
-                "Job requires the placed agent's own active Build turn",
-            ));
+            return Err(ledger::error(super::refusal::BUILD_TURN_REQUIRED));
         }
         let (workspace, cwd) = requests::job_workspace(&run, &request)?;
         let admission = crate::runtime::process_resources::LaunchAdmission::default();
@@ -55,7 +53,7 @@ impl KernelRuntimeState {
             &cwd,
             prompt
                 .as_deref()
-                .ok_or_else(|| ledger::error("The placed agent has no active turn"))?,
+                .ok_or_else(|| ledger::error(super::refusal::BUILD_TURN_REQUIRED))?,
         )
         .await?;
         self.placed_job_target(&wake, &binding).await?;

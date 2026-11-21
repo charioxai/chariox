@@ -2550,6 +2550,62 @@ async fn placed_agent_jobs() {
                 .contains("directory"),
             "{refused:?}"
         );
+        let pinned = call(
+            "chariox.jobs.run",
+            json!({"command": ["/bin/true"], "machine": "another-machine"}),
+        )
+        .await
+        .unwrap();
+        assert!(!pinned.ok);
+        assert_eq!(pinned.payload["retryable"], false);
+        assert!(pinned.payload["error"]
+            .as_str()
+            .unwrap()
+            .contains("omit the machine argument"));
+
+        let running = call(
+            "chariox.jobs.run",
+            json!({"command": ["/bin/sleep", "60"], "wait_s": 0}),
+        )
+        .await
+        .unwrap();
+        assert!(running.ok, "{running:?}");
+        let id = running.payload["job_id"].as_str().unwrap();
+        timeout(Duration::from_secs(10), async {
+            loop {
+                let status = call("chariox.jobs.status", json!({"job_id": id}))
+                    .await
+                    .unwrap();
+                if status.payload["state"] == "running" {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        })
+        .await
+        .expect("the placed job should be running before the stop");
+
+        dispatch_json(
+            &fixture.home,
+            json!({"StopSessionProcesses":{"session_id":room,"target":{"kind":"process","process_id":id}}}),
+        )
+        .await
+        .expect("Room owner stops the placed job");
+
+        timeout(Duration::from_secs(10), async {
+            loop {
+                let status = call("chariox.jobs.status", json!({"job_id": id}))
+                    .await
+                    .unwrap();
+                if !status.payload["result"].is_null() {
+                    assert_eq!(status.payload["result"]["outcome"], "cancelled");
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        })
+        .await
+        .expect("the placement should confirm that the process stopped");
     }
     worker.stop().await;
     fixture.stop().await;

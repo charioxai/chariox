@@ -175,9 +175,8 @@ impl KernelRuntimeState {
         &self,
         id: &str,
     ) -> Result<crate::provider::RuntimeProviderRun, DaemonError> {
-        self.watched_process_run(id).map_err(|_| {
-            ledger::error("Jobs require an active unrestricted Build turn on the execution kernel")
-        })
+        self.watched_process_run(id)
+            .map_err(|_| ledger::error(super::refusal::BUILD_TURN_REQUIRED))
     }
 
     pub(super) async fn wait_for_job(

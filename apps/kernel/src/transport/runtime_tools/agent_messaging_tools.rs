@@ -47,7 +47,7 @@ pub fn agent_messaging_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: GET_SESSION_AGENT_TOOL.to_string(),
-            description: "Read the safe configuration and current runtime status of one existing agent in the current Chariox session. Address the target by its unique alias, agent ref, or agent id. Provider credentials and resume state are never returned.".to_string(),
+            description: "Read the safe configuration and current runtime status of one existing agent in the current Chariox session. Includes job summaries for yourself and your same-owner direct children. Address the target by its unique alias, agent ref, or agent id. Provider credentials and resume state are never returned.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["agent"],
