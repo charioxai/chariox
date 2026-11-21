@@ -1107,6 +1107,19 @@ fn mp11_relay_renewal_extends_the_socket_only_to_short_identity_expiry() {
     });
 }
 
+/// Redeems a grant over its loopback endpoint and waits until the kernel holds its lease: only a redeemed grant renews.
+async fn redeemed(kernel: &Kernel, browser: &Browser, grant: &Grant) -> ClientSocket {
+    let (socket, verdict) = connect(kernel, browser, grant).await;
+    assert_eq!(verdict["kind"], "local_connected");
+    for _ in 0..100 {
+        if kernel.direct.leases.lock().unwrap().contains_key(&grant.grant) {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    socket
+}
+
 fn renewed_lease(browser: &Browser, outcome: RelayRequestOutcome) -> serde_json::Value {
     assert!(
         outcome.error.is_none(),
@@ -1988,6 +2001,31 @@ fn mp08_webrtc_answer_offers_the_address_the_relay_stun_responder_sees() {
         let grant = issued["grant"].as_str().unwrap().to_owned();
         let verdict = rtc_handshake(&kernel, &browser, &mut client, &issued, &grant).await;
         assert_eq!(verdict["kind"], "local_connected", "{verdict}");
+    });
+}
+
+/// c#794 review (row 236): a grant's end is in the kernel's clock, and it can be shorter than the 30 s maximum (bounded by the caller's
+/// identity). Each grant and renewal answer also says how long it lasts from now, so a page whose clock is off by any amount renews it
+/// before it ends.
+#[test]
+fn row236_grant_and_renewal_answers_carry_the_remaining_lifetime() {
+    large_stack(async {
+        let kernel = Kernel::new();
+        let browser = Browser::new();
+        let (_client, offer) = RtcClient::offer();
+        let issued = kernel.mint_rtc(&browser, &offer).await;
+        let first = issued["expires_in_ms"].as_u64().expect("the connect answer says how long the grant lasts");
+        assert!(first > 29_000 && first <= GRANT_TTL_MS, "{issued}");
+        let grant = kernel.mint(&browser, browser.identity()).await.unwrap();
+        let _socket = redeemed(&kernel, &browser, &grant).await;
+        let mut short = browser.identity();
+        short.expires_at_ms = crate::session::unix_epoch_ms() + 15_000;
+        let outcome = renew(&kernel, &browser, short, &grant, 1, true).await;
+        assert!(outcome.error.is_none(), "{:?}", outcome.error);
+        let plaintext = relay_crypto::decrypt_payload_for_private_key(&browser.private_key, &outcome.encrypted_response.unwrap()).unwrap();
+        let answer: serde_json::Value = serde_json::from_slice(&plaintext.plaintext).unwrap();
+        let renewed = answer["LocalBrowserLeaseRenewed"]["expires_in_ms"].as_u64().expect("the renewal answer says how long it lasts");
+        assert!(renewed > 14_000 && renewed <= 15_000, "a grant shortened by its identity lasts what remains of it: {answer}");
     });
 }
 
