@@ -1542,6 +1542,10 @@ impl KernelRuntimeState {
         let mut blocked = Vec::new();
         for task in self.owned.durable_state_store.agent_tasks_to_sweep()? {
             step.enter(format!("task {} of agent {}", task.task_id, task.agent_id));
+            self.owned
+                .agent_wakes
+                .hold_while_task_stall_fault_names(&task.agent_id)
+                .await;
             let Ok(session) = self.owned.session_store.get_session(&task.room_id) else {
                 continue;
             };

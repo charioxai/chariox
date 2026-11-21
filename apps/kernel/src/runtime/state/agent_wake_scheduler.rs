@@ -15,6 +15,9 @@ pub(crate) const WAKE_DELIVERY_TOLERANCE_MS: u64 = 60_000;
 const VERIFY_WAIT_MS: u64 = 5_000;
 /// Drill-only stall fault: while this file exists the scheduler skips ticks.
 const STALL_FAULT_ENV: &str = "CHARIOX_WAKE_SCHEDULER_STALL_FILE";
+/// Drill-only task fault: while this file lists an agent id (one per line), the lifecycle sweep's
+/// settlement of that agent's tasks does not end.
+const TASK_STALL_FAULT_ENV: &str = "CHARIOX_SWEEP_TASK_STALL_FILE";
 
 pub(crate) struct AgentWakeMonitor {
     pub(super) started_at_ms: u64,
@@ -24,6 +27,7 @@ pub(crate) struct AgentWakeMonitor {
     sweep_stall_alerted: AtomicBool,
     tick_failure_alerted: AtomicBool,
     stall_fault: Option<PathBuf>,
+    task_stall_fault: std::sync::Mutex<Option<PathBuf>>,
     /// What the scheduler loop and the lifecycle sweep wait on, named in their stall reports.
     pub(super) scheduler_step: super::supervision_step::SupervisionStep,
     pub(super) sweep_step: super::supervision_step::SupervisionStep,
@@ -43,6 +47,9 @@ impl AgentWakeMonitor {
             sweep_stall_alerted: AtomicBool::new(false),
             tick_failure_alerted: AtomicBool::new(false),
             stall_fault: std::env::var_os(STALL_FAULT_ENV).map(PathBuf::from),
+            task_stall_fault: std::sync::Mutex::new(
+                std::env::var_os(TASK_STALL_FAULT_ENV).map(PathBuf::from),
+            ),
             processes: Default::default(),
             scheduler_step: Default::default(),
             sweep_step: Default::default(),
@@ -60,6 +67,32 @@ impl AgentWakeMonitor {
     fn scheduler_silent_ms(&self, now: u64) -> u64 {
         let tick = self.scheduler_tick_ms.load(Ordering::Acquire);
         now.saturating_sub(tick.max(self.started_at_ms))
+    }
+
+    #[cfg(test)]
+    pub(super) fn set_task_stall_fault(&self, file: PathBuf) {
+        *self
+            .task_stall_fault
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(file);
+    }
+
+    /// Drill fault: a settlement of `agent`'s task that does not end while the fault file names it.
+    pub(super) async fn hold_while_task_stall_fault_names(&self, agent: &str) {
+        loop {
+            let file = self
+                .task_stall_fault
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone();
+            let named = file
+                .and_then(|file| std::fs::read_to_string(file).ok())
+                .is_some_and(|names| names.lines().any(|name| name.trim() == agent));
+            if !named {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
     }
 
     /// Why the lifecycle sweep has not passed its dead-man check since `since`.
