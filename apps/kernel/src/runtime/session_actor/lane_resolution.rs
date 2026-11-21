@@ -120,7 +120,8 @@ pub(super) async fn resolve_session_lane_key(
         LocalDaemonRequest::UpdateAgentConfig(request) => {
             resolve_direct_session_lane_key(session_projection, &request.session_id)
         }
-        LocalDaemonRequest::UpdateAgentProfile(request) => {
+        LocalDaemonRequest::UpdateAgentProfile(request)
+        | LocalDaemonRequest::UpdateAgentProfileAtTurnEnd(request) => {
             resolve_direct_session_lane_key(session_projection, &request.session_id)
         }
         LocalDaemonRequest::AliasAgent(request) => {

@@ -643,6 +643,7 @@ impl KernelRuntimeState {
         // A deferred settings change belongs to the next turn. Route a queued
         // prompt through provider selection instead of promoting it on this run.
         let defer_queued_prompt = is_workflow_prompt
+            || owned.agent_store.has_pending_profile(&agent_id)
             || (provider_run.settings_stale() && provider_run.client_interface().is_chariox())
             || next_queued_prompt_candidate.as_ref().is_some_and(|prompt| {
                 crate::scheduler::runtime::is_workflow_prompt_attachment(

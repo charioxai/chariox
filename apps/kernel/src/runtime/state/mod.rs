@@ -589,6 +589,7 @@ mod agent_notification_app;
 mod agent_notification_expiry;
 mod agent_profile_compaction;
 mod agent_profile_owned_state;
+mod agent_profile_turn_end;
 mod agent_settings_change;
 mod agent_settings_swap_runtime;
 mod agent_trigger_gateway;

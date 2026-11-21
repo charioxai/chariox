@@ -410,7 +410,8 @@ async fn run_session_command_lane(
 
 fn session_command_lane_id(request: &LocalDaemonRequest, session_id: &str) -> String {
     let agent_id = match request {
-        LocalDaemonRequest::UpdateAgentProfile(request) => Some(&request.agent_id),
+        LocalDaemonRequest::UpdateAgentProfile(request)
+        | LocalDaemonRequest::UpdateAgentProfileAtTurnEnd(request) => Some(&request.agent_id),
         LocalDaemonRequest::UpdateAgentConfig(request) => Some(&request.agent_id),
         _ => None,
     };

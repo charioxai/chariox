@@ -524,6 +524,8 @@ impl DaemonApp {
         app.prompt_state_owner
             .set_agent_move_admission(app.agent_moves.clone());
         app.prompt_state_owner
+            .set_agent_profile_admission(app.agents.clone());
+        app.prompt_state_owner
             .set_room_setup(app.room_setup.clone());
         let restore_started = Instant::now();
         app.restore_durable_state()?;

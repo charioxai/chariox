@@ -203,7 +203,8 @@ pub(super) fn projected_session_absence_response(
         LocalDaemonRequest::SpawnAgents(request) => &request.session_id,
         LocalDaemonRequest::UndoTurn(request) => &request.session_id,
         LocalDaemonRequest::ForkAgent(request) => &request.session_id,
-        LocalDaemonRequest::UpdateAgentProfile(request) => &request.session_id,
+        LocalDaemonRequest::UpdateAgentProfile(request)
+        | LocalDaemonRequest::UpdateAgentProfileAtTurnEnd(request) => &request.session_id,
         LocalDaemonRequest::CreateAgentTrigger(request) => &request.session_id,
         LocalDaemonRequest::UpdateAgentTrigger(request) => &request.session_id,
         LocalDaemonRequest::DeleteAgentTrigger(request) => &request.session_id,

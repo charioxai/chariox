@@ -1,5 +1,7 @@
 import { LocalIpcError } from "@chariox/kernel-client/ipc"
 import { CommandFailure, exitCodeFor, familyUsageOf, guideText, parseArguments, usageOf, wantsHelp } from "./agent-command-table.js"
+import { defaultKernelEndpoint } from "./cli-options.js"
+import { LocalIpcClient } from "./ipc.js"
 import { kernelUnixClient } from "./kernel-unix-client.js"
 import { FILES_VERBS, runFilesVerb, type SendRequest } from "./kernel-files.js"
 import { runTerminalVerb, TERMINAL_ATTACH_USAGE, TERMINAL_VERBS, waitMsOf, type TerminalFlags, type TerminalVerb } from "./terminal-verbs.js"
@@ -82,6 +84,16 @@ export async function withKernel<T>(
       throw lostConnectionFailure(await probeKernel(options.socket).then(() => null, probeError => probeError))
     }))
   } finally { await client.close() }
+}
+
+/** An owner uses the ordinary local endpoint. An external agent can name its grant socket. */
+export async function withAgentKernel<T>(
+  options: { socket: string | undefined; kernel?: string | undefined; commandId?: string | undefined },
+  use: (send: SendRequest) => Promise<T>,
+): Promise<T> {
+  if (options.socket || options.kernel) return withKernel({ ...options, timeoutSeconds: 30 }, use)
+  const client = new LocalIpcClient(defaultKernelEndpoint(), { controlRequestRetryDeadlineMs: 0, controlResponseStallMs: 30000 })
+  try { return await use(body => client.send(body)) } finally { await client.close() }
 }
 
 export function sendRequest(
