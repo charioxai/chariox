@@ -1,3 +1,4 @@
+import { runAgentSettingsCommand } from "./agent-settings-command.js"
 import { runAgentDeadlineCommand } from "./agent-deadline-command.js"
 import { runAccessCommand } from "./access-command.js"
 import { runInteractionCommand } from "./interaction-command.js"
@@ -12,5 +13,5 @@ import { runSecretCommand } from "./secret-command.js"
 export const AGENT_VERB_NAMES = ["access", "kernels", "request", "watch", "files", "events", "guide", "terminal", "exec", "secret", "interaction", "agent"]
 
 export async function runAgentVerb(argv: readonly string[]): Promise<boolean> {
-  return (await runAgentDeadlineCommand([...argv])) || (await runAccessCommand([...argv])) || (await runSecretCommand([...argv])) || (await runInteractionCommand([...argv])) || (await runKernelsCommand([...argv]))
+  return (await runAgentSettingsCommand(argv)) || (await runAgentDeadlineCommand([...argv])) || (await runAccessCommand([...argv])) || (await runSecretCommand([...argv])) || (await runInteractionCommand([...argv])) || (await runKernelsCommand([...argv]))
 }

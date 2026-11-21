@@ -477,6 +477,7 @@ response_policies! {
         RoomSetupUpdated,
         AgentAliased,
         AgentProfileUpdated,
+        AgentSettings,
         AgentDeadline,
         AgentTree,
         AgentSpawned,

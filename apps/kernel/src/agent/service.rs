@@ -306,6 +306,12 @@ impl AgentService {
         Ok(agent)
     }
 
+    pub(crate) fn has_pending_profile(&self, agent_id: &str) -> bool {
+        self.store
+            .get(agent_id)
+            .is_some_and(|agent| agent.pending_profile().is_some())
+    }
+
     pub(crate) fn restore_agent(&mut self, agent: AgentInstance) -> AgentInstance {
         self.store.insert_restored(agent)
     }

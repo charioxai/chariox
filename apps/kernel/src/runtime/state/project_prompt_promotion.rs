@@ -83,8 +83,10 @@ impl KernelRuntimeState {
                 .provider_store
                 .get_run_for_agent(session_id, agent_id)
                 .is_some_and(|run| {
-                    self.owned
-                        .project_prompt_provider_requires_resolution(&session, &run)
+                    run.settings_stale()
+                        || self
+                            .owned
+                            .project_prompt_provider_requires_resolution(&session, &run)
                 })
             {
                 completion.completion.started_next = self

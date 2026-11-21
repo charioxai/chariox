@@ -422,7 +422,15 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
                 .session(&request.session_id)
                 .agent(&request.agent_id)
         }
-        LocalDaemonRequest::UpdateAgentProfile(request) => {
+        LocalDaemonRequest::GetAgentSettings(request) => {
+            let mut metadata = LocalRequestMetadata::new("agent.settings.read", Normal);
+            if let Some(session_id) = &request.session_id {
+                metadata = metadata.session(session_id);
+            }
+            metadata
+        }
+        LocalDaemonRequest::UpdateAgentProfile(request)
+        | LocalDaemonRequest::UpdateAgentProfileAtTurnEnd(request) => {
             LocalRequestMetadata::new("agent.profile.update", Interactive)
                 .session(&request.session_id)
                 .agent(&request.agent_id)
@@ -1057,10 +1065,12 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::RetryRoomSetup(_) => "session.setup.retry",
         LocalDaemonRequest::DismissRoomSetup(_) => "session.setup.dismiss",
         LocalDaemonRequest::SetAgentDeadline(_) => "agent.deadline.set",
+        LocalDaemonRequest::GetAgentSettings(_) => "agent.settings.read",
         LocalDaemonRequest::GetAgentDeadline(_) => "agent.deadline.get",
         LocalDaemonRequest::ListDescendants(_) => "agent.descendants.list",
         LocalDaemonRequest::AliasAgent(_) => "agent.alias",
-        LocalDaemonRequest::UpdateAgentProfile(_) => "agent.profile.update",
+        LocalDaemonRequest::UpdateAgentProfile(_)
+        | LocalDaemonRequest::UpdateAgentProfileAtTurnEnd(_) => "agent.profile.update",
         LocalDaemonRequest::SpawnAgent(_) => "agent.spawn",
         LocalDaemonRequest::SpawnAgents(_) => "agents.spawn",
         LocalDaemonRequest::UndoTurn(_) => "turn.undo",

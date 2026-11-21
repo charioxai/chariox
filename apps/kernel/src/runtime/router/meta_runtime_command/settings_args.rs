@@ -4,7 +4,7 @@ use super::result::meta_command_error;
 use super::*;
 use crate::local::{UpdateAgentConfigRequest, UpdateAgentProfileRequest};
 
-const USAGE: &str = "usage: agent settings set [<agent>] [--model M] [--effort E | --clear-effort] [--account-profile P] [--provider P] [--reason TEXT]  |  agent settings set [<agent>] [--mode build|plan] [--permission required|yolo] [--dir PATH] [--reason TEXT]";
+const USAGE: &str = "usage: agent settings set [<agent>] [--model M] [--effort E | --clear-effort] [--account-profile P] [--provider P] [--reason TEXT] [--at-turn-end]  |  agent settings set [<agent>] [--mode build|plan] [--permission required|yolo] [--dir PATH] [--reason TEXT]";
 
 /// The request the arguments after `agent settings` ask for: the profile request, or the config
 /// request when they name a mode, permission level or directory. One command changes one kind.
@@ -24,6 +24,7 @@ pub(super) fn meta_agent_settings_request(
     let (mut provider, mut account_profile, mut model, mut effort) = (None, None, None, None);
     let (mut clear_effort, mut mode, mut permission, mut directory, mut reason) =
         (false, None, None, None, None);
+    let mut at_turn_end = false;
     let mut index = 0;
     while index < rest.len() {
         let arg = rest[index].as_str();
@@ -36,6 +37,11 @@ pub(super) fn meta_agent_settings_request(
         }
         if arg == "--clear-effort" {
             clear_effort = true;
+            index += 1;
+            continue;
+        }
+        if arg == "--at-turn-end" {
+            at_turn_end = true;
             index += 1;
             continue;
         }
@@ -66,25 +72,24 @@ pub(super) fn meta_agent_settings_request(
         }
         index += 2;
     }
-    let target = match reference {
-        None => actor.clone(),
-        Some(reference) => crate::runtime::room_tool_admission::resolve_agent(
-            agents,
-            actor.session_id(),
-            reference,
-        )?
-        .clone(),
-    };
-    crate::runtime::room_tool_admission::self_or_below(actor, &target, agents)?;
+    let target = settings_target(actor, agents, reference)?;
     let profile = provider.is_some()
         || account_profile.is_some()
         || model.is_some()
         || effort.is_some()
         || clear_effort;
     let config = mode.is_some() || permission.is_some() || directory.is_some();
+    if config && at_turn_end {
+        return Err(meta_command_error(
+            "--at-turn-end applies to provider profile settings",
+        ));
+    }
+    if clear_effort && effort.is_some() {
+        return Err(meta_command_error("choose --effort or --clear-effort"));
+    }
     match (profile, config) {
-        (true, false) => Ok(LocalDaemonRequest::UpdateAgentProfile(
-            UpdateAgentProfileRequest {
+        (true, false) => {
+            let request = UpdateAgentProfileRequest {
                 session_id: session.id().to_string(),
                 agent_id: target.id().to_string(),
                 provider,
@@ -93,8 +98,13 @@ pub(super) fn meta_agent_settings_request(
                 effort,
                 clear_effort,
                 reason,
-            },
-        )),
+            };
+            Ok(if at_turn_end {
+                LocalDaemonRequest::UpdateAgentProfileAtTurnEnd(request)
+            } else {
+                LocalDaemonRequest::UpdateAgentProfile(request)
+            })
+        }
         (false, true) => Ok(LocalDaemonRequest::UpdateAgentConfig(
             UpdateAgentConfigRequest {
                 session_id: session.id().to_string(),
@@ -118,4 +128,18 @@ pub(super) fn meta_agent_settings_request(
         )),
         (false, false) => Err(meta_command_error(USAGE)),
     }
+}
+
+pub(super) fn settings_target<'a>(
+    actor: &crate::agent::AgentInstance,
+    agents: &'a [crate::agent::AgentInstance],
+    reference: Option<&str>,
+) -> Result<&'a crate::agent::AgentInstance, DaemonError> {
+    let target = crate::runtime::room_tool_admission::resolve_agent(
+        agents,
+        actor.session_id(),
+        reference.unwrap_or_else(|| actor.id()),
+    )?;
+    crate::runtime::room_tool_admission::self_or_below(actor, target, agents)?;
+    Ok(target)
 }

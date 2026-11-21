@@ -210,6 +210,7 @@ impl KernelRuntimeOwnedState {
         if !provider_model_or_account_changed
             && target_effort == agent.effort()
             && !selection_changed
+            && agent.pending_profile().is_none()
         {
             return Ok(owned::OwnedAgentProfileUpdate {
                 agent,
@@ -280,14 +281,14 @@ impl KernelRuntimeOwnedState {
                     &target_provider,
                     &target_account_profile,
                 );
-                agents.set_agent_runtime_profile_with_account_profile(
-                    agent_id,
-                    &target_provider,
-                    target_model,
-                    target_effort.map(str::to_string),
-                    Some(target_account_profile),
-                    resume_state,
-                )?
+                let mut updated = current;
+                updated.set_provider(target_provider);
+                updated.set_account_profile(Some(target_account_profile));
+                updated.set_model(target_model);
+                updated.set_effort(target_effort.map(str::to_string));
+                updated.set_provider_resume_state(resume_state);
+                updated.set_pending_profile(None);
+                agents.restore_agent(updated)
             };
             let _ = self.session_snapshot(session_id)?;
             agent
@@ -308,11 +309,7 @@ impl KernelRuntimeOwnedState {
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
         let agents = self.agent_store.read();
         let agent = agents.get_agent(agent_id)?;
-        self.durable_state_store.append_event(
-            "agent.updated",
-            Some(agent.id().to_string()),
-            serde_json::json!({ "agent": &agent, "capability_name": null }),
-        )?;
+        self.persist_agent_profile_record(&agent)?;
         Ok(agent)
     }
 
