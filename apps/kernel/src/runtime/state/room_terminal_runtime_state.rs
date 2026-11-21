@@ -165,6 +165,7 @@ impl KernelRuntimeState {
                 rows,
                 title,
                 command,
+                stdin,
             } => {
                 let project_environment = match scope.room_id() {
                     Some(session_id) => {
@@ -181,6 +182,7 @@ impl KernelRuntimeState {
                     title,
                     opened_by: actor,
                     command,
+                    stdin,
                     project_environment,
                 })?;
                 // A Room that ended while this opened has already swept its

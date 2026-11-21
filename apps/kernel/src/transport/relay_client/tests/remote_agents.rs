@@ -1047,6 +1047,7 @@ async fn assert_worker_provider_tools_act_as_the_home_agent(
         rows: 24,
         title: None,
         command: None,
+        stdin: None,
     })
     .await
     else {
@@ -1361,6 +1362,7 @@ async fn assert_worker_provider_tools_act_as_the_home_agent(
         rows: 24,
         title: None,
         command: None,
+        stdin: None,
     })
     .await
     else {
@@ -1455,6 +1457,7 @@ async fn assert_ending_the_room_stops_worker_terminals(
             rows: 24,
             title: None,
             command: Some(vec!["sleep".to_string(), "300".to_string()]),
+            stdin: None,
         },
     });
     let command = KernelCommand::from_local_request("room-terminal", None, None, &request);
@@ -1531,6 +1534,7 @@ async fn assert_remote_room_terminal(
             rows: 24,
             title: None,
             command: None,
+            stdin: None,
         },
     )
     .await

@@ -85,6 +85,9 @@ pub enum RoomTerminalOperation {
         title: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         command: Option<Vec<String>>,
+        /// What `command` reads on standard input; the terminal when absent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        stdin: Option<crate::room_terminal::ProgramInput>,
     },
     List,
     Snapshot {

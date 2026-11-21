@@ -6065,6 +6065,17 @@ reload (the same handover as a Room terminal). Closing it, or the kernel stoppin
 `chariox terminal [--kernel K] open|list|send|read|wait|close` and `chariox exec [--kernel K] -- argv` (no `--session`,
 no `--workspace`) use it; the one-shot opens a terminal running the argv, waits for it, reads its output and closes it.
 
+`open` with `command` also takes `stdin`, the program's standard input: `{ kind: "inline", data_base64 }` (at most
+64 KiB decoded) or `{ kind: "file", path }` (a file already on that kernel, for example from `chariox files put`;
+a relative path starts at the terminal's folder). The program reads that file as fd 0 and sees end-of-file where it
+ends; without `stdin` it reads the terminal. Inline input is staged in a private file the kernel removes as
+soon as the program holds it open; a named file is read as it is and left. `stdin` without `command`, input over the
+limit, bad base64 and a missing file are refused naming the limit or the file and the other way to pass it. An
+argument over 4096 bytes is refused naming stdin and the stdin file. `chariox exec` sends its own stdin inline when it
+is not a terminal (over 64 KiB it is refused before sending, naming `files put` and `--stdin-file KERNEL_PATH`);
+`--stdin-file` sends the file reference. Clients need kernel protocol ≥1014 for `stdin`
+(`programStdinMinimumProtocolVersion`, provisional number; an older kernel would ignore the field).
+
 ### Room terminals — carried by local 570 / relay peer 178 (formerly provisional 569 / 177)
 
 Numbering: the terminal shapes below were written at 562/170 and are carried by

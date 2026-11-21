@@ -2260,6 +2260,7 @@ fn open_terminal(f: &Fixture, command: &str) -> String {
         .owned
         .room_terminals
         .open(crate::room_terminal::OpenRoomTerminal {
+            stdin: None,
             project_environment: Default::default(),
             scope: crate::room_terminal::TerminalScope::room(f.room.clone()),
             working_directory: f.runtime.room_project_directory(&f.room).unwrap(),
