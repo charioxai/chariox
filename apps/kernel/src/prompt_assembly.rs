@@ -1832,6 +1832,8 @@ mod tests {
             .unwrap();
         assert!(brief.contains("One deliverable"), "{brief}");
         assert!(brief.contains("at most 30 lines"), "{brief}");
+        assert!(brief.contains("final message"), "{brief}");
+        assert!(brief.contains("no files in temporary folders"), "{brief}");
     }
 
     /// A helper's startup costs about as much as a small task: the tool says a task
