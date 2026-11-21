@@ -15,6 +15,7 @@ pub mod usage_report;
 
 pub mod drain_window;
 mod outgoing;
+mod packed_peer_reply;
 mod registry;
 
 pub use auth::{
