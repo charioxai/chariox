@@ -579,6 +579,11 @@ impl KernelRuntimeState {
         result: Result<JobResult, DaemonError>,
         cancelled: bool,
     ) -> Result<JobResult, DaemonError> {
+        let upload_timed_out = !cancelled
+            && matches!(
+                &result,
+                Err(DaemonError::MachineRequest { code, .. }) if code == "job_upload_time_limit"
+            );
         let result = match result {
             Err(_) if cancelled => {
                 self.stop_named_command(record).await;
@@ -607,6 +612,9 @@ impl KernelRuntimeState {
             }
             failed(record, "Job failed; see the protected output log".into())
         });
+        if upload_timed_out {
+            result.outcome = JobOutcome::TimeLimit;
+        }
         output
             .file
             .flush()
@@ -627,7 +635,10 @@ impl KernelRuntimeState {
             // whole result are saved before the uploaded workspace goes, so a restart between the
             // two finds a finished job whose cleanup is left, never a pending return.
             save_record(self, record)?;
-            self.settle_or_warn(record).await;
+            // Status or recovery retries the saved cleanup plan after an upload deadline.
+            if !upload_timed_out {
+                self.settle_or_warn(record).await;
+            }
             return Ok(result);
         }
         self.forget_pending_return(&record.job_id);
@@ -664,51 +675,42 @@ impl KernelRuntimeState {
         if *cancelled.borrow() {
             return Ok(cancelled_result(record));
         }
-        let directory = record.request.target_directory().is_some();
-        let (located, plan) = if directory {
-            (None, None)
+        let (remote, plan) = if record.request.target_directory().is_some() {
+            self.remember_remote_job(record, machine)?;
+            (Remote::in_directory(machine.grant.clone(), record).await?, None)
         } else {
             record.state = "uploading".into();
             save_record(self, record)?;
-            let located = Remote::locate(machine.grant.clone(), &record.job_id).await?;
-            let plan = PendingReturn {
-                root: located.root.clone(),
-                kernel_id: machine.kernel_id.clone(),
-                base: crate::jobs::snapshot(&record.workspace, &record.request.outputs)?,
-                uploaded: crate::jobs::snapshot(&record.workspace, &[])?,
+            let held = record.request.machine.is_some();
+            let limit = Duration::from_secs(record.request.timeout_s);
+            let mut stop = cancelled.clone();
+            let preparation = self.prepare_remote_workspace(record, machine, cancelled);
+            let (remote, plan) = if held {
+                tokio::select! {
+                    answer = tokio::time::timeout(limit, preparation) => match answer {
+                        Ok(Ok(prepared)) => prepared,
+                        Ok(Err(error)) => return Err(ledger::error(format!(
+                            "The job stopped before the command started while uploading the workspace. {error} Check chariox.machines.status and retry once the machine is reachable."
+                        ))),
+                        Err(_) => return Err(DaemonError::MachineRequest {
+                            code: "job_upload_time_limit".into(),
+                            message: "The job reached its time limit while uploading the workspace, before the command started. Check chariox.machines.status. Retry with a longer timeout if the machine is reachable. A job status check retries workspace cleanup.".into(),
+                        }),
+                    },
+                    _ = stop.wait_for(|stopped| *stopped) => {
+                        return Err(ledger::error("Job cancelled during workspace upload"));
+                    }
+                }
+            } else {
+                preparation.await?
             };
-            // Persist the return plan before any bytes can reach a machine.
-            plan.save(self, &record.job_id)?;
-            (Some(located), Some(plan))
-        };
-        record.advance(StageEvent::Plan)?;
-        if let Err(error) = save_record(self, record) {
-            self.give_up_pending_return(record);
-            self.forget_pending_return(&record.job_id);
-            return Err(error);
-        }
-        if let Some(driver) = &self.job_wake_driver {
-            driver
-                .return_grants
-                .lock()
-                .expect("job return grants")
-                .insert(record.job_id.clone(), machine.grant.clone());
-        }
-        let remote = if let Some((located, plan)) = located.as_ref().zip(plan.as_ref()) {
-            Remote::prepare(
-                machine.grant.clone(),
-                record,
-                located,
-                &plan.uploaded,
-                cancelled,
-            )
-            .await?
-        } else {
-            Remote::in_directory(machine.grant.clone(), record).await?
+            (remote, Some(plan))
         };
         if *cancelled.borrow() {
             return Err(ledger::error("Job cancelled during workspace upload"));
         }
+        record.state = "starting".into();
+        save_record(self, record)?;
         let exec_id = remote
             .open(
                 validate(&record.request)?,
@@ -731,6 +733,69 @@ impl KernelRuntimeState {
         save_record(self, record)?;
         self.supervise_remote(record, &remote, plan.as_ref(), &exec_id, output, cancelled)
             .await
+    }
+
+    async fn prepare_remote_workspace(
+        &self,
+        record: &mut Record,
+        machine: &super::super::job_compute::JobMachine,
+        cancelled: &watch::Receiver<bool>,
+    ) -> Result<(Remote, PendingReturn), DaemonError> {
+        let workspace = record.workspace.clone();
+        let outputs = record.request.outputs.clone();
+        let (base, upload) = tokio::task::spawn_blocking(move || {
+            Ok::<_, DaemonError>((
+                crate::jobs::snapshot(&workspace, &outputs)?,
+                crate::jobs::snapshot(&workspace, &[])?,
+            ))
+        })
+        .await
+        .map_err(|error| ledger::error(format!("Cannot read the job workspace. {error}")))??;
+        let located = Remote::locate(machine.grant.clone(), &record.job_id).await?;
+        // From here the machine may come to hold the only copy of the outputs, and a held machine
+        // keeps the uploaded workspace until it is removed: keep where it is and what collecting
+        // needs before the first byte goes up, so nothing after it can lose them or leave them
+        // behind. The worker is released only once the command's end is read and its files are
+        // home, or it is stopped; a held machine's workspace is removed then.
+        let plan = PendingReturn {
+            root: located.root.clone(),
+            kernel_id: machine.kernel_id.clone(),
+            base,
+            uploaded: upload,
+        };
+        plan.save(self, &record.job_id)?;
+        self.remember_remote_job(record, machine)?;
+        let remote = Remote::prepare(
+            machine.grant.clone(),
+            record,
+            &located,
+            &plan.uploaded,
+            cancelled,
+        )
+        .await?;
+        Ok((remote, plan))
+    }
+
+    fn remember_remote_job(
+        &self,
+        record: &mut Record,
+        machine: &super::super::job_compute::JobMachine,
+    ) -> Result<(), DaemonError> {
+        record.advance(StageEvent::Plan)?;
+        if let Err(error) = save_record(self, record) {
+            // Nothing is uploaded yet, so nothing is left on the machine.
+            self.give_up_pending_return(record);
+            self.forget_pending_return(&record.job_id);
+            return Err(error);
+        }
+        if let Some(driver) = &self.job_wake_driver {
+            driver
+                .return_grants
+                .lock()
+                .expect("job return grants")
+                .insert(record.job_id.clone(), machine.grant.clone());
+        }
+        Ok(())
     }
 
     /// After a restart: reattaches to the command the record names and waits for its end, so no
