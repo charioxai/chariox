@@ -33,16 +33,19 @@ def with_watchdog(command, seconds):
             sys.stdout.buffer.write(output)
             sys.stdout.buffer.flush()
             lines = (partial + output).split(b"\n")
-            partial = lines.pop()
+            partial = lines.pop()[:8192]
+            previous = active
             for line in lines:
                 match = TEST_LINE.match(line)
-                if match or TEST_RESULT.match(line) or line.startswith(b"test result:"):
+                if match:
+                    active = None if TEST_RESULT.match(match[2]) else match[1].decode(errors="replace")
+                elif TEST_RESULT.match(line) or line.startswith(b"test result:"):
                     active = None
             match = TEST_LINE.match(partial)
-            current = match[1].decode(errors="replace") if match and not TEST_RESULT.match(match[2]) else None
-            if current != active or active is None:
+            if match and not TEST_RESULT.match(match[2]):
+                active = match[1].decode(errors="replace")
+            if active != previous or active is None:
                 deadline = time.monotonic() + seconds
-            active = current
         label = f"Rust test {active}" if active else "Rust test runner before a test name was available"
         print(f"\n::error::{label} timed out after {seconds} seconds", flush=True)
         # Only the new process group belongs to this run, and its leader has not been reaped.
