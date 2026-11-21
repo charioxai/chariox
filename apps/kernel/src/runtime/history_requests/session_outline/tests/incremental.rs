@@ -216,3 +216,86 @@ fn an_outline_read_after_the_database_was_reclaimed_loads_the_range_again() {
         "the cached outline differs from the full one after the database was reclaimed"
     );
 }
+
+async fn read_delta_page(
+    store: &OperationalHistoryStore,
+    cursors: serde_json::Value,
+) -> serde_json::Value {
+    let request = serde_json::from_value(serde_json::json!({
+        "session_id": "session-1",
+        "agent_ids": ["agent-1"],
+        "after_sequence": cursors,
+    }))
+    .unwrap();
+    let response = execute_session_history_outline_request(store.clone(), request)
+        .await
+        .unwrap();
+    serde_json::to_value(response).unwrap()["SessionHistoryOutline"]["agents"][0].clone()
+}
+
+#[tokio::test]
+async fn outline_delta_sends_replacements_and_recovers_from_a_stale_cursor() {
+    let (_dir, path) = store_path();
+    let store = OperationalHistoryStore::open(path).expect("open history");
+    store
+        .append_many(&[prompt(10, 5_000), fragment(11, 5_001, "working")])
+        .unwrap();
+
+    let full = read_delta_page(&store, serde_json::json!({})).await;
+    assert_eq!(full["turns"][0]["summary"]["entry"]["text"], "working");
+    let before = &full["delta_cursor"];
+    assert_eq!(before["after_sequence"], 11);
+
+    let replacement = store
+        .replace_transcript_by_merge_key(
+            "session-1",
+            Some("agent-1"),
+            "message-1",
+            &fragment_entry("settled"),
+            context(),
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(replacement.sequence, 11);
+    let delta = read_delta_page(&store, serde_json::json!({"agent-1": before})).await;
+    assert_eq!(delta["turns"], serde_json::json!([]));
+    assert!(delta["turn_deltas"][0]["header"].is_number());
+    assert_eq!(
+        delta["turn_deltas"][0]["summary"]["entry"]["text"],
+        "settled"
+    );
+    assert_eq!(delta["delta_cursor"]["after_sequence"], 11);
+
+    let stale = read_delta_page(
+        &store,
+        serde_json::json!({
+            "agent-1": {"after_sequence": 11, "revision": "expired"}
+        }),
+    )
+    .await;
+    assert!(stale.get("turn_deltas").is_none());
+    assert_eq!(stale["turns"][0]["summary"]["entry"]["text"], "settled");
+
+    let unchanged = read_delta_page(
+        &store,
+        serde_json::json!({
+            "agent-1": stale["delta_cursor"]
+        }),
+    )
+    .await;
+    assert!(unchanged["turn_deltas"][0]["summary"].is_number());
+
+    store.append(&fragment(12, 5_002, " now")).unwrap();
+    let grown = read_delta_page(
+        &store,
+        serde_json::json!({
+            "agent-1": stale["delta_cursor"]
+        }),
+    )
+    .await;
+    assert_eq!(grown["delta_cursor"]["after_sequence"], 12);
+    assert_eq!(
+        grown["turn_deltas"][0]["summary"]["entry"]["text"],
+        "settled now"
+    );
+}
