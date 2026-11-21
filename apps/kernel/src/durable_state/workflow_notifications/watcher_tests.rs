@@ -36,6 +36,7 @@ fn create(f: &Fixture, coalesce: WatcherCoalesce, debounce_s: u64) -> WatcherRec
         kernel_id: "daemon-test".into(),
         session_id: f.session.clone(),
         creator_agent_id: Some("agent-1".into()),
+        owner_activation: false,
         manifest: manifest(coalesce, debounce_s),
         script: WatcherScript {
             file_name: "watch.sh".into(),
@@ -90,6 +91,7 @@ fn set_state(state: WatcherState, at: u64) -> WatcherOperation {
         owner: "local".into(),
         watcher_id: WATCHER.into(),
         state,
+        by_owner: false,
         at,
     }
 }

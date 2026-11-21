@@ -22,6 +22,7 @@ const FIRST_BACKOFF_MS: u64 = 5_000;
 const MAX_BACKOFF_MS: u64 = 10 * 60 * 1000;
 /// Periods without a good run before a poll source reports a gap.
 const GAP_PERIODS: u64 = 3;
+const NO_READING: &str = "No reading reported";
 
 /// What this kernel life is running, by watcher.
 #[derive(Default)]
@@ -143,6 +144,7 @@ impl KernelRuntimeState {
                     kernel_id: self.owned.config_projection.snapshot().daemon_id,
                     session_id,
                     creator_agent_id: agent.map(str::to_owned),
+                    owner_activation: false,
                     manifest,
                     script,
                     state: WatcherState::Draft,
@@ -194,7 +196,7 @@ impl KernelRuntimeState {
                 Ok(LocalDaemonResponse::WatcherDryRun { result })
             }
             WatcherRequest::Activate { watcher_id } => {
-                self.set_watcher_state(&watcher_id, caller, WatcherState::Active)
+                self.set_watcher_state(&watcher_id, caller, WatcherState::Active, agent.is_none())
             }
             WatcherRequest::Pause { watcher_id, paused } => {
                 let state = if paused {
@@ -202,7 +204,7 @@ impl KernelRuntimeState {
                 } else {
                     WatcherState::Active
                 };
-                self.set_watcher_state(&watcher_id, caller, state)
+                self.set_watcher_state(&watcher_id, caller, state, agent.is_none())
             }
             WatcherRequest::CheckNow { watcher_id } => {
                 let record = self.caller_watcher(&watcher_id, caller)?;
@@ -278,6 +280,7 @@ impl KernelRuntimeState {
         watcher_id: &str,
         caller: &str,
         state: WatcherState,
+        by_owner: bool,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let record = self.caller_watcher(watcher_id, caller)?;
         let written = self
@@ -287,6 +290,7 @@ impl KernelRuntimeState {
                 owner: record.owner_id,
                 watcher_id: watcher_id.into(),
                 state,
+                by_owner,
                 at: crate::session::unix_epoch_ms(),
             })?;
         if state == WatcherState::Active {
@@ -493,6 +497,9 @@ async fn run_once(
         tell(store, store.watcher_write(WatcherOperation::Commit(commit)))
             .map_err(|e| e.to_string())
     };
+    let expects_reading = record
+        .passed_dry_run()
+        .is_some_and(|preview| preview.reading.is_some());
     let end = run::run(spec, stopped, |report| {
         match report {
             Report::Reading(reading) => pending.reading = Some(reading),
@@ -508,13 +515,30 @@ async fn run_once(
         Ok(())
     })
     .await;
+    let missing_reading = !stream
+        && expects_reading
+        && pending
+            .reading
+            .as_deref()
+            .is_none_or(|reading| reading.trim().is_empty());
     match &end {
+        RunEnd::Finished if missing_reading => {
+            fail(NO_READING.into(), None);
+        }
         RunEnd::Finished if !stream => {
             if let Err(reason) = commit(&mut pending) {
                 tracing::debug!(watcher = %watcher_id, %reason, "watcher run was not committed");
             }
         }
         RunEnd::Finished => fail("the stream ended".into(), None),
+        RunEnd::Failed { reason, output } if missing_reading => {
+            let failure = if output.is_empty() {
+                reason.clone()
+            } else {
+                format!("{reason}\n{output}")
+            };
+            fail(NO_READING.into(), Some(failure));
+        }
         RunEnd::Failed { reason, output } => {
             fail(reason.clone(), (!output.is_empty()).then(|| output.clone()))
         }
@@ -586,6 +610,10 @@ fn tell(
         return Ok(());
     };
     let record = &written.record;
+    if record.owner_activation {
+        // Fix in Sources starts the repair conversation for an owner-reviewed source.
+        return Ok(());
+    }
     let (state, since_ms, message) = match health {
         WatcherHealth::Ok => return Ok(()),
         WatcherHealth::Failing { since_ms, reason } => (
