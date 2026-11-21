@@ -47,7 +47,7 @@ pub fn agent_run_tool_specs() -> Vec<RuntimeToolSpec> {
                         "required": ["name", "brief"],
                         "properties": {
                             "name": {"type": "string", "description": "Unique alias for the worker: letters, digits, - and _."},
-                            "brief": {"type": "string", "description": "One deliverable: the task, the files it owns, constraints, and the answer as paths and facts in at most 30 lines."},
+                            "brief": {"type": "string", "description": "One deliverable: the task, the files it owns, constraints; the answer comes back in its final message, at most 30 lines, with no files in temporary folders."},
                             "model": {"type": "string", "description": "Optional model; defaults to yours."},
                             "effort": {"type": "string", "description": "Optional effort; defaults to yours."}
                         },
