@@ -32,6 +32,7 @@ fn turn() -> crate::local::SessionHistoryOutlineTurn {
         summary: None,
         blobs: vec![crate::local::SessionHistoryOutlineBlob {
             blob_id: "history:11:11".into(),
+            revision: "blob-revision".into(),
             steering: false,
             kind: crate::history::SessionHistoryEntryKind::ProviderTool,
             title: "bash · COMPLETED".into(),

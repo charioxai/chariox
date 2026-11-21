@@ -201,6 +201,7 @@ fn local_daemon_protocol_session_history_outline_shape_is_versioned() {
     let request = LocalDaemonRequest::GetSessionHistoryOutline(
         crate::local::GetSessionHistoryOutlineRequest {
             session_id: "session-1".to_string(),
+            after_sequence: None,
             include_prefetched_content: false,
             agent_ids: Some(vec!["agent-1".to_string(), "agent-2".to_string()]),
             latest_prompt_count: Some(4),
@@ -264,6 +265,8 @@ fn local_daemon_protocol_session_history_outline_shape_is_versioned() {
     blob_entry.entry.prompt_origin = Some(crate::session::PromptOrigin::External);
     let outline = LocalDaemonResponse::SessionHistoryOutline {
         agents: vec![crate::local::SessionHistoryOutlineAgent {
+            delta_cursor: None,
+            turn_deltas: None,
             agent_id: "agent-1".to_string(),
             prefetched_blobs: None,
             turns: vec![crate::local::SessionHistoryOutlineTurn {
@@ -283,6 +286,7 @@ fn local_daemon_protocol_session_history_outline_shape_is_versioned() {
                 summary: Some(summary),
                 blobs: vec![crate::local::SessionHistoryOutlineBlob {
                     blob_id: "history:11:11".to_string(),
+                    revision: "blob-revision".into(),
                     steering: false,
                     kind: crate::history::SessionHistoryEntryKind::ProviderTool,
                     title: "bash · COMPLETED".to_string(),

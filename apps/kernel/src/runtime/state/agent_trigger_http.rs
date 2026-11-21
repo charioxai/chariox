@@ -136,6 +136,7 @@ impl KernelRuntimeState {
                     agent_ids: Some(vec![trigger.agent_id().into()]),
                     latest_prompt_count: Some(20),
                     cursor: request.cursor,
+                    after_sequence: None,
                     include_prefetched_content: true,
                 },
             ),
