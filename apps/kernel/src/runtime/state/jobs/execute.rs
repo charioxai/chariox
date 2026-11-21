@@ -831,13 +831,12 @@ impl KernelRuntimeState {
         machine: &super::super::job_compute::JobMachine,
         cancelled: &watch::Receiver<bool>,
     ) -> Result<(Remote, PendingReturn), DaemonError> {
-        let workspace = record.workspace.clone();
+        let worktree = record.workspace.clone();
+        let root = record.transfer_root().to_path_buf();
         let outputs = record.request.outputs.clone();
         let (base, upload) = tokio::task::spawn_blocking(move || {
-            Ok::<_, DaemonError>((
-                crate::jobs::snapshot(&workspace, &outputs)?,
-                crate::jobs::snapshot(&workspace, &[])?,
-            ))
+            let workspace = crate::jobs::TransferWorkspace::new(&worktree, &root)?;
+            Ok::<_, DaemonError>((workspace.snapshot(&outputs)?, workspace.snapshot(&[])?))
         })
         .await
         .map_err(|error| ledger::error(format!("Cannot read the job workspace. {error}")))??;
