@@ -42,7 +42,7 @@ impl KernelRuntimeState {
             tool_name,
             None,
         );
-        let relay_config = self.with_app_side_effect(|app| app.config().clone()).await;
+        let relay_config = self.owned.config_projection.snapshot();
         let response = send_remote_workspace_live_sync_request_with_recovery(
             &relay_config,
             ClientTarget {

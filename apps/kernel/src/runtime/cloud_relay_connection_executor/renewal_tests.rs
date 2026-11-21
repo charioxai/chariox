@@ -45,9 +45,20 @@ async fn renewal_installs_the_issued_expiry_while_the_app_is_locked() {
     )
     .await;
     drop(app_guard);
-    outcome.expect("renewal must not wait for the app lock").unwrap();
+    outcome
+        .expect("renewal must not wait for the app lock")
+        .unwrap();
     server.await.unwrap();
+    let mut durable = app.lock().await.config().clone();
+    assert!(durable.relay_token.is_none());
+    durable.runtime_mcp_port = 43210;
+    projection.update(durable.clone());
     let saved = projection.snapshot();
+    assert_eq!(saved.runtime_mcp_port, durable.runtime_mcp_port);
+    assert_eq!(
+        router.relay_registration().await.auth_token,
+        saved.relay_token.clone().unwrap()
+    );
     assert_eq!(
         saved.cloud_relay.as_ref().unwrap().token_expires_at_ms,
         Some(expiry)
@@ -60,5 +71,16 @@ async fn renewal_installs_the_issued_expiry_while_the_app_is_locked() {
     );
     assert!(
         crate::runtime::cloud_relay_control::cloud_relay_token_refresh_due(&saved, expiry - 60_000)
+    );
+
+    durable.relay_url = Some("ws://127.0.0.1:9010".into());
+    durable.relay_token = Some("private-relay-token".into());
+    projection.update(durable);
+    assert!(projection
+        .install_cloud_relay_renewal(&saved, "delayed-token".into(), expiry)
+        .is_err());
+    assert_eq!(
+        projection.snapshot().relay_token.as_deref(),
+        Some("private-relay-token")
     );
 }

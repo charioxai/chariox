@@ -99,7 +99,7 @@ impl KernelRuntimeState {
         home: &RemoteExtensionInvocationContext,
         request: RelayPeerRequest,
     ) -> Result<RelayPeerResponse, DaemonError> {
-        let config = self.with_app_side_effect(|app| app.config().clone()).await;
+        let config = self.owned.config_projection.snapshot();
         let timeout = std::cmp::max(
             Duration::from_millis(config.relay_request_timeout_ms),
             HOME_VAULT_RESPONSE_TIMEOUT,

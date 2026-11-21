@@ -94,7 +94,7 @@ impl KernelRuntimeState {
         tool_name: &str,
         arguments: serde_json::Value,
     ) -> Result<RuntimeToolResult, DaemonError> {
-        let relay_config = self.with_app_side_effect(|app| app.config().clone()).await;
+        let relay_config = self.owned.config_projection.snapshot();
         // A wait blocks up to its own timeout, and the home may itself wait on a
         // worker; leave room for both relay answers.
         let timeout = std::cmp::max(

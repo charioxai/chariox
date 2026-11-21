@@ -41,7 +41,7 @@ impl KernelRuntimeState {
             tool_name,
             None,
         );
-        let relay_config = self.with_app_side_effect(|app| app.config().clone()).await;
+        let relay_config = self.owned.config_projection.snapshot();
         self.register_remote_home_extension_invocation(&context, &metadata)
             .await;
         let response = self
@@ -169,7 +169,7 @@ impl KernelRuntimeState {
             name,
             provider_tool_call_id,
         );
-        let relay_config = self.with_app_side_effect(|app| app.config().clone()).await;
+        let relay_config = self.owned.config_projection.snapshot();
         self.register_remote_home_extension_invocation(&context, &metadata)
             .await;
         let response = self
@@ -246,7 +246,7 @@ impl KernelRuntimeState {
         if entries.is_empty() {
             return;
         }
-        let relay_config = self.with_app_side_effect(|app| app.config().clone()).await;
+        let relay_config = self.owned.config_projection.snapshot();
         for entry in entries {
             let home_kernel_id = entry.context.home_kernel_id.clone();
             let _ = self

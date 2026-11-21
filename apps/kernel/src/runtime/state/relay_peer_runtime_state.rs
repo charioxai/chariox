@@ -108,7 +108,8 @@ impl KernelRuntimeState {
                 origin.provider_run_id(),
             );
             Ok::<_, DaemonError>(
-                target.map(|(daemon_id, context)| (app.config().clone(), daemon_id, context)),
+                target
+                    .map(|(daemon_id, context)| (app.relay_config_snapshot(), daemon_id, context)),
             )
         })
         .await

@@ -119,14 +119,15 @@ impl DaemonApp {
         let connected = block_on_relay_query(async move {
             Ok::<bool, DaemonError>(relay_state.read().await.connected())
         })?;
+        let config = self.relay_config_snapshot();
         Ok(RelayStatus {
             local_daemon_protocol_version: crate::local::LOCAL_DAEMON_PROTOCOL_VERSION,
             runtime_process_identity: crate::runtime::kernel_process_identity::current(),
             capabilities: crate::runtime::state::control_capabilities(&self.durable_state_store()),
-            configured: self.config().relay_url.is_some() && self.config().relay_token.is_some(),
+            configured: config.relay_url.is_some() && config.relay_token.is_some(),
             connected,
-            relay_url: self.config().relay_url.clone(),
-            relay_token_configured: self.config().relay_token.is_some(),
+            relay_url: config.relay_url.clone(),
+            relay_token_configured: config.relay_token.is_some(),
             daemon_id: self.config().daemon_id.clone(),
             machine_id: self.config().host_machine_id.clone(),
             machine_alias: self.config().machine_name(),

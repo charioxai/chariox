@@ -6,7 +6,7 @@ use std::sync::OnceLock;
 
 mod background_writer;
 use background_writer::{BackgroundWriter, WriteAction};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Map, Value};
 
@@ -71,18 +71,42 @@ pub struct ProcessLogGuard;
 impl Drop for ProcessLogGuard {
     fn drop(&mut self) {
         if let Some(writer) = LOGGER.get().and_then(|logger| logger.writer.as_ref()) {
-            writer.flush();
+            if !writer.flush() {
+                eprintln!("Could not finish writing the process log before shutdown");
+            }
         }
     }
 }
 
 fn start_log_writer(mut writer: BoundedLogWriter) -> std::io::Result<BackgroundWriter> {
-    BackgroundWriter::start(move |action| match action {
-        WriteAction::Line(line, flush) => {
-            let _ = writer.write_line(&line, flush);
-        }
-        WriteAction::Flush => {
-            let _ = writer.file.flush();
+    let mut previous_error = None;
+    BackgroundWriter::start(move |action| {
+        let started = Instant::now();
+        let result = match action {
+            WriteAction::Line(line, flush) => writer.write_line(&line, flush),
+            WriteAction::Dropped(count) => writer.report_sink_problem(
+                "process log queue filled while waiting for disk",
+                json!({ "dropped_records": count }),
+            ),
+            WriteAction::Flush => writer.file.flush(),
+        };
+        match result {
+            Ok(()) => {
+                if let Some(error) = previous_error.take() {
+                    let _ = writer.report_sink_problem(
+                        "process log writes resumed after a disk error",
+                        json!({ "error": error }),
+                    );
+                }
+                let elapsed = started.elapsed();
+                if elapsed >= Duration::from_secs(1) {
+                    let _ = writer.report_sink_problem(
+                        "process log disk write stalled",
+                        json!({ "elapsed_ms": elapsed.as_millis() as u64 }),
+                    );
+                }
+            }
+            Err(error) => previous_error = Some(error.to_string()),
         }
     })
 }
@@ -313,6 +337,22 @@ impl BoundedLogWriter {
             max_file_bytes: max_file_bytes.max(1),
             flush_interval_bytes: flush_interval_bytes.max(1),
         })
+    }
+
+    fn report_sink_problem(&mut self, message: &str, fields: Value) -> std::io::Result<()> {
+        let mut record = json!({
+            "timestamp_ms": unix_epoch_ms(),
+            "level": "warn",
+            "process_kind": self.process_kind,
+            "pid": self.pid,
+            "component": "logging",
+            "message": message,
+            "log_path": self.current_path,
+        });
+        if let (Some(record), Value::Object(fields)) = (record.as_object_mut(), fields) {
+            record.extend(fields);
+        }
+        self.write_line(&record.to_string(), true)
     }
 
     fn write_line(&mut self, line: &str, flush_immediately: bool) -> std::io::Result<()> {

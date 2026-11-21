@@ -64,7 +64,7 @@ impl RemoteLeaseRuntime<'_> {
         Ok(RemoteProviderAccountProvisioning {
             registry: self.app.provider_account_profile_registry(),
             durable_state: self.app.durable_state_store(),
-            config: self.app.config().clone(),
+            config: self.app.relay_config_snapshot(),
             lease,
             context,
         })

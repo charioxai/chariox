@@ -1,20 +1,26 @@
-use std::sync::mpsc::{self, Sender, SyncSender};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{self, Sender, SyncSender, TrySendError};
+use std::sync::Arc;
 use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
 
 const QUEUED_RECORDS: usize = 1024;
+const SHUTDOWN_FLUSH_BUDGET: Duration = Duration::from_secs(2);
 
 pub(super) enum WriteAction {
     Line(String, bool),
+    Dropped(u64),
     Flush,
 }
 
-struct Request {
-    action: WriteAction,
-    completed: Option<Sender<()>>,
+enum Request {
+    Record(String, bool),
+    Flush(Sender<()>),
 }
 
 pub(super) struct BackgroundWriter {
     sender: Option<SyncSender<Request>>,
+    dropped: Arc<AtomicU64>,
     worker: Option<JoinHandle<()>>,
 }
 
@@ -22,44 +28,63 @@ impl BackgroundWriter {
     pub(super) fn start(
         mut write: impl FnMut(WriteAction) + Send + 'static,
     ) -> std::io::Result<Self> {
-        let (sender, requests) = mpsc::sync_channel::<Request>(QUEUED_RECORDS);
+        let (sender, requests) = mpsc::sync_channel(QUEUED_RECORDS);
+        let dropped = Arc::new(AtomicU64::new(0));
+        let worker_dropped = Arc::clone(&dropped);
         let worker = thread::Builder::new()
             .name("chariox-log-writer".into())
             .spawn(move || {
                 while let Ok(request) = requests.recv() {
-                    write(request.action);
-                    if let Some(completed) = request.completed {
-                        let _ = completed.send(());
+                    let count = worker_dropped.swap(0, Ordering::Relaxed);
+                    if count != 0 {
+                        write(WriteAction::Dropped(count));
+                    }
+                    match request {
+                        Request::Record(line, flush) => write(WriteAction::Line(line, flush)),
+                        Request::Flush(completed) => {
+                            write(WriteAction::Flush);
+                            let _ = completed.send(());
+                        }
                     }
                 }
                 write(WriteAction::Flush);
             })?;
         Ok(Self {
             sender: Some(sender),
+            dropped,
             worker: Some(worker),
         })
     }
 
     pub(super) fn write(&self, line: String, flush: bool) {
-        self.submit(WriteAction::Line(line, flush), flush);
-    }
-
-    pub(super) fn flush(&self) {
-        self.submit(WriteAction::Flush, true);
-    }
-
-    fn submit(&self, action: WriteAction, wait: bool) {
         let Some(sender) = &self.sender else { return };
-        let (completed, completion) = if wait {
-            let (sender, receiver) = mpsc::channel();
-            (Some(sender), Some(receiver))
-        } else {
-            (None, None)
+        // Diagnostics are bounded. Disk latency must never become relay latency.
+        if let Err(TrySendError::Full(_)) = sender.try_send(Request::Record(line, flush)) {
+            self.dropped.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    pub(super) fn flush(&self) -> bool {
+        let Some(sender) = &self.sender else {
+            return false;
         };
-        if sender.send(Request { action, completed }).is_ok() {
-            if let Some(completion) = completion {
-                let _ = completion.recv();
+        let (completed, completion) = mpsc::channel();
+        let mut request = Request::Flush(completed);
+        let deadline = Instant::now() + SHUTDOWN_FLUSH_BUDGET;
+        loop {
+            match sender.try_send(request) {
+                Ok(()) => {
+                    return completion
+                        .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                        .is_ok();
+                }
+                Err(TrySendError::Disconnected(_)) => return false,
+                Err(TrySendError::Full(pending)) => request = pending,
             }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            thread::sleep(Duration::from_millis(5));
         }
     }
 }
@@ -76,7 +101,7 @@ impl Drop for BackgroundWriter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Arc, Mutex};
+    use std::sync::Mutex;
     use std::time::Duration;
 
     #[test]
@@ -94,7 +119,7 @@ mod tests {
                     }
                     observed.lock().unwrap().push((line, flush));
                 }
-                WriteAction::Flush => {}
+                WriteAction::Flush | WriteAction::Dropped(_) => {}
             })
             .unwrap(),
         );
@@ -136,6 +161,9 @@ mod tests {
                     observed.lock().unwrap().push(line);
                 }
                 WriteAction::Flush => observed.lock().unwrap().push("flushed".into()),
+                WriteAction::Dropped(count) => {
+                    observed.lock().unwrap().push(format!("dropped {count}"))
+                }
             })
             .unwrap(),
         );
@@ -160,9 +188,14 @@ mod tests {
         let records = records.lock().unwrap();
         assert!(completed, "a full log queue blocked the producer");
         assert_eq!(records[0], "first");
-        for index in 0..QUEUED_RECORDS {
-            assert_eq!(records[index + 1], index.to_string());
-        }
+        assert!(records.iter().any(|record| record == "dropped 1"));
+        assert_eq!(
+            records
+                .iter()
+                .filter_map(|record| record.parse().ok())
+                .collect::<Vec<usize>>(),
+            (0..QUEUED_RECORDS).collect::<Vec<_>>()
+        );
         assert!(!records.iter().any(|record| record == "last"));
         assert_eq!(records.last().unwrap(), "flushed");
     }
