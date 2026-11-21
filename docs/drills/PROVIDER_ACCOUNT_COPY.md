@@ -77,3 +77,45 @@ The existing person Inbox notice carries optional `action: {kind: "provider_sign
 | 7 | Missing/unauthenticated sources fail clearly without exposing a half-installed profile. |
 
 Run builds/tests through cargo-slot.sh. Run drill kernels, relay and Chrome on buildfarm machines, with isolated CHARIOX_HOME. A synthetic public-router/encrypted-relay regression proves transaction behavior; it does not replace real provider rotation or the web cells above.
+
+## Same-host benchmark and drill kernels
+
+Use an independently enrolled kernel in the source's Cloud realm. A fresh
+`CHARIOX_HOME` creates separate state. Account copy still requires an
+enrollment for that identity, even on the same host.
+
+1. Provision an authorized disposable target using the
+   [own-machine Setup flow](../../apps/setup/README.md). Give it a unique
+   install ID and independent state, home, socket and ports. For a drill that
+   starts its own binary, run it in its own service with a clean environment
+   and use the ordinary kernel device enrollment for that exact identity.
+   An existing enrolled lab works too when its owner reserves it for the run.
+2. Create and unlock the receiving Vault through Chariox. In the target's
+   Provider Accounts, choose **Copy login to this machine** for the exact
+   source kernel and Claude profile. Automation using the target's owner
+   client can select the same offer with `ListProviderAccountCopyOffers` and
+   `CopyProviderAccountFromKernel`. Keep the target profile ID from the receipt.
+3. Create a fresh Room on the target. Select that profile ID explicitly and
+   complete one short real Claude turn. For orchbench's Chariox arms, use
+   `--existing-kernel` with the target's `ORCHBENCH_KERNEL_HOME`,
+   `ORCHBENCH_KERNEL_PORT` and `ORCHBENCH_ACCOUNT_PROFILE`. The account ID is
+   the one in the receipt. A benchmark that launches Claude outside Chariox
+   needs a provider-native login. The transferred setup token lives in the
+   Vault and Chariox supplies it only to its own provider launch. Pointing an
+   external Claude CLI at the copied profile directory leaves it signed out.
+4. Scan the arm's isolated home. The following check emits matching file
+   names only. For this check, exit 1 means no matches and other nonzero
+   exits indicate a scan error.
+
+   ```sh
+   rg --files-with-matches --text --hidden --no-ignore \
+     -e 'sk-ant-(oat|api)[0-9]+-[A-Za-z0-9_-]{30,}' -- "$arm_home"
+   ```
+
+5. End the Room and remove the target copy. For an owned disposable target,
+   retire its enrollment, stop its service and remove its entire private root.
+   On a reusable target, delete only the credential whose metadata names the
+   Claude profile ID from this run's receipt, then delete that managed
+   profile's data. Verify both the credential and profile are absent before
+   releasing the target. Confirm the source still completes a turn on its
+   original profile.
