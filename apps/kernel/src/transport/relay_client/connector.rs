@@ -1162,7 +1162,15 @@ async fn run_daemon_relay_connector_inner(
                                             &active_relay_token,
                                         ));
                                     }
-                                    "relay close frame received"
+                                    if frame.as_ref().is_some_and(|frame| {
+                                        frame.code == tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode::Again
+                                            && frame.reason == chariox_relay::protocol::REPLY_QUEUE_FULL_CLOSE_REASON
+                                    }) {
+                                        state.write().await.record_reply_queue_closed(&relay_url);
+                                        "relay reply queue was full"
+                                    } else {
+                                        "relay close frame received"
+                                    }
                                 }
                                 Ok(socket_thread::ReaderEnd::RelayClose(reason)) => {
                                     break Err(DaemonError::LocalTransport {

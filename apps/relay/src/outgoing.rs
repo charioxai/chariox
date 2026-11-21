@@ -235,7 +235,7 @@ impl WeakRelaySender {
 pub(crate) fn backlog_close_frame() -> Message {
     Message::Close(Some(CloseFrame {
         code: CloseCode::Again,
-        reason: "try again later".into(),
+        reason: crate::protocol::REPLY_QUEUE_FULL_CLOSE_REASON.into(),
     }))
 }
 
