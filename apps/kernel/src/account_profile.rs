@@ -5182,9 +5182,19 @@ fn validate_linked_root(path: &Path) -> Result<PathBuf, DaemonError> {
             ));
         }
         if metadata.permissions().mode() & 0o077 != 0 {
+            let Some(path) = canonical.to_str().or_else(|| path.to_str()) else {
+                return Err(registry_error(
+                    "link account profile",
+                    format!(
+                        "Remove group and other permissions from the provider folder at {:?}, then link it again.",
+                        canonical
+                    ),
+                ));
+            };
+            let quoted = path.replace('\'', "'\\''");
             return Err(registry_error(
                 "link account profile",
-                "linked provider root must not be accessible by group or other users",
+                format!("Provider folder '{quoted}' is accessible by group or other users. Run chmod go-rwx -- '{quoted}' and link it again."),
             ));
         }
     }
@@ -9850,13 +9860,22 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         let (root, registry) = fixture();
-        let linked = root.join("insecure");
+        let linked = root.join("Provider's account");
         fs::create_dir_all(&linked).unwrap();
-        fs::set_permissions(&linked, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::set_permissions(&linked, fs::Permissions::from_mode(0o750)).unwrap();
 
+        let refusal = registry
+            .link_existing("owner-a", "opencode", "Linked", &linked)
+            .unwrap_err();
+        let path = linked.canonicalize().unwrap();
+        let quoted = path.to_str().unwrap().replace('\'', "'\\''");
+        assert!(refusal
+            .to_string()
+            .contains(&format!("chmod go-rwx -- '{quoted}'")));
+        fs::set_permissions(&linked, fs::Permissions::from_mode(0o700)).unwrap();
         assert!(registry
-            .link_existing("owner-a", "codex", "Unsafe", &linked)
-            .is_err());
+            .link_existing("owner-a", "opencode", "Linked", &linked)
+            .is_ok());
         let _ = fs::remove_dir_all(root);
     }
 }
