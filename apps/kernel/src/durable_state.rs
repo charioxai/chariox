@@ -276,6 +276,10 @@ enum DurableWriteOperation {
     AcquireChoice(acquire_choices::AcquireChoiceTransition),
     RoomEnvironment(room_environment::RoomEnvironmentWrite),
     RoomSetup(room_setup::RoomSetupWrite),
+    RoomSetupStorageFailure {
+        owner_id: String,
+        session_id: String,
+    },
     BrowserImport(browser_import::ImportStateWrite),
     RetiredSessionBackfill {
         owner_id: String,
@@ -2037,6 +2041,10 @@ fn commit_durable_write_batch(
                 acquire_choices::apply(&transaction, transition)
             }
             DurableWriteOperation::RoomSetup(write) => room_setup::apply(&transaction, write),
+            DurableWriteOperation::RoomSetupStorageFailure {
+                owner_id,
+                session_id,
+            } => room_setup::mark_storage_failure(&transaction, owner_id, session_id),
             DurableWriteOperation::RoomEnvironment(write) => {
                 room_environment::apply(&transaction, write)
             }
@@ -2390,6 +2398,11 @@ CREATE TABLE IF NOT EXISTS durable_room_setups (
     session_id TEXT NOT NULL,
     agent_id TEXT NOT NULL,
     state_json TEXT NOT NULL,
+    PRIMARY KEY (owner_id, session_id)
+);
+CREATE TABLE IF NOT EXISTS durable_room_setup_storage_failures (
+    owner_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
     PRIMARY KEY (owner_id, session_id)
 );
 CREATE TABLE IF NOT EXISTS durable_room_environments (

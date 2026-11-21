@@ -19,6 +19,23 @@ struct RoomSetup {
     storage_failed: bool,
 }
 
+impl RoomSetup {
+    fn fail_step(&mut self, position: usize, message: &'static str) {
+        let step = &mut self.state.steps[position];
+        step.state = RoomSetupStepState::Failed;
+        step.message = Some(message.into());
+        self.state.steps.truncate(position + 1);
+    }
+
+    fn storage_failed(&mut self, position: usize) {
+        self.fail_step(
+            position,
+            storage_failure_message(self.state.steps[position].id),
+        );
+        self.storage_failed = true;
+    }
+}
+
 impl RoomSetupStore {
     pub(crate) fn durable(
         store: crate::durable_state::DurableKernelStateStore,
@@ -28,31 +45,41 @@ impl RoomSetupStore {
             rooms: Default::default(),
             durable: Some((store.clone(), owner.into())),
         };
-        for (session, agent_id, mut state) in store.load_room_setups(owner)? {
-            // No setup task survives the process. Never leave a Room waiting on one.
-            if let Some(position) = state.steps.iter().position(|step| {
+        let mut rooms = restored.rooms();
+        for saved in store.load_room_setups(owner)? {
+            let session_id = saved.session_id;
+            let mut setup = RoomSetup {
+                agent_id: saved.agent_id,
+                state: saved.state,
+                storage_failed: saved.storage_failed,
+            };
+            // No setup task survives the process. The last committed state identifies the
+            // first unfinished step even when recording the result was the write that failed.
+            if let Some(position) = setup.state.steps.iter().position(|step| {
                 matches!(
                     step.state,
                     RoomSetupStepState::Pending | RoomSetupStepState::Running
                 )
             }) {
-                let step = &mut state.steps[position];
-                step.state = RoomSetupStepState::Failed;
-                step.message = Some(if step.id == RoomSetupStepId::Publish {
-                    "Publishing was interrupted by a kernel restart; retry publishing".into()
+                if setup.storage_failed {
+                    setup.storage_failed(position);
                 } else {
-                    "Room setup was interrupted by a kernel restart; check the folder, then dismiss to continue".into()
-                });
-                state.steps.truncate(position + 1);
+                    let step = setup.state.steps[position].id;
+                    setup.fail_step(position, interrupted_message(step));
+                    if let Err(error) = store.save_room_setup(
+                        owner,
+                        &session_id,
+                        Some((&setup.agent_id, &setup.state)),
+                    ) {
+                        tracing::error!(session_id, %error, "Room setup recovery could not save progress; repair kernel storage, then retry or dismiss setup");
+                        restored.record_storage_failure(&session_id);
+                        setup.storage_failed(position);
+                    }
+                }
             }
-            restored.change(&session, |_| {
-                Ok(Some(RoomSetup {
-                    agent_id,
-                    state,
-                    storage_failed: false,
-                }))
-            })?;
+            rooms.insert(session_id, setup);
         }
+        drop(rooms);
         Ok(restored)
     }
 
@@ -115,28 +142,26 @@ impl RoomSetupStore {
             .is_some_and(|setup| !setup.storage_failed && setup.state.holds_prompts())
     }
 
-    /// A failed write cannot save its own failure. Keep a visible recovery action locally,
-    /// and stop holding prompts; Retry or Dismiss must commit normally after storage is repaired.
+    /// Project the failure and release prompts even if storage cannot record the failure marker.
+    /// Retry or Dismiss must commit normally after storage is repaired.
     pub(crate) fn progress_failed(&self, session_id: &str, step: RoomSetupStepId) {
         let mut rooms = self.rooms();
         let Some(setup) = rooms.get_mut(session_id) else {
             return;
         };
-        let message = if step == RoomSetupStepId::Publish {
-            "Publishing progress could not be saved. Repair kernel storage and check the repository, then retry publishing."
-        } else {
-            "Room setup progress could not be saved. Repair kernel storage and check the folder, then dismiss setup to continue."
-        };
-        apply_step(
-            &mut setup.state,
-            step,
-            RoomSetupStepState::Failed,
-            Some(message.into()),
-        );
         if let Some(position) = setup.state.steps.iter().position(|item| item.id == step) {
-            setup.state.steps.truncate(position + 1);
+            self.record_storage_failure(session_id);
+            setup.storage_failed(position);
         }
-        setup.storage_failed = true;
+    }
+
+    fn record_storage_failure(&self, session_id: &str) {
+        if let Some((store, owner)) = &self.durable {
+            // The progress write may still be rejected. Save only the storage failure marker.
+            if let Err(error) = store.mark_room_setup_storage_failure(owner, session_id) {
+                tracing::error!(session_id, %error, "Room setup storage failure could not be recorded");
+            }
+        }
     }
 
     pub(crate) fn start(&self, session_id: &str, step: RoomSetupStepId) -> Result<(), DaemonError> {
@@ -212,6 +237,22 @@ impl RoomSetupStore {
             }))
         })?;
         Ok(dismissed)
+    }
+}
+
+fn storage_failure_message(step: RoomSetupStepId) -> &'static str {
+    if step == RoomSetupStepId::Publish {
+        "Publishing progress could not be saved. Repair kernel storage and check the repository, then retry publishing."
+    } else {
+        "Room setup progress could not be saved. Repair kernel storage and check the folder, then dismiss setup to continue."
+    }
+}
+
+fn interrupted_message(step: RoomSetupStepId) -> &'static str {
+    if step == RoomSetupStepId::Publish {
+        "Publishing was interrupted by a kernel restart; retry publishing"
+    } else {
+        "Room setup was interrupted by a kernel restart; check the folder, then dismiss to continue"
     }
 }
 
