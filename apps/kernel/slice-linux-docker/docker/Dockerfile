@@ -81,9 +81,9 @@ RUN mkdir -p /opt/chariox-runtime-bin \
       && install -m 0755 "target/$profile_dir/chariox-relay" /opt/chariox-runtime-bin/chariox-relay; \
     fi
 
+FROM node:22.17.1-bookworm@sha256:37ff334612f77d8f999c10af8797727b731629c26f2e83caa6af390998bdc49c AS cli-builder
 # The artifact builder supplies the full, immutable repository checkout.
 # Slice image builds consume the resulting prebuilt CLI from their signed context.
-FROM node:22.17.1-bookworm@sha256:37ff334612f77d8f999c10af8797727b731629c26f2e83caa6af390998bdc49c AS cli-builder
 WORKDIR /opt/chariox-source
 RUN npm install --global bun@1.4.2 pnpm@9.15.0
 RUN --mount=type=bind,source=.,target=/src \
