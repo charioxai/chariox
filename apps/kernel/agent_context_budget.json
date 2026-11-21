@@ -2,7 +2,7 @@
   "claude_tools_listed": 136,
   "claude_tools_list_json_bytes": 120429,
   "claude_core_tools": 4,
-  "claude_core_json_bytes": 4476,
+  "claude_core_json_bytes": 4537,
   "claude_server_instructions_bytes": 368,
   "claude_worker_core_tools": 4,
   "claude_worker_core_json_bytes": 3488,
