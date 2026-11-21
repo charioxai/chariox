@@ -12,6 +12,7 @@ const PREFIX: &str = "machine-acquisition-";
 const DIRECT_PREFIX: &str = "machine-acquisition-direct-";
 pub(in crate::runtime::state) const DECISION_EVENT: &str = "compute.acquisition_decided";
 const DECISION_SECONDS: u64 = 300;
+const CARD_ADMISSION_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(750);
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
@@ -209,6 +210,7 @@ impl KernelRuntimeState {
         command: &KernelCommand,
         request: &ControlPlaneRequest,
         capability: Option<&MachineAllocationCapability>,
+        trace: Option<&super::direct::AcquireTrace<'_>>,
     ) -> Result<Option<crate::local::ControlPlaneResponse>, DaemonError> {
         let Some(id) = self.machine_approval_id(command, request) else {
             return Ok(None);
@@ -237,10 +239,12 @@ impl KernelRuntimeState {
         let direct = matches!(request, ControlPlaneRequest::Acquire { .. })
             && command.reach_caller_id().is_some();
         if direct && decision.is_none() {
-            if let Some(wake) = self.owned.durable_state_store.agent_wake(&id)? {
+            if let Some(wake) = self.machine_approval_wake(&id).await? {
                 decision = self.owned.machine_decision(&id, session.owner_user_id())?;
                 if decision.is_none() {
-                    return self.pending_machine_acquisition(&wake, &room, agent.as_deref());
+                    return self
+                        .pending_machine_acquisition(&wake, &room, agent.as_deref())
+                        .map(Some);
                 }
             }
         }
@@ -307,17 +311,46 @@ impl KernelRuntimeState {
             let agent = agent.as_deref().ok_or_else(|| {
                 acquisition_error("approval_required", "Ask from a running agent in a Room")
             })?;
-            let armed = self.arm_interaction_wake(&room, agent, interaction);
+            let state = self.clone();
+            let trace = trace.map(super::direct::AcquireTrace::detail);
+            let mut arm = tokio::task::spawn_blocking({
+                let room = room.clone();
+                let agent = agent.to_owned();
+                move || state.arm_interaction_wake(&room, &agent, interaction, trace)
+            });
+            let armed = match tokio::time::timeout(CARD_ADMISSION_TIMEOUT, &mut arm).await {
+                Ok(Ok(result)) => result,
+                Ok(Err(error)) => Err(acquisition_error(
+                    "acquisition_card_unavailable",
+                    &error.to_string(),
+                )),
+                Err(_) => {
+                    // A running admission may still commit. The same request ID follows that
+                    // durable wake, and abort stops an admission that is still queued.
+                    arm.abort();
+                    return Err(card_starting());
+                }
+            };
             if let Some(decision) = self.owned.machine_decision(&id, session.owner_user_id())? {
                 return approved_quote(decision, &description);
             }
             if let Err(error) = armed {
-                if let Some(wake) = self.owned.durable_state_store.agent_wake(&id)? {
-                    if matches!(wake.state.as_str(), "starting" | "running") {
-                        return self.pending_machine_acquisition(&wake, &room, Some(agent));
+                if let Some(wake) = self.machine_approval_wake(&id).await? {
+                    if let Some(decision) =
+                        self.owned.machine_decision(&id, session.owner_user_id())?
+                    {
+                        return approved_quote(decision, &description);
+                    }
+                    if wake.state == "running" {
+                        return self
+                            .pending_machine_acquisition(&wake, &room, Some(agent))
+                            .map(Some);
                     }
                 }
-                return Err(error);
+                return Err(acquisition_error(
+                    "acquisition_card_unavailable",
+                    &format!("The kernel could not raise the approval card. The service has not been asked. Ask with a new request_id from a running Room turn: {error}"),
+                ));
             }
             let wake = self
                 .owned
@@ -329,8 +362,21 @@ impl KernelRuntimeState {
                         "The approval wait could not be saved. Ask again",
                     )
                 })?;
-            return self.pending_machine_acquisition(&wake, &room, Some(agent));
+            return self
+                .pending_machine_acquisition(&wake, &room, Some(agent))
+                .map(Some);
         }
+        if matches!(request, ControlPlaneRequest::Acquire { .. }) {
+            let published = self
+                .publish_standalone_machine_approval(&room, session.owner_user_id(), interaction)
+                .await;
+            if let Some(decision) = self.owned.machine_decision(&id, session.owner_user_id())? {
+                return approved_quote(decision, &description);
+            }
+            return published.map(Some);
+        }
+        // The remote job has already returned its job handle to the caller. Only its
+        // kernel-owned worker reaches this wait, where job cancellation can remove the card.
         let receiver = match self
             .create_kernel_operation_interaction(&room, session.owner_user_id(), interaction)
             .await
@@ -362,26 +408,115 @@ impl KernelRuntimeState {
         ))
     }
 
-    fn pending_machine_acquisition(
+    async fn publish_standalone_machine_approval(
+        &self,
+        room: &str,
+        owner: &str,
+        interaction: RuntimeInteraction,
+    ) -> Result<crate::local::ControlPlaneResponse, DaemonError> {
+        let owned = self.owned.clone();
+        let room = room.to_owned();
+        let owner = owner.to_owned();
+        let mut publish = tokio::task::spawn_blocking(move || {
+            let id = interaction.id().to_owned();
+            let (sender, receiver) = tokio::sync::oneshot::channel();
+            let published = owned.register_runtime_interaction(
+                &room,
+                interaction,
+                sender,
+                Some(&owner),
+                None,
+                None,
+            );
+            if published.is_ok() {
+                // A standalone acquisition owns its card until the deadline. Keep its
+                // receiver alive while the authenticated caller continues independently.
+                tokio::spawn(async move {
+                    let _ = tokio::time::timeout(
+                        std::time::Duration::from_secs(DECISION_SECONDS + 1),
+                        receiver,
+                    )
+                    .await;
+                });
+            }
+            let session = owned.session_store.get_session(&room)?;
+            let card = session
+                .active_interactions()
+                .iter()
+                .find(|card| card.id() == id);
+            if let Some(card) = card {
+                return Ok(crate::local::ControlPlaneResponse::AcquisitionWaiting {
+                    registration_id: id,
+                    expires_at_ms: decision_deadline(card),
+                });
+            }
+            Err(acquisition_error(
+                "acquisition_card_unavailable",
+                &format!("The kernel could not raise the approval card. Retry from an active Room with the same request_id: {}",
+                    published.err().map_or_else(|| "Room is no longer active".into(), |error| error.to_string())),
+            ))
+        });
+        match tokio::time::timeout(CARD_ADMISSION_TIMEOUT, &mut publish).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(error)) => Err(acquisition_error(
+                "acquisition_card_unavailable",
+                &format!("The kernel could not publish the approval. Retry with the same request_id: {error}"),
+            )),
+            Err(_) => {
+                publish.abort();
+                Err(card_starting())
+            }
+        }
+    }
+
+    pub(super) async fn machine_approval_wake(
+        &self,
+        id: &str,
+    ) -> Result<Option<crate::durable_state::agent_lifecycle::AgentWake>, DaemonError> {
+        let wait_for_publication = async {
+            loop {
+                let wake = self.owned.durable_state_store.agent_wake(id)?;
+                if wake.as_ref().is_none_or(|wake| wake.state != "starting") {
+                    return Ok(wake);
+                }
+                // A parallel retry may see the ledger commit before the card is published.
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        };
+        tokio::time::timeout(CARD_ADMISSION_TIMEOUT, wait_for_publication)
+            .await
+            .map_err(|_| card_starting())?
+    }
+
+    pub(super) fn pending_machine_acquisition(
         &self,
         wake: &crate::durable_state::agent_lifecycle::AgentWake,
         room: &str,
         agent: Option<&str>,
-    ) -> Result<Option<crate::local::ControlPlaneResponse>, DaemonError> {
-        if wake.room_id != room
-            || Some(wake.agent_id.as_str()) != agent
-            || !matches!(wake.state.as_str(), "starting" | "running")
-        {
-            return Err(acquisition_error(
-                "acquisition_unavailable",
-                "The approval wait ended. Use a new request_id to ask again",
-            ));
+    ) -> Result<crate::local::ControlPlaneResponse, DaemonError> {
+        if wake.room_id == room && Some(wake.agent_id.as_str()) == agent {
+            match wake.state.as_str() {
+                "running" => {
+                    return Ok(crate::local::ControlPlaneResponse::AcquisitionWaiting {
+                        registration_id: wake.registration_id.clone(),
+                        expires_at_ms: wake.next_due_ms.unwrap_or(wake.created_at_ms),
+                    });
+                }
+                "starting" => {
+                    return Err(card_starting());
+                }
+                "cancelled" | "cancelling" => {
+                    return Err(acquisition_error(
+                        "acquisition_cancelled",
+                        "The approval was cancelled. Use a new request_id to ask again",
+                    ));
+                }
+                _ => {}
+            }
         }
-        Ok(Some(
-            crate::local::ControlPlaneResponse::AcquisitionWaiting {
-                registration_id: wake.registration_id.clone(),
-                expires_at_ms: wake.next_due_ms.unwrap_or(wake.created_at_ms),
-            },
+        Err(acquisition_error(
+            "acquisition_unavailable",
+            "The approval wait ended. Use a new request_id to ask again",
         ))
     }
 
@@ -420,6 +555,13 @@ impl KernelRuntimeState {
         approval_id(request, room.as_deref(), agent.as_deref())
     }
 }
+fn card_starting() -> DaemonError {
+    acquisition_error(
+        "acquisition_card_starting",
+        "The approval card is taking longer to open. Retry shortly with the same request_id",
+    )
+}
+
 fn approved_quote(
     decision: MachineDecision,
     current_quote: &str,

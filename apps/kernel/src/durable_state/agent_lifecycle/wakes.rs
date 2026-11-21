@@ -449,6 +449,13 @@ fn cancel_settle_because(
     wake.state = "cancelled".into();
     wake.next_due_ms = None;
     let mut answer = serde_json::json!({"wake_id":wake.id,"label":wake.label,"cancelled":true});
+    if wake.kind == "interaction"
+        && crate::runtime::state::machine_acquisition::direct::has_wake_trace(wake)
+    {
+        answer["interaction_id"] = wake.id.clone().into();
+        answer["status"] = "cancelled".into();
+        answer["message"] = "Machine approval cancelled. Use a new request_id to ask again".into();
+    }
     if let Some(reason) = reason {
         answer["reason"] = reason.into();
     }

@@ -17,6 +17,7 @@ mod control;
 mod driver;
 mod execute;
 mod held;
+pub(super) mod held_exec;
 #[cfg(test)]
 mod held_tests;
 mod local;

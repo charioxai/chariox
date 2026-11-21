@@ -71,7 +71,7 @@ async fn offload_automatic_setting_off_awaits_one_human_decision_before_returnin
     let room = command.session_id.clone().unwrap();
     let gate = tokio::spawn(async move {
         gate_state
-            .approve_machine_acquisition(&command, &request, Some(&caps))
+            .approve_machine_acquisition(&command, &request, Some(&caps), None)
             .await
     });
     let id = tokio::time::timeout(Duration::from_secs(5), async {
@@ -143,7 +143,7 @@ async fn offload_automatic_setting_off_awaits_one_human_decision_before_returnin
 async fn offload_automatic_setting_on_has_no_decision_and_off_applies_to_next_request() {
     let (state, command, request, caps, _workspace) = fixture(true);
     state
-        .approve_machine_acquisition(&command, &request, Some(&caps))
+        .approve_machine_acquisition(&command, &request, Some(&caps), None)
         .await
         .unwrap();
     let room = command.session_id.as_deref().unwrap();
@@ -161,7 +161,7 @@ async fn offload_automatic_setting_on_has_no_decision_and_off_applies_to_next_re
     let room = room.to_owned();
     let gate = tokio::spawn(async move {
         gate_state
-            .approve_machine_acquisition(&command, &request, Some(&caps))
+            .approve_machine_acquisition(&command, &request, Some(&caps), None)
             .await
     });
     let id = tokio::time::timeout(Duration::from_secs(5), async {
@@ -231,44 +231,34 @@ async fn offload_manual_machine_request_uses_the_same_owner_gate_and_service_min
         region: None,
     };
     let room = command.session_id.clone().unwrap();
-    let gate_state = state.clone();
-    let gate = tokio::spawn(async move {
-        gate_state
-            .approve_machine_acquisition(&command, &request, Some(&caps))
-            .await
-    });
-    let id = tokio::time::timeout(Duration::from_secs(5), async {
-        loop {
-            let snapshot = state.owned.session_store.get_session(&room).unwrap();
-            if let Some(card) = snapshot.active_interactions().first() {
-                assert_eq!(snapshot.active_interactions().len(), 1);
-                assert!(card.message().contains("0.0006 USD per minute"));
-                assert!(card.message().contains("total depends"));
-                break card.id().to_owned();
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .unwrap();
-    assert!(!gate.is_finished());
-    let owner = state
-        .owned
-        .session_store
-        .get_session(&room)
+    let ask = || state.approve_machine_acquisition(&command, &request, Some(&caps), None);
+    let pending = tokio::time::timeout(Duration::from_secs(2), ask())
+        .await
+        .expect("standalone acquisition returns before the owner answers")
         .unwrap()
-        .owner_user_id()
-        .to_owned();
+        .unwrap();
+    let session = state.owned.session_store.get_session(&room).unwrap();
+    assert_eq!(session.active_interactions().len(), 1);
+    let card = &session.active_interactions()[0];
+    assert!(card.message().contains("0.0006 USD per minute"));
+    assert!(card.message().contains("total depends"));
+    assert!(matches!(
+        &pending,
+        ControlPlaneResponse::AcquisitionWaiting { registration_id, .. }
+            if registration_id == card.id()
+    ));
+    assert_eq!(ask().await.unwrap(), Some(pending));
     state
-        .resolve_terminal_runtime_interaction(&room, &id, "deny", None, Some(&owner))
+        .resolve_terminal_runtime_interaction(
+            &room,
+            card.id(),
+            "deny",
+            None,
+            Some(session.owner_user_id()),
+        )
         .await
         .unwrap();
-    assert!(gate
-        .await
-        .unwrap()
-        .unwrap_err()
-        .to_string()
-        .contains("The request was not sent to the service"));
+    assert!(ask().await.unwrap_err().to_string().contains("Denied by"));
 }
 
 pub(super) fn option(class_id: &str, region: &str, available: bool) -> MachineOption {
@@ -297,7 +287,9 @@ fn the_machine_tools_list_options_and_acquire_takes_the_chosen_class() {
             "chariox.machines.options",
             "chariox.machines.acquire",
             "chariox.machines.status",
-            "chariox.machines.release"
+            "chariox.machines.release",
+            "chariox.machines.exec",
+            "chariox.machines.copy"
         ]
     );
     let acquire = specs
@@ -335,7 +327,7 @@ async fn the_owner_is_asked_about_the_option_the_agent_chose() {
     let gate_state = state.clone();
     let gate = tokio::spawn(async move {
         gate_state
-            .approve_machine_acquisition(&command, &request, Some(&caps))
+            .approve_machine_acquisition(&command, &request, Some(&caps), None)
             .await
     });
     let message = tokio::time::timeout(Duration::from_secs(5), async {
@@ -369,7 +361,7 @@ async fn the_owner_is_asked_about_a_named_option_even_when_it_is_no_longer_liste
     let gate_state = state.clone();
     let gate = tokio::spawn(async move {
         gate_state
-            .approve_machine_acquisition(&command, &request, Some(&caps))
+            .approve_machine_acquisition(&command, &request, Some(&caps), None)
             .await
     });
     let message = tokio::time::timeout(Duration::from_secs(5), async {

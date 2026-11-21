@@ -19,8 +19,8 @@ pub(crate) use http::{
     acquire_failure, cloud_error_code, cloud_error_is_retryable, cloud_error_reason,
     cloud_url_component, get_cloud_kernel_directory, is_stale_cloud_link_error,
     normalize_cloud_api_url, post_cloud_acknowledged, post_cloud_json,
-    post_cloud_json_authenticated, post_cloud_json_with_timeout, AcquireFailure,
-    CLOUD_PRESENCE_REQUEST_TIMEOUT, CLOUD_RELAY_TOKEN_REQUEST_TIMEOUT,
+    post_cloud_json_authenticated, post_cloud_json_with_dispatch, post_cloud_json_with_timeout,
+    AcquireFailure, CLOUD_PRESENCE_REQUEST_TIMEOUT, CLOUD_RELAY_TOKEN_REQUEST_TIMEOUT,
 };
 mod pairing;
 pub(crate) use pairing::request_account_pairing_token;

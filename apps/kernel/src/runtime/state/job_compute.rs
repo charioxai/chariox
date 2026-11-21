@@ -14,6 +14,7 @@ pub(super) struct JobMachine {
     pub(super) machine_label: String,
     pub(super) address: Option<String>,
     pub(super) kernel_id: String,
+    pub(super) target_verified: bool,
     pub(super) grant: Arc<dyn GrantedSend>,
     /// Present for a worker the job allocated; a machine the agent already holds has none.
     pub(super) class: Option<JobClass>,
@@ -79,6 +80,17 @@ impl KernelRuntimeState {
         request: &ControlPlaneRequest,
         command_id: &str,
     ) -> Result<ControlPlaneResponse, DaemonError> {
+        self.machine_control_plane(origin, request, command_id, None)
+            .await
+    }
+
+    pub(super) async fn machine_control_plane(
+        &self,
+        origin: &Origin,
+        request: &ControlPlaneRequest,
+        command_id: &str,
+        trace: Option<&super::machine_acquisition::direct::AcquireTrace<'_>>,
+    ) -> Result<ControlPlaneResponse, DaemonError> {
         let subject = match origin.grant_id.strip_prefix("job:") {
             Some(job) => Some(self.job_acquisition_subject(job)?),
             None => {
@@ -136,6 +148,7 @@ impl KernelRuntimeState {
             &command,
             router.kernel_gateway(),
             request,
+            trace,
         )
         .await?;
         match response {
@@ -417,6 +430,7 @@ impl KernelRuntimeState {
                     address,
                     grant: self.job_machine_grant(&target.kernel_id, &origin.harness)?,
                     kernel_id: target.kernel_id,
+                    target_verified: true,
                     class: Some(JobClass {
                         capability_revision: capability_revision.into(),
                         class_id: class.class_id,

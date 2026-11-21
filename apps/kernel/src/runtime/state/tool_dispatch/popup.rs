@@ -270,7 +270,7 @@ impl KernelRuntimeState {
         }
         if args.wait == Some(false) {
             let interaction_id = interaction.id().to_owned();
-            let result = self.arm_interaction_wake(session_id, agent_id, interaction)?;
+            let result = self.arm_interaction_wake(session_id, agent_id, interaction, None)?;
             self.resume_browser_region_cards();
             // Its holder is told as for a question that blocks the turn.
             self.announce_child_decision(session_id, &interaction_id)
