@@ -90,6 +90,18 @@ pub(super) fn redacted_meta_command_for_payload(command: &str) -> String {
     }
 }
 
+pub(super) fn agent_settings_details(agent: &crate::agent::AgentInstance) -> serde_json::Value {
+    serde_json::json!({
+        "provider": agent.provider(),
+        "model": agent.model(),
+        "effort": agent.effort(),
+        "account_profile": agent.provider_account_profile(),
+        "mode": agent.execution_mode_override(),
+        "permission": agent.permission_level_override(),
+        "directory": agent.worktree_id(),
+    })
+}
+
 fn summarize_meta_command_response(
     response: &LocalDaemonResponse,
     metaagent: &crate::agent::AgentInstance,
@@ -108,18 +120,12 @@ fn summarize_meta_command_response(
         | LocalDaemonResponse::AgentConfigUpdated { agent, applies, .. } => serde_json::json!({
             "type": "AgentSettingsChanged",
             "agent": summarize_meta_agent(agent),
-            "settings": {
-                "provider": agent.provider(),
-                "model": agent.model(),
-                "effort": agent.effort(),
-                "account_profile": agent.provider_account_profile(),
-                "mode": agent.execution_mode_override(),
-                "permission": agent.permission_level_override(),
-                "directory": agent.worktree_id(),
-            },
+            "settings": agent_settings_details(agent),
+            "pending": agent.pending_profile(),
             "status": match applies {
                 crate::local::SettingsApplies::Now => "applied",
                 crate::local::SettingsApplies::AtStepBoundary => "applied, continuing",
+                crate::local::SettingsApplies::AtTurnEnd if agent.pending_profile().is_some() => "pending until this turn ends",
                 crate::local::SettingsApplies::AtTurnEnd => "applied when this turn ends",
             },
         }),

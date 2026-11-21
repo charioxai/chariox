@@ -300,6 +300,7 @@ impl KernelRuntimeOwnedState {
             self.unhide_agent(agent_id)?;
         }
         activity_mutation.record();
+        self.apply_agent_profile_after_turn(&session, agent_id)?;
         self.withdraw_stale_agent_interactions();
         self.provider_process_projection.invalidate();
         let _ = self.session_snapshot(session_id)?;

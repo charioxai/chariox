@@ -226,9 +226,14 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::UpdateAgentConfig(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
-        LocalDaemonRequest::UpdateAgentProfile(request) => Some(SessionMembershipScope::SessionId(
-            request.session_id.clone(),
-        )),
+        LocalDaemonRequest::GetAgentSettings(request) => request
+            .session_id
+            .clone()
+            .map(SessionMembershipScope::SessionId),
+        LocalDaemonRequest::UpdateAgentProfile(request)
+        | LocalDaemonRequest::UpdateAgentProfileAtTurnEnd(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
         LocalDaemonRequest::SetAgentDeadline(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),

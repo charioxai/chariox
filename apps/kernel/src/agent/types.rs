@@ -277,6 +277,15 @@ impl AgentRef {
     }
 }
 
+/// A validated provider profile waiting for the agent's turn to settle.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingAgentProfile {
+    pub provider: String,
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    pub account_profile: String,
+}
+
 /// Serialized through `AgentInstance::serialize`/`deserialize` (derived with
 /// `remote = "Self"`) so loading can migrate retired sticky-substitution state.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -307,6 +316,8 @@ pub struct AgentInstance {
     provider: String,
     model: Option<String>,
     effort: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pending_profile: Option<PendingAgentProfile>,
     /// Where the provider compacts the conversation; none leaves the provider's default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     max_context_tokens: Option<u64>,
@@ -392,6 +403,7 @@ impl AgentInstance {
             provider: provider.into(),
             model,
             effort,
+            pending_profile: None,
             max_context_tokens: None,
             account_profile: None,
             execution_mode_override: None,
@@ -720,7 +732,16 @@ impl AgentInstance {
         self.visible_in_freeform = visible;
     }
 
+    pub fn pending_profile(&self) -> Option<&PendingAgentProfile> {
+        self.pending_profile.as_ref()
+    }
+
+    pub(crate) fn set_pending_profile(&mut self, pending: Option<PendingAgentProfile>) {
+        self.pending_profile = pending;
+    }
+
     pub fn redacted_parameters(mut self) -> Self {
+        self.pending_profile = None;
         self.provider = "redacted".to_string();
         self.model = None;
         self.effort = None;
@@ -898,6 +919,7 @@ impl AgentInstance {
     }
 
     fn clear_publication_runtime_state(&mut self) {
+        self.pending_profile = None;
         self.remote_execution = None;
         self.agent_move = None;
         self.provider_resume_state = ProviderResumeState::default();

@@ -570,6 +570,12 @@ export type AgentInstance = {
   model: string | null
   effort?: string | null
   account_profile?: string | null
+  pending_profile?: {
+    provider: string
+    model: string | null
+    effort: string | null
+    account_profile: string
+  }
   execution_mode_override?: "build" | "plan" | null
   permission_level_override?: "required" | "yolo" | null
   max_context_tokens?: number | null

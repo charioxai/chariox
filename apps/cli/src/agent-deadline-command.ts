@@ -1,8 +1,6 @@
 import type { SendRequest } from "./kernel-files.js"
 import { CommandFailure, parseArguments, usageOf, wantsHelp } from "./agent-command-table.js"
-import { reportFailure, withKernel } from "./kernels-command.js"
-import { defaultKernelEndpoint } from "./cli-options.js"
-import { LocalIpcClient } from "./ipc.js"
+import { reportFailure, withAgentKernel } from "./kernels-command.js"
 
 function deadlineOf(value: string, now: number): number | null {
   if (value === "none") return null
@@ -41,12 +39,7 @@ export async function runAgentDeadlineCommand(argv: string[]): Promise<boolean> 
     kernel = flags.get("--kernel") as string | undefined
     const run = (send: SendRequest) => runAgentDeadline(positionals[0]!, positionals[1]!, flags.get("--session") as string | undefined, send)
     const socket = flags.get("--socket") as string | undefined
-    let result: unknown
-    if (socket || kernel) result = await withKernel({ socket, kernel, timeoutSeconds: 30 }, run)
-    else {
-      const client = new LocalIpcClient(defaultKernelEndpoint(), { controlRequestRetryDeadlineMs: 0, controlResponseStallMs: 30000 })
-      try { result = await run(body => client.send(body)) } finally { await client.close() }
-    }
+    const result = await withAgentKernel({ socket, kernel }, run)
     console.log(JSON.stringify(result))
   } catch (error) { reportFailure(error, kernel ?? null) }
   return true

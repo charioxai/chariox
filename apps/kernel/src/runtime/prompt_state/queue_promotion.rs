@@ -37,7 +37,10 @@ impl PromptStateOwner {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let key = PromptStateKey::new(session.id(), agent_id);
-        if owner.execution_transition_pending(&key) || owner.queue_promotions.contains(&key) {
+        if owner.execution_transition_pending(&key)
+            || owner.agent_profile_waiting_for_settlement(agent_id)
+            || owner.queue_promotions.contains(&key)
+        {
             return None;
         }
         let state = owner.ensure_agent_state(session, agent_id);

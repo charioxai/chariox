@@ -213,6 +213,7 @@ impl KernelRuntimeOwnedState {
         if !provider_model_or_account_changed
             && target_effort == agent.effort()
             && !selection_changed
+            && agent.pending_profile().is_none()
         {
             return Ok(owned::OwnedAgentProfileUpdate {
                 agent,
@@ -302,13 +303,16 @@ impl KernelRuntimeOwnedState {
                     resume_state,
                 )?;
                 // Continue on another account takes this exact stopped turn with the new profile.
-                if profile_changed && continue_limit.is_none() {
+                let mut updated = if profile_changed && continue_limit.is_none() {
                     agents
                         .change_usage_limit_stop(agent_id, |held| held.map(|_| None))?
                         .unwrap_or(updated)
                 } else {
                     updated
-                }
+                };
+                // A committed profile answers a change that was waiting for the turn to end.
+                updated.set_pending_profile(None);
+                agents.restore_agent(updated)
             };
             let _ = self.session_snapshot(session_id)?;
             agent
@@ -329,11 +333,7 @@ impl KernelRuntimeOwnedState {
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
         let agents = self.agent_store.read();
         let agent = agents.get_agent(agent_id)?;
-        self.durable_state_store.append_event(
-            "agent.updated",
-            Some(agent.id().to_string()),
-            serde_json::json!({ "agent": &agent, "capability_name": null }),
-        )?;
+        self.persist_agent_profile_record(&agent)?;
         Ok(agent)
     }
 

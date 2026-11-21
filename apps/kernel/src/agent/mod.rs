@@ -20,8 +20,8 @@ pub use store::AgentStore;
 pub use types::{
     calculate_agent_layout, generate_agent_ref, recalculate_positions, AgentInstance,
     AgentOperatingMode, AgentRef, AgentRole, AgentState, AgentSubstituteProfile,
-    CreateAgentRequest, GitWorktreePlacement, GridPosition, RemoteAgentBinding, UsageLimitStop,
-    UsageLimitStopState,
+    CreateAgentRequest, GitWorktreePlacement, GridPosition, PendingAgentProfile,
+    RemoteAgentBinding, UsageLimitStop, UsageLimitStopState,
 };
 
 mod outside_events;

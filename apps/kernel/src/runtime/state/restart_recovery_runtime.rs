@@ -177,6 +177,23 @@ impl KernelRuntimeState {
         DurableRestartRecoveryTask(tokio::spawn(async move {
             state.owned.publication_activation.wait().await;
             tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            for agent in state.owned.agent_store.list_agents() {
+                if agent.pending_profile().is_none() {
+                    continue;
+                }
+                let applied = state
+                    .owned
+                    .session_store
+                    .get_session(agent.session_id())
+                    .and_then(|session| {
+                        state
+                            .owned
+                            .apply_agent_profile_after_turn(&session, agent.id())
+                    });
+                if let Err(error) = applied {
+                    tracing::warn!(agent_id = agent.id(), %error, "restoring pending agent profile failed");
+                }
+            }
             state.resolve_stored_agent_models().await;
             state.resume_idle_agent_trigger_queues(idle_queue_agents);
             for (session_id, agent_id, prompt_id) in uncertain_steer_targets {

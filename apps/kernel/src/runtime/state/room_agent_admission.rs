@@ -170,7 +170,10 @@ impl KernelRuntimeState {
             }
             LocalDaemonRequest::DestroyAgent(r) => (&r.session_id, &r.agent_id, true),
             LocalDaemonRequest::UpdateAgentConfig(r) => (&r.session_id, &r.agent_id, false),
-            LocalDaemonRequest::UpdateAgentProfile(r) => (&r.session_id, &r.agent_id, false),
+            LocalDaemonRequest::UpdateAgentProfile(r)
+            | LocalDaemonRequest::UpdateAgentProfileAtTurnEnd(r) => {
+                (&r.session_id, &r.agent_id, false)
+            }
             LocalDaemonRequest::UpdateAgentSubstitutes(r) => (&r.session_id, &r.agent_id, false),
             LocalDaemonRequest::EndSession(_)
             | LocalDaemonRequest::DeleteSession(_)
@@ -253,7 +256,8 @@ impl KernelRuntimeState {
         // settings gate holds it to that set. Everything else needs the agent to be above.
         let own_settings = target.id() == actor.id()
             && match request {
-                LocalDaemonRequest::UpdateAgentProfile(_) => true,
+                LocalDaemonRequest::UpdateAgentProfile(_)
+                | LocalDaemonRequest::UpdateAgentProfileAtTurnEnd(_) => true,
                 LocalDaemonRequest::UpdateAgentConfig(r) => r.usage_limit.is_none(),
                 _ => false,
             };

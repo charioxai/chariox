@@ -462,3 +462,181 @@ async fn a_continuation_the_new_process_refuses_fails_the_turn_on_that_process()
 
     turn.assert_turn_failed();
 }
+
+#[tokio::test]
+async fn agent_profile_turn_end_holds_the_active_process_and_updates_the_next_turn() {
+    let turn = running_turn().await;
+    let mut context = super::super::SettingsContext::person();
+    context.at_turn_end = true;
+    let (agent, applies) = turn
+        .runtime
+        .update_agent_profile_as(
+            &turn.session_id,
+            &turn.agent_id,
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            None,
+            None,
+            Some(NEXT_MODEL.into()),
+            None,
+            context.clone(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(applies, crate::local::SettingsApplies::AtTurnEnd);
+    assert_eq!(agent.model(), Some("primary-model"));
+    assert_eq!(
+        agent.pending_profile().unwrap().model.as_deref(),
+        Some(NEXT_MODEL)
+    );
+
+    let saved = turn
+        .runtime
+        .owned
+        .durable_state_store
+        .load_events_after(0)
+        .unwrap()
+        .into_iter()
+        .rev()
+        .find(|event| event.kind == "agent.updated")
+        .unwrap();
+    let restored: crate::agent::AgentInstance =
+        serde_json::from_value(saved.payload["agent"].clone()).unwrap();
+    assert_eq!(restored.pending_profile(), agent.pending_profile());
+    assert!(!turn
+        .runtime
+        .swap_turn_process_at_step_boundary(&turn.session_id, &turn.failed_run_id)
+        .await
+        .unwrap());
+    assert_eq!(turn.live_run().unwrap().id(), turn.failed_run_id);
+
+    turn.runtime
+        .settle_owned_provider_prompt(&turn.session_id, &turn.failed_run_id, true, false, true)
+        .await
+        .expect("the original turn completes");
+    assert!(turn.active_prompt().is_none());
+    let agent = turn
+        .runtime
+        .owned
+        .agent_store
+        .get_agent(&turn.agent_id)
+        .unwrap();
+    assert_eq!(agent.model(), Some(NEXT_MODEL));
+    assert!(agent.pending_profile().is_none());
+
+    let next = turn
+        .runtime
+        .with_app_side_effect(|app| {
+            app.ensure_prompt_provider_run_for_agent(&turn.session_id, &turn.agent_id)
+        })
+        .await
+        .expect("the next turn launches");
+    assert_ne!(next, turn.failed_run_id);
+    assert_eq!(turn.live_run().unwrap().model(), NEXT_MODEL);
+
+    let (idle, applies) = turn
+        .runtime
+        .update_agent_profile_as(
+            &turn.session_id,
+            &turn.agent_id,
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            None,
+            None,
+            Some("idle-model".into()),
+            None,
+            context,
+        )
+        .await
+        .unwrap();
+    assert_eq!(applies, crate::local::SettingsApplies::Now);
+    assert_eq!(idle.model(), Some("idle-model"));
+    assert!(idle.pending_profile().is_none());
+}
+
+#[tokio::test]
+async fn agent_profile_turn_end_survives_reopening_the_kernel() {
+    let config = crate::config::DaemonConfig::for_tests();
+    let (app, runtime, session_id, agent_id) =
+        super::agent_config_runtime_with_config(config.clone()).await;
+    let owner = crate::session::DEFAULT_LOCAL_USER_ID;
+    runtime
+        .update_agent_profile(
+            &session_id,
+            &agent_id,
+            owner,
+            Some("dev-stub".into()),
+            None,
+            Some("primary-model".into()),
+            None,
+        )
+        .await
+        .unwrap();
+    {
+        let mut app = app.lock().await;
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(crate::attachment::AttachRequest::new(
+                &session_id,
+                "restart-test",
+                crate::attachment::ClientCapabilityLevel::FullTerminal,
+            ))
+            .unwrap();
+        app.prompt_owner_submit_prepared_prompt(
+            &session_id,
+            crate::session::PromptQueueItem::new(
+                "restart-turn",
+                attachment.id(),
+                &agent_id,
+                "finish this turn",
+                crate::session::PromptStatus::Queued,
+            ),
+            false,
+        )
+        .unwrap();
+    }
+    let mut context = super::super::SettingsContext::person();
+    context.at_turn_end = true;
+    let (_, timing) = runtime
+        .update_agent_profile_as(
+            &session_id,
+            &agent_id,
+            owner,
+            None,
+            None,
+            Some(NEXT_MODEL.into()),
+            None,
+            context,
+        )
+        .await
+        .unwrap();
+    assert_eq!(timing, crate::local::SettingsApplies::AtTurnEnd);
+    drop(runtime);
+    drop(app);
+
+    let app = super::Arc::new(super::Mutex::new(
+        super::DaemonApp::bootstrap(config).expect("reopen the durable kernel"),
+    ));
+    let runtime = super::owned_runtime_state(&app).await;
+    let agent = runtime.owned.agent_store.get_agent(&agent_id).unwrap();
+    assert_eq!(agent.model(), Some("primary-model"));
+    assert_eq!(
+        agent.pending_profile().unwrap().model.as_deref(),
+        Some(NEXT_MODEL)
+    );
+    let session = runtime
+        .owned
+        .session_store
+        .get_session(&session_id)
+        .unwrap();
+    assert!(!runtime
+        .owned
+        .apply_agent_profile_after_turn(&session, &agent_id)
+        .unwrap());
+
+    let completion = runtime
+        .owned
+        .complete_local_prompt_without_advance(&session_id, &agent_id, None)
+        .expect("the recovered turn settles");
+    assert!(completion.is_some());
+    let agent = runtime.owned.agent_store.get_agent(&agent_id).unwrap();
+    assert_eq!(agent.model(), Some(NEXT_MODEL));
+    assert!(agent.pending_profile().is_none());
+}
