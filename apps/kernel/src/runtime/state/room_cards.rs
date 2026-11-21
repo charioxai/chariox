@@ -45,6 +45,9 @@ impl KernelRuntimeOwnedState {
         interaction: &RuntimeInteraction,
     ) -> Result<(), DaemonError> {
         self.authorize_owner_room(source, caller, target)?;
+        if super::agent_deadline_cards::is_deadline_card(interaction.id()) {
+            return Err(denied("This card is owner-only. Authorized agents can extend the limit with agent deadline."));
+        }
         use super::decision_holder::UserOnly;
         match super::decision_holder::user_only(pending, interaction) {
             None | Some(UserOnly::AccessGrant | UserOnly::KernelOperation)

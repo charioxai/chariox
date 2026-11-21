@@ -649,8 +649,15 @@ impl KernelRuntimeState {
                 )
                 .await;
         }
-        self.owned
-            .ensure_agent_before_deadline(target_room, target.id())?;
+        if let Err(error) = self
+            .owned
+            .ensure_agent_before_deadline(target_room, target.id())
+        {
+            if crate::error::is_agent_deadline_refusal(&error) {
+                self.show_deadline_refusal(target_room, target.id()).await;
+            }
+            return Err(error);
+        }
         // Refuse here, while the sender can still react: a message the peer's account cannot
         // start would otherwise stay durable and pending behind the sender's goal.
         if let Err(error) =

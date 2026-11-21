@@ -172,6 +172,11 @@ impl KernelRuntimeState {
         if event.state != "pending" {
             return Ok(());
         }
+        if let Err(error) = self.owned.ensure_agent_before_deadline(room, agent) {
+            self.settle_deadline_delivery_refusal(&event, &error)
+                .await?;
+            return Err(error);
+        }
         // An explicitly stopped agent stays stopped: messages, urgent ones too,
         // stay pending and visible until the owner prompts it again.
         if active.is_none()
@@ -309,21 +314,28 @@ impl KernelRuntimeState {
             .as_ref()
             .and_then(|d| d.target_active_prompt_id.clone());
         let waiting = self.owned.waiting_tasks(room, agent);
-        let Outcome::Event(attempt) =
-            self.owned
-                .durable_state_store
-                .agent_lifecycle(Operation::Attempt {
-                    room: room.into(),
-                    agent: agent.into(),
-                    sequence: event.sequence,
-                    prompt: prompt_id.clone(),
-                    target: target_prompt,
-                    run,
-                    now: crate::session::unix_epoch_ms(),
-                    work,
-                    through,
-                })?
-        else {
+        let attempt = self
+            .owned
+            .durable_state_store
+            .agent_lifecycle(Operation::Attempt {
+                room: room.into(),
+                agent: agent.into(),
+                sequence: event.sequence,
+                prompt: prompt_id.clone(),
+                target: target_prompt,
+                run,
+                now: crate::session::unix_epoch_ms(),
+                work,
+                through,
+            });
+        let Outcome::Event(attempt) = (match attempt {
+            Err(error) => {
+                self.settle_deadline_delivery_refusal(&event, &error)
+                    .await?;
+                return Err(error);
+            }
+            Ok(attempt) => attempt,
+        }) else {
             unreachable!()
         };
         self.owned.record_woken_waits(&waiting, &attempt);
@@ -438,6 +450,10 @@ impl KernelRuntimeState {
                     self.record_agent_delivery_receipt(room, agent, event.sequence, "rejected")?;
                 }
                 Err(e) => {
+                    if crate::error::is_agent_deadline_refusal(&e) {
+                        self.settle_deadline_delivery_refusal(&event, &e).await?;
+                        return Err(e);
+                    }
                     if let DaemonError::VaultUnlock {
                         code: "vault_unlock_declined",
                         retryable: false,
@@ -453,10 +469,8 @@ impl KernelRuntimeState {
                     }
                     let state = ledger::delivery_receipt_state(None, false);
                     self.record_agent_delivery_receipt(room, agent, event.sequence, state)?;
-                    if !crate::error::is_agent_deadline_refusal(&e) {
-                        self.owned
-                            .settle_failed_delegate_start(room, agent, &e.to_string())?;
-                    }
+                    self.owned
+                        .settle_failed_delegate_start(room, agent, &e.to_string())?;
                     self.publish_task_change(room);
                     return Err(e);
                 }
@@ -464,6 +478,27 @@ impl KernelRuntimeState {
         }
         Ok(())
     }
+    async fn settle_deadline_delivery_refusal(
+        &self,
+        event: &ledger::InboxEvent,
+        error: &DaemonError,
+    ) -> Result<(), DaemonError> {
+        if crate::error::is_agent_deadline_refusal(error) {
+            self.owned
+                .durable_state_store
+                .agent_lifecycle(Operation::FailDeadlineDelivery {
+                    room: event.room_id.clone(),
+                    agent: event.agent_id.clone(),
+                    sequence: event.sequence,
+                    now: crate::session::unix_epoch_ms(),
+                })?;
+            self.show_deadline_refusal(&event.room_id, &event.agent_id)
+                .await;
+            self.publish_task_change(&event.room_id);
+        }
+        Ok(())
+    }
+
     fn inbox_row_is_pending(
         &self,
         room: &str,

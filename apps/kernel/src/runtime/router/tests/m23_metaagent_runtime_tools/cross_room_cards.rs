@@ -115,13 +115,13 @@ async fn cards() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "e6af1639ff15590f3878df899c7bea6f04a97de09284566074299c3d0b477c41"
+        "62f89fdafb32058d8cf71949a84b6ade50fd087f8e1eb8e942d28421c79969c6"
     );
 }
 
 #[test]
 fn room_cards_pages_by_bytes_and_keeps_a_cursor_after_the_previous_card_closes() {
-    run_large_stack_async_test("xroom-paged", async {
+    run_large_stack_async_test("xroom-paged", || async {
         let world = coordinator("xroom-paged").await;
         let mut answers = Vec::new();
         for index in 0..6 {

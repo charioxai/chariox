@@ -11,6 +11,12 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             sequence,
             ..
         }
+        | Operation::FailDeadlineDelivery {
+            room,
+            agent,
+            sequence,
+            ..
+        }
         | Operation::BindSubmission {
             room,
             agent,
@@ -40,6 +46,14 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 agent,
                 sequence: member,
                 state,
+                now,
+            },
+            Operation::FailDeadlineDelivery {
+                room, agent, now, ..
+            } => Operation::FailDeadlineDelivery {
+                room,
+                agent,
+                sequence: member,
                 now,
             },
             Operation::BindSubmission {
@@ -152,6 +166,23 @@ fn apply_row(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, DaemonError
             }
             replies::settle_named_reply(tx, &admitted)?;
             Ok(Outcome::Event(admitted))
+        }
+        Operation::FailDeadlineDelivery {
+            room,
+            agent,
+            sequence,
+            now,
+        } => {
+            let mut event = get_event(tx, &room, &agent, sequence)?;
+            if matches!(event.state.as_str(), "pending" | "submitting") {
+                super::delivery_failure::fail_undelivered(
+                    tx,
+                    &mut event,
+                    DelegateGoneReason::AgentDeadlineReached,
+                    now,
+                )?;
+            }
+            Ok(Outcome::Event(event))
         }
         Operation::WithdrawReply {
             room,
