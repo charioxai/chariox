@@ -86,7 +86,7 @@ FROM node:22.17.1-bookworm@sha256:37ff334612f77d8f999c10af8797727b731629c26f2e83
 # Slice image builds consume the resulting prebuilt CLI from their signed context.
 WORKDIR /opt/chariox-source
 RUN npm install --global bun@1.4.2 pnpm@9.15.0
-RUN --mount=type=bind,source=.,target=/src \
+RUN --mount=type=bind,from=cli-source,target=/src \
     cp -a /src/. . \
     && pnpm install --frozen-lockfile \
     && pnpm --filter @chariox/cli run build \
