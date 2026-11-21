@@ -667,7 +667,7 @@ impl DaemonApp {
         let relay_override = self.slice_relay_config_for_kernel_ref(kernel_ref);
         let relay_config = relay_override
             .clone()
-            .unwrap_or_else(|| self.config.clone());
+            .unwrap_or_else(|| self.relay_config_snapshot());
         // Until a worker is chosen nothing exists over there: the caller may settle its obligation.
         let unplaced = |error: DaemonError| match error {
             error @ DaemonError::NoRemoteKernelAvailable { .. } => error,
@@ -734,7 +734,7 @@ impl DaemonApp {
         let worktree_id = worker_worktree_id.or_else(|| agent.worktree_id().map(ToOwned::to_owned));
         let relay_config = relay_override
             .clone()
-            .unwrap_or_else(|| self.config.clone());
+            .unwrap_or_else(|| self.relay_config_snapshot());
         let session = self.sessions().get_session(agent.session_id())?;
         let effective_config =
             self.agents
@@ -1117,7 +1117,7 @@ impl DaemonApp {
             authorizer: Arc::new(|| Ok(())),
             agent,
             expected_binding: current_binding.clone(),
-            config: self.config.clone(),
+            config: self.relay_config_snapshot(),
             relay_override: uses_remote_execution_relay.then_some(relay_config.clone()),
             relay_config,
             relay_state: self.relay_client_state(),
@@ -1476,8 +1476,9 @@ impl DaemonApp {
         kernel_or_machine_ref: &str,
         relay_config: &DaemonConfig,
     ) -> bool {
-        relay_config.relay_url == self.config.relay_url
-            && (relay_config.relay_token == self.config.relay_token
+        let current = self.relay_config_snapshot();
+        relay_config.relay_url == current.relay_url
+            && (relay_config.relay_token == current.relay_token
                 || self.hosted_shared_slice_uses_connected_relay(kernel_or_machine_ref))
     }
 
@@ -1637,7 +1638,7 @@ impl DaemonApp {
         &self,
         remote_execution: &RemoteAgentBinding,
     ) -> DaemonConfig {
-        let mut config = self.config.clone();
+        let mut config = self.relay_config_snapshot();
         if let (Some(relay_url), Some(relay_token)) = (
             remote_execution.relay_url.clone(),
             remote_execution.relay_token.clone(),
@@ -3195,7 +3196,7 @@ impl DaemonApp {
         let relay_override = self.slice_relay_config_for_kernel_ref(kernel_id);
         let relay = relay_override
             .clone()
-            .unwrap_or_else(|| self.config.clone());
+            .unwrap_or_else(|| self.relay_config_snapshot());
         let discovery = self.remote_worker_discovery_config(kernel_id, relay)?;
         let worker =
             self.select_remote_kernel_by_ref_with_config(kernel_id, agent.provider(), &discovery)?;
@@ -3219,7 +3220,7 @@ impl DaemonApp {
         let relay_override = self.slice_relay_config_for_kernel_ref(reference);
         let relay = relay_override
             .clone()
-            .unwrap_or_else(|| self.config.clone());
+            .unwrap_or_else(|| self.relay_config_snapshot());
         let discovery = self.remote_worker_discovery_config(reference, relay)?;
         let worker = self.select_remote_kernel_for_machine_with_config(
             reference,

@@ -21,7 +21,7 @@ impl KernelRuntimeState {
         else {
             return Ok(None);
         };
-        let relay_config = self.with_app_side_effect(|app| app.config().clone()).await;
+        let relay_config = self.owned.config_projection.snapshot();
         let response_timeout =
             room_browser_runtime_tool_response_timeout(&relay_config, tool_name, &arguments);
         let home_kernel_id = context.home_kernel_id.clone();

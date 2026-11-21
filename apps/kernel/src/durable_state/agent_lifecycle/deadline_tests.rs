@@ -285,6 +285,17 @@ fn a_reached_deadline_and_a_deadline_without_a_beat_stay_where_they_are() {
         .agent_lifecycle(Operation::ResumeDeadlines { now: 500_000 })
         .unwrap();
     assert!(empty.store.agent_deadlines().unwrap().is_empty());
+    let heartbeat_exists: bool = empty
+        .store
+        .lock_connection("test.deadline_clock")
+        .unwrap()
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM agent_deadline_clock)",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(!heartbeat_exists);
 }
 
 #[test]

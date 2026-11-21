@@ -4,7 +4,7 @@ use base64::Engine;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 #[tokio::test]
-async fn renewal_persists_the_issued_expiry_instead_of_the_requested_lifetime() {
+async fn renewal_installs_the_issued_expiry_while_the_app_is_locked() {
     let root = crate::test_support::TestWorktree::new("relay-issued-expiry");
     let mut config = crate::config::DaemonConfig::for_tests();
     config.user_config.state.path = Some(root.path().join("state.db").display().to_string());
@@ -36,15 +36,29 @@ async fn renewal_persists_the_issued_expiry_instead_of_the_requested_lifetime() 
     });
     let app = crate::app::DaemonApp::bootstrap(config).unwrap();
     let projection = app.config_projection_store();
-    let router = crate::runtime::router::CommandRouter::with_interactive_capacity(
-        Arc::new(tokio::sync::Mutex::new(app)),
-        1,
-    );
-    ensure_cloud_relay_connection(&router.runtime_state(), &projection)
-        .await
+    let app = Arc::new(tokio::sync::Mutex::new(app));
+    let router = crate::runtime::router::CommandRouter::with_interactive_capacity(app.clone(), 1);
+    let app_guard = app.lock().await;
+    let outcome = tokio::time::timeout(
+        Duration::from_secs(1),
+        ensure_cloud_relay_connection(&router.runtime_state(), &projection),
+    )
+    .await;
+    drop(app_guard);
+    outcome
+        .expect("renewal must not wait for the app lock")
         .unwrap();
     server.await.unwrap();
+    let mut durable = app.lock().await.config().clone();
+    assert!(durable.relay_token.is_none());
+    durable.runtime_mcp_port = 43210;
+    projection.update(durable.clone());
     let saved = projection.snapshot();
+    assert_eq!(saved.runtime_mcp_port, durable.runtime_mcp_port);
+    assert_eq!(
+        router.relay_registration().await.auth_token,
+        saved.relay_token.clone().unwrap()
+    );
     assert_eq!(
         saved.cloud_relay.as_ref().unwrap().token_expires_at_ms,
         Some(expiry)
@@ -57,5 +71,16 @@ async fn renewal_persists_the_issued_expiry_instead_of_the_requested_lifetime() 
     );
     assert!(
         crate::runtime::cloud_relay_control::cloud_relay_token_refresh_due(&saved, expiry - 60_000)
+    );
+
+    durable.relay_url = Some("ws://127.0.0.1:9010".into());
+    durable.relay_token = Some("private-relay-token".into());
+    projection.update(durable);
+    assert!(projection
+        .install_cloud_relay_renewal(&saved, "delayed-token".into(), expiry)
+        .is_err());
+    assert_eq!(
+        projection.snapshot().relay_token.as_deref(),
+        Some("private-relay-token")
     );
 }

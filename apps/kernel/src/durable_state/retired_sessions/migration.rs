@@ -19,7 +19,7 @@ impl DurableKernelStateStore {
         &self,
         owner: &str,
         snapshot: Option<&DurableStateSnapshot>,
-    ) -> Result<(), DaemonError> {
+    ) -> Result<Option<u64>, DaemonError> {
         let mut records = BTreeMap::new();
         let latest_sequence = self
             .latest_event_sequence()?
@@ -44,7 +44,7 @@ impl DurableKernelStateStore {
             }
             .filter(|sequence| *sequence <= latest_sequence);
             if verified_sequence == Some(latest_sequence) {
-                return Ok(());
+                return Ok(None);
             }
             // Existing indexed records survive newer live-only checkpoints.
             let mut query = connection
@@ -58,6 +58,7 @@ impl DurableKernelStateStore {
                 records.insert(session.id().to_string(), session);
             }
         }
+        let had_retired_sessions = !records.is_empty();
         let mut cursor = verified_sequence.unwrap_or(0);
         let mut checkpoint_applied = snapshot.is_none_or(|snapshot| {
             verified_sequence.is_some_and(|sequence| snapshot.sequence <= sequence)
@@ -103,6 +104,11 @@ impl DurableKernelStateStore {
         if !checkpoint_applied {
             apply_checkpoint(&mut records, owner, snapshot.expect("checkpoint exists"))?;
         }
+        if !had_retired_sessions && records.is_empty() {
+            // The index already answers correctly. Only the replay cursor is
+            // missing, so startup can publish readiness while it commits.
+            return Ok(Some(latest_sequence));
+        }
         let records = records
             .into_values()
             .map(|session| {
@@ -119,8 +125,22 @@ impl DurableKernelStateStore {
         self.writer
             .execute(DurableWriteOperation::RetiredSessionBackfill {
                 owner_id: owner.to_string(),
-                records,
+                records: Some(records),
                 sequence: latest_sequence,
+            })?;
+        Ok(None)
+    }
+
+    pub(crate) fn record_retired_session_backfill(
+        &self,
+        owner: String,
+        sequence: u64,
+    ) -> Result<(), DaemonError> {
+        self.writer
+            .execute(DurableWriteOperation::RetiredSessionBackfill {
+                owner_id: owner,
+                records: None,
+                sequence,
             })?;
         Ok(())
     }
@@ -168,17 +188,19 @@ fn apply_session(
 pub(in crate::durable_state) fn commit_backfill(
     transaction: &Transaction<'_>,
     owner: &str,
-    records: &[(String, String, String)],
+    records: Option<&[(String, String, String)]>,
     sequence: u64,
 ) -> rusqlite::Result<u64> {
-    transaction.execute("DELETE FROM retired_sessions WHERE owner_id=?1", [owner])?;
-    for (id, project, payload) in records {
-        transaction.execute("INSERT INTO retired_sessions(owner_id,session_id,project_id,payload) VALUES (?1,?2,?3,?4)", params![owner,id,project,payload])?;
+    if let Some(records) = records {
+        transaction.execute("DELETE FROM retired_sessions WHERE owner_id=?1", [owner])?;
+        for (id, project, payload) in records {
+            transaction.execute("INSERT INTO retired_sessions(owner_id,session_id,project_id,payload) VALUES (?1,?2,?3,?4)", params![owner,id,project,payload])?;
+        }
     }
     transaction.execute("INSERT INTO durable_state_metadata(owner_id,metadata_key,metadata_value,updated_at_ms)
         VALUES (?1,?2,?3,?4) ON CONFLICT(owner_id,metadata_key) DO UPDATE SET metadata_value=excluded.metadata_value,updated_at_ms=excluded.updated_at_ms",
         params![owner,RECEIPT,sequence.to_string(),crate::session::unix_epoch_ms() as i64])?;
-    Ok(records.len() as u64)
+    Ok(records.map_or(0, |records| records.len() as u64))
 }
 
 #[cfg(test)]
@@ -221,13 +243,57 @@ mod tests {
 
         let store = DurableKernelStateStore::open_owned(path).unwrap();
         let snapshot = store.latest_snapshot_for_owner("home").unwrap().unwrap();
-        store
-            .backfill_retired_sessions("home", Some(&snapshot))
-            .unwrap();
+        assert_eq!(
+            store
+                .backfill_retired_sessions("home", Some(&snapshot))
+                .unwrap(),
+            None
+        );
         let stored_room = &snapshot.payload["sessions"][0];
         assert_eq!(stored_room["id"], "room");
         assert!(stored_room.get("queued_agent_messages").is_none());
         let retired = store.retired_session("home", "room").unwrap().unwrap();
         assert_eq!(retired.status(), SessionStatus::Ended);
+    }
+
+    #[test]
+    fn deferred_backfill_receipt_preserves_a_room_ended_after_restore() {
+        let root = crate::test_support::TestWorktree::new("deferred-retired-room-backfill");
+        let path = root.path().join("state.sqlite");
+        let store = DurableKernelStateStore::open_owned(path.clone()).unwrap();
+        let sequence = store
+            .backfill_retired_sessions("home", None)
+            .unwrap()
+            .unwrap();
+        let room = RuntimeSession::new(
+            "room",
+            crate::session::ProjectId::test(),
+            None,
+            "workspace",
+            "tree",
+            "machine",
+            "home",
+        );
+        let mut room = serde_json::to_value(room).unwrap();
+        room["status"] = serde_json::to_value(SessionStatus::Ended).unwrap();
+        store
+            .append_event(
+                "session.ended",
+                Some("room".into()),
+                serde_json::json!({"session": room}),
+            )
+            .unwrap();
+
+        store
+            .record_retired_session_backfill("home".into(), sequence)
+            .unwrap();
+        assert!(store.retired_session("home", "room").unwrap().is_some());
+        drop(store);
+        let reopened = DurableKernelStateStore::open_owned(path).unwrap();
+        assert_eq!(
+            reopened.backfill_retired_sessions("home", None).unwrap(),
+            None
+        );
+        assert!(reopened.retired_session("home", "room").unwrap().is_some());
     }
 }

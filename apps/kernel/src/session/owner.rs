@@ -13,11 +13,13 @@ use super::{
 pub(crate) struct SessionStateStore {
     inner: Arc<RwLock<SessionService>>,
     identity: Arc<()>,
+    prompt_ids: super::PromptIdAllocator,
 }
 
 impl SessionStateStore {
     pub(crate) fn new(sessions: SessionService) -> Self {
         Self {
+            prompt_ids: sessions.prompt_id_allocator(),
             inner: Arc::new(RwLock::new(sessions)),
             identity: Arc::new(()),
         }
@@ -46,11 +48,11 @@ impl SessionStateStore {
     }
 
     pub(crate) fn prompt_id_allocator(&self) -> super::PromptIdAllocator {
-        self.read().prompt_id_allocator()
+        self.prompt_ids.clone()
     }
 
     pub(crate) fn reserve_prompt_id(&self) -> String {
-        self.read().reserve_prompt_id()
+        self.prompt_ids.next_prompt_id()
     }
 
     pub(crate) fn retire_ended_session(&self, session_id: &str) {

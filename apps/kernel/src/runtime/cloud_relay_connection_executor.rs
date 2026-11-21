@@ -119,10 +119,7 @@ pub(crate) async fn ensure_cloud_relay_connection_replacing(
     };
     // The issuer may shorten the requested TTL.
     let expires_at_ms = issued_token_expiry_ms(&issued.token)?;
-    progress.stage("persist renewed token", Duration::from_secs(2));
-    runtime_state
-        .install_cloud_relay_renewal(config, issued.token, expires_at_ms)
-        .await
+    config_projection.install_cloud_relay_renewal(&config, issued.token, expires_at_ms)
 }
 
 pub(crate) async fn execute_connect_cloud_relay_request(

@@ -6,6 +6,10 @@ use crate::error::DaemonError;
 use crate::runtime_transport::KERNEL_RUNTIME_THREAD_STACK_SIZE;
 
 impl DaemonApp {
+    pub(crate) fn relay_config_snapshot(&self) -> crate::config::DaemonConfig {
+        self.config_projection.snapshot()
+    }
+
     pub fn relay_registration(&mut self) -> DaemonRegistration {
         let available_providers = self.providers.registry().advertised_provider_ids();
         let provider_accounts = self
@@ -41,7 +45,7 @@ impl DaemonApp {
             })
             .collect();
         DaemonRegistration {
-            auth_token: self.config.relay_token.clone().unwrap_or_default(),
+            auth_token: self.relay_config_snapshot().relay_token.unwrap_or_default(),
             daemon_id: self.config.daemon_id.clone(),
             machine_id: self.config.host_machine_id.clone(),
             machine_alias: self.config.machine_name(),

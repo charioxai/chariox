@@ -36,6 +36,11 @@ pub(super) fn beat(db: &Connection, now: u64) -> Result<(), DaemonError> {
 /// Shifts every armed deadline, and the owner's explicit limit behind it, by the downtime.
 /// Reached deadlines stay reached.
 pub(super) fn resume_after_kernel_start(db: &Connection, now: u64) -> Result<(), DaemonError> {
+    let armed = deadlines::armed(db)?;
+    if armed.is_empty() {
+        // Arming a deadline writes its first heartbeat in the same transaction.
+        return Ok(());
+    }
     let last_seen: Option<i64> = db
         .query_row(
             "SELECT last_seen_ms FROM agent_deadline_clock WHERE id=1",
@@ -44,9 +49,8 @@ pub(super) fn resume_after_kernel_start(db: &Connection, now: u64) -> Result<(),
         )
         .optional()
         .map_err(sql)?;
-    let armed = deadlines::armed(db)?;
     // No heartbeat means no armed deadline has ever been counted: there is no downtime to give back.
-    if let Some(last_seen) = last_seen.filter(|_| !armed.is_empty()) {
+    if let Some(last_seen) = last_seen {
         let down_ms = now.saturating_sub(
             u64::try_from(last_seen).map_err(|_| error("negative deadline heartbeat"))?,
         );

@@ -207,22 +207,22 @@ impl ManagedContextTransferStore {
         recovery: Option<&ManagedContextLaunchRecoveryBinding>,
     ) -> Result<Self, DaemonError> {
         ensure_private_directory(&root)?;
-        let state = rollback_storage::read_state(&root)?;
+        let (state, needs_index_write) = rollback_storage::read_state(&root)?;
+        let legacy = state.schema_version != TRANSFER_STATE_SCHEMA_VERSION;
         let store = Self {
             root,
             state: Arc::new(Mutex::new(state)),
             active_imports: Arc::new(Mutex::new(HashSet::new())),
         };
-        if store.lock_state().schema_version != TRANSFER_STATE_SCHEMA_VERSION {
+        if legacy {
             store.migrate_legacy_state(recovery)?;
-        }
-        {
+        } else {
             let mut state = store.lock_state();
             validate_persisted_state(&state)?;
-            store.externalize_owner_history(&mut state)?;
-            // Also split legacy active owner transfers, which have no completed
-            // authority to externalize yet, before an admitted rollback can run.
-            store.persist_locked(&state)?;
+            let recovered = store.externalize_owner_history(&mut state)?;
+            if recovered || needs_index_write {
+                store.persist_locked(&state)?;
+            }
         }
         store.cleanup_failed_transfers();
         store.prune_expired_transfers(current_time_ms())?;
@@ -938,7 +938,7 @@ impl ManagedContextTransferStore {
         appended_offset: u64,
         archive: &std::fs::File,
     ) -> Result<(), DaemonError> {
-        let durable = rollback_storage::read_state(&self.root)?;
+        let (durable, _) = rollback_storage::read_state(&self.root)?;
         if durable.schema_version != TRANSFER_STATE_SCHEMA_VERSION {
             return Err(transfer_error(
                 "durable managed context transfer state version changed",

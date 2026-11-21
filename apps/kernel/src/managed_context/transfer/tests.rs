@@ -5,6 +5,34 @@ use std::path::PathBuf;
 use super::*;
 
 #[test]
+#[cfg(unix)]
+fn current_transfer_indexes_are_reused_on_restart() {
+    use std::os::unix::fs::MetadataExt;
+
+    let root = test_root("reuse-current-indexes");
+    let now = current_time_ms();
+    let store = ManagedContextTransferStore::open(root.clone()).unwrap();
+    store
+        .arm(arm_request(b"archive", now + 60_000), now)
+        .unwrap();
+    drop(store);
+    let indexes = ["state.json", "owner-transfers.json"].map(|name| root.join(name));
+    // Atomic replacement leaves these still-open files on their old inodes.
+    let original = indexes.each_ref().map(|path| fs::File::open(path).unwrap());
+
+    let reopened = ManagedContextTransferStore::open(root.clone()).unwrap();
+    assert!(reopened.has_pending_transfer(now));
+    for (path, file) in indexes.iter().zip(original) {
+        assert_eq!(
+            fs::metadata(path).unwrap().ino(),
+            file.metadata().unwrap().ino()
+        );
+    }
+    drop(reopened);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn pending_context_transfer_blocks_idle_between_chunks_and_after_restart() {
     let root = test_root("pending-activity");
     let now = current_time_ms();

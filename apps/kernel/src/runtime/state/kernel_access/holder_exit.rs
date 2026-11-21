@@ -1,7 +1,11 @@
 use super::*;
 
 impl KernelRuntimeState {
-    pub(crate) async fn wait_for_kernel_access_holder_exit(&self) {
+    pub(crate) async fn wait_for_kernel_access_holder_exit(&self, maintenance_requested: bool) {
+        // An exited holder stays ready until the scheduled pass sweeps its grant.
+        if maintenance_requested {
+            return std::future::pending().await;
+        }
         use futures_util::StreamExt;
         let changed = self
             .owned

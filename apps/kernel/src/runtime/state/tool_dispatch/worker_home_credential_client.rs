@@ -27,7 +27,7 @@ impl KernelRuntimeState {
             return Ok(None);
         };
         let home_kernel_id = context.home_kernel_id.clone();
-        let relay_config = self.with_app_side_effect(|app| app.config().clone()).await;
+        let relay_config = self.owned.config_projection.snapshot();
         let response_timeout =
             remote_home_credential_tool_response_timeout(&relay_config, tool_name, &arguments);
         let response = self
@@ -93,7 +93,7 @@ impl KernelRuntimeState {
         injection: crate::transport::relay_peer::RemoteCredentialSecretInjection,
     ) -> Result<zeroize::Zeroizing<String>, DaemonError> {
         let home_kernel_id = context.home_kernel_id.clone();
-        let relay_config = self.with_app_side_effect(|app| app.config().clone()).await;
+        let relay_config = self.owned.config_projection.snapshot();
         let response = self
             .send_worker_home_runtime_request(
                 &relay_config,

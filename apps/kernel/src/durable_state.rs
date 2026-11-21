@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use rusqlite::{params, types::Value as SqlValue, Connection, OptionalExtension};
+use rusqlite::{config::DbConfig, params, types::Value as SqlValue, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
 use crate::error::DaemonError;
@@ -276,7 +276,7 @@ enum DurableWriteOperation {
     BrowserImport(browser_import::ImportStateWrite),
     RetiredSessionBackfill {
         owner_id: String,
-        records: Vec<(String, String, String)>,
+        records: Option<Vec<(String, String, String)>>,
         sequence: u64,
     },
     Event {
@@ -445,6 +445,7 @@ impl DurableKernelStateStore {
                 operation: "durable_state.open",
                 message: error.to_string(),
             })?;
+        retain_durable_wal_on_close(&connection)?;
         if initialize_incremental_vacuum {
             connection
                 .pragma_update(None, "auto_vacuum", "INCREMENTAL")
@@ -1562,6 +1563,7 @@ impl DurableStateWriter {
             operation: "durable_state.open_writer",
             message: error.to_string(),
         })?;
+        retain_durable_wal_on_close(&connection)?;
         connection
             .pragma_update(None, "journal_mode", "WAL")
             .map_err(|error| DaemonError::LocalTransport {
@@ -1666,6 +1668,18 @@ impl DurableStateWriter {
             max_batch_records: self.health.max_batch_records.load(Ordering::Acquire),
         }
     }
+}
+
+fn retain_durable_wal_on_close(connection: &Connection) -> Result<(), DaemonError> {
+    // A committed WAL is already durable. Reopen it on restart and keep the
+    // usual writer checkpoints, without making close wait for another sync.
+    connection
+        .set_db_config(DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, true)
+        .map(|_| ())
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "durable_state.configure_wal_close",
+            message: error.to_string(),
+        })
 }
 
 fn configure_durable_write_sync(connection: &Connection) -> Result<(), DaemonError> {
@@ -2004,7 +2018,12 @@ fn commit_durable_write_batch(
                 owner_id,
                 records,
                 sequence,
-            } => retired_sessions::commit_backfill(&transaction, owner_id, records, *sequence),
+            } => retired_sessions::commit_backfill(
+                &transaction,
+                owner_id,
+                records.as_deref(),
+                *sequence,
+            ),
             DurableWriteOperation::AcquireChoice(transition) => {
                 acquire_choices::apply(&transaction, transition)
             }
@@ -2611,6 +2630,28 @@ mod tests {
             .pragma_query_value(None, "synchronous", |row| row.get(0))
             .unwrap();
         assert_eq!(mode, 2);
+    }
+
+    #[test]
+    fn durable_state_replays_committed_wal_after_close() {
+        let root = crate::test_support::TestWorktree::new("durable-state-wal-reopen");
+        let path = root.path().join("state.db");
+        let store = DurableKernelStateStore::open(path.clone()).unwrap();
+        let event = store
+            .append_event(
+                "reopen-test",
+                Some("session-1".into()),
+                serde_json::json!({ "marker": "committed" }),
+            )
+            .unwrap();
+        drop(store);
+        assert!(fs::metadata(path.with_extension("db-wal")).unwrap().len() > 32);
+
+        let reopened = DurableKernelStateStore::open(path).unwrap();
+        let events = reopened.load_events_by_kind("reopen-test").unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_id, event.event_id);
+        assert_eq!(events[0].payload, event.payload);
     }
 
     #[test]

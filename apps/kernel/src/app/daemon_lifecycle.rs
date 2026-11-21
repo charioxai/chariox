@@ -193,6 +193,13 @@ impl DaemonApp {
         let legacy_workflow_history = self.legacy_workflow_history_store();
         let history_migration_store = self.durable_state_store();
         let history_migration_owner = self.config.daemon_id.clone();
+        let retired_sessions_receipt = self.retired_sessions_verified_sequence.map(|sequence| {
+            (
+                self.durable_state_store(),
+                self.config.daemon_id.clone(),
+                sequence,
+            )
+        });
         let reap_remote_execution_leases =
             self.config.kernel_runtime_role == crate::config::KernelRuntimeRole::RemoteLeaseWorker;
         #[cfg(unix)]
@@ -240,6 +247,18 @@ impl DaemonApp {
                 shutdown_rx.clone(),
             ),
         );
+        let retired_sessions_receipt_task =
+            retired_sessions_receipt.map(|(store, owner, sequence)| {
+                tokio::task::spawn_blocking(move || {
+                    if let Err(error) = store.record_retired_session_backfill(owner, sequence) {
+                        crate::logging::warn_with_fields(
+                        "durable_state.restore",
+                        "could not record retired Room verification; it will be retried at restart",
+                        serde_json::json!({ "error": error.to_string(), "sequence": sequence }),
+                    );
+                    }
+                })
+            });
         let empty_context_completion_task = empty_context_completion.map(|completion| {
             tokio::spawn(completion.run(relay_state.clone(), shutdown_rx.clone()))
         });
@@ -364,6 +383,9 @@ impl DaemonApp {
         }
         crate::shutdown::stage("history migration");
         if let Some(task) = history_migration_task {
+            let _ = task.await;
+        }
+        if let Some(task) = retired_sessions_receipt_task {
             let _ = task.await;
         }
         crate::shutdown::stage("remote execution lease reaper");

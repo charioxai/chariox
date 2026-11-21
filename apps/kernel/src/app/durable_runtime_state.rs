@@ -288,7 +288,8 @@ impl DaemonApp {
             .latest_snapshot_for_owner(&self.config.daemon_id)?;
         // Populate historical Room lookup before the live-only restore drops
         // ended checkpoint records. Replay ordering is part of the migration.
-        self.durable_state
+        self.retired_sessions_verified_sequence = self
+            .durable_state
             .backfill_retired_sessions(&self.config.daemon_id, snapshot.as_ref())?;
         let replay_after_sequence = match snapshot {
             Some(snapshot) => {

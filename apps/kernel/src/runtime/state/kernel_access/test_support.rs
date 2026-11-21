@@ -360,6 +360,59 @@ impl KernelRuntimeState {
     }
 }
 
+#[tokio::test]
+async fn exited_access_holder_wakes_only_one_pending_maintenance_pass() {
+    let app =
+        crate::test_support::bootstrap_authenticated_app(crate::config::DaemonConfig::for_tests())
+            .unwrap();
+    let state = crate::runtime::router::CommandRouter::with_interactive_capacity_from_app(
+        std::sync::Arc::new(tokio::sync::Mutex::new(app)),
+        32,
+    )
+    .runtime_state();
+    let mut process = tokio::process::Command::new("/bin/cat")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let holder = process::inspect(process.id().unwrap()).unwrap().0;
+    state.owned.kernel_access.lock().unwrap().grants.insert(
+        "waiting-holder".into(),
+        Grant {
+            summary: KernelAccessGrant {
+                covered: Vec::new(),
+                grant_id: "waiting-holder".into(),
+                owner_user_id: "local".into(),
+                holder_pid: holder.pid,
+                holder_executable: holder.executable.clone(),
+                holder_harness: None,
+                term: KernelAccessTerm::UntilHolderExits,
+                expires_at_ms: None,
+            },
+            holder,
+            covered: Vec::new(),
+            clock: None,
+        },
+    );
+
+    let first_exit = state.wait_for_kernel_access_holder_exit(false);
+    tokio::pin!(first_exit);
+    assert!(futures_util::poll!(&mut first_exit).is_pending());
+    drop(process.stdin.take());
+    assert!(process.wait().await.unwrap().success());
+    tokio::time::timeout(Duration::from_secs(3), first_exit)
+        .await
+        .expect("the real holder exit schedules maintenance");
+
+    // The previous pass is still busy, so the dead grant remains in the set.
+    let next_exit = state.wait_for_kernel_access_holder_exit(true);
+    tokio::pin!(next_exit);
+    assert!(
+        futures_util::poll!(&mut next_exit).is_pending(),
+        "the same dead holder must not repeatedly wake an already requested pass",
+    );
+}
+
 // MP-08 / MP-10 / MP-11: granting access needs no session, and the shared
 // owner/timeout machinery still protects the kernel-wide board.
 #[tokio::test]
