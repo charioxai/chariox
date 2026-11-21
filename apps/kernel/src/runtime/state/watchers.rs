@@ -466,6 +466,9 @@ async fn run_once(
         at: 0,
     };
     let mut commits = 0u64;
+    let expects_reading = record
+        .passed_dry_run()
+        .is_some_and(|preview| preview.reading.is_some());
     let spec = RunSpec {
         dir,
         manifest: record.manifest,
@@ -497,9 +500,6 @@ async fn run_once(
         tell(store, store.watcher_write(WatcherOperation::Commit(commit)))
             .map_err(|e| e.to_string())
     };
-    let expects_reading = record
-        .passed_dry_run()
-        .is_some_and(|preview| preview.reading.is_some());
     let end = run::run(spec, stopped, |report| {
         match report {
             Report::Reading(reading) => pending.reading = Some(reading),
