@@ -1,7 +1,7 @@
 //! The native agent's acquisition request and its trace across the approval wait.
 use super::approval::{decision_error, direct_approval_id, MachineDecision};
 use super::*;
-use crate::durable_state::acquire_choices::AcquireOption;
+use crate::durable_state::acquire_choices::{AcquireChoiceWrite, AcquireOption};
 use crate::durable_state::agent_lifecycle::AgentWake;
 use crate::local::ControlPlaneResponse;
 use crate::runtime::kernel_gateway::Origin;
@@ -110,6 +110,19 @@ pub(crate) fn has_wake_trace(wake: &AgentWake) -> bool {
 }
 
 impl KernelRuntimeState {
+    pub(crate) fn mark_acquire_submitted(
+        &self,
+        trace: &AcquireTrace<'_>,
+    ) -> Result<(), DaemonError> {
+        self.owned.durable_state_store.write_acquire_choice(
+            trace.agent,
+            trace.request_id,
+            AcquireChoiceWrite::Submit,
+            crate::session::unix_epoch_ms(),
+        )?;
+        Ok(())
+    }
+
     pub(super) async fn direct_machine_acquire(
         &self,
         origin: &Origin,
