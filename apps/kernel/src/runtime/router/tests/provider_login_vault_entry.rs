@@ -383,6 +383,50 @@ async fn an_entry_for_another_site_is_refused_and_the_login_stays_open() {
 }
 
 #[tokio::test]
+async fn a_removed_vault_entry_or_value_leaves_provider_login_ready_for_another_entry() {
+    crate::test_support::isolated_env_test!();
+    let _env = crate::env_lock::lock();
+    let fixture = Fixture::new(crate::config::CredentialVaultBackend::ProcessMemory);
+    let removed = fixture.owner_entry(OPENCODE_SITE).await;
+    let login_id = fixture.start("opencode_zen_api_key").await;
+    let key = crate::credential::CharioxCredentialRegistry::user()
+        .unwrap()
+        .get(&removed)
+        .unwrap()
+        .unwrap()
+        .source;
+    let crate::config::UserCredentialSourceConfig::Vault { key } = key else {
+        panic!("expected a Vault entry");
+    };
+    for request in [
+        LocalDaemonRequest::DeleteCredentialSecret(crate::local::DeleteCredentialSecretRequest {
+            key,
+            session_id: None,
+            agent_id: None,
+        }),
+        LocalDaemonRequest::RemoveCredential(crate::local::RemoveCredentialRequest {
+            id: removed.clone(),
+        }),
+    ] {
+        fixture.send(request).await.unwrap();
+        let error = fixture.vault_entry(&login_id, &removed).await.unwrap_err();
+        let response = crate::transport::kernel_protocol::map_kernel_error(&error);
+        assert_eq!(response.code, "provider_login_vault_entry_unavailable");
+        assert_eq!(
+            fixture.status(&login_id).await.state,
+            ProviderLoginProcessState::Running
+        );
+        assert!(fixture.received().is_none());
+    }
+    let replacement = fixture.owner_entry(OPENCODE_SITE).await;
+    fixture.vault_entry(&login_id, &replacement).await.unwrap();
+    assert_eq!(
+        fixture.until_finished(&login_id).await.state,
+        ProviderLoginProcessState::Succeeded
+    );
+}
+
+#[tokio::test]
 async fn a_login_without_an_api_key_and_a_second_entry_are_refused() {
     crate::test_support::isolated_env_test!();
     let _env = crate::env_lock::lock();

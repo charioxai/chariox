@@ -63,6 +63,8 @@ pub enum DaemonError {
     ProviderLoginCodeIncomplete,
     #[error("The code could not be read. Copy the whole code and try again.")]
     ProviderLoginCodeInvalid,
+    #[error("This Vault entry is no longer available. Choose another entry or add one in Vault.")]
+    ProviderLoginVaultEntryUnavailable,
     #[error("{provider} account `{account_name}`: {}", .reason.local_message())]
     ProviderProfileRefused {
         reason: ProviderProfileRefusal,

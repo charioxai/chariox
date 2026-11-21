@@ -34,6 +34,7 @@ pub(super) fn map_relay_error(error: &DaemonError) -> RelayError {
         DaemonError::ProviderAccountNameTaken { .. }
         | DaemonError::ProviderLoginCodeIncomplete
         | DaemonError::ProviderLoginCodeInvalid
+        | DaemonError::ProviderLoginVaultEntryUnavailable
         | DaemonError::ProviderProfileRefused { .. }
         | DaemonError::AgentNotInSession { .. }
         | DaemonError::AgentNotFound { .. }
