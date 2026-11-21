@@ -20,6 +20,26 @@ fn unlocked(config: &crate::config::DaemonConfig) -> Result<(), DaemonError> {
     Ok(())
 }
 
+/// An owner-enrolled kernel holds a kernel credential and its pinned identity. A rented
+/// Chariox machine holds only the machine credential its rental bootstrap issued, and the
+/// identity Cloud pinned for the machine is the relay key this kernel runs with; the install
+/// path below verifies that key against the binding.
+fn receiver_enrolled(
+    profile: &crate::config::PersistedCloudRelayProfile,
+    daemon_id: &str,
+    target_key_thumbprint: &str,
+) -> bool {
+    let has = |value: &Option<String>| value.as_deref().is_some_and(|v| !v.is_empty());
+    let kernel = has(&profile.kernel_credential)
+        && profile.kernel_id.as_deref() == Some(daemon_id)
+        && profile.kernel_public_key_thumbprint.as_deref() == Some(target_key_thumbprint);
+    let rented = profile.kernel_credential.is_none()
+        && profile.kernel_id.is_none()
+        && profile.kernel_public_key_thumbprint.is_none()
+        && has(&profile.machine_credential);
+    kernel || rented
+}
+
 impl KernelRuntimeState {
     pub(crate) async fn copy_provider_account_to_kernel(
         &self,
@@ -229,13 +249,7 @@ impl KernelRuntimeState {
             || identity.realm_id != profile.realm_id
             || profile.realm_id.is_empty()
             || profile.machine_id.as_deref() != Some(config.host_machine_id.as_str())
-            || profile
-                .kernel_credential
-                .as_deref()
-                .is_none_or(str::is_empty)
-            || profile.kernel_id.as_deref() != Some(config.daemon_id.as_str())
-            || profile.kernel_public_key_thumbprint.as_deref()
-                != Some(binding.target_key_thumbprint.as_str())
+            || !receiver_enrolled(profile, &config.daemon_id, &binding.target_key_thumbprint)
             || source_kernel != binding.source_kernel_id
             || (identity.subject_kind == chariox_relay::auth::RelaySubjectKind::Kernel
                 && chariox_relay::protocol::canonical_peer_daemon_id(&identity.subject)
@@ -290,5 +304,57 @@ impl KernelRuntimeState {
         )?;
         self.notify_provider_account_sign_in(&profile, true).await?;
         Ok(receipt)
+    }
+}
+
+#[cfg(test)]
+mod receiver_enrollment_tests {
+    use super::receiver_enrolled;
+    use crate::config::PersistedCloudRelayProfile;
+
+    const THUMB: &str = "aa";
+    fn kernel() -> PersistedCloudRelayProfile {
+        PersistedCloudRelayProfile {
+            kernel_id: Some("kernel-a".into()),
+            kernel_credential: Some("kcred".into()),
+            kernel_public_key_thumbprint: Some(THUMB.into()),
+            ..Default::default()
+        }
+    }
+    fn rented() -> PersistedCloudRelayProfile {
+        PersistedCloudRelayProfile {
+            machine_credential: Some("mcred_x".into()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn an_owner_enrolled_kernel_is_admitted_only_with_its_own_identity() {
+        assert!(receiver_enrolled(&kernel(), "kernel-a", THUMB));
+        assert!(!receiver_enrolled(&kernel(), "kernel-b", THUMB));
+        assert!(!receiver_enrolled(&kernel(), "kernel-a", "bb"));
+        let mut empty = kernel();
+        empty.kernel_credential = Some(String::new());
+        assert!(!receiver_enrolled(&empty, "kernel-a", THUMB));
+    }
+
+    #[test]
+    fn a_rented_machine_with_only_its_machine_credential_is_admitted() {
+        assert!(receiver_enrolled(&rented(), "kernel-r", THUMB));
+    }
+
+    #[test]
+    fn an_unenrolled_or_half_enrolled_profile_is_refused() {
+        assert!(!receiver_enrolled(
+            &PersistedCloudRelayProfile::default(),
+            "k",
+            THUMB
+        ));
+        let mut empty = rented();
+        empty.machine_credential = Some(String::new());
+        assert!(!receiver_enrolled(&empty, "k", THUMB));
+        let mut half = rented();
+        half.kernel_id = Some("kernel-r".into());
+        assert!(!receiver_enrolled(&half, "kernel-r", THUMB));
     }
 }
