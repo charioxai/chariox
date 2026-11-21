@@ -50,7 +50,7 @@ impl RefusalBackoff {
         relay_url: &str,
         reason: String,
         token_refused: bool,
-    ) -> Duration {
+    ) -> (Duration, bool) {
         let previous = self
             .current
             .as_ref()
@@ -114,6 +114,6 @@ impl RefusalBackoff {
             record_relay_reconnect(router, relay_url, &refusal.reason, delay);
         }
         self.current = Some((relay_url.into(), refusal));
-        delay
+        (delay, new_refusal)
     }
 }

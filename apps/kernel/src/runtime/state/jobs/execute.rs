@@ -584,7 +584,12 @@ impl KernelRuntimeState {
                 &result,
                 Err(DaemonError::MachineRequest { code, .. }) if code == "job_upload_time_limit"
             );
+        let release = self.held_job_release(record).await;
+        if matches!(release, Some(super::held::HeldRelease::Deleted)) {
+            self.mark_held_job_deleted(record);
+        }
         let result = match result {
+            Err(_) if cancelled && record.deleted => Ok(cancelled_result(record)),
             Err(_) if cancelled => {
                 self.stop_named_command(record).await;
                 uncollected_stop(self, record, output, JobOutcome::Cancelled)
@@ -602,16 +607,18 @@ impl KernelRuntimeState {
         };
         let mut result = result.unwrap_or_else(|error| {
             let _ = output.push(self, &record.room_id, error.to_string().as_bytes(), true);
-            if record.remote.holds_worker() {
-                let _ = output.push(
-                    self,
-                    &record.room_id,
-                    kept_worker_notice(record).as_bytes(),
-                    true,
-                );
-            }
             failed(record, "Job failed; see the protected output log".into())
         });
+        if let Some(release) = release {
+            output.push(self, &record.room_id, release.notice().as_bytes(), true)?;
+        } else if record.remote.holds_worker() {
+            output.push(
+                self,
+                &record.room_id,
+                kept_worker_notice(record).as_bytes(),
+                true,
+            )?;
+        }
         if upload_timed_out {
             result.outcome = JobOutcome::TimeLimit;
         }
@@ -675,9 +682,20 @@ impl KernelRuntimeState {
         if *cancelled.borrow() {
             return Ok(cancelled_result(record));
         }
-        let (remote, plan) = if record.request.target_directory().is_some() {
+        let (remote, plan) = if record.request.machine_only
+            || record.request.target_directory().is_some()
+        {
+            if matches!(
+                record.request.machine,
+                Some(JobMachineTarget::Allocation(_))
+            ) {
+                record.held_kernel_id = Some(machine.kernel_id.clone());
+            }
             self.remember_remote_job(record, machine)?;
-            (Remote::in_directory(machine.grant.clone(), record).await?, None)
+            (
+                Remote::without_workspace(machine.grant.clone(), record).await?,
+                None,
+            )
         } else {
             record.state = "uploading".into();
             save_record(self, record)?;
@@ -810,7 +828,8 @@ impl KernelRuntimeState {
             return Err(ledger::error("The job has no running command to resume"));
         };
         let result = async {
-            let plan = if record.request.target_directory().is_some() {
+            let plan = if record.request.machine_only || record.request.target_directory().is_some()
+            {
                 None
             } else {
                 Some(PendingReturn::load(self, &record.job_id)?)
@@ -956,8 +975,7 @@ impl KernelRuntimeState {
             }
             Err(error) => {
                 let notice = format!(
-                    "The command finished, but its files could not all be returned: {error}. {}",
-                    kept_worker_notice(record)
+                    "The command finished, but its files could not all be returned: {error}.\n"
                 );
                 output.push(self, &record.room_id, notice.as_bytes(), true)?;
                 result.outcome = JobOutcome::OutsideEnd;
@@ -974,7 +992,7 @@ pub(super) const NAMED_COMMAND_MAY_RUN: &str = "The command may still run on the
 
 fn kept_worker_notice(record: &Record) -> &'static str {
     if record.request.machine.is_some() {
-        "The files the command left on the held machine are kept so none are lost. Check this job with chariox.jobs.status to collect them; chariox.jobs.cancel gives them up. The machine stays yours: release it with chariox.machines.release when you are done.\n"
+        "If the machine is reachable, check this job with chariox.jobs.status to collect the remaining files. chariox.jobs.cancel gives them up.\n"
     } else {
         "The remote machine is kept so none are lost. Check this job with chariox.jobs.status to collect them; chariox.jobs.cancel gives them up. The machine is deleted once they are home, or when its lease ends.\n"
     }

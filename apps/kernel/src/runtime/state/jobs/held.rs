@@ -44,6 +44,21 @@ use crate::local::{ControlPlaneRequest, ControlPlaneResponse};
 use crate::runtime::kernel_gateway::Origin;
 use zeroize::Zeroizing;
 
+#[derive(Clone, Copy)]
+pub(super) enum HeldRelease {
+    Deleting,
+    Deleted,
+}
+
+impl HeldRelease {
+    pub(super) fn notice(self) -> &'static str {
+        match self {
+            Self::Deleting => "The machine is being released.\n",
+            Self::Deleted => "The machine was released.\n",
+        }
+    }
+}
+
 impl KernelRuntimeState {
     /// The held machine `allocation_ref` names, proven ready and reachable now, or the refusal that
     /// says what to do next.
@@ -212,6 +227,51 @@ impl KernelRuntimeState {
 }
 
 impl KernelRuntimeState {
+    fn held_job_origin(&self, record: &Record) -> Origin {
+        Origin {
+            grant_id: format!(
+                "{}{}",
+                super::super::reach::OWNER_GRANT_PREFIX,
+                self.owned.config_projection.local_owner_user_id()
+            ),
+            harness: self
+                .agent_harness_name(&record.room_id, &record.agent_id)
+                .unwrap_or_else(|| "Chariox".into()),
+        }
+    }
+
+    pub(super) async fn held_job_release(&self, record: &Record) -> Option<HeldRelease> {
+        let Some(JobMachineTarget::Allocation(allocation_ref)) = &record.request.machine else {
+            return None;
+        };
+        let request = ControlPlaneRequest::Get {
+            allocation_ref: allocation_ref.clone(),
+        };
+        let origin = self.held_job_origin(record);
+        let command_id = format!("{}:release-state", record.job_id);
+        let Ok(Ok(ControlPlaneResponse::Machine { state, .. })) = tokio::time::timeout(
+            Duration::from_secs(3),
+            self.job_control_plane(&origin, &request, &command_id),
+        )
+        .await
+        else {
+            // The job output is still available if the lifecycle service cannot confirm the
+            // state. File return remains pending until the allocation can be checked again.
+            return None;
+        };
+        match state.as_str() {
+            "deleting" => Some(HeldRelease::Deleting),
+            "deleted" | "released" => Some(HeldRelease::Deleted),
+            _ => None,
+        }
+    }
+
+    pub(super) fn mark_held_job_deleted(&self, record: &mut Record) {
+        record.deleted = true;
+        self.give_up_pending_return(record);
+        self.forget_pending_return(&record.job_id);
+    }
+
     /// After a restart: the live grant to the held machine is gone. The service names the machine
     /// again, and only the kernel the job's plan pinned is granted.
     pub(super) async fn held_machine_reattach(
@@ -222,16 +282,7 @@ impl KernelRuntimeState {
         let Some(JobMachineTarget::Allocation(allocation_ref)) = &record.request.machine else {
             return Err(ledger::error("The job has no held machine"));
         };
-        let origin = Origin {
-            grant_id: format!(
-                "{}{}",
-                super::super::reach::OWNER_GRANT_PREFIX,
-                self.owned.config_projection.local_owner_user_id()
-            ),
-            harness: self
-                .agent_harness_name(&record.room_id, &record.agent_id)
-                .unwrap_or_else(|| "Chariox".into()),
-        };
+        let origin = self.held_job_origin(record);
         let machine = self
             .job_held_machine(
                 allocation_ref,

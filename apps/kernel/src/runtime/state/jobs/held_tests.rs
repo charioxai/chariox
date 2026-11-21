@@ -255,6 +255,8 @@ enum Fault {
     LoseUploadReplies(usize),
     /// The nth upload chunk never gets its reply: the home kernel dies waiting for it.
     HangUpload(usize),
+    /// File return fails after the command exits.
+    FailReturn,
     /// Every cleanup request fails.
     CleanupDown,
     /// The workspace removal runs on the machine but its reply never comes back.
@@ -396,6 +398,11 @@ impl crate::room_exec::gateway_placement::GrantedSend for Machine {
                     }
                     _ => {}
                 }
+            }
+            if fault == Fault::FailReturn
+                && matches!(request, LocalDaemonRequest::ListKernelDirectory(_))
+            {
+                return Err(outage());
             }
             let cleanup = id.contains(":cleanup");
             if cleanup && fault == Fault::CleanupDown {
@@ -1029,4 +1036,75 @@ async fn a_missing_held_upload_reply_is_retried_and_reported() {
             && output.contains("chariox.machines.status"),
         "{output}"
     );
+}
+
+#[tokio::test]
+async fn a_machine_only_held_job_runs_without_uploading_or_returning_workspace_files() {
+    let (state, run, task, workspace) = super::tests::remote_fixture().await;
+    three_files(workspace.path());
+    let home = crate::test_support::TestWorktree::new("machine-only-home");
+    let kernel = "machine-only-kernel";
+    let machine = Machine::stand_in(kernel, home.path(), Fault::FailUpload(0));
+    let mut responses = two_gets(kernel);
+    responses.push(("get", 200, held_machine("ready", kernel)));
+    let service = service(&state, responses).await;
+    let finished = run_on_held(
+        &state,
+        &run,
+        &task,
+        serde_json::json!({
+            "command": ["/bin/sh", "-c", "test ! -e a.txt && printf remote > remote.txt && printf done"],
+            "machine": "held-1",
+            "machine_only": true,
+            "wait_s": 15
+        }),
+    )
+    .await
+    .unwrap();
+    served(service).await;
+    assert_eq!(finished["result"]["exit_code"], 0, "{finished}");
+    assert_eq!(finished["result"]["output_tail"], "done");
+    assert_eq!(finished["result"]["files_back"], serde_json::json!([]));
+    assert_eq!(machine.chunks.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert_eq!(
+        std::fs::read(home.path().join("remote.txt")).unwrap(),
+        b"remote"
+    );
+    assert!(!workspace.path().join("remote.txt").exists());
+    assert!(!plan_saved(&state, finished["job_id"].as_str().unwrap()));
+}
+
+#[tokio::test]
+async fn release_during_held_job_return_settles_the_saved_job() {
+    let (state, run, task, _workspace) = super::tests::remote_fixture().await;
+    let home = crate::test_support::TestWorktree::new("held-return-released");
+    let kernel = "held-return-released-kernel";
+    Machine::stand_in(kernel, home.path(), Fault::FailReturn);
+    let mut responses = two_gets(kernel);
+    responses.push(("get", 200, held_machine("deleted", kernel)));
+    let service = service(&state, responses).await;
+    let finished = run_on_held(
+        &state,
+        &run,
+        &task,
+        serde_json::json!({
+            "command": ["/bin/sh", "-c", "printf remote > remote.txt"],
+            "machine": "held-1",
+            "wait_s": 15
+        }),
+    )
+    .await
+    .unwrap();
+    served(service).await;
+    let job_id = finished["job_id"].as_str().unwrap();
+    let status = job_status(&state, &run, &task, "chariox.jobs.status", job_id).await;
+    assert!(!plan_saved(&state, job_id));
+    for response in [finished, status] {
+        assert_eq!(response["deleted"], true, "{response}");
+        assert_eq!(response["return_pending"], false);
+        assert_eq!(response["result"]["exit_code"], 0);
+        let output = response["result"]["output_tail"].as_str().unwrap();
+        assert!(output.contains("The machine was released."), "{output}");
+        assert!(!output.contains("stays yours"), "{output}");
+    }
 }

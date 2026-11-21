@@ -186,9 +186,10 @@ impl KernelRuntimeState {
             }
             return Ok(machine.grant);
         }
-        let kernel_id = &plan
-            .ok_or_else(|| ledger::error("The job's file return plan is missing"))?
-            .kernel_id;
+        let kernel_id = plan
+            .map(|plan| plan.kernel_id.as_str())
+            .or(record.held_kernel_id.as_deref())
+            .ok_or_else(|| ledger::error("The job's target kernel is missing"))?;
         if record.request.machine.is_some() {
             return self.held_machine_reattach(record, kernel_id).await;
         }

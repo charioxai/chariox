@@ -37,6 +37,9 @@ pub struct RunJobRequest {
     /// A machine the job can use without allocating or releasing it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub machine: Option<JobMachineTarget>,
+    /// Run on the named machine without sending or returning workspace files.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub machine_only: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

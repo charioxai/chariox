@@ -1012,9 +1012,12 @@ async fn run_daemon_relay_connector_inner(
                             refused =
                                 Some(RefusedCredentials::new(&relay_url, &active_relay_token));
                         }
-                        let delay = registration_backoff
+                        let (delay, changed) = registration_backoff
                             .record(&router, &state, &relay_url, reason, token_refused)
                             .await;
+                        if let Some(presence) = presence.filter(|_| changed) {
+                            presence.publish(false, "relay registration refused");
+                        }
                         if !token_refused && wait_for_reconnect_delay(shutdown, delay).await {
                             break 'connector;
                         }

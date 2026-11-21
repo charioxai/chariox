@@ -21,11 +21,29 @@ impl KernelRuntimeState {
                 .ok_or_else(|| ledger::error("job_id required"))?;
             let mut record = driver.own(id, task)?;
             let mut collection_error = None;
+            let mut release_notice = None;
+            if record.state == "finished" && !record.deleted {
+                match self.held_job_release(&record).await {
+                    Some(release @ super::held::HeldRelease::Deleted) => {
+                        self.mark_held_job_deleted(&mut record);
+                        if let Some(result) = &mut record.result {
+                            result.output_tail.push_str(release.notice());
+                        }
+                        driver.save(&record)?;
+                    }
+                    Some(release @ super::held::HeldRelease::Deleting) => {
+                        release_notice = Some(release.notice().trim_end());
+                    }
+                    None => {}
+                }
+            }
+
             // Whatever placement the job ended with, a saved allocation receipt keeps its
             // cleanup owed until the service confirms the deletion.
             if record.state == "finished"
                 && record.has_remote_trace()
                 && !record.deleted
+                && release_notice.is_none()
                 && (self.remote_jobs_enabled() || record.request.machine.is_some())
             {
                 match record.remote {
@@ -87,6 +105,9 @@ impl KernelRuntimeState {
             let mut value = self.job_response(driver.read(id)?)?;
             if let Some(error) = collection_error {
                 value["return_error"] = error.into();
+            }
+            if let Some(notice) = release_notice {
+                value["machine_status"] = notice.into();
             }
             return Ok(value);
         }
@@ -159,6 +180,7 @@ impl KernelRuntimeState {
             allocation_ref: None,
             capability_revision: None,
             machine_label: None,
+            held_kernel_id: None,
             address: None,
             result: None,
             exec_id: None,
@@ -249,6 +271,18 @@ pub(super) fn validate(request: &RunJobRequest) -> Result<Vec<String>, DaemonErr
     }
     if request.needs.cpus == Some(0) || request.needs.memory_gib == Some(0) {
         return Err(ledger::error("Job resource needs must be positive"));
+    }
+    if request.machine_only {
+        if request.machine.is_none() {
+            return Err(ledger::error("machine_only requires a named machine"));
+        }
+        if !request.outputs.is_empty()
+            || (request.cwd.is_some() && request.target_directory().is_none())
+        {
+            return Err(ledger::error(
+                "machine_only leaves files on the machine. Omit outputs and pass cwd only with a target directory.",
+            ));
+        }
     }
     if let Some(cwd) = &request.cwd {
         crate::jobs::relative(cwd)?;
