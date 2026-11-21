@@ -1497,14 +1497,17 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       for (const [id, node] of nodes) if (node.ownerDocument === a.ownerDocument && kindOf.get(id) === 'mask' && range.intersectsNode(node)) throw new Error('mirror2 selection intersects protected content');
       a.ownerDocument.getSelection().setBaseAndExtent(a, request.anchor_offset, b, request.focus_offset); return true;
     };
-    // MP-08/MP-10 local scroll (viewer-owned): the kernel follows the viewer.
+    // MP-08/MP-10 local scroll (viewer-owned): the kernel follows the viewer. Y3-R1 (6thsense, tensr): at once, whatever
+    // scroll-behavior the page asks for. The viewer already moved its copy the page's way; a smooth kernel scroll lagged
+    // behind it and its start position came back to the viewer as where the page stood.
+    const at = (x, y) => ({ left: x, top: y, behavior: 'instant' });
     const scrollTo = request => {
-      if (!request.node_id) { window.scrollTo(request.x, request.y); return [scrollX, scrollY]; }
+      if (!request.node_id) { window.scrollTo(at(request.x, request.y)); return [scrollX, scrollY]; }
       const node = nodes.get(request.node_id);
       // A document id scrolls that document's window (same-origin frames too).
-      if (node?.nodeType === 9 && node.defaultView) { node.defaultView.scrollTo(request.x, request.y); return [node.defaultView.scrollX, node.defaultView.scrollY]; }
+      if (node?.nodeType === 9 && node.defaultView) { node.defaultView.scrollTo(at(request.x, request.y)); return [node.defaultView.scrollX, node.defaultView.scrollY]; }
       const element = live(request.node_id); if (element.nodeType !== 1) throw new Error('mirror2 element required');
-      element.scrollTo(request.x, request.y); return [element.scrollLeft, element.scrollTop];
+      element.scrollTo(at(request.x, request.y)); return [element.scrollLeft, element.scrollTop];
     };
     // Trusted-side (DOM.resolveNode): the mirror id of a frame owner element.
     const idOfNode = function () { return this && mirrored(this) || null; };
