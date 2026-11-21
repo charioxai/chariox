@@ -134,6 +134,7 @@ response_policies! {
     ],
     Withhold => [
         MachineRoomResources,
+        OwnerViewStatus,
         OwnerVault,
         CredentialVaultKeySealed,
         SessionViewAttached,

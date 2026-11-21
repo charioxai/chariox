@@ -324,6 +324,11 @@ pub enum LocalDaemonResponse {
     },
     RoomListSessionsListed { page: RoomListSessionPage, },
     RoomListSnapshot { snapshot: RoomListSnapshot, },
+    OwnerViewStatus {
+        generation: String,
+        tab_id: Option<String>,
+        watchers: Vec<OwnerViewWatcher>,
+    },
     PersonInbox {
         cards: Vec<PersonInboxCard>,
         mutes: Vec<PersonInboxOrigin>,
