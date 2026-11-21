@@ -185,8 +185,17 @@ fn account_copy_recipient_consent_and_independent_removal() {
     run_account_copy_drill(CopyScenario::Recipient);
 }
 
+/// Row 263: a rented Chariox machine holds only the machine credential its rental bootstrap
+/// issued, so Cloud lists it for account copy alone and never as a kernel-grant peer.
+#[test]
+fn account_copy_installs_on_a_rented_machine_enrolled_with_a_machine_credential() {
+    crate::test_support::isolated_env_test!();
+    run_account_copy_drill(CopyScenario::RentedReceiver);
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum CopyScenario {
+    RentedReceiver,
     Recipient,
     Serial,
     RegistryAccess,
@@ -235,6 +244,14 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"num_turns
         let cloud_url = format!("http://{}", cloud.local_addr().unwrap());
         source.cloud_relay.as_mut().unwrap().api_url = cloud_url.clone();
         target.cloud_relay.as_mut().unwrap().api_url = cloud_url;
+        if scenario == CopyScenario::RentedReceiver {
+            let rented = target.cloud_relay.as_mut().unwrap();
+            rented.kernel_id = None;
+            rented.kernel_credential = None;
+            rented.kernel_public_key_thumbprint = None;
+            rented.machine_credential = Some(format!("mcred_{}", "r".repeat(43)));
+        }
+        let rented_scenario = scenario == CopyScenario::RentedReceiver;
         let peers:Vec<_>=[&source,&target].into_iter().map(|config|serde_json::json!({
             "targetId":config.daemon_id, "peer":{
                 "relayRealmId":"copy-realm", "machineId":config.host_machine_id,
@@ -252,8 +269,10 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"num_turns
                     _=stopped_cloud.changed()=>break,
                     accepted=cloud.accept()=>{
                         let (mut socket,_)=accepted.unwrap();
-                        let mut buffer=[0u8;8192];let _=socket.read(&mut buffer).await.unwrap();
-                        let peers=if omit_for_server.load(std::sync::atomic::Ordering::SeqCst) { &peers[..1] } else { &peers[..] };
+                        let mut buffer=[0u8;8192];let read=socket.read(&mut buffer).await.unwrap();
+                        let for_copy=String::from_utf8_lossy(&buffer[..read]).contains("purpose=provider_account_copy");
+                        // A rented machine is listed for account copy only.
+                        let peers=if omit_for_server.load(std::sync::atomic::Ordering::SeqCst) || (rented_scenario && !for_copy) { &peers[..1] } else { &peers[..] };
                         let body=serde_json::json!({"peers":peers}).to_string();
                         let reply=format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",body.len(),body);
                         socket.write_all(reply.as_bytes()).await.unwrap();
