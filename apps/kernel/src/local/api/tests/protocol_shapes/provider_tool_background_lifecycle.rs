@@ -8,7 +8,7 @@ fn mp10_provider_tool_background_lifecycle_snapshot_and_hash() {
     let bytes = include_bytes!("provider-tool-background-lifecycle.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "58dd1a0408e622af81c198a8176bc88800ba44eda83386fb76b50bba31921c7b"
+        "235a501644501c49c77ba2c6825e853722d5abfed47e09cbfc2da2e58119302b"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(fixture["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
@@ -16,6 +16,9 @@ fn mp10_provider_tool_background_lifecycle_snapshot_and_hash() {
         fixture["peer_protocol"],
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION
     );
+    let opencode = &fixture["opencode_foreground_completed"];
+    assert_eq!(opencode["started_at_ms"], 1_000);
+    assert_eq!(opencode["finished_at_ms"], 13_000);
     let foreground = &fixture["claude_foreground_completed"];
     assert!(foreground["started_at_ms"].is_u64());
     assert!(foreground.get("background").is_none());
@@ -37,7 +40,11 @@ fn mp10_provider_tool_background_lifecycle_snapshot_and_hash() {
 fn mp10_provider_tool_lifecycle_fields_survive_the_terminal_caps_whole() {
     let fixture: serde_json::Value =
         serde_json::from_slice(include_bytes!("provider-tool-background-lifecycle.json")).unwrap();
-    for name in ["claude_background_launched", "codex_background_finished"] {
+    for name in [
+        "claude_background_launched",
+        "codex_background_finished",
+        "opencode_foreground_completed",
+    ] {
         let mut payload = fixture[name].clone();
         payload["output"] = serde_json::json!("x".repeat(64 * 1024));
         let bounded = crate::provider_output_policy::output_bounds::bounded_terminal_output_bytes(

@@ -2502,7 +2502,7 @@ fn malformed_local_request_replies_with_its_request_id() {
 }
 
 #[test]
-fn request_decode_refusal_preserves_websocket_correlation_for_unknown_field_shape() {
+fn request_decode_refusal_preserves_websocket_correlation_for_malformed_field() {
     let (request_id, error) = decode_error_reply(serde_json::json!({
         "type": "request", "request_id": "req-host-shape",
         "request": { "AcceptAppHostAction": { "session_id": "s", "operation_id": 17 } }
@@ -2510,9 +2510,16 @@ fn request_decode_refusal_preserves_websocket_correlation_for_unknown_field_shap
     assert_eq!(request_id, "req-host-shape");
     assert_eq!(error.code, "invalid_request");
     assert!(!error.retryable);
-    assert!(error
+    assert!(
+        error.message.contains(
+            "AcceptAppHostAction.operation_id: invalid type: integer `17`, expected a string"
+        ),
+        "{}",
+        error.message
+    );
+    assert!(!error
         .message
-        .contains("update the Chariox client or kernel so both match"));
+        .contains("update the Chariox client or kernel"));
 }
 
 #[test]

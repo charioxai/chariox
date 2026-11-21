@@ -323,6 +323,7 @@ fn outbound_lets_a_grant_holder_read_why_its_request_did_not_parse_and_nothing_e
     let decode = crate::transport::request_decode_error::message(
         crate::transport::request_decode_error::DECODE_PREFIX,
         &error,
+        Some(&serde_json::json!({"CreateSessoin":{}})),
     );
     let frame = |message: &str| {
         serde_json::json!({"type":"response","request_id":"r","response":null,

@@ -5,7 +5,7 @@
 //! is chunked, resumable and checked by sha256. Paths are absolute or `~/`.
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::MetadataExt as _;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
@@ -81,6 +81,71 @@ pub(super) fn resolve(path: &str, guard: &StateGuard) -> Result<PathBuf, DaemonE
         .check(&resolved)
         .map_err(|message| fail("file_state_protected", message))?;
     Ok(resolved)
+}
+
+fn folder_failure(folder: &Path, error: &std::io::Error) -> DaemonError {
+    use std::io::ErrorKind;
+    let (code, reason) = match error.kind() {
+        ErrorKind::NotFound => return fail(
+            "file_destination_missing",
+            format!("Destination folder {} no longer exists. Recreate it or choose another folder, then upload again.", folder.display()),
+        ),
+        ErrorKind::NotADirectory | ErrorKind::AlreadyExists => {
+            ("file_not_a_file", "a file blocks the path")
+        }
+        ErrorKind::PermissionDenied => (
+            "file_permission_denied",
+            "the kernel's user lacks permission",
+        ),
+        _ => {
+            return fail(
+                "file_io_failed",
+                format!(
+                "Could not prepare folder {}: {error}. Check the path or choose another folder.",
+                folder.display()
+            ),
+            )
+        }
+    };
+    fail(
+        code,
+        format!("Could not prepare folder {} because {reason}. Fix the folder path or choose another folder.", folder.display()),
+    )
+}
+
+/// A machine destination is checked before any parent is created and again at its resolved path.
+pub(crate) fn prepare_write_target(
+    path: &Path,
+    guard: &StateGuard,
+) -> Result<PathBuf, DaemonError> {
+    let name = path.file_name().ok_or_else(|| {
+        fail(
+            "file_path_invalid",
+            format!("{} names no file. Choose a file path.", path.display()),
+        )
+    })?;
+    if path.components().any(|part| part == Component::ParentDir) {
+        return Err(fail(
+            "file_path_invalid",
+            format!(
+                "{} contains '..'. Use the full path to the destination.",
+                path.display()
+            ),
+        ));
+    }
+    let folder = path.parent().expect("an absolute file path has a parent");
+    guard
+        .check(folder)
+        .map_err(|message| fail("file_state_protected", message))?;
+    std::fs::create_dir_all(folder).map_err(|error| folder_failure(folder, &error))?;
+    let target = folder
+        .canonicalize()
+        .map_err(|error| folder_failure(folder, &error))?
+        .join(name);
+    guard
+        .check(&target)
+        .map_err(|message| fail("file_state_protected", message))?;
+    Ok(target)
 }
 
 fn partial_of(path: &Path) -> PathBuf {
@@ -170,6 +235,14 @@ pub(crate) fn stat(
             sha256: None,
             partial_size,
         },
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::NotADirectory | std::io::ErrorKind::PermissionDenied
+            ) =>
+        {
+            return Err(folder_failure(path.parent().unwrap_or(&path), &error));
+        }
         Err(error) => return Err(io_failure(&path, &error)),
     };
     Ok(LocalDaemonResponse::KernelFileStat { stat })
@@ -271,6 +344,21 @@ pub(crate) fn read(
     })
 }
 
+fn missing_destination(path: &Path) -> Option<DaemonError> {
+    let folder = path.parent()?;
+    let error = std::fs::metadata(folder).err()?;
+    (error.kind() == std::io::ErrorKind::NotFound).then(|| folder_failure(folder, &error))
+}
+
+fn upload_failure(path: &Path, error: &std::io::Error) -> DaemonError {
+    if error.kind() == std::io::ErrorKind::NotFound {
+        if let Some(error) = missing_destination(path) {
+            return error;
+        }
+    }
+    io_failure(path, error)
+}
+
 /// Opens the upload's staging file without trusting what is already at the predictable name:
 /// a first chunk replaces whatever is there, a later chunk continues only the private regular
 /// file this user made (another user of a shared directory may have planted a link or a file).
@@ -280,8 +368,8 @@ fn open_staging(partial: &Path, path: &Path, offset: u64) -> Result<std::fs::Fil
         fail(
             "file_staging_untrusted",
             format!(
-                "{} is not the private file this upload made; remove it, then upload again from offset 0.",
-                partial.display()
+                "The unfinished upload for {} has changed. Choose another destination or restart the upload from offset 0.",
+                path.display()
             ),
         )
     };
@@ -289,7 +377,7 @@ fn open_staging(partial: &Path, path: &Path, offset: u64) -> Result<std::fs::Fil
         match std::fs::remove_file(partial) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(io_failure(partial, &e)),
+            Err(e) => return Err(io_failure(path, &e)),
         }
         // Private from the first byte: the unfinished upload may become a credentials file.
         // A new file stays private; replacing one takes the replaced file's permissions on finish.
@@ -300,7 +388,7 @@ fn open_staging(partial: &Path, path: &Path, offset: u64) -> Result<std::fs::Fil
             .mode(0o600)
             .custom_flags(libc::O_NOFOLLOW)
             .open(partial)
-            .map_err(|e| io_failure(partial, &e));
+            .map_err(|e| upload_failure(path, &e));
     }
     let file = match std::fs::OpenOptions::new()
         .read(true)
@@ -310,12 +398,12 @@ fn open_staging(partial: &Path, path: &Path, offset: u64) -> Result<std::fs::Fil
     {
         Ok(file) => file,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Err(offset_mismatch(path, 0));
+            return Err(missing_destination(path).unwrap_or_else(|| offset_mismatch(path, 0)));
         }
         Err(e) if e.raw_os_error() == Some(libc::ELOOP) => return Err(untrusted()),
-        Err(e) => return Err(io_failure(partial, &e)),
+        Err(e) => return Err(io_failure(path, &e)),
     };
-    let metadata = file.metadata().map_err(|e| io_failure(partial, &e))?;
+    let metadata = file.metadata().map_err(|e| io_failure(path, &e))?;
     // SAFETY: geteuid has no preconditions and cannot fail.
     let own_uid = unsafe { libc::geteuid() };
     if !metadata.is_file()
@@ -332,12 +420,21 @@ fn open_staging(partial: &Path, path: &Path, offset: u64) -> Result<std::fs::Fil
 
 /// Holds a chunk that is ahead of the staged bytes until the chunks before it have landed. A chunk
 /// at a wrong offset still ends as `file_offset_mismatch`, after this wait.
-fn wait_for_turn(partial: &Path, offset: u64) {
-    let staged = || std::fs::symlink_metadata(partial).map_or(0, |metadata| metadata.len());
+fn wait_for_turn(partial: &Path, path: &Path, offset: u64) -> Result<(), DaemonError> {
     let deadline = Instant::now() + TURN_WAIT;
-    while offset > 0 && staged() < offset && Instant::now() < deadline {
+    while offset > 0 && Instant::now() < deadline {
+        match std::fs::symlink_metadata(partial) {
+            Ok(metadata) if metadata.len() >= offset => break,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                if let Some(error) = missing_destination(path) {
+                    return Err(error);
+                }
+            }
+            _ => {}
+        }
         std::thread::sleep(TURN_POLL);
     }
+    Ok(())
 }
 
 fn offset_mismatch(path: &Path, have: u64) -> DaemonError {
@@ -367,9 +464,19 @@ pub(crate) fn write(
         ));
     }
     let path = resolve(&request.path, guard)?;
+    let target = if request.offset == 0 {
+        prepare_write_target(&path, guard)?
+    } else {
+        path.clone()
+    };
+    let staging = partial_of(&target);
+    guard.check(&staging).map_err(|_| fail(
+        "file_state_protected",
+        format!("The upload for {} overlaps the kernel's own state or Vault. Choose another file path.", path.display()),
+    ))?;
     let written = write_at(
-        &path,
-        &partial_of(&path),
+        &target,
+        &staging,
         &StagedChunk {
             offset: request.offset,
             total_size: request.total_size,
@@ -441,11 +548,11 @@ pub(crate) fn write_at(
             ),
         ));
     }
-    wait_for_turn(&partial, chunk.offset);
+    wait_for_turn(&partial, path, chunk.offset)?;
     let mut file = open_staging(&partial, path, chunk.offset)?;
     file.write_all(chunk.data)
-        .map_err(|e| io_failure(&partial, &e))?;
-    file.flush().map_err(|e| io_failure(&partial, &e))?;
+        .map_err(|e| io_failure(path, &e))?;
+    file.flush().map_err(|e| io_failure(path, &e))?;
     if end < chunk.total_size {
         return Ok(StagedWrite {
             received: end,
@@ -472,12 +579,15 @@ pub(crate) fn discard_staging(staging: &Path) {
     let _ = std::fs::remove_file(staging);
 }
 
-fn staging_replaced(partial: &Path) -> DaemonError {
+fn staging_replaced(path: &Path) -> DaemonError {
+    if let Some(error) = missing_destination(path) {
+        return error;
+    }
     fail(
         "file_staging_untrusted",
         format!(
-            "{} was replaced while the upload finished; nothing was kept. Remove it, then upload again.",
-            partial.display()
+            "The unfinished upload for {} was replaced while it finished. Upload the file again.",
+            path.display()
         ),
     )
 }
@@ -507,7 +617,7 @@ fn replace(file: &std::fs::File, partial: &Path, path: &Path) -> Result<(), Daem
         if kept {
             let _ = std::fs::remove_file(&previous);
         }
-        return Err(io_failure(path, &error));
+        return Err(upload_failure(path, &error));
     }
     if names_the_open_file(path, file) {
         if kept {
@@ -519,7 +629,7 @@ fn replace(file: &std::fs::File, partial: &Path, path: &Path) -> Result<(), Daem
     if kept {
         let _ = std::fs::rename(&previous, path);
     }
-    Err(staging_replaced(partial))
+    Err(staging_replaced(path))
 }
 
 /// Verifies, sets the permissions of and installs the staged upload through the descriptor that
@@ -532,7 +642,7 @@ fn publish(
     overwrite: bool,
     expected_sha256: Option<&str>,
 ) -> Result<String, DaemonError> {
-    let sha256 = sha256_of_open(file, partial)?;
+    let sha256 = sha256_of_open(file, path)?;
     if let Some(expected) = expected_sha256 {
         if !expected.eq_ignore_ascii_case(&sha256) {
             let _ = std::fs::remove_file(partial);
@@ -543,13 +653,13 @@ fn publish(
         }
     }
     if !names_the_open_file(partial, file) {
-        return Err(staging_replaced(partial));
+        return Err(staging_replaced(path));
     }
     if overwrite {
         // Replacing a file keeps its permissions (a 0600 credentials file stays private).
         if let Ok(existing) = std::fs::metadata(path) {
             file.set_permissions(existing.permissions())
-                .map_err(|e| io_failure(partial, &e))?;
+                .map_err(|e| io_failure(path, &e))?;
         }
         replace(file, partial, path)?;
     } else {
@@ -564,12 +674,12 @@ fn publish(
                     ),
                 )
             } else {
-                io_failure(path, &error)
+                upload_failure(path, &error)
             }
         })?;
         if !names_the_open_file(path, file) {
             let _ = std::fs::remove_file(path);
-            return Err(staging_replaced(partial));
+            return Err(staging_replaced(path));
         }
         let _ = std::fs::remove_file(partial);
     }
@@ -633,6 +743,74 @@ mod tests {
             panic!("not a write answer")
         };
         (received, complete, sha256)
+    }
+
+    #[test]
+    fn first_upload_chunk_creates_parents_only_inside_the_allowed_path() {
+        let dir = scratch();
+        let target = dir.join("a/b/c/file.txt");
+        assert!(written(write(&chunk(&target, 0, b"new", 3, None)).unwrap()).1);
+        assert_eq!(std::fs::read(&target).unwrap(), b"new");
+
+        let protected = dir.join("private");
+        std::fs::create_dir(&protected).unwrap();
+        let guard = StateGuard::new(Some(protected.to_str().unwrap()));
+        let link = dir.join("shortcut");
+        std::os::unix::fs::symlink(&protected, &link).unwrap();
+        for target in [link.join("new/file"), dir.join("a/../private/new/file")] {
+            let error = super::write(&chunk(&target, 0, b"new", 3, None), &guard).unwrap_err();
+            assert_eq!(code(error), "file_state_protected");
+        }
+        assert!(!protected.join("new").exists());
+    }
+
+    #[test]
+    fn parent_and_staging_errors_refer_to_the_requested_path() {
+        let dir = scratch();
+        let blocked = dir.join("blocked");
+        std::fs::write(&blocked, b"file").unwrap();
+        let target = blocked.join("folder/file");
+        let probe = stat(&StatKernelFileRequest {
+            path: target.display().to_string(),
+            with_sha256: false,
+        })
+        .unwrap_err();
+        let write_error = write(&chunk(&target, 0, b"new", 3, None)).unwrap_err();
+        for error in [probe, write_error] {
+            let message = error.to_string();
+            assert!(message.contains(&blocked.join("folder").display().to_string()));
+            assert!(message.contains("a file blocks the path"));
+            assert!(!message.contains(PARTIAL_SUFFIX));
+        }
+
+        let target = dir.join("upload");
+        std::fs::create_dir(partial_of(&target)).unwrap();
+        let error = write(&chunk(&target, 0, b"new", 3, None)).unwrap_err();
+        for error in [error, staging_replaced(&target)] {
+            let message = error.to_string();
+            assert!(message.contains(&target.display().to_string()));
+            assert!(!message.contains(PARTIAL_SUFFIX));
+        }
+    }
+
+    #[test]
+    fn continuing_an_upload_names_the_destination_folder_that_disappeared() {
+        let dir = scratch();
+        let folder = dir.join("incoming");
+        let target = folder.join("upload.txt");
+        write(&chunk(&target, 0, b"a", 2, None)).unwrap();
+        std::fs::remove_dir_all(&folder).unwrap();
+
+        let error = write(&chunk(&target, 1, b"b", 2, None)).unwrap_err();
+        let message = error.to_string();
+        assert_eq!(code(error), "file_destination_missing");
+        assert!(message.contains(&format!(
+            "Destination folder {} no longer exists",
+            folder.display()
+        )));
+        assert!(message.contains("Recreate it or choose another folder"));
+        assert!(!message.contains(PARTIAL_SUFFIX));
+        assert!(!folder.exists());
     }
 
     // EA2-07: an upload resumes at the offset the target reports, and the file
@@ -955,12 +1133,14 @@ mod tests {
         let partial = partial_of(&target);
         std::fs::set_permissions(&partial, std::fs::Permissions::from_mode(0o644)).unwrap();
         let error = write(&chunk(&target, 3, b"def", 6, None)).unwrap_err();
+        assert!(!error.to_string().contains(PARTIAL_SUFFIX));
         assert_eq!(code(error), "file_staging_untrusted");
         std::fs::remove_file(&partial).unwrap();
         let victim = dir.join("victim.txt");
         std::fs::write(&victim, b"abc").unwrap();
         std::os::unix::fs::symlink(&victim, &partial).unwrap();
         let error = write(&chunk(&target, 3, b"def", 6, None)).unwrap_err();
+        assert!(!error.to_string().contains(PARTIAL_SUFFIX));
         assert_eq!(code(error), "file_staging_untrusted");
         assert_eq!(std::fs::read(&victim).unwrap(), b"abc");
     }
