@@ -309,44 +309,34 @@ async fn offload_manual_machine_request_uses_the_same_owner_gate_and_service_min
         region: None,
     };
     let room = command.session_id.clone().unwrap();
-    let gate_state = state.clone();
-    let gate = tokio::spawn(async move {
-        gate_state
-            .approve_machine_acquisition(&command, &request, Some(&caps), None)
-            .await
-    });
-    let id = tokio::time::timeout(Duration::from_secs(5), async {
-        loop {
-            let snapshot = state.owned.session_store.get_session(&room).unwrap();
-            if let Some(card) = snapshot.active_interactions().first() {
-                assert_eq!(snapshot.active_interactions().len(), 1);
-                assert!(card.message().contains("0.0006 USD per minute"));
-                assert!(card.message().contains("total depends"));
-                break card.id().to_owned();
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .unwrap();
-    assert!(!gate.is_finished());
-    let owner = state
-        .owned
-        .session_store
-        .get_session(&room)
+    let ask = || state.approve_machine_acquisition(&command, &request, Some(&caps), None);
+    let pending = tokio::time::timeout(Duration::from_secs(2), ask())
+        .await
+        .expect("standalone acquisition returns before the owner answers")
         .unwrap()
-        .owner_user_id()
-        .to_owned();
+        .unwrap();
+    let session = state.owned.session_store.get_session(&room).unwrap();
+    assert_eq!(session.active_interactions().len(), 1);
+    let card = &session.active_interactions()[0];
+    assert!(card.message().contains("0.0006 USD per minute"));
+    assert!(card.message().contains("total depends"));
+    assert!(matches!(
+        &pending,
+        ControlPlaneResponse::AcquisitionWaiting { registration_id, .. }
+            if registration_id == card.id()
+    ));
+    assert_eq!(ask().await.unwrap(), Some(pending));
     state
-        .resolve_terminal_runtime_interaction(&room, &id, "deny", None, Some(&owner))
+        .resolve_terminal_runtime_interaction(
+            &room,
+            card.id(),
+            "deny",
+            None,
+            Some(session.owner_user_id()),
+        )
         .await
         .unwrap();
-    assert!(gate
-        .await
-        .unwrap()
-        .unwrap_err()
-        .to_string()
-        .contains("The request was not sent to the service"));
+    assert!(ask().await.unwrap_err().to_string().contains("Denied by"));
 }
 
 pub(super) fn option(class_id: &str, region: &str, available: bool) -> MachineOption {

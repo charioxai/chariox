@@ -86,13 +86,37 @@ pub(crate) async fn execute(
             ))
         };
     };
+    let acquire_id = trace.map(|trace| trace.request_id).or(match request {
+        ControlPlaneRequest::Acquire { request_id, .. } => Some(request_id.as_str()),
+        _ => None,
+    });
+    if let ControlPlaneRequest::AcquireJob { job_ref, .. } = request {
+        let Some(job_id) = command.caller.caller_id.strip_prefix("job:") else {
+            return Err(unavailable(
+                "job_acquisition_required",
+                "Start the work as a job so the kernel can manage its machine",
+            ));
+        };
+        let (room, agent, owner) = state.job_acquisition_subject(job_id)?;
+        if job_ref != job_id
+            || command.session_id.as_deref() != Some(room.as_str())
+            || command.agent_id.as_deref() != Some(agent.as_str())
+            || command.caller.metaagent_id.as_deref() != Some(agent.as_str())
+            || command.caller.user_id.as_deref() != Some(owner.as_str())
+        {
+            return Err(unavailable(
+                "control_plane_binding_invalid",
+                "The accepted job no longer matches its Room, agent and owner",
+            ));
+        }
+    }
     let post = |request: &ControlPlaneRequest| {
         let body = cloud_request_body(&profile.account_id, credential, request);
         let api_url = profile.api_url.clone();
         let offer = matches!(request, ControlPlaneRequest::Capabilities {});
         async move {
             use crate::runtime::cloud_api_client::{post_cloud_json, post_cloud_json_with_timeout};
-            let Some(trace) = trace else {
+            let Some(request_id) = acquire_id else {
                 return post_cloud_json(api_url, "/control-plane", body).await;
             };
             let deadline = if offer {
@@ -119,7 +143,7 @@ pub(crate) async fn execute(
                         code: "acquisition_offer_unavailable".into(),
                         message: format!(
                             "The machine service did not return its offer, so this try was not sent. Retry with request_id {}.",
-                            trace.request_id,
+                            request_id,
                         ),
                     });
             }
@@ -131,7 +155,7 @@ pub(crate) async fn execute(
                         code: "acquisition_service_unconfirmed".into(),
                         message: format!(
                             "The machine service did not confirm the allocation. Retry with request_id {} to recover any allocation it accepted: {error}",
-                            trace.request_id,
+                            request_id,
                         ),
                     })
                 }
@@ -140,7 +164,7 @@ pub(crate) async fn execute(
                     code: "acquisition_service_timeout".into(),
                     message: format!(
                         "The machine service did not confirm the allocation in time. Retry with request_id {} to recover any allocation it accepted.",
-                        trace.request_id,
+                        request_id,
                     ),
                 }),
             }
@@ -151,7 +175,7 @@ pub(crate) async fn execute(
         ControlPlaneRequest::Acquire { .. } | ControlPlaneRequest::AcquireJob { .. }
     ) {
         let offered = post(&ControlPlaneRequest::Capabilities {}).await.map_err(|error| {
-            if trace.is_some() {
+            if acquire_id.is_some() {
                 return error;
             }
             // A failed offer read is never a service refusal of the acquisition itself.
@@ -180,22 +204,6 @@ pub(crate) async fn execute(
             state.authorize_external_request(grant, &request_shape)?;
         } else if let Some(reach) = command.reach_caller_id() {
             state.authorize_gateway_request(&reach, &request_shape)?;
-        }
-        if let (ControlPlaneRequest::AcquireJob { job_ref, .. }, Some(job_id)) =
-            (request, command.caller.caller_id.strip_prefix("job:"))
-        {
-            let (room, agent, owner) = state.job_acquisition_subject(job_id)?;
-            if job_ref != job_id
-                || command.session_id.as_deref() != Some(room.as_str())
-                || command.agent_id.as_deref() != Some(agent.as_str())
-                || command.caller.metaagent_id.as_deref() != Some(agent.as_str())
-                || command.caller.user_id.as_deref() != Some(owner.as_str())
-            {
-                return Err(unavailable(
-                    "control_plane_binding_invalid",
-                    "The accepted job no longer matches its Room, agent and owner",
-                ));
-            }
         }
     }
     let service_response = post(request).await;
@@ -319,7 +327,7 @@ pub(crate) async fn execute(
             } else {
                 let command_id = format!("{}:machine-access", command.command_id);
                 let attach = gateway.attach_machine(target, &origin, &command_id);
-                if trace.is_some() {
+                if acquire_id.is_some() {
                     tokio::time::timeout(OFFER_TIMEOUT, attach)
                         .await
                         .unwrap_or_else(|_| {

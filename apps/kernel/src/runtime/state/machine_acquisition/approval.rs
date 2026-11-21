@@ -366,6 +366,17 @@ impl KernelRuntimeState {
                 .pending_machine_acquisition(&wake, &room, Some(agent))
                 .map(Some);
         }
+        if matches!(request, ControlPlaneRequest::Acquire { .. }) {
+            let published = self
+                .publish_standalone_machine_approval(&room, session.owner_user_id(), interaction)
+                .await;
+            if let Some(decision) = self.owned.machine_decision(&id, session.owner_user_id())? {
+                return approved_quote(decision, &description);
+            }
+            return published.map(Some);
+        }
+        // The remote job has already returned its job handle to the caller. Only its
+        // kernel-owned worker reaches this wait, where job cancellation can remove the card.
         let receiver = match self
             .create_kernel_operation_interaction(&room, session.owner_user_id(), interaction)
             .await
@@ -395,6 +406,67 @@ impl KernelRuntimeState {
                 "The approval ended before an answer arrived. Ask again"
             },
         ))
+    }
+
+    async fn publish_standalone_machine_approval(
+        &self,
+        room: &str,
+        owner: &str,
+        interaction: RuntimeInteraction,
+    ) -> Result<crate::local::ControlPlaneResponse, DaemonError> {
+        let owned = self.owned.clone();
+        let room = room.to_owned();
+        let owner = owner.to_owned();
+        let mut publish = tokio::task::spawn_blocking(move || {
+            let id = interaction.id().to_owned();
+            let (sender, receiver) = tokio::sync::oneshot::channel();
+            let published = owned.register_runtime_interaction(
+                &room,
+                interaction,
+                sender,
+                Some(&owner),
+                None,
+                None,
+            );
+            if published.is_ok() {
+                // A standalone acquisition owns its card until the deadline. Keep its
+                // receiver alive while the authenticated caller continues independently.
+                tokio::spawn(async move {
+                    let _ = tokio::time::timeout(
+                        std::time::Duration::from_secs(DECISION_SECONDS + 1),
+                        receiver,
+                    )
+                    .await;
+                });
+            }
+            let session = owned.session_store.get_session(&room)?;
+            let card = session
+                .active_interactions()
+                .iter()
+                .find(|card| card.id() == id);
+            if let Some(card) = card {
+                return Ok(crate::local::ControlPlaneResponse::AcquisitionWaiting {
+                    registration_id: id,
+                    expires_at_ms: decision_deadline(card),
+                });
+            }
+            Err(acquisition_error(
+                "acquisition_card_unavailable",
+                &format!("The kernel could not raise the approval card. Retry from an active Room with the same request_id: {}",
+                    published.err().map_or_else(|| "Room is no longer active".into(), |error| error.to_string())),
+            ))
+        });
+        match tokio::time::timeout(CARD_ADMISSION_TIMEOUT, &mut publish).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(error)) => Err(acquisition_error(
+                "acquisition_card_unavailable",
+                &format!("The kernel could not publish the approval. Retry with the same request_id: {error}"),
+            )),
+            Err(_) => {
+                publish.abort();
+                Err(card_starting())
+            }
+        }
     }
 
     pub(super) async fn machine_approval_wake(
