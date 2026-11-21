@@ -42,5 +42,7 @@ never a password. Repeated runs from one network make Google show a CAPTCHA; wai
   full version list are empty; the `Sec-CH-UA-Full-Version-List/Arch/Bitness` headers are not sent).
 - The permission wrappers (`browser-page-permission-shim.mjs`) leave one registered Symbol on `window`, and a same-origin
   iframe's own `Function.prototype.toString` shows the wrappers' source.
+- The font-face recorder (`browser-page-font-recorder.mjs`) has the same limits for `FontFace` and `document.fonts`
+  add/delete/clear: a same-origin iframe's own `Function.prototype.toString` does not name the parent's `FontFace`.
 - Camera and microphone report `denied` instead of `prompt`.
 - A GPU-less host: stock Chrome has no WebGL, the kernel browser renders SwiftShader.

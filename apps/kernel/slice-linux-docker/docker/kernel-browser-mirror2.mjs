@@ -272,6 +272,14 @@ export class Mirror2 {
     this.host.timing?.('mirror2_world_css', cssAt);
     return out;
   }
+  // F5: the faces the page made by script (browser-page-fonts.mjs) reach the world before its snapshot or next drain,
+  // once per change; the observer adds them to the document as its last adopted sheet.
+  async syncScriptFonts(world, tab) {
+    const fonts = this.host.browser.pageFonts?.of(tab.target_id);
+    if (!fonts || fonts.serial <= (world.scriptFontsSerial ?? 0)) return;
+    await this.evaluate(world, `globalThis.__charioxMirror2.scriptFonts(${fonts.serial},${JSON.stringify(fonts.css)})`);
+    world.scriptFontsSerial = fonts.serial;
+  }
   async watchCss(world, frameId, streamId, patience) {
     const large = await this.evaluate(world, "document.readyState !== 'complete' || document.getElementsByTagName('*').length > 10000", false, patience?.());
     world.holdInitialPaint = large;
@@ -528,6 +536,7 @@ export class Mirror2 {
     };
     const read = async () => {
       assertDocument();
+      await this.syncScriptFonts(world, tab);
       if (reset) {
         // A snapshot may reuse local ids. Refuse old inputs/region leases
         // before touching the observer, including resyncs found during drain.
@@ -607,6 +616,7 @@ export class Mirror2 {
       // A navigation ends the wait at once (MP-08/MP-10): the next credit resets to the new document.
       while (!reset && !resources.length && this.empty(stream, source) && !this.sheetsDue(stream) && Date.now() < deadline && stream.hurry === hurry && !moved()) {
         const settle = stream.movedAt + SETTLE_MS - Date.now(), refine = settle > 0 && this.refinePending(stream) ? settle + 1 : 500;
+        await this.syncScriptFonts(world, tab);
         const polled = this.evaluate(world, `${world.ref}.waitDrain(${Math.max(1, Math.min(500, refine, deadline - Date.now()))})`, true);
         const drained = moveWatch ? await Promise.race([polled, moveWatch.promise.then(() => MOVED)]) : await polled;
         // The old document's poll may answer late (its page outlives the commit): the commit ends this credit now.

@@ -884,6 +884,38 @@ test("Y3-C1a: a wheel listener added or removed without any DOM change still rea
     assert.equal(await after("removeEventListener('wheel', take, { passive: false })", false), false, "removing it with no mutation gives the wheel back");
   }));
 
+// browserfidelity r19 (F5, tldraw): faces a page makes by script (new FontFace + document.fonts.add) have no stylesheet rule;
+// the mirror carries them as @font-face rules of the document's last adopted sheet, from a URL or from bytes, and the page
+// still sees Chromium's own FontFace and FontFaceSet.
+test("F5: faces the page makes by script reach the viewer as @font-face rules, and FontFace still looks native to the page", () => mirrored(
+  `<p style="font-family:JsUrl">a</p><p style="font-family:JsBytes">b</p><script>
+    document.fonts.add(new FontFace("JsUrl", "url(/f/u.woff2) format('woff2')", { weight: "700", style: "italic" }));
+    document.fonts.add(new FontFace("JsBytes", new Uint8Array([119, 79, 70, 50, 1, 2, 3, 4]).buffer));
+    const gone = new FontFace("Gone", "url(/f/g.woff2)"); document.fonts.add(gone); document.fonts.delete(gone);
+    new FontFace("NotAdded", "url(/f/n.woff2)");
+  </script>`, async ({ next, evaluate }) => {
+    await new Promise(resolve => setTimeout(resolve, 800));
+    const fontsCss = packet => JSON.stringify([packet.nodes ?? [], packet.ops.filter(op => op.op === "adopted")]); // snapshot records are compact: their text is searched
+    const css = fontsCss(await next());
+    assert.match(css, /@font-face ?\{[^}]*font-family: ?\\?"JsUrl\\?"[^}]*\}/, `F5: the face made from a URL (${css.slice(0, 1500)})`);
+    assert.match(css, /@font-face ?\{[^}]*JsUrl[^}]*font-style: ?italic[^}]*font-weight: ?700/, "F5: with its descriptors");
+    assert.match(css, /@font-face ?\{[^}]*JsBytes[^}]*\}/, "F5: the face made from bytes");
+    assert.doesNotMatch(css, /Gone|NotAdded/, "F5: a face deleted from the set, or never added, is not carried");
+    await evaluate(`document.fonts.add(new FontFace("Later", "url(/f/l.woff2)")); document.body.append("c")`);
+    let later = "";
+    for (let i = 0; i < 8 && !later.includes("Later"); i++) later = fontsCss(await next(1000));
+    assert.match(later, /@font-face ?\{[^}]*Later/, "F5: a face added later reaches the viewer as a change of the document's sheets");
+    const identity = await evaluate(`(() => { class Sub extends FontFace {} const face = new FontFace("x", "url(/f/x.woff2)"), d = Object.getOwnPropertyDescriptor(window, "FontFace");
+      return { source: FontFace.toString(), call: Function.prototype.toString.call(FontFace), name: FontFace.name, length: FontFace.length, instance: face instanceof FontFace,
+        proto: Object.getPrototypeOf(face) === FontFace.prototype, ctor: FontFace.prototype.constructor === FontFace, sub: new Sub("y", "url(/f/y.woff2)") instanceof Sub,
+        flags: [d.writable, d.enumerable, d.configurable], add: [document.fonts.add.toString(), document.fonts.add.name, document.fonts.add.length, Object.hasOwn(document.fonts.add, "prototype")],
+        deleteSource: document.fonts.delete.toString(), toStringSource: Function.prototype.toString.toString(), binding: "__charioxScriptFonts" in window,
+        detect: "FontFace" in window && typeof FontFace === "function" && typeof document.fonts.check === "function", plain: (() => { try { FontFace("z", "url(a)"); return "called"; } catch (e) { return e.constructor.name; } })() }; })()`);
+    assert.deepEqual(identity, { source: "function FontFace() { [native code] }", call: "function FontFace() { [native code] }", name: "FontFace", length: 2, instance: true, proto: true, ctor: true, sub: true,
+      flags: [true, false, true], add: ["function add() { [native code] }", "add", 1, false], deleteSource: "function delete() { [native code] }", toStringSource: "function toString() { [native code] }",
+      binding: false, detect: true, plain: "TypeError" }, "F5: the page sees Chromium's own shapes");
+  }, { "/f/u.woff2": { type: "font/woff2", body: "wOF2" + "\u0001".repeat(60) }, "/f/l.woff2": { type: "font/woff2", body: "wOF2" + "\u0001".repeat(60) } }));
+
 test("MP-10: review #941-4 a CDP-read cross-origin sheet keeps its already-loaded imports (own base, media condition, images and fonts)", () => mirrored(
   '<link rel="stylesheet" href="http://localhost:PORT/cdn/main.css"><div class="x" style="width:20px;height:20px">a</div>', async ({ next }) => {
     await new Promise(resolve => setTimeout(resolve, 800));
