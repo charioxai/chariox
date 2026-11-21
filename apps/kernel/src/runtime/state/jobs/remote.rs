@@ -240,15 +240,20 @@ impl Remote {
         cancelled: &watch::Receiver<bool>,
     ) -> Result<Self, DaemonError> {
         let Located { home, root } = located;
+        let workspace = record.transfer_workspace()?;
         let room =
             create_target_room(&*grant, &format!("{}:prepare", record.job_id), Some(home)).await?;
         let preparation = Self::new(grant.clone(), room, record.job_id.clone());
         let relative_cwd = record
             .cwd
-            .strip_prefix(&record.workspace)
+            .strip_prefix(workspace.root)
             .map_err(|_| ledger::error("Job directory escaped workspace"))?;
-        let mut directories =
-            BTreeSet::from([root.clone(), format!("{root}/{}", relative_cwd.display())]);
+        let cwd = if relative_cwd.as_os_str().is_empty() {
+            root.clone()
+        } else {
+            format!("{root}/{}", relative_cwd.display())
+        };
+        let mut directories = BTreeSet::from([root.clone(), cwd.clone()]);
         for path in manifest.keys() {
             crate::jobs::relative(path)?;
             if let Some(parent) = Path::new(path)
@@ -270,7 +275,7 @@ impl Remote {
                 .await?;
         }
         for (index, (path, state)) in manifest.iter().enumerate() {
-            let local = crate::jobs::checked_path(&record.workspace, path)?;
+            let local = workspace.checked_path(path)?;
             let mut file = std::fs::File::open(&local)
                 .map_err(|e| ledger::error(format!("Cannot upload job file: {e}")))?;
             let size = file
@@ -331,15 +336,6 @@ impl Remote {
                 .utility(command, &format!("chmod:{index}"))
                 .await?;
         }
-        let relative_cwd = record
-            .cwd
-            .strip_prefix(&record.workspace)
-            .map_err(|_| ledger::error("Job directory escaped workspace"))?;
-        let cwd = if relative_cwd.as_os_str().is_empty() {
-            root.clone()
-        } else {
-            format!("{root}/{}", relative_cwd.display())
-        };
         let room =
             create_target_room(&*grant, &format!("{}:command", record.job_id), Some(&cwd)).await?;
         Ok(Self::new(grant, room, record.job_id.clone()))
@@ -352,9 +348,7 @@ impl Remote {
         base: &crate::jobs::Manifest,
         uploaded: &crate::jobs::Manifest,
     ) -> Result<(Vec<String>, Vec<String>), DaemonError> {
-        let rules = crate::workspace_live_sync_ignore::workspace_live_sync_user_ignore_patterns(
-            &record.workspace,
-        );
+        let workspace = record.transfer_workspace()?;
         let mut pending = vec![String::new()];
         let mut remote = BTreeMap::new();
         let mut total = 0u64;
@@ -396,10 +390,7 @@ impl Remote {
                     if crate::jobs::hard_excluded(&relative) {
                         continue;
                     }
-                    let ignored =
-                        crate::workspace_live_sync_ignore::workspace_live_sync_ignored_path(
-                            &relative, &rules,
-                        );
+                    let ignored = workspace.ignored(&relative);
                     let output = record.request.outputs.iter().any(|pattern| crate::workspace_live_sync_ignore::workspace_live_sync_ignore_pattern_matches(pattern, &relative));
                     if entry.kind == KernelFileKind::Directory {
                         if !ignored
@@ -413,11 +404,12 @@ impl Remote {
                         }
                     } else if entry.kind == KernelFileKind::File && (!ignored || output) {
                         total = total.saturating_add(entry.size);
-                        if total > 2 * 1024 * 1024 * 1024 || remote.len() >= 100_000 {
-                            return Err(ledger::error(
-                                "Job return exceeds the 2 GiB or 100000 file limit",
-                            ));
-                        }
+                        crate::jobs::check_transfer_limit(
+                            "return",
+                            workspace.root,
+                            total,
+                            remote.len() + 1,
+                        )?;
                         let stat = match self
                             .call(
                                 &format!("return-stat:{relative}"),
@@ -505,7 +497,7 @@ impl Remote {
                 None
             };
             let applied = crate::jobs::apply_return(
-                &record.workspace,
+                workspace.root,
                 &record.job_id,
                 &path,
                 base.get(&path),

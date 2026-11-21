@@ -73,61 +73,137 @@ fn is_executable(_: &std::fs::Metadata) -> bool {
     false
 }
 
-pub(crate) fn snapshot(root: &Path, outputs: &[String]) -> Result<Manifest, DaemonError> {
-    let rules = crate::workspace_live_sync_ignore::workspace_live_sync_user_ignore_patterns(root);
-    let mut manifest = Manifest::new();
-    let mut pending = vec![String::new()];
-    let mut total = 0u64;
-    while let Some(directory) = pending.pop() {
-        for item in std::fs::read_dir(root.join(&directory))
-            .map_err(|e| error(format!("Cannot scan job workspace: {e}")))?
-        {
-            let item = item.map_err(|e| error(format!("Cannot scan job file: {e}")))?;
-            let name = item
-                .file_name()
-                .into_string()
-                .map_err(|_| error("Job workspace filenames must be UTF-8"))?;
-            let path = if directory.is_empty() {
-                name
+/// Files are addressed relative to the upload root. A selected subdirectory still
+/// respects the worktree's ignore rules and the same path checks as a full upload.
+pub(crate) struct TransferWorkspace<'a> {
+    pub(crate) root: &'a Path,
+    worktree: &'a Path,
+    prefix: &'a str,
+    rules: Vec<String>,
+    worktree_rules: Vec<String>,
+}
+
+impl<'a> TransferWorkspace<'a> {
+    pub(crate) fn new(worktree: &'a Path, root: &'a Path) -> Result<Self, DaemonError> {
+        let prefix = root
+            .strip_prefix(worktree)
+            .ok()
+            .and_then(Path::to_str)
+            .ok_or_else(|| error("The job's transfer directory must be inside its workspace"))?;
+        if !prefix.is_empty() {
+            checked_path(worktree, prefix)?;
+            // Selecting an upload root must not hide a normally excluded ancestor.
+            if prefix.split('/').any(hard_excluded) {
+                return Err(error(format!(
+                    "Job directory `{}` is excluded from workspace transfers; choose another directory inside the workspace",
+                    root.display()
+                )));
+            }
+        }
+        let ignore = crate::workspace_live_sync_ignore::workspace_live_sync_user_ignore_patterns;
+        Ok(Self {
+            root,
+            worktree,
+            prefix,
+            rules: ignore(root),
+            worktree_rules: if prefix.is_empty() {
+                Vec::new()
             } else {
-                format!("{directory}/{name}")
-            };
-            let metadata = item.file_type().map_err(|e| error(e.to_string()))?;
-            if metadata.is_symlink() {
-                continue;
-            }
-            let ignored =
-                crate::workspace_live_sync_ignore::workspace_live_sync_ignored_path(&path, &rules);
-            let output = outputs.iter().any(|pattern| {
-                crate::workspace_live_sync_ignore::workspace_live_sync_ignore_pattern_matches(
-                    pattern, &path,
-                )
-            });
-            if hard_excluded(&path) {
-                continue;
-            }
-            if metadata.is_dir() {
-                // Traverse an ignored build directory only when a declared output lies beneath it.
-                if !ignored || outputs.iter().any(|pattern| {
-                    crate::workspace_live_sync_ignore::workspace_live_sync_pattern_may_match_below(
+                ignore(worktree)
+            },
+        })
+    }
+
+    pub(crate) fn checked_path(&self, path: &str) -> Result<std::path::PathBuf, DaemonError> {
+        checked_path(self.worktree, &self.worktree_path(path))
+    }
+
+    pub(crate) fn ignored(&self, path: &str) -> bool {
+        use crate::workspace_live_sync_ignore::{
+            user_rules_exclude_path, workspace_live_sync_ignored_path,
+        };
+        workspace_live_sync_ignored_path(path, &self.rules)
+            || !self.worktree_rules.is_empty()
+                && user_rules_exclude_path(&self.worktree_path(path), &self.worktree_rules)
+    }
+
+    fn worktree_path<'b>(&self, path: &'b str) -> std::borrow::Cow<'b, str> {
+        if self.prefix.is_empty() {
+            path.into()
+        } else {
+            format!("{}/{path}", self.prefix).into()
+        }
+    }
+
+    pub(crate) fn snapshot(&self, outputs: &[String]) -> Result<Manifest, DaemonError> {
+        let mut manifest = Manifest::new();
+        let mut pending = vec![String::new()];
+        let mut total = 0u64;
+        while let Some(directory) = pending.pop() {
+            for item in std::fs::read_dir(self.root.join(&directory))
+                .map_err(|e| error(format!("Cannot scan job workspace: {e}")))?
+            {
+                let item = item.map_err(|e| error(format!("Cannot scan job file: {e}")))?;
+                let name = item
+                    .file_name()
+                    .into_string()
+                    .map_err(|_| error("Job workspace filenames must be UTF-8"))?;
+                let path = if directory.is_empty() {
+                    name
+                } else {
+                    format!("{directory}/{name}")
+                };
+                let metadata = item.file_type().map_err(|e| error(e.to_string()))?;
+                if metadata.is_symlink() {
+                    continue;
+                }
+                let ignored = self.ignored(&path);
+                let output = outputs.iter().any(|pattern| {
+                    crate::workspace_live_sync_ignore::workspace_live_sync_ignore_pattern_matches(
                         pattern, &path,
                     )
-                }) {
-                    pending.push(path);
+                });
+                if hard_excluded(&path) {
+                    continue;
                 }
-            } else if metadata.is_file() && (!ignored || output) {
-                total =
-                    total.saturating_add(item.metadata().map_err(|e| error(e.to_string()))?.len());
-                if total > 2 * 1024 * 1024 * 1024 || manifest.len() >= 100_000 {
-                    return Err(error("Job workspace exceeds the 2 GiB or 100000 file transfer limit; ignore generated files"));
-                }
-                if let Some(state) = file_state(&item.path())? {
-                    manifest.insert(path, state);
+                if metadata.is_dir() {
+                    // Traverse an ignored build directory only when a declared output lies beneath it.
+                    if !ignored || outputs.iter().any(|pattern| {
+                        crate::workspace_live_sync_ignore::workspace_live_sync_pattern_may_match_below(
+                            pattern, &path,
+                        )
+                    }) {
+                        pending.push(path);
+                    }
+                } else if metadata.is_file() && (!ignored || output) {
+                    total = total
+                        .saturating_add(item.metadata().map_err(|e| error(e.to_string()))?.len());
+                    check_transfer_limit("upload", self.root, total, manifest.len() + 1)?;
+                    if let Some(state) = file_state(&item.path())? {
+                        manifest.insert(path, state);
+                    }
                 }
             }
         }
+        Ok(manifest)
     }
-    Ok(manifest)
+}
+
+pub(crate) fn check_transfer_limit(
+    direction: &str,
+    root: &Path,
+    bytes: u64,
+    files: usize,
+) -> Result<(), DaemonError> {
+    const MAX_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+    const MAX_FILES: usize = 100_000;
+    if bytes > MAX_BYTES || files > MAX_FILES {
+        return Err(error(format!(
+            "Job workspace {direction} for `{}` exceeds the limit of 2 GiB ({MAX_BYTES} bytes) and {MAX_FILES} files. Measured at least {bytes} bytes (file count {files}). Ignore generated files or choose a smaller directory.",
+            root.display()
+        )));
+    }
+    Ok(())
 }
 
 /// `Ok(true)` when the home copy now matches what the job returned, `Ok(false)` when a local
@@ -267,11 +343,12 @@ mod tests {
         std::fs::write(root.join("target/release/build-output"), b"binary").unwrap();
         std::fs::write(root.join("source.rs"), b"source").unwrap();
         std::fs::write(root.join(".env"), b"not copied").unwrap();
-        let normal = snapshot(root, &[]).unwrap();
+        let workspace = TransferWorkspace::new(root, root).unwrap();
+        let normal = workspace.snapshot(&[]).unwrap();
         assert!(normal.contains_key("source.rs"));
         assert!(!normal.contains_key(".env"));
         assert!(!normal.contains_key("target/release/build-output"));
-        let artifacts = snapshot(root, &["target/release/*".into()]).unwrap();
+        let artifacts = workspace.snapshot(&["target/release/*".into()]).unwrap();
         assert!(artifacts.contains_key("target/release/build-output"));
         assert!(!artifacts.contains_key(".env"));
     }
@@ -282,7 +359,10 @@ mod tests {
         std::fs::create_dir_all(root.join("target/release/deps")).unwrap();
         std::fs::write(root.join("target/release/app"), b"binary").unwrap();
         std::fs::write(root.join("target/release/deps/lib.rlib"), b"lib").unwrap();
-        let artifacts = snapshot(root, &["target/**".into()]).unwrap();
+        let artifacts = TransferWorkspace::new(root, root)
+            .unwrap()
+            .snapshot(&["target/**".into()])
+            .unwrap();
         assert!(artifacts.contains_key("target/release/app"));
         assert!(artifacts.contains_key("target/release/deps/lib.rlib"));
     }

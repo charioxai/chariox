@@ -635,8 +635,9 @@ impl KernelRuntimeState {
         }
         record.state = "uploading".into();
         save_record(self, record)?;
-        let base = crate::jobs::snapshot(&record.workspace, &record.request.outputs)?;
-        let upload = crate::jobs::snapshot(&record.workspace, &[])?;
+        let workspace = record.transfer_workspace()?;
+        let base = workspace.snapshot(&record.request.outputs)?;
+        let upload = workspace.snapshot(&[])?;
         let located = Remote::locate(machine.grant.clone(), &record.job_id).await?;
         // From here the machine may come to hold the only copy of the outputs, and a held machine
         // keeps the uploaded workspace until it is removed: keep where it is and what collecting

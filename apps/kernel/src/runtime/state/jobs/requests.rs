@@ -235,7 +235,20 @@ pub(super) fn job_workspace(
     request: &RunJobRequest,
 ) -> Result<(PathBuf, PathBuf), DaemonError> {
     let workspace = super::super::agent_process_watch::workspace_cwd(run, None)?;
-    let cwd = super::super::agent_process_watch::workspace_cwd(run, request.cwd.as_deref())?;
+    let Some(directory) = &request.cwd else {
+        return Ok((workspace.clone(), workspace));
+    };
+    let cwd = workspace
+        .join(directory)
+        .canonicalize()
+        .ok()
+        .filter(|path| path.is_dir() && path.starts_with(&workspace))
+        .ok_or_else(|| {
+            ledger::error(format!(
+                "Job directory `{directory}` must be an existing directory inside the agent's workspace `{}`",
+                workspace.display()
+            ))
+        })?;
     Ok((workspace, cwd))
 }
 
@@ -246,7 +259,11 @@ pub(super) fn validate(request: &RunJobRequest) -> Result<Vec<String>, DaemonErr
     if request.needs.cpus == Some(0) || request.needs.memory_gib == Some(0) {
         return Err(ledger::error("Job resource needs must be positive"));
     }
-    if let Some(cwd) = &request.cwd {
+    if let Some(cwd) = request
+        .cwd
+        .as_deref()
+        .filter(|cwd| !Path::new(cwd).is_absolute())
+    {
         crate::jobs::relative(cwd)?;
     }
     for output in &request.outputs {
