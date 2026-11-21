@@ -14,7 +14,8 @@ use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 use tokio_tungstenite::tungstenite::Message;
 
-use crate::frame_transport::{peer_reply_block_size, CHUNK_BYTES};
+use crate::frame_transport::{peer_reply_block_size, peer_reply_chunk, CHUNK_BYTES};
+use crate::packed_peer_reply::{PackedPeerReply, PackedReplyPlan};
 
 /// Bulk bytes one receiver may have queued: about one second at 64 Mbit/s, enough to keep a
 /// fast client's pipe full. A single message larger than this still passes an empty bulk queue.
@@ -22,7 +23,7 @@ pub(crate) const RECEIVER_BULK_BUDGET: usize = 8 * 1024 * 1024;
 
 pub(crate) enum Outgoing {
     Frame(Message),
-    PeerReply(PeerReplyText),
+    PeerReply(PeerReply),
 }
 
 #[cfg(test)]
@@ -40,13 +41,65 @@ impl Outgoing {
         }
     }
 
+    pub(crate) fn admitted_len(&self) -> usize {
+        match self {
+            Self::PeerReply(PeerReply::Packed(reply)) => reply.charge(),
+            _ => self.len(),
+        }
+    }
+
     #[cfg(test)]
     fn into_test_frame(self) -> Message {
         match self {
             Self::Frame(message) => message,
-            Self::PeerReply(reply) => {
+            Self::PeerReply(PeerReply::Text(reply)) => {
                 Message::Text(reply.blocks.into_iter().collect::<String>().into())
             }
+            Self::PeerReply(PeerReply::Packed(reply)) => {
+                Message::Text(reply.into_test_text().into())
+            }
+        }
+    }
+}
+
+pub(crate) enum PeerReply {
+    Text(PeerReplyText),
+    Packed(PackedPeerReply),
+}
+
+impl PeerReply {
+    pub(crate) fn len(&self) -> usize {
+        match self {
+            Self::Text(reply) => reply.len,
+            Self::Packed(reply) => reply.len(),
+        }
+    }
+
+    pub(crate) fn next_chunk(
+        &self,
+        id: u32,
+        offset: usize,
+        limit: usize,
+    ) -> Option<(String, usize)> {
+        match self {
+            Self::Text(reply) => {
+                let block = reply.blocks.front()?;
+                peer_reply_chunk(
+                    id,
+                    &block[offset - reply.written..],
+                    offset,
+                    reply.len,
+                    limit,
+                )
+            }
+            Self::Packed(reply) => reply.next_chunk(id, offset, limit),
+        }
+    }
+
+    pub(crate) fn written(&mut self, end: usize) -> Option<usize> {
+        match self {
+            Self::Text(reply) => reply.written(end),
+            Self::Packed(reply) => reply.written(end),
         }
     }
 }
@@ -69,17 +122,7 @@ impl PeerReplyText {
         reply
     }
 
-    pub(crate) fn len(&self) -> usize {
-        self.len
-    }
-
-    pub(crate) fn front(&self) -> Option<(&str, usize)> {
-        self.blocks
-            .front()
-            .map(|block| (block.as_ref(), self.written))
-    }
-
-    pub(crate) fn written(&mut self, end: usize) -> Option<usize> {
+    fn written(&mut self, end: usize) -> Option<usize> {
         let len = self.blocks.front()?.len();
         if end != self.written + len {
             return None;
@@ -348,7 +391,18 @@ impl RelaySender {
         len: usize,
         reply: &impl serde::Serialize,
     ) -> Result<(), SendRefused> {
-        self.try_send_sized(len, || Outgoing::PeerReply(PeerReplyText::serialize(reply)))
+        self.try_send_sized(len, || {
+            Outgoing::PeerReply(PeerReply::Text(PeerReplyText::serialize(reply)))
+        })
+    }
+
+    pub(crate) fn try_send_packed_peer_reply(
+        &self,
+        plan: PackedReplyPlan<'_>,
+    ) -> Result<(), SendRefused> {
+        self.try_send_sized(plan.charge(), || {
+            Outgoing::PeerReply(PeerReply::Packed(plan.into_reply()))
+        })
     }
 
     fn try_send_sized(
@@ -368,7 +422,7 @@ impl RelaySender {
             }
         })?;
         let message = message();
-        debug_assert_eq!(message.len(), len);
+        debug_assert_eq!(message.admitted_len(), len);
         permit.send(message);
         Ok(())
     }
@@ -433,13 +487,13 @@ pub(crate) struct DetachedReceiver {
 impl DetachedReceiver {
     pub(crate) async fn recv(&mut self) -> Option<Message> {
         let message = self.rx.recv().await?;
-        self.queue.release(message.len());
+        self.queue.release(message.admitted_len());
         Some(message.into_test_frame())
     }
 
     pub(crate) fn try_recv(&mut self) -> Result<Message, mpsc::error::TryRecvError> {
         let message = self.rx.try_recv()?;
-        self.queue.release(message.len());
+        self.queue.release(message.admitted_len());
         Ok(message.into_test_frame())
     }
 }
