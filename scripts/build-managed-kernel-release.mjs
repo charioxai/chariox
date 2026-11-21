@@ -718,6 +718,7 @@ export async function runManagedKernelReleaseBuild(options, {
         "buildx", "build", "--builder", verifiedBuilder.name,
         "--pull", "--platform", "linux/amd64", "--target", ARTIFACT_STAGE,
         "--metadata-file", metadataPath,
+        "--build-context", `cli-source=${source}`,
         "--build-arg", `CHARIOX_CARGO_BUILD_JOBS=${cargoJobs}`,
         "--file", join(source, BUILDER_DOCKERFILE),
         "--output", `type=local,dest=${exported}`,
