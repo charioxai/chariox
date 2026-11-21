@@ -6,6 +6,7 @@ fn materialize_empty_codex_profile_for_test(app: &DaemonApp, owner_user_id: &str
             owner_user_id,
             &crate::account_profile::ProviderAccountMaterialization {
                 profile: crate::account_profile::ProviderAccountReplicaMetadata {
+                    provider_account_id: None,
                     owner_user_id: owner_user_id.to_string(),
                     provider: "codex".to_string(),
                     profile_id: "default".to_string(),

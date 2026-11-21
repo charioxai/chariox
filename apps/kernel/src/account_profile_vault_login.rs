@@ -146,6 +146,7 @@ impl ProviderAccountProfileRegistry {
                 profile_id: profile.profile_id.clone(),
             },
             ProviderAccountReplicaMetadata {
+                provider_account_id: None,
                 owner_user_id: profile.owner_user_id,
                 provider: profile.provider,
                 profile_id: profile.profile_id,
@@ -175,6 +176,7 @@ impl ProviderAccountProfileRegistry {
         }
         let provider = normalize_provider(&login.profile.provider)?;
         let profile_id = validate_profile_id(&login.profile.profile_id)?;
+        let provider_account_id = identity::imported_claude_account_id(provider, &login.profile)?;
         let materialization_sha256 = provider_vault_login::materialization_sha256(login)?;
         let receipt = ManagedContextProviderAccountReceipt {
             context_id: context_id.to_string(),
@@ -295,6 +297,7 @@ impl ProviderAccountProfileRegistry {
             next.profiles.push(StoredProviderAccountProfile {
                 public,
                 locator: locator.clone(),
+                provider_account_id,
                 label_source: Some(ProviderAccountLabelSource::Explicit),
                 materialized_replica: false,
                 pending_native_validation: false,
@@ -311,6 +314,7 @@ impl ProviderAccountProfileRegistry {
                 }),
                 transferred_from: None,
             });
+            next.remember_claude_merges();
             self.persist_locked(&next)?;
             *document = next;
             Ok(())

@@ -41,6 +41,7 @@ fn vault_login_1000_shapes_are_pinned() {
         &target.relay_public_key,
         &binding,
         ProviderAccountReplicaMetadata {
+            provider_account_id: None,
             owner_user_id: "owner".into(),
             provider: "claude".into(),
             profile_id: "work".into(),
@@ -96,4 +97,22 @@ fn the_closed_receiving_vault_reason_classes_are_wire_stable() {
             ..
         }
     ));
+}
+
+#[test]
+fn native_account_identity_peer_shape_is_versioned_and_hashed() {
+    let bytes = include_bytes!("provider-account-identity-451.json");
+    assert_eq!(
+        format!("{:x}", Sha256::digest(bytes)),
+        "1e16e3e883521a0940be7f8eb508226dc976e96f5a911578efa08733ba635e30"
+    );
+    let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    assert_eq!(
+        fixture["peer"],
+        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION
+    );
+    let metadata: ProviderAccountReplicaMetadata =
+        serde_json::from_value(fixture["profile"].clone()).unwrap();
+    assert!(metadata.provider_account_id.is_some());
+    assert_eq!(serde_json::to_value(metadata).unwrap(), fixture["profile"]);
 }

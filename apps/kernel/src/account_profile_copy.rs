@@ -169,11 +169,13 @@ impl ProviderAccountProfileRegistry {
         });
         if let Some(index) = existing {
             next.profiles[index].public = public;
+            next.profiles[index].provider_account_id = None;
             next.profiles[index].transferred_from = transferred_from;
         } else {
             next.profiles.push(StoredProviderAccountProfile {
                 public,
                 locator,
+                provider_account_id: None,
                 label_source: Some(ProviderAccountLabelSource::Explicit),
                 materialized_replica: false,
                 pending_native_validation: false,
