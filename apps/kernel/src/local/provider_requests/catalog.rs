@@ -171,6 +171,15 @@ fn append_catalog_source(
                 .and_then(crate::provider::canonical_provider_family)
                 == Some(provider) =>
         {
+            if matches!(
+                error,
+                DaemonError::LocalTransport {
+                    operation: crate::provider::OPENCODE_CATALOG_START,
+                    ..
+                }
+            ) {
+                return Err(error);
+            }
             return Err(DaemonError::LocalTransport {
                 operation: "get_provider_catalog",
                 message: format!("{provider} catalog is unavailable: {error}. Check the provider account and retry."),

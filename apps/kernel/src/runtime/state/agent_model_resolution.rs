@@ -233,11 +233,14 @@ impl KernelRuntimeState {
             true,
         )
         .await
-        .map_err(|error| DaemonError::LocalTransport {
-            operation: "resolve agent model",
-            message: format!(
-                "the model list of {provider} account `{profile_id}` could not be read: {error}. Check the account and retry"
-            ),
+        .map_err(|error| match error {
+            DaemonError::LocalTransport { operation: crate::provider::OPENCODE_CATALOG_START, .. } => error,
+            _ => DaemonError::LocalTransport {
+                operation: "resolve agent model",
+                message: format!(
+                    "the model list of {provider} account `{profile_id}` could not be read: {error}. Check the account and retry"
+                ),
+            },
         })
     }
 }
