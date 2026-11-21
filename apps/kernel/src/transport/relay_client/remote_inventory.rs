@@ -177,20 +177,22 @@ pub(crate) async fn refresh_remote_inventory_projection(
             if verdict != LivePassVerdict::Publish {
                 return verdict;
             }
-            if let Some(read) = seen.directory_read {
-                projection.record_directory_read(read.linked);
-                projection.record_directory_machines(&read.directory, read.linked_machines);
-            }
-            // Membership is the directory's: a machine Cloud no longer links (Remove unlinks it)
-            // is forgotten by every kernel that remembers it through that directory, not only
-            // the one that was asked. Records of a private relay or a pairing are no directory's.
+            // Cloud directory reads speak for enrolled machines. A private pairing or
+            // another directory keeps its own records.
             if let Some(directory) = &directory {
-                machine_presence::record_directory_of_new_machines(
+                machine_presence::record_directory_of_machines(
                     registry,
                     &seen.listed,
                     directory,
+                    seen.directory_read
+                        .as_ref()
+                        .and_then(|read| read.linked_machines.as_ref()),
                     &runtime_config.host_machine_id,
                 );
+                if let Some(read) = seen.directory_read {
+                    projection.record_directory_read(read.linked);
+                    projection.record_directory_machines(&read.directory, read.linked_machines);
+                }
                 let unlinked = projection.gone_machines(
                     directory,
                     registry
