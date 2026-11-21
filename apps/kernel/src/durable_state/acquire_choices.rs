@@ -343,7 +343,7 @@ mod tests {
     fn allocation_authority_outlives_the_request_replay_window() {
         let dir = crate::test_support::TestTempDir::new("allocation-owner");
         let path = dir.path().join("kernel.db");
-        let store = DurableKernelStateStore::open(&path).unwrap();
+        let store = DurableKernelStateStore::open(path).unwrap();
         let first = now();
         assert!(store
             .write_acquire_choice("asker", "r1", accept("small", "allocation"), first)
