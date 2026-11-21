@@ -1,0 +1,30 @@
+{
+  "local": 1100,
+  "requests": [
+    {"GetAgentSettings":{"agent":"worker","session_id":"room"}},
+    {"UpdateAgentProfileAtTurnEnd":{"session_id":"room","agent_id":"agent","provider":"codex","model":"next-model","clear_effort":false}}
+  ],
+  "response": {
+    "AgentSettings": {
+      "agent": {
+        "id": "agent",
+        "session_id": "room",
+        "agent_ref": "A2",
+        "alias": "worker",
+        "provider": "claude",
+        "model": "current-model",
+        "effort": "low",
+        "account_profile": "current-account",
+        "execution_mode_override": null,
+        "permission_level_override": null,
+        "worktree_id": null,
+        "pending_profile": {
+          "provider": "codex",
+          "model": "next-model",
+          "effort": null,
+          "account_profile": "next-account"
+        }
+      }
+    }
+  }
+}
