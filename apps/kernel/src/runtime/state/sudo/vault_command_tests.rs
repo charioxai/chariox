@@ -79,6 +79,17 @@ async fn s2_ordinary_agents_capture_and_use_without_sudo() {
         .as_str()
         .unwrap()
         .contains(&format!("KEY=[vault:{handle}]")));
+    let body = "first line\n\nsecond line with literal $(false) and 'quotes'\n";
+    let used = call(
+        &f,
+        USE_ENV,
+        json!({"origin":"https://api.example.com","argv":["/bin/sh", "-c",
+            "printf '%s%s' \"$1\" \"$KEY\"", "print-argument", body],"env":{"KEY":handle}}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(used["exit_code"], 0);
+    assert_eq!(used["stdout"], format!("{body}[vault:{handle}]"));
     let marker = workspace(&f).join("must-not-run");
     assert!(call(&f,USE_ENV,json!({"origin":"https://api.example.com","argv":["/usr/bin/touch",marker],"env":{"KEY":"missing"}})).await.is_err());
     assert!(!marker.exists());
