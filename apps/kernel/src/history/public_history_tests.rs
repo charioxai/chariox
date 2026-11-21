@@ -599,6 +599,24 @@ fn public_history_late_lower_sequence_invalidates_pagination() {
 }
 
 #[test]
+fn public_history_reopens_while_the_database_writer_is_busy() {
+    let f = Fixture::new();
+    let event = f.append("room", "retained during restart");
+    let mut writer = rusqlite::Connection::open(f.store.path()).unwrap();
+    let transaction = writer
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .unwrap();
+    let reopened = OperationalHistoryStore::open(f.store.path().to_path_buf())
+        .expect("opening a current history schema must not require a SQLite write lock");
+    let _guard = reopened.lock_public_history().unwrap();
+    assert!(reopened
+        .read_public_history_locked("owner", "room", &event.event_id)
+        .unwrap()
+        .is_some());
+    transaction.rollback().unwrap();
+}
+
+#[test]
 fn public_history_existing_database_refreshes_bookkeeping_trigger() {
     let f = Fixture::new();
     let event = f.append("room", "retained compiler");
@@ -608,7 +626,8 @@ fn public_history_existing_database_refreshes_bookkeeping_trigger() {
         .lock()
         .unwrap()
         .execute_batch(
-            "DROP TRIGGER public_history_source_update;
+            "PRAGMA user_version=0;
+         DROP TRIGGER public_history_source_update;
          CREATE TRIGGER public_history_source_update AFTER UPDATE ON history_events BEGIN
            DELETE FROM public_history WHERE event_ref=old.event_id;
          END;",
