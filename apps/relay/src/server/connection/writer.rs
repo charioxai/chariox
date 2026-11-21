@@ -7,13 +7,13 @@ use crate::frame_transport::{
     MAX_ASSEMBLY_BYTES, MAX_MESSAGE_BYTES, MAX_TRANSFERS, PEER_RECEIPT_FRAMES, SMALL_RESERVE_BYTES,
 };
 use crate::meter::{ConnectionMeter, Direction, CONTROL_SCOPE, DISPLAY_TUNNEL_SCOPE};
-use crate::outgoing::{backlog_close_frame, OutgoingQueue};
+use crate::outgoing::{backlog_close_frame, BulkCharge, OutgoingQueue};
 use futures_util::{Sink, SinkExt};
 use std::collections::VecDeque;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
-use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::{Message, Utf8Bytes};
 
 enum Stream {
     Subscription(String),
@@ -105,11 +105,12 @@ struct Transfer {
     scope: Arc<str>,
     key: Option<String>,
     small: bool,
-    text: String,
+    text: Utf8Bytes,
     binary: Option<Message>,
     offset: usize,
     lane: Lane,
     waiting: usize,
+    bulk: Option<BulkCharge>,
 }
 impl Transfer {
     /// The next frame; a text frame stays within `limit` bytes, and so does a binary one toward a
@@ -159,12 +160,22 @@ impl Transfer {
 // Receipts follow wire order, including across transfer IDs. A later transfer's
 // receipt cannot forge credit for earlier chunks or binary envelopes.
 struct WireCredit {
-    pending: VecDeque<(u32, u32, usize, bool, SendStamp)>,
+    pending: VecDeque<SentFrame>,
     bytes: usize,
     // Bytes of `bytes` held by single-chunk messages.
     small: usize,
     drain: DrainWindow,
 }
+
+struct SentFrame {
+    id: u32,
+    offset: u32,
+    bytes: usize,
+    small: bool,
+    stamp: SendStamp,
+    _bulk: Option<BulkCharge>,
+}
+
 impl WireCredit {
     fn new() -> Self {
         Self {
@@ -174,20 +185,26 @@ impl WireCredit {
             drain: DrainWindow::new(Instant::now()),
         }
     }
-    fn sent(&mut self, id: u32, end: u32, bytes: usize, small: bool) {
+    fn sent(&mut self, id: u32, offset: u32, bytes: usize, small: bool, bulk: Option<BulkCharge>) {
         let stamp = self.drain.sent(Instant::now(), self.pending.is_empty());
         self.bytes += bytes;
         if small {
             self.small += bytes;
         }
-        self.pending.push_back((id, end, bytes, small, stamp));
+        self.pending.push_back(SentFrame {
+            id,
+            offset,
+            bytes,
+            small,
+            stamp,
+            _bulk: bulk,
+        });
     }
     fn receipt(&mut self, id: u32, offset: u32, active: &mut VecDeque<Transfer>) -> bool {
-        let Some(&(expected_id, expected_offset, bytes, small, stamp)) = self.pending.front()
-        else {
+        let Some(frame) = self.pending.front() else {
             return false;
         };
-        if (id, offset) != (expected_id, expected_offset) {
+        if (id, offset) != (frame.id, frame.offset) {
             return false;
         }
         // A fully written transfer already released its assembly/lane slot.
@@ -198,12 +215,13 @@ impl WireCredit {
             }
             transfer.waiting -= 1;
         }
-        self.pending.pop_front();
-        self.bytes -= bytes;
-        if small {
-            self.small -= bytes;
+        let frame = self.pending.pop_front().expect("matched the oldest frame");
+        self.bytes -= frame.bytes;
+        if frame.small {
+            self.small -= frame.bytes;
         }
-        self.drain.received(Instant::now(), bytes, stamp, !small);
+        self.drain
+            .received(Instant::now(), frame.bytes, frame.stamp, !frame.small);
         true
     }
 }
@@ -499,7 +517,7 @@ where
                 .or_else(|| (0..pending.len()).find(|&i| startable(i)))
             {
                 let queued = pending.remove(index).unwrap();
-                usage.released(&queued);
+                let bulk = usage.queue.start_transfer(queued.admitted);
                 let class = queued.lane;
                 let key = queued.key.clone();
                 let scope = queued.scope.clone();
@@ -511,8 +529,8 @@ where
                 }
                 let id = 0; // Assigned on the first wire write, not queue admission.
                 let (text, binary) = match message {
-                    Message::Text(s) => (s.to_string(), None),
-                    Message::Binary(_) => (String::new(), Some(message)),
+                    Message::Text(s) => (s, None),
+                    Message::Binary(_) => (Utf8Bytes::default(), Some(message)),
                     _ => {
                         if !write(&mut writer, message).await {
                             return "write_failed";
@@ -530,6 +548,7 @@ where
                     offset: 0,
                     lane: class,
                     waiting: 0,
+                    bulk,
                 };
                 if small {
                     active.push_front(transfer);
@@ -590,7 +609,6 @@ where
                         if starting {
                             next_id = transfer.id;
                         }
-                        credit.sent(transfer.id, end as u32, bytes, transfer.small);
                         small_streak = if transfer.small { small_streak + 1 } else { 0 };
                         transfer.offset = end;
                         transfer.waiting += 1;
@@ -599,6 +617,12 @@ where
                         } else {
                             None
                         };
+                        let bulk = if transfer.finished() {
+                            transfer.bulk.take()
+                        } else {
+                            None
+                        };
+                        credit.sent(transfer.id, end as u32, bytes, transfer.small, bulk);
                         let scope = transfer.scope.clone();
                         active.push_back(transfer);
                         if let Some(binary) = binary {
@@ -781,6 +805,7 @@ mod tests {
                 offset: 1,
                 lane: Lane::Reply,
                 waiting: 1,
+                bulk: None,
             },
             Transfer {
                 id: 2,
@@ -792,11 +817,12 @@ mod tests {
                 offset: 1,
                 lane: Lane::Event,
                 waiting: 1,
+                bulk: None,
             },
         ]);
         let mut credit = WireCredit::new();
-        credit.sent(1, 1, 100, false);
-        credit.sent(2, 1, 200, false);
+        credit.sent(1, 1, 100, false, None);
+        credit.sent(2, 1, 200, false, None);
         assert!(!credit.receipt(2, 1, &mut active));
         assert_eq!(credit.bytes, 300);
         assert!(credit.receipt(1, 1, &mut active));
@@ -1059,8 +1085,10 @@ mod tests {
                 assert_eq!(sender.try_send(reply.clone()), Err(SendRefused::Backlogged));
             }
             let (complete, receipt) = receiver.receive(&frame).unwrap();
-            let TransportFrame::TransportAck { transfer_id, offset } =
-                serde_json::from_str(&receipt.unwrap()).unwrap()
+            let TransportFrame::TransportAck {
+                transfer_id,
+                offset,
+            } = serde_json::from_str(&receipt.unwrap()).unwrap()
             else {
                 panic!("expected a transport receipt");
             };
@@ -1528,8 +1556,8 @@ mod tests {
     fn mp08_mp10_mp11_retired_writes_keep_exact_ordered_byte_credit() {
         let mut active = VecDeque::new();
         let mut credit = WireCredit::new();
-        credit.sent(1, 10, 100, false);
-        credit.sent(2, 0, 200, false);
+        credit.sent(1, 10, 100, false, None);
+        credit.sent(2, 0, 200, false, None);
         assert!(!credit.receipt(2, 0, &mut active));
         assert_eq!(credit.bytes, 300);
         assert!(!credit.receipt(1, 11, &mut active));

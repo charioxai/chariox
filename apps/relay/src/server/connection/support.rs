@@ -1379,11 +1379,40 @@ pub(super) enum Delivery {
     ReceiverGone,
 }
 
+#[derive(Default)]
+struct SerializedSize(usize);
+
+impl std::io::Write for SerializedSize {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0 += bytes.len();
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 /// Hands `envelope` to `receiver` on behalf of a different connection (its sender). A
 /// receiver's backlog or departure is reported here and never ends the sender's connection.
 pub(super) fn deliver(receiver: &RelaySender, envelope: &RelayEnvelope) -> Delivery {
-    let payload = serde_json::to_string(envelope).expect("a relay envelope is always valid JSON");
-    match receiver.try_send(Message::Text(payload.into())) {
+    let to_message = || {
+        let payload =
+            serde_json::to_string(envelope).expect("a relay envelope is always valid JSON");
+        Message::Text(payload.into())
+    };
+    let queued = if matches!(
+        envelope,
+        RelayEnvelope::DaemonPeerResponse { encrypted_response: Some(response), .. }
+            if response.ciphertext.len() > crate::frame_transport::CHUNK_BYTES
+    ) {
+        let mut size = SerializedSize::default();
+        serde_json::to_writer(&mut size, envelope).expect("counting JSON bytes cannot fail");
+        receiver.try_send_sized(size.0, to_message)
+    } else {
+        receiver.try_send(to_message())
+    };
+    match queued {
         Ok(()) => Delivery::Sent,
         Err(SendRefused::Backlogged) => {
             receiver.record_dropped_reply();
