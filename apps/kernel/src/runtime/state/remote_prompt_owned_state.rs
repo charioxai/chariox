@@ -859,7 +859,7 @@ mod tests {
     /// A session whose agent runs on this kernel, with no lease, and its running
     /// structured Claude provider run.
     pub(super) async fn local_claude_fixture(
-        config: crate::DaemonConfig,
+        worktree: &crate::test_support::TestWorktree,
     ) -> (
         KernelRuntimeState,
         String,
@@ -867,9 +867,9 @@ mod tests {
         String,
         crate::provider::RuntimeProviderRun,
     ) {
-        let mut app = DaemonApp::bootstrap(config).unwrap();
+        let mut app = DaemonApp::bootstrap(crate::DaemonConfig::for_tests()).unwrap();
         let (session, agent) = KernelSessionService::new(&mut app)
-            .create_session(CreateSessionRequest::new("local-home", "local-home"))
+            .create_session(worktree.session_request())
             .unwrap();
         let attachment = KernelSessionService::new(&mut app)
             .attach(AttachRequest::new(
@@ -881,7 +881,7 @@ mod tests {
         let request = crate::provider::LaunchProviderRequest::new(
             session.id(),
             "claude",
-            "claude-code",
+            "claude",
             "default",
             "sonnet",
         )
@@ -895,9 +895,13 @@ mod tests {
                 pty_target: None,
                 pty_program: None,
                 pty_args: Vec::new(),
-                pty_env: std::collections::BTreeMap::new(),
+                pty_env: [(
+                    "CLAUDE_CONFIG_DIR".into(),
+                    worktree.path().join("claude-config").display().to_string(),
+                )]
+                .into(),
                 pty_env_remove: Vec::new(),
-                working_directory: None,
+                working_directory: Some(worktree.path().to_path_buf()),
                 structured_endpoint: None,
             },
         );

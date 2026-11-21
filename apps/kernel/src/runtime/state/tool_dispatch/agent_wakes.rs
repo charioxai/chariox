@@ -410,6 +410,9 @@ mod security_tests {
 
     #[tokio::test]
     async fn review_r1_safe_argument_boundaries_survive_metadata_retention() {
+        if !crate::test_support::has_user_namespaces() {
+            return;
+        }
         let (state, run, task, _worktree) = fixture("codex", false).await;
         let argv = vec!["/bin/echo", "two words", "", "quote\"and\\slash"];
         let result = state.dispatch_agent_wake_tool(Some(&run), "chariox.events.process",
