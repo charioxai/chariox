@@ -1,5 +1,5 @@
 {
-  "local": 1012,
+  "local": 1014,
   "requests": [
     { "GetPersonInbox": null },
     { "SetInboxCardState": { "card_ids": ["notice_5_ab"], "change": { "read": { "read": true } } } },
@@ -26,6 +26,12 @@
         { "card_id": "permission-1", "session_id": "room-1", "snoozed_until_ms": 9000, "body": { "needs_you": { "interaction": {
           "id": "permission-1", "agent_id": "agent-1", "kind": "permission", "level": "info", "message": "Run the tests",
           "choices": [{ "id": "yes", "label": "Allow once", "reply": "yes" }], "requested_at_ms": 2 } } } },
+        { "card_id": "task-blocked-t-2", "session_id": "room-1", "snoozed_until_ms": null, "body": { "needs_you": { "interaction": {
+          "id": "task-blocked-t-2", "kernel_operation_id": "task-blocked-t-2", "related_agent_id": "agent-1",
+          "kind": "choice", "level": "info", "title": "Question", "message": "Reviewer: Which branch?",
+          "choices": [{ "id": "cancel", "label": "Dismiss", "reply": "cancel", "description": "Hide this card from the Room. The task keeps waiting and you can answer in the Inbox." },
+            { "id": "stop", "label": "Stop Reviewer's task", "reply": "stop", "description": "End the waiting task.", "style": "danger" }],
+          "custom_choice": { "id": "reply", "label": "Reply", "description": "Send your reply and continue the waiting task.", "min_length": 1 }, "requested_at_ms": 7 } } } },
         { "card_id": "run:run-7", "session_id": "room-1", "snoozed_until_ms": null, "body": { "workflow": {
           "workflow_id": "wf-1", "workflow_name": "nightly_deploy", "run_id": "run-7", "run_number": 7,
           "outcome": { "kind": "failed", "reason": "workflow_run_output_validation_failed", "detail": "ticket is missing" }, "at_ms": 11 } } },
