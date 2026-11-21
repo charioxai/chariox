@@ -109,6 +109,8 @@ pub struct MachineKernelDiagnostics {
     pub kernel_version: Option<String>,
     pub kernel_protocol: Option<u32>,
     pub last_relay_refusal: Option<super::RelayRegistrationRefusal>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relay_error: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -22,6 +22,7 @@ export type ControlPlaneResponse =
     } }
 
 export type MachineKernelDiagnostics = {
+  relay_error?: string
   kernel_version: string | null
   kernel_protocol: number | null
   last_relay_refusal: {

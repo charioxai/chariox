@@ -36,6 +36,7 @@ pub struct RelayClientState {
     /// Wakes whoever publishes `connected` elsewhere as soon as it changes.
     connection_changes: watch::Sender<bool>,
     registration_refused: Option<(String, RelayRegistrationRefusal)>,
+    reply_queue_closed_relay_url: Option<String>,
     pub(super) connected_relay_url: Option<String>,
     pub(super) outgoing_tx: Option<RelayOutgoingSender>,
     pub(super) pending_peer_requests: BTreeMap<String, oneshot::Sender<RelayPeerResponseEnvelope>>,
@@ -157,6 +158,16 @@ impl RelayClientState {
 
     pub(crate) fn connection_changes(&self) -> watch::Receiver<bool> {
         self.connection_changes.subscribe()
+    }
+
+    pub(super) fn record_reply_queue_closed(&mut self, relay_url: &str) {
+        self.reply_queue_closed_relay_url = Some(relay_url.into());
+    }
+
+    pub(crate) fn reply_queue_closed(&self, relay_url: Option<&str>) -> bool {
+        self.reply_queue_closed_relay_url
+            .as_deref()
+            .is_some_and(|closed_url| relay_url == Some(closed_url))
     }
 
     fn set_connection(&mut self, connected: bool) {
@@ -649,6 +660,7 @@ pub(super) async fn set_connected(
     let registrations = {
         let mut guard = state.write().await;
         guard.registration_refused = None;
+        guard.reply_queue_closed_relay_url = None;
         guard.set_connection(true);
         guard.connected_relay_url = Some(relay_url);
         guard.outgoing_tx = Some(outgoing_tx.clone());

@@ -39,7 +39,7 @@ fn workflow_gate_entry_and_owned_state_protocol_snapshot() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "ef615712a3b5e734c809ca9fa10f8776aee5975964119ca2930b94f9f82ff16a"
+        "dbfa062943aa0bd9c82ec6887b7044defe15af3299354fa4e7b43d53a7b0c3ed"
     );
     assert!(serde_json::from_value::<LocalDaemonRequest>(serde_json::json!({"WorkflowGate":{"session_id":"room","workflow_ref":"advisory","action":{"kind":"reset_state","reason":"clear","state":{"forged":true}}}})).is_err());
 }

@@ -53,14 +53,14 @@ impl CommandRouter {
             return Ok(());
         };
         if !online {
-            if let Some(refusal) = self
-                .relay_state
-                .read()
-                .await
-                .registration_refusal(config.relay_url.as_deref())
-            {
+            let relay = self.relay_state.read().await;
+            let url = config.relay_url.as_deref();
+            if let Some(refusal) = relay.registration_refusal(url) {
                 body["metadata"]["last_relay_refusal"] =
                     serde_json::to_value(refusal).expect("relay registration refusal serializes");
+            }
+            if relay.reply_queue_closed(url) {
+                body["metadata"]["relay_disconnect"] = serde_json::json!("reply_queue_full");
             }
         }
         let _: serde_json::Value = post_cloud_json_with_timeout(
