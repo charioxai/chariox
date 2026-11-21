@@ -17,6 +17,9 @@ fn read_u64(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<u64> {
 // echoes (6 adds owner-resume), preserving unrelated sanitized source rather
 // than rebuilding from raw data.
 pub(crate) const PUBLIC_HISTORY_VERSION: u32 = 6;
+// SQLite user_version records the installed definitions independently of the public
+// history projection version, which also governs cursor and content validity.
+const PUBLIC_HISTORY_SCHEMA_VERSION: u32 = 1;
 // Internal projection input only; never serialized into operational events.
 pub(crate) const PUBLIC_HISTORY_BATCH_REFS: &str = "_public_history_batch_refs";
 pub(crate) type PublicHistoryProjector =
@@ -877,19 +880,26 @@ pub(super) fn initialize_public_history(connection: &Connection) -> Result<(), D
     connection
         .execute_batch("PRAGMA secure_delete=ON; PRAGMA temp_store=MEMORY;")
         .map_err(public_error)?;
-    let tx =
-        rusqlite::Transaction::new_unchecked(connection, rusqlite::TransactionBehavior::Immediate)
-            .map_err(public_error)?;
-    tx.execute_batch(include_str!("public_history.sql"))
+    let schema_version: u32 = connection
+        .pragma_query_value(None, "user_version", |row| row.get(0))
         .map_err(public_error)?;
-    tx.commit().map_err(public_error)?;
-    if !index_existed {
-        // A recreated derived index resumes from the existing sanitized source.
-        // Persist the reset before admitting writes/searches; raw history is never
-        // a recovery source, and new appends follow the bounded rebuild cursor.
-        connection
-            .execute_batch("UPDATE public_history_build SET cursor=0,complete=0,epoch=epoch+1;")
+    if !index_existed || schema_version != PUBLIC_HISTORY_SCHEMA_VERSION {
+        let tx = rusqlite::Transaction::new_unchecked(
+            connection,
+            rusqlite::TransactionBehavior::Immediate,
+        )
+        .map_err(public_error)?;
+        tx.execute_batch(include_str!("public_history.sql"))
             .map_err(public_error)?;
+        if !index_existed {
+            // Resume the derived index from sanitized rows, even if the kernel
+            // stops before the bounded rebuild has started.
+            tx.execute_batch("UPDATE public_history_build SET cursor=0,complete=0,epoch=epoch+1;")
+                .map_err(public_error)?;
+        }
+        tx.pragma_update(None, "user_version", PUBLIC_HISTORY_SCHEMA_VERSION)
+            .map_err(public_error)?;
+        tx.commit().map_err(public_error)?;
     }
     let version: u32 = connection
         .query_row("SELECT version FROM public_history_version", [], |r| {
