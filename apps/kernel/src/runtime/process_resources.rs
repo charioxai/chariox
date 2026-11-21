@@ -287,8 +287,15 @@ impl PreparedDomain {
         // Kernel services may be OOM-protected. Workloads must be killable
         // by their own controller; inheriting -1000 makes memory.max loop.
         let admission = match &self.marker {
-            None => "printf '%s\\n' \"$$\" > \"$1/cgroup.procs\" || exit 125; shift; exec \"$@\""
-                .to_string(),
+            None => r#"
+                printf '%s\n' "$$" > "$1/cgroup.procs" || {
+                    printf '%s\n' 'The command did not run because its resource group was unavailable. It is safe to retry.' >&2
+                    exit 125
+                }
+                shift
+                exec "$@"
+            "#
+            .to_string(),
             Some(marker) => format!(
                 "export {}; shift; exec \"$@\"",
                 sampling::marker_entry(marker)
