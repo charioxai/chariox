@@ -13,6 +13,39 @@ fn memory_override_rejects_invalid_and_overflowing_limits() {
     assert_eq!(configured_cap(Some("64")).unwrap(), Some(64 * MIB));
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn resource_admission_reports_when_the_command_did_not_run() {
+    let root = crate::test_support::TestTempDir::new("resource-admission");
+    let group = root.path().join("resource-group");
+    let mut prepared = PreparedDomain::watchdog("admission-test", None, roomy());
+    prepared.marker = None;
+    let (program, mut args) = prepared.command(
+        "/bin/sh".into(),
+        vec!["-c".into(), "printf 'program ran'; exit 125".into()],
+    );
+    args[3] = group.to_str().unwrap().to_string();
+    let run = || {
+        std::process::Command::new(&program)
+            .args(&args)
+            .output()
+            .unwrap()
+    };
+
+    let refused = run();
+    assert_eq!(refused.status.code(), Some(125));
+    assert!(refused.stdout.is_empty());
+    let stderr = String::from_utf8(refused.stderr).unwrap();
+    assert!(stderr.contains("The command did not run"));
+    assert!(stderr.contains("safe to retry"));
+
+    std::fs::create_dir(&group).unwrap();
+    let program_exit = run();
+    assert_eq!(program_exit.status.code(), Some(125));
+    assert_eq!(program_exit.stdout, b"program ran");
+    assert!(program_exit.stderr.is_empty());
+}
+
 #[cfg(unix)]
 #[test]
 fn watchdog_kills_only_its_owned_memory_tree_and_names_the_limit() {
