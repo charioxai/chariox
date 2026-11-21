@@ -86,6 +86,7 @@ impl CommandRouter {
                         request.latest_prompt_count,
                     )),
                     cursor: None,
+                    after_sequence: Some(Default::default()),
                     include_prefetched_content: false,
                 }),
             )

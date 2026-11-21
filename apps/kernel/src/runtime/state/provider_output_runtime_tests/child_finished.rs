@@ -505,6 +505,7 @@ async fn a_steering_finish_is_not_shown_to_clients_as_a_user_prompt() {
                     agent_ids: Some(vec![team.parent.clone()]),
                     latest_prompt_count: Some(4),
                     include_prefetched_content,
+                    after_sequence: None,
                     cursor: None,
                 },
             )

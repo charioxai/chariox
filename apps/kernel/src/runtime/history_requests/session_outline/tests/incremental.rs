@@ -246,12 +246,14 @@ async fn outline_delta_sends_replacements_and_recovers_from_a_stale_cursor() {
     let before = &full["delta_cursor"];
     assert_eq!(before["after_sequence"], 11);
 
+    let mut settled = fragment_entry("settled");
+    settled.timestamp_ms = 5_001;
     let replacement = store
         .replace_transcript_by_merge_key(
             "session-1",
             Some("agent-1"),
             "message-1",
-            &fragment_entry("settled"),
+            &settled,
             context(),
         )
         .unwrap()
@@ -295,7 +297,54 @@ async fn outline_delta_sends_replacements_and_recovers_from_a_stale_cursor() {
     .await;
     assert_eq!(grown["delta_cursor"]["after_sequence"], 12);
     assert_eq!(
-        grown["turn_deltas"][0]["summary"]["entry"]["text"],
-        "settled now"
+        grown["turn_deltas"][0]["summary"]["suffix"]["entry"]["text"],
+        " now"
     );
+}
+
+#[tokio::test]
+async fn outline_delta_includes_a_blob_whose_display_metadata_did_not_change() {
+    let (_dir, path) = store_path();
+    let store = OperationalHistoryStore::open(path).expect("open history");
+    let tool = |output| {
+        let mut entry = SessionHistoryEntry::provider_output(
+            "session-1",
+            RUN,
+            Some("agent-1"),
+            TerminalOutputKind::ProviderTool,
+            Some("call-1".to_string()),
+            format!(r#"{{"id":"call-1","tool":"bash","status":"completed","output":"{output}"}}"#),
+        );
+        entry.timestamp_ms = 5_001;
+        entry
+    };
+    store
+        .append_many(&[
+            prompt(10, 5_000),
+            HistoryEvent::transcript(11, &tool("yes"), context()),
+        ])
+        .unwrap();
+    let full = read_delta_page(&store, serde_json::json!({})).await;
+    let original = &full["turns"][0]["blobs"][0];
+    assert!(!original.is_null());
+    store
+        .replace_transcript_by_merge_key(
+            "session-1",
+            Some("agent-1"),
+            "call-1",
+            &tool("new"),
+            context(),
+        )
+        .unwrap()
+        .expect("tool replaced in place");
+    let delta = read_delta_page(
+        &store,
+        serde_json::json!({ "agent-1": full["delta_cursor"] }),
+    )
+    .await;
+    let updated = &delta["turn_deltas"][0]["blobs"][0];
+    assert_eq!(updated["blob_id"], original["blob_id"]);
+    assert_eq!(updated["preview"], original["preview"]);
+    assert_eq!(updated["total_chars"], original["total_chars"]);
+    assert_ne!(updated["revision"], original["revision"]);
 }

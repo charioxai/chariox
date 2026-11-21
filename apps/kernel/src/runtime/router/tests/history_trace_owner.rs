@@ -40,6 +40,7 @@ async fn a_private_member_cannot_read_another_users_agent_history() {
                 agent_ids: Some(vec![owner_agent_id.clone()]),
                 latest_prompt_count: None,
                 cursor: None,
+                after_sequence: None,
                 include_prefetched_content: true,
             },
         ),
@@ -81,6 +82,7 @@ async fn a_private_member_cannot_read_another_users_agent_history() {
             agent_ids: Some(vec![owner_agent_id.clone()]),
             latest_prompt_count: None,
             cursor: None,
+            after_sequence: None,
             include_prefetched_content: false,
         },
     );
@@ -119,6 +121,7 @@ async fn the_owner_reads_the_history_outline_of_sub_agents_at_any_depth() {
             agent_ids: Some(asked.clone()),
             latest_prompt_count: Some(2),
             cursor: None,
+            after_sequence: None,
             include_prefetched_content: true,
         },
     );
@@ -151,6 +154,7 @@ async fn history_reads_build_no_full_session_snapshot() {
                 agent_ids: None,
                 latest_prompt_count: Some(4),
                 cursor: None,
+                after_sequence: None,
                 include_prefetched_content: false,
             },
         ),
@@ -202,6 +206,7 @@ async fn identical_outline_reads_in_flight_read_the_history_once() {
                 agent_ids: None,
                 latest_prompt_count: Some(2),
                 cursor: None,
+                after_sequence: None,
                 include_prefetched_content: true,
             },
         );
@@ -272,6 +277,7 @@ async fn an_outline_asked_for_after_a_row_is_rewritten_does_not_join_an_older_re
                 agent_ids: None,
                 latest_prompt_count: Some(2),
                 cursor: None,
+                after_sequence: None,
                 include_prefetched_content: true,
             },
         );
