@@ -25,7 +25,7 @@ pub fn meta_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: META_SEARCH_COMMANDS_TOOL.to_string(),
-            description: "Search Chariox commands available to this agent in Meta mode by natural-language goal, name, usage, intent, tag, scope, mutation behavior, or Meta mode policy.".to_string(),
+            description: "Find up to five matching Chariox commands by name or natural-language goal. Read the syntax and examples with commands.docs.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -34,7 +34,7 @@ pub fn meta_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                     "scope": {"type": "string", "enum": ["session", "global", "external"]},
                     "mutates": {"type": "boolean"},
                     "policy": {"type": "string", "enum": ["allow", "approval", "deny"]},
-                    "limit": {"type": "integer", "minimum": 1, "maximum": 100}
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 5}
                 },
                 "additionalProperties": false
             }),
