@@ -3,12 +3,46 @@ import { installScriptFontRecorder } from './browser-page-font-recorder.mjs';
 // browserfidelity r19 F5: the faces a page made by script, per page target, as @font-face rules the mirror adds to its
 // document as one more adopted sheet (kernel-browser-mirror2.mjs), so their bytes travel the font path of any sheet.
 export const scriptFontsBinding = '__charioxScriptFonts';
-const MAX_FACES = 256, MAX_CSS = 24 * 1024 * 1024;
+const MAX_FACES = 256, MAX_CSS = 24 * 1024 * 1024, MAX_SRC = 4 * 1024 * 1024; // MAX_SRC: a data: URL of a 3 MB font (the bytes limit)
 
 const cssString = value => `"${value.replace(/[\\"\n\r\f]/g, c => `\\${c.charCodeAt(0).toString(16)} `)}"`;
-// A descriptor or src value is page text placed inside a rule: anything that could end the rule or open a comment is refused.
+// A descriptor value is page text placed inside a rule: anything that could end the rule or open a comment is refused.
 const plain = value => typeof value === 'string' && value.length > 0 && value.length <= 65536 && !/[{};<\\]|\/\*/.test(value);
-const absolute = (src, base) => src.replace(/url\(\s*(['"]?)([^'")]*)\1\s*\)/gi, (whole, quote, url) => { try { return `url(${cssString(new URL(url, base).href)})`; } catch { return whole; } });
+// A src value is a list of url(...) or local(...) items, each with optional format(...) and tech(...) hints (#1617 review: a
+// data: URL holds ';' and ','). Each item is written back from its parts, its URL made absolute and every URL and name quoted by
+// cssString, so nothing in them can end the rule. A value outside that grammar gives no face, as Chrome gives it no font.
+function srcCss(src, base) {
+  if (typeof src !== 'string' || src.length === 0 || src.length > MAX_SRC || typeof base !== 'string') return null;
+  const items = [];
+  let depth = 0, quote = '', start = 0;
+  for (let i = 0; i <= src.length; i++) {
+    const c = src[i];
+    if (quote) { if (c === quote) quote = ''; continue; }
+    if (c === '"' || c === "'") quote = c;
+    else if (c === '(') depth++;
+    else if (c === ')') depth--;
+    else if ((c === ',' && depth === 0) || i === src.length) { const item = srcItem(src.slice(start, i), base); if (!item) return null; items.push(item); start = i + 1; }
+    if (depth < 0) return null;
+  }
+  return quote || depth ? null : items.join(',');
+}
+const sourcePart = /^\s*(url|local)\(\s*(?:"([^"\\]*)"|'([^'\\]*)'|([^'"()\\]*?))\s*\)/i, hintPart = /^\s*(format|tech)\(([^()]*)\)/i;
+function srcItem(text, base) {
+  const source = sourcePart.exec(text);
+  if (!source) return null;
+  const value = source[2] ?? source[3] ?? source[4], kind = source[1].toLowerCase();
+  if (kind === 'url' && /\s/.test(source[4] ?? '')) return null;
+  let css;
+  if (kind === 'local') css = `local(${cssString(value)})`;
+  else { try { css = `url(${cssString(new URL(value, base).href)})`; } catch { return null; } }
+  let rest = text.slice(source[0].length);
+  for (let hint; (hint = hintPart.exec(rest)); rest = rest.slice(hint[0].length)) {
+    const names = hint[2].split(',').map(name => name.trim().replace(/^(['"])([\w.-]*)\1$/, '$2'));
+    if (!names.every(name => /^[\w.-]+$/.test(name))) return null;
+    css += hint[1].toLowerCase() === 'format' ? ` format(${names.map(cssString).join(',')})` : ` tech(${names.join(',')})`;
+  }
+  return rest.trim() === '' ? css : null;
+}
 const descriptors = [['style', 'font-style'], ['weight', 'font-weight'], ['stretch', 'font-stretch'], ['unicodeRange', 'unicode-range'], ['featureSettings', 'font-feature-settings'], ['display', 'font-display']];
 
 /** @font-face rules for the faces the page world reported (browser-page-font-recorder.mjs); a face it cannot place is left out. */
@@ -20,8 +54,7 @@ export function scriptFontsCss(faces) {
     if (!family || family.length > 256 || /[\n\r\f]/.test(family)) continue;
     let src;
     if (typeof face.data === 'string') { if (!/^[A-Za-z0-9+/]+=*$/.test(face.data)) continue; src = `url("data:application/octet-stream;base64,${face.data}")`; }
-    else if (plain(face.src) && typeof face.base === 'string') src = absolute(face.src, face.base);
-    else continue;
+    else if (!(src = srcCss(face.src, face.base))) continue;
     const parts = [`font-family:${cssString(family)}`, `src:${src}`];
     for (const [key, property] of descriptors) if (plain(face[key])) parts.push(`${property}:${face[key]}`);
     rules.push(`@font-face{${parts.join(';')}}`);
