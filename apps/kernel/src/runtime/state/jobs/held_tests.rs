@@ -173,7 +173,7 @@ async fn a_job_naming_a_machine_whose_kernel_does_not_answer_is_refused() {
     .unwrap_err();
     served(service).await;
     assert!(
-        error.to_string().contains("did not answer")
+        error.to_string().contains("is reconnecting")
             && error.to_string().contains("chariox.machines.status"),
         "{error}"
     );

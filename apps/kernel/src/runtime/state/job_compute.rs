@@ -25,6 +25,15 @@ pub(super) struct JobClass {
     pub(super) rate_per_minute: JobMachineRate,
 }
 
+#[cfg(test)]
+pub(in crate::runtime) fn stand_in_kernel(kernel_id: &str) -> Option<Arc<dyn GrantedSend>> {
+    stand_in_kernels()
+        .lock()
+        .expect("stand-in kernels")
+        .get(kernel_id)
+        .cloned()
+}
+
 /// Tests reach a second kernel in the same process under the kernel id they name; nothing else
 /// stands in for the relay gateway.
 #[cfg(test)]
@@ -305,12 +314,8 @@ impl KernelRuntimeState {
         harness: &str,
     ) -> Result<Arc<dyn GrantedSend>, DaemonError> {
         #[cfg(test)]
-        if let Some(kernel) = stand_in_kernels()
-            .lock()
-            .expect("stand-in kernels")
-            .get(kernel_id)
-        {
-            return Ok(kernel.clone());
+        if let Some(kernel) = stand_in_kernel(kernel_id) {
+            return Ok(kernel);
         }
         let owner = self.owned.config_projection.local_owner_user_id();
         let retained = Origin {

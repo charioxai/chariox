@@ -120,6 +120,8 @@ mod environment_tools;
 mod file_copy_tool;
 mod file_watch_runtime;
 mod job_compute;
+#[cfg(test)]
+pub(super) use job_compute::stand_in_kernel;
 mod jobs;
 mod leased_agent_file_serve;
 mod machine_acquisition;
