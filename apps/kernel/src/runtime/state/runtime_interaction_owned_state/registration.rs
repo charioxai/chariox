@@ -73,10 +73,14 @@ impl KernelRuntimeOwnedState {
             );
         }
         if let Some(task_id) = interaction.asking_task_id() {
-            let wake = self
+            let mut wake = self
                 .durable_state_store
                 .agent_wake(interaction.id())?
                 .ok_or_else(|| interaction_error("Async question has no admitted wake"))?;
+            if super::super::machine_acquisition::approval::is_machine_approval(&interaction) {
+                // The acquisition trace accompanies the durable question but isn't part of its card.
+                super::super::machine_acquisition::direct::remove_wake_trace(&mut wake.detail);
+            }
             if wake.kind != super::super::interaction_wake::KIND
                 || wake.task_id != task_id
                 || wake.room_id != session_id

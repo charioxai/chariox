@@ -65,6 +65,12 @@ pub(in crate::runtime::state) fn set_wake_trace(detail: &mut Value, trace: Value
     detail[WAKE_TRACE] = trace;
 }
 
+pub(in crate::runtime::state) fn remove_wake_trace(detail: &mut Value) {
+    if let Some(fields) = detail.as_object_mut() {
+        fields.remove(WAKE_TRACE);
+    }
+}
+
 pub(in crate::runtime::state) fn record_wake(wake: &AgentWake, outcome: &str) {
     if let Some(fields) = wake
         .detail
