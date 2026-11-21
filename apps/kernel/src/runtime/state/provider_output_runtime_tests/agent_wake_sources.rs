@@ -1494,6 +1494,99 @@ async fn an_event_tool_call_missing_a_required_argument_is_refused_naming_it() {
 }
 
 #[tokio::test]
+async fn wake_listing_filters_armed_sources_and_pages_retained_receipts() {
+    let f = fixture("wake-listing-page", true).await;
+    let task = f.begin(&f.prompt_id);
+    let token = {
+        let app = f.app.lock().await;
+        app.providers
+            .get_run(&f.run)
+            .unwrap()
+            .runtime_mcp_auth_token()
+            .unwrap()
+            .to_string()
+    };
+    for index in 0..200 {
+        let id = format!("settled-{index}");
+        f.arm(&task, &id).unwrap();
+        f.driver
+            .sink
+            .occurred(f.occurrence(&id, "exit", Some(WakeEnd::Succeeded)))
+            .unwrap();
+        let wake = f.store().agent_wake(&id).unwrap().unwrap();
+        f.store()
+            .agent_lifecycle(Operation::Ack {
+                room: f.room.clone(),
+                agent: f.agent.clone(),
+                sequence: wake.last_sequence.unwrap(),
+                handled: true,
+                now: crate::session::unix_epoch_ms(),
+            })
+            .unwrap();
+    }
+    let mut large_wake = f.wake(&task, "armed-first");
+    large_wake.command = vec!["x".repeat(4_096); 5];
+    f.runtime.arm_wake_source(&task, &large_wake).unwrap();
+    f.arm(&task, "armed-second").unwrap();
+
+    let armed = call(
+        &f,
+        &token,
+        "chariox.events.wakes",
+        &task,
+        serde_json::json!({"armed_only": true}),
+    )
+    .await
+    .unwrap()
+    .payload;
+    let armed_ids: Vec<_> = armed["wakes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|wake| wake["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(armed_ids, ["armed-first", "armed-second"]);
+    assert_eq!(armed["wakes"][0]["details_omitted"], true);
+    assert_eq!(armed["receipts"], serde_json::json!([]));
+    assert!(armed["next_after"].is_null());
+    assert!(armed.to_string().len() < 4_096);
+
+    let mut after = serde_json::Value::Null;
+    let mut wakes = std::collections::BTreeSet::new();
+    let mut receipts = std::collections::BTreeSet::new();
+    for _ in 0..100 {
+        let page = call(
+            &f,
+            &token,
+            "chariox.events.wakes",
+            &task,
+            serde_json::json!({"after": after, "limit": 7}),
+        )
+        .await
+        .unwrap()
+        .payload;
+        let page_wakes = page["wakes"].as_array().unwrap();
+        let page_receipts = page["receipts"].as_array().unwrap();
+        assert!(page_wakes.len() + page_receipts.len() <= 7);
+        assert!(page.to_string().len() < 20_480);
+        for wake in page_wakes {
+            assert!(wakes.insert(wake["id"].as_str().unwrap().to_string()));
+        }
+        for receipt in page_receipts {
+            assert!(receipts.insert(receipt["sequence"].as_u64().unwrap()));
+        }
+        after = page["next_after"].clone();
+        if after.is_null() {
+            break;
+        }
+    }
+    assert!(after.is_null(), "all retained pages were read");
+    assert_eq!(wakes.len(), 66);
+    // The completed wakes and their receipts are pruned together.
+    assert_eq!(receipts.len(), 64);
+}
+
+#[tokio::test]
 async fn event_tools_arm_wait_and_cancel_through_the_runtime_mcp_entry() {
     let f = fixture("event-tools-mcp", true).await;
     let task = f.begin(&f.prompt_id);

@@ -11,6 +11,7 @@ mod agent_messaging;
 mod agent_peek;
 pub(super) use agent_messaging::resolve_session_agent;
 mod agent_process_permission;
+mod agent_wake_listing;
 pub(super) mod agent_wakes;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod app;
