@@ -259,6 +259,57 @@ fn a_submitted_line_owns_the_terminal_before_the_shell_starts_it() {
         });
 }
 
+#[tokio::test]
+async fn a_completed_continuation_releases_terminal_ownership() {
+    let root = TempDir::new();
+    let service = service(root.path());
+    service.use_shell_for_test("/bin/bash");
+    let id = open(&service, root.path()).terminal_id;
+    let terminal_owner = service.terminal_for_test(&id);
+    until("the first prompt", || async {
+        service.pump_once();
+        terminal_owner.lock().terminal.mark_tracking
+    })
+    .await;
+
+    let first = agent("a");
+    let second = agent("b");
+    assert!(
+        type_as(&service, &id, &first, "if true; then\r")
+            .await
+            .accepted
+    );
+    // Quiet at a continuation prompt still leaves the submitted line with A.
+    tokio::time::sleep(Duration::from_millis(650)).await;
+    let blocked = type_as(&service, &id, &second, "true\r").await;
+    assert_eq!(blocked.refusal.as_deref(), Some("busy (driven by a)"));
+
+    assert!(
+        type_as(&service, &id, &first, "echo continuation-$((6*7)); fi\r",)
+            .await
+            .accepted
+    );
+    until("the completed command's output", || {
+        screen_has(&service, &id, "continuation-42")
+    })
+    .await;
+    until("the shell to report completion", || async {
+        service.pump_once();
+        let state = terminal_owner.lock();
+        state.terminal.commands_started > 0 && !state.terminal.command_in_flight
+    })
+    .await;
+    assert!(type_as(&service, &id, &first, " ").await.accepted);
+    until("the completed command to release its driver", || async {
+        service.pump_once();
+        service.list("room-1")[0].driver == RoomTerminalDriver::Free
+    })
+    .await;
+    assert!(!terminal_owner.has_running_work());
+    assert!(type_as(&service, &id, &second, "true\r").await.accepted);
+    service.end_scope("room-1");
+}
+
 /// zsh installs its finish hook while the first prompt's hooks run, so the
 /// first mark it reports is the start of the first command.
 #[test]

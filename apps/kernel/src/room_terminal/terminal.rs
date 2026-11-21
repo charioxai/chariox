@@ -193,7 +193,7 @@ impl Terminal {
             fired.extend(self.watches.on_output(&self.plain));
         }
         for mark in self.marks.feed(bytes) {
-            fired.extend(self.on_mark(mark));
+            fired.extend(self.on_mark(mark, now));
         }
         fired
     }
@@ -206,7 +206,7 @@ impl Terminal {
         self.last_program_end = Some(end);
     }
 
-    fn on_mark(&mut self, mark: ShellMark) -> Fired {
+    fn on_mark(&mut self, mark: ShellMark, now: Instant) -> Fired {
         match mark {
             ShellMark::CommandStarted => {
                 if let Some(run_id) = &self.run_id {
@@ -230,17 +230,17 @@ impl Terminal {
                 // The first prompt reports before any command has run.
                 if !self.command_in_flight && !self.program_running {
                     if !initial_prompt {
-                        self.driver.finish_submission();
+                        self.driver.finish_submission(now);
                     }
                     return Fired::new();
                 }
                 self.command_in_flight = false;
-                self.driver.finish_submission();
+                self.driver.finish_submission(now);
                 let command = Some(self.commands_started);
                 self.record_program_end(ProgramEnd {
                     output_offset: self.log.end_offset(),
                     command,
-                    at: Instant::now(),
+                    at: now,
                     exit_code,
                     signal: None,
                 });

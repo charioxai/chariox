@@ -24,6 +24,8 @@ pub(super) struct DriverTracker {
     /// wait of that agent is about.
     agent_lines: HashMap<String, u64>,
     last_write: Option<Instant>,
+    last_submission: Option<Instant>,
+    last_finish_report: Option<Instant>,
 }
 
 impl DriverTracker {
@@ -55,7 +57,8 @@ impl DriverTracker {
         }
     }
 
-    pub(super) fn finish_submission(&mut self) {
+    pub(super) fn finish_submission(&mut self, now: Instant) {
+        self.last_finish_report = Some(now);
         if let Some(submission) = self.submissions.front_mut() {
             submission.lines -= 1;
             if submission.lines == 0 {
@@ -77,6 +80,12 @@ impl DriverTracker {
         self.last_write
     }
 
+    pub(super) fn finish_since_last_submission(&self) -> Option<Instant> {
+        let submitted = self.last_submission?;
+        self.last_finish_report
+            .filter(|finished| *finished >= submitted)
+    }
+
     pub(super) fn record_write(
         &mut self,
         actor: &TerminalActor,
@@ -95,6 +104,7 @@ impl DriverTracker {
                 .insert(agent_id.clone(), self.lines_written);
         }
         if submitted_lines > 0 {
+            self.last_submission = Some(now);
             match self.submissions.back_mut() {
                 Some(submission) if submission.actor == *actor => {
                     submission.lines += submitted_lines;
@@ -160,16 +170,16 @@ mod tests {
         };
         assert_eq!(tracker.observe(true), agent_driving);
         assert_eq!(tracker.observe(false), agent_driving);
-        tracker.finish_submission();
+        tracker.finish_submission(now);
         assert_eq!(tracker.observe(true), agent_driving);
-        tracker.finish_submission();
+        tracker.finish_submission(now);
         assert_eq!(
             tracker.observe(true),
             RoomTerminalDriver::Busy {
                 driven_by: TerminalActor::User
             }
         );
-        tracker.finish_submission();
+        tracker.finish_submission(now);
         assert_eq!(tracker.observe(true), RoomTerminalDriver::Free);
     }
 
