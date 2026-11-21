@@ -1379,6 +1379,62 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
         }
       } catch { return null; }
     };
+    // T3 (subvysion): a region whose still would never show, because another region's opaque still covers all of it from above
+    // (a page's hidden <video> under the canvas that paints its frames), names that cover; the kernel then spends the packet's
+    // still budget on the cover alone. Only what is proven counts: the cover contains the box, is above it at its centre and four
+    // inset corners, is fully opaque (a video frame filling its box, or a canvas whose readback is opaque everywhere) and draws
+    // without opacity, blending or transform. Anything else (unreadable pixels, a hole, a cover below) names no cover.
+    const coveredBy = list => {
+      const out = {};
+      const opaque = new Map(), isOpaque = (id, node) => {
+        if (opaque.has(id)) return opaque.get(id);
+        let yes = false;
+        try {
+          const style = getComputedStyle(node);
+          // An axis-aligned transform (subvysion's canvas has matrix(1, 0, 0, 1, 0, 0)) paints exactly its bounding box.
+          const m = /^matrix\(([^)]*)\)$/.exec(style.transform)?.[1].split(',').map(Number), aligned = style.transform === 'none' || m?.length === 6 && m[1] === 0 && m[2] === 0;
+          if (style.opacity === '1' && style.mixBlendMode === 'normal' && aligned && style.visibility === 'visible') {
+            if (node.localName === 'video') yes = node.readyState >= 2 && ['fill', 'cover'].includes(style.objectFit);
+            else if (node.localName === 'canvas' && node.width > 0 && node.height > 0) {
+              const w = Math.min(256, node.width), h = Math.max(1, Math.round(node.height * w / node.width)), probe = new OffscreenCanvas(w, h), g = probe.getContext('2d');
+              g.drawImage(node, 0, 0, w, h); const data = g.getImageData(0, 0, w, h).data; let all = true, black = true;
+              for (let i = 0; i < data.length && all; i += 4) { all = data[i + 3] === 255; black &&= !data[i] && !data[i + 1] && !data[i + 2]; }
+              // An all-black readback of a WebGL canvas is its cleared buffer, not what it shows (as elementPixels).
+              yes = all && !(black && !(() => { try { return !!node.getContext('2d'); } catch { return false; } })());
+            }
+          }
+        } catch { yes = false; }
+        opaque.set(id, yes); return yes;
+      };
+      // A region hit testing cannot see (pointer-events: none) is ordered by CSS painting order in one provable case: it paints at a
+      // negative z-index directly in the root stacking context (no ancestor makes one), so anything whose root-level painter is
+      // in flow or at z-index >= 0 paints above it (subvysion's fixed z-index -1 video under its z-index 4 canvas).
+      const makesContext = e => {
+        if (e === e.ownerDocument.documentElement) return true;
+        const st = getComputedStyle(e), parent = e.parentElement && getComputedStyle(e.parentElement).display;
+        return st.position === 'fixed' || st.position === 'sticky' || st.zIndex !== 'auto' && (st.position !== 'static' || /flex|grid/.test(parent ?? '')) || st.opacity !== '1' || st.transform !== 'none' || st.filter !== 'none' || st.backdropFilter !== 'none' || st.mixBlendMode !== 'normal' || st.isolation === 'isolate' || st.clipPath !== 'none' || st.maskImage !== 'none' || st.perspective !== 'none' || /paint|layout|strict|content/.test(st.contain) || /transform|opacity|filter|z-index|position/.test(st.willChange);
+      };
+      const rootPainter = e => { let out = e; for (let at = e.parentElement; at && at !== e.ownerDocument.documentElement; at = at.parentElement) if (makesContext(at)) out = at; return out; };
+      const belowAll = node => { const st = getComputedStyle(node); return st.position !== 'static' && parseInt(st.zIndex, 10) < 0 && rootPainter(node) === node; };
+      const notBelow = e => { const p = rootPainter(e), st = getComputedStyle(p); return st.position === 'static' && !makesContext(p) || st.zIndex === 'auto' || parseInt(st.zIndex, 10) >= 0; };
+      for (const id of list) {
+        const node = nodes.get(id);
+        if (!node?.isConnected || kindOf.get(id) !== 'tile' || node.namespaceURI !== HTML) continue;
+        const r = node.getBoundingClientRect(), doc = node.ownerDocument, view = doc.defaultView;
+        if (!(r.width > 2 && r.height > 2)) continue;
+        const left = Math.max(r.left + 1, 0), top = Math.max(r.top + 1, 0), right = Math.min(r.right - 1, view.innerWidth - 1), bottom = Math.min(r.bottom - 1, view.innerHeight - 1);
+        if (right <= left || bottom <= top) continue;
+        let cover = null;
+        for (const [x, y] of [[(left + right) / 2, (top + bottom) / 2], [left, top], [right, top], [left, bottom], [right, bottom]]) {
+          const stack = doc.elementsFromPoint(x, y), at = stack.indexOf(node), hidden = at < 0 && belowAll(node);
+          const above = at > 0 || hidden ? stack.slice(0, hidden ? stack.length : at).find(e => { if (hidden && !notBelow(e)) return false; const eid = mirrored(e); if (!eid || eid === id || kindOf.get(eid) !== 'tile' || e.namespaceURI !== HTML) return false; const b = e.getBoundingClientRect(); return b.left <= r.left + 0.5 && b.top <= r.top + 0.5 && b.right >= r.right - 0.5 && b.bottom >= r.bottom - 0.5 && isOpaque(eid, e); }) : null;
+          if (!above || cover && above !== cover) { cover = null; break; }
+          cover = above;
+        }
+        if (cover) out[id] = mirrored(cover);
+      }
+      return out;
+    };
     // MP-08 / MP-11: input follows live geometry; Vault protection applies to model observations.
     const live = id => {
       const node = nodes.get(id);
@@ -1687,6 +1743,6 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       let binary = ''; for (let i = 0; i < bytes.length; i += 32768) binary += String.fromCharCode(...bytes.subarray(i, i + 32768));
       return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"><image width="${W}" height="${H}" preserveAspectRatio="none" href="data:image/webp;base64,${btoa(binary)}"/></svg>`;
     };
-    return Object.freeze({ sheetChanged, dispose, snapshot, visited, drain, resetTargets, waitDrain, wake, sanitize, usedCss, fullSheet, markClosedHost, reveal, customHosts, customCandidates, closedChecked, loaded, loadedCount, nearImages, preview, sprite, idOfNode, frameOrigin, activeForeign, opaqueBoxes, regionShape, regionBoxes, mediaNode, elementPixels, point, hitCheck, activeTarget, ancestry, focus, blur, set, select, scrollTo, protect, textCoverage, textCodePoints, pending: () => continuation !== null || deferred.size > 0 || records.length > 0 || overflow });
+    return Object.freeze({ sheetChanged, dispose, snapshot, visited, drain, resetTargets, waitDrain, wake, sanitize, usedCss, fullSheet, markClosedHost, reveal, customHosts, customCandidates, closedChecked, loaded, loadedCount, nearImages, preview, sprite, idOfNode, frameOrigin, activeForeign, opaqueBoxes, regionShape, regionBoxes, mediaNode, elementPixels, coveredBy, point, hitCheck, activeTarget, ancestry, focus, blur, set, select, scrollTo, protect, textCoverage, textCodePoints, pending: () => continuation !== null || deferred.size > 0 || records.length > 0 || overflow });
   }
 }
