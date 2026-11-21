@@ -99,6 +99,9 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
   // state }. 'pending' until the field first holds the fill (registered before the insertion: masked), 'filled'
   // while it holds it, 'retired' once it no longer does (an edit): a plain field until a refill (new revision).
   const fills = new WeakMap();
+  // F5: the @font-face rules of the faces the page made by script (browser-page-fonts.mjs), set by the kernel with the serial
+  // of that state; every instance adds them to the top document as its last adopted sheet.
+  let scriptFonts = { serial: 0, css: '' };
   globalThis.__charioxMirror2 = Object.freeze({
     get: id => {
       let instance = instances.get(id);
@@ -110,6 +113,12 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     drop: id => { instances.get(id)?.dispose(); instances.delete(id); return true; },
     // CDP CSS events (kernel-browser-mirror2-css.mjs): a changed sheet's owner node, 'adopted' or 'imports'.
     sheetChanged: owner => { for (const instance of instances.values()) instance.sheetChanged(owner); return true; },
+    scriptFonts: (serial, css) => {
+      if (serial <= scriptFonts.serial) return true;
+      scriptFonts = { serial, css };
+      for (const instance of instances.values()) instance.sheetChanged('adopted');
+      return true;
+    },
   });
   return true;
   // SHA-256 hex of a string's UTF-8 bytes (synchronous: the drain is; crypto.subtle needs a secure context).
@@ -654,8 +663,10 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     // drain, and their rule text when CDP reports a constructed sheet changed (replaceSync, rule edits).
     // A disabled sheet keeps its ordered slot as an empty sheet; a sheet's media list is its @media condition.
     const sheetIds = new WeakMap(), adoptedTexts = new WeakMap(); let sheetSerial = 0;
-    const adopted = root => { const sheets = []; for (const sheet of root.adoptedStyleSheets ?? []) { try { const base = root.baseURI ?? document.baseURI, text = sheetText(sheet, base), media = sheet.media.mediaText; adoptedTexts.set(sheet, text); sheets.push(sheet.disabled ? '' : sheetCss(media ? `@media ${media}{${text}}` : text, base, root.ownerDocument ?? root)); } catch { sheets.push(''); } } return sheets; };
-    const adoptedSignature = root => (root.adoptedStyleSheets ?? []).map(sheet => { let id = sheetIds.get(sheet); if (!id) sheetIds.set(sheet, id = ++sheetSerial); return `${id}:${sheetSignature(sheet)}`; }).join(',');
+    const adopted = root => { const sheets = []; for (const sheet of root.adoptedStyleSheets ?? []) { try { const base = root.baseURI ?? document.baseURI, text = sheetText(sheet, base), media = sheet.media.mediaText; adoptedTexts.set(sheet, text); sheets.push(sheet.disabled ? '' : sheetCss(media ? `@media ${media}{${text}}` : text, base, root.ownerDocument ?? root)); } catch { sheets.push(''); } }
+      if (root === document && scriptFonts.css) sheets.push(sheetCss(scriptFonts.css, document.baseURI, document));
+      return sheets; };
+    const adoptedSignature = root => (root.adoptedStyleSheets ?? []).map(sheet => { let id = sheetIds.get(sheet); if (!id) sheetIds.set(sheet, id = ++sheetSerial); return `${id}:${sheetSignature(sheet)}`; }).join(',') + (root === document && scriptFonts.css ? `,fonts:${scriptFonts.serial}` : '');
     const adoptedEdited = () => {
       const edited = new Map(), out = new Set();
       for (const [id, root] of roots) for (const sheet of root.adoptedStyleSheets ?? []) {
