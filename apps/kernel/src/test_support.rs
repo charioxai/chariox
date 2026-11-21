@@ -59,6 +59,69 @@ macro_rules! isolated_env_test {
 }
 pub(crate) use isolated_env_test;
 
+/// A private libtest executable cannot re-exec after a root probe drops to UID 65534.
+#[cfg(target_os = "linux")]
+pub(crate) fn test_binary_allows_other_execute() -> bool {
+    use std::os::unix::fs::PermissionsExt as _;
+    let mode = std::fs::metadata("/proc/self/exe")
+        .unwrap()
+        .permissions()
+        .mode()
+        & 0o777;
+    if mode & 0o001 != 0 {
+        return true;
+    }
+    report_skipped(&format!(
+        "UID 65534 needs execute permission on the test binary (mode {mode:04o}); build with umask 0022"
+    ));
+    false
+}
+
+pub(crate) fn has_user_namespaces() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        use crate::runtime::bounded_process::BoundedCommandExt as _;
+        let output = std::process::Command::new("bwrap")
+            .args(["--dev-bind", "/", "/", "--", "/bin/true"])
+            .bounded_output();
+        let output = match output {
+            Ok(output) => output,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                report_skipped("needs Bubblewrap; install bwrap and run in a systemd unit");
+                return false;
+            }
+            Err(error) => panic!("could not run Bubblewrap namespace probe: {error}"),
+        };
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if (stderr.contains("No permissions to create") && stderr.contains("namespace"))
+                || (stderr.contains("namespace") && stderr.contains("Operation not permitted"))
+            {
+                report_skipped("needs user namespaces; run in a systemd unit");
+                return false;
+            }
+            panic!(
+                "Bubblewrap namespace probe failed ({}): {stderr}",
+                output.status
+            );
+        }
+    }
+    true
+}
+
+#[cfg(target_os = "linux")]
+fn report_skipped(reason: &str) {
+    if environment_test_isolated() {
+        // The parent adds the name when it forwards the child’s skip message.
+        eprintln!("SKIP {reason}");
+    } else {
+        eprintln!(
+            "SKIP {}: {reason}",
+            std::thread::current().name().unwrap_or("test")
+        );
+    }
+}
+
 static TEST_WORKTREE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Dropped router tasks may briefly retain the durable store's ownership fence.
