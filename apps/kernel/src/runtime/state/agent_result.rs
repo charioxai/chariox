@@ -148,7 +148,7 @@ fn fetch(
         ));
     }
     let name = format!("result-{}", artifact.artifact_id);
-    files::materialize(scratch, &name, &data.data, &artifact.sha256).map_err(refused)?;
+    files::materialize(scratch, &name, &data.data).map_err(refused)?;
     let mut result = receipt(&artifact);
     result["path"] = serde_json::json!(scratch.join(name));
     Ok(result)
