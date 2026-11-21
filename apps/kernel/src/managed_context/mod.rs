@@ -12,6 +12,7 @@ pub mod owner_managed;
 pub mod package;
 pub(crate) mod portable_path;
 pub(crate) mod scm;
+pub(crate) mod startup_health;
 pub(crate) mod target_vault;
 pub(crate) mod transfer;
 

@@ -277,6 +277,14 @@
     "seam": "context transfer ticket authority"
   },
   {
+    "path": "/v1/kernels/startup-health",
+    "callers": [
+      "apps/kernel/src/managed_context/startup_health.rs"
+    ],
+    "why": "the enrolled kernel reports the outcome of its local and encrypted peer checks to the connected allocation service",
+    "seam": "managed machine health receipt"
+  },
+  {
     "path": "/v1/kernels/context/ticket",
     "callers": [
       "apps/cli/scripts/live-byom-account-drill.mjs",

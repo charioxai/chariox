@@ -211,7 +211,9 @@ pub(crate) async fn execute(
             ));
         }
         *access_state = "pending".into();
-        *access_reason = None;
+        if !matches!(machine_state.as_str(), "deleting" | "deleted" | "failed") {
+            *access_reason = None;
+        }
         if let Some(target) = kernel_target.as_ref().filter(|_| machine_state == "ready") {
             let grant = grant
                 .or_else(|| command.reach_caller_id())
