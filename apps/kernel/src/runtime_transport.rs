@@ -756,7 +756,7 @@ where
                 _ = pump_router.wait_for_provider_run_actor_completion_after(provider_actor_completion_sequence) => pass_requested = true,
                 _ = pump_router.wait_for_started_app_refreshes() => pass_requested = true,
                 _ = pump_state.wait_for_provider_output_ready_after(output_ready_sequence) => pass_requested = true,
-                _ = pump_state.wait_for_kernel_access_holder_exit() => pass_requested = true,
+                _ = pump_state.wait_for_kernel_access_holder_exit(pass_requested) => pass_requested = true,
             }
         }
     });
