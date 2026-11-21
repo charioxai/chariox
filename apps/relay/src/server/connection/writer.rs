@@ -1024,6 +1024,65 @@ mod tests {
         receiver.recv().await.unwrap();
         sender.try_send(big()).expect("the queue emptied");
     }
+    #[tokio::test]
+    async fn oversized_reply_holds_bulk_budget_until_its_last_exact_receipt() {
+        use crate::outgoing::{SendRefused, RECEIVER_BULK_BUDGET};
+        let (socket, mut client) = sockets().await;
+        let (sender, outgoing) = RelaySender::channel(8);
+        let (acks, receipts) = mpsc::channel(PEER_RECEIPT_FRAMES);
+        let (_control, controls) = mpsc::channel(8);
+        let queue = sender.queue();
+        let task = tokio::spawn(run_writer(
+            socket,
+            outgoing,
+            true,
+            false,
+            false,
+            receipts,
+            controls,
+            WriterUsage::fixture_with_queue(false, queue.clone()),
+        ));
+        let payload = format!(
+            r#"{{"kind":"daemon_peer_response","payload":"{}"}}"#,
+            "x".repeat(RECEIVER_BULK_BUDGET + 1)
+        );
+        let reply = Message::Text(payload.clone().into());
+        sender.try_send(reply.clone()).unwrap();
+        let mut receiver = crate::frame_transport::FrameReceiver::default();
+        let mut first = true;
+        loop {
+            let Message::Text(frame) = client.next().await.unwrap().unwrap() else {
+                panic!("expected a transport chunk");
+            };
+            if first {
+                first = false;
+                assert_eq!(sender.try_send(reply.clone()), Err(SendRefused::Backlogged));
+            }
+            let (complete, receipt) = receiver.receive(&frame).unwrap();
+            let TransportFrame::TransportAck { transfer_id, offset } =
+                serde_json::from_str(&receipt.unwrap()).unwrap()
+            else {
+                panic!("expected a transport receipt");
+            };
+            if let Some(complete) = complete {
+                assert_eq!(complete, payload);
+                assert_eq!(sender.try_send(reply.clone()), Err(SendRefused::Backlogged));
+                acks.send((transfer_id, offset)).await.unwrap();
+                break;
+            }
+            acks.send((transfer_id, offset)).await.unwrap();
+        }
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while queue.queued_bytes() != 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        sender.try_send(reply).unwrap();
+        task.abort();
+        let _ = task.await;
+    }
     // Control and small replies are written ahead of the bulk behind them.
     #[tokio::test]
     async fn control_is_not_delayed_by_a_bulk_backlog() {
