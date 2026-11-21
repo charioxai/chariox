@@ -20,10 +20,6 @@ fn semantic_session_activity_protocol_snapshot_and_hash() {
         "peer": crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
         "schema": 14, "session": {"last_activity_at_ms": decoded.last_activity_at_ms()}});
     assert_eq!(
-        snapshot,
-        serde_json::json!({"local":1012,"peer": 449,"schema":14,"session":{"last_activity_at_ms":42}})
-    );
-    assert_eq!(
         format!(
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
