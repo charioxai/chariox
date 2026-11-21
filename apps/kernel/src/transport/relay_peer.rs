@@ -234,7 +234,8 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// skill delivery (Agent Move no longer lists skills and the per-agent skill grants are gone).
 /// The receiving agent’s deadline refusal is carried in the encrypted peer response.
 /// A peer spawn carries the starter's display name.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 451;
+/// Version 452 carries the worker's rejection cause in prompt admission receipts.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 452;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
 pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = RELAY_PEER_PROTOCOL_VERSION;
@@ -2043,6 +2044,28 @@ pub enum RelayPeerEvent {
 mod tests {
     use super::*;
     use sha2::{Digest, Sha256};
+
+    #[test]
+    fn leased_prompt_admission_rejection_protocol_hash() {
+        let response = RelayPeerResponse::LeasedPromptReceiptQueried {
+            receipt: Some(LeasedPromptReceipt {
+                home_prompt_id: "home-prompt-1".into(),
+                worker_provider_run_id: String::new(),
+                phase: LeasedPromptReceiptPhase::AdmissionRejected(
+                    LeasedPromptRejection::ExecutableMissing,
+                ),
+                target_home_prompt_id: None,
+                execution_lease_id: Some("lease-1".into()),
+            }),
+        };
+        assert_eq!(
+            format!(
+                "{:x}",
+                Sha256::digest(serde_json::to_vec(&response).unwrap())
+            ),
+            "95cb201ba2ccef296c4f175f19c20a4afcb81348f69aeffab3cfa30166a592cf"
+        );
+    }
 
     #[test]
     fn leased_prompt_cancellation_requires_exact_prompt_and_run_at_protocol_66() {
