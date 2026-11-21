@@ -161,10 +161,29 @@ pub struct ProviderAccountMaterialization {
     pub generated_at_ms: u64,
 }
 
+/// The native auth store OpenCode keeps its logins in; it is the only file an OpenCode profile exports.
+const OPENCODE_AUTH_STORE: &str = "data/opencode/auth.json";
+
 impl ProviderAccountMaterialization {
+    /// A signed-out OpenCode profile exports no login: no auth store at all, or one that lists no service.
     pub(crate) fn is_credentialless_opencode(&self) -> bool {
-        self.profile.provider == "opencode" && self.files.is_empty()
+        self.profile.provider == "opencode"
+            && self.files.iter().all(|file| {
+                file.relative_path == OPENCODE_AUTH_STORE
+                    && base64::engine::general_purpose::STANDARD
+                        .decode(&file.contents_base64)
+                        .is_ok_and(|contents| opencode_auth_store_lists_no_service(&contents))
+            })
     }
+}
+
+/// True only for a plain empty JSON object; anything else is kept as a login to validate.
+fn opencode_auth_store_lists_no_service(contents: &[u8]) -> bool {
+    serde_json::from_slice::<serde_json::Value>(contents).is_ok_and(|value| {
+        value
+            .as_object()
+            .is_some_and(|services| services.is_empty())
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -4736,9 +4755,21 @@ fn opencode_locator_has_no_credentials(
     locator: &ProviderAccountLocator,
 ) -> Result<bool, DaemonError> {
     match locator {
-        ProviderAccountLocator::Opencode { xdg_data_home, .. } => Ok(!path_entry_exists(
-            &xdg_data_home.join("opencode/auth.json"),
-        )?),
+        ProviderAccountLocator::Opencode { xdg_data_home, .. } => {
+            let auth = xdg_data_home.join("opencode/auth.json");
+            if !path_entry_exists(&auth)? {
+                return Ok(true);
+            }
+            // Only a plain file can be read as an empty store; a link or directory is not signed out.
+            let metadata =
+                fs::symlink_metadata(&auth).map_err(registry_io("inspect account profile path"))?;
+            if !metadata.is_file() || metadata.len() as usize > MAX_MATERIALIZATION_BYTES {
+                return Ok(false);
+            }
+            let contents =
+                fs::read(&auth).map_err(registry_io("read account profile auth store"))?;
+            Ok(opencode_auth_store_lists_no_service(&contents))
+        }
         _ => Ok(false),
     }
 }
