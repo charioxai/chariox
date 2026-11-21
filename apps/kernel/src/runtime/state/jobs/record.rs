@@ -85,6 +85,22 @@ impl Record {
         }
     }
 
+    pub(super) fn transfer_workspace(
+        &self,
+    ) -> Result<crate::jobs::TransferWorkspace<'_>, DaemonError> {
+        let root = if self
+            .request
+            .cwd
+            .as_deref()
+            .is_some_and(|cwd| Path::new(cwd).is_absolute())
+        {
+            &self.cwd
+        } else {
+            &self.workspace
+        };
+        crate::jobs::TransferWorkspace::new(&self.workspace, root)
+    }
+
     pub(super) fn runs_for_lease(&self, wake: &AgentWake) -> bool {
         // A worker executes in its backing room. The wake belongs to the home room.
         self.room_id != wake.room_id
