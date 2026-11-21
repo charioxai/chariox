@@ -16,6 +16,7 @@ use crate::provider::{
 };
 use crate::session::PromptOrigin;
 
+mod delta;
 mod peek;
 mod prefetch;
 mod projection;
@@ -61,14 +62,28 @@ pub(crate) async fn execute_scoped_session_history_outline_request(
             .clamp(1, MAX_LATEST_PROMPT_COUNT);
         let mut agents = Vec::new();
         for agent_id in agent_ids {
-            agents.push(load_scoped_agent_outline(
+            let mut agent = load_scoped_agent_outline(
                 &operational_history,
                 &request.session_id,
                 &agent_id,
                 latest_prompt_count,
                 request.cursor.as_ref().map(|cursor| cursor.before_sequence),
                 agent_imports.get(&agent_id),
-            )?);
+            )?;
+            if request.cursor.is_none() {
+                if let Some(cursors) = &request.after_sequence {
+                    delta::apply(
+                        &request.session_id,
+                        &mut agent,
+                        if request.include_prefetched_content {
+                            None
+                        } else {
+                            cursors.get(&agent_id)
+                        },
+                    )?;
+                }
+            }
+            agents.push(agent);
         }
         if request.include_prefetched_content {
             prefetch::prefetch_outline_blobs(
@@ -266,6 +281,8 @@ fn load_scoped_agent_outline(
         return Ok(SessionHistoryOutlineAgent {
             agent_id: agent_id.to_string(),
             prefetched_blobs: None,
+            delta_cursor: None,
+            turn_deltas: None,
             turns: Vec::new(),
             next_cursor: None,
         });
@@ -327,6 +344,8 @@ fn load_scoped_agent_outline(
     Ok(SessionHistoryOutlineAgent {
         agent_id: agent_id.to_string(),
         prefetched_blobs: None,
+        delta_cursor: None,
+        turn_deltas: None,
         turns,
         next_cursor,
     })

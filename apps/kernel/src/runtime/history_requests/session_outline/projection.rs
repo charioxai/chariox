@@ -69,6 +69,7 @@ fn outline_blob_from_event(event: &HistoryEvent) -> Option<SessionHistoryOutline
     let total_chars = entry.text.chars().count();
     Some(SessionHistoryOutlineBlob {
         blob_id: blob_id(event.sequence, event.sequence),
+        revision: super::delta::blob_revision(&[&event]),
         steering: is_steering_prompt_event(event),
         kind: entry.kind,
         title: blob_title(entry.kind),
@@ -214,6 +215,7 @@ fn outline_blob_from_event_group(events: &[&HistoryEvent]) -> Option<SessionHist
         .unwrap_or(first_event.timestamp_ms);
     Some(SessionHistoryOutlineBlob {
         blob_id: blob_id(sequence_start, sequence_end),
+        revision: super::delta::blob_revision(events),
         steering: is_steering_prompt_event(first_event),
         kind: first_entry.kind,
         title: grouped_blob_title(

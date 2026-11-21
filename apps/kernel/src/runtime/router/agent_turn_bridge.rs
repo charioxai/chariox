@@ -43,6 +43,7 @@ impl CommandRouter {
                 agent_ids: Some(vec![agent_id.to_string()]),
                 latest_prompt_count: Some(1),
                 cursor: None,
+                after_sequence: None,
                 include_prefetched_content: false,
             }),
         )

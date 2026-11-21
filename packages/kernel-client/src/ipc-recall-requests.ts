@@ -2,6 +2,7 @@ import type {
   RecallQueryPayload,
   SemanticSearchRecallMode,
   SessionHistoryOutlineCursor,
+  SessionHistoryOutlineDeltaCursor,
 } from "./kernel-types.js"
 
 export function getSessionHistoryOutlineRequest(
@@ -10,6 +11,7 @@ export function getSessionHistoryOutlineRequest(
   latestPromptCount?: number | null,
   cursor?: SessionHistoryOutlineCursor | null,
   includePrefetchedContent = false,
+  afterSequence?: Readonly<Record<string, SessionHistoryOutlineDeltaCursor>>,
 ) {
   return {
     GetSessionHistoryOutline: {
@@ -17,6 +19,7 @@ export function getSessionHistoryOutlineRequest(
       agent_ids: agentIds ? [...agentIds] : null,
       latest_prompt_count: latestPromptCount ?? null,
       cursor: cursor ?? null,
+      ...(afterSequence ? { after_sequence: afterSequence } : {}),
       ...(includePrefetchedContent ? { include_prefetched_content: true } : {}),
     },
   }

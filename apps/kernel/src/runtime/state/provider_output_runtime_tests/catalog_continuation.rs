@@ -448,6 +448,7 @@ async fn a_person_steer_into_the_catalog_continuation_stays_visible() {
                     agent_ids: Some(vec![agent.id().to_string()]),
                     latest_prompt_count: Some(4),
                     include_prefetched_content,
+                    after_sequence: None,
                     cursor: None,
                 },
             )
