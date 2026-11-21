@@ -86,6 +86,10 @@ pub(super) fn resolve(path: &str, guard: &StateGuard) -> Result<PathBuf, DaemonE
 fn folder_failure(folder: &Path, error: &std::io::Error) -> DaemonError {
     use std::io::ErrorKind;
     let (code, reason) = match error.kind() {
+        ErrorKind::NotFound => return fail(
+            "file_destination_missing",
+            format!("Destination folder {} no longer exists. Recreate it or choose another folder, then upload again.", folder.display()),
+        ),
         ErrorKind::NotADirectory | ErrorKind::AlreadyExists => {
             ("file_not_a_file", "a file blocks the path")
         }
@@ -340,6 +344,21 @@ pub(crate) fn read(
     })
 }
 
+fn missing_destination(path: &Path) -> Option<DaemonError> {
+    let folder = path.parent()?;
+    let error = std::fs::metadata(folder).err()?;
+    (error.kind() == std::io::ErrorKind::NotFound).then(|| folder_failure(folder, &error))
+}
+
+fn upload_failure(path: &Path, error: &std::io::Error) -> DaemonError {
+    if error.kind() == std::io::ErrorKind::NotFound {
+        if let Some(error) = missing_destination(path) {
+            return error;
+        }
+    }
+    io_failure(path, error)
+}
+
 /// Opens the upload's staging file without trusting what is already at the predictable name:
 /// a first chunk replaces whatever is there, a later chunk continues only the private regular
 /// file this user made (another user of a shared directory may have planted a link or a file).
@@ -369,7 +388,7 @@ fn open_staging(partial: &Path, path: &Path, offset: u64) -> Result<std::fs::Fil
             .mode(0o600)
             .custom_flags(libc::O_NOFOLLOW)
             .open(partial)
-            .map_err(|e| io_failure(path, &e));
+            .map_err(|e| upload_failure(path, &e));
     }
     let file = match std::fs::OpenOptions::new()
         .read(true)
@@ -379,7 +398,7 @@ fn open_staging(partial: &Path, path: &Path, offset: u64) -> Result<std::fs::Fil
     {
         Ok(file) => file,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Err(offset_mismatch(path, 0));
+            return Err(missing_destination(path).unwrap_or_else(|| offset_mismatch(path, 0)));
         }
         Err(e) if e.raw_os_error() == Some(libc::ELOOP) => return Err(untrusted()),
         Err(e) => return Err(io_failure(path, &e)),
@@ -401,12 +420,21 @@ fn open_staging(partial: &Path, path: &Path, offset: u64) -> Result<std::fs::Fil
 
 /// Holds a chunk that is ahead of the staged bytes until the chunks before it have landed. A chunk
 /// at a wrong offset still ends as `file_offset_mismatch`, after this wait.
-fn wait_for_turn(partial: &Path, offset: u64) {
-    let staged = || std::fs::symlink_metadata(partial).map_or(0, |metadata| metadata.len());
+fn wait_for_turn(partial: &Path, path: &Path, offset: u64) -> Result<(), DaemonError> {
     let deadline = Instant::now() + TURN_WAIT;
-    while offset > 0 && staged() < offset && Instant::now() < deadline {
+    while offset > 0 && Instant::now() < deadline {
+        match std::fs::symlink_metadata(partial) {
+            Ok(metadata) if metadata.len() >= offset => break,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                if let Some(error) = missing_destination(path) {
+                    return Err(error);
+                }
+            }
+            _ => {}
+        }
         std::thread::sleep(TURN_POLL);
     }
+    Ok(())
 }
 
 fn offset_mismatch(path: &Path, have: u64) -> DaemonError {
@@ -520,7 +548,7 @@ pub(crate) fn write_at(
             ),
         ));
     }
-    wait_for_turn(&partial, chunk.offset);
+    wait_for_turn(&partial, path, chunk.offset)?;
     let mut file = open_staging(&partial, path, chunk.offset)?;
     file.write_all(chunk.data)
         .map_err(|e| io_failure(path, &e))?;
@@ -552,6 +580,9 @@ pub(crate) fn discard_staging(staging: &Path) {
 }
 
 fn staging_replaced(path: &Path) -> DaemonError {
+    if let Some(error) = missing_destination(path) {
+        return error;
+    }
     fail(
         "file_staging_untrusted",
         format!(
@@ -586,7 +617,7 @@ fn replace(file: &std::fs::File, partial: &Path, path: &Path) -> Result<(), Daem
         if kept {
             let _ = std::fs::remove_file(&previous);
         }
-        return Err(io_failure(path, &error));
+        return Err(upload_failure(path, &error));
     }
     if names_the_open_file(path, file) {
         if kept {
@@ -643,7 +674,7 @@ fn publish(
                     ),
                 )
             } else {
-                io_failure(path, &error)
+                upload_failure(path, &error)
             }
         })?;
         if !names_the_open_file(path, file) {
@@ -760,6 +791,26 @@ mod tests {
             assert!(message.contains(&target.display().to_string()));
             assert!(!message.contains(PARTIAL_SUFFIX));
         }
+    }
+
+    #[test]
+    fn continuing_an_upload_names_the_destination_folder_that_disappeared() {
+        let dir = scratch();
+        let folder = dir.join("incoming");
+        let target = folder.join("upload.txt");
+        write(&chunk(&target, 0, b"a", 2, None)).unwrap();
+        std::fs::remove_dir_all(&folder).unwrap();
+
+        let error = write(&chunk(&target, 1, b"b", 2, None)).unwrap_err();
+        let message = error.to_string();
+        assert_eq!(code(error), "file_destination_missing");
+        assert!(message.contains(&format!(
+            "Destination folder {} no longer exists",
+            folder.display()
+        )));
+        assert!(message.contains("Recreate it or choose another folder"));
+        assert!(!message.contains(PARTIAL_SUFFIX));
+        assert!(!folder.exists());
     }
 
     // EA2-07: an upload resumes at the offset the target reports, and the file
