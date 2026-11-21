@@ -2134,7 +2134,7 @@ mod tests {
         let hash = Sha256::digest(serialized.as_bytes());
         assert_eq!(
             format!("{hash:x}"),
-            "0d86c18bf510a18529d2304a1aa8c56035268d59f44f513f494856e9d77dc479",
+            "d0df0d2af63d62087d580760492db0cd6e113689fbf940e5bf08e63e4cfc37c3",
         );
     }
 
