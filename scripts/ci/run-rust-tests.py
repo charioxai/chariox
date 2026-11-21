@@ -72,7 +72,7 @@ def kernel_lib_shard(shard, count, seconds):
     return with_watchdog([*command, "--", "--exact", *names], seconds)
 
 
-def workspace_targets(seconds):
+def workspace_targets(workspace_command, seconds):
     metadata = json.loads(subprocess.check_output(["cargo", "metadata", "--locked", "--no-deps", "--format-version", "1"]))
     kernel = next(package for package in metadata["packages"] if package["name"] == "chariox-kernel")
     selectors = [("--test", "test"), ("--bin", "bin"), ("--example", "example"), ("--bench", "bench")]
@@ -81,7 +81,7 @@ def workspace_targets(seconds):
     if not targets:
         raise ValueError("No chariox-kernel non-library tests found")
     commands = [
-        ["cargo", "test", "--locked", "--workspace", "--exclude", "chariox-kernel", "--no-fail-fast"],
+        workspace_command,
         [*KERNEL, "--no-fail-fast", *targets],
         [*KERNEL, "--doc"],
     ]
@@ -103,13 +103,16 @@ def main():
     parser.add_argument("--shard", type=int, default=0)
     parser.add_argument("--shards", type=int, default=3)
     parser.add_argument("--timeout", type=int, default=600)
+    parser.add_argument("--workspace-command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     if not 0 <= args.shard < args.shards or args.timeout < 1:
         parser.error("require 0 <= shard < shards and a positive timeout")
     os.environ.update(RUST_TEST_THREADS="1", CARGO_TERM_COLOR="never")
     if args.suite == "kernel":
         return kernel_lib_shard(args.shard, args.shards, args.timeout)
-    return workspace_targets(args.timeout)
+    if not args.workspace_command:
+        parser.error("workspace suite requires a Cargo workspace test command")
+    return workspace_targets(args.workspace_command, args.timeout)
 
 
 if __name__ == "__main__":

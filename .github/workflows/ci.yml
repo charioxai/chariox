@@ -278,10 +278,18 @@ jobs:
           test "$(codex --version)" = "codex-cli 0.159.3"
           test "$(opencode --version)" = "1.18.23"
 
-      - name: Test
-        run: python3 scripts/ci/run-rust-tests.py "$TEST_SUITE" --shard "$TEST_SHARD" --shards 3
+      - name: Test workspace packages and kernel integration
+        if: matrix.suite == 'workspace'
+        run: >-
+          python3 scripts/ci/run-rust-tests.py workspace
+          --workspace-command cargo test --workspace --exclude chariox-kernel --locked --no-fail-fast
         env:
-          TEST_SUITE: ${{ matrix.suite }}
+          RUST_MIN_STACK: 16777216
+
+      - name: Test kernel library shard
+        if: matrix.suite == 'kernel'
+        run: python3 scripts/ci/run-rust-tests.py kernel --shard "$TEST_SHARD" --shards 3
+        env:
           TEST_SHARD: ${{ matrix.shard }}
           RUST_MIN_STACK: 16777216
 
