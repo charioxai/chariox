@@ -525,9 +525,9 @@ fn local_daemon_protocol_metaagent_event_shape_is_versioned() {
     let searched = LocalDaemonResponse::MetaagentCommandsSearched {
         commands: vec![serde_json::json!({
             "name": "agent list",
-            "usage": "agent list",
-            "scope": "session",
-            "policy": "allow",
+            "routed": true,
+            "metaagent_policy": "allow",
+            "search_score": 90,
         })],
     };
     let overview_response = LocalDaemonResponse::MetaagentTurnOverview {
@@ -683,7 +683,7 @@ fn local_daemon_protocol_metaagent_event_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "89631e90f05a4b6d5586707b2a2bb354ea131b4bb3e935afaa004fa79d572bae"
+        "5e2f1fd4b81b0aa321d66085e5989cd9ee4bc188bc17499fe25b3c9f5bfa4a57"
     );
 }
 

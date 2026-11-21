@@ -64,7 +64,7 @@ const ROOM_RUN_COMMAND_DESCRIPTION: &str = "Run a room command (syntax in chario
 pub(crate) fn room_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
     meta_runtime_tool_specs().into_iter().filter_map(|mut spec| {
         spec.name = room_name(&spec.name)?;
-        if spec.name == "chariox.history.search" || is_notification_tool(&spec.name) { return Some(spec); }
+        if matches!(spec.name.as_str(), "chariox.commands.search" | "chariox.history.search") || is_notification_tool(&spec.name) { return Some(spec); }
         if spec.name == "chariox.history.read" {
             spec.description = "Read a sanitized public event_ref returned by chariox.history.search. Room authorization and current protection are revalidated; no filesystem/blob fallback. Limited to the caller room, even under /sudo.".into();
             spec.input_schema = serde_json::json!({"type":"object","required":["event_ref"],"properties":{"event_ref":{"type":"string"},"session_id":{"type":"string"}},"additionalProperties":false});

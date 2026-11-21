@@ -1,6 +1,6 @@
 {
-  "local_protocol": 1012,
-  "peer_protocol": 449,
+  "local_protocol": 1026,
+  "peer_protocol": 463,
   "requests": [
     {
       "InspectAppView": {
