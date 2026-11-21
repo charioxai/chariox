@@ -9,7 +9,7 @@ use crate::runtime::state::KernelRuntimeState;
 fn cloud_request_body(
     account_id: &str,
     credential: &str,
-    request: &ControlPlaneRequest,
+    request: impl serde::Serialize,
 ) -> serde_json::Value {
     serde_json::json!({"accountId": account_id, "kernelCredential": credential, "request": request})
 }
