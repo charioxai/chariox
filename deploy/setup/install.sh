@@ -12,14 +12,16 @@ case "$(uname -s):$(uname -m)" in
 esac
 # No argument may carry a code. --enroll takes no value; Setup reads stdin or prompts once.
 previous=
+stage_parent=${TMPDIR:-/tmp}
 for argument do
   if [ "$previous" = --enroll ]; then
     case "$argument" in --*) ;; *) printf '%s\n' 'MP-11: enrollment codes must be supplied on stdin' >&2; exit 1 ;; esac
   fi
+  case "$argument" in --build-tools) stage_parent=${HOME:?Setup requires HOME} ;; esac
   previous=$argument
 done
 case "$version" in ''|*@*) printf '%s\n' 'MP-07: use a published versioned installer' >&2; exit 1 ;; esac
-stage=$(mktemp -d "${TMPDIR:-/tmp}/chariox-setup.XXXXXXXX")
+stage=$(mktemp -d "$stage_parent/chariox-setup.XXXXXXXX")
 trap 'rm -rf -- "$stage"' EXIT HUP INT TERM
 # MP-07/MP-11: probe the required capability, independent of version labels.
 # RFC 8032 section 7.1 test 2 contains only public verification inputs here.

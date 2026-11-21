@@ -1,7 +1,7 @@
 // MP-07 / MP-08 / MP-11: mocked release server + actual shared target install filesystem.
 import assert from "node:assert/strict"
 import { createServer } from "node:http"
-import { generateKeyPairSync } from "node:crypto"
+import { createHash, generateKeyPairSync } from "node:crypto"
 import { copyFile, cp, lstat, mkdir, mkdtemp, readFile, readlink, realpath, readdir, rm, symlink, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
@@ -9,7 +9,7 @@ import test from "node:test"
 import { installLocal, targetPlatform, publicUrl } from "./installer.mjs"
 import { setupFixture } from "./fixture.mjs"
 import { launchdDefinition, launchdManager } from "./launchd.mjs"
-import { runMachine } from "./machine/remote.mjs"
+import { command, runMachine } from "./machine/remote.mjs"
 const extractorSource = await readFile(new URL("../../deploy/runtime-release/extract-release.py", import.meta.url), "utf8")
 const state = await realpath(process.env.CHARIOX_BYOM_TEST_STATE ?? tmpdir())
 async function harness(t, overrides = {}) {
@@ -27,6 +27,76 @@ async function harness(t, overrides = {}) {
   const options = { home, platform: f.platform, version: f.version, publicKeyHex: f.publicKeyHex, releaseBase: `http://127.0.0.1:${server.address().port}`, apiUrl: "http://127.0.0.1:1", extractorSource, installOnly: true, servicePersistence: async () => {}, agentConfinement: async () => {}, serviceManager: async args => { calls.push(args); return "LoadState=not-found\nFragmentPath=\nDropInPaths=\nActiveState=inactive\nUnitFileState=disabled\n" } }
   return { dir, home, f, responses, requests, calls, root, options, serve }
 }
+async function buildToolsFixture(h) {
+  const bin = join(h.dir, "bin")
+  await mkdir(bin)
+  await writeFile(join(bin, "micromamba"), `#!/bin/sh
+set -eu
+while [ "$1" != --prefix ]; do shift; done
+prefix=$2
+mkdir -p "$prefix/bin"
+for name in cargo x86_64-conda-linux-gnu-gcc; do
+  printf '#!/bin/sh\\nprintf "pinned tool"\\n' > "$prefix/bin/$name"
+  chmod +x "$prefix/bin/$name"
+done
+`, { mode: 0o700 })
+  const archive = join(h.dir, "micromamba.tar.bz2")
+  await command("tar", ["-cjf", archive, "-C", h.dir, "bin/micromamba"])
+  function pin(name, bytes) {
+    h.responses.set(`/${name}`, bytes)
+    return {
+      url: `${h.options.releaseBase}/${name}`,
+      size: bytes.length,
+      sha256: createHash("sha256").update(bytes).digest("hex"),
+    }
+  }
+  return {
+    ...h.options,
+    buildTools: true,
+    buildToolchain: {
+      micromamba: pin("micromamba.tar.bz2", await readFile(archive)),
+      packages: [pin("cargo-1.99.1-test.conda", Buffer.from("pinned archive"))],
+    },
+  }
+}
+
+test("Linux Setup provisions home build tools once across machine installs", async t => {
+  const h = await harness(t)
+  const options = await buildToolsFixture(h)
+  await installLocal(options)
+  const run = join(h.home, ".local/bin/chariox-build")
+  const prefix = await readlink(run)
+  assert.equal(await command(run, ["cargo", "--version"], true), "pinned tool")
+  for (const pin of [options.buildToolchain.micromamba, ...options.buildToolchain.packages]) {
+    const path = new URL(pin.url).pathname
+    assert.equal(h.requests.filter(request => request === path).length, 1)
+    h.responses.delete(path)
+  }
+  h.requests.length = 0
+  await installLocal({ ...options, installId: "second", port: 55149 })
+  assert.equal(await readlink(run), prefix)
+  assert.equal(h.requests.some(path => path.endsWith(".tar.bz2") || path.endsWith(".conda")), false)
+})
+
+for (const name of ["micromamba.tar.bz2", "cargo-1.99.1-test.conda"]) {
+  test(`Linux Setup refuses a tampered ${name} before publishing build tools or starting enrollment`, async t => {
+    const h = await harness(t)
+    const options = await buildToolsFixture(h)
+    const path = `/${name}`
+    const valid = h.responses.get(path)
+    const altered = Buffer.from(valid)
+    altered[0] ^= 1
+    h.responses.set(path, altered)
+    await assert.rejects(installLocal({ ...options, installOnly: false }), /SHA-256 mismatch/)
+    assert.deepEqual(h.calls, [])
+    assert.deepEqual(await readdir(join(h.home, ".local/bin")), [])
+    assert.deepEqual(await readdir(join(h.home, ".local/share/chariox/build-tools")), [])
+    h.responses.set(path, valid)
+    await installLocal(options)
+    assert.equal(await command(join(h.home, ".local/bin/chariox-build"), ["cargo"], true), "pinned tool")
+  })
+}
+
 test("MP-07 platform and URL admission reject credential URLs and unsupported targets", () => {
   assert.equal(targetPlatform("linux", "x64"), "linux-x64"); assert.equal(targetPlatform("darwin", "arm64"), "darwin-arm64")
   for (const pair of [["win32", "x64"], ["linux", "arm64"]]) assert.throws(() => targetPlatform(...pair))

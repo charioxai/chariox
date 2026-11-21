@@ -141,3 +141,32 @@ interrupted-journal recovery, stdin-only codes and local kernel enrollment seams
 Real Cloud/device approval, signed published artifacts, macOS signing/launchd,
 real systemd, Mac-to-LAN and fresh-machine parity remain coordinator acceptance.
 No MP item is closed by the local mocked drills.
+
+## Build jobs on a linked Linux machine
+
+Pass `--build-tools` alongside `--enroll` on Linux x86_64 to prepare this
+machine for native build jobs. For an existing link, run
+`chariox-setup --repair --build-tools`. The normal Setup prerequisites for a
+working user service and Bubblewrap still apply.
+
+Setup downloads the toolchain on the first run and checks every archive against
+the SHA-256 pinned in `build-tools-linux-x64.lock.json` before installation.
+It keeps Rust, GCC, binutils, CMake and their dependencies under
+`~/.local/share/chariox/build-tools`, shared by the user's machine installs.
+Repeating Setup with the same pin reuses those files. Uninstalling an individual
+machine keeps the shared toolchain.
+
+Start a job on that machine with the wrapper, using its absolute path if the
+job's PATH omits `~/.local/bin`. For example, from the Chariox source directory
+on the worker:
+
+```sh
+"$HOME/.local/bin/chariox-build" cargo build --locked -p chariox-kernel
+```
+
+The wrapper selects the pinned compiler and linker for that build. To update
+the toolchain pin, resolve the Linux x86_64 environment on conda-forge with
+micromamba `create --dry-run --json`; record each `actions.FETCH` archive's
+URL, SHA-256 and byte size and verify with a fresh home. Keep the Rust version
+aligned with `rust-toolchain.toml` and the sysroot compatible with the Linux
+Setup target.
