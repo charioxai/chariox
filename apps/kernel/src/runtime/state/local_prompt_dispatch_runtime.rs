@@ -234,7 +234,8 @@ impl KernelRuntimeOwnedState {
                 dispatch.prompt_id,
                 dispatch.target_active_prompt_id.as_deref().unwrap_or("(none)"),
             ),
-        })
+        }
+        .steer_not_submitted(true))
     }
 }
 
@@ -717,6 +718,7 @@ impl KernelRuntimeState {
             // One deadline: the start budget until the prompt is written, then the
             // acknowledgement timeout. A person's card holds the start for as long as it is open.
             let mut prompt_written = false;
+            let mut injection_attempted = false;
             let mut deadline =
                 tokio::time::Instant::now() + prompt_timer(crate::provider::CLAUDE_START_BUDGET);
             loop {
@@ -727,8 +729,19 @@ impl KernelRuntimeState {
                     .await;
                 let attempt = self
                     .with_app_side_effect(|app| {
-                        if !owned.ensure_prompt_dispatch_matches_active_prompt(dispatch)? {
-                            return Ok(None);
+                        match owned.ensure_prompt_dispatch_matches_active_prompt(dispatch) {
+                            Ok(true) => {}
+                            Ok(false) => return Ok(None),
+                            Err(DaemonError::ProviderPromptSteerRejected { .. })
+                                if injection_attempted =>
+                            {
+                                // A previous pass may have written the steer and still be
+                                // waiting for its hook acknowledgement.
+                                return Err(DaemonError::ProviderPromptSteerUnconfirmed {
+                                    provider_run_id: dispatch.provider_run_id.clone(),
+                                });
+                            }
+                            Err(error) => return Err(error),
                         }
                         // SessionStart can reset the native session before its
                         // first transcript row exists. Refresh its official hook
@@ -775,6 +788,7 @@ impl KernelRuntimeState {
                 match attempt {
                     crate::app::ClaudeNativeDispatchAttempt::Completed => break,
                     crate::app::ClaudeNativeDispatchAttempt::AwaitingInjection => {
+                        injection_attempted = true;
                         // Workflow/native dispatch must service the same official
                         // hook bridge even with no terminal client polling output.
                         // The bridge writes the fresh response and waits for its
