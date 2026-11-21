@@ -1,5 +1,6 @@
 // Usage: node packages/kernel-client/scripts/relay-registration-drill.mjs RELAY KERNEL L12_RELAY L12_KERNEL
 // For baseline evidence: append --baseline to a command using the L12 binaries.
+// For the reply-queue status case: supply RELAY KERNEL --reply-queue.
 // Linux with systemd. All endpoints, credentials, state and units belong to this drill.
 import assert from "node:assert/strict"
 import { execFileSync, spawnSync } from "node:child_process"
@@ -12,9 +13,10 @@ import { setTimeout as delay } from "node:timers/promises"
 import { WebSocket, WebSocketServer } from "ws"
 
 const baseline = process.argv.includes("--baseline")
+const replyQueue = process.argv.includes("--reply-queue")
 const [relayBinary, kernelBinary, oldRelayBinary, oldKernelBinary] =
-  process.argv.slice(2).filter(arg => arg !== "--baseline").map(path => resolve(path))
-assert(relayBinary && kernelBinary && (baseline || (oldRelayBinary && oldKernelBinary)),
+  process.argv.slice(2).filter(arg => arg !== "--baseline" && arg !== "--reply-queue").map(path => resolve(path))
+assert(relayBinary && kernelBinary && (baseline || replyQueue || (oldRelayBinary && oldKernelBinary)),
   "supply the relay and kernel binaries and their L12 predecessors")
 const scratch = await mkdtemp(join(tmpdir(), "chrrg-"))
 const names = `relay-registration-${process.pid}`
@@ -27,6 +29,7 @@ const presence = []
 const attempts = []
 let releaseRegistration
 let releaseAck
+let closeReplyQueue
 let forwardedRefusals = 0
 let refusedSocketsClosed = 0
 
@@ -105,7 +108,7 @@ async function cloud(req, res) {
   const body = JSON.parse(Buffer.concat(chunks).toString() || "{}")
   res.setHeader("Content-Type", "application/json")
   if (req.url === "/kernels/presence") {
-    presence.push({ kernel: body.kernelId, status: body.status, time: Date.now() })
+    presence.push({ kernel: body.kernelId, status: body.status, time: Date.now(), relayDisconnect: body.metadata?.relay_disconnect })
     res.end("{}")
   } else if (req.url === "/relay/token" && body.subjectKind === "kernel") {
     const now = Math.floor(Date.now() / 1000)
@@ -169,7 +172,10 @@ async function relayProxy(port, mode) {
       })
       upstream.on("message", (bytes, binary) => {
         const text = binary ? "" : bytes.toString()
-        if (mode === "ack" && text === '{"kind":"daemon_registered"}') {
+        if (mode === "reply-queue" && text === '{"kind":"daemon_registered"}' && !closeReplyQueue) {
+          closeReplyQueue = () => downstream.close(1013, "try again later")
+          downstream.send(text)
+        } else if ((mode === "ack" || mode === "reply-queue") && text === '{"kind":"daemon_registered"}') {
           releaseAck = () => downstream.send(text)
         } else {
           if (mode === "refuse" && text.startsWith('{"kind":"close"')) forwardedRefusals++
@@ -227,6 +233,22 @@ async function startRelay(label, binary) {
 async function drill() {
   const cloudPort = await listen(createServer(cloud))
   const relayPort = await startRelay("relay", relayBinary)
+  if (replyQueue) {
+    const kernel = await startKernel("reply-queue", await relayProxy(relayPort, "reply-queue"), cloudPort)
+    await until("kernel registered with the relay", () => online(kernel))
+    const dropIndex = presence.length
+    closeReplyQueue()
+    const offline = await until("kernel reported the dropped connection", () =>
+      presence.slice(dropIndex).find(event => event.kernel === kernel.kernelId && event.status === "OFFLINE"))
+    assert.equal(offline.relayDisconnect, "reply_queue_full")
+    const acknowledge = await until("the relay accepted the reconnect", () => releaseAck)
+    acknowledge()
+    const recovered = await until("kernel reported online again", () =>
+      presence.find(event => event.kernel === kernel.kernelId && event.status === "ONLINE" && event.time > offline.time))
+    assert.equal(recovered.relayDisconnect, undefined)
+    console.log("Reply queue PASS offline reported the queue closure, and reconnect cleared it")
+    return
+  }
   const oldWireUrl = await relayProxy(relayPort, "refuse")
   const ackUrl = await relayProxy(relayPort, "ack")
   const refused = await startKernel("refused", oldWireUrl, cloudPort)
