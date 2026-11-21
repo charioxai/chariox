@@ -72,10 +72,15 @@ fn cloud_call(
                 .map_err(|_| enrollment_error("enrollment_unavailable", "Chariox did not answer; ask again in a moment"))
         }
         Err(ureq::Error::Status(status, response)) => {
-            let message = response
-                .into_json::<serde_json::Value>()
-                .ok()
-                .and_then(|body| body["error"]["message"].as_str().map(str::to_owned));
+            let mut bytes = Vec::new();
+            let message = {
+                use std::io::Read;
+                response.into_reader().take(8192).read_to_end(&mut bytes).ok().and_then(|_| {
+                    serde_json::from_slice::<serde_json::Value>(&bytes)
+                        .ok()
+                        .and_then(|body| body["error"]["message"].as_str().map(str::to_owned))
+                })
+            };
             Err(match (status, message) {
                 (404, _) => enrollment_error(
                     "enrollment_unknown",
