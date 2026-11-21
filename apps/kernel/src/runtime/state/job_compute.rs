@@ -88,6 +88,17 @@ impl KernelRuntimeState {
         request: &ControlPlaneRequest,
         command_id: &str,
     ) -> Result<ControlPlaneResponse, DaemonError> {
+        self.machine_control_plane(origin, request, command_id, None)
+            .await
+    }
+
+    pub(super) async fn machine_control_plane(
+        &self,
+        origin: &Origin,
+        request: &ControlPlaneRequest,
+        command_id: &str,
+        trace: Option<&super::machine_acquisition::direct::AcquireTrace<'_>>,
+    ) -> Result<ControlPlaneResponse, DaemonError> {
         let subject = match origin.grant_id.strip_prefix("job:") {
             Some(job) => Some(self.job_acquisition_subject(job)?),
             None => {
@@ -145,6 +156,7 @@ impl KernelRuntimeState {
             &command,
             router.kernel_gateway(),
             request,
+            trace,
         )
         .await?;
         match response {

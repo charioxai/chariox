@@ -1,6 +1,6 @@
 //! The agent's `chariox.machines.acquire` tool against a stand-in connected service.
 use super::*;
-use crate::durable_state::acquire_choices::AcquireChoiceState;
+use crate::durable_state::acquire_choices::{AcquireChoiceState, AcquireOption};
 use crate::local::{ControlPlaneMachineTarget, MachineAllocationCapability, MachineOption};
 use crate::provider::*;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -1385,7 +1385,7 @@ async fn direct_rental_names_the_asker_and_only_raises_one_card_for_the_id() {
     let args = acquire_args("r1");
     let (first, retry) = tokio::join!(acquire(args.clone()), acquire(args.clone()));
     let first = first.unwrap().payload;
-    assert_eq!(first["status"], "waiting");
+    assert_eq!(first["status"], "pending");
     assert_eq!(retry.unwrap().payload, first);
     assert_eq!(acquire(args.clone()).await.unwrap().payload, first);
     let changed = serde_json::json!({"request_id":"r1", "reason":"Run something else"});
@@ -1399,6 +1399,7 @@ async fn direct_rental_names_the_asker_and_only_raises_one_card_for_the_id() {
     let listed = state.list_owner_interactions(session.owner_user_id());
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].interaction_id, card.id());
+    assert_eq!(first["interaction_id"], card.id());
     assert_eq!(listed[0].title.as_deref(), Some(expected));
     assert!(listed[0].person_only.is_none());
 
@@ -1434,7 +1435,7 @@ async fn unanswered_direct_acquire_returns_a_room_wait_and_expires_once() {
         .await
         .expect("a pending decision must return without waiting for the person")
         .unwrap();
-    assert_eq!(result.payload["status"], "waiting");
+    assert_eq!(result.payload["status"], "pending");
     assert!(result.payload["registration_id"].is_string());
     assert_eq!(acquire("r1").await.unwrap().payload, result.payload);
     let id;
@@ -1480,7 +1481,7 @@ async fn unanswered_direct_acquire_returns_a_room_wait_and_expires_once() {
     let error = acquire("r1").await.unwrap_err().to_string();
     assert!(error.contains("Expired at"), "{error}");
     assert!(error.contains("Use a new request_id"), "{error}");
-    assert_eq!(acquire("r2").await.unwrap().payload["status"], "waiting");
+    assert_eq!(acquire("r2").await.unwrap().payload["status"], "pending");
     assert!(service.acquires.lock().unwrap().is_empty());
 }
 
@@ -1505,7 +1506,7 @@ async fn machine_wait_denial_names_the_person_and_approval_stays_visible_until_s
                 .unwrap();
         }
     };
-    assert_eq!(acquire("deny").await.unwrap().payload["status"], "waiting");
+    assert_eq!(acquire("deny").await.unwrap().payload["status"], "pending");
     answer("deny").await;
     let error = acquire("deny").await.unwrap_err().to_string();
     assert!(error.contains("Denied by user@example.test at "), "{error}");
@@ -1513,7 +1514,7 @@ async fn machine_wait_denial_names_the_person_and_approval_stays_visible_until_s
 
     assert_eq!(
         acquire("approve").await.unwrap().payload["status"],
-        "waiting"
+        "pending"
     );
     let session = state.owned.session_store.get_session(&room).unwrap();
     let listed = state.list_owner_interactions(session.owner_user_id());
@@ -1562,4 +1563,298 @@ async fn machine_wait_denial_names_the_person_and_approval_stays_visible_until_s
         crate::session::MachineApprovalReceiptState::Sent
     );
     assert_eq!(service.acquires.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn acquire_refuses_an_offer_read_that_never_answers() {
+    for first_read in [true, false] {
+        let service = service(two_in_stock(), &[]).await;
+        let (state, token, _workspace) = agent_kernel(service.api_url.clone()).await;
+        let room = require_owner_approval(&state, &token);
+        let (_, release) = hold_before_send(&service);
+        if first_read {
+            service.capability_failures.lock().unwrap().pop_front();
+        }
+        let error = tokio::time::timeout(
+            Duration::from_secs(5),
+            state.machine_tool(
+                &token,
+                "chariox.machines.acquire",
+                acquire_args("slow-offer"),
+            ),
+        )
+        .await
+        .expect("the acquire must return even when the service does not answer")
+        .unwrap_err();
+        assert!(
+            matches!(&error, DaemonError::MachineRequest { code, .. } if code == "acquisition_offer_unavailable"),
+            "{error}"
+        );
+        assert!(error.to_string().contains("slow-offer"));
+        assert!(state
+            .owned
+            .session_store
+            .get_session(&room)
+            .unwrap()
+            .active_interactions()
+            .is_empty());
+        assert!(service.acquires.lock().unwrap().is_empty());
+        release.notify_one();
+        let retried = state
+            .machine_tool(
+                &token,
+                "chariox.machines.acquire",
+                acquire_args("slow-offer"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(retried.payload["status"], "pending");
+    }
+}
+
+#[tokio::test]
+async fn acquire_names_the_failure_to_publish_a_card() {
+    let service = service(two_in_stock(), &[]).await;
+    let (state, token, _workspace) = agent_kernel(service.api_url.clone()).await;
+    let room = require_owner_approval(&state, &token);
+    let session = state.owned.session_store.get_session(&room).unwrap();
+    let mut held = Vec::new();
+    for i in 0..8 {
+        let id = format!("already-pending-{i}");
+        let card = crate::session::RuntimeInteraction::for_kernel_operation(
+            &id,
+            &id,
+            "Other decision",
+            "Fixture only",
+            vec![crate::session::RuntimeInteractionChoice::new(
+                "close", "Close", "close", None,
+            )],
+        );
+        held.push(
+            state
+                .create_kernel_operation_interaction(&room, session.owner_user_id(), card)
+                .await
+                .unwrap(),
+        );
+    }
+    let error = state
+        .machine_tool(
+            &token,
+            "chariox.machines.acquire",
+            acquire_args("board-full"),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&error, DaemonError::MachineRequest { code, .. } if code == "acquisition_card_unavailable"),
+        "{error}"
+    );
+    assert_eq!(
+        state
+            .owned
+            .session_store
+            .get_session(&room)
+            .unwrap()
+            .active_interactions()
+            .len(),
+        held.len()
+    );
+    assert!(error.to_string().contains("Open decisions:"), "{error}");
+    assert!(service.acquires.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn acquire_trace_survives_the_approval_wait() {
+    let logs = crate::logging::capture::start();
+    let service = service(two_in_stock(), &[]).await;
+    let (state, token, _workspace) = agent_kernel(service.api_url.clone()).await;
+    let room = require_owner_approval(&state, &token);
+    let agent = agent_of(&state, &token);
+    let request_id = "acquire-trace-approval";
+    let acquire =
+        || state.machine_tool(&token, "chariox.machines.acquire", acquire_args(request_id));
+    let pending = acquire().await.unwrap().payload;
+    let id = pending["interaction_id"].as_str().unwrap();
+    let owner = state
+        .owned
+        .session_store
+        .get_session(&room)
+        .unwrap()
+        .owner_user_id()
+        .to_owned();
+    assert_eq!(acquire().await.unwrap().payload, pending);
+    state
+        .resolve_terminal_runtime_interaction(&room, id, "approve", None, Some(&owner))
+        .await
+        .unwrap();
+    acquire().await.unwrap();
+    let entries: Vec<_> = logs
+        .records()
+        .into_iter()
+        .filter(|line| line.contains(request_id) && line.contains("runtime.machine_acquisition"))
+        .collect();
+    for outcome in ["card_raised", "approved", "allocated"] {
+        let matches: Vec<_> = entries
+            .iter()
+            .filter(|line| line.contains(&format!(r#""outcome":"{outcome}""#)))
+            .collect();
+        assert_eq!(matches.len(), 1, "{entries:?}");
+        let line = matches[0];
+        for field in [&room, &agent, id, "class_id"] {
+            assert!(line.contains(field), "{line}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn cancelled_acquire_preserves_a_distinct_outcome() {
+    let service = service(two_in_stock(), &[]).await;
+    let (state, token, _workspace) = agent_kernel(service.api_url.clone()).await;
+    let room = require_owner_approval(&state, &token);
+    let acquire = || {
+        state.machine_tool(
+            &token,
+            "chariox.machines.acquire",
+            acquire_args("cancelled-acquire"),
+        )
+    };
+    let pending = acquire().await.unwrap().payload;
+    let id = pending["interaction_id"].as_str().unwrap();
+    let store = &state.owned.durable_state_store;
+    let wake = store.agent_wake(id).unwrap().unwrap();
+    let task = store
+        .agent_tasks(Some(&room), Some(&wake.agent_id))
+        .unwrap()
+        .into_iter()
+        .find(|task| task.task_id == wake.task_id)
+        .unwrap();
+    state
+        .cancel_agent_wake(&wake, &task.task_id, Some(&task.prompt_id))
+        .await
+        .unwrap();
+
+    let cancelled = store.agent_wake(id).unwrap().unwrap();
+    let (event, _) = store
+        .agent_inbox_event(cancelled.last_sequence.unwrap())
+        .unwrap()
+        .unwrap();
+    assert_eq!(event.payload["public_answer"]["status"], "cancelled");
+    assert_eq!(event.payload["public_answer"]["interaction_id"], id);
+    assert!(state
+        .owned
+        .session_store
+        .get_session(&room)
+        .unwrap()
+        .active_interactions()
+        .is_empty());
+    assert!(
+        matches!(acquire().await.unwrap_err(), DaemonError::MachineRequest {code, ..} if code == "acquisition_cancelled")
+    );
+    assert!(service.acquires.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn acquire_can_recover_a_machine_when_the_commit_reply_stalls() {
+    let service = service(two_in_stock(), &[]).await;
+    let (state, token, _workspace) = agent_kernel(service.api_url.clone()).await;
+    let arrived = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    service
+        .answers
+        .lock()
+        .unwrap()
+        .push_back(Answer::AcceptLater {
+            arrived: arrived.clone(),
+            release: release.clone(),
+        });
+    let acquire = || {
+        state.machine_tool(
+            &token,
+            "chariox.machines.acquire",
+            acquire_args("slow-commit"),
+        )
+    };
+    let error = tokio::time::timeout(Duration::from_secs(5), acquire())
+        .await
+        .expect("the acquire must return after the service reply stalls")
+        .unwrap_err();
+    assert!(
+        matches!(&error, DaemonError::MachineRequest { code, .. } if code == "acquisition_service_timeout"),
+        "{error}"
+    );
+    assert!(error
+        .to_string()
+        .contains("Retry with request_id slow-commit"));
+    arrived.notified().await;
+    release.notify_one();
+    let result = acquire().await.unwrap();
+    assert_eq!(
+        result.payload["allocation"]["allocation_ref"],
+        "allocation-1"
+    );
+    let posts = service.acquires.lock().unwrap();
+    assert_eq!(posts.len(), 2);
+    assert_eq!(posts[0]["request_id"], posts[1]["request_id"]);
+}
+
+#[tokio::test]
+async fn acquire_retries_if_card_publication_is_still_running() {
+    let service = service(two_in_stock(), &[]).await;
+    let (state, token, _workspace) = agent_kernel(service.api_url.clone()).await;
+    let room = require_owner_approval(&state, &token);
+    let acquire = || {
+        state.machine_tool(
+            &token,
+            "chariox.machines.acquire",
+            acquire_args("slow-card"),
+        )
+    };
+
+    // Hold the interaction publisher while the background admission reaches it.
+    let (locked, ready) = tokio::sync::oneshot::channel();
+    let (release, released) = std::sync::mpsc::channel();
+    let publisher = tokio::task::spawn_blocking({
+        let state = state.clone();
+        move || {
+            let _publisher = state.owned.pending_interactions.mutation.lock().unwrap();
+            locked.send(()).unwrap();
+            let _ = released.recv_timeout(Duration::from_secs(5));
+        }
+    });
+    ready.await.unwrap();
+    let error = tokio::time::timeout(Duration::from_secs(3), acquire())
+        .await
+        .expect("a stalled card publisher must not stall the provider")
+        .unwrap_err();
+    release.send(()).unwrap();
+    publisher.await.unwrap();
+    assert!(
+        matches!(&error, DaemonError::MachineRequest {code, ..} if code == "acquisition_card_starting"),
+        "{error}"
+    );
+    assert!(error.to_string().contains("same request_id"));
+    let until_pending = async {
+        loop {
+            match acquire().await {
+                Ok(response) => break response,
+                Err(DaemonError::MachineRequest { code, .. })
+                    if code == "acquisition_card_starting" =>
+                {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+                Err(error) => panic!("pending card refused: {error}"),
+            }
+        }
+    };
+    let pending = tokio::time::timeout(Duration::from_secs(3), until_pending)
+        .await
+        .unwrap();
+    assert_eq!(pending.payload["status"], "pending");
+    let session = state.owned.session_store.get_session(&room).unwrap();
+    assert_eq!(session.active_interactions().len(), 1);
+    assert_eq!(
+        session.active_interactions()[0].id(),
+        pending.payload["interaction_id"]
+    );
+    assert!(service.acquires.lock().unwrap().is_empty());
 }

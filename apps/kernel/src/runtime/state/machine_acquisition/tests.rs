@@ -71,7 +71,7 @@ async fn offload_automatic_setting_off_awaits_one_human_decision_before_returnin
     let room = command.session_id.clone().unwrap();
     let gate = tokio::spawn(async move {
         gate_state
-            .approve_machine_acquisition(&command, &request, Some(&caps))
+            .approve_machine_acquisition(&command, &request, Some(&caps), None)
             .await
     });
     let id = tokio::time::timeout(Duration::from_secs(5), async {
@@ -221,7 +221,7 @@ async fn machine_acquisition_reclaims_stale_owner_decisions_before_admission() {
 async fn offload_automatic_setting_on_has_no_decision_and_off_applies_to_next_request() {
     let (state, command, request, caps, _workspace) = fixture(true);
     state
-        .approve_machine_acquisition(&command, &request, Some(&caps))
+        .approve_machine_acquisition(&command, &request, Some(&caps), None)
         .await
         .unwrap();
     let room = command.session_id.as_deref().unwrap();
@@ -239,7 +239,7 @@ async fn offload_automatic_setting_on_has_no_decision_and_off_applies_to_next_re
     let room = room.to_owned();
     let gate = tokio::spawn(async move {
         gate_state
-            .approve_machine_acquisition(&command, &request, Some(&caps))
+            .approve_machine_acquisition(&command, &request, Some(&caps), None)
             .await
     });
     let id = tokio::time::timeout(Duration::from_secs(5), async {
@@ -312,7 +312,7 @@ async fn offload_manual_machine_request_uses_the_same_owner_gate_and_service_min
     let gate_state = state.clone();
     let gate = tokio::spawn(async move {
         gate_state
-            .approve_machine_acquisition(&command, &request, Some(&caps))
+            .approve_machine_acquisition(&command, &request, Some(&caps), None)
             .await
     });
     let id = tokio::time::timeout(Duration::from_secs(5), async {
@@ -413,7 +413,7 @@ async fn the_owner_is_asked_about_the_option_the_agent_chose() {
     let gate_state = state.clone();
     let gate = tokio::spawn(async move {
         gate_state
-            .approve_machine_acquisition(&command, &request, Some(&caps))
+            .approve_machine_acquisition(&command, &request, Some(&caps), None)
             .await
     });
     let message = tokio::time::timeout(Duration::from_secs(5), async {
@@ -447,7 +447,7 @@ async fn the_owner_is_asked_about_a_named_option_even_when_it_is_no_longer_liste
     let gate_state = state.clone();
     let gate = tokio::spawn(async move {
         gate_state
-            .approve_machine_acquisition(&command, &request, Some(&caps))
+            .approve_machine_acquisition(&command, &request, Some(&caps), None)
             .await
     });
     let message = tokio::time::timeout(Duration::from_secs(5), async {

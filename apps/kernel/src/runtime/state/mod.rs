@@ -124,7 +124,7 @@ mod job_compute;
 pub(super) use job_compute::stand_in_kernel;
 mod jobs;
 mod leased_agent_file_serve;
-mod machine_acquisition;
+pub(crate) mod machine_acquisition;
 mod machine_files_runtime;
 pub(crate) use file_watch_runtime::{FileWatchPermit, RemoteFileWatch};
 mod machine_files_tools;

@@ -1,5 +1,6 @@
 //! MP-08 / MP-09 / MP-10 / MP-11: task-owned questions use the ordinary wake ledger.
 use super::machine_acquisition::approval::{is_machine_approval, MachineDecision};
+use super::machine_acquisition::direct::{record_wake, set_wake_trace};
 use super::wake_driver::{Cancel, Liveness, Recovery, WakeDriver};
 use super::*;
 use crate::durable_state::agent_lifecycle::{
@@ -93,6 +94,7 @@ impl WakeDriver for InteractionWakeDriver {
                     id: wake.id.clone(),
                     now: crate::session::unix_epoch_ms(),
                 })?;
+            record_wake(wake, "card_raised");
         } else if current.state != "running" {
             return Err(ledger::error("question is no longer pending"));
         }
@@ -110,6 +112,7 @@ impl WakeDriver for InteractionWakeDriver {
             wake,
             "Question withdrawn because its task, agent or wake was cancelled",
         )?;
+        record_wake(wake, "cancelled");
         Ok(Cancel::Done)
     }
     fn recover(&self, wake: &AgentWake) -> Recovery {
@@ -171,9 +174,10 @@ impl KernelRuntimeState {
         room: &str,
         agent: &str,
         interaction: RuntimeInteraction,
+        machine_trace: Option<serde_json::Value>,
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
         let task = self.asking_task_for_turn(room, agent)?;
-        self.arm_interaction_wake_for_task(&task, interaction)
+        self.arm_interaction_wake_for_task(&task, interaction, machine_trace)
     }
 
     pub(super) fn asking_task_for_turn(
@@ -201,6 +205,7 @@ impl KernelRuntimeState {
         &self,
         task: &AgentTaskExecution,
         interaction: RuntimeInteraction,
+        machine_trace: Option<serde_json::Value>,
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
         if task.wait.is_some() {
             return Err(ledger::error(
@@ -228,6 +233,9 @@ impl KernelRuntimeState {
         });
         wake.detail = serde_json::to_value(interaction)
             .map_err(|_| ledger::error("question encoding failed"))?;
+        if let Some(trace) = machine_trace {
+            set_wake_trace(&mut wake.detail, trace);
+        }
         self.arm_wake_source(task, &wake)?;
         // The source can finish after popup validation but before registration.
         // Once the question exists, its condition is the current durable source.
@@ -440,7 +448,8 @@ impl KernelRuntimeOwnedState {
         if machine_decision.is_some() {
             payload["message"] = serde_json::json!(&summary);
         }
-        self.durable_state_store
+        let committed = self
+            .durable_state_store
             .agent_lifecycle(Operation::WakeOccurred {
                 id: wake.id.clone(),
                 occurrence: format!("{}-resolved", wake.id),
@@ -450,6 +459,13 @@ impl KernelRuntimeOwnedState {
                 end: Some(WakeEnd::Succeeded),
                 now,
             })?;
+        if !matches!(committed, ledger::Outcome::Wakes(ref wakes) if wakes.iter().any(|wake| wake.state == "exited"))
+        {
+            return Err(ledger::error("question was already answered or withdrawn"));
+        }
+        if machine_decision.is_some() {
+            record_wake(&wake, status);
+        }
         self.settle_vault_payment(interaction, resolution);
         Ok(())
     }
