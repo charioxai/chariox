@@ -87,7 +87,7 @@ pub(super) async fn service(
 }
 
 /// Answers every request by its action, in any order, until the test ends it.
-async fn service_by_action(
+pub(super) async fn service_by_action(
     state: &KernelRuntimeState,
     answer: impl Fn(&serde_json::Value) -> (u16, serde_json::Value) + Send + 'static,
 ) -> tokio::task::JoinHandle<()> {

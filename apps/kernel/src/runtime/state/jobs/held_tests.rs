@@ -1,7 +1,7 @@
 //! A job placed on a machine the agent already holds, through `chariox.jobs.run`: the held machine's
 //! own kernel runs it (a second kernel in this process stands in for it), and no machine is allocated,
 //! started or released.
-use super::cleanup_tests::service;
+use super::cleanup_tests::{service, service_by_action};
 use super::return_tests::worker_kernel;
 use super::*;
 
@@ -101,6 +101,84 @@ async fn a_job_naming_a_held_machine_runs_on_its_kernel_and_leaves_the_machine_h
         .join("chariox-jobs")
         .join(&record.job_id)
         .exists());
+}
+
+#[tokio::test]
+async fn absolute_job_cwd_uploads_only_the_selected_directory_to_a_held_worker() {
+    let (state, run, task, workspace) = super::tests::remote_fixture().await;
+    let home = crate::test_support::TestWorktree::new("held-small-workspace");
+    stand_in_kernel("held-kernel-small-workspace", home.path());
+    let workspace = workspace.path().canonicalize().unwrap();
+    let empty = workspace.join("empty");
+    let small = workspace.join("small");
+    let oversized = workspace.join("oversized");
+    for dir in [&empty, &small, &oversized] {
+        std::fs::create_dir(dir).unwrap();
+    }
+    let bytes = 2 * 1024 * 1024 * 1024 + 1;
+    std::fs::File::create(oversized.join("large.bin"))
+        .unwrap()
+        .set_len(bytes)
+        .unwrap();
+    std::fs::write(workspace.join(".charioxignore"), b"small/private.bin\n").unwrap();
+    std::fs::write(small.join("private.bin"), b"local-only").unwrap();
+    std::fs::write(small.join("payload.bin"), vec![0; 1024 * 1024]).unwrap();
+    // Every run asks the machine service for the held machine's state; how often is not the point here.
+    let service = service_by_action(&state, |_| {
+        (200, held_machine("ready", "held-kernel-small-workspace"))
+    })
+    .await;
+    for (directory, command) in [
+        (&empty, r#"test -z "$(ls -A)" && printf empty > receipt"#),
+        (
+            &small,
+            r#"test ! -e private.bin && wc -c < payload.bin > receipt"#,
+        ),
+    ] {
+        let value = run_on_held(
+            &state,
+            &run,
+            &task,
+            serde_json::json!({"command":command,"cwd":directory,"outputs":["receipt"],"machine":"held-1","wait_s":40}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(value["placement"], "remote", "{value}");
+        assert_eq!(value["result"]["exit_code"], 0, "{value}");
+        assert_eq!(
+            value["result"]["files_back"],
+            serde_json::json!(["receipt"]),
+            "{value}"
+        );
+    }
+    assert_eq!(std::fs::read(empty.join("receipt")).unwrap(), b"empty");
+    assert_eq!(
+        std::fs::read_to_string(small.join("receipt"))
+            .unwrap()
+            .trim(),
+        "1048576"
+    );
+    assert!(!workspace.join("receipt").exists());
+
+    let value = run_on_held(
+        &state,
+        &run,
+        &task,
+        serde_json::json!({"command":["/bin/true"],"cwd":oversized,"machine":"held-1","wait_s":40}),
+    )
+    .await
+    .unwrap();
+    service.abort();
+    let reason = value["result"]["output_tail"].as_str().unwrap();
+    assert!(reason.contains(oversized.to_str().unwrap()), "{value}");
+    assert!(
+        reason.contains("2147483648 bytes") && reason.contains("100000 files"),
+        "{value}"
+    );
+    assert!(
+        reason.contains("2147483649 bytes (file count 1)"),
+        "{value}"
+    );
 }
 
 #[tokio::test]
