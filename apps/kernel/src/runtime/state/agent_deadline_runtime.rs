@@ -40,6 +40,16 @@ impl KernelRuntimeState {
         caller_user_id: &str,
         request: SetAgentDeadlineRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        self.set_agent_deadline_inner(caller_user_id, request, None)
+            .await
+    }
+
+    pub(super) async fn set_agent_deadline_inner(
+        &self,
+        caller_user_id: &str,
+        request: SetAgentDeadlineRequest,
+        expected_expired_limit: Option<u64>,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
         let _rearm = self.owned.agent_deadline_rearm.lock().await;
         let _deadline_edit = self.owned.agent_deadline_edit.lock().await;
         self.authorize_current_external_command()?;
@@ -54,6 +64,20 @@ impl KernelRuntimeState {
                 session_id: request.session_id,
                 agent_id: request.agent_id,
             });
+        }
+        let previous = self
+            .owned
+            .durable_state_store
+            .agent_deadline(&request.session_id, &request.agent_id)?;
+        if expected_expired_limit.is_some_and(|expected| {
+            previous
+                .as_ref()
+                .is_none_or(|deadline| deadline.deadline_ms != expected)
+        }) {
+            return Err(refusal(
+                "agent_deadline_changed",
+                "The agent’s time limit already changed.",
+            ));
         }
         // A deadline is never later than the nearest ancestor limit still running: the
         // parent's deadline ends its team. An ancestor whose limit has ended bounds nothing.
@@ -148,6 +172,16 @@ impl KernelRuntimeState {
         else {
             unreachable!()
         };
+        if let Some(previous) = previous.filter(|previous| {
+            (previous.state == AgentDeadlineState::Reached
+                || previous.deadline_ms <= crate::session::unix_epoch_ms())
+                && deadline.as_ref().is_none_or(|current| {
+                    current.state == AgentDeadlineState::Armed
+                        && current.deadline_ms > crate::session::unix_epoch_ms()
+                })
+        }) {
+            self.owned.close_deadline_card(&previous)?;
+        }
         self.publish_changed_agent_trees();
         Ok(LocalDaemonResponse::AgentDeadline { deadline })
     }

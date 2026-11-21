@@ -545,6 +545,25 @@ impl KernelRuntimeState {
         }
         Ok(())
     }
+    pub(crate) fn withdraw_agent_reply_request(
+        &self,
+        session: &crate::session::RuntimeSession,
+        sender: &crate::agent::AgentInstance,
+        sequence: u64,
+    ) -> Result<(), DaemonError> {
+        self.require_message_authority(session, sender)?;
+        self.owned
+            .durable_state_store
+            .agent_lifecycle(Operation::WithdrawReply {
+                room: session.id().into(),
+                agent: sender.id().into(),
+                sequence,
+                now: crate::session::unix_epoch_ms(),
+            })?;
+        self.publish_task_change(session.id());
+        self.schedule_agent_lifecycle_sweep();
+        Ok(())
+    }
     pub(in crate::runtime::state) async fn send_durable_agent_message(
         &self,
         session: &crate::session::RuntimeSession,
@@ -630,8 +649,15 @@ impl KernelRuntimeState {
                 )
                 .await;
         }
-        self.owned
-            .ensure_agent_before_deadline(target_room, target.id())?;
+        if let Err(error) = self
+            .owned
+            .ensure_agent_before_deadline(target_room, target.id())
+        {
+            if crate::error::is_agent_deadline_refusal(&error) {
+                self.show_deadline_refusal(target_room, target.id()).await;
+            }
+            return Err(error);
+        }
         // Refuse here, while the sender can still react: a message the peer's account cannot
         // start would otherwise stay durable and pending behind the sender's goal.
         if let Err(error) =

@@ -101,6 +101,9 @@ impl CommandRouter {
                 )
                 .await?,
             ),
+            Some("withdraw-reply") => {
+                Some(self.dispatch_withdraw_reply_command(session, caller, command, args))
+            }
             Some("promote") => Some(
                 self.dispatch_meta_agent_promote_command(
                     provider_run,

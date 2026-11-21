@@ -415,3 +415,13 @@ fn peer_commands_and_owner_room_card_authority_are_documented() {
         .unwrap()
         .contains("never acts for a peer"));
 }
+
+#[test]
+fn withdrawing_a_reply_is_routed() {
+    let tokens = tokenize_command("agent withdraw-reply 42").unwrap();
+    assert!(matches!(
+        execution_policy(&tokens),
+        MetaCommandExecutionPolicy::Routed
+    ));
+    assert!(crate::runtime::room_tool_admission::command(&tokens).is_ok());
+}

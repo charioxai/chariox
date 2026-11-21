@@ -171,6 +171,12 @@ pub struct UsageLimitStop {
     pub state: UsageLimitStopState,
 }
 
+impl UsageLimitStop {
+    pub(crate) fn reset_reached(&self, now_ms: u64) -> bool {
+        self.refused == 0 && self.resumes_at_ms.is_some_and(|reset| reset <= now_ms)
+    }
+}
+
 fn is_zero(value: &u32) -> bool {
     *value == 0
 }
