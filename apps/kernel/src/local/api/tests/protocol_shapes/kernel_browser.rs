@@ -554,7 +554,7 @@ fn mp08_browser_state_wait_unchanged_1008_snapshot() {
     let bytes = include_bytes!("browser-state-wait-unchanged-1008.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "fd94d13a5127b04a6cc5fa847d5806c21f34dd9a293013db5676cb4b444d3267"
+        "fcc170b3f54356b033d18bb39872d4e6c1c9505b31fd53054f68fd1490194e61"
     );
     let snapshot: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(snapshot["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
@@ -604,7 +604,7 @@ fn mp08_mp10_mp11_mirror_completion_550_158_snapshot_hash() {
     let bytes = include_bytes!("browser-mirror2-completion-550.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "fe1a056db1192c44624efda9c919c11d9ad1f801fb3269e906b47cb29ea46d7c"
+        "0aba68fe866a81bbb9bc4c1b8bf437e4931fe58335e04ff9cbb54a38d51f91ce"
     );
     let value: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(value["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
@@ -765,7 +765,7 @@ fn mp08_mp10_browser_favicon_cache_1012_shape_and_hash() {
     let bytes = include_bytes!("browser-favicon-cache-1012.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "28e91316c0116e6d364a34a1a5d1cc6b3a67f16aef6f5cfd5a7a967c8d000b59"
+        "46c07d513d7130941bed81a405ef239e7264f4aa8518b7fcd11ff86594bbc9a1"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     let request: LocalDaemonRequest = serde_json::from_value(fixture["request"].clone()).unwrap();
@@ -792,7 +792,7 @@ fn mp08_mp11_vault_fill_941_shape_and_hash() {
     let bytes = include_bytes!("kernel-browser-vault-fill-941.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "d1f6706eae8a601f5c8bfd63108ca9864eb68583f6b32faa45d9f1c305ec9b3f"
+        "f13e0138b3894506a48129df5f71b6ef59c7ef47f4ec7d84c23a1323a8a33773"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     let request: LocalDaemonRequest = serde_json::from_value(fixture["request"].clone()).unwrap();
