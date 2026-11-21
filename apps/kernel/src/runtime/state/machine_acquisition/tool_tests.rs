@@ -1756,6 +1756,15 @@ async fn cancelled_acquire_preserves_a_distinct_outcome() {
     assert!(
         matches!(acquire().await.unwrap_err(), DaemonError::MachineRequest {code, ..} if code == "acquisition_cancelled")
     );
+    let status = state
+        .machine_tool(
+            &token,
+            "chariox.machines.status",
+            serde_json::json!({"request_id":"cancelled-acquire"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(status.payload["status"], "cancelled");
     assert!(service.acquires.lock().unwrap().is_empty());
 }
 
@@ -1919,4 +1928,84 @@ async fn rental_operations_refuse_released_allocations() {
             matches!(error, DaemonError::MachineRequest { code, .. } if code == "machine_released")
         );
     }
+}
+
+#[tokio::test]
+async fn machine_status_looks_up_the_original_request_id() {
+    let service = service(two_in_stock(), &[]).await;
+    let (state, token, _workspace) = agent_kernel(service.api_url.clone()).await;
+    let room = require_owner_approval(&state, &token);
+    let status = |id| {
+        state.machine_tool(
+            &token,
+            "chariox.machines.status",
+            serde_json::json!({"request_id":id}),
+        )
+    };
+    assert_eq!(
+        status("missing").await.unwrap().payload["status"],
+        "unknown"
+    );
+    let acquire = || state.machine_tool(&token, "chariox.machines.acquire", acquire_args("lookup"));
+    let pending = acquire().await.unwrap().payload;
+    let found = status("lookup").await.unwrap().payload;
+    assert_eq!(found["status"], "pending");
+    assert_eq!(found["interaction_id"], pending["interaction_id"]);
+    assert_eq!(found["registration_id"], pending["registration_id"]);
+    let session = state.owned.session_store.get_session(&room).unwrap();
+    state
+        .resolve_terminal_runtime_interaction(
+            &room,
+            found["interaction_id"].as_str().unwrap(),
+            "approve",
+            None,
+            Some(session.owner_user_id()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        status("lookup").await.unwrap().payload["status"],
+        "approved"
+    );
+    let machine = acquire().await.unwrap().payload;
+    let found = status("lookup").await.unwrap().payload;
+    assert_eq!(found["status"], "allocated");
+    assert_eq!(
+        found["allocation_ref"],
+        machine["allocation"]["allocation_ref"]
+    );
+}
+
+#[tokio::test]
+async fn machine_status_names_a_lost_service_reply_as_unconfirmed() {
+    let service = service(two_in_stock(), &[]).await;
+    let (state, token, _workspace) = agent_kernel(service.api_url.clone()).await;
+    service
+        .answers
+        .lock()
+        .unwrap()
+        .push_back(Answer::LoseResponse);
+    let acquire = || {
+        state.machine_tool(
+            &token,
+            "chariox.machines.acquire",
+            acquire_args("ambiguous"),
+        )
+    };
+    assert!(acquire().await.is_err());
+    let result = state
+        .machine_tool(
+            &token,
+            "chariox.machines.status",
+            serde_json::json!({"request_id":"ambiguous"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(result.payload["status"], "unconfirmed");
+    assert!(result.payload["message"]
+        .as_str()
+        .unwrap()
+        .contains("same request_id"));
+    let allocation = acquire().await.unwrap().payload;
+    assert_eq!(allocation["allocation"]["allocation_ref"], "allocation-1");
 }

@@ -27,7 +27,7 @@ pub(crate) fn machine_tool_specs() -> Vec<crate::transport::runtime_tools::Runti
     [
         ("chariox.machines.options", "List the machines you can acquire now, as the connected service offers them: class_id, region, size, decimal rate per minute and per hour in the account's currency, and whether it is in stock. Pick one for chariox.machines.acquire. An option that is not available cannot be acquired.", schema(serde_json::json!({}),serde_json::json!([]))),
         ("chariox.machines.acquire", "Acquire a machine through Chariox for work you need to run elsewhere. In reason, briefly tell the person what you need the machine for. Keep the same reason when retrying. Pass class_id (and region when the class is offered in several) from chariox.machines.options to acquire exactly that option; without class_id the first option in stock is acquired. A named option that is out of stock is refused with the options in stock, never replaced. When the person needs to approve, returns status pending with request_id, interaction_id and registration_id. Yield on the registration_id. After approval, call acquire with that same request_id to send the request. After denial, expiry or cancellation, ask again with a new request_id. Service limits and the daily spend cap always apply. Returns allocation_ref, the machine type and service terms; poll status until access is available, then reach the returned kernel with Room commands. Release it when finished. Reuse request_id for a retry, after a lost response, a timeout or a refusal: it is safe, keeps the option the first try chose and returns the allocation the service accepted. Use a new request_id when the approval ended or the service closed the old one.", schema(serde_json::json!({"request_id":{"type":"string"},"class_id":{"type":"string"},"region":{"type":"string"},"reason":{"type":"string","minLength":1,"maxLength":ACQUISITION_REASON_MAX_CHARS}}),serde_json::json!(["reason"]))),
-        ("chariox.machines.status", "Read an allocation's state, its verified target kernel and the installed build toolchain version when the target answers. Use the allocation_ref returned by acquire. The machine remains charged until deletion is confirmed.", schema(serde_json::json!({"allocation_ref":{"type":"string"}}),serde_json::json!(["allocation_ref"]))),
+        ("chariox.machines.status", "Read a machine's state, its verified target kernel and the installed build toolchain version when the target answers, with allocation_ref from acquire, or read the approval and allocation outcome with the original request_id. Pass exactly one. A request ID belongs to the agent that asked. When its reply was lost and the outcome is unknown or unconfirmed, retry acquire with the same request_id.", serde_json::json!({"type":"object","properties":{"allocation_ref":{"type":"string"},"request_id":{"type":"string"}},"oneOf":[{"required":["allocation_ref"]},{"required":["request_id"]}],"additionalProperties":false})),
         ("chariox.machines.release", "Delete an acquired machine when its work is finished. Returns the allocation state; poll status until deleted to confirm the allocation has ended.", schema(serde_json::json!({"allocation_ref":{"type":"string"}}),serde_json::json!(["allocation_ref"]))),
     ].into_iter().map(|(name,description,input_schema)|RuntimeToolSpec{name:name.into(),description:description.into(),input_schema}).chain(access::specs()).collect()
 }
@@ -64,13 +64,31 @@ impl KernelRuntimeState {
         let args: Args = serde_json::from_value(args).map_err(|_| {
             acquisition_error(
                 "invalid_request",
-                "Use reason, request_id, class_id and region for acquire, allocation_ref for status and release, and no arguments for options",
+                "Use reason, request_id, class_id and region for acquire, request_id or allocation_ref for status, allocation_ref for release, and no arguments for options",
             )
         })?;
         if tool == "chariox.machines.acquire" {
             return self
                 .direct_machine_acquire(&reach.origin(), run.session_id(), &reach.agent_id, args)
                 .await;
+        }
+        if tool == "chariox.machines.status" {
+            match (args.request_id.as_deref(), args.allocation_ref.as_deref()) {
+                (Some(request_id), None) => {
+                    return self.machine_request_status(
+                        run.session_id(),
+                        &reach.agent_id,
+                        request_id,
+                    );
+                }
+                (None, Some(_)) => {}
+                _ => {
+                    return Err(acquisition_error(
+                        "invalid_request",
+                        "For machine status, pass exactly one of request_id and allocation_ref",
+                    ))
+                }
+            }
         }
         let origin = reach.origin();
         let caps = self
@@ -173,6 +191,7 @@ mod build_toolchain;
 mod choice;
 pub(crate) mod direct;
 mod quote;
+mod status;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
