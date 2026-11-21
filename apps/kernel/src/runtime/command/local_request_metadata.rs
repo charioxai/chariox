@@ -257,6 +257,9 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
         LocalDaemonRequest::PreflightProviderAccountPortability(_) => {
             LocalRequestMetadata::new("provider_account.portability.preflight", Interactive)
         }
+        LocalDaemonRequest::CloudAccountKernels(request) => {
+            LocalRequestMetadata::new(account_kernels_command_type(request), Interactive)
+        }
         LocalDaemonRequest::ControlPlane(_) => {
             LocalRequestMetadata::new("control_plane", Interactive)
         }
@@ -663,6 +666,7 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
 
 fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
     match request {
+        LocalDaemonRequest::CloudAccountKernels(request) => account_kernels_command_type(request),
         LocalDaemonRequest::ControlPlane(_) => "control_plane",
         LocalDaemonRequest::SetRoomPinned(_) => "room.pin",
         LocalDaemonRequest::IssueOwnMachineEnrollment(_) => "machine.enroll",
@@ -1257,5 +1261,12 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         | LocalDaemonRequest::PeekAgentTranscript(_)
         | LocalDaemonRequest::ReadAgentTranscriptEntry(_)
         | LocalDaemonRequest::GetProviderRun(_) => unreachable!("handled by metadata matcher"),
+    }
+}
+
+fn account_kernels_command_type(request: &crate::local::AccountKernelsRequest) -> &'static str {
+    match request {
+        crate::local::AccountKernelsRequest::List {} => "account_kernels.list",
+        crate::local::AccountKernelsRequest::Unlink { .. } => "account_kernels.unlink",
     }
 }

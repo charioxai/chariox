@@ -710,6 +710,7 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::SubscribeUserAppViews(_)
         | LocalDaemonRequest::AnswerUserDomainInteraction(_)
         | LocalDaemonRequest::AcceptAppHostAction(_)
+        | LocalDaemonRequest::CloudAccountKernels(_)
         | LocalDaemonRequest::ControlPlane(_)
         | LocalDaemonRequest::GetEnvironmentOperation(_)
         | LocalDaemonRequest::SaveProjectEnvironment(_)

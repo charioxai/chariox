@@ -10,6 +10,7 @@ use crate::slice::{
 use crate::terminal::{RuntimeNoticeRecord, TerminalOutputKind, TerminalOutputRecord};
 use chariox_relay::protocol::RelayKernelPresence;
 
+mod account_kernels;
 mod account_transfer;
 mod agent_deadline;
 mod agent_lifecycle;
@@ -70,6 +71,7 @@ mod workflow;
 mod workflow_notification;
 mod workspace;
 
+pub use account_kernels::*;
 pub use account_transfer::*;
 pub use agent_deadline::*;
 pub use agent_lifecycle::*;

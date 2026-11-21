@@ -24,6 +24,7 @@ use crate::runtime::workspace_coordinator::WorkspaceCoordinator;
 use crate::terminal::TerminalStreamHealthStore;
 use crate::transport::relay_client::RelayClientState;
 
+mod account_kernels;
 pub(crate) mod agent_turn_bridge;
 mod caller_identity_bridge;
 mod card_action;

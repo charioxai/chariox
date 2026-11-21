@@ -197,7 +197,10 @@ pub(crate) fn command(tokens: &[String]) -> Result<(), DaemonError> {
             Ok(())
         }
         Some("session") if tokens.get(1).map(String::as_str) == Some("overview") => Ok(()),
-        Some("kernel") if matches!(tokens, [_, verb] if verb == "status" || verb == "list-local") => {
+        Some("kernel")
+            if matches!(tokens, [_, verb] if matches!(verb.as_str(), "status" | "list-local" | "list-account"))
+                || matches!(tokens, [_, verb, _] if verb == "unlink") =>
+        {
             Ok(())
         }
         // What `--room` and `--slice` accept for the caller; the slice lifecycle stays out.
