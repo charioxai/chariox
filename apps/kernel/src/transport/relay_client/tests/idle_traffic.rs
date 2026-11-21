@@ -143,8 +143,10 @@ fn presence_refreshes_share_one_cloud_connection() {
             INTERACTIVE_COMMAND_QUEUE_LIMIT,
         ));
 
+        let registration = router.relay_registration().await;
         for round in 0..3 {
-            let outcome = publish_cloud_presence(&router, true, "idle drill").await;
+            let outcome =
+                publish_cloud_presence(&router, true, "idle drill", Some(&registration)).await;
             assert_eq!(outcome, CloudPresencePublishOutcome::Published, "{round}");
         }
 

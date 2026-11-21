@@ -51,12 +51,17 @@ fn cloud_presence_publish_survives_a_slow_cloud_answer() {
             machine_credential: Some("synthetic-machine-credential".into()),
             ..Default::default()
         });
+        let app = Arc::new(Mutex::new(DaemonApp::bootstrap(config).unwrap()));
         let router = Arc::new(CommandRouter::with_interactive_capacity_from_app(
-            Arc::new(Mutex::new(DaemonApp::bootstrap(config).unwrap())),
+            Arc::clone(&app),
             INTERACTIVE_COMMAND_QUEUE_LIMIT,
         ));
+        let mut busy_app = app.lock().await;
+        let registration = busy_app.relay_registration();
 
-        let outcome = publish_cloud_presence(&router, true, "slow cloud drill").await;
+        let outcome =
+            publish_cloud_presence(&router, true, "slow cloud drill", Some(&registration)).await;
+        drop(busy_app);
 
         assert_eq!(outcome, CloudPresencePublishOutcome::Published);
         assert_eq!(cloud.join().unwrap(), "POST /kernels/presence HTTP/1.1");
