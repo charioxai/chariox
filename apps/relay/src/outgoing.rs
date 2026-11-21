@@ -90,9 +90,28 @@ impl OutgoingQueue {
         Ok(())
     }
 
-    /// A message of `len` bytes left the queue: it was written, or became a transfer.
+    /// A message of `len` bytes was written or could not enter the writer.
     pub(crate) fn release(&self, len: usize) {
         self.messages.fetch_sub(1, Ordering::Relaxed);
+        self.release_bytes(len);
+    }
+
+    /// The writer took the message slot. A bulk transfer retains its byte
+    /// reservation until WireCredit receives the last chunk's receipt.
+    pub(crate) fn start_transfer(self: &Arc<Self>, len: usize) -> Option<BulkCharge> {
+        self.messages.fetch_sub(1, Ordering::Relaxed);
+        if len > CHUNK_BYTES {
+            Some(BulkCharge {
+                queue: Arc::clone(self),
+                bytes: len,
+            })
+        } else {
+            self.release_bytes(len);
+            None
+        }
+    }
+
+    fn release_bytes(&self, len: usize) {
         self.bytes.fetch_sub(len, Ordering::Relaxed);
         if len > CHUNK_BYTES {
             self.bulk_bytes.fetch_sub(len, Ordering::Relaxed);
@@ -123,6 +142,17 @@ impl OutgoingQueue {
             dropped_replies: self.dropped_replies.load(Ordering::Relaxed),
             backlog_closed: self.backlog_closed(),
         }
+    }
+}
+
+pub(crate) struct BulkCharge {
+    queue: Arc<OutgoingQueue>,
+    bytes: usize,
+}
+
+impl Drop for BulkCharge {
+    fn drop(&mut self) {
+        self.queue.release_bytes(self.bytes);
     }
 }
 
@@ -176,18 +206,30 @@ impl RelaySender {
     }
 
     pub(crate) fn try_send(&self, message: Message) -> Result<(), SendRefused> {
+        self.try_send_sized(message.len(), || message)
+    }
+
+    /// Reserve capacity before allocating a serialized reply that might be refused.
+    pub(crate) fn try_send_sized(
+        &self,
+        len: usize,
+        message: impl FnOnce() -> Message,
+    ) -> Result<(), SendRefused> {
         if self.tx.is_closed() {
             return Err(SendRefused::Gone);
         }
-        let len = message.len();
         self.queue.admit(len)?;
-        self.tx.try_send(message).map_err(|error| {
+        let permit = self.tx.try_reserve().map_err(|error| {
             self.queue.release(len);
             match error {
                 mpsc::error::TrySendError::Full(_) => SendRefused::Backlogged,
                 mpsc::error::TrySendError::Closed(_) => SendRefused::Gone,
             }
-        })
+        })?;
+        let message = message();
+        debug_assert_eq!(message.len(), len);
+        permit.send(message);
+        Ok(())
     }
 
     pub(crate) fn same_channel(&self, other: &Self) -> bool {
