@@ -7509,6 +7509,11 @@ control-plane acquire that needs approval returns `acquisition_waiting`, with th
 card ID in `registration_id`. After the Room decision, repeat the request with
 the same ID to read the outcome or complete the allocation.
 
+Use `chariox.machines.status {request_id}` to read the original acquisition receipt
+from the requesting agent. An allocated receipt names the allocation, whose
+current state is available through `status {allocation_ref}`. An unknown or
+unconfirmed receipt keeps the original request ID available for a safe retry.
+
 The acquiring agent can use `chariox.machines.exec` for a short command on its ready
 rental and `chariox.machines.copy` for verified uploads and downloads. Both
 operations take that allocation's ID and check the canonical target. The scope
