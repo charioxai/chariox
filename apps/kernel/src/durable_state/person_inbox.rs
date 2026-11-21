@@ -110,7 +110,8 @@ pub(super) fn apply_event(tx: &Transaction<'_>, kind: &str, payload: &str) -> ru
     match kind {
         NOTICE | WORKFLOW_START_REFUSED => {
             let notice: StoredNotice = serde_json::from_str(payload).map_err(decode)?;
-            let read = if kind == WORKFLOW_START_REFUSED && !notice.is_workflow_relink() {
+            let workflow_refusal = kind == WORKFLOW_START_REFUSED;
+            let read = if workflow_refusal && !notice.is_workflow_relink() {
                 tx.query_row(
                     "SELECT EXISTS(SELECT 1 FROM person_inbox_mutes
                      WHERE owner_user_id = ?1 AND session_id = ?2 AND agent_id = ?3)",
@@ -120,15 +121,11 @@ pub(super) fn apply_event(tx: &Transaction<'_>, kind: &str, payload: &str) -> ru
             } else {
                 notice.read
             };
-            let repeat = if kind == WORKFLOW_START_REFUSED {
-                1
-            } else {
-                notice.folded
-            };
+            let repeat = if workflow_refusal { 1 } else { notice.folded };
             if repeat > 0 {
                 let updated = tx.execute(
                     "UPDATE person_inbox_notices SET folded = min(folded + ?2, 4294967295), title = ?3, body = ?4,
-                        link = ?5, created_at_ms = ?6, read = ?7,
+                        link = ?5, created_at_ms = ?6, read = ?7 OR (?9 AND read),
                         priority = CASE WHEN priority = 'high' OR ?8 = 'high' THEN 'high' ELSE 'normal' END
                     WHERE card_id = ?1",
                     params![
@@ -139,7 +136,8 @@ pub(super) fn apply_event(tx: &Transaction<'_>, kind: &str, payload: &str) -> ru
                         notice.link,
                         notice.created_at_ms as i64,
                         read,
-                        priority_text(notice.priority)
+                        priority_text(notice.priority),
+                        workflow_refusal,
                     ],
                 )?;
                 if updated != 0 {
