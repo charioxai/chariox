@@ -277,6 +277,14 @@
     "seam": "context transfer ticket authority"
   },
   {
+    "path": "/v1/kernels/context/report",
+    "callers": [
+      "apps/kernel/src/managed_context/outbound_report.rs"
+    ],
+    "why": "the source kernel tells the owner's control plane why a machine's context copy stopped",
+    "seam": "context transfer ticket authority"
+  },
+  {
     "path": "/v1/kernels/context/ticket",
     "callers": [
       "apps/cli/scripts/live-byom-account-drill.mjs",
