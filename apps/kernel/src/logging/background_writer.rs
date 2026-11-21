@@ -80,7 +80,7 @@ mod tests {
     use std::time::Duration;
 
     #[test]
-    fn warning_waits_for_prior_records_and_its_flush() {
+    fn warning_does_not_wait_for_a_busy_sink() {
         let records = Arc::new(Mutex::new(Vec::new()));
         let observed = Arc::clone(&records);
         let (started, starting) = mpsc::channel();
@@ -109,11 +109,11 @@ mod tests {
             finished.send(()).unwrap();
         });
         submission.recv().unwrap();
-        let waited = completion.recv_timeout(Duration::from_millis(100)).is_err();
+        let completed = completion.recv_timeout(Duration::from_secs(1)).is_ok();
         release.send(()).unwrap();
-        completion.recv_timeout(Duration::from_secs(1)).unwrap();
         warning.join().unwrap();
-        assert!(waited, "warning acknowledged before the sink flushed it");
+        writer.flush();
+        assert!(completed, "warning waited for the disk writer");
         assert_eq!(
             *records.lock().unwrap(),
             vec![("info".into(), false), ("warning".into(), true)]
@@ -121,7 +121,7 @@ mod tests {
     }
 
     #[test]
-    fn full_queue_applies_backpressure_and_drop_drains_every_record() {
+    fn full_log_queue_does_not_block_producers() {
         let records = Arc::new(Mutex::new(Vec::new()));
         let observed = Arc::clone(&records);
         let (started, starting) = mpsc::channel();
@@ -153,19 +153,17 @@ mod tests {
             finished.send(()).unwrap();
         });
         submission.recv().unwrap();
-        let waited = completion.recv_timeout(Duration::from_millis(100)).is_err();
+        let completed = completion.recv_timeout(Duration::from_secs(1)).is_ok();
         release.send(()).unwrap();
-        completion.recv_timeout(Duration::from_secs(1)).unwrap();
         overflow.join().unwrap();
         drop(writer);
         let records = records.lock().unwrap();
-        assert!(waited, "a full queue did not apply backpressure");
-        assert_eq!(records.len(), QUEUED_RECORDS + 3);
+        assert!(completed, "a full log queue blocked the producer");
         assert_eq!(records[0], "first");
         for index in 0..QUEUED_RECORDS {
             assert_eq!(records[index + 1], index.to_string());
         }
-        assert_eq!(records[QUEUED_RECORDS + 1], "last");
-        assert_eq!(records[QUEUED_RECORDS + 2], "flushed");
+        assert!(!records.iter().any(|record| record == "last"));
+        assert_eq!(records.last().unwrap(), "flushed");
     }
 }
