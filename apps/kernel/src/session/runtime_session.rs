@@ -1340,6 +1340,7 @@ impl RuntimeSession {
     pub fn equivalent_except_presence(&self, other: &Self) -> bool {
         let mut left = self.clone();
         left.attachment_ids = other.attachment_ids.clone();
+        left.attachment_revision = other.attachment_revision;
         left.last_used_at_ms = other.last_used_at_ms;
         left == *other
     }
@@ -1348,6 +1349,7 @@ impl RuntimeSession {
         let mut left = self.clone();
         let right = other.clone();
         left.attachment_ids = right.attachment_ids.clone();
+        left.attachment_revision = right.attachment_revision;
         left.alias = right.alias.clone();
         left.last_used_at_ms = right.last_used_at_ms;
         left.last_activity_at_ms = right.last_activity_at_ms;
