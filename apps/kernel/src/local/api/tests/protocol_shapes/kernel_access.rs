@@ -698,8 +698,10 @@ fn owner_interactions_protocol_1023_list_the_persons_cards_with_why_the_person_k
         choices: vec![OwnerInteractionChoice {
             id: "approve".into(),
             label: "Install".into(),
+            description: Some("Install this App on this kernel.".into()),
         }],
         reply_choice_id: None,
+        reply_choice_description: None,
         person_only: person_only.map(str::to_owned),
     };
     let response = LocalDaemonResponse::OwnerInteractionsListed {
@@ -714,11 +716,11 @@ fn owner_interactions_protocol_1023_list_the_persons_cards_with_why_the_person_k
         serde_json::to_value(&response).unwrap(),
         serde_json::json!({"OwnerInteractionsListed": {"interactions": [
             {"session_id": "s", "interaction_id": "i", "title": "Install App", "message": "Install this App?",
-             "choices": [{"id": "approve", "label": "Install"}]},
+             "choices": [{"id": "approve", "label": "Install", "description": "Install this App on this kernel."}]},
             {"session_id": "s", "interaction_id": "i", "title": "Install App", "message": "Install this App?",
-             "choices": [{"id": "approve", "label": "Install"}], "person_only": "it approves a payment"},
+             "choices": [{"id": "approve", "label": "Install", "description": "Install this App on this kernel."}], "person_only": "it approves a payment"},
             {"interaction_id": "i", "title": "Install App", "message": "Install this App?",
-             "choices": [{"id": "approve", "label": "Install"}]},
+             "choices": [{"id": "approve", "label": "Install", "description": "Install this App on this kernel."}]},
         ]}})
     );
     assert_eq!(
