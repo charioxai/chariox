@@ -390,6 +390,109 @@ async fn a_failing_watcher_wakes_the_agent_that_made_it_once() {
         .unwrap();
 }
 
+// A successful exit cannot commit an event or advance the cursor if the demonstrated reading disappeared.
+#[tokio::test]
+async fn a_poll_that_loses_its_reading_is_unhealthy() {
+    let rig = rig().await;
+    let (watcher_id, _) = rig
+        .create(
+            r#"read input
+case "$input" in
+    *'"dry_run":true'*) echo '{"reading":"€1,599"}'; exit 0;;
+esac
+echo '{"cursor":"unreadable"}'
+echo '{"event":"mail","key":"x","text":"false alarm"}'
+"#,
+        )
+        .await;
+    rig.tool("chariox.watcher.dry_run", json!({"watcher_id": watcher_id}))
+        .await
+        .unwrap();
+    rig.tool(
+        "chariox.watcher.activate",
+        json!({"watcher_id": watcher_id}),
+    )
+    .await
+    .unwrap();
+    let record = rig
+        .record_until(&watcher_id, |record| record.last_check_ms.is_some())
+        .await;
+    assert!(matches!(record.health, WatcherHealth::Failing { .. }));
+    assert_eq!((record.fired_count, record.cursor), (0, None));
+}
+
+#[tokio::test]
+async fn a_watcher_the_owner_turned_on_requires_owner_approval_for_repairs() {
+    let rig = rig().await;
+    let (watcher_id, _) = rig
+        .create(
+            r#"read input
+case "$input" in *'"dry_run":true'*) exit 0;; esac
+exit 4
+"#,
+        )
+        .await;
+    let dry_run = json!({"watcher_id": watcher_id});
+    rig.tool("chariox.watcher.dry_run", dry_run.clone())
+        .await
+        .unwrap();
+    let activate = || WatcherRequest::Activate {
+        watcher_id: watcher_id.clone(),
+    };
+    rig.runtime
+        .execute_watcher_request(activate(), "local")
+        .await
+        .unwrap();
+    let failed = rig
+        .record_until(&watcher_id, |record| {
+            matches!(record.health, WatcherHealth::Failing { .. })
+        })
+        .await;
+
+    rig.tool(
+        "chariox.watcher.create",
+        json!({
+            "watcher_id": watcher_id,
+            "manifest": failed.manifest,
+            "script": { "file_name": "watch.sh", "text": SCRIPT }
+        }),
+    )
+    .await
+    .unwrap();
+    rig.tool("chariox.watcher.dry_run", dry_run.clone())
+        .await
+        .unwrap();
+    for arguments in [dry_run, json!({"watcher_id": watcher_id, "paused": false})] {
+        let refused = rig
+            .tool("chariox.watcher.activate", arguments)
+            .await
+            .unwrap_err();
+        assert!(refused.contains("owner"), "{refused}");
+    }
+
+    let draft = rig.record_until(&watcher_id, |_| true).await;
+    assert_eq!(draft.state, WatcherState::Draft);
+    assert_eq!(draft.fired_count, 0);
+    assert_eq!(draft.health, failed.health);
+    let inbox = rig
+        .runtime
+        .owned
+        .durable_state_store
+        .agent_inbox(&rig.session_id, &rig.agent_id, 0)
+        .unwrap();
+    assert!(!inbox.iter().any(|event| event.kind == "watcher_health"));
+
+    rig.runtime
+        .execute_watcher_request(activate(), "local")
+        .await
+        .unwrap();
+    let repaired = rig
+        .record_until(&watcher_id, |record| record.fired_count == 1)
+        .await;
+    assert_eq!(repaired.state, WatcherState::Active);
+    assert_eq!(repaired.health, WatcherHealth::Ok);
+}
+
 /// A stream's script in `dir`: it answers a dry run at once and otherwise runs `body`.
 fn stream_script(dir: &std::path::Path, body: &str) -> String {
     format!(
