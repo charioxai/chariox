@@ -4,7 +4,7 @@ use super::remote::Remote;
 use super::*;
 use crate::local::OffloadPolicy;
 use crate::room_exec::{ExecOutcome, ExecOutput, ExecStream, OUTPUT_LOSS_NOTICE};
-use std::io::Write;
+use std::io::{Read, Seek, SeekFrom, Write};
 use zeroize::Zeroizing;
 
 /// Output is protected as complete lines, including values that cross relay chunk boundaries.
@@ -27,7 +27,7 @@ pub(super) struct OutputCheckpoint {
 }
 
 impl Output {
-    fn path(state: &KernelRuntimeState, record: &Record) -> PathBuf {
+    pub(super) fn path(state: &KernelRuntimeState, record: &Record) -> PathBuf {
         state
             .owned
             .config_projection
@@ -38,9 +38,18 @@ impl Output {
             .join("output.log")
     }
 
-    pub(super) fn existing_log(state: &KernelRuntimeState, record: &Record) -> Option<String> {
-        let path = Self::path(state, record);
-        path.is_file().then(|| path.to_string_lossy().into_owned())
+    /// Reads only the already-sanitized bytes the previous kernel kept.
+    pub(super) fn saved_tail(path: &Path, limit: usize) -> std::io::Result<String> {
+        let mut file = std::fs::File::open(path)?;
+        let start = file.metadata()?.len().saturating_sub(limit as u64);
+        file.seek(SeekFrom::Start(start))?;
+        let mut bytes = Vec::new();
+        file.take(limit as u64).read_to_end(&mut bytes)?;
+        let first = bytes
+            .iter()
+            .take_while(|&&byte| byte & 0xc0 == 0x80)
+            .count();
+        Ok(String::from_utf8_lossy(&bytes[first..]).into_owned())
     }
 
     pub(super) fn read_tail(

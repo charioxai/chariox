@@ -6761,6 +6761,22 @@ and the termination name the same cause. The managed-upgrade list is
 `local_daemon_protocol_received_event_shape_is_versioned`) and
 `node --test scripts/protocol-versions.test.mjs`.
 
+### Durable local jobs across a kernel restart
+
+A hot reload hands over a running local job and its output reader. After a full
+kernel restart, an interrupted local job settles under the original job ID.
+`chariox.jobs.status` returns a finished result with a null exit code, the
+restart reason, and retry guidance. The result includes a bounded tail of the
+saved output and a path to the retained log when one exists. An orderly stop
+drains already captured output before closing the reader. After an abrupt
+stop, the log contains output the previous kernel had already saved.
+
+Multi-step commands can print a line such as `Completed: validate inputs`
+after each successful step. Use those lines to identify reported completions.
+Check the affected files and systems for partial work before retrying. Only
+repeat work once the original process has stopped and its effects are safe to
+repeat.
+
 ### MP-08 / MP-09 / MP-10 / MP-11: a hot reload's relay close — local 925 / peer 376
 
 A kernel that stops for a hot reload (SIGUSR2, EA2-86) is back on the relay within
