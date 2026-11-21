@@ -16,6 +16,7 @@ main { min-height: 0; }
 summary.btn { display: inline-flex; align-items: center; }
 .text-truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .diff-hunk-context { background: var(--bgColor-muted, #f6f8fa); overflow: auto; white-space: pre; }
+.check-log { max-height: 18rem; overflow: auto; }
 
 /* The diff: two number gutters and a marker column, one row per line; tinted as GitHub tints it. */
 .diff-table { width: 100%; border-collapse: collapse; table-layout: fixed; font: 12px/20px ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace; }
