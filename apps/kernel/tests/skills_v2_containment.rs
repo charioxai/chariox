@@ -126,21 +126,27 @@ fn skills_v2_containment_dispatch_rejects_package_parent_replacement() {
 }
 #[test]
 fn skills_v2_containment_private_account_files_are_not_bundled_assets() {
-    let f = Fixture::new();
-    let source = f.root.join("source");
-    fs::create_dir(&source).unwrap();
-    fs::write(source.join("SKILL.md"), BODY).unwrap();
-    // Synthetic non-secret content. Never read a real provider account here.
-    fs::write(source.join("auth.json"), "{}").unwrap();
-    assert!(
-        f.service
+    for path in ["auth.json", ".credentials.json", "opencode/auth.json"] {
+        let f = Fixture::new();
+        let source = f.root.join("source");
+        let account_file = source.join(path);
+        fs::create_dir_all(account_file.parent().unwrap()).unwrap();
+        fs::write(source.join("SKILL.md"), BODY).unwrap();
+        fs::write(&account_file, []).unwrap();
+        let error = f
+            .service
             .prepare(&f.mutation(SkillInstallSource::Folder {
-                path: source.to_string_lossy().into()
+                path: source.to_string_lossy().into(),
             }))
-            .is_err(),
-        "adjacent account/config files must not enter a skill payload"
-    );
-    assert_eq!(f.service.storage.snapshot().unwrap().revision, 0);
+            .expect_err("an adjacent provider account file must prevent publication");
+        assert!(
+            error
+                .to_string()
+                .contains(account_file.file_name().unwrap().to_str().unwrap()),
+            "{error}"
+        );
+        assert_eq!(f.service.storage.snapshot().unwrap().revision, 0);
+    }
 }
 #[test]
 fn skills_v2_containment_dispatch_rejects_modified_immutable_body() {
