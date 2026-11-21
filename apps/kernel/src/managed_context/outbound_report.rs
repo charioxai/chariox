@@ -131,7 +131,7 @@ impl ReportTarget {
         let cloud = self.config.cloud_relay.as_ref().ok_or_else(|| {
             super::outbound_service_error("source kernel is not connected to Chariox Cloud", true)
         })?;
-        post_cloud_json(cloud.api_url.clone(), REPORT_ENDPOINT, body)
+        post_cloud_json::<serde_json::Value>(cloud.api_url.clone(), REPORT_ENDPOINT, body)
             .await
             .map(|_| ())
     }
