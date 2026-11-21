@@ -14,7 +14,7 @@
 // swapped-in entry cannot hide behind a deleted one.
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { acceptedEntries as acceptedListEntries, isAccepted as isAcceptedIn, newEntryProblems as newListEntryProblems, problem, readList, readText, trackedFiles } from './lib/ratchet.mjs'
+import { acceptedEntries as acceptedListEntries, isAccepted as isAcceptedIn, newEntryProblems as newListEntryProblems, problem, readList, readText, requiredBaseline, trackedFiles } from './lib/ratchet.mjs'
 
 const PROVIDER_PATTERNS = [
   ['provider name', /hetzner|hcloud\b|\bovh|boat\.dev|\bboat_|digitalocean|linode|vultr|scaleway|\b(?:aws|ec2|gcp|azure)\b/i],
@@ -213,7 +213,7 @@ const ALLOWED_FILES_LIST = { label: 'whole-file list', file: 'scripts/oss-bounda
 const LEAK_LIST = { label: 'leak list', file: 'scripts/oss-boundary-leaks.allow.json', key: 'path', newKind: 'new leak entry' }
 const SHRINK_ONLY_LISTS = [ALLOWED_FILES_LIST, LEAK_LIST]
 // The accepted entry keys of both lists at the merge base (scripts/lib/ratchet.mjs).
-export const acceptedEntries = (root, env = process.env) => acceptedListEntries(root, SHRINK_ONLY_LISTS, env)
+export const acceptedEntries = (root, env = process.env) => acceptedListEntries(root, SHRINK_ONLY_LISTS, requiredBaseline(root, env))
 
 const isAccepted = isAcceptedIn
 const newEntryProblems = (list, entries, accepted) => newListEntryProblems(list, entries, accepted, 'move the logic to Cloud instead of adding an entry')
