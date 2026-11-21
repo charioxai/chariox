@@ -263,6 +263,7 @@ fn resolve_catalog_profiles(
             && profile.auth_state != crate::account_profile::ProviderAccountAuthState::Authenticated
             && focus_provider != Some(provider)
             && !overrides.contains_key(provider)
+            && !(provider == "opencode" && resolve_opencode_executable().is_ok())
         {
             continue;
         }
