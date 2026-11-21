@@ -7,7 +7,7 @@ fn provider_login_vault_entry_1012_snapshot_and_hash() {
     let bytes = include_bytes!("provider-login-vault-entry-1012.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "a2a1d8b10b3260c6b973c4f385dbfb29ac262ce19e9311865dcfd59a3452155c"
+        "2e79771b268273da8e182ae3c69cf2816fbd4eb8e3b8e9dd90a7b024808af3cb"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(fixture["local"], LOCAL_DAEMON_PROTOCOL_VERSION);
