@@ -326,9 +326,31 @@ exit 2
     #[cfg(unix)]
     #[test]
     fn credentialless_opencode_placement_can_later_receive_a_login() {
+        credentialless_opencode_placement_then_login(vec![], "remote-opencode-credentialless");
+    }
+
+    // An auth store the native tool wrote without any service is the same signed-out profile.
+    #[cfg(unix)]
+    #[test]
+    fn empty_auth_store_opencode_placement_can_later_receive_a_login() {
+        use base64::Engine as _;
+        credentialless_opencode_placement_then_login(
+            vec![crate::account_profile::ProviderAccountMaterializationFile {
+                relative_path: "data/opencode/auth.json".into(),
+                contents_base64: base64::engine::general_purpose::STANDARD.encode(b"{}"),
+            }],
+            "remote-opencode-empty-store",
+        );
+    }
+
+    #[cfg(unix)]
+    fn credentialless_opencode_placement_then_login(
+        signed_out_files: Vec<crate::account_profile::ProviderAccountMaterializationFile>,
+        fixture: &str,
+    ) {
         crate::test_support::isolated_env_test!();
         let _env = crate::env_lock::lock();
-        let root = crate::test_support::TestWorktree::new("remote-opencode-credentialless");
+        let root = crate::test_support::TestWorktree::new(fixture);
         let _native = install_opencode_auth_fixture(root.path());
         let mut config = crate::config::DaemonConfig::for_tests();
         config.accept_remote_leases = true;
@@ -354,7 +376,7 @@ exit 2
                 origin: crate::account_profile::ProviderAccountProfileOrigin::CharioxCreated,
                 is_default: true,
             },
-            files: vec![],
+            files: signed_out_files,
             generated_at_ms: 1,
         };
         for _ in 0..2 {
@@ -365,13 +387,11 @@ exit 2
         }
 
         use base64::Engine as _;
-        materialization
-            .files
-            .push(crate::account_profile::ProviderAccountMaterializationFile {
-                relative_path: "data/opencode/auth.json".into(),
-                contents_base64: base64::engine::general_purpose::STANDARD
-                    .encode(br#"{"opencode":{"type":"api","key":"synthetic-home"}}"#),
-            });
+        materialization.files = vec![crate::account_profile::ProviderAccountMaterializationFile {
+            relative_path: "data/opencode/auth.json".into(),
+            contents_base64: base64::engine::general_purpose::STANDARD
+                .encode(br#"{"opencode":{"type":"api","key":"synthetic-home"}}"#),
+        }];
         let profile = worker
             .ensure_remote_provider_account(context, materialization)
             .unwrap();
