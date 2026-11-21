@@ -522,6 +522,44 @@ impl RoomListRelayClient {
     }
 }
 
+async fn populate_framed_room_list_fixture(
+    router: &CommandRouter,
+    worktree: &crate::test_support::TestWorktree,
+) -> usize {
+    use crate::transport::kernel_protocol::room_list_rows_changed_event;
+
+    let budget = crate::transport::perf_budget::budget("event_envelope_bytes");
+    // Base64 expands the encrypted payload by a third. Measure the actual projection
+    // so differences in local paths and metadata cannot make the fixture oversize.
+    let minimum = chariox_relay::frame_transport::CHUNK_BYTES * 3 / 4;
+    for room_count in 1..=12 {
+        let alias = format!("fixture-room-{room_count}");
+        let request =
+            LocalDaemonRequest::CreateSession(worktree.session_request().with_alias(&alias));
+        let command = KernelCommand::from_local_request(alias, None, None, &request);
+        router
+            .dispatch(command, request)
+            .await
+            .expect("fixture Room should be created");
+
+        let inventory = router
+            .room_list_snapshot(crate::session::DEFAULT_LOCAL_USER_ID, None)
+            .await
+            .expect("fixture inventory should project");
+        let rows = room_list_rows_changed_event(inventory, None)
+            .expect("initial inventory should contain Room rows");
+        let plaintext_bytes = serde_json::to_vec(&rows).unwrap().len();
+        assert!(
+            plaintext_bytes <= budget,
+            "the fixture event must fit the kernel's event budget ({plaintext_bytes} > {budget})",
+        );
+        if plaintext_bytes >= minimum {
+            return room_count;
+        }
+    }
+    panic!("fixture should require bounded delivery after creating twelve Rooms");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn relay_room_list_subscription_sends_baseline_after_reload_and_observes_mutations() {
     crate::test_support::isolated_env_test!();
@@ -560,20 +598,9 @@ async fn relay_room_list_subscription_sends_baseline_after_reload_and_observes_m
     config.relay_token = Some("secret".to_string());
     config.relay_heartbeat_ms = 50;
     let worktree = crate::test_support::TestWorktree::new("workspace-relay-inventory");
-    let mut app = DaemonApp::bootstrap(config.clone()).expect("daemon should bootstrap");
-    // Encryption expands the wire envelope beyond one frame while the state event
-    // and its mutation fit the kernel's event budget.
-    const FIXTURE_ROOM_COUNT: usize = 6;
-    for index in 0..FIXTURE_ROOM_COUNT {
-        crate::app::KernelSessionService::new(&mut app)
-            .create_session(
-                worktree
-                    .session_request()
-                    .with_alias(format!("fixture-room-{index}-{}", "a".repeat(64))),
-            )
-            .unwrap();
-    }
-    let app = Arc::new(Mutex::new(app));
+    let app = Arc::new(Mutex::new(
+        DaemonApp::bootstrap(config.clone()).expect("daemon should bootstrap"),
+    ));
     let router = Arc::new(CommandRouter::with_interactive_capacity_from_app(
         Arc::clone(&app),
         INTERACTIVE_COMMAND_QUEUE_LIMIT,
@@ -586,13 +613,14 @@ async fn relay_room_list_subscription_sends_baseline_after_reload_and_observes_m
         shutdown_rx,
     ));
     wait_for_daemon_registration(registry, &config.daemon_id).await;
+    let fixture_room_count = populate_framed_room_list_fixture(&router, &worktree).await;
 
     let url = format!("ws://{}:{}", addr.ip(), addr.port());
     let mut original = RoomListRelayClient::subscribe(&url, &config, "room-list").await;
     let (first_inventory, first_wire_bytes) = original.inventory().await;
     assert_eq!(
         first_inventory["sessions"].as_array().unwrap().len(),
-        FIXTURE_ROOM_COUNT,
+        fixture_room_count,
     );
 
     let mut reloaded = RoomListRelayClient::subscribe(&url, &config, "room-list-reload").await;
