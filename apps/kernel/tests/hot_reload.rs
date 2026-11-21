@@ -1041,10 +1041,10 @@ async fn terminal_that_left_a_job_running(
 async fn listed_job(socket: &mut Socket, session_id: &str, pid: i32) -> Option<Value> {
     let state = request(
         socket,
-        json!({"GetSessionState": {"session_id": session_id}}),
+        json!({"GetMachineRoomResources": {"session_id": session_id}}),
     )
     .await;
-    state["SessionState"]["processes"]
+    state["MachineRoomResources"]["processes"]
         .as_array()?
         .iter()
         .find(|row| row["pid"] == pid)
