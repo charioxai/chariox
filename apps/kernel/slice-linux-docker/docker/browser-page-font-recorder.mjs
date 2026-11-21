@@ -27,9 +27,9 @@ export function installScriptFontRecorder(bindingName) {
   // another document (another frame) are not in this document's set and are never reported here.
   const sources = new WeakMap();
   const base64 = bytes => { let binary = ''; for (let i = 0; i < bytes.length; i += 32768) binary += fromCharCode(...bytes.subarray(i, i + 32768)); return encode(binary); };
-  const MAX_BYTES = 3 * 1024 * 1024;
+  const MAX_BYTES = 3 * 1024 * 1024, MAX_SRC = 4 * 1024 * 1024; // a src string may be a data: URL of a font as large
   const sourceOf = value => {
-    if (typeof value === 'string') return value.length <= 65536 ? { src: value, base: document.baseURI } : null;
+    if (typeof value === 'string') return value.length <= MAX_SRC ? { src: value, base: document.baseURI } : null;
     const view = value instanceof ArrayBuffer ? new Uint8Array(value) : ArrayBuffer.isView(value) ? new Uint8Array(value.buffer, value.byteOffset, value.byteLength) : null;
     return view && view.byteLength <= MAX_BYTES ? { data: base64(view) } : null;
   };
@@ -58,6 +58,16 @@ export function installScriptFontRecorder(bindingName) {
       try { binding(stringify(faces)); } catch {}
     });
   };
+  // A face already in the set can change its descriptors later with no set operation (#1617 review): a set on a script-made
+  // face in the document's set reports the list again. The setters keep Chromium's shapes ('set family', length 1).
+  const has = fontSet.has;
+  for (const key of ['family', 'style', 'weight', 'stretch', 'unicodeRange', 'featureSettings', 'display']) {
+    const original = Object.getOwnPropertyDescriptor(NativeFontFace.prototype, key)?.set;
+    if (typeof original !== 'function') continue;
+    const wrapped = Object.getOwnPropertyDescriptor({ set [key](value) { Reflect.apply(original, this, [value]); if (sources.has(this) && Reflect.apply(has, document.fonts, [this])) report(); } }, key).set;
+    nativeSource.set(wrapped, `function set ${key}() { [native code] }`);
+    define(NativeFontFace.prototype, key, descriptor => { descriptor.set = wrapped; });
+  }
   const asMethod = (name, impl) => ({[name](...args) { return Reflect.apply(impl, this, args); }})[name];
   for (const key of ['add', 'delete', 'clear']) {
     const original = fontSet[key];

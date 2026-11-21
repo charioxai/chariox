@@ -916,6 +916,33 @@ test("F5: faces the page makes by script reach the viewer as @font-face rules, a
       binding: false, detect: true, plain: "TypeError" }, "F5: the page sees Chromium's own shapes");
   }, { "/f/u.woff2": { type: "font/woff2", body: "wOF2" + "\u0001".repeat(60) }, "/f/l.woff2": { type: "font/woff2", body: "wOF2" + "\u0001".repeat(60) } }));
 
+// #1617 review: a face's src can be a data: URL (its ';' and ',' sit inside the URL), and a page can change a face's descriptors
+// after it is in the set, with no other set operation; the viewer's rule follows both.
+const scriptFontsCss = packet => JSON.stringify([packet.nodes ?? [], packet.ops.filter(op => op.op === "adopted")]);
+test("F5-R1a: a script-made face from a data: URL reaches the viewer", () => mirrored(
+  `<p style="font-family:Embedded">a</p><script>
+    document.fonts.add(new FontFace("Embedded", "url(data:font/woff2;base64,d09GMgABAAAAAA==) format('woff2')"));
+  </script>`, async ({ next }) => {
+    await new Promise(resolve => setTimeout(resolve, 800));
+    const css = scriptFontsCss(await next());
+    assert.match(css, /@font-face ?\{[^}]*Embedded[^}]*src: ?url\([^}]*format\(\\?"woff2\\?"\)/, `F5-R1a: the face made from a data: URL (${css.slice(0, 1500)})`);
+  }));
+
+test("F5-R1b: a script-made face whose descriptors change later reaches the viewer as changed; the setters look native", () => mirrored(
+  `<p style="font-family:Renamed">b</p><script>
+    window.moving = new FontFace("Moving", "url(/f/m.woff2)", { weight: "700" }); document.fonts.add(window.moving);
+  </script>`, async ({ next, evaluate }) => {
+    await new Promise(resolve => setTimeout(resolve, 800));
+    assert.match(scriptFontsCss(await next()), /@font-face ?\{[^}]*Moving[^}]*font-weight: ?700/, "F5-R1b: the face before its change");
+    await evaluate(`setTimeout(() => { window.moving.family = "Renamed"; window.moving.weight = "300"; }, 0)`);
+    let later = "";
+    for (let i = 0; i < 8 && !/Renamed/.test(later); i++) later = scriptFontsCss(await next(1000));
+    assert.match(later, /@font-face ?\{[^}]*Renamed[^}]*font-weight: ?300/, `F5-R1b: the face's new family and weight reach the viewer (${later.slice(0, 800)})`);
+    assert.doesNotMatch(later, /Moving/, "F5-R1b: the old family is gone");
+    const setter = await evaluate(`(() => { const d = Object.getOwnPropertyDescriptor(FontFace.prototype, "family"), set = d.set; return [set.toString(), set.name, set.length, Object.hasOwn(set, "prototype"), Function.prototype.toString.call(set), d.enumerable, d.configurable, d.get.name]; })()`);
+    assert.deepEqual(setter, ["function set family() { [native code] }", "set family", 1, false, "function set family() { [native code] }", true, true, "get family"], "F5-R1b: the descriptor setters look native");
+  }, { "/f/m.woff2": { type: "font/woff2", body: "wOF2" + "\u0001".repeat(60) } }));
+
 test("MP-10: review #941-4 a CDP-read cross-origin sheet keeps its already-loaded imports (own base, media condition, images and fonts)", () => mirrored(
   '<link rel="stylesheet" href="http://localhost:PORT/cdn/main.css"><div class="x" style="width:20px;height:20px">a</div>', async ({ next }) => {
     await new Promise(resolve => setTimeout(resolve, 800));
