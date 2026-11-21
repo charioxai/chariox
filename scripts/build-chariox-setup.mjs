@@ -13,6 +13,7 @@ export function renderInstallScript(source, { version, publicKeyHex, releaseBase
     : "platform=darwin-arm64"
   return source.replaceAll("@VERSION@", version).replaceAll("@RELEASE_PUBLIC_KEY@", publicKeyHex)
     .replaceAll("@RELEASE_BASE@", releaseBase).replaceAll("@DARWIN_SETUP@", darwin)
+    .replaceAll("@SETUP_SIGNATURE_INPUT@", linuxOnly ? "setup.digest" : "chariox-setup")
 }
 export async function linuxProviderArtifacts(repository) {
   const versions = Object.fromEntries((await readFile(join(repository, "deploy/runtime-release/provider-versions.env"), "utf8"))
