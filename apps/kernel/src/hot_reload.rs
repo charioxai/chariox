@@ -705,8 +705,8 @@ pub(crate) fn hold_unclaimed_run_for_tests(run: crate::provider::RuntimeProvider
 }
 
 #[cfg(test)]
-pub(crate) fn forget_unclaimed_runs_for_tests() {
-    lock(&UNCLAIMED_RUNS).clear();
+pub(crate) fn forget_unclaimed_run_for_test(run_id: &str) {
+    lock(&UNCLAIMED_RUNS).remove(run_id);
 }
 
 /// A new run of the agent takes the handed-over run's id and tool token, and
