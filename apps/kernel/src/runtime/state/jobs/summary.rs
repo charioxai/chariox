@@ -64,7 +64,16 @@ impl Summary {
                             && record.machine_label.is_none())
                             || (record.placement == JobPlacement::Local
                                 && result.outcome == crate::local::JobOutcome::MachineLost))
-                            .then(|| result.output_tail.chars().take(512).collect()),
+                            .then(|| {
+                                let reason =
+                                    if result.output_tail.starts_with(super::local::RESTART_REASON)
+                                    {
+                                        super::local::RESTART_REASON
+                                    } else {
+                                        &result.output_tail
+                                    };
+                                reason.chars().take(512).collect()
+                            }),
                         files_back_count: result.files_back.len() as u64,
                         conflicts_count: result.conflicts.len() as u64,
                         ran_on: result.ran_on.clone(),
