@@ -1081,8 +1081,14 @@ export class Mirror2 {
     // goes to the regions after it.
     let budget = STILL_PACKET_BYTES;
     const send = (id, tile) => { const digest = createHash('sha256').update(`${tile.x},${tile.y},${tile.width},${tile.height},${tile.data_base64}`).digest('hex'); if (stream.tileHashes.get(id) === digest) return; stream.tileHashes.set(id, digest); budget -= tile.data_base64.length; out.push({ node_id: id, ...tile }); };
-    for (const [index, b] of boxes.entries()) {
-      const slot = slotOf(b.id), owner = slot ? stream.frameSlots.get(slot)?.child : world, share = Math.floor(budget / (boxes.length - index));
+    // T3: a region an opaque still covers from above (coveredBy) is never seen: the regions on top take the budget first, and a
+    // covered one is skipped once its cover's still has reached the viewer (now or before); otherwise it is captured as before.
+    const main = boxes.filter(b => !b.foreign && !slotOf(b.id)).map(b => b.id);
+    const covers = main.length > 1 ? await this.evaluate(world, `${world.ref}.coveredBy(${JSON.stringify(main)})`, true).catch(() => ({})) ?? {} : {};
+    const order = [...boxes.filter(b => !covers[b.id]), ...boxes.filter(b => covers[b.id])], uncovered = order.length - Object.keys(covers).length;
+    for (const [index, b] of order.entries()) {
+      if (covers[b.id] && stream.tileHashes.has(covers[b.id])) continue;
+      const slot = slotOf(b.id), owner = slot ? stream.frameSlots.get(slot)?.child : world, share = Math.floor(budget / (index < uncovered ? uncovered - index : order.length - index));
       const own = b.foreign || !owner ? null : await this.evaluate(owner, `${owner.ref}.elementPixels(${JSON.stringify(slot ? localId(b.id) : b.id)},${scale},${share})`, true).catch(() => null);
       if (own) send(b.id, own);
       // A distorted region's screenshot already holds its compositing: as the element's background the mirrored DOM
