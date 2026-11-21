@@ -21,7 +21,7 @@ async function harness(t) {
   await stub("id", 'case "$1" in -u) echo 1000 ;; -un) echo alice ;; esac')
   await stub("python3", "exit 0")
   await stub("systemctl", `echo "$*" >> "${base}/systemctl.log"; case "$*" in *is-active*|*is-enabled*) [ -e "${base}/active" ] ;; esac; case "$*" in *start*) touch "${base}/active" ;; esac`)
-  for (const name of ["chariox-kernel", "chariox-app-wasm-worker"]) {
+  for (const name of ["chariox", "chariox-kernel", "chariox-app-wasm-worker"]) {
     await writeFile(join(bundle, name), `#!/bin/sh\necho ${name}\n`)
     await chmod(join(bundle, name), 0o755)
   }
@@ -55,5 +55,34 @@ test("the user install refuses a kernel without its worker beside it and changes
   const result = run("install", "--kernel", join(bundle, "chariox-kernel"))
   assert.notEqual(result.status, 0)
   assert.match(result.stderr, /chariox-app-wasm-worker is missing/)
+  assert.equal(existsSync(join(home, ".local/bin")), false)
+})
+
+test("the user install copies the bundled CLI beside the kernel and removes it on uninstall", async t => {
+  const { home, bundle, run } = await harness(t)
+  const installed = join(home, ".local/bin/chariox")
+  const kernel = join(bundle, "chariox-kernel")
+  const first = run("install", "--kernel", kernel)
+  assert.equal(first.status, 0, first.stderr)
+  assert.equal(await mode(installed), 0o755)
+  assert.equal(await readFile(installed, "utf8"), await readFile(join(bundle, "chariox"), "utf8"))
+  const again = run("install", "--kernel", kernel)
+  assert.equal(again.status, 0, again.stderr)
+  assert.ok(again.stdout.split("\n").includes(`[chariox-install] unchanged ${installed}`))
+
+  await writeFile(join(bundle, "chariox"), "#!/bin/sh\necho upgraded CLI\n")
+  const upgraded = run("install", "--kernel", kernel)
+  assert.equal(upgraded.status, 0, upgraded.stderr)
+  assert.equal(await readFile(installed, "utf8"), "#!/bin/sh\necho upgraded CLI\n")
+  assert.equal(run("uninstall").status, 0)
+  assert.equal(existsSync(installed), false)
+})
+
+test("the user install refuses a kernel without its bundled CLI before installing anything", async t => {
+  const { home, bundle, run } = await harness(t)
+  await rm(join(bundle, "chariox"))
+  const result = run("install", "--kernel", join(bundle, "chariox-kernel"))
+  assert.notEqual(result.status, 0)
+  assert.match(result.stderr, /chariox is missing/)
   assert.equal(existsSync(join(home, ".local/bin")), false)
 })
