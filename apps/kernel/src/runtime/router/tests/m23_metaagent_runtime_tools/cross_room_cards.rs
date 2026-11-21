@@ -120,6 +120,55 @@ async fn cards() {
 }
 
 #[test]
+fn room_cards_pages_by_bytes_and_keeps_a_cursor_after_the_previous_card_closes() {
+    run_large_stack_async_test("xroom-paged", async {
+        let world = coordinator("xroom-paged").await;
+        let mut answers = Vec::new();
+        for index in 0..6 {
+            let id = format!("page-card-{index}");
+            let interaction =
+                card(&id, &world.ids["q"], false).with_message("Details ".repeat(600));
+            answers.push(
+                world
+                    .router
+                    .runtime_state
+                    .create_runtime_interaction(&world.other_room, interaction)
+                    .await
+                    .unwrap(),
+            );
+        }
+
+        let command = format!("room cards {}", world.other_room);
+        let first = room_command(&world, "a", &command).await;
+        assert!(first.ok, "{first:?}");
+        assert!(first.payload.to_string().len() < 17 * 1024);
+        let cursor = first.payload["response"]["next_after"]
+            .as_str()
+            .expect("first page cursor");
+        let answered = room_command(
+            &world,
+            "a",
+            &format!("agent answer {cursor} allow --room {}", world.other_room),
+        )
+        .await;
+        assert!(answered.ok, "{answered:?}");
+
+        let next = room_command(&world, "a", &format!("{command} --after {cursor}")).await;
+        assert!(next.ok, "{next:?}");
+        assert!(next.payload.to_string().len() < 17 * 1024);
+        let cards = next.payload["response"]["cards"].as_array().unwrap();
+        assert!(cards
+            .iter()
+            .all(|card| card["id"].as_str().unwrap() > cursor));
+        assert_eq!(
+            first.payload["response"]["cards"].as_array().unwrap().len() + cards.len(),
+            6
+        );
+        assert!(next.payload["response"]["next_after"].is_null());
+    });
+}
+
+#[test]
 fn xroom_03_owner_answers_once_and_the_asking_agent_receives_it() {
     run_large_stack_async_test("xroom-03", answer);
 }

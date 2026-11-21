@@ -371,8 +371,12 @@ impl KernelRuntimeOwnedState {
         interaction: &crate::session::RuntimeInteraction,
         phase: InteractionPhase<'_>,
     ) -> (OutsideEventValue, String) {
+        let summary = match &phase {
+            InteractionPhase::Recovered(_, reason) => *reason,
+            _ => "decision closed",
+        };
         let (state, pending) = match phase {
-            InteractionPhase::Resolved(resolution) => {
+            InteractionPhase::Resolved(resolution) | InteractionPhase::Recovered(resolution, _) => {
                 return (
                     OutsideEventValue::Interaction {
                         state: EventInteractionState::Resolved,
@@ -381,7 +385,7 @@ impl KernelRuntimeOwnedState {
                         resolution: Some(resolution),
                         shown_in: interaction.shown_in_agent_id().map(str::to_owned),
                     },
-                    "decision closed".into(),
+                    summary.into(),
                 )
             }
             InteractionPhase::Pending(pending) => (EventInteractionState::Pending, pending),
@@ -449,6 +453,7 @@ impl KernelRuntimeOwnedState {
 pub(in crate::runtime::state) enum InteractionPhase<'a> {
     Pending(&'a super::PendingInteraction),
     Resolved(EventResolution),
+    Recovered(EventResolution, &'a str),
 }
 
 impl InteractionPhase<'_> {

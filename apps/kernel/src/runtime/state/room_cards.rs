@@ -88,37 +88,87 @@ impl KernelRuntimeOwnedState {
 }
 
 impl KernelRuntimeState {
-    pub(crate) fn owner_room_state(
+    pub(crate) fn owner_room_cards(
         &self,
         caller_id: &str,
         room: &str,
-        cards: bool,
+        after: Option<&str>,
+    ) -> Result<serde_json::Value, DaemonError> {
+        // Leave space under the provider result limit for JSON escaping and envelope fields.
+        const PAGE_BYTES: usize = 16 * 1024;
+        const PAGE_CARDS: usize = 12;
+        let caller = self.owned.agent_store.get_agent(caller_id)?;
+        let source = self.owned.session_store.get_session(caller.session_id())?;
+        let target = self.owned.session_store.get_session(room)?;
+        self.owned.authorize_owner_room(&source, &caller, &target)?;
+        let rooms = self.owned.session_store.read();
+        let pending = self.owned.pending_interactions.write();
+        let mut open = target
+            .active_interactions()
+            .iter()
+            .filter(|card| after.is_none_or(|after| card.id() > after))
+            .filter_map(|card| {
+                let p = pending
+                    .get(card.id())
+                    .filter(|p| p.session_id == target.id())?;
+                Some((card, p))
+            })
+            .collect::<Vec<_>>();
+        open.sort_unstable_by_key(|(card, _)| card.id());
+
+        let mut cards = Vec::new();
+        let mut bytes = 0;
+        let mut last = None;
+        let mut next_after = None;
+        for (card, p) in open {
+            let refusal = self
+                .owned
+                .authorize_owner_card(&rooms, &source, &caller, &target, p, card)
+                .err();
+            let mut row = serde_json::json!({
+                "id": card.id(),
+                "agent_id": card.agent_id().or_else(|| card.related_agent_id()),
+                "kind": card.kind(),
+                "level": card.level(),
+                "title": card.title(),
+                "message": card.message(),
+                "choices": card.choices().iter().map(|choice| serde_json::json!({"id":choice.id(), "label":choice.label()})).collect::<Vec<_>>(),
+                "custom_choice": card.custom_choice().filter(|c| c.input_kind() == crate::session::RuntimeInteractionInputKind::Text),
+                "answerable": refusal.is_none(),
+                "reason": refusal.as_ref().map(ToString::to_string),
+            });
+            let mut size = row.to_string().len() + 1;
+            if size > PAGE_BYTES {
+                row = serde_json::json!({
+                    "id": card.id(),
+                    "answerable": false,
+                    "reason": refusal.map_or_else(
+                        || "This card is too large to read here. Open it in the Room before answering.".to_string(),
+                        |error| error.to_string(),
+                    ),
+                });
+                size = row.to_string().len() + 1;
+            }
+            if cards.len() == PAGE_CARDS || bytes + size > PAGE_BYTES {
+                next_after = last;
+                break;
+            }
+            last = Some(card.id());
+            bytes += size;
+            cards.push(row);
+        }
+        Ok(serde_json::json!({"room_id": target.id(), "cards": cards, "next_after": next_after}))
+    }
+
+    pub(crate) fn owner_room_agents(
+        &self,
+        caller_id: &str,
+        room: &str,
     ) -> Result<serde_json::Value, DaemonError> {
         let caller = self.owned.agent_store.get_agent(caller_id)?;
         let source = self.owned.session_store.get_session(caller.session_id())?;
         let target = self.owned.session_snapshot(room)?;
         self.owned.authorize_owner_room(&source, &caller, &target)?;
-        if cards {
-            let rooms = self.owned.session_store.read();
-            let pending = self.owned.pending_interactions.write();
-            let cards = target.active_interactions().iter().filter_map(|interaction| {
-                let p = pending.get(interaction.id()).filter(|p| p.session_id == target.id())?;
-                let refusal = self.owned.authorize_owner_card(&rooms, &source, &caller, &target, p, interaction).err();
-                Some(serde_json::json!({
-                    "id": interaction.id(),
-                    "agent_id": interaction.agent_id().or_else(|| interaction.related_agent_id()),
-                    "kind": interaction.kind(),
-                    "level": interaction.level(),
-                    "title": interaction.title(),
-                    "message": interaction.message(),
-                    "choices": interaction.choices().iter().map(|choice| serde_json::json!({"id":choice.id(), "label":choice.label()})).collect::<Vec<_>>(),
-                    "custom_choice": interaction.custom_choice().filter(|c| c.input_kind() == crate::session::RuntimeInteractionInputKind::Text),
-                    "answerable": refusal.is_none(),
-                    "reason": refusal.map(|error| error.to_string()),
-                }))
-            }).collect::<Vec<_>>();
-            return Ok(serde_json::json!({"room_id": target.id(), "cards":cards}));
-        }
         let tasks = self
             .owned
             .durable_state_store

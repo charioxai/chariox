@@ -12,27 +12,40 @@ impl CommandRouter {
         command: &str,
         tokens: &[String],
     ) -> Option<RuntimeToolResult> {
-        if !self.runtime_state.room_agent_tools_enabled() {
-            return None;
-        }
+        let room_surface = self.runtime_state.room_agent_tools_enabled();
         let response = match tokens {
             [first, second] if first == "room" && second == "list" => {
                 serde_json::json!({"rooms": self.runtime_state.reachable_rooms(session, caller)})
             }
-            [first, second, room]
-                if first == "room" && matches!(second.as_str(), "agents" | "cards") =>
-            {
-                match self
-                    .runtime_state
-                    .owner_room_state(caller.id(), room, second == "cards")
-                {
+            [first, second, room] if first == "room" && second == "agents" => {
+                match self.runtime_state.owner_room_agents(caller.id(), room) {
                     Ok(response) => response,
                     Err(error) => {
-                        return Some(super::result::meta_command_failure_result(command, error))
+                        return Some(super::result::meta_command_failure_result(command, error));
                     }
                 }
             }
-            [first, second] if first == "slice" && matches!(second.as_str(), "list" | "ls") => {
+            [first, second, room, cursor @ ..] if first == "room" && second == "cards" => {
+                let result = match cursor {
+                    [] => self.runtime_state.owner_room_cards(caller.id(), room, None),
+                    [flag, after] if flag == "--after" => {
+                        self.runtime_state
+                            .owner_room_cards(caller.id(), room, Some(after))
+                    }
+                    _ => Err(super::result::meta_command_error(
+                        "usage: room cards <room-id> [--after <card-id>]",
+                    )),
+                };
+                match result {
+                    Ok(response) => response,
+                    Err(error) => {
+                        return Some(super::result::meta_command_failure_result(command, error));
+                    }
+                }
+            }
+            [first, second]
+                if room_surface && first == "slice" && matches!(second.as_str(), "list" | "ls") =>
+            {
                 let slices = self
                     .runtime_state
                     .slices_usable_by_room(session.id(), caller.owner_user_id())
@@ -50,7 +63,7 @@ impl CommandRouter {
                     .collect::<Vec<_>>();
                 serde_json::json!({"slices": slices})
             }
-            [first, second] if first == "trigger" && second == "list" => {
+            [first, second] if room_surface && first == "trigger" && second == "list" => {
                 let triggers = session
                     .agent_triggers()
                     .iter()

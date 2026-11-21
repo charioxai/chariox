@@ -534,6 +534,12 @@ pub(crate) enum Operation {
     /// An event without a sender turn on this kernel, such as a message from a peer on
     /// another kernel; de-duplicated on (room, agent, source, occurrence).
     Occur(InboxEvent),
+    WithdrawReply {
+        room: String,
+        agent: String,
+        sequence: u64,
+        now: u64,
+    },
     Send {
         task: String,
         prompt: String,
