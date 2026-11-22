@@ -75,6 +75,29 @@ async function mirrored(html, run, routes = {}, initialOptions = {}, environment
   }
 }
 
+// T1: Chrome reports no target change when a page retitles itself (only URL changes reach Target.targetInfoChanged), so a
+// parked state read showing the Browser tab strip waited out its whole wait. The mirror's drain sees the new title.
+test("T1: a page retitling itself wakes a parked state read within one mirror drain", () => mirrored("<title>one</title><p>retitle</p>", async ({ next, evaluate, host }) => {
+  await next();
+  const before = host.stateSignal.count, started = Date.now();
+  const parked = host.stateSignal.wait(before, 4000);
+  await evaluate("document.title = 'two'");
+  await next(1500);
+  assert.notEqual(await parked, before, "the title change woke the parked state read");
+  assert.ok(Date.now() - started < 3000, `woke in ${Date.now() - started} ms`);
+  assert.equal((await host.request({ op: "state" })).tabs[0].title, "two");
+}));
+// T1 review: a recovery or layout reset that first sees the new title wakes the parked state read too (it used to take the change
+// silently, so no later drain saw a difference).
+test("T1: a reset that first sees a retitled page wakes a parked state read", () => mirrored("<title>one</title><p>retitle</p>", async ({ next, evaluate, host }) => {
+  await next();
+  const before = host.stateSignal.count, started = Date.now();
+  const parked = host.stateSignal.wait(before, 4000);
+  await evaluate("document.title = 'two'");
+  await next(0, true);
+  assert.notEqual(await parked, before, "the reset's title change woke the parked state read");
+  assert.ok(Date.now() - started < 3000, `woke in ${Date.now() - started} ms`);
+}));
 test("MP-10: a focused unchanged field does not answer every credit (no form-op busy loop)", () => mirrored(
   '<input id="q" autofocus value="query"><p>page</p>', async ({ next, evaluate }) => {
     await evaluate("document.querySelector('#q').focus()");

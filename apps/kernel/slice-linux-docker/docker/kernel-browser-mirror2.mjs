@@ -541,6 +541,9 @@ export class Mirror2 {
         stream.deferredSheets = [];
         for (const op of sheetOps) if (op.full) { if (known.has(sheetDigest(op.full))) op.css = op.full; else stream.deferredSheets.push({ op: 'css', id: op.id, css: op.full }); delete op.full; }
         stream.deferredAt = Date.now(); stream.fullPending = snap.full_pending ?? 0;
+        // T1: a reset (recovery, layout) can be the first to see a retitled page: it wakes a parked state read as a drain does.
+        if (typeof snap.title === 'string' && stream.title !== undefined && snap.title !== stream.title) this.host.stateSignal?.notify();
+        stream.title = snap.title;
         this.opaque(snap.nodes, frames.opaque);
         return this.frames.project(stream, { ...snap, sheets: [], nodes: [...snap.nodes, ...frames.records], ops: this.viewerOps(stream, [...(snap.ops ?? []), ...frames.ops, ...sheetOps]), resources: [...snap.resources, ...(frames.resources ?? [])] });
       }
@@ -548,6 +551,8 @@ export class Mirror2 {
     };
     const processDelta = async delta => {
       assertDocument();
+      // T1: Chrome reports no target change when a page retitles itself; the drain sees it, so a parked state read wakes.
+      if (typeof delta.title === 'string') { if (stream.title !== undefined && delta.title !== stream.title) this.host.stateSignal?.notify(); stream.title = delta.title; }
       if (Number.isInteger(delta.full_pending)) stream.fullPending = delta.full_pending;
       // New/upgraded custom hosts trigger trusted discovery before their final projection. Steady-state credits add no round trip.
       if (delta.closed_candidates && await this.markClosedHosts(world, delta)) {
