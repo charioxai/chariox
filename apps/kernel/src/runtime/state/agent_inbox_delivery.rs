@@ -18,6 +18,62 @@ enum WakeDisposition {
     Hold,
     Deliver,
 }
+/// What the states of the tasks an event names say about its wake: the
+/// source occurrence and a finished or blocked task keep their outcome,
+/// so the automatic wake is retired; a proven startup refusal keeps its
+/// answer for an explicit Resume.
+fn wake_disposition(
+    event: &ledger::InboxEvent,
+    tasks: &[ledger::AgentTaskExecution],
+) -> WakeDisposition {
+    // A peer event names the turn that created its persistent follow,
+    // not unfinished work whose wake expires when that turn ends. Work the ended turn left
+    // running reports its end to the agent, not to the turn.
+    if event.kind == "peer_event" || event.payload["after_turn"] == true {
+        return WakeDisposition::Deliver;
+    }
+    let mut ids = Vec::new();
+    if let Some(id) = event.payload["task_id"].as_str() {
+        ids.push(id);
+    }
+    if let Some(more) = event.payload["task_ids"].as_array() {
+        ids.extend(more.iter().filter_map(|v| v.as_str()));
+    }
+    if !ids.is_empty()
+        && ids.iter().all(|id| {
+            tasks
+                .iter()
+                .find(|t| t.task_id == *id)
+                .is_none_or(|t| matches!(t.state, ExecutionState::Done | ExecutionState::Cancelled))
+        })
+    {
+        return WakeDisposition::Retire;
+    }
+    let waiting = |id: &&str| {
+        tasks
+            .iter()
+            .any(|t| t.task_id == *id && t.state == ExecutionState::Waiting)
+    };
+    if ids.iter().any(|id| {
+        tasks
+            .iter()
+            .any(|t| t.task_id == *id && t.state == ExecutionState::Blocked)
+    }) && !ids.iter().any(waiting)
+    {
+        if event.attempted_at_ms.is_some()
+            && event.submit_epoch.is_none()
+            && tasks.iter().any(|task| {
+                task.state == ExecutionState::Blocked
+                    && task.wait.is_some()
+                    && ids.contains(&task.task_id.as_str())
+            })
+        {
+            return WakeDisposition::Hold;
+        }
+        return WakeDisposition::Retire;
+    }
+    WakeDisposition::Deliver
+}
 impl KernelRuntimeState {
     pub(super) fn agent_inbox_waits_for_vault(&self, room: &str, agent: &str) -> bool {
         if !self
@@ -110,6 +166,15 @@ impl KernelRuntimeState {
             .owned
             .prompt_state_owner
             .active_prompt_for_agent(&session, agent);
+        if active.is_none()
+            && self
+                .owned
+                .prompt_state_owner
+                .peek_next_queued_prompt(&session, agent)
+                .is_some()
+        {
+            return Ok(());
+        }
         // Checks use a separate tool-free conversation. Keep ordinary work in
         // the inbox until its agent can handle it in a work turn.
         if active.as_ref().is_some_and(|prompt| {
@@ -143,7 +208,7 @@ impl KernelRuntimeState {
                 return Ok(());
             };
             if event.state == "pending" && event.kind != "message" {
-                match self.wake_disposition(&event, &tasks) {
+                match wake_disposition(&event, &tasks) {
                     WakeDisposition::Retire => {
                         self.owned
                             .durable_state_store
@@ -206,6 +271,43 @@ impl KernelRuntimeState {
             }
             return Ok(());
         }
+        let target = self.owned.agent_store.get_agent(agent)?;
+        let leased = target.remote_execution().is_some();
+        // Take the provider lane before choosing the batch. Other arrivals while
+        // the turn holds the lane remain pending until the same delivery opportunity.
+        let steer_lane = if let Some(active) = active.as_ref().filter(|_| !leased) {
+            let Some(run) = self.owned.provider_store.get_run_for_agent(room, agent) else {
+                self.defer_inbox_steer(room, agent, event.sequence)?;
+                return Ok(());
+            };
+            let Ok(lane) = tokio::time::timeout(
+                STEER_LANE_WAIT,
+                self.provider_runtime_lanes.acquire(run.id()),
+            )
+            .await
+            else {
+                self.schedule_agent_lifecycle_sweep();
+                return Ok(());
+            };
+            let session = self.owned.session_store.get_session(room)?;
+            let same_turn = self
+                .owned
+                .prompt_state_owner
+                .active_prompt_for_agent(&session, agent)
+                .is_some_and(|current| current.id() == active.id());
+            let still_first = self
+                .owned
+                .durable_state_store
+                .agent_urgent_delivery_front(room, agent)?
+                .is_some_and(|front| front.sequence == event.sequence && front.state == "pending");
+            if !same_turn || !still_first {
+                self.schedule_agent_lifecycle_sweep();
+                return Ok(());
+            }
+            Some((run.id().to_owned(), lane))
+        } else {
+            None
+        };
         let batch = self.delivery_batch(
             room,
             agent,
@@ -216,8 +318,6 @@ impl KernelRuntimeState {
             work.as_deref(),
         )?;
         let through = batch.last().map_or(event.sequence, |last| last.sequence);
-        let target = self.owned.agent_store.get_agent(agent)?;
-        let leased = target.remote_execution().is_some();
         let attachment = self.ensure_agent_message_attachment(room, &target)?;
         let workflow = match tasks.iter().find(|t| {
             t.state == ExecutionState::Waiting
@@ -286,18 +386,11 @@ impl KernelRuntimeState {
                 )
                 .await;
         }
-        let steer = if active.is_some() {
+        let steer = if let Some((run, _lane)) = &steer_lane {
             match self.prepare_local_active_prompt_steer_dispatch(room, &prompt) {
-                Ok(Some(dispatch)) => Some(dispatch),
-                Ok(None) | Err(_) => {
-                    self.owned
-                        .durable_state_store
-                        .agent_lifecycle(Operation::Defer {
-                            room: room.into(),
-                            agent: agent.into(),
-                            sequence: event.sequence,
-                            now: crate::session::unix_epoch_ms(),
-                        })?;
+                Ok(Some(dispatch)) if &dispatch.provider_run_id == run => Some(dispatch),
+                _ => {
+                    self.defer_inbox_steer(room, agent, event.sequence)?;
                     return Ok(());
                 }
             }
@@ -329,19 +422,6 @@ impl KernelRuntimeState {
         self.owned.record_woken_waits(&waiting, &attempt);
         self.mark_prompt_events_shown(room, agent, &shown)?;
         if let Some(dispatch) = steer {
-            // A turn that is settling holds its lane until it ends. The steer then
-            // sent nothing: the row waits for the idle wake instead of the lane.
-            let Ok(_permit) = tokio::time::timeout(
-                STEER_LANE_WAIT,
-                self.provider_runtime_lanes
-                    .acquire(&dispatch.provider_run_id),
-            )
-            .await
-            else {
-                self.record_agent_delivery_receipt(room, agent, event.sequence, "rejected")?;
-                self.schedule_agent_lifecycle_sweep();
-                return Ok(());
-            };
             if !self
                 .owned
                 .prompt_dispatch_matches_active_prompt(&dispatch)
@@ -505,6 +585,18 @@ impl KernelRuntimeState {
         self.spawn_agent_inbox_delivery(room.to_owned(), agent.to_owned(), sequence);
     }
 
+    fn defer_inbox_steer(&self, room: &str, agent: &str, sequence: u64) -> Result<(), DaemonError> {
+        self.owned
+            .durable_state_store
+            .agent_lifecycle(Operation::Defer {
+                room: room.into(),
+                agent: agent.into(),
+                sequence,
+                now: crate::session::unix_epoch_ms(),
+            })?;
+        Ok(())
+    }
+
     /// The caller holds the dispatch's run lane.
     async fn dispatch_agent_event_prompt(
         &self,
@@ -567,7 +659,7 @@ impl KernelRuntimeState {
                     break;
                 }
             } else {
-                match self.wake_disposition(&next, tasks) {
+                match wake_disposition(&next, tasks) {
                     WakeDisposition::Retire => {
                         self.owned
                             .durable_state_store
@@ -596,62 +688,6 @@ impl KernelRuntimeState {
             batch.push(next);
         }
         Ok(batch)
-    }
-    /// What the states of the tasks an event names say about its wake: the
-    /// source occurrence and a finished or blocked task keep their outcome,
-    /// so the automatic wake is retired; a proven startup refusal keeps its
-    /// answer for an explicit Resume.
-    fn wake_disposition(
-        &self,
-        event: &ledger::InboxEvent,
-        tasks: &[ledger::AgentTaskExecution],
-    ) -> WakeDisposition {
-        // A peer event names the turn that created its persistent follow,
-        // not unfinished work whose wake expires when that turn ends. Work the ended turn left
-        // running reports its end to the agent, not to the turn.
-        if event.kind == "peer_event" || event.payload["after_turn"] == true {
-            return WakeDisposition::Deliver;
-        }
-        let mut ids = Vec::new();
-        if let Some(id) = event.payload["task_id"].as_str() {
-            ids.push(id);
-        }
-        if let Some(more) = event.payload["task_ids"].as_array() {
-            ids.extend(more.iter().filter_map(|v| v.as_str()));
-        }
-        if !ids.is_empty()
-            && ids.iter().all(|id| {
-                tasks.iter().find(|t| t.task_id == *id).is_none_or(|t| {
-                    matches!(t.state, ExecutionState::Done | ExecutionState::Cancelled)
-                })
-            })
-        {
-            return WakeDisposition::Retire;
-        }
-        let waiting = |id: &&str| {
-            tasks
-                .iter()
-                .any(|t| t.task_id == *id && t.state == ExecutionState::Waiting)
-        };
-        if ids.iter().any(|id| {
-            tasks
-                .iter()
-                .any(|t| t.task_id == *id && t.state == ExecutionState::Blocked)
-        }) && !ids.iter().any(waiting)
-        {
-            if event.attempted_at_ms.is_some()
-                && event.submit_epoch.is_none()
-                && tasks.iter().any(|task| {
-                    task.state == ExecutionState::Blocked
-                        && task.wait.is_some()
-                        && ids.contains(&task.task_id.as_str())
-                })
-            {
-                return WakeDisposition::Hold;
-            }
-            return WakeDisposition::Retire;
-        }
-        WakeDisposition::Deliver
     }
     /// What the sender is told when message `sequence` waits for the owner's next prompt to
     /// `agent`, which the owner stopped: no turn is coming, so it must not wait for an answer.
@@ -977,6 +1013,83 @@ impl KernelRuntimeState {
 }
 
 impl KernelRuntimeOwnedState {
+    /// The queued notification owns this delivery opportunity. Ordinary rows
+    /// still pending beside it join when the prompt is promoted, and the
+    /// durable prompt commit reserves their receipts before provider I/O.
+    pub(super) fn add_pending_wakes_to_notification(
+        &self,
+        session: &crate::session::RuntimeSession,
+        agent: &str,
+        started: crate::session::PromptQueueItem,
+    ) -> Result<crate::session::PromptQueueItem, DaemonError> {
+        let notifications = started.queued_notifications();
+        if !notifications
+            .first()
+            .is_some_and(|notification| notification.batch_instruction.is_some())
+            || self.sudo_work_task(session.id(), agent).is_some()
+        {
+            return Ok(started);
+        }
+
+        let room = session.id();
+        let store = &self.durable_state_store;
+        let tasks = store.agent_tasks(Some(room), Some(agent))?;
+        let can_resume_task = tasks
+            .iter()
+            .find(|task| task.prompt_id == started.id())
+            .is_none_or(ledger::AgentTaskExecution::is_unstarted_prompt_task);
+        let mut protected = Vec::new();
+        for task in &tasks {
+            if task.pending_prompt_id.is_some()
+                || (task.state == ExecutionState::Waiting
+                    && store.agent_task_workflow(&task.task_id)?.is_some())
+            {
+                protected.push(task.task_id.as_str());
+            }
+        }
+        let eligible = |event: &ledger::InboxEvent| {
+            event.state == "pending"
+                && event.kind != "message"
+                && !event.reply_requested
+                && matches!(wake_disposition(event, &tasks), WakeDisposition::Deliver)
+                && !protected.iter().any(|task| names_task(event, task))
+                && (can_resume_task
+                    || !tasks.iter().any(|task| {
+                        task.state == ExecutionState::Waiting && names_task(event, &task.task_id)
+                    }))
+        };
+        let Some(lead) = store.agent_delivery_front(room, agent)?.filter(eligible) else {
+            return Ok(started);
+        };
+        let following = store.agent_delivery_batch(&lead, false, None)?;
+        let batch = std::iter::once(lead)
+            .chain(
+                following
+                    .into_iter()
+                    .take_while(eligible)
+                    .take(MAX_WAKE_BATCH),
+            )
+            .collect::<Vec<_>>();
+
+        let mut combined = started.clone();
+        combined.set_prompt(super::agent_inbox_wake_text::notification_batch(
+            notifications,
+            &batch,
+        ));
+        let combined =
+            combined.with_inbox_wakes(batch.iter().map(|event| event.sequence).collect());
+        if self.prompt_state_owner.replace_active_prompt_if_matches(
+            session,
+            agent,
+            &started,
+            combined.clone(),
+        ) {
+            Ok(combined)
+        } else {
+            Ok(started)
+        }
+    }
+
     /// Bind only after dispatch admission and immediately before provider I/O.
     pub(super) fn bind_agent_event_submission(
         &self,

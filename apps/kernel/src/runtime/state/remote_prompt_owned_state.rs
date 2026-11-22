@@ -212,6 +212,7 @@ impl KernelRuntimeOwnedState {
         let Some(started) = started else {
             return Ok(None);
         };
+        let started = self.add_pending_wakes_to_notification(&session, agent_id, started)?;
         let _ =
             self.record_started_user_prompt(session_id, started.source_attachment_id(), &started)?;
         let (active_prompt, queued_prompts) =
@@ -547,6 +548,11 @@ impl KernelRuntimeOwnedState {
                             agent_id,
                             Some(expected_next.id()),
                         )?;
+                    let active = active
+                        .map(|prompt| {
+                            self.add_pending_wakes_to_notification(&session, agent_id, prompt)
+                        })
+                        .transpose()?;
                     if active.is_some() {
                         let (active_prompt, queued_prompts) =
                             self.prompt_state_owner.state_parts(&session, agent_id);

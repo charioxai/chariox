@@ -685,7 +685,7 @@ impl KernelRuntimeState {
             crate::durable_state::workflow_notifications::agent_lineage::operation_id(
                 trigger_id, &payload,
             )?;
-        let notification = self.record_notification_occurrence(
+        let mut notification = self.record_notification_occurrence(
             session_id,
             agent_id,
             &hold,
@@ -698,7 +698,7 @@ impl KernelRuntimeState {
             .durable_state_store
             .reserve_agent_notification_lineage(receipt_id, &operation_id)?;
         // Several occurrences behind a busy agent cost one turn: this one joins the
-        // trigger's prompt that already waits. The caller settles its receipt with that
+        // notification prompt that already waits. The caller settles its receipt with that
         // prompt, so the occurrence keeps its own inbox row and acknowledgement.
         if let Some((prompt_id, joined)) = self.owned.join_queued_agent_notification(
             session_id,
@@ -728,11 +728,10 @@ impl KernelRuntimeState {
             // Off, or mid-firing: the accepted occurrence waits for the next pass.
             return Ok(None);
         };
-        let notice = super::agent_inbox_wake_text::notification_notice(
-            &notification.title,
-            &notification.source,
-            notification.sequence,
-        );
+        if dispatch.busy_policy == AgentTriggerBusyPolicy::Queue && !dispatch.responsible {
+            notification.batch_instruction = Some(dispatch.prompt.clone());
+        }
+        let notice = super::agent_inbox_wake_text::notification_notice(&notification);
         dispatch.prompt = format!("{}\n\n{notice}", dispatch.prompt);
         dispatch.notification = Some(notification);
         let now = crate::session::unix_epoch_ms();
@@ -809,6 +808,8 @@ impl KernelRuntimeState {
             title: hold.title.clone(),
             source: hold.source.clone(),
             sequence: event.sequence,
+            arrived_at_ms: event.arrived_at_ms,
+            batch_instruction: None,
             operation_id: operation_id.to_string(),
         })
     }
