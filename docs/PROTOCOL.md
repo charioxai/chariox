@@ -7499,7 +7499,8 @@ its own Vault under the Project scope, so presence differs per machine and is co
   than that or has ended, so a state change reaches the reader within a round trip and nothing is polled.
 - Room tools `chariox.environment.read` (names and states), `chariox.environment.setup` (runs the saved Setup
   in the room's checkout; returns the operation id) and `chariox.environment.check` (the kernel's own comparison).
-  None returns a value.
+  None returns a value. `chariox.environment.save` with `revision: 0` on a Project with no Environment is the owner's
+  first `SaveProjectEnvironment` (revision 1, owner check and validation unchanged); `check` and `propose` work after it.
 - `RunRemoteProjectEnvironmentSetup { projectId, operationId, targetKernelId, checkoutPath? }` runs Setup on
   another kernel of the same authenticated owner (a leased worker included), in the checkout that kernel
   holds for the Project; `RemoteEnvironmentOperation { operationId, targetKernelId, stop? }` reads or stops
