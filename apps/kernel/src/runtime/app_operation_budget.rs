@@ -8,7 +8,7 @@ use tokio::time::Instant;
 pub(crate) struct AppOperationBudget {
     deadline: Instant,
     cancelled: Arc<dyn Fn() -> bool + Send + Sync>,
-    resource: Option<super::kernel_browser_host::KernelBrowserResourceGrant>,
+    resource: Option<super::kernel_browser_host::AgentRunFence>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -55,7 +55,7 @@ impl AppOperationBudget {
     /// so revocation can still cancel work while SQLite admission is waiting.
     pub(crate) fn with_resource(
         mut self,
-        resource: super::kernel_browser_host::KernelBrowserResourceGrant,
+        resource: super::kernel_browser_host::AgentRunFence,
     ) -> Self {
         let parent = self.cancelled.clone();
         let observed = resource.clone();

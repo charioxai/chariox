@@ -1573,15 +1573,16 @@ async fn mk03_slice_detach_survives_completion_crash() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn mk03_forward_commit_retires_home_desktop_grant() {
+async fn mk03_forward_commit_retires_home_browser_presence() {
     let (fixture, session, _) = crash_fixture().await;
     {
         let home = fixture.home.lock().await;
         home.kernel_browser_host
-            .grant_desktop("local", &fixture.agent_id, "test-surface");
+            .admit("local", &fixture.agent_id)
+            .unwrap();
         assert!(home
             .kernel_browser_host
-            .grant_holders()
+            .running_agents()
             .iter()
             .any(|(_, agent)| agent == &fixture.agent_id));
     }
@@ -1592,10 +1593,10 @@ async fn mk03_forward_commit_retires_home_desktop_grant() {
             .lock()
             .await
             .kernel_browser_host
-            .grant_holders()
+            .running_agents()
             .iter()
             .any(|(_, agent)| agent == &fixture.agent_id),
-        "moving execution must retire its home user-domain grant"
+        "moving execution must retire its home browser presence"
     );
 }
 

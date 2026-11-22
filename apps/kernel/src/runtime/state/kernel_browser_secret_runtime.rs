@@ -612,7 +612,7 @@ impl KernelRuntimeState {
         }
         // MP-08/MP-11: the fill is the agent's input to an App Tab too.
         if admission.is_agent() {
-            self.claim_app_view_tab(user, admission, &mut params)?;
+            self.mark_app_view_tab(user, &mut params)?;
         }
         if let Some(actor) = context.actor {
             params["observed_by"] = json!(actor);

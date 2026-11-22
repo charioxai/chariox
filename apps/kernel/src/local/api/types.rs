@@ -63,7 +63,6 @@ mod slice;
 mod terminal_command_catalog;
 mod terminal_interaction;
 mod usage_snapshot;
-mod user_domain_access;
 mod vault_secret;
 mod watcher;
 mod workflow;
@@ -123,7 +122,6 @@ pub use slice::*;
 pub use terminal_command_catalog::*;
 pub use terminal_interaction::*;
 pub use usage_snapshot::*;
-pub use user_domain_access::*;
 pub use vault_secret::*;
 pub use watcher::*;
 pub use workflow::*;
@@ -635,6 +633,11 @@ pub use workspace::*;
 /// v2 header carries `page_wheel`, whether the page's own script takes the wheel (a non-passive wheel listener on window,
 /// document, html or body), so the viewer sends it every wheel step.
 /// Machine status includes a readable relay failure reason (#1632).
-/// Local 1014 (relay peer 451, provisional numbers): opening a terminal with a `command` takes `stdin`, inline up to
+/// Local 1014 (relay peer 451): opening a terminal with a `command` takes `stdin`, inline up to
 /// 64 KiB or a file on the kernel, which the program reads as its standard input (docs/PROTOCOL.md, "Kernel terminals").
+/// Local 1014 (relay peer 451): the owner's agents need no grant for the kernel browser, Computer or
+/// App views. `UserDomainGrant`, `UserDomainNotice`, `UserDomainResource` and `UserDomainWindowAccess` are gone; the
+/// `user_domain_grants_changed` snapshot carries only `cursor` and `room_computer`; browser and App view results no
+/// longer carry `kernel_id`, `kernel_name`, `focused_agent_kernel_id` or `reachable_by_focused_agent`; the loader tools
+/// take no arguments and `chariox.kernel_browser_share` is removed.
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1014;

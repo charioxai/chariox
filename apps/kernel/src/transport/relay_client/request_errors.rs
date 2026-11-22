@@ -668,7 +668,6 @@ mod tests {
     fn mp08_room_computer_policy_refusals_retain_codes_across_relay() {
         use crate::error::UserDomainRefusalReason;
         for reason in [
-            UserDomainRefusalReason::NotFocusedAgent,
             UserDomainRefusalReason::ForeignOwner,
             UserDomainRefusalReason::StaleEpoch,
             UserDomainRefusalReason::StaleReference,

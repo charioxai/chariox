@@ -50,7 +50,7 @@ struct Handover {
     admission: Vec<crate::runtime::process_resources::HeldCommand>,
     // Focus and grants list agents' user-domain tools: a provider that listed
     // them must not see its tools change.
-    user_domain: crate::runtime::user_domain_access::AccessHandover,
+    user_domain: crate::runtime::kernel_browser_host::LoadedHandover,
     // Provider runs the owner cut off from the gateway: a handed-over run keeps its
     // id and tool token, so the revocation has to survive the swap with it.
     revoked_reach_runs: Vec<String>,
@@ -237,7 +237,7 @@ static RECEIVED_PROVIDERS: Mutex<Vec<ProviderHandover>> = Mutex::new(Vec::new())
 static RETAINED_GOAL_APPROVALS: Mutex<BTreeMap<String, crate::provider::NativeApprovalGoal>> =
     Mutex::new(BTreeMap::new());
 static RECEIVED_ATTACHMENTS: Mutex<Vec<AttachmentHandover>> = Mutex::new(Vec::new());
-static RECEIVED_USER_DOMAIN: Mutex<Option<crate::runtime::user_domain_access::AccessHandover>> =
+static RECEIVED_USER_DOMAIN: Mutex<Option<crate::runtime::kernel_browser_host::LoadedHandover>> =
     Mutex::new(None);
 static RECEIVED_REVOKED_REACH_RUNS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 // The handed-over runs' tool identities, from the handover until a recovered prompt claims the run:
@@ -403,7 +403,7 @@ pub(crate) fn take_attachments() -> Vec<crate::attachment::RuntimeAttachment> {
         .collect()
 }
 
-pub(crate) fn take_user_domain() -> Option<crate::runtime::user_domain_access::AccessHandover> {
+pub(crate) fn take_user_domain() -> Option<crate::runtime::kernel_browser_host::LoadedHandover> {
     lock(&RECEIVED_USER_DOMAIN).take()
 }
 
@@ -952,7 +952,7 @@ pub(crate) fn read_local_job_state(fd: i32) -> std::io::Result<zeroize::Zeroizin
 }
 
 /// Keeps the users' focus and grants for the next program.
-pub(crate) fn hand_over_user_domain(access: crate::runtime::user_domain_access::AccessHandover) {
+pub(crate) fn hand_over_user_domain(access: crate::runtime::kernel_browser_host::LoadedHandover) {
     if let Some(prepared) = lock(&PREPARED).as_mut() {
         prepared.handover.user_domain = access;
     }

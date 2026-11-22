@@ -253,21 +253,17 @@ impl SessionRuntimeCommandExecutor {
                     .detach_from_session(request, caller_user_id)
                     .await
             }),
-            LocalDaemonRequest::FocusAgent(request) => Box::pin(async move {
-                self.store
-                    .focus_agent(request, caller_user_id, terminal_caller)
-                    .await
-            }),
+            LocalDaemonRequest::FocusAgent(request) => {
+                Box::pin(async move { self.store.focus_agent(request, caller_user_id).await })
+            }
             LocalDaemonRequest::AcknowledgeAgentOutputSeen(request) => Box::pin(async move {
                 self.store
                     .acknowledge_agent_output_seen(request, caller_user_id)
                     .await
             }),
-            LocalDaemonRequest::CycleAgentFocus(request) => Box::pin(async move {
-                self.store
-                    .cycle_agent_focus(request, caller_user_id, terminal_caller)
-                    .await
-            }),
+            LocalDaemonRequest::CycleAgentFocus(request) => {
+                Box::pin(async move { self.store.cycle_agent_focus(request, caller_user_id).await })
+            }
             LocalDaemonRequest::ResizeTerminal(request) => {
                 Box::pin(async move { self.store.resize_terminal(request).await })
             }

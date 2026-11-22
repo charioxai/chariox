@@ -1,6 +1,7 @@
-//! Every local agent has the kernel browser: grants through the real router and
-//! provider MCP admission, with no card and no focus. The browser is the fixture
-//! controller; live Chromium/provider acceptance is a separate recorded gate.
+//! Every local agent uses the owner's kernel browser through the real router and
+//! provider MCP admission, with no grant, card, focus or delegation. The browser
+//! is the fixture controller; live Chromium/provider acceptance is a separate
+//! recorded gate.
 use super::*;
 use crate::attachment::{AttachRequest, ClientCapabilityLevel};
 
@@ -130,33 +131,26 @@ fn refusal(error: crate::DaemonError) -> Option<crate::error::UserDomainRefusalR
     }
 }
 
-async fn grants(router: &CommandRouter) -> Vec<Value> {
-    human(router, KernelBrowserCommand::ListGrants).await["grants"]
-        .as_array()
-        .unwrap()
-        .clone()
-}
-
 fn snapshot(tab: &str) -> Value {
     json!({"command":{"op":"snapshot","tab_id":tab,"generation":1}})
 }
 
-/// No card, no focus and no owner prompt: an idle peer, a child and a
-/// grandchild (depth 2) each load the kernel browser at once and use the
-/// owner's existing tab and their own new tabs.
+/// Row 322 (Miguel 2026-11-21): no grant, card, focus or delegation. An agent at depth 3 and an
+/// idle peer use the owner's existing tab and open their own with no load, no
+/// transfer from a parent and no owner prompt, and keep doing so across calls.
 #[test]
-fn every_agent_uses_the_kernel_browser_at_once_without_a_card() {
+fn every_agent_uses_the_owners_browser_with_no_grant_at_any_depth() {
     run_test(|| {
         Box::pin(async {
-            let setup = setup("browser-no-card", &["child", "grandchild"], &["idle"]);
+            let setup = setup(
+                "browser-no-grant",
+                &["child", "grandchild", "great-grandchild"],
+                &["idle"],
+            );
             let agents = setup.agents.clone();
             let room = start(setup, agents[0].0.owner_user_id());
             let router = &room.router;
-            for (agent, token) in &agents[1..] {
-                let loaded = tool(router, token, "chariox.load_kernel_browser", json!({}))
-                    .await
-                    .unwrap_or_else(|error| panic!("{} loads the browser: {error}", agent.id()));
-                assert_eq!(loaded.payload["loaded"], "chariox.kernel_browser");
+            for (agent, token) in &agents {
                 tool(
                     router,
                     token,
@@ -164,7 +158,7 @@ fn every_agent_uses_the_kernel_browser_at_once_without_a_card() {
                     snapshot("host-tab-fixture"),
                 )
                 .await
-                .expect("the owner's existing tab needs no focus");
+                .unwrap_or_else(|error| panic!("{} reads the owner's tab: {error}", agent.id()));
                 tool(
                     router,
                     token,
@@ -172,7 +166,34 @@ fn every_agent_uses_the_kernel_browser_at_once_without_a_card() {
                     json!({"command":{"op":"open","url":"https://www.wikipedia.org/"}}),
                 )
                 .await
-                .expect("opening a tab needs no approval");
+                .unwrap_or_else(|error| panic!("{} opens a tab: {error}", agent.id()));
+                let loaded = tool(router, token, "chariox.load_kernel_browser", json!({}))
+                    .await
+                    .unwrap_or_else(|error| panic!("{} lists the browser: {error}", agent.id()));
+                assert_eq!(loaded.payload["loaded"], "chariox.kernel_browser");
+                assert!(
+                    loaded.payload.get("granted").is_none(),
+                    "loading grants nothing"
+                );
+                assert!(
+                    tool(
+                        router,
+                        token,
+                        "chariox.load_kernel_browser",
+                        json!({"lifetime_hours": 4}),
+                    )
+                    .await
+                    .is_err(),
+                    "the loader takes no lifetime"
+                );
+                tool(
+                    router,
+                    token,
+                    "chariox.kernel_browser",
+                    snapshot("host-tab-fixture"),
+                )
+                .await
+                .expect("still no refusal after loading");
             }
             let session = router
                 .runtime_state()
@@ -188,35 +209,15 @@ fn every_agent_uses_the_kernel_browser_at_once_without_a_card() {
                     .map(|interaction| interaction.title())
                     .collect::<Vec<_>>()
             );
-            assert_eq!(grants(router).await.len(), 3);
-            // A revoke stops the agent's current use; loading again needs nobody.
-            let (idle, token) = &agents[3];
-            human(
-                router,
-                KernelBrowserCommand::RevokeGrants {
-                    agent_id: Some(idle.id().into()),
-                },
-            )
-            .await;
+            // The share tool is gone: there is nothing to delegate.
             assert!(tool(
                 router,
-                token,
-                "chariox.kernel_browser",
-                snapshot("host-tab-fixture")
+                &agents[0].1,
+                "chariox.kernel_browser_share",
+                json!({"agent": agents[1].0.id(), "resources": []}),
             )
             .await
             .is_err());
-            tool(router, token, "chariox.load_kernel_browser", json!({}))
-                .await
-                .expect("a revoked agent loads the browser again");
-            tool(
-                router,
-                token,
-                "chariox.kernel_browser",
-                snapshot("host-tab-fixture"),
-            )
-            .await
-            .unwrap();
             router.runtime_state().shutdown_cleanup().await.unwrap();
             std::fs::remove_dir_all(&room.root).unwrap();
         })
@@ -224,7 +225,7 @@ fn every_agent_uses_the_kernel_browser_at_once_without_a_card() {
 }
 
 #[test]
-fn capability_leased_agents_cannot_acquire_or_receive_user_domain_access() {
+fn leased_agents_keep_only_their_room_browser_route() {
     run_test(|| {
         Box::pin(async {
             let setup = setup("capability-s04", &["leased"], &[]);
@@ -288,18 +289,6 @@ fn capability_leased_agents_cannot_acquire_or_receive_user_domain_access() {
             )
             .await
             .unwrap();
-            assert!(
-                tool(
-                    router,
-                    &parent_token,
-                    "chariox.kernel_browser_share",
-                    json!({"agent": child.id(), "resources": [{"kind":"browser_tab","tab_id":"host-tab-new"}]}),
-                )
-                .await
-                .is_err(),
-                "MP-08: leased agents keep only their Room Browser/Computer route"
-            );
-            assert_eq!(grants(router).await.len(), 1);
             router.runtime_state().shutdown_cleanup().await.unwrap();
             std::fs::remove_dir_all(&room.root).unwrap();
         })

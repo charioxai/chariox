@@ -1,4 +1,4 @@
-import type { KernelBrowserCommand, UserDomainGrant, UserDomainGrantEvent, UserDomainResource } from "./kernel-types-kernel-browser.js"
+import type { KernelBrowserCommand, UserDomainGrantEvent } from "./kernel-types-kernel-browser.js"
 
 export const userDomainAccessMinimumProtocol = 494
 // MP-08 / MP-10 / MP-11: only Room Computer grant consumers require 449.
@@ -12,27 +12,6 @@ export type UserDomainAccessClient = {
   readonly localDaemonProtocolVersion?: number
   send<T>(request: unknown, options?: { signal?: AbortSignal; timeoutMs?: number; retryOnTimeout?: boolean; beforeSend?: () => void }): Promise<T>
 }
-export function userDomainResourceLabel(resource: UserDomainResource): string {
-  switch (resource.kind) {
-    case "desktop": return `desktop ${resource.surface_id}`
-    case "browser_tab": return `tab ${resource.tab_id}`
-    case "app_view": return `App ${resource.view_id}`
-    case "capture": return `capture ${resource.capture_id}`
-  }
-}
-export function userDomainUseNotice(notice: UserDomainGrantEvent["notice"]): string | null {
-  return notice ? `Agent ${notice.agent_id} used retained access to ${userDomainResourceLabel(notice.resource)} while not focused.` : null
-}
-export function userDomainGrantExpiry(grant: UserDomainGrant): string {
-  if (grant.expires_at_ms !== undefined && grant.expires_at_ms !== null) {
-    const deadline = grant.idle_since_ms === null ? grant.expires_at_ms
-      : Math.min(grant.expires_at_ms, grant.idle_since_ms + grant.idle_timeout_seconds * 1000)
-    return new Date(deadline).toISOString()
-  }
-  return grant.idle_since_ms === null ? "Retained during work or pending wake"
-    : new Date(grant.idle_since_ms + grant.idle_timeout_seconds * 1000).toISOString()
-}
-
 /** Owner-terminal projection only. All admission and expiry decisions stay in the kernel. */
 export class UserDomainAccessController {
   snapshot: UserDomainGrantEvent | null = null
@@ -45,14 +24,9 @@ export class UserDomainAccessController {
   private retry: ReturnType<typeof setTimeout> | null = null
   private revision = 0
   private readonly listeners = new Set<() => void>()
-  private readonly uses = new Map<string, { since: number; at: number }>()
   constructor(private readonly deps: { client(): UserDomainAccessClient | null; bindingKey(): string }) {}
   subscribe(listener: () => void): () => void { this.listeners.add(listener); return () => this.listeners.delete(listener) }
   private publish(): void { for (const listener of this.listeners) listener() }
-  lastObservedRetainedUse(grant: UserDomainGrant): number | null {
-    const use = this.uses.get(grant.agent_id)
-    return use?.since === grant.since_ms ? use.at : null
-  }
   private check(revision: number): void {
     if (revision !== this.revision || this.client !== this.deps.client() || this.binding !== this.deps.bindingKey() || this.client?.localDaemonProtocolVersion !== this.protocol) {
       throw new Error("Kernel or owner changed; refresh access.")
@@ -64,24 +38,14 @@ export class UserDomainAccessController {
       { KernelBrowser: { command } }, { ...(signal ? { signal } : {}), timeoutMs: 35000, retryOnTimeout: false, beforeSend: () => this.check(revision) })
     this.check(revision)
     const event = response.KernelBrowser?.result
-    if (!event || event.event !== "user_domain_grants_changed" || !Number.isSafeInteger(event.cursor) || event.cursor < 0 || !Array.isArray(event.grants)) {
+    if (!event || event.event !== "user_domain_grants_changed" || !Number.isSafeInteger(event.cursor) || event.cursor < 0) {
       throw new Error(response.Error?.message ?? "Invalid access snapshot from kernel.")
     }
     return event
   }
   private apply(event: UserDomainGrantEvent): void {
     if (this.snapshot && event.cursor < this.snapshot.cursor) return
-    // A notice can outlive a revoked grant. Never present it as current authority.
-    const notice = event.notice && event.grants.some(g => g.agent_id === event.notice!.agent_id && g.since_ms <= event.notice!.at_ms)
-      ? event.notice : null
-    this.snapshot = { ...event, notice }
-    for (const [id, use] of this.uses) {
-      if (!event.grants.some(g => g.agent_id === id && g.since_ms === use.since)) this.uses.delete(id)
-    }
-    if (notice) {
-      const grant = event.grants.find(g => g.agent_id === notice.agent_id)!
-      this.uses.set(grant.agent_id, { since: grant.since_ms, at: notice.at_ms })
-    }
+    this.snapshot = event
     this.error = null; this.publish()
   }
   /** Call on connection/owner changes; starts one cursor feed even when the access view is closed. */
@@ -91,7 +55,7 @@ export class UserDomainAccessController {
     this.stop()
     this.client = client; this.binding = binding; this.protocol = client?.localDaemonProtocolVersion
     if (!client || (client.localDaemonProtocolVersion ?? 0) < userDomainAccessMinimumProtocol) {
-      this.error = "Update the connected kernel for access grants (protocol 494)."; this.publish(); return
+      this.error = "Update the connected kernel for Room Computer access (protocol 494)."; this.publish(); return
     }
     this.abort = new AbortController()
     void this.poll(this.revision, this.abort.signal)
@@ -100,7 +64,7 @@ export class UserDomainAccessController {
     ++this.revision; this.abort?.abort(); this.abort = null
     if (this.retry !== null) clearTimeout(this.retry)
     this.retry = null
-    this.client = null; this.binding = ""; this.protocol = undefined; this.snapshot = null; this.uses.clear(); this.busy = false; this.error = null
+    this.client = null; this.binding = ""; this.protocol = undefined; this.snapshot = null; this.busy = false; this.error = null
     this.publish()
   }
   refresh(): void { this.stop(); this.sync() }

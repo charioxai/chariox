@@ -1,10 +1,11 @@
 //! MP-08/MP-10/MP-11 A05: user-requested capability grants. Prompt causation is
 //! typed (human attachment); agents never mint authority or widen a transfer.
-use super::kernel_browser_runtime::host_error;
 use super::*;
-use crate::local::UserDomainResource;
-use crate::runtime::room_tool_admission::{denied, in_subtree, resolve_agent};
-use crate::transport::runtime_tools::RuntimeToolResult;
+use crate::runtime::room_tool_admission::denied;
+
+/// An agent's App binding lasts 8 hours and never outlasts a day (phase 2 deletes it).
+const MAX_APP_GRANT_LIFETIME: Duration = Duration::from_secs(24 * 3600);
+pub(super) const DEFAULT_APP_GRANT_LIFETIME: Duration = Duration::from_secs(8 * 3600);
 
 /// MP-11: serialize binding changes with pending acquisition and delegation.
 /// Revisions are process-local; persisted grants carry their own generation.
@@ -335,13 +336,6 @@ pub(crate) struct AppBindingPermit {
     pub(super) provider_run_id: Option<String>,
 }
 
-#[derive(serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ShareArguments {
-    agent: String,
-    resources: Vec<UserDomainResource>,
-}
-
 impl KernelRuntimeState {
     pub(super) fn app_binding_epoch(
         &self,
@@ -464,7 +458,7 @@ impl KernelRuntimeState {
                     .expires_at_ms
                     .saturating_sub(crate::session::unix_epoch_ms()),
             )
-            .min(crate::runtime::user_domain_access::MAX_GRANT_LIFETIME);
+            .min(MAX_APP_GRANT_LIFETIME);
         handle.spawn(async move {
             loop {
                 let changed = state.owned.app_grant_epochs.changed.notified();
@@ -500,39 +494,5 @@ impl KernelRuntimeState {
 
     pub(super) fn notify_app_grant_change(&self) {
         self.owned.app_grant_epochs.changed.notify_waiters();
-    }
-
-    /// MP-08/MP-11: hand a direct local child an explicit subset of the caller's
-    /// granted user-domain resources. The child cannot widen or outlive it.
-    pub(super) fn kernel_browser_share(
-        &self,
-        actor: &crate::agent::AgentInstance,
-        arguments: serde_json::Value,
-        admission: &crate::runtime::kernel_browser_host::KernelBrowserAdmission,
-    ) -> Result<RuntimeToolResult, DaemonError> {
-        if !self.room_agent_tools_enabled() {
-            return Err(denied("grant transfer requires room agent tools"));
-        }
-        let request: ShareArguments = serde_json::from_value(arguments)
-            .map_err(|_| host_error("MP-08: invalid grant transfer".into()))?;
-        let agents = self
-            .owned
-            .agent_store
-            .get_session_agents(actor.session_id());
-        let child = resolve_agent(&agents, actor.session_id(), &request.agent)?;
-        in_subtree(actor, child, &agents)?;
-        if child.remote_execution().is_some() || child.owner_user_id() != actor.owner_user_id() {
-            return Err(denied(
-                "grant transfer requires a descendant executing on this kernel; leased agents use their Room Browser/Computer route",
-            ));
-        }
-        self.owned
-            .kernel_browser_host
-            .transfer_grant(admission, child.id(), &request.resources)
-            .map_err(host_error)?;
-        Ok(RuntimeToolResult {
-            ok: true,
-            payload: serde_json::json!({"shared": request.resources.len(), "agent_id": child.id()}),
-        })
     }
 }

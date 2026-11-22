@@ -1,6 +1,5 @@
 //! MP-08/MP-10/MP-11 #992: retain AppView authority through cold start and reply.
 use super::*;
-use crate::local::UserDomainResource;
 use chariox_app_package::{verify, VerificationPolicy};
 use chariox_app_runtime::{
     release_store::{ReleaseStore, StageBudget},
@@ -100,18 +99,13 @@ fn tool_method(state: &KernelRuntimeState) -> String {
         .local_name
         .clone()
 }
-fn grant(state: &KernelRuntimeState, agent: &crate::agent::AgentInstance, view: &str) {
-    let host = &state.owned.kernel_browser_host;
-    host.set_focus("alice", Some(agent.id()));
-    host.load("alice", agent.id()).unwrap();
-    let admission = host.admit("alice", agent.id()).unwrap();
-    host.claim_resource(
-        Some(&admission),
-        UserDomainResource::AppView {
-            view_id: view.into(),
-        },
-    )
-    .unwrap();
+/// The agent runs again: a fresh run fence, never the retired one.
+fn grant(state: &KernelRuntimeState, agent: &crate::agent::AgentInstance, _view: &str) {
+    state
+        .owned
+        .kernel_browser_host
+        .admit("alice", agent.id())
+        .unwrap();
 }
 async fn wait_worker(state: &KernelRuntimeState) {
     tokio::time::timeout(Duration::from_secs(10), async {
@@ -183,10 +177,7 @@ async fn mp11_app_view_revoke_regrant_during_cold_lease_never_enqueues() {
         result = &mut call => panic!("call must await cold lease: {result:?}"),
         _ = tokio::time::sleep(Duration::from_millis(100)) => {}
     }
-    state
-        .owned
-        .kernel_browser_host
-        .revoke_grants("alice", Some(agent.id()));
+    state.owned.kernel_browser_host.revoke_agent(agent.id());
     grant(&state, &agent, &view);
     release.send(()).unwrap();
     let result = tokio::time::timeout(Duration::from_secs(3), &mut call).await;
@@ -255,10 +246,7 @@ async fn mp11_app_view_revoke_regrant_cancels_a_pending_worker_reply() {
     })
     .await
     .unwrap();
-    state
-        .owned
-        .kernel_browser_host
-        .revoke_grants("alice", Some(agent.id()));
+    state.owned.kernel_browser_host.revoke_agent(agent.id());
     grant(&state, &agent, &view);
     let result = tokio::time::timeout(Duration::from_secs(2), &mut call).await;
     if result.is_err() {
@@ -339,10 +327,7 @@ async fn an_approved_agent_call_is_approved_until_the_call_ends() {
     .await
     .unwrap();
     assert_eq!(state.app_control().approved_operations().len(), 1);
-    state
-        .owned
-        .kernel_browser_host
-        .revoke_grants("alice", Some(agent.id()));
+    state.owned.kernel_browser_host.revoke_agent(agent.id());
     grant(&state, &agent, &view);
     let _ = tokio::time::timeout(Duration::from_secs(2), call).await;
     assert_eq!(state.app_control().approved_operations().len(), 0);
@@ -361,25 +346,18 @@ async fn mp11_app_view_budget_keeps_document_and_grant_cancellation() {
             _cleanup,
             ..
         } = prepare(Mode::ToolEcho);
-        let resource = UserDomainResource::AppView {
-            view_id: view.clone(),
-        };
         let grant_epoch = state
             .owned
             .kernel_browser_host
-            .retain_resource_grant("alice", agent.id(), resource)
-            .unwrap();
+            .run_fence("alice", agent.id());
         let mut tracked = state.app_control().views().track_call(&view, &view, None);
-        tracked.retain_browser_grant(grant_epoch.clone());
+        tracked.retain_run_fence(grant_epoch.clone());
         let budget = tracked.operation_budget();
         grant_epoch.commit(|| budget.check()).unwrap().unwrap();
         if close_document {
             state.app_control().views().forget_session(&view);
         } else {
-            state
-                .owned
-                .kernel_browser_host
-                .revoke_grants("alice", Some(agent.id()));
+            state.owned.kernel_browser_host.revoke_agent(agent.id());
             grant(&state, &agent, &view);
             assert!(
                 grant_epoch.commit(|| ()).is_err(),
@@ -666,83 +644,3 @@ async fn room_app_view_backend_preserves_actor_and_revocation() {
 
 #[path = "app_view_actor_roundtrip_tests.rs"]
 mod actor_roundtrip_tests;
-
-/// MP-08/MP-11 S1-04: an agent that holds the App and the browser but has not
-/// claimed this view is told what is missing, not that the App is not granted.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn an_unclaimed_view_is_refused_with_the_missing_claim_not_the_missing_app_grant() {
-    let ViewFixture {
-        state,
-        agent,
-        binding,
-        view,
-        _cleanup,
-        ..
-    } = prepare(Mode::ToolEcho);
-    let host = &state.owned.kernel_browser_host;
-    host.revoke_grants("alice", Some(agent.id()));
-    host.set_focus("alice", Some(agent.id()));
-    host.load("alice", agent.id()).unwrap();
-    assert!(agent.has_extension_grant(crate::extension::ExtensionKind::App, "installed"));
-    let method = tool_method(&state);
-    let mut tracked = state.app_control().views().track_call(&view, &view, None);
-    let error = state
-        .invoke_user_app_view_call(
-            "alice",
-            &view,
-            &binding,
-            &method,
-            serde_json::json!({"text":"unclaimed"}),
-            &mut tracked,
-            ViewCaller::Agent(&agent),
-        )
-        .await
-        .unwrap_err();
-    assert_eq!(error.code, "AGENT_APP_NOT_GRANTED");
-    assert!(
-        error.message.contains("claim") && !error.message.contains("no grant for this App"),
-        "the owner already granted the App; the message must name the missing claim: {}",
-        error.message
-    );
-    // The page's own call, attributed to the agent, is refused the same way.
-    let actor = crate::runtime::browser_controller_app_view::BrowserAppViewActor {
-        kind: "agent".into(),
-        id: agent.id().into(),
-    };
-    let error = state
-        .user_app_view_agent("alice", &view, &actor)
-        .expect_err("an unclaimed view refuses the agent's page call");
-    assert_eq!(error.code, "AGENT_APP_NOT_GRANTED");
-    assert!(
-        error.message.contains("claim"),
-        "the page call names the missing claim: {}",
-        error.message
-    );
-    // Claiming the view, as a click on its Tab does, removes the refusal.
-    let admission = host.admit("alice", agent.id()).unwrap();
-    host.claim_resource(
-        Some(&admission),
-        UserDomainResource::AppView {
-            view_id: view.clone(),
-        },
-    )
-    .unwrap();
-    assert!(state.user_app_view_agent("alice", &view, &actor).is_ok());
-    let mut tracked = state.app_control().views().track_call(&view, &view, None);
-    let claimed = state
-        .invoke_user_app_view_call(
-            "alice",
-            &view,
-            &binding,
-            &method,
-            serde_json::json!({"text":"claimed"}),
-            &mut tracked,
-            ViewCaller::Agent(&agent),
-        )
-        .await;
-    assert!(
-        !matches!(&claimed, Err(error) if error.code == "AGENT_APP_NOT_GRANTED"),
-        "a claimed view reaches the App: {claimed:?}"
-    );
-    cleanup_worker(&state).await;
-}

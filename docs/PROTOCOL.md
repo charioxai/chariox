@@ -177,42 +177,22 @@ Draft protocol aligned with `docs/spec-v1.md`.
 Apps Phase 1 protocol numbers were renumbered above release F on 2026-10-03 (local
 N → N + 9 for 368–406, relay 58 → 69); see [PROTOCOL_PHASE1_RENUMBERING.md](PROTOCOL_PHASE1_RENUMBERING.md).
 
-## MP-08 / MP-11: user-domain grant contract (local 432 / relay 78)
+## MP-08 / MP-11: user-domain access (no grants)
 
-The owner-approved multidomain access contract is specified in
-[MULTIDOMAIN_USER_DOMAIN_ACCESS.md](MULTIDOMAIN_USER_DOMAIN_ACCESS.md).
-MP-11: authenticated human-terminal focus grants resource-scoped authority.
-Agent-originated focus, attach, cycle and alias-routed prompts preserve session
-orchestration without creating or refreshing browser/Notes grants. Changing
-human focus does not revoke prior
-holders. Existing kernel turn/wake state retains grants until fully idle expiry,
-session/agent end or explicit revocation. Authenticated owner terminals use
-`KernelBrowser` operations `list_grants`, `subscribe_grants` and `revoke_grants`;
-agent tools cannot invoke these owner controls. Snapshots carry the live cursor,
-holders and non-focused-use notice. Revocation cancels grant epochs and idle
-subscriptions. MP-11: retained holders have the same input and mutations as
-focused agents on granted resources, including typing, keys, Tab and clicks.
-Explicit start/open is allowed; open grants its newly created tab. Claiming an
-unrelated existing resource requires focus. Loading a capability requires focus
-or the A05 owner approval described below. Vault,
-protected regions, sensitive approvals and App/passkey validation keep their
-shared protections. Ordinary input has no retained/focused classification;
-revoke and idle lapse still cancel authority immediately. Observation reads,
-including state, never start/restart Chromium or its controller for any caller;
-stopped/unavailable reads require explicit start/open (`browser_unavailable`).
-Browser/App window projections identify the owning kernel and focused-agent
-reachability; cross-kernel control is refused. Consumers of these new fields and
-commands require local 432. Existing multidomain feature minima remain 427.
-The focused MP-10 drill and protocol snapshots cover these changes; they do not
-alone establish ordinary/managed parity or official-provider wait behavior.
-
-MP-08 / MP-11: ordinary text and text-producing key events use the same
-Vault-only protected-target check, including password/OTP fields, focused
-frames and open nested shadow fields, for both focused and retained holders.
-Successful browser results are bound to the exact admission epoch under the
-grant lock before resource/subscription registration or inventory projection;
-revocation followed by refocus cannot adopt an old call's result into a fresh
-grant. A final live cancellation/provider-run check fences returned results.
+The owner's agents use the owner's kernel browser, Computer and App views with no
+grant, focus, epoch or lifetime; see
+[MULTIDOMAIN_USER_DOMAIN_ACCESS.md](MULTIDOMAIN_USER_DOMAIN_ACCESS.md). The loader
+tools take no arguments and `chariox.kernel_browser_share` is gone. The owner
+terminal's `KernelBrowser` commands `list_grants`, `subscribe_grants` and
+`revoke_grants` now carry only the Room Computer switches: the
+`user_domain_grants_changed` snapshot holds `cursor` and `room_computer`. Browser
+and App window projections no longer carry `kernel_id`, `kernel_name`,
+`focused_agent_kernel_id` or `reachable_by_focused_agent`, and `UserAppView.access`
+is removed. Vault, protected regions, sensitive approvals and App/passkey
+validation keep their protections; ordinary text and text-producing key events use
+the same Vault-only protected-target check. Observation reads never start or
+restart Chromium for any caller; a stopped browser needs an explicit start/open
+(`browser_unavailable`).
 
 ### MP-08 / MP-09 / MP-10 / MP-11: one-use Vault capture (local 963 / peer 412)
 
@@ -234,56 +214,24 @@ See [capture and use](KERNEL_SUDO.md#vault-capture-and-use-by-command-and-file-v
 Local 469 combines A04 (460) and A05 (462); relay peer 87 combines peer 82 and
 86. A06 adds no serialized request or event shape: the MCP tool
 `chariox.vault.generate` replaces `chariox.create_generated_credential`, and
-`chariox.kernel_browser_paste_secret` accepts a live sudo window in place of
-focus for a retained grant. See [Sudo windows](KERNEL_SUDO.md).
+`chariox.kernel_browser_paste_secret` accepts a live sudo window. See [Sudo windows](KERNEL_SUDO.md).
 
 MP-08 / MP-09 / MP-10 / MP-11, local 956 / peer 405: Vault generation is an ordinary agent tool. Generated and captured entries persist `metadata.use_binding` with one exact destination and a value kind. Browser/HTTP site uses compare canonical origins (scheme, host, effective port), not host suffixes. Environment/stdin, file, TOTP and WebAuthn bindings are distinct uses. Bindings and card kind cannot be changed by overwriting or aliasing a handle. Payment-card values require one owner interaction per operation; ordinary values need no task approval or sudo. Only the encrypted Vault's actual setup/unlock still requires its key. `chariox_kernel_request` remains sudo-only.
 
-### MP-08 / MP-10 / MP-11: A05 capability acquisition (local 462)
-
-A running prompt submitted by the owner
-through a human attachment supplies acquisition causation. Agent messages,
-workflows, schedules and continuations do not. A new App binding or kernel
-browser grant also requires the owner's resource-specific `RuntimeInteraction`
-reply; a human prompt alone cannot authorize unrelated resources. Owner Deny
-and a missing owner request return the typed `user_domain_not_requested`
-refusal; a revoke reaching that agent while its decision is pending returns
-`user_domain_not_granted`. Other holders' grant changes do not affect a pending
-decision. Provider MCP errors carry the same code. Existing focus grants remain
-available through the shared browser authority path; focus is the owner's live
-act, so focus grants have no absolute lifetime (no `expires_at_ms`) and retire
-through idle, revocation or session/agent end.
-Explicit owner focus promotes an existing requested or delegated browser grant
-to that focus lifecycle without retiring its resources, subscriptions or epoch.
-
-Browser loader arguments may request `lifetime_hours` from 1 through 24; the
-default is 8 hours. A prompt grant covers newly opened tabs, while claiming an
-existing resource and Vault-sensitive actions retain the focus checks.
-`chariox.kernel_browser_share` transfers an explicit nonempty resource subset
-to a direct local child. A delegated grant cannot open additional tabs, outlive
-its source or survive source revocation. Grant projections include absolute
-`expires_at_ms` and optional prompt/delegation attribution. Absolute and idle
-expiry have live kernel wakes that cancel in-flight work and subscription scopes.
+### App bindings
 
 App bindings use the existing trusted installation, admitted publisher key and
-capability checks. Issued bindings carry an optional `app_grant` generation,
+capability checks; an agent binds a trusted installation itself, with no card. Issued bindings carry an optional `app_grant` generation,
 absolute expiry and prompt/delegation attribution; agents cannot submit this
 issued authority as grant input. App grants default to 8 hours and child
 bindings inherit the parent's deadline. Revocation removes only bindings
 actually delegated from that generation, wakes retained calls and prevents an
 old call or expiry wake from adopting a replacement binding. Recovery rearms
-absolute expiry; an untimed legacy binding needs fresh owner approval in room
-mode, and recovery without a live expiry executor fails closed. Recovery
+absolute expiry; recovery without a live expiry executor fails closed. Recovery
 removals record the normal `agent.extension_revoked` event and
-`home_extension.grant.revoked` audit. Leased, remote and slice agents cannot acquire these user-domain
-resources; they use their Room Browser/Computer route.
+`home_extension.grant.revoked` audit. Leased, remote and slice agents use their Room Browser/Computer route.
 
-Clients consuming this metadata require local 462; relay peer shapes are
-unchanged. The focused A05 drill exercises the built TUI, kernel and official
-Codex resource-approval path: owner Deny with the typed refusal code, owner
-Allow with the 462 grant projection over the real client transport, and the
-live absolute-expiry wake. Source refusal and protocol snapshot tests are
-supplementary and do not establish hosted, public-site or managed acceptance.
+
 
 ## 1. Scope
 

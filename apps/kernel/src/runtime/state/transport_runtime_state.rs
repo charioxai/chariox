@@ -457,7 +457,7 @@ impl KernelRuntimeState {
         #[cfg(unix)]
         {
             crate::hot_reload::hand_over_user_domain(
-                self.owned.kernel_browser_host.hand_over_access(),
+                self.owned.kernel_browser_host.hand_over_loaded(),
             );
             self.hand_over_reach_revocations();
         }

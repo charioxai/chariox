@@ -359,7 +359,6 @@ pub use api::{
     NoteAnchor, NoteBox, NoteCommand, NoteResult, NoteSelection, NoteTextQuote, NoteWindow,
     NotesRequest,
 };
-pub use api::{UserDomainGrant, UserDomainNotice, UserDomainResource, UserDomainWindowAccess};
 pub use api::{
     WatcherCoalesce, WatcherDryRun, WatcherEvent, WatcherEventDeclaration, WatcherHealth,
     WatcherManifest, WatcherMode, WatcherRequest, WatcherScript, WatcherState, WatcherSummary,

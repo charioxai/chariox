@@ -2772,7 +2772,7 @@ async fn a_wake_turn_loads_the_kernel_browser_without_a_card() {
         .runtime
         .owned
         .kernel_browser_host
-        .has_grant("local", &f.agent));
+        .is_loaded("local", &f.agent));
     let session = f.runtime.owned.session_store.get_session(&f.room).unwrap();
     assert!(session.active_interactions().is_empty());
 }
