@@ -62,12 +62,7 @@ impl DaemonConfig {
             .path
             .as_deref()
             .map(expand_user_path)
-            .unwrap_or_else(|| {
-                default_config_dir()
-                    .join("kernels")
-                    .join(&self.daemon_id)
-                    .join("state.db")
-            })
+            .unwrap_or_else(|| default_durable_state_path(&default_config_dir(), &self.daemon_id))
     }
 
     pub fn account_profile_registry_path(&self) -> PathBuf {
@@ -251,11 +246,19 @@ pub(crate) fn default_config_dir() -> PathBuf {
     env::temp_dir().join("chariox").join("config")
 }
 
+pub(super) fn default_durable_state_path(home: &Path, daemon_id: &str) -> PathBuf {
+    home.join("kernels").join(daemon_id).join("state.db")
+}
+
 fn expand_user_path(value: &str) -> PathBuf {
+    expand_user_path_from_home(value, chariox_home_dir().as_deref())
+}
+
+pub(super) fn expand_user_path_from_home(value: &str, chariox_home: Option<&Path>) -> PathBuf {
     let value = value.trim();
-    if let Some(home_dir) = chariox_home_dir() {
+    if let Some(home_dir) = chariox_home {
         if value == "~/.chariox" {
-            return home_dir;
+            return home_dir.to_path_buf();
         }
         if let Some(suffix) = value.strip_prefix("~/.chariox/") {
             return home_dir.join(suffix);

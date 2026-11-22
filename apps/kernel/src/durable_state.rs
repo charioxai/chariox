@@ -2,6 +2,9 @@
 // cross-cutting API change, so keep these storage-boundary results explicit here.
 #![allow(clippy::result_large_err)]
 
+mod replay_error;
+pub(crate) use replay_error::ReplayFailure;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
@@ -397,6 +400,22 @@ pub struct DurableStateEvent {
 impl DurableStateEvent {
     /// The inbox owns queued messages. Ignore persisted copies of its Room
     /// projection before replay decodes any session.
+    pub(crate) fn without_queued_message_projections(&self) -> std::borrow::Cow<'_, Self> {
+        let carries = |session: &serde_json::Value| session.get("queued_agent_messages").is_some();
+        let found = self.payload.get("session").is_some_and(carries)
+            || self
+                .payload
+                .get("sessions")
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|sessions| sessions.iter().any(carries));
+        if !found {
+            return std::borrow::Cow::Borrowed(self);
+        }
+        let mut event = self.clone();
+        event.discard_queued_message_projections();
+        std::borrow::Cow::Owned(event)
+    }
+
     pub(crate) fn discard_queued_message_projections(&mut self) {
         fn discard(session: &mut serde_json::Value) {
             if let Some(session) = session.as_object_mut() {
@@ -795,6 +814,15 @@ impl DurableKernelStateStore {
         sequence: u64,
         limit: usize,
     ) -> Result<Vec<DurableStateEvent>, DaemonError> {
+        self.load_replay_events_after_batch(sequence, limit)
+            .map_err(|failure| *failure.error)
+    }
+
+    fn load_replay_events_after_batch(
+        &self,
+        sequence: u64,
+        limit: usize,
+    ) -> Result<Vec<DurableStateEvent>, ReplayFailure> {
         let limit = limit.clamp(1, 4_096);
         let connection = self.lock_connection("durable_state.load_events_after_batch")?;
         let mut statement = connection
@@ -820,25 +848,10 @@ impl DurableKernelStateStore {
             operation: "durable_state.load_events_after_batch",
             message: error.to_string(),
         })? {
-            let payload_json =
-                row.get::<_, String>(5)
-                    .map_err(|error| DaemonError::LocalTransport {
-                        operation: "durable_state.load_events_after_batch",
-                        message: error.to_string(),
-                    })?;
-            events.push(DurableStateEvent {
-                sequence: row.get::<_, i64>(0).unwrap_or_default().max(0) as u64,
-                event_id: row.get::<_, String>(1).unwrap_or_default(),
-                kind: row.get::<_, String>(2).unwrap_or_default(),
-                subject_id: row.get::<_, Option<String>>(3).unwrap_or_default(),
-                timestamp_ms: row.get::<_, i64>(4).unwrap_or_default().max(0) as u64,
-                payload: serde_json::from_str(&payload_json).map_err(|error| {
-                    DaemonError::LocalTransport {
-                        operation: "durable_state.decode_event_batch",
-                        message: error.to_string(),
-                    }
-                })?,
-            });
+            events.push(decode_replay_event(
+                row,
+                "durable_state.decode_event_batch",
+            )?);
         }
         Ok(events)
     }
@@ -847,7 +860,7 @@ impl DurableKernelStateStore {
         &self,
         sequence: u64,
         limit: usize,
-    ) -> Result<Vec<DurableStateEvent>, DaemonError> {
+    ) -> Result<Vec<DurableStateEvent>, ReplayFailure> {
         let limit = limit.clamp(1, 4_096);
         let connection = self.lock_connection("durable_state.load_restore_events_after_batch")?;
         let mut statement = connection
@@ -897,25 +910,10 @@ impl DurableKernelStateStore {
             operation: "durable_state.load_restore_events_after_batch",
             message: error.to_string(),
         })? {
-            let payload_json =
-                row.get::<_, String>(5)
-                    .map_err(|error| DaemonError::LocalTransport {
-                        operation: "durable_state.load_restore_events_after_batch",
-                        message: error.to_string(),
-                    })?;
-            events.push(DurableStateEvent {
-                sequence: row.get::<_, i64>(0).unwrap_or_default().max(0) as u64,
-                event_id: row.get::<_, String>(1).unwrap_or_default(),
-                kind: row.get::<_, String>(2).unwrap_or_default(),
-                subject_id: row.get::<_, Option<String>>(3).unwrap_or_default(),
-                timestamp_ms: row.get::<_, i64>(4).unwrap_or_default().max(0) as u64,
-                payload: serde_json::from_str(&payload_json).map_err(|error| {
-                    DaemonError::LocalTransport {
-                        operation: "durable_state.decode_restore_event_batch",
-                        message: error.to_string(),
-                    }
-                })?,
-            });
+            events.push(decode_replay_event(
+                row,
+                "durable_state.decode_restore_event_batch",
+            )?);
         }
         Ok(events)
     }
@@ -1714,6 +1712,38 @@ impl DurableStateWriter {
             max_batch_records: self.health.max_batch_records.load(Ordering::Acquire),
         }
     }
+}
+
+fn decode_replay_event(
+    row: &rusqlite::Row<'_>,
+    operation: &'static str,
+) -> Result<DurableStateEvent, ReplayFailure> {
+    let sequence = row.get::<_, i64>(0).unwrap_or_default().max(0) as u64;
+    let event_id = row.get::<_, String>(1).unwrap_or_default();
+    let kind = row.get::<_, String>(2).unwrap_or_default();
+    let payload = row
+        .get::<_, String>(5)
+        .map_err(|error| error.to_string())
+        .and_then(|json| serde_json::from_str(&json).map_err(|error| error.to_string()));
+    let payload = match payload {
+        Ok(payload) => payload,
+        Err(message) => {
+            return Err(ReplayFailure::at_event(
+                kind,
+                event_id,
+                sequence,
+                DaemonError::LocalTransport { operation, message },
+            ))
+        }
+    };
+    Ok(DurableStateEvent {
+        sequence,
+        event_id,
+        kind,
+        subject_id: row.get::<_, Option<String>>(3).unwrap_or_default(),
+        timestamp_ms: row.get::<_, i64>(4).unwrap_or_default().max(0) as u64,
+        payload,
+    })
 }
 
 fn configure_durable_write_sync(connection: &Connection) -> Result<(), DaemonError> {
