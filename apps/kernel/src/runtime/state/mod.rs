@@ -31,6 +31,7 @@ use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
 use chariox_relay::protocol::ClientTarget;
 
 mod agent_auth;
+mod agent_result;
 mod workspace_live_sync;
 use workspace_live_sync::*;
 mod workspace_live_sync_workspace_context;

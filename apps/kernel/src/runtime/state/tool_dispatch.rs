@@ -246,6 +246,9 @@ impl KernelRuntimeState {
             specs.extend(super::machine_files_tools::files_tool_specs());
             specs.extend(super::machine_acquisition::machine_tool_specs());
         }
+        if matches!(provider_runs.as_slice(), [run] if self.agent_result_available(run)) {
+            specs.push(super::agent_result::spec());
+        }
         if provider_runs.len() == 1 && self.skills_v2_runtime_available() {
             specs.extend(crate::transport::runtime_tools::skill_runtime_tool_specs());
         }
@@ -485,6 +488,9 @@ impl KernelRuntimeState {
         }
         if super::machine_files_tools::is_files_tool(tool_name) {
             return Box::pin(self.files_tool(auth_token, tool_name, arguments)).await;
+        }
+        if super::agent_result::is_result_tool(tool_name) {
+            return Box::pin(self.agent_result_tool(auth_token, arguments)).await;
         }
         if super::file_copy_tool::is_file_copy_tool(tool_name) {
             return Box::pin(self.file_copy_tool(auth_token, arguments)).await;
