@@ -106,6 +106,15 @@ export function mirrorResourceType(bytes, kind) {
   return null;
 }
 
+// W0-T1 (tldraw): an 'SVG stack' shows only the element its URL's fragment names (`svg>[id]{display:none}
+// svg>[id]:target{display:inline}`). The viewer gets the bytes as a blob: URL without that fragment, so the resource
+// for `stack.svg#name` travels with its `:target` rules pinned to that element. Other SVGs, and fragments a selector
+// cannot name plainly, keep their bytes.
+export function svgTargetPinned(text, fragment) {
+  if (!/^[\w-]{1,256}$/.test(fragment) || !/:target\b/i.test(text)) return text;
+  return text.replace(/(<style\b[^>]*>)([\s\S]*?)(<\/style>)/gi, (_, open, css, close) => `${open}${css.replace(/:target\b/gi, `[id="${fragment}"]`)}${close}`);
+}
+
 // Leading @import rules of a sheet's source (only @charset/@layer statements may
 // precede them), with their layer/supports/media conditions as wrapping blocks.
 // The wrapped text is parsed by the CSSOM again before it is sanitized.
@@ -909,6 +918,7 @@ export class Mirror2 {
         // Protocol 501: a sprite travels as its sanitized symbols (the viewer validates them again).
         if (entry.kind === 'sprite') { const clean = mime_type === 'image/svg+xml' ? await this.evaluate(world, `${world.ref}.sprite(${JSON.stringify(body.toString('utf8'))})`).catch(() => null) : null; body = typeof clean === 'string' ? Buffer.from(clean, 'utf8') : null; if (!body) mime_type = null; }
         if (!mime_type) { entry.tries++; entry.state = entry.tries >= 3 ? 'failed' : 'waiting'; continue; }
+        if (entry.kind === 'image' && mime_type === 'image/svg+xml') { const hash = new URL(entry.url).hash.slice(1); if (hash) { const text = body.toString('utf8'), pinned = svgTargetPinned(text, hash); if (pinned !== text) body = Buffer.from(pinned, 'utf8'); } }
         entry.state = 'ok'; entry.resource = { key: entry.key, resource_id: createHash('sha256').update(body).digest('hex'), mime_type, data_base64: body.toString('base64') };
       }
       const size = near?.get(entry.key);

@@ -907,6 +907,19 @@ test("Y3-C1a: a wheel listener added or removed without any DOM change still rea
     assert.equal(await after("removeEventListener('wheel', take, { passive: false })", false), false, "removing it with no mutation gives the wheel back");
   }));
 
+// browserfidelity r19 W0-T1 (tldraw): icons drawn as CSS masks into an "SVG stack" by fragment (only the :target element
+// shows). The viewer has the bytes without the fragment, so each fragment's resource pins its own element.
+test("W0-T1: an SVG stack named by fragment arrives with its own element shown, per fragment", () => mirrored(
+  '<div style="width:30px;height:30px;background:#000;mask:url(/s/stack.svg#b)"></div><div style="width:30px;height:30px;background-image:url(/s/stack.svg#a)"></div>', async ({ next }) => {
+    await new Promise(resolve => setTimeout(resolve, 800));
+    const delivered = [...(await next()).resources];
+    const svg = () => delivered.filter(r => r.mime_type === "image/svg+xml" && r.data_base64).map(r => Buffer.from(r.data_base64, "base64").toString());
+    for (let i = 0; i < 6 && svg().length < 2; i++) delivered.push(...(await next(1000)).resources);
+    const texts = svg();
+    assert(texts.some(t => t.includes('svg>[id][id="b"]{display:inline}')), `W0-T1: the mask's resource shows #b (${texts.map(t => t.slice(0, 160))})`);
+    assert(texts.some(t => t.includes('svg>[id][id="a"]{display:inline}')), "W0-T1: the background's resource shows #a (the file loaded once, under the mask's fragment)");
+  }, { "/s/stack.svg": { type: "image/svg+xml", body: '<svg xmlns="http://www.w3.org/2000/svg" width="30" height="30"><style>svg>[id]{display:none}svg>[id]:target{display:inline}</style><circle id="a" cx="15" cy="15" r="12"/><rect id="b" width="30" height="30"/></svg>' } }));
+
 test("MP-10: review #941-4 a CDP-read cross-origin sheet keeps its already-loaded imports (own base, media condition, images and fonts)", () => mirrored(
   '<link rel="stylesheet" href="http://localhost:PORT/cdn/main.css"><div class="x" style="width:20px;height:20px">a</div>', async ({ next }) => {
     await new Promise(resolve => setTimeout(resolve, 800));

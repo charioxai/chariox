@@ -1635,7 +1635,12 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     const resourceDocuments = () => new Set([document, ...[...roots.values()].filter(root => root.nodeType === 9)]);
     const resourceEntries = () => [...resourceDocuments()].flatMap(doc => { try { return doc.defaultView?.performance.getEntriesByType('resource') ?? []; } catch { return []; } });
     const resourceImages = () => imageNodes.values();
-    const loaded = () => { const names = new Set([...timed, ...resourceEntries().map(entry => entry.name)]); for (const img of resourceImages()) if (img.complete && img.naturalWidth && img.currentSrc) { names.add(img.currentSrc); try { names.add(new URL(imageSource(img), img.baseURI).href); } catch {} } return [...names].flatMap(url => [urlKeys.get(url), urlKeys.get(`sprite:${url}`)]).filter(Boolean).map(entry => entry.key); };
+    // W0-T1: a file loads once whatever fragments name it (an SVG stack's icons): each fragment's key counts as loaded with it.
+    const unhashed = url => { const at = url.indexOf('#'); return at < 0 ? url : url.slice(0, at); };
+    const loaded = () => { const names = new Set([...timed, ...resourceEntries().map(entry => entry.name)]); for (const img of resourceImages()) if (img.complete && img.naturalWidth && img.currentSrc) { names.add(img.currentSrc); try { names.add(new URL(imageSource(img), img.baseURI).href); } catch {} }
+      const files = new Set([...names].map(unhashed)), keys = [];
+      for (const [slot, entry] of urlKeys) if (files.has(unhashed(slot.startsWith('sprite:') ? slot.slice(7) : slot))) keys.push(entry.key);
+      return keys; };
     // Changes when the page loads something (an image may complete without a new entry).
     const loadedCount = () => { let complete = 0; for (const img of resourceImages()) if (img.complete) complete++; return timed.size + resourceEntries().length + complete; };
     // MP-10 wheel bytes: images (by element) near the viewport, with their CSS
