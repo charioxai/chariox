@@ -708,6 +708,27 @@ test('Row 342 (b): a sheet prunes from its selector list exactly as usedCss walk
   '@keyframes spin {\n  from { transform: none; }\n  to { transform: rotate(1turn); }\n}'].join('\n')+'\n');
 });
 
+// Row 342: GitHub's first-visit sheets waited ~1.1 s behind the page's own main thread to parse (~0.2 s of actual work).
+test('Row 342 a first-visit sheet parses in the keepalive blank page; quirks pages and a lost reserve parse in the page',async()=>{
+ const source='.a{color:red}',asideCalls=[];let asideReply='ok';
+ const browser={responseBodies:{async read(){return Buffer.from(source)}},async resolvePageTarget(target){asideCalls.push(target);return {sessionId:'KS',connection:{async send(method,params){
+  assert.equal(method,'Runtime.evaluate');assert.match(params.expression,/location\.href!=='about:blank'/);
+  if(asideReply==='throw')throw Error('target gone');if(asideReply==='user tab')return {result:{value:null}};
+  const sheets=JSON.parse(params.expression.slice(params.expression.lastIndexOf('})(')+3,-1));return {result:{value:sheets.map(()=>'.a { color: red; }')}}}}}}};
+ const seen=[];
+ const make=()=>{const mirror=new Mirror2({host:{browser,keepaliveTarget:'K'}});mirror.evaluate=pageSheets(seen);return mirror};
+ const parsesInPage=()=>seen.filter(e=>!e.includes('.sheetKeys(')&&!e.includes('.usedSelectors(')).length;
+ const world=(url,mode='CSS1Compat')=>({connection:{async send(method){throw Error(`unexpected ${method}`)}},sessionId:'S',frame:{id:'F',url},mode,ref:'observer'});
+ assert.equal(await make().crossOriginSheet(world('https://site.example/a'),'https://cdn.example/a.css'),'.a { color: red; }');
+ assert.deepEqual(asideCalls,['K']);assert.equal(parsesInPage(),0,'a standards-mode page never parses its sheet itself');
+ await make().crossOriginSheet(world('https://site.example/q','BackCompat'),'https://cdn.example/a.css');
+ assert.equal(asideCalls.length,1,'a quirks page does not use the standards-mode reserve');assert.equal(parsesInPage(),1);
+ asideReply='user tab';await make().crossOriginSheet(world('https://site.example/b'),'https://cdn.example/a.css');
+ assert.equal(parsesInPage(),2,'a reserve that became a user tab: the page parses as before');
+ asideReply='throw';await make().crossOriginSheet(world('https://site.example/c'),'https://cdn.example/a.css');
+ assert.equal(parsesInPage(),3,'no reserve: the page parses as before');
+});
+
 // Row 342 F3: the document's loaded stylesheets read alongside the snapshot, never across documents.
 test('Row 342 F3: prefetched stylesheet reads serve only their own document, and a missed one reads as before',async()=>{
  const bodies=new BrowserResponseBodies(),ev=(method,params)=>bodies.observe({sessionId:'S',method,params});

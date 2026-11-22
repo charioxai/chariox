@@ -926,6 +926,21 @@ export class Mirror2 {
     }
     return out;
   }
+  // Row 342: a first visit's sheets parse in the kernel's keepalive blank page (the same Chrome and CSSOM, so the same text) instead
+  // of behind the page's own work (GitHub: ~1.1 s of a 1.3 s stage was waiting for its main thread; the parse itself is ~0.2 s).
+  // A bare about:blank is quirks mode: its document is rewritten once in standards mode, its URL stays about:blank, so it stays the
+  // host's reserve. Null (the caller parses in the page as before) when there is no reserve, it became a user tab, or anything fails.
+  async parseAside(sources) {
+    const target = this.host.keepaliveTarget;
+    if (!target || !this.host.browser?.resolvePageTarget) return null;
+    try {
+      const { connection, sessionId } = await this.host.browser.resolvePageTarget(target);
+      const expression = `(sheets=>{if(location.href!=='about:blank')return null;if(document.compatMode!=='CSS1Compat'){document.open();document.write('<!doctype html><title></title>');document.close()}${SERIALIZER}return sheets.map(s=>{let body=parse(s.text);if(s.open)body=parse(s.open+body+s.close);return body})})(${JSON.stringify(sources)})`;
+      const reply = await connection.send('Runtime.evaluate', { expression, returnByValue: true }, sessionId, { timeoutMs: 5000 });
+      const bodies = reply?.exceptionDetails ? null : reply?.result?.value;
+      return Array.isArray(bodies) && bodies.length === sources.length && bodies.every(body => typeof body === 'string') ? bodies : null;
+    } catch { return null; }
+  }
   // Row 342 F3: reads of the stylesheets a document has loaded, kept on that document's world (a world is one document:
   // a navigation gets a new one, so no read of the old document's sheets can serve the new one).
   prefetchSheets(world) {
@@ -1121,7 +1136,8 @@ export class Mirror2 {
     const bodies = keys.map(key => this.parsedSheets.take(key));
     const misses = sheets.flatMap(({ text, open, close }, i) => bodies[i] === undefined ? [{ i, text, open, close }] : []);
     if (misses.length) {
-      const parsed = await this.evaluate(world, `(sheets=>{${SERIALIZER}return sheets.map(s=>{let body=parse(s.text);if(s.open)body=parse(s.open+body+s.close);return body})})(${JSON.stringify(misses.map(({ text, open, close }) => ({ text, open, close })))})`);
+      const sources = misses.map(({ text, open, close }) => ({ text, open, close }));
+      const parsed = (!world.quirks && await this.parseAside(sources)) || await this.evaluate(world, `(sheets=>{${SERIALIZER}return sheets.map(s=>{let body=parse(s.text);if(s.open)body=parse(s.open+body+s.close);return body})})(${JSON.stringify(sources)})`);
       misses.forEach(({ i }, n) => { bodies[i] = parsed[n]; this.parsedSheets.put(keys[i], parsed[n]); });
     }
     // Sanitizing runs here on that text (the page's own sanitizer, shared verbatim), not in the page: only each part's url()
