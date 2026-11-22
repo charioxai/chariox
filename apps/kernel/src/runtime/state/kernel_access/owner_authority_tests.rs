@@ -39,10 +39,12 @@ fn owner_requests() -> Vec<LocalDaemonRequest> {
         }),
         LocalDaemonRequest::ForgetGatewayKernel(ForgetGatewayKernelRequest { name: "k".into() }),
         LocalDaemonRequest::CloudRelayStatus(CloudRelayStatusRequest),
-        LocalDaemonRequest::GetProviderAccountProfile(GetProviderAccountProfileRequest {
-            provider: "codex".into(),
-            account_profile: "default".into(),
-        }),
+        LocalDaemonRequest::GetProviderAccountProfile(
+            crate::local::api::GetProviderAccountProfileRequest {
+                provider: "codex".into(),
+                account_profile: "default".into(),
+            },
+        ),
         LocalDaemonRequest::GetUserConfig(GetUserConfigRequest),
         LocalDaemonRequest::AcceptAppHostAction(AcceptAppHostActionRequest {
             session_id: "s".into(),
