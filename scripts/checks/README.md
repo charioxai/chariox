@@ -35,6 +35,8 @@ node --test scripts/checks/*.test.mjs   # each check plants a violation in a thr
 - an entry that is not in the list at the merge base is red (CI sets `CHARIOX_BOUNDARY_BASE`; CI without a base fails);
 - a count that fell, or a file with no violation left, is red until `--shrink` lowers or deletes it.
 
+The rule runner prints the commit it uses. It uses `CHARIOX_BOUNDARY_BASE` when set, or the merge base of `HEAD` and `origin/main`. If the remote-tracking reference is missing, it fetches `main` from `origin`.
+
 A check with an empty list holds the rule everywhere. `protocol-shape-needs-version`, `perf-budget-tighten-only` and `commit-message-rules` have no list: their ratchet is the diff against the merge base.
 
 ## Adding a check
