@@ -6,8 +6,6 @@ pub(crate) mod attachment_artifacts;
 mod config_runtime;
 mod daemon_lifecycle;
 mod durable_runtime_state;
-mod state_check;
-pub use state_check::check_state;
 mod external_provider_session_discovery;
 #[cfg(test)]
 mod restored_agent_names_tests;

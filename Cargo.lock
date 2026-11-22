@@ -716,7 +716,6 @@ dependencies = [
  "shell-words",
  "str0m",
  "tar",
- "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tokio-rustls",

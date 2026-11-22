@@ -84,9 +84,6 @@ fn main() -> Result<(), chariox_kernel::DaemonError> {
             println!("{}", chariox_kernel::hot_reload::HANDOVER_FORMAT);
             return Ok(());
         }
-        kernel_arguments::Command::CheckState(home) => {
-            std::process::exit(chariox_kernel::app::check_state(home.as_deref()));
-        }
         kernel_arguments::Command::PrepareProtectedSliceIdentity(port) => {
             let proof =
                 chariox_kernel::config::prepare_protected_slice_identity("127.0.0.1", port)?;
