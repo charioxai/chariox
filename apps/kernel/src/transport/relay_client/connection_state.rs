@@ -33,6 +33,8 @@ const MANAGED_SLICE_ACTIVATION_CONFIRMATION_MAX_ATTEMPTS: u8 = 3;
 #[derive(Debug, Default)]
 pub struct RelayClientState {
     pub(super) connected: bool,
+    connected_since: Option<tokio::time::Instant>,
+    acknowledged_connections: u64,
     /// Wakes whoever publishes `connected` elsewhere as soon as it changes.
     connection_changes: watch::Sender<bool>,
     registration_refused: Option<(String, RelayRegistrationRefusal)>,
@@ -171,8 +173,18 @@ impl RelayClientState {
     }
 
     fn set_connection(&mut self, connected: bool) {
+        if connected && !self.connected {
+            self.acknowledged_connections = self.acknowledged_connections.saturating_add(1);
+            self.connected_since = Some(tokio::time::Instant::now());
+        } else if !connected {
+            self.connected_since = None;
+        }
         self.connected = connected;
         self.connection_changes.send_replace(connected);
+    }
+
+    pub(crate) fn startup_probe_connection(&self) -> (u64, Option<tokio::time::Instant>) {
+        (self.acknowledged_connections, self.connected_since)
     }
 
     pub(crate) fn outgoing_sender(&self) -> Option<RelayOutgoingSender> {
@@ -524,6 +536,11 @@ impl RelayClientState {
         self.set_connection(true);
         self.connected_relay_url = Some(relay_url.into());
         self.outgoing_tx = Some(outgoing_tx);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_mark_disconnected(&mut self) {
+        self.set_connection(false);
     }
 
     #[cfg(test)]
