@@ -170,6 +170,7 @@ mod session_activity;
 
 mod event_follow;
 mod owner_vault;
+mod pane_feed;
 mod person_inbox;
 mod totp;
 mod watcher;

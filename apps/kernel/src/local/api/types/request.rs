@@ -293,6 +293,8 @@ pub enum LocalDaemonRequest {
     QueryFreshRemoteMachineKernels(ListRemoteMachineKernelsRequest),
     ListRoomListSessions(ListRoomListSessionsRequest),
     GetRoomListSnapshot(GetRoomListSnapshotRequest),
+    GetPaneFeed(GetPaneFeedRequest),
+    ReportPaneSettings(ReportPaneSettingsRequest),
     GetPersonInbox(GetPersonInboxRequest),
     SetInboxCardState(SetInboxCardStateRequest),
     SetInboxMute(SetInboxMuteRequest),
