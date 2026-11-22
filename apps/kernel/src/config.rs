@@ -169,6 +169,9 @@ pub struct DaemonConfig {
     pub managed_slice_relay_recovery_token: Option<String>,
     pub managed_slice_relay_owner_public_key: Option<String>,
     pub cloud_relay: Option<PersistedCloudRelayProfile>,
+    // Enrollment identity remains visible when a private relay suppresses the Cloud profile.
+    persisted_cloud_kernel_id: Option<String>,
+    pub(crate) former_cloud_kernel_id: Option<String>,
     pub relay_public_key: String,
     pub relay_private_key: String,
     pub relay_heartbeat_ms: u64,
@@ -300,6 +303,8 @@ impl DaemonConfig {
             managed_slice_relay_recovery_token: None,
             managed_slice_relay_owner_public_key: None,
             cloud_relay: None,
+            persisted_cloud_kernel_id: None,
+            former_cloud_kernel_id: None,
             relay_public_key,
             relay_private_key,
             relay_heartbeat_ms: DEFAULT_RELAY_HEARTBEAT_MS,
