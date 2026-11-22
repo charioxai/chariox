@@ -2644,7 +2644,19 @@ impl ProviderAccountProfileRegistry {
         let provider = normalize_provider(provider)?;
         let document = self.read_document()?;
         let stored = resolve_stored_profile(&document, owner_user_id, provider, profile_id)?;
-        let files = materialization_files(&stored.locator)?;
+        let mut files = materialization_files(&stored.locator)?;
+        // Row 274: a Claude login held as a Vault setup token is the one that crosses to another
+        // machine (the launch carries it). The native refresh credential beside it never does.
+        if provider == "claude" {
+            let source = self.credential_source_profile_id(owner_user_id, provider, profile_id)?;
+            if crate::provider::provider_account_credential_uses_vault(
+                owner_user_id,
+                provider,
+                &source,
+            )? {
+                files.retain(|file| file.relative_path != ".credentials.json");
+            }
+        }
         Ok(ProviderAccountMaterialization {
             profile: ProviderAccountReplicaMetadata {
                 owner_user_id: stored.public.owner_user_id.clone(),

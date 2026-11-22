@@ -625,6 +625,10 @@ impl KernelRuntimeState {
                 .spawn_agent(request)
                 .map_err(|error| self.discard_unused_checkouts(checkout, error));
         }
+        if let Some(worker_ref) = request.kernel_ref.clone() {
+            self.prepare_claude_login_for_worker(&request, &worker_ref)
+                .await?;
+        }
         self.with_app_side_effect(|app| {
             self.authorize_current_external_command()?;
             crate::app::KernelSessionService::new(app)

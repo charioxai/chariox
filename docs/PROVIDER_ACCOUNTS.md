@@ -92,6 +92,10 @@ This account transfer is not a history backup or provider-session migration.
 Environment and slice saved-state acceptance must validate their own durable
 provider state independently.
 
+### A Claude agent on another machine
+
+Row 274. A Claude login crosses to another machine only as the Vault setup token; a native login never does. When an agent is spawned on another machine (a rented machine included) with a Claude profile, the home kernel decides before anything is created there. A profile held as a Vault setup token spawns with no step and no card: the launch carries the token, and the native credential file beside it is no longer exported. A profile that is a native login only refuses the spawn and raises ONE card on the owner's own computer (per profile, in the spawning agent's Room): **Create login**. Choosing it runs the existing setup-token sign-in on that kernel, the one person step; afterwards the same spawn works with no step on the other machine. A spawn from a client with no agent has no card; the refusal names the same step. The refusal and the card never ask for anything on the other machine, and no credential value appears in them.
+
 ## Usage semantics
 
 Usage meters identify their source, kind, unit, limits/balance where exposed, reset time, freshness, and availability. Missing numbers mean the provider did not expose them; they are not treated as zero. Codex subscription windows and credits use app-server methods. Claude uses provider-native rate-limit observations and an explicit official-CLI `/usage` refresh with tools disabled and session persistence disabled. The refresh accepts only structured results with all required model-activity fields present and zero; missing fields are not assumed to be zero. Chariox does not rewrite Claude's onboarding or trust settings for this probe. OpenCode billing remains best-effort and extensible per upstream provider.

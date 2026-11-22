@@ -52,7 +52,7 @@ impl RemoteProviderAccountProvisioning {
         {
             return Err(DaemonError::LocalTransport {
                 operation: crate::transport::relay_peer::ENSURE_REMOTE_PROVIDER_ACCOUNT_OPERATION,
-                message: "Claude provider credentials cannot be materialized on a remote worker; a native Claude login has no copyable credential. On your own computer create a setup-token login for it (Provider Accounts: Create setup token, or /provider setup-token claude <account-profile> --run), then on that machine run /provider accounts copy and pick the login, and start the agent again".to_string(),
+                message: "Claude provider credentials cannot be materialized on a remote worker; a native Claude login has no copyable credential. On your own computer sign in to Claude once to create the setup-token login for it (Provider Accounts: Create setup token, or /provider setup-token claude <account-profile> --run), then start the agent again. Nothing needs doing on the other machine".to_string(),
             });
         }
 
