@@ -70,14 +70,22 @@ pub(crate) struct KernelBrowserAdmission {
 }
 
 /// The run fence an asynchronous App call retains: it is cancelled when the agent's run ends.
+/// The gate serializes that cancellation with the App submission a commit makes, so ending a run
+/// never overtakes a call that already passed its last check.
 #[derive(Clone)]
-pub(crate) struct AgentRunFence(Arc<BrowserCancellation>);
+pub(crate) struct AgentRunFence {
+    cancellation: Arc<BrowserCancellation>,
+    gate: Arc<Mutex<()>>,
+}
 impl AgentRunFence {
-    /// Safe in a durable queue budget even while commit holds the host lock.
+    /// Safe in a durable queue budget even while a commit holds the gate.
     pub(crate) fn cancelled(&self) -> bool {
-        self.0.requested()
+        self.cancellation.requested()
     }
+    /// Runs `call` (the submission) with the run's gate held: the run cannot end between the
+    /// final check and the submission.
     pub(crate) fn commit<T>(&self, call: impl FnOnce() -> T) -> Result<T, ()> {
+        let _gate = self.gate.lock().unwrap_or_else(|e| e.into_inner());
         if self.cancelled() {
             return Err(());
         }
@@ -1186,6 +1194,7 @@ impl KernelBrowserHost {
     }
 
     pub(crate) fn shutdown(&self) -> Result<(), String> {
+        let mut gates = Vec::new();
         let browsers = {
             let mut state = self
                 .inner
@@ -1194,11 +1203,16 @@ impl KernelBrowserHost {
             state.stopped = true;
             for presence in std::mem::take(&mut state.presence).into_values() {
                 presence.fence.request_cancel();
+                gates.push(presence.gate);
             }
             state.loaded.clear();
             state.retire_lanes.clear();
             std::mem::take(&mut state.browsers)
         };
+        // An App call between its last check and its submission finishes before the host goes down.
+        for gate in gates {
+            drop(gate.lock().unwrap_or_else(|e| e.into_inner()));
+        }
         let mut first = None;
         for (_, browser) in browsers {
             let mut backend = browser
@@ -1305,6 +1319,60 @@ mod tests {
             assert!(new.is_loaded_for("owner", "agent", capability));
             assert!(!new.is_loaded_for("owner", "other", capability));
         }
+    }
+
+    /// Review 6010087630 P2: ending a run waits for an App call that passed its last check
+    /// and is about to submit; nothing submits after the run has ended.
+    #[test]
+    fn ending_a_run_waits_for_an_app_call_between_its_last_check_and_its_submission() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize};
+        use std::sync::mpsc::channel;
+        let host = KernelBrowserHost::new(PathBuf::from("/unused/run-gate"));
+        let fence = host.run_fence("owner", "agent");
+        let submitted = Arc::new(AtomicUsize::new(0));
+        let (entered_tx, entered_rx) = channel();
+        let (release_tx, release_rx) = channel::<()>();
+        let committing = {
+            let (fence, submitted) = (fence.clone(), submitted.clone());
+            std::thread::spawn(move || {
+                fence.commit(|| {
+                    // The final check passed; the submission has not happened yet.
+                    entered_tx.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                    submitted.fetch_add(1, Ordering::SeqCst)
+                })
+            })
+        };
+        entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        let ended = Arc::new(AtomicBool::new(false));
+        let revoking = {
+            let (host, ended) = (host.clone(), ended.clone());
+            std::thread::spawn(move || {
+                host.revoke_agent("agent");
+                ended.store(true, Ordering::SeqCst);
+            })
+        };
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while !fence.cancelled() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(fence.cancelled(), "cancellation is requested at once");
+        std::thread::sleep(Duration::from_millis(150));
+        assert!(
+            !ended.load(Ordering::SeqCst),
+            "the run must not end while a call sits between its last check and its submission"
+        );
+        release_tx.send(()).unwrap();
+        assert!(committing.join().unwrap().is_ok());
+        revoking.join().unwrap();
+        assert!(ended.load(Ordering::SeqCst));
+        assert_eq!(submitted.load(Ordering::SeqCst), 1);
+        assert!(fence.commit(|| submitted.fetch_add(1, Ordering::SeqCst)).is_err());
+        assert_eq!(
+            submitted.load(Ordering::SeqCst),
+            1,
+            "no submission after the run ended"
+        );
     }
 
     #[test]
