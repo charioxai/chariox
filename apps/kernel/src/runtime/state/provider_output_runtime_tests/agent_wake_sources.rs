@@ -1388,6 +1388,74 @@ async fn a_fresh_kernel_with_a_scheduled_timer_raises_no_false_stall_alert() {
 }
 
 #[tokio::test]
+async fn committed_timer_delivers_when_its_writer_ack_is_lost() {
+    committed_wake_delivers_after_lost_ack("wake_intent").await;
+}
+
+#[tokio::test]
+async fn committed_driver_wake_delivers_when_its_writer_ack_is_lost() {
+    committed_wake_delivers_after_lost_ack("wake_occurrence").await;
+}
+
+async fn committed_wake_delivers_after_lost_ack(operation: &str) {
+    use crate::durable_state::agent_lifecycle::faults::TestFaultDir;
+    let faults = crate::test_support::TestTempDir::new("wake-ack");
+    let f = {
+        let _faults = TestFaultDir::set(faults.path());
+        fixture("wake-ack-delivery", false).await
+    };
+    let task = f.begin("waiting-turn");
+    let scheduler = if operation == "wake_intent" {
+        let mut timer = f.wake(&task, "wake-ack");
+        timer.kind = "timer".into();
+        timer.next_due_ms = Some(crate::session::unix_epoch_ms() + 1_000);
+        let registration = timer.registration_id.clone();
+        f.store()
+            .agent_lifecycle(Operation::CreateWake {
+                task: task.task_id.clone(),
+                prompt: task.prompt_id.clone(),
+                wake: timer,
+            })
+            .unwrap();
+        f.wait_on(&task, &registration);
+        std::fs::write(faults.path().join("drop-ack"), operation).unwrap();
+        let runtime = f.runtime.clone();
+        Some(tokio::spawn(async move {
+            runtime.run_agent_wake_scheduler().await
+        }))
+    } else {
+        let wake = f.arm(&task, "wake-ack").unwrap();
+        f.wait_on(&task, &wake.registration_id);
+        std::fs::write(faults.path().join("drop-ack"), operation).unwrap();
+        f.runtime
+            .wake_sink(KIND)
+            .occurred(f.occurrence(&wake.id, "exit", Some(WakeEnd::Succeeded)))
+            .unwrap_err();
+        None
+    };
+    let received = tokio::time::timeout(Duration::from_secs(4), async {
+        loop {
+            let wake = f.store().agent_wake("wake-ack").unwrap().unwrap();
+            if wake.last_delivered_at_ms.is_some() {
+                break wake;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    if let Some(scheduler) = scheduler {
+        scheduler.abort();
+    }
+    assert!(faults.path().join("drop-ack.log").exists(), "{operation}");
+    assert_eq!(
+        received
+            .expect("a committed wake delivers without a sweep")
+            .fire_count,
+        1
+    );
+}
+
+#[tokio::test]
 async fn ev13_lost_source_raises_a_visible_alert_and_one_event() {
     let f = fixture("ev13-lost-source", false).await;
     let task = f.begin("turn-1");
@@ -2804,6 +2872,113 @@ async fn a_yield_writes_one_wait_row_and_the_wake_updates_it_in_place() {
     assert_eq!(row["woken_by"]["kind"], "output_matched", "{row}");
     let started = row["started_at_ms"].as_u64().unwrap();
     assert!(row["finished_at_ms"].as_u64().unwrap() >= started, "{row}");
+}
+
+#[tokio::test]
+async fn sweep_commits_the_yield_of_a_completed_turn_that_did_not_answer() {
+    let f = fixture("sweep-completed-yield", true).await;
+    let Outcome::Task(task) = f
+        .store()
+        .agent_lifecycle(Operation::Begin {
+            owner: "local".into(),
+            room: f.room.clone(),
+            agent: f.agent.clone(),
+            prompt: f.prompt_id.clone(),
+            run: Some(f.run.clone()),
+            now: 1,
+        })
+        .unwrap()
+    else {
+        panic!("begin returns the task");
+    };
+    let wake = f.arm(&task, "sweep-yield-source").unwrap();
+    f.store()
+        .agent_lifecycle(Operation::Yield {
+            task: task.task_id.clone(),
+            prompt: task.prompt_id.clone(),
+            registrations: vec![wake.registration_id],
+            cursor: 0,
+            deadline: None,
+            reason: "Wait for the test source".into(),
+            now: crate::session::unix_epoch_ms(),
+        })
+        .unwrap();
+    // The provider can end without an answer after accepting a yield. The sweep
+    // may see this prompt completion before the task ledger commits the wait.
+    f.runtime
+        .owned
+        .complete_local_prompt_without_advance(&f.room, &f.agent, Some(&f.run))
+        .unwrap();
+    f.runtime.sweep_agent_lifecycle().await.unwrap();
+
+    let waiting = f.task(&task.task_id);
+    assert_eq!(waiting.state, ExecutionState::Waiting, "{}", waiting.reason);
+    assert_eq!(f.wake_state(&wake.id), "running");
+}
+
+#[tokio::test]
+async fn sweep_keeps_a_yield_while_its_provider_turn_is_still_settling() {
+    let f = fixture("sweep-yield-settling", true).await;
+    let Outcome::Task(task) = f
+        .store()
+        .agent_lifecycle(Operation::Begin {
+            owner: "local".into(),
+            room: f.room.clone(),
+            agent: f.agent.clone(),
+            prompt: f.prompt_id.clone(),
+            run: Some(f.run.clone()),
+            now: 1,
+        })
+        .unwrap()
+    else {
+        panic!("begin returns the task");
+    };
+    let wake = f.arm(&task, "settling-yield-source").unwrap();
+    f.store()
+        .agent_lifecycle(Operation::Yield {
+            task: task.task_id.clone(),
+            prompt: task.prompt_id.clone(),
+            registrations: vec![wake.registration_id],
+            cursor: 0,
+            deadline: None,
+            reason: "Wait for the test source".into(),
+            now: crate::session::unix_epoch_ms(),
+        })
+        .unwrap();
+    f.runtime.start_active_turn_with_trace_id(
+        &f.room,
+        &f.agent,
+        &f.prompt_id,
+        &f.run,
+        &f.prompt_id,
+    );
+    let session = f.runtime.owned.session_store.get_session(&f.room).unwrap();
+    // Pause the ordinary completion path between removing its prompt and
+    // recording the completed outcome. The provider turn still owns settlement.
+    let completed = f
+        .runtime
+        .owned
+        .prompt_state_owner
+        .complete_active_prompt_if_matches(&session, &f.agent, Some(&f.prompt_id))
+        .unwrap();
+    f.runtime.sweep_agent_lifecycle().await.unwrap();
+    let settling = f.task(&task.task_id);
+    assert_eq!(
+        settling.state,
+        ExecutionState::Working,
+        "{}",
+        settling.reason
+    );
+    assert!(settling.wait.is_some());
+
+    let settled = f
+        .runtime
+        .owned
+        .settle_agent_task(&f.room, &f.agent, &completed, &f.run, false)
+        .unwrap();
+    f.runtime.owned.clear_prompt_activity(&f.run);
+    assert_eq!(settled.unwrap().0.state, ExecutionState::Waiting);
+    assert_eq!(f.wake_state(&wake.id), "running");
 }
 
 // A wait the owner stops does not stay a running row in the transcript: the same row says it was cancelled.

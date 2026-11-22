@@ -242,3 +242,11 @@ and new work completes while the same question remains pending. Then the TUI
 `/agent delete` command removes the asking agent. The question must disappear
 with a final cancellation record and without applying its default. Read that
 record from the disposable ledger because deleted agents leave the UI projection.
+
+## MP-09: a task whose settlement does not end
+
+Set `CHARIOX_SWEEP_TASK_STALL_FILE` to an absolute lane-owned path outside the repository before
+starting the kernel. While that file lists an agent id (one per line), the lifecycle sweep's
+settlement of that agent's tasks does not end. Every other agent keeps its inbox delivery and its
+wake checks, no notice says wake delivery is degraded, and the log names the task that did not
+settle. Remove the file and the task settles once.
