@@ -542,6 +542,21 @@ test("YM-C1: a transformed WebGL canvas that read real pixels keeps its still wh
   assert(!later.has(gl), "the WebGL canvas keeps its still");
 }, {}, {}, { ...process.env, CHARIOX_KERNEL_BROWSER_HEADLESS: "1" }));
 
+// YM-C1 review 2: a default WebGL canvas (preserveDrawingBuffer false) reads clear from the start; untransformed, its still comes
+// from the rendered page (a real picture). Transformed later, its clear readback must not replace that still with a clear one.
+const glFallback = '<style>body{margin:0;background:#f0f}canvas{display:block;width:240px;height:120px;margin:20px}</style><canvas id="g" width="240" height="120"></canvas><script>const g=document.querySelector("#g").getContext("webgl");const draw=()=>{g.clearColor(1,0,0,1);g.clear(g.COLOR_BUFFER_BIT);requestAnimationFrame(draw)};draw();window.turn=()=>{document.querySelector("#g").style.transform="rotate(3deg)";return true}</script>';
+test("YM-C1: a default WebGL canvas whose still came from the rendered page keeps it once transformed", () => mirrored(glFallback, async ({ subscribe, evaluate }) => {
+  const { next } = await subscribe({ device_scale_factor: 1 });
+  const clearOf = still => decodePng(still.data_base64, 1).pixels.every((v, i) => i % 4 !== 3 || v === 0);
+  let first = null;
+  for (let i = 0; i < 8 && !first; i++) first = (await next(1100)).tiles[0] ?? null;
+  assert(first && !clearOf(first), "the untransformed canvas gets a real still (rendered page)");
+  await evaluate("turn()");
+  const later = [];
+  for (let i = 0; i < 4; i++) later.push(...(await next(1100)).tiles.filter(t => t.node_id === first.node_id));
+  assert(!later.some(clearOf), `the transformed canvas keeps its still (${later.length} later stills, ${later.filter(clearOf).length} clear)`);
+}, {}, {}, { ...process.env, CHARIOX_KERNEL_BROWSER_HEADLESS: "1" }));
+
 // browserfidelity r16 (YC sites, three.js): an opaque WebGL canvas (alpha:false, three.js's default) read after
 // compositing is opaque black, not transparent, so its own-pixels still was black. Its still must show what the page
 // shows; a 2D canvas the page fills black stays black.

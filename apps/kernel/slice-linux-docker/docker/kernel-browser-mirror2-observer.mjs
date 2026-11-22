@@ -1391,7 +1391,9 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
           // A composited WebGL buffer (preserveDrawingBuffer false) reads clear too, while the page still shows its frame:
           // a canvas that once read real pixels has a context, so asking for '2d' creates none and names a 2D one; any
           // other context keeps the still it has.
-          if (clear) { if (drawnCanvases.has(node)) { let flat = false; try { flat = !!node.getContext('2d'); } catch {} if (!flat) return null; } return { clear: true }; }
+          // `flat`: proven a 2D canvas the page cleared (only asked of a canvas with a context): the kernel may then replace a real
+          // still with a clear one; otherwise it keeps whatever real still it has (one from the rendered page included).
+          if (clear) { if (drawnCanvases.has(node)) { let flat = false; try { flat = !!node.getContext('2d'); } catch {} return flat ? { clear: true, flat: true } : null; } return { clear: true }; }
           drawnCanvases.add(node);
           if (black) { let flat = false; try { flat = !!node.getContext('2d'); } catch {} if (!flat) return null; }
         }

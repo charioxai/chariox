@@ -1109,7 +1109,9 @@ export class Mirror2 {
     // a hidden video under the canvas that paints it) cannot leave the one on top at a lower density; a share it leaves unused
     // goes to the regions after it.
     let budget = STILL_PACKET_BYTES;
-    const send = (id, { opaque, ...tile }) => { const digest = createHash('sha256').update(`${tile.x},${tile.y},${tile.width},${tile.height},${tile.data_base64}`).digest('hex'); if (stream.tileHashes.get(id) === digest) return; stream.tileHashes.set(id, digest); budget -= tile.data_base64.length; out.push({ node_id: id, ...tile }); if (opaque === true) stream.opaqueStills.add(id); else stream.opaqueStills.delete(id); };
+    // Regions whose viewer still is a real picture (not CLEAR_STILL): a clear readback replaces one only when proven (own.flat).
+    if (reset || !stream.realStills) stream.realStills = new Set();
+    const send = (id, { opaque, ...tile }) => { const digest = createHash('sha256').update(`${tile.x},${tile.y},${tile.width},${tile.height},${tile.data_base64}`).digest('hex'); if (stream.tileHashes.get(id) === digest) return; stream.tileHashes.set(id, digest); budget -= tile.data_base64.length; out.push({ node_id: id, ...tile }); if (opaque === true) stream.opaqueStills.add(id); else stream.opaqueStills.delete(id); if (tile.data_base64 === CLEAR_STILL) stream.realStills.delete(id); else stream.realStills.add(id); };
     // T3: a region an opaque still covers from above (coveredBy) is never seen: the regions on top take the budget first, and a
     // covered one is skipped while its cover's still in the viewer was proven opaque (opaqueStills); otherwise it is captured.
     const main = boxes.filter(b => !b.foreign && !slotOf(b.id)).map(b => b.id);
@@ -1124,7 +1126,7 @@ export class Mirror2 {
       if (!own) stream.opaqueStills.delete(b.id); // no still of its own this time: it proves nothing
       // YM-C1: a transformed, faded or stacked canvas whose own pixels read clear shows the page through it: a transparent
       // still replaces the viewer's placeholder (its screenshot would hold its compositing, applied again by the mirror).
-      if (own?.clear) { if (b.distorted && b.distorted !== 'canvas') send(b.id, { x: 0, y: 0, width: b.box[2], height: b.box[3], data_base64: CLEAR_STILL }); else shots.push(b); }
+      if (own?.clear) { if (b.distorted && b.distorted !== 'canvas') { if (own.flat || !stream.realStills.has(b.id)) send(b.id, { x: 0, y: 0, width: b.box[2], height: b.box[3], data_base64: CLEAR_STILL }); } else shots.push(b); }
       else if (own) send(b.id, own);
       // A distorted region's screenshot already holds its compositing: as the element's background the mirrored DOM
       // would apply the transform/opacity again, so such a region carries no still (its video lease shows it).
