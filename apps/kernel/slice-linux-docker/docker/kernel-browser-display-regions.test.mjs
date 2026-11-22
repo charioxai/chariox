@@ -434,3 +434,24 @@ test('R1c: a protected page gets no screencast region video',async()=>{
  g.host.protection={unknown:false,values:[],targets:['t']};assert.equal(source.valid(),false,'protection appearing stops the region');
  for(const stream of [...g.host.displays.values()])await stream.close();
 });
+
+// R1 S2/S3 (orch14 decision 11-22): a navigation fences the region screencast for good (no frame of the new document goes out on
+// it); a protection event (DOM rebuilt, a target attribute) fences at once and no frame captured before that fence goes out later.
+test('R1 S2/S3: navigation and protection events fence the region screencast; older frames never go out after a fence',async()=>{
+ const {RegionScreencast}=await import('./kernel-browser-screencast-region.mjs');
+ let clock=1_000_000;const sent=[],listeners=new Set();
+ const connection={subscribe(fn){listeners.add(fn);return()=>listeners.delete(fn);},send:async(method)=>{sent.push(method);return {};}};
+ const policy={unknown:false,values:[],targets:[]},tab={tab_id:'t',document_id:'doc'};
+ const cast=new RegionScreencast({connection,sessionId:'s',tab,width:100,height:50,policy,allowed:p=>p===policy,now:()=>clock});
+ await cast.start();
+ const out=[];cast.subscribe(f=>out.push(f.capturedAt));
+ const frame=at=>{for(const l of listeners)l({sessionId:'s',method:'Page.screencastFrame',params:{sessionId:1,data:'j',metadata:{timestamp:at/1000}}});};
+ frame(clock-10);assert.equal(out.length,1,'a frame goes out');
+ clock+=100;for(const l of listeners)l({sessionId:'s',method:'DOM.documentUpdated',params:{}});
+ assert.equal(cast.sample(),null,'S3: the protection event drops the latest frame');
+ frame(clock-50);assert.equal(out.length,1,'S3: a frame captured before the fence never goes out after it');
+ frame(clock+5);assert.equal(out.length,2,'S3: frames after the fence go out while the policy still allows them');
+ for(const l of listeners)l({sessionId:'s',method:'Page.frameNavigated',params:{frame:{id:'main',loaderId:'new'}}});
+ frame(clock+50);assert.equal(out.length,2,'S2: nothing goes out after a navigation');assert.equal(cast.valid(),false);assert.equal(cast.sample(),null);
+ await cast.close();assert(sent.includes('Page.stopScreencast'));
+});
