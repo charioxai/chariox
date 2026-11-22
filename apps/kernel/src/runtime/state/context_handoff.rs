@@ -527,11 +527,8 @@ impl super::KernelRuntimeOwnedState {
         // Output recorded without a provider session id is the target
         // session's own only when the same provider family answered it.
         let answered_without_session_id = |latest: &crate::history::HistoryEvent, run_session| {
-            latest.provider_session_id.is_none()
-                && latest
-                    .provider
-                    .as_deref()
-                    .and_then(crate::provider::canonical_provider_family)
+            answered_session(latest).is_none()
+                && answered_provider(latest).and_then(crate::provider::canonical_provider_family)
                     == Some(target_run.adapter_key())
                 && self
                     .operational_history_store
@@ -555,16 +552,14 @@ impl super::KernelRuntimeOwnedState {
         // receives the turns it missed.
         let holds_conversation = |latest: &crate::history::HistoryEvent| {
             // Native /clear can replace the session without replacing the run.
-            let same_session = latest
-                .provider_session_id
-                .as_deref()
+            let same_session = answered_session(latest)
                 .zip(run_session)
                 .is_none_or(|(latest, current)| latest == current);
             (same_session
                 && latest.provider_run_id.as_deref() == Some(target_run.id())
                 && latest.timestamp_ms >= target_run.started_at_ms())
                 || run_session.is_some_and(|run_session| {
-                    latest.provider_session_id.as_deref() == Some(run_session)
+                    answered_session(latest) == Some(run_session)
                         || answered_without_session_id(latest, run_session)
                 })
         };
@@ -593,7 +588,7 @@ impl super::KernelRuntimeOwnedState {
                 "session_id": session_id,
                 "agent_id": agent_id,
                 "source_provider_run_id": latest.and_then(|latest| latest.provider_run_id.as_deref()),
-                "source_provider_session_id": latest.and_then(|latest| latest.provider_session_id.as_deref()),
+                "source_provider_session_id": latest.and_then(answered_session),
                 "target_provider_run_id": target_run.id(),
                 "derive_ms": started.elapsed().as_millis() as u64,
             }),
@@ -746,6 +741,27 @@ impl super::KernelRuntimeOwnedState {
                 .note_run_holds_conversation(session_id, agent_id, target_run);
         }
     }
+}
+
+/// The provider session an answer came from. A turn the kernel observed in the
+/// provider's own transcript (as restart recovery does) names it only in its
+/// observation metadata.
+fn answered_session(event: &crate::history::HistoryEvent) -> Option<&str> {
+    event.provider_session_id.as_deref().or_else(|| {
+        event
+            .metadata
+            .get("external_provider_session_id")
+            .and_then(serde_json::Value::as_str)
+    })
+}
+
+fn answered_provider(event: &crate::history::HistoryEvent) -> Option<&str> {
+    event.provider.as_deref().or_else(|| {
+        event
+            .metadata
+            .get("external_provider")
+            .and_then(serde_json::Value::as_str)
+    })
 }
 
 fn pending_handoff_key(session_id: &str, agent_id: &str) -> String {
@@ -1521,6 +1537,44 @@ mod tests {
 
         let fresh = fixture.run("provider-run-1", "claude", None);
         assert!(fixture.prompt(&fresh).contains("amber-kestrel"));
+    }
+
+    /// After a restart the kernel reconciles an interrupted turn from Claude's
+    /// own transcript; such observed answers name their session only in their
+    /// observation metadata. A run resuming that session holds the
+    /// conversation: it resumes natively, with no handoff rebuilt.
+    #[tokio::test]
+    async fn a_run_resuming_the_session_of_an_observed_answer_holds_the_conversation() {
+        let fixture = DerivedHandoffFixture::new().await;
+        fixture.user(1, "remember the codename amber-kestrel");
+        let mut observed = crate::history::HistoryEvent::transcript(
+            2,
+            &crate::history::SessionHistoryEntry::provider_output(
+                &fixture.session_id,
+                "",
+                Some(&fixture.agent_id),
+                crate::terminal::TerminalOutputKind::ProviderOutput,
+                None,
+                "OK",
+            ),
+            crate::history::HistoryEventTurnContext::default(),
+        );
+        observed.provider = None;
+        observed.provider_run_id = None;
+        observed.provider_session_id = None;
+        observed
+            .metadata
+            .insert("external_provider".into(), serde_json::json!("claude"));
+        observed.metadata.insert(
+            "external_provider_session_id".into(),
+            serde_json::json!("claude-session-1"),
+        );
+        fixture.history.append(&observed).unwrap();
+
+        let resumed = fixture.run("provider-run-1", "claude", Some("claude-session-1"));
+        assert_eq!(fixture.prompt(&resumed), "next");
+        let other = fixture.run("provider-run-2", "claude", Some("claude-session-2"));
+        assert!(fixture.prompt(&other).contains("amber-kestrel"));
     }
 
     #[tokio::test]

@@ -45,21 +45,35 @@ awk '{ exit !($2 < 32) }' /proc/loadavg || { echo "load5 >= 32: not now" >&2; ex
 awk '/MemAvailable/ { exit !($2 > 15 * 1024 * 1024) }' /proc/meminfo || { echo "MemAvailable <= 15 GB: not now" >&2; exit 3; }
 
 here=$(dirname "$(realpath -e "$0")")
+# Every path this script writes, moves or removes lies inside its own new work
+# directory; anything else is refused before it is touched.
+work=$(realpath -m "${work:?}")
+[[ "$work" == /var/tmp/?*/?* ]] || { echo "--work must be at least two levels under /var/tmp" >&2; exit 2; }
+inside_work() {
+  local path=${1:?empty path}
+  [[ "$path" == "$work"/?* && "/$path/" != */../* ]] || { echo "refused: '$path' is outside $work" >&2; exit 97; }
+}
+remove_contents() {  # $1 = a directory inside the work directory
+  inside_work "$1"
+  find "$1" -mindepth 1 -maxdepth 1 -exec rm -rf --one-file-system -- {} +
+}
 umask 077
 home=$work/home
+inside_work "$home"
 mkdir -p "$home/state" "$home/history" "$home/kernels" "$work/bin" "$work/logs" "$work/os-home" "$work/tmp"
 port=56201
-slice=rsdrill.slice  # no dash: a dash nests a slice
+slice=rsdrill$$.slice  # one per run, so two drills never clean up each other's cgroups; no dash: a dash nests a slice
 log() { printf '%s %s\n' "$(date -u +%FT%TZ)" "$*" | tee -a "$work/drill.log"; }
 
 # The stand-in Claude CLI: every user message gets an answer and a result. A
 # brief request gets a well-formed brief, so the kernel stores it.
+inside_work "$work/bin/claude"
 { head -1 "$here/claude-standin.sh"; echo "sessions=$sessions"; tail -n +2 "$here/claude-standin.sh"; } > "$work/bin/claude"
 chmod 755 "$work/bin/claude"
 
 start_kernel() {  # $1 = unit name
   systemd-run --unit="$1" --slice="$slice" --collect --property=Type=exec \
-    --property=PrivateNetwork=yes --property=ProtectHome=read-only \
+    --property=PrivateNetwork=yes --property=TemporaryFileSystem=/tmp --property=ProtectHome=read-only \
     --property=ReadWritePaths="$work" --property=BindPaths="$home:$source_home" \
     --property=KillMode=control-group \
     unshare --pid --fork --mount-proc --kill-child \
@@ -99,7 +113,7 @@ for record in registry["kernels"].values():
     record["kernel_id"] = kernel_id
 json.dump(registry, open(path, "w"))
 PY
-rm -rf "$work/logs"/* "$home/state"/* "$home/history"/*
+remove_contents "$work/logs"; remove_contents "$home/state"; remove_contents "$home/history"
 log "copy identity ready: $kernel_id with its own keys"
 
 # 2. The source state, read through SQLite online backups.
@@ -117,12 +131,17 @@ PY
 # The configuration and the account registry (which profile each agent runs on)
 # come along; no Vault file, relay identity or provider credential does. The
 # stand-in CLI needs no login.
-if [[ -f $source_home/config.toml ]]; then cp "$source_home/config.toml" "$home/config.toml"; fi
+if [[ -f $source_home/config.toml ]]; then inside_work "$home/config.toml"; cp -- "$source_home/config.toml" "$home/config.toml"; fi
 if [[ -f $source_home/state/provider-accounts.json ]]; then
   # Each profile's login directory becomes an empty directory inside the copy.
   python3 - "$source_home" "$home" <<'PY'
 import json, os, sys
 source, copy = sys.argv[1:]
+def inside_copy(path):
+    resolved = os.path.realpath(path)
+    if not resolved.startswith(copy + "/"):
+        sys.exit(f"refused: {path!r} is outside {copy}")
+    return resolved
 document = json.load(open(f"{source}/state/provider-accounts.json"))
 for profile in document.get("profiles", []):
     locator = profile.get("locator", {})
@@ -130,11 +149,11 @@ for profile in document.get("profiles", []):
         if isinstance(value, str) and value.startswith("/"):
             inside = value if value.startswith(source + "/") else f"{source}/drill-outside{value}"
             locator[key] = inside
-            os.makedirs(copy + inside[len(source):], mode=0o700, exist_ok=True)
+            os.makedirs(inside_copy(copy + inside[len(source):]), mode=0o700, exist_ok=True)
     # The stand-in CLI needs no login, but a launch requires a login file: a
     # fixed placeholder, never a credential.
     if profile.get("provider") == "claude" and "claude_config_dir" in locator:
-        placeholder = copy + locator["claude_config_dir"][len(source):] + "/.credentials.json"
+        placeholder = inside_copy(copy + locator["claude_config_dir"][len(source):] + "/.credentials.json")
         with open(os.open(placeholder, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as handle:
             json.dump({"claudeAiOauth": {"accessToken": "drill-placeholder",
                 "refreshToken": "drill-placeholder", "expiresAt": 4102444800000}}, handle)
@@ -162,8 +181,8 @@ for boot in 1 2; do
   watch_cpu "$unit" "$window" "$work/cpu-boot$boot.tsv"
   stop_kernel "$unit"
   log "boot $boot: cold-stopped after ${window}s"
-  mkdir -p "$work/boot$boot"
-  mv "$work/logs"/* "$work/boot$boot/" 2>/dev/null || true
+  inside_work "$work/boot$boot"; mkdir -p "$work/boot$boot"
+  find "$work/logs" -mindepth 1 -maxdepth 1 -exec mv -- {} "$work/boot$boot/" \;
   python3 "$here/report.py" "$work/boot$boot" "$boot_ms" "$work/cpu-boot$boot.tsv" >> "$work/report.md"
 done
 log "done: $work/report.md"

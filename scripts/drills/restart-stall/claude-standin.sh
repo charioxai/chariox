@@ -13,6 +13,9 @@ esac
 case "$sessions:$*" in
   lost:*--resume*) echo 'No conversation found with session ID' >&2; exit 1 ;;
 esac
+# Each turn starts with the CLI's init report, under the resumed session or a new one.
+session=$(printf '%s' "$*" | sed -n 's/.*--resume \([^ ]*\).*/\1/p')
+[ -n "$session" ] || session=$(cat /proc/sys/kernel/random/uuid)
 brief='## Goal\nContinue the work\n## Constraints & Preferences\nNone\n## Progress\n### Done\nRecorded\n### In Progress\nNone\n### Blocked\nNone\n## Key Decisions\nNone\n## Next Steps\nContinue\n## Critical Context\nNone'
 while IFS= read -r line; do
   case "$line" in
@@ -20,6 +23,7 @@ while IFS= read -r line; do
     *) continue ;;
   esac
   uuid=$(printf '%s' "$line" | sed -n 's/.*"uuid":"\([^"]*\)".*/\1/p')
+  printf '{"type":"system","subtype":"init","session_id":"%s"}\n' "$session"
   case "$line" in
     *'Update the handoff brief'*)
       printf '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"%s"}]}}\n' "$brief"
