@@ -16,6 +16,20 @@ Terminology:
 - **Workflow mode** means a daemon-owned workflow graph schedules node turns, validates outputs, and advances runs.
 - **Remote mode** means one or more CLIs or agents connect through relay to a home daemon or to a remote machine accepting leases.
 
+## Drill kernel databases
+
+Start ordinary drills with a fresh, private `CHARIOX_HOME` under the lane's development directory. Seed only the Rooms and test data needed for the scenario through the kernel's normal entry points. For recovery cases that need an invalid record, construct a synthetic fixture inside that disposable kernel. Keep the run's state within its private directory and remove it when the run ends. Keep evidence outside that directory and outside the checkout.
+
+Run the filesystem check against the development and artifact directories you own. Supply the exact configured paths for any kernel databases that belong in the scan. Repeat `--kernel-db` for each such database.
+
+```sh
+node scripts/sweep-kernel-dbs.mjs --kernel-db /path/to/kernel-home/state/kernel.db /path/to/scan
+```
+
+Exit 0 means the scan found no misplaced files. Exit 1 lists unexpected `kernel.db` paths, including files inside an undeclared copy of a state directory. Exit 2 means the scan could not complete. The check does not open database files, follow directory symlinks or delete anything.
+
+After `pnpm build:kernel-client`, run `node scripts/drills/kernel-db-isolation.mjs --kernel-binary <path> --state-root <lane-state-dir> --evidence-dir <evidence-dir>` in a dedicated drill unit with a clean environment. The drill seeds a Room and an unsigned provider profile through IPC, starts a second kernel, checks its independent state and exercises the sweep and cleanup.
+
 ## Required Drill Matrix
 
 1. Freeform local multi-agent:
