@@ -257,10 +257,13 @@ fn resolve_catalog_profiles(
         // Native defaults exist before a login does. Broad reads (including startup
         // warm-up) must not keep a provider server alive for an empty placeholder.
         // An explicit provider/account request still starts it on demand.
+        // OpenCode is the exception once installed: its free models need no
+        // account, so a signed-out default profile still has models to offer.
         if profile.origin == crate::account_profile::ProviderAccountProfileOrigin::Default
             && profile.auth_state != crate::account_profile::ProviderAccountAuthState::Authenticated
             && focus_provider != Some(provider)
             && !overrides.contains_key(provider)
+            && !(provider == "opencode" && resolve_opencode_executable().is_ok())
         {
             continue;
         }
@@ -1770,6 +1773,51 @@ mod tests {
         )
         .is_err());
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn broad_catalog_offers_installed_signed_out_opencode_only() {
+        crate::test_support::isolated_env_test!();
+        let _guard = crate::env_lock::lock();
+        let root = std::env::temp_dir().join(format!(
+            "chariox-catalog-account-free-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        fs::create_dir(&root).expect("fixture root should create");
+        let previous = std::env::var_os("CHARIOX_OPENCODE_BIN");
+        let registry = crate::account_profile::ProviderAccountProfileRegistry::open(
+            root.join("profiles.json"),
+        )
+        .expect("fixture registry should open");
+        registry
+            .migrate_effective_defaults("local", &root.join("home"))
+            .expect("fixture profiles should create");
+        let request = GetProviderCatalogRequest::default();
+
+        let executable = root.join("opencode");
+        fs::write(&executable, "#!/bin/sh\nexit 0\n").expect("fixture should write");
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o755))
+            .expect("fixture should be executable");
+        std::env::set_var("CHARIOX_OPENCODE_BIN", &executable);
+        let installed =
+            resolve_catalog_profiles(&DaemonConfig::for_tests(), &registry, "local", &request);
+        std::env::set_var("CHARIOX_OPENCODE_BIN", root.join("missing"));
+        let missing =
+            resolve_catalog_profiles(&DaemonConfig::for_tests(), &registry, "local", &request);
+        match previous {
+            Some(value) => std::env::set_var("CHARIOX_OPENCODE_BIN", value),
+            None => std::env::remove_var("CHARIOX_OPENCODE_BIN"),
+        }
+        let _ = fs::remove_dir_all(&root);
+
+        // Signed-out Claude and Codex stay out of the broad read; only the
+        // account-free OpenCode profile is kept, and only while it is installed.
+        let installed = installed.expect("installed catalog profiles should resolve");
+        assert_eq!(installed.keys().collect::<Vec<_>>(), vec!["opencode"]);
+        assert!(missing
+            .expect("missing OpenCode should not fail the broad read")
+            .is_empty());
     }
 
     #[test]
