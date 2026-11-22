@@ -690,8 +690,14 @@ impl CommandRouter {
                 .slice_development_selection_for_session(session, &worktree_id)
             {
                 Ok(development) => development,
-                Err(error @ DaemonError::ManagedContext { .. }) => {
-                    return Ok(meta_command_failure_result(command, error))
+                // The refusal names the directory and the next step; show it without the wrapper.
+                Err(DaemonError::ManagedContext {
+                    operation, message, ..
+                }) => {
+                    return Ok(meta_command_failure_result(
+                        command,
+                        DaemonError::LocalTransport { operation, message },
+                    ))
                 }
                 Err(error) => return Ok(meta_command_failure_result(command, error)),
             };
