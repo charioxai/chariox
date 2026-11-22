@@ -4,7 +4,7 @@ use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
 use super::{
-    env_loader::{daemon_id_override, kernel_websocket_endpoint},
+    env_loader::{daemon_id_override, kernel_listen_address},
     identity::read_registered_kernel_id,
     paths::{
         chariox_home_dir, default_config_dir, default_durable_state_path,
@@ -52,7 +52,7 @@ impl StateCheckTarget {
         let daemon_id = match daemon_id_override() {
             Some(daemon_id) => daemon_id,
             None => {
-                let (host, port) = kernel_websocket_endpoint();
+                let (host, port) = kernel_listen_address();
                 read_registered_kernel_id(&home, &host, port)?
             }
         };
