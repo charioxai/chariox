@@ -963,7 +963,6 @@ fn session_history_kind_from_key(kind: &str) -> Option<SessionHistoryEntryKind> 
         "provider_tool" => Some(SessionHistoryEntryKind::ProviderTool),
         "provider_error" => Some(SessionHistoryEntryKind::ProviderError),
         "provider_status" => Some(SessionHistoryEntryKind::ProviderStatus),
-        "context_compacted" => Some(SessionHistoryEntryKind::ContextCompacted),
         "notice" => Some(SessionHistoryEntryKind::Notice),
         _ => None,
     }

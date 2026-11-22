@@ -20,8 +20,6 @@ pub enum TerminalOutputKind {
     ProviderTool,
     ProviderError,
     ProviderStatus,
-    /// Claude summarised the conversation to free context; the bytes are the summary.
-    ContextCompacted,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

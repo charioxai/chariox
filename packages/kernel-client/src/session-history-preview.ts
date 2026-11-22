@@ -99,8 +99,6 @@ export function transcriptEntryPreviewLabel(role: TranscriptEntry["role"]): stri
       return "Err"
     case "status":
       return "Stat"
-    case "compaction":
-      return "Compact"
     case "notice":
       return "Note"
     case "assistant":

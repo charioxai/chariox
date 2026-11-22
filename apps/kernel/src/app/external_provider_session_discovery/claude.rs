@@ -1,5 +1,4 @@
 use super::*;
-use crate::provider::{ClaudeCompaction, ContextCompaction};
 
 pub(super) fn parse_claude_transcript(path: &Path) -> Option<ExternalProviderSessionRecord> {
     let fingerprint = provider_transcript_file_fingerprint(path)?;
@@ -194,23 +193,6 @@ pub(super) fn claude_observed_turns_from_value(value: &Value) -> Vec<ObservedExt
     }
     let observed_at_ms = string_field(value, &["timestamp"])
         .and_then(|timestamp| parse_timestamp_millis(&timestamp));
-    match crate::provider::claude_compaction(value) {
-        Some(ClaudeCompaction::Summary { row_id, summary }) => {
-            return vec![ObservedExternalProviderTurn {
-                role: ObservedExternalProviderTurnRole::ContextCompacted,
-                text: ContextCompaction::Done { summary }.to_text(),
-                provider_turn_id: Some(row_id),
-                observed_at_ms,
-            }];
-        }
-        // The summary entry that follows is the row; the status events are stream-only.
-        Some(
-            ClaudeCompaction::Boundary { .. }
-            | ClaudeCompaction::Started
-            | ClaudeCompaction::Failed { .. },
-        ) => return Vec::new(),
-        None => {}
-    }
     let record_type = value.get("type").and_then(Value::as_str);
     match record_type {
         Some("user") => claude_user_observed_turns(value, observed_at_ms),

@@ -78,7 +78,6 @@ pub enum HistoryEventKind {
     ProviderTool,
     ProviderError,
     ProviderStatus,
-    ContextCompacted,
     Notice,
     SessionCreated,
     AgentCreated,
@@ -616,7 +615,6 @@ impl From<SessionHistoryEntryKind> for HistoryEventKind {
             SessionHistoryEntryKind::ProviderTool => Self::ProviderTool,
             SessionHistoryEntryKind::ProviderError => Self::ProviderError,
             SessionHistoryEntryKind::ProviderStatus => Self::ProviderStatus,
-            SessionHistoryEntryKind::ContextCompacted => Self::ContextCompacted,
             SessionHistoryEntryKind::Notice => Self::Notice,
         }
     }
@@ -633,7 +631,6 @@ impl TryFrom<HistoryEventKind> for SessionHistoryEntryKind {
             HistoryEventKind::ProviderTool => Ok(Self::ProviderTool),
             HistoryEventKind::ProviderError => Ok(Self::ProviderError),
             HistoryEventKind::ProviderStatus => Ok(Self::ProviderStatus),
-            HistoryEventKind::ContextCompacted => Ok(Self::ContextCompacted),
             HistoryEventKind::Notice => Ok(Self::Notice),
             _ => Err(()),
         }
@@ -648,9 +645,9 @@ impl HistoryEventRole {
             | SessionHistoryEntryKind::ProviderReasoning
             | SessionHistoryEntryKind::ProviderError => Self::Assistant,
             SessionHistoryEntryKind::ProviderTool => Self::Tool,
-            SessionHistoryEntryKind::ProviderStatus
-            | SessionHistoryEntryKind::ContextCompacted
-            | SessionHistoryEntryKind::Notice => Self::System,
+            SessionHistoryEntryKind::ProviderStatus | SessionHistoryEntryKind::Notice => {
+                Self::System
+            }
         }
     }
 }
@@ -1772,7 +1769,6 @@ fn history_event_kind_key(kind: HistoryEventKind) -> &'static str {
         HistoryEventKind::ProviderTool => "provider_tool",
         HistoryEventKind::ProviderError => "provider_error",
         HistoryEventKind::ProviderStatus => "provider_status",
-        HistoryEventKind::ContextCompacted => "context_compacted",
         HistoryEventKind::Notice => "notice",
         HistoryEventKind::SessionCreated => "session_created",
         HistoryEventKind::AgentCreated => "agent_created",

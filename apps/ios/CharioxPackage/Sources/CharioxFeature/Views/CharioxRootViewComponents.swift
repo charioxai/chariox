@@ -27,22 +27,6 @@ struct TranscriptRow: View {
     let entry: TranscriptEntry
 
     var body: some View {
-        Group {
-            if entry.kind == .compaction {
-                if let compaction = entry.compaction {
-                    TranscriptCompactionRow(compaction: compaction)
-                } else {
-                    Text("Compaction details unavailable")
-                        .foregroundStyle(CharioxPalette.muted)
-                }
-            } else {
-                message
-            }
-        }
-        .padding(.vertical, 2)
-    }
-
-    private var message: some View {
         VStack(alignment: .leading, spacing: 5) {
             HStack(spacing: 8) {
                 Text(entry.kind.rawValue.uppercased())
@@ -61,6 +45,7 @@ struct TranscriptRow: View {
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .padding(.vertical, 2)
     }
 
     private var color: Color {
@@ -72,46 +57,6 @@ struct TranscriptRow: View {
         default:
             CharioxPalette.orange
         }
-    }
-}
-
-private struct TranscriptCompactionRow: View {
-    let compaction: TranscriptCompaction
-
-    var body: some View {
-        Group {
-            switch compaction.state {
-            case .running:
-                HStack(spacing: 8) {
-                    ProgressView()
-                        .controlSize(.small)
-                    Text(compaction.title)
-                    if let startedAt = compaction.startedAt {
-                        TimelineView(.periodic(from: startedAt, by: 1)) { context in
-                            let seconds = max(0, Int(context.date.timeIntervalSince(startedAt)))
-                            Text("\(seconds)s")
-                                .monospacedDigit()
-                        }
-                    }
-                }
-            case .done:
-                DisclosureGroup(compaction.title) { detail }
-            case .failed:
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(compaction.title)
-                        .foregroundStyle(CharioxPalette.red)
-                    detail
-                }
-            }
-        }
-        .font(.system(.caption, design: .monospaced))
-        .foregroundStyle(CharioxPalette.muted)
-    }
-
-    private var detail: some View {
-        Text(compaction.detail ?? "")
-            .foregroundStyle(.white)
-            .textSelection(.enabled)
     }
 }
 

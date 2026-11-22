@@ -55,9 +55,6 @@ pub struct ClaudeRuntimeState {
     // Most recent API call input, independent of turn-wide billed usage.
     pub(super) last_context_tokens: Option<u64>,
     pub(super) last_context_window: Option<u64>,
-    /// The compactions this run has had, so one row follows each from start to end.
-    pub(super) compactions: u64,
-    pub(super) compaction_started_at_ms: Option<u64>,
     pub(super) observed_context_model: Option<String>,
     pub(super) main_stream_has_context: bool,
     pub(super) active_stream_message_id: Option<String>,

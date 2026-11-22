@@ -42,7 +42,6 @@ export type TerminalRecordTranscriptRole =
   | "error"
   | "reasoning"
   | "status"
-  | "compaction"
   | "tool"
   | "user"
 
@@ -248,7 +247,7 @@ export function terminalRecordRoleShouldAppend(role: TerminalRecordTranscriptRol
 }
 
 export function terminalRecordRoleShouldReplace(role: TerminalRecordTranscriptRole | null): boolean {
-  return role === "tool" || role === "status" || role === "compaction"
+  return role === "tool" || role === "status"
 }
 
 function terminalRecordTranscriptRole(kind: string): TerminalRecordTranscriptRole | null {

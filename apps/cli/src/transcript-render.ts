@@ -37,7 +37,7 @@ import {
   transcriptUsesSeparator,
   type TranscriptSurfaceTone,
 } from "./transcript-render-theme.js"
-import { applyTranscriptTextContent, CompactionTextRenderable } from "./transcript-text-render.js"
+import { applyTranscriptTextContent } from "./transcript-text-render.js"
 import { createTranscriptMarkdownNodeRenderer } from "./transcript-hyperlinks.js"
 
 export {
@@ -217,8 +217,7 @@ function buildExpandedTranscriptContent(
     return { textRenderable: null, markdownRenderable: markdown }
   }
 
-  const TranscriptText = entry.role === "compaction" ? CompactionTextRenderable : TextRenderable
-  const text = new TranscriptText(renderer, {
+  const text = new TextRenderable(renderer, {
     fg: transcriptTextColor(entry),
     wrapMode: "word",
   })

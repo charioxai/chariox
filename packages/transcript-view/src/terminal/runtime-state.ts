@@ -1,8 +1,6 @@
-import type { ProviderTranscriptRole } from "@chariox/kernel-client/transcript-kind-role"
-import type { TerminalPromptAttachmentView } from "./prompt-attachment-state.js"
-
 export type FreeformTranscriptRole = "user" | "agent" | "reasoning" | "tool" | "status" | "error"
-export type TerminalOutputRole = "user" | ProviderTranscriptRole
+import type { TerminalPromptAttachmentView } from "./prompt-attachment-state.js"
+export type TerminalOutputRole = "user" | "assistant" | "reasoning" | "tool" | "status" | "error"
 export type TerminalOutputEntry = {
   readonly key: string
   readonly role: TerminalOutputRole

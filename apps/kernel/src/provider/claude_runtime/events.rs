@@ -1,6 +1,5 @@
 use serde_json::Value;
 
-use crate::provider::{ClaudeCompaction, ContextCompaction};
 use crate::session::unix_epoch_ms;
 use crate::terminal::TerminalOutputKind;
 
@@ -36,7 +35,6 @@ pub(super) fn apply_claude_message(
             state.background_notification_pending = false;
         }
     }
-    note_compaction(provider_run_id, state, &value, batch);
     match kind {
         "system" => apply_system_message(state, &value, batch),
         "stream_event" => apply_stream_event(provider_run_id, state, &value, batch),
@@ -45,75 +43,6 @@ pub(super) fn apply_claude_message(
         "rate_limit_event" => apply_rate_limit_event(&value, batch),
         _ => {}
     }
-}
-
-/// One row follows a compaction from Claude's "compacting" status to its end. The stream carries
-/// no summary: it is in the transcript file.
-fn note_compaction(
-    provider_run_id: &str,
-    state: &mut ClaudeRuntimeState,
-    value: &Value,
-    batch: &mut ProviderPromptSignalBatch,
-) {
-    let compaction = match crate::provider::claude_compaction(value) {
-        // Claude repeats the status as the summary streams; the row keeps its first start.
-        Some(ClaudeCompaction::Started) if state.compaction_started_at_ms.is_some() => return,
-        Some(ClaudeCompaction::Started) => {
-            let started_at_ms = unix_epoch_ms();
-            state.compaction_started_at_ms = Some(started_at_ms);
-            ContextCompaction::Running { started_at_ms }
-        }
-        Some(ClaudeCompaction::Failed { reason }) => {
-            state.compaction_started_at_ms = None;
-            ContextCompaction::Failed { reason }
-        }
-        Some(ClaudeCompaction::Boundary { row_id }) => {
-            state.compaction_started_at_ms = None;
-            ContextCompaction::Done {
-                summary: claude_config_dir(state)
-                    .zip(state.session_id.as_deref())
-                    .and_then(|(config_dir, session_id)| {
-                        crate::provider::read_summary_from_transcript(
-                            &config_dir,
-                            session_id,
-                            &row_id,
-                        )
-                    })
-                    .unwrap_or_default(),
-            }
-        }
-        Some(ClaudeCompaction::Summary { summary, .. }) => ContextCompaction::Done { summary },
-        None => return,
-    };
-    batch.chunks.push(ProviderPromptChunk {
-        kind: TerminalOutputKind::ContextCompacted,
-        merge_key: Some(format!(
-            "claude:{provider_run_id}:compaction:{}",
-            state.compactions
-        )),
-        bytes: compaction.to_text().into_bytes(),
-    });
-    if !matches!(compaction, ContextCompaction::Running { .. }) {
-        state.compactions += 1;
-    }
-}
-
-/// Where this run's Claude keeps its transcripts: its profile's config directory, else the home it runs under.
-fn claude_config_dir(state: &ClaudeRuntimeState) -> Option<std::path::PathBuf> {
-    state
-        .env
-        .get("CLAUDE_CONFIG_DIR")
-        .map(std::path::PathBuf::from)
-        .or_else(|| {
-            state
-                .env
-                .get("HOME")
-                .map(|home| std::path::Path::new(home).join(".claude"))
-        })
-        .or_else(|| std::env::var_os("CLAUDE_CONFIG_DIR").map(std::path::PathBuf::from))
-        .or_else(|| {
-            std::env::var_os("HOME").map(|home| std::path::Path::new(&home).join(".claude"))
-        })
 }
 
 fn apply_system_message(

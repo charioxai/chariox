@@ -4,14 +4,12 @@ export type ProviderTranscriptKind =
   | "provider_tool"
   | "provider_error"
   | "provider_status"
-  | "context_compacted"
 
 export type ProviderTranscriptRole =
   | "assistant"
   | "error"
   | "reasoning"
   | "status"
-  | "compaction"
   | "tool"
 
 export function providerTranscriptRoleForKind(kind: ProviderTranscriptKind): ProviderTranscriptRole
@@ -28,8 +26,6 @@ export function providerTranscriptRoleForKind(kind: string): ProviderTranscriptR
       return "error"
     case "provider_status":
       return "status"
-    case "context_compacted":
-      return "compaction"
     default:
       return null
   }

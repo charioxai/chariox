@@ -385,8 +385,7 @@ fn collect_turns(sorted: &[HistoryEvent]) -> Vec<HandoffTurn> {
                     turn.output_item = None;
                 }
             }
-            HistoryEventKind::ContextCompacted
-            | HistoryEventKind::PromptInput
+            HistoryEventKind::PromptInput
             | HistoryEventKind::SessionCreated
             | HistoryEventKind::AgentCreated
             | HistoryEventKind::AgentMoved

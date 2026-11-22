@@ -700,22 +700,19 @@ public struct TranscriptEntry: Identifiable, Equatable, Sendable {
   public let agentID: String?
   public var text: String
   public let createdAt: Date
-  let mergeKey: String?
 
   public init(
     id: UUID = UUID(),
     kind: Kind,
     agentID: String?,
     text: String,
-    createdAt: Date = Date(),
-    mergeKey: String? = nil
+    createdAt: Date = Date()
   ) {
     self.id = id
     self.kind = kind
     self.agentID = agentID
     self.text = text
     self.createdAt = createdAt
-    self.mergeKey = mergeKey
   }
 
   public enum Kind: String, Equatable, Sendable {
@@ -727,7 +724,6 @@ public struct TranscriptEntry: Identifiable, Equatable, Sendable {
     case status
     case notice
     case completion
-    case compaction
 
     init(terminalKind: String) {
       switch terminalKind {
@@ -741,8 +737,6 @@ public struct TranscriptEntry: Identifiable, Equatable, Sendable {
         self = .error
       case "provider_status":
         self = .status
-      case "context_compacted":
-        self = .compaction
       default:
         self = .output
       }
@@ -760,8 +754,6 @@ public struct TranscriptEntry: Identifiable, Equatable, Sendable {
         self = .error
       case "provider_status":
         self = .status
-      case "context_compacted":
-        self = .compaction
       case "notice":
         self = .notice
       default:
@@ -773,7 +765,7 @@ public struct TranscriptEntry: Identifiable, Equatable, Sendable {
       switch self {
       case .prompt, .output, .reasoning, .tool:
         true
-      case .error, .status, .notice, .completion, .compaction:
+      case .error, .status, .notice, .completion:
         false
       }
     }
