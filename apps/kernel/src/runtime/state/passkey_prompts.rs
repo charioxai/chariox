@@ -274,8 +274,7 @@ impl KernelRuntimeOwnedState {
                     access
                         .pending
                         .values()
-                        .find(|g| g.summary.grant_id == id)
-                        .map(|g| &g.summary)
+                        .find(|g| g.grant_id == id)
                         .or_else(|| access.grants.get(id).map(|g| &g.summary))
                 }) {
                     prompt.term = Some(grant.term);

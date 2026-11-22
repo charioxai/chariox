@@ -21,9 +21,8 @@ export function parseAccessRequest(argv: string[]) {
   if (minutes !== undefined && (!Number.isSafeInteger(minutes) || minutes < 1)) throw new CommandFailure("usage", "Access requires a positive integer lifetime")
   const term = flags.has("--until-exit") ? "until_holder_exits" as const : minutes !== undefined ? { minutes } : undefined
   const noWait = flags.has("--no-wait")
-  const reason = flags.get("--reason") as string | undefined
   return {
-    request: { RequestKernelAccess: { ...holderPid(flags), ...(term ? { term } : {}), ...(noWait ? { no_wait: true } : {}), ...(reason !== undefined ? { reason } : {}) } },
+    request: { RequestKernelAccess: { ...holderPid(flags), ...(term ? { term } : {}), ...(noWait ? { no_wait: true } : {}) } },
     socket: flags.get("--socket") as string | undefined,
     noWait,
   }
@@ -49,16 +48,11 @@ async function requestAccess(argv: string[]): Promise<void> {
         return
       }
       // The kernel waits for the owner and binds the answer to the holder: this process may exit.
-      console.log(JSON.stringify({
-        status: status.state,
-        holder_pid: status.holder_pid,
-        message: status.reason?.message ?? "Waiting for the owner.",
-        note: "Run chariox access status to check the decision.",
-      }))
+      console.log(JSON.stringify({ status: status.state, holder_pid: status.holder_pid, note: "approve in your Chariox client, then run chariox access status" }))
       process.exitCode = 6
       return
     }
-    console.error("Waiting for the owner to approve kernel access.")
+    console.error("Waiting for the kernel's access popup.")
     const response = await client.send<KernelAccessGrantedResponse>(request)
     // A grant just issued has made no subscription yet.
     console.log(JSON.stringify({ ...response.KernelAccessGranted.grant, ...followsFields(0) }))

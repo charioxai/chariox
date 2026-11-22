@@ -5,8 +5,8 @@
 # kernel then installs, updates and runs Apps itself.
 #
 #   install-user.sh install --kernel PATH   the chariox-kernel binary to run; the
-#                                           bundled chariox CLI and App worker
-#                                           are installed beside the kernel
+#                                           chariox-app-wasm-worker beside it is
+#                                           installed beside the installed kernel
 #   install-user.sh uninstall               stop and remove the unit; ~/.chariox is kept
 #
 # Every change is printed; a repeated install with the same binary changes nothing
@@ -16,7 +16,6 @@ umask 077
 
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 KERNEL=$HOME/.local/bin/chariox-kernel
-CLI=$HOME/.local/bin/chariox
 # The kernel opens its worker only beside itself and trusts it only when it is not writable by its owner.
 WORKER=$HOME/.local/bin/chariox-app-wasm-worker
 START=$HOME/.local/lib/chariox/start-kernel.sh
@@ -54,11 +53,8 @@ case "$command" in
     [[ -f "$kernel" && -x "$kernel" ]] || die "$kernel is not an executable file"
     worker=$(dirname -- "$kernel")/chariox-app-wasm-worker
     [[ -f "$worker" && -x "$worker" ]] || die "$worker is missing; an installed kernel cannot run any App without the worker built with it"
-    cli=$(dirname -- "$kernel")/chariox
-    [[ -f "$cli" && -x "$cli" ]] || die "$cli is missing; use the chariox CLI bundled with this kernel"
     restart=0
     install -d -m 0700 "$HOME/.chariox" "$HOME/.chariox/logs" "$HOME/.config/chariox"
-    put "$cli" "$CLI" 0755 || :
     put "$worker" "$WORKER" 0555 && restart=1
     put "$kernel" "$KERNEL" 0755 && restart=1
     put "$here/start-kernel.sh" "$START" 0755 && restart=1
@@ -86,7 +82,7 @@ case "$command" in
       say "stop and disable $SERVICE"
       systemctl --user disable --now --quiet "$SERVICE"
     fi
-    for path in "$UNIT" "$START" "$KERNEL" "$CLI" "$WORKER"; do
+    for path in "$UNIT" "$START" "$KERNEL" "$WORKER"; do
       if [[ -e "$path" ]]; then say "remove $path"; rm -f -- "$path"; fi
     done
     systemctl --user daemon-reload

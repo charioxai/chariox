@@ -286,19 +286,16 @@ fn local_kernel_access_protocol_451_has_no_session_scope_or_bearer() {
     };
     let requests = [
         LocalDaemonRequest::RequestKernelAccess(RequestKernelAccessRequest {
-            reason: None,
             holder_pid: Some(42),
             no_wait: false,
             term: Some(crate::local::KernelAccessTerm::Minutes(30)),
         }),
         LocalDaemonRequest::RequestKernelAccess(RequestKernelAccessRequest {
-            reason: None,
             holder_pid: Some(42),
             no_wait: false,
             term: Some(crate::local::KernelAccessTerm::UntilHolderExits),
         }),
         LocalDaemonRequest::RequestKernelAccess(RequestKernelAccessRequest {
-            reason: None,
             holder_pid: Some(42),
             no_wait: false,
             term: None,
@@ -571,14 +568,13 @@ fn kernel_access_938_lets_the_kernel_pick_the_holder_own_no_wait_and_report_one_
     assert_eq!(
         serde_json::to_value(LocalDaemonRequest::RequestKernelAccess(
             RequestKernelAccessRequest {
-                reason: Some("Check the test kernel".into()),
                 holder_pid: None,
                 term: Some(crate::local::KernelAccessTerm::UntilHolderExits),
                 no_wait: true,
             }
         ))
         .unwrap(),
-        serde_json::json!({"RequestKernelAccess": {"term": "until_holder_exits", "no_wait": true, "reason": "Check the test kernel"}})
+        serde_json::json!({"RequestKernelAccess": {"term": "until_holder_exits", "no_wait": true}})
     );
     assert_eq!(
         serde_json::from_value::<LocalDaemonRequest>(
@@ -586,7 +582,6 @@ fn kernel_access_938_lets_the_kernel_pick_the_holder_own_no_wait_and_report_one_
         )
         .unwrap(),
         LocalDaemonRequest::RequestKernelAccess(RequestKernelAccessRequest {
-            reason: None,
             holder_pid: None,
             term: None,
             no_wait: false,

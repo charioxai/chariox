@@ -69,7 +69,6 @@ impl OrphanHolder {
             .request_kernel_access(
                 process::inspect(self.requester).unwrap().0,
                 RequestKernelAccessRequest {
-                    reason: None,
                     holder_pid: Some(self.holder),
                     no_wait: false,
                     term: Some(term),
@@ -295,7 +294,6 @@ async fn a_requester_without_a_grandparent_is_told_how_to_name_its_holder() {
         .request_kernel_access(
             requester,
             RequestKernelAccessRequest {
-                reason: None,
                 holder_pid: None,
                 no_wait: true,
                 term: Some(KernelAccessTerm::UntilHolderExits),

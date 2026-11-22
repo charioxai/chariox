@@ -1240,13 +1240,13 @@ async fn enrolled_owner_can_manage_grants_approved_before_login() {
     assert_eq!(state.list_kernel_access("local").len(), 1);
     let mut pending = state.access_grant_summary(&id).unwrap();
     pending.grant_id = "pending-before-login".into();
-    state.owned.kernel_access.lock().unwrap().pending.insert(
-        (42, 1, "request".into()),
-        PendingGrant {
-            summary: pending,
-            deadline_ms: u64::MAX,
-        },
-    );
+    state
+        .owned
+        .kernel_access
+        .lock()
+        .unwrap()
+        .pending
+        .insert((42, 1, "request".into()), pending);
     let extension_id = format!("{id}-extension");
     let extension = RuntimeInteraction::for_kernel_operation(
         &extension_id,

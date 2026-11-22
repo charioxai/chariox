@@ -90,6 +90,7 @@ pub(crate) fn public_error_message(message: &str) -> bool {
         "sudo request expired; answer the popup in a Chariox terminal",
         "queued sudo was revoked",
         "sudo authorization revoked before dispatch",
+        "access request refused or expired; answer the popup in a Chariox terminal",
     ]
     .into_iter()
     .chain(Refusal::ALL.map(Refusal::message))

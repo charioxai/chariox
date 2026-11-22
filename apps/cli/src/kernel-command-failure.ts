@@ -21,7 +21,7 @@ export function failureOf(error: unknown): CommandFailure {
 
 export function lostConnectionFailure(probeError: unknown): CommandFailure {
   if (probeError instanceof LocalIpcError && probeError.code === "kernel_access_ended") {
-    return new CommandFailure("kernel_access_ended", "Access ended while the request was in flight. Check whether it ran, then run `chariox access request --no-wait` before retrying.")
+    return new CommandFailure("kernel_access_ended", "the access grant ended while this request was in flight; the request may or may not have run")
   }
   return new CommandFailure("kernel_connection_lost", "the connection to the local kernel was lost before the answer; the request may or may not have run")
 }

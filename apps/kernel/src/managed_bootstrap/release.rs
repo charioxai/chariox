@@ -294,13 +294,6 @@ pub(super) fn verify_release_evidence(
     if app_count == app_names.len() {
         expected_names.extend(app_names);
     }
-    if manifest
-        .artifacts
-        .iter()
-        .any(|artifact| artifact.name == "chariox")
-    {
-        expected_names.push("chariox");
-    }
     if attestation.schema_version != 1
         || !is_git_object_id(&attestation.source_commit)
         || !is_git_object_id(&attestation.source_tree)
@@ -352,18 +345,19 @@ pub(super) fn verify_release_evidence(
             "build attestation supervisor artifact does not match the signed release",
         ));
     }
-    for artifact in &attestation.artifacts[3..] {
-        let path = read_pinned_release_artifact(
-            &manifest,
-            &artifact.name,
-            &format!("/usr/local/bin/{}", artifact.name),
-            &active_release_path,
-        )?;
-        if digest_regular_file(&path)? != artifact.sha256 {
-            return Err(release_error(&format!(
-                "build attestation {} artifact does not match the signed release",
-                artifact.name
-            )));
+    if app_count == app_names.len() {
+        for (index, name) in app_names.iter().enumerate() {
+            let path = read_pinned_release_artifact(
+                &manifest,
+                name,
+                &format!("/usr/local/bin/{name}"),
+                &active_release_path,
+            )?;
+            if digest_regular_file(&path)? != attestation.artifacts[index + 3].sha256 {
+                return Err(release_error(
+                    "build attestation App artifact does not match the signed release",
+                ));
+            }
         }
     }
     Ok(VerifiedReleaseEvidence {

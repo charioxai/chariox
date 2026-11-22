@@ -193,9 +193,6 @@ pub enum KernelAccessProviderHarness {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RequestKernelAccessRequest {
-    /// Agent-supplied purpose, shown to the owner alongside the verified requester.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reason: Option<String>,
     /// Protocol 938: None lets the kernel pick the holder from the peer's host ancestry. A pid
     /// is a host pid of the requester or one of its OS ancestors.
     #[serde(default, skip_serializing_if = "Option::is_none")]

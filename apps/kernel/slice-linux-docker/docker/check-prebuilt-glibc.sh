@@ -15,7 +15,7 @@ for binary in "$@"; do
   fi
 done
 if [[ "$rejected" != 0 ]]; then
-  echo "Build the binaries inside the slice builder (docker build --build-context cli-source=. --target managed-release-artifacts .)," >&2
+  echo "Build the binaries inside the slice builder (docker build --target managed-release-artifacts)," >&2
   echo "or remove apps/kernel/slice-linux-docker/prebuilt/.managed-release to build in the image." >&2
   exit 1
 fi

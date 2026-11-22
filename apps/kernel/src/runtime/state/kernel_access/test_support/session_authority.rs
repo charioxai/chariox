@@ -304,18 +304,15 @@ async fn kernel_access_targeted_revocation_preserves_other_owners_pending_reques
         32,
     )
     .runtime_state();
-    let pending = |owner: &str, id: &str| PendingGrant {
-        summary: KernelAccessGrant {
-            covered: Vec::new(),
-            grant_id: id.into(),
-            owner_user_id: owner.into(),
-            holder_pid: 1,
-            holder_executable: "fixture".into(),
-            holder_harness: None,
-            term: crate::local::KernelAccessTerm::Minutes(30),
-            expires_at_ms: None,
-        },
-        deadline_ms: u64::MAX,
+    let pending = |owner: &str, id: &str| KernelAccessGrant {
+        covered: Vec::new(),
+        grant_id: id.into(),
+        owner_user_id: owner.into(),
+        holder_pid: 1,
+        holder_executable: "fixture".into(),
+        holder_harness: None,
+        term: crate::local::KernelAccessTerm::Minutes(30),
+        expires_at_ms: None,
     };
     {
         let mut access = state.owned.kernel_access.lock().unwrap();
@@ -334,13 +331,7 @@ async fn kernel_access_targeted_revocation_preserves_other_owners_pending_reques
     assert_eq!(access.generation, generation);
     assert_eq!(access.pending.len(), 1);
     assert_eq!(
-        access
-            .pending
-            .values()
-            .next()
-            .unwrap()
-            .summary
-            .owner_user_id,
+        access.pending.values().next().unwrap().owner_user_id,
         "owner-b"
     );
     drop(access);

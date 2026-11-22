@@ -1,22 +1,19 @@
-"""MP-08 / MP-10 / MP-11: distinguish CLI denial from provider exit status."""
-
-import json
+"""MP-08 / MP-10 / MP-11: distinguish CLI refusal from provider exit status."""
 
 REFUSAL_DIAGNOSTIC = (
-    "The owner denied kernel access. Run `chariox access request --no-wait` "
-    "if you still need access."
+    "kernel transport `handle kernel response` failed: "
+    "local transport `kernel access` failed: access request refused or expired; "
+    "answer the popup in a Chariox terminal"
 )
 
 
 def verify_requester_exit(returncode, diagnostic, *, local_cli):
     if local_cli:
+        # The direct CLI propagates the kernel refusal as exit 1. Require its
+        # exact public diagnostic; transport/startup errors must still fail.
         lines = diagnostic.splitlines()
-        try:
-            error = json.loads(lines[-1])["error"]
-        except (IndexError, KeyError, TypeError, ValueError) as exc:
-            raise RuntimeError("MP-10 local CLI did not report the expected access denial") from exc
-        if returncode != 3 or error.get("code") != "kernel_access_request_denied" or error.get("message") != REFUSAL_DIAGNOSTIC:
-            raise RuntimeError("MP-10 local CLI did not report the expected access denial")
+        if returncode != 1 or not lines or lines[-1] != REFUSAL_DIAGNOSTIC:
+            raise RuntimeError("MP-10 local CLI did not report the expected access refusal")
         return REFUSAL_DIAGNOSTIC
     if returncode != 0:
         raise RuntimeError("MP-10 outside requester exited " + str(returncode))
