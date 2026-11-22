@@ -502,10 +502,18 @@ test('R1: a screencast region\'s exact still is its crop at the lease density',a
  f.host.screenshot=async(tab,clip,protectedCapture)=>{shots.push({clip,protectedCapture});return {data_base64:encodePng(clip.width*clip.scale,clip.height*clip.scale,Buffer.alloc(clip.width*clip.scale*clip.height*clip.scale*4,255)),protected_regions:[]};};
  await subscribeRegion(f.host,f.command,'terminal:a',undefined,{Screencast});
  const stream=[...f.host.displays.values()][0];
+ // R1 review 2: the page is scrolled to y=500; a CDP clip is in page coordinates.
+ let origins=[{pageX:0,pageY:500,scale:1}];stream.regionSource.sessionId='s';
+ stream.regionSource.connection={send:async method=>{assert.equal(method,'Page.getLayoutMetrics');return {cssVisualViewport:origins.length>1?origins.shift():origins[0]};}};
  try{
   const shot=await stream.regionSource.options.exact();
-  assert.deepEqual(shots,[{clip:{x:10,y:20,width:100,height:50,scale:2},protectedCapture:true}]);
+  assert.deepEqual(shots,[{clip:{x:10,y:520,width:100,height:50,scale:2},protectedCapture:true}],'the lease rect offset by the viewport page origin');
   assert.deepEqual([shot.width,shot.height],[200,100],'css size x DPR');
+  origins=[{pageX:0,pageY:500,scale:1},{pageX:0,pageY:520,scale:1}];
+  await assert.rejects(stream.regionSource.options.exact(),/moved/,'a viewport that moved during the capture refuses');
+  origins=[{pageX:0,pageY:0,scale:2}];
+  await assert.rejects(stream.regionSource.options.exact(),/unzoomed/,'a pinch-zoomed viewport refuses');
+  origins=[{pageX:0,pageY:0,scale:1}];
   f.host.screenshot=async()=>({data_base64:encodePng(1,1,Buffer.alloc(4)),protected_regions:[{x:0,y:0,width:1,height:1}]});
   await assert.rejects(stream.regionSource.options.exact(),/protected/,'a protected region in the clip refuses');
  }finally{await stream.close();}

@@ -2166,6 +2166,31 @@ for (const dpr of [1, 2]) test(`R1: a screencast region at rest gets its exact s
     for (const f of exact) { const png = Buffer.from(f.payload?.data_base64 ?? f.data_base64, "base64"); assert.deepEqual([png.readUInt32BE(16), png.readUInt32BE(20)], [200 * k, 100 * k], "the exact frame is the region's size"); }
     await host.request({ op: "display_unsubscribe", subscription_id: reply.subscription_id }).catch(() => {});
   }, {}, { device_scale_factor: dpr }, { ...process.env, CHARIOX_KERNEL_BROWSER_HEADLESS: "1" }));
+// R1 review 2 (P2): a CDP clip is in page coordinates, the lease rect in viewport ones. On a page scrolled to y=500 a canvas seen at
+// viewport y=40 is captured at page y=540: the exact still at rest holds the canvas's own final pixels, not the page elsewhere.
+test("R1: a screencast region's exact still on a scrolled page holds the region's own pixels", () => mirrored(
+  '<style>body{margin:0;height:3000px;background:#f0f}canvas{position:absolute;left:30px;top:540px;width:200px;height:100px}</style><canvas id="c" width="200" height="100"></canvas><script>scrollTo(0,500);const g=document.getElementById("c").getContext("2d");let n=0,run=true;function stop(){run=false;g.fillStyle="rgb(0,128,255)";g.fillRect(0,0,200,100)}(function f(){if(!run)return;g.fillStyle=`hsl(${(n++*7)%360},80%,50%)`;g.fillRect(0,0,200,100);requestAnimationFrame(f)})()</script>',
+  async ({ host, next, subscription_id, generation, tab_id, evaluate }) => {
+    await evaluate("scrollTo(0,500)"); await settle(300);
+    let packet = await next(); for (let i = 0; i < 4 && !(await evaluate("scrollY")); i++) packet = await next();
+    assert.equal(await evaluate("scrollY"), 500, "fixture: the page is scrolled");
+    const stream = host.mirror.streams.get(subscription_id);
+    const region_id = [...stream.regionRecords].find(([, r]) => r.kind === "tile")?.[0];
+    const target = { kind: "region", mirror_subscription_id: subscription_id, document_id: stream.document_id, sequence: packet.sequence, region_id };
+    const reply = await host.request({ op: "display_subscribe", tab_id, generation, target, codecs: ["png", "avc1.420033"], bitrate: 2_000_000, device_scale_factor: 1 });
+    assert.equal(reply.source_kind, "region", JSON.stringify(reply));
+    const display = host.displays.get(reply.subscription_id), shots = [], errors = [];
+    const source = display.regionSource, own = source.exactCapture.bind(source);
+    source.exactCapture = async () => { try { const shot = await own(); shots.push(shot); return shot; } catch (error) { errors.push(String(error?.message ?? error)); throw error; } };
+    const credit = () => host.request({ op: "screenshot", generation, display_subscription_id: reply.subscription_id, after_sequence: display.sequence }).catch(() => null);
+    for (let i = 0; i < 6; i++) { await credit(); await settle(80); }
+    await evaluate("stop()"); await settle(300);
+    for (let i = 0; i < 30 && !shots.length; i++) { await credit(); await settle(120); }
+    assert(shots.length, `an exact still is captured once the region rests (${JSON.stringify(errors)})`);
+    const { pixels, width, height } = decodePng(shots.at(-1).data_base64, 1), at = ((height >> 1) * width + (width >> 1)) * 4;
+    assert.deepEqual([...pixels.subarray(at, at + 3)], [0, 128, 255], "the exact still is the canvas's final picture, not the page beside it");
+    await host.request({ op: "display_unsubscribe", subscription_id: reply.subscription_id }).catch(() => {});
+  }, {}, {}, { ...process.env, CHARIOX_KERNEL_BROWSER_HEADLESS: "1" }));
 // R1 S4/S1 (orch14 decision 11-22 under AGENTS.md "Secrets and agents"): a Vault fill on a page whose region streams raw screencast
 // pixels fences before the value is written (the kernel registers the target, host.protect, then fills): no frame captured at or
 // after that moment reaches the lease, and the region stops. The same when the target is in a child frame.

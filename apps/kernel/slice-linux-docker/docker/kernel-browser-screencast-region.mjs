@@ -39,7 +39,14 @@ export async function subscribeScreencastRegion(host,command,scope,signal,{Scree
    // itself runs at a lower one (headless). A protected region inside the clip refuses: this source never shows one.
    exact:async()=>{
     const factor=scale/(host.scales.get(tab.tab_id)??1);
-    const {protected_regions=[],...shot}=await host.screenshot(tab,{x:left/motion,y:top/motion,width:width/motion,height:height/motion,scale:factor},true,'png',false,true);
+    // The lease rect is in viewport coordinates, a CDP clip in page ones: offset by the visual viewport's page origin, read
+    // around the capture; an unzoomed viewport only, and one that moved during the capture refuses (the refiner asks again).
+    const origin=async()=>{const v=(await source.connection.send('Page.getLayoutMetrics',{},source.sessionId))?.cssVisualViewport;
+     if(!(v?.scale===1&&Number.isFinite(v.pageX)&&Number.isFinite(v.pageY)))throw Error('MP-08: screencast region exact needs an unzoomed viewport');return v;};
+    const before=await origin();
+    const {protected_regions=[],...shot}=await host.screenshot(tab,{x:before.pageX+left/motion,y:before.pageY+top/motion,width:width/motion,height:height/motion,scale:factor},true,'png',false,true);
+    const after=await origin();
+    if(after.pageX!==before.pageX||after.pageY!==before.pageY)throw Error('MP-08: screencast region moved during its exact capture');
     if(protected_regions.length)throw Error('MP-11: protected pixels in a screencast region');
     const png=Buffer.from(shot.data_base64,'base64');
     return {...shot,width:png.readUInt32BE(16),height:png.readUInt32BE(20),[displayMaskRegions]:[],[displayFullMaskRegions]:[]};
