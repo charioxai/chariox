@@ -62,8 +62,7 @@ impl Summary {
                         exit_code: result.exit_code,
                         reason: ((record.placement == JobPlacement::Remote
                             && record.machine_label.is_none())
-                            || (record.placement == JobPlacement::Local
-                                && result.outcome == crate::local::JobOutcome::MachineLost))
+                            || result.outcome == crate::local::JobOutcome::MachineLost)
                             .then(|| {
                                 let reason =
                                     if result.output_tail.starts_with(super::local::RESTART_REASON)
@@ -122,6 +121,17 @@ pub(super) fn save(
         &serde_json::to_vec(&Summary::new(record, bytes, modified))
             .map_err(|error| ledger::error(error.to_string()))?,
     )
+}
+
+pub(super) fn remove(state: &KernelRuntimeState, record: &Record) -> Result<(), DaemonError> {
+    let path = directory(state, &record.room_id)
+        .join(&record.agent_id)
+        .join(format!("{}.json", record.job_id));
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(ledger::error(error.to_string())),
+    }
 }
 
 pub(super) fn read(state: &KernelRuntimeState, room: &str) -> Vec<Summary> {

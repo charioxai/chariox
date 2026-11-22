@@ -278,6 +278,8 @@ pub enum LeasedWatchedProcessAction {
         wake: crate::durable_state::agent_lifecycle::AgentWake,
         binding: crate::durable_state::agent_lifecycle::LeasedProcessBinding,
         cwd: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        job: Option<Box<crate::local::RunJobRequest>>,
     },
     Query {
         wake_id: String,

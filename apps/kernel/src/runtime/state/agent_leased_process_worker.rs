@@ -19,6 +19,23 @@ pub(super) fn process_digest(
     ))
 }
 
+pub(super) fn launch_digest(
+    wake: &ledger::AgentWake,
+    cwd: &Option<String>,
+    job: Option<&crate::local::RunJobRequest>,
+) -> Result<String, DaemonError> {
+    match job {
+        Some(job) => Ok(format!(
+            "{:x}",
+            Sha256::digest(
+                serde_json::to_vec(job)
+                    .map_err(|_| ledger::error("job request encoding failed"))?,
+            )
+        )),
+        None => process_digest(wake, cwd),
+    }
+}
+
 impl KernelRuntimeState {
     /// The first pass after a start: processes the previous program handed
     /// over are supervised again before restart cleanup, which would call a
@@ -40,7 +57,8 @@ impl KernelRuntimeState {
             .leased_process_receipts()?
             .into_iter()
             .filter(|r| {
-                matches!(r.wake.state.as_str(), "starting" | "running" | "cancelling")
+                r.wake.kind == "process"
+                    && matches!(r.wake.state.as_str(), "starting" | "running" | "cancelling")
                     && r.wake.created_at_ms < self.owned.agent_wakes.started_at_ms
                     && !self.owned.agent_wakes.processes.contains(&r.wake.id)
             })
@@ -106,8 +124,8 @@ impl KernelRuntimeState {
                     "leased process receipt belongs to another lease or run",
                 ));
             }
-            if let LeasedWatchedProcessAction::Start { wake, cwd, .. } = &action {
-                if process_digest(wake, cwd)? != stored.command_digest {
+            if let LeasedWatchedProcessAction::Start { wake, cwd, job, .. } = &action {
+                if launch_digest(wake, cwd, job.as_deref())? != stored.command_digest {
                     return Err(ledger::error("leased process command identity changed"));
                 }
             }
@@ -130,6 +148,14 @@ impl KernelRuntimeState {
                         | LeasedWatchedProcessAction::Cancel { .. }
                 ) => {}
                 Err(error) => return Err(error),
+            }
+            if stored.wake.kind == super::jobs::KIND {
+                return self
+                    .placed_job_receipt(
+                        stored,
+                        matches!(action, LeasedWatchedProcessAction::Cancel { .. }),
+                    )
+                    .map(Some);
             }
             if matches!(action, LeasedWatchedProcessAction::Cancel { .. })
                 && matches!(stored.wake.state.as_str(), "starting" | "running")
@@ -167,10 +193,16 @@ impl KernelRuntimeState {
             mut wake,
             binding,
             cwd,
+            job,
         } = action
         else {
             return Ok(None);
         };
+        if let Some(job) = job {
+            return Box::pin(self.start_worker_placed_job(wake, binding, *job))
+                .await
+                .map(Some);
+        }
         if !cfg!(target_os = "linux") {
             return Err(ledger::error("leased watched processes require Linux ownership verification on the execution worker"));
         }
@@ -235,6 +267,7 @@ impl KernelRuntimeState {
         wake.pid = None;
         wake.verified_at_ms = None;
         let receipt = LeasedProcessReceipt {
+            job: None,
             command_digest: process_digest(&wake, &cwd)?,
             worker_boot_id: std::fs::read_to_string("/proc/sys/kernel/random/boot_id")
                 .map_err(|_| ledger::error("worker boot identity unavailable"))?

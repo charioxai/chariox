@@ -23,8 +23,10 @@ impl KernelRuntimeState {
         if current_run.id() != run.id() {
             return Err(ledger::error("stale provider tool authority"));
         }
-        self.dispatch_agent_event_tool_for(run.session_id(), actor, Some(run), name, args)
-            .await
+        let reply = self
+            .dispatch_agent_event_tool_for(run.session_id(), actor, Some(run), name, args)
+            .await;
+        super::super::jobs::refusal::tool_reply(name, reply)
     }
     /// A10: a leased agent's event tools reach the home ledger, which owns
     /// its waiting state and wake ordering. The forwarded context must name
@@ -39,13 +41,18 @@ impl KernelRuntimeState {
             return Err(ledger::error("room event tools are disabled"));
         }
         if context.home_prompt_id.is_none() {
-            return Err(ledger::error(
-                "leased event tools need the running home prompt",
-            ));
+            let error = if super::super::jobs::refusal::is_job_tool(name) {
+                super::super::jobs::refusal::BUILD_TURN_REQUIRED
+            } else {
+                "leased event tools need the running home prompt"
+            };
+            return super::super::jobs::refusal::tool_reply(name, Err(ledger::error(error)));
         }
         let agent = self.authorize_forwarded_workspace_context(context)?;
-        self.dispatch_agent_event_tool_for(&context.home_session_id, agent.id(), None, name, args)
-            .await
+        let reply = self
+            .dispatch_agent_event_tool_for(&context.home_session_id, agent.id(), None, name, args)
+            .await;
+        super::super::jobs::refusal::tool_reply(name, reply)
     }
     /// A10-S02: a message turn that interrupted a waiting task tends to reuse
     /// that task's ids to wait again. Name this turn's own ids, and say that

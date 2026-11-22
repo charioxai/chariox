@@ -11,32 +11,34 @@ impl WakeDriver for JobDriver {
             .expect("job pending")
             .remove(&wake.id)
             .ok_or_else(|| ledger::error("job launch intent missing"))?;
-        let (cancel, cancelled) = watch::channel(false);
-        self.live
-            .lock()
-            .expect("job live")
-            .insert(wake.id.clone(), cancel);
-        self.state.wake_sink(KIND).verified(&wake.id)?;
-        let live = self.live.clone();
-        let wake = wake.clone();
-        tokio::spawn(async move {
-            pending
-                .state
-                .execute_job(wake.clone(), pending.record, cancelled, None)
-                .await;
-            live.lock().expect("job live").remove(&wake.id);
-        });
-        Ok(())
+        self.launch(wake.clone(), pending)
     }
     fn cancel(&self, wake: &AgentWake) -> Result<Cancel, DaemonError> {
         if let Some(cancel) = self.live.lock().expect("job live").get(&wake.id) {
             cancel.send_replace(true);
+            Ok(Cancel::Pending)
+        } else if self
+            .state
+            .owned
+            .durable_state_store
+            .leased_wake_binding(&wake.id)?
+            .is_some()
+        {
             Ok(Cancel::Pending)
         } else {
             Ok(Cancel::Done)
         }
     }
     fn recover(&self, wake: &AgentWake) -> Recovery {
+        if self
+            .state
+            .owned
+            .durable_state_store
+            .leased_wake_binding(&wake.id)
+            .is_ok_and(|binding| binding.is_some())
+        {
+            return Recovery::Reattached;
+        }
         let Some(id) = wake.detail["job_id"].as_str() else {
             return Recovery::Lost("job identity missing".into());
         };
@@ -227,7 +229,14 @@ impl WakeDriver for JobDriver {
         });
     }
     fn liveness(&self, wake: &AgentWake) -> Liveness {
-        if self.live.lock().expect("job live").contains_key(&wake.id) {
+        if self.live.lock().expect("job live").contains_key(&wake.id)
+            || self
+                .state
+                .owned
+                .durable_state_store
+                .leased_wake_binding(&wake.id)
+                .is_ok_and(|binding| binding.is_some())
+        {
             Liveness::Live
         } else {
             Liveness::Lost("job supervisor ended without a result".into())
@@ -256,6 +265,28 @@ fn remote_jobs_off_result(record: &Record) -> JobResult {
 }
 
 impl JobDriver {
+    pub(super) fn launch(&self, wake: AgentWake, pending: Pending) -> Result<(), DaemonError> {
+        let (cancel, cancelled) = watch::channel(false);
+        let live = self.live.clone();
+        live.lock()
+            .expect("job live")
+            .insert(wake.id.clone(), cancel);
+        if !pending.record.runs_for_lease(&wake) {
+            if let Err(error) = self.state.wake_sink(KIND).verified(&wake.id) {
+                live.lock().expect("job live").remove(&wake.id);
+                return Err(error);
+            }
+        }
+        tokio::spawn(async move {
+            pending
+                .state
+                .execute_job(wake.clone(), pending.record, cancelled, None)
+                .await;
+            live.lock().expect("job live").remove(&wake.id);
+        });
+        Ok(())
+    }
+
     /// A state that holds this driver and the job gateway, for work a restart resumes.
     fn recovery_state(&self) -> Option<KernelRuntimeState> {
         let (driver, router) = (
@@ -295,7 +326,7 @@ impl KernelRuntimeState {
             // Claim the inherited children before the transport can start a new reload.
             // The wake scheduler may still be starting when the kernel accepts that reload.
             for id in crate::hot_reload::local_job_wakes() {
-                match self.owned.durable_state_store.agent_wake(&id) {
+                match self.job_wake_for_recovery(&id) {
                     Ok(Some(wake))
                         if wake.kind == KIND
                             && matches!(
@@ -312,6 +343,7 @@ impl KernelRuntimeState {
                 }
             }
             crate::hot_reload::discard_unclaimed_local_jobs();
+            self.recover_placed_jobs(driver);
         }
     }
 
@@ -324,28 +356,17 @@ impl KernelRuntimeState {
         record.state = "finished".into();
         record.result = Some(result.clone());
 
-        let end = if result.outcome == JobOutcome::MachineLost {
-            WakeEnd::Lost
-        } else if result.exit_code == Some(0) && result.outcome == JobOutcome::Completed {
-            WakeEnd::Succeeded
-        } else {
-            WakeEnd::Failed
-        };
+        if record.runs_for_lease(wake) {
+            while let Err(error) = save_record(self, record) {
+                tracing::warn!(%error, "placed job result retained for durable save");
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+            return;
+        }
+
         loop {
             match save_record(self, record).and_then(|()| {
-                self.wake_sink(KIND).occurred(WakeOccurrence {
-                    wake_id: wake.id.clone(),
-                    occurrence_id: format!("{}-finished", wake.id),
-                    kind: "job_finished".into(),
-                    payload: completion_payload(record, &result),
-                    summary: Some(
-                        format!("{} · {:?}", wake.label, result.outcome)
-                            .chars()
-                            .take(120)
-                            .collect(),
-                    ),
-                    end: Some(end),
-                })
+                self.report_job_completion(wake, record, &result, completion_end(&result))
             }) {
                 Ok(()) => break,
                 Err(error) => {
@@ -357,6 +378,37 @@ impl KernelRuntimeState {
                 }
             }
         }
+    }
+    pub(super) fn report_job_completion(
+        &self,
+        wake: &AgentWake,
+        record: &Record,
+        result: &JobResult,
+        end: WakeEnd,
+    ) -> Result<(), DaemonError> {
+        self.wake_sink(KIND).occurred(WakeOccurrence {
+            wake_id: wake.id.clone(),
+            occurrence_id: format!("{}-finished", wake.id),
+            kind: "job_finished".into(),
+            payload: completion_payload(record, result),
+            summary: Some(
+                format!("{} · {:?}", wake.label, result.outcome)
+                    .chars()
+                    .take(120)
+                    .collect(),
+            ),
+            end: Some(end),
+        })
+    }
+}
+
+pub(super) fn completion_end(result: &JobResult) -> WakeEnd {
+    if result.outcome == JobOutcome::MachineLost {
+        WakeEnd::Lost
+    } else if result.exit_code == Some(0) && result.outcome == JobOutcome::Completed {
+        WakeEnd::Succeeded
+    } else {
+        WakeEnd::Failed
     }
 }
 
