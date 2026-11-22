@@ -421,16 +421,8 @@ fn same_binding(
     expected: &crate::agent::AgentInstance,
     name: &str,
 ) -> bool {
-    let grant = |agent: &crate::agent::AgentInstance| {
-        agent
-            .extension_grants()
-            .iter()
-            .find(|grant| grant.kind == ExtensionKind::App && grant.name == name)
-            .map(|grant| grant.app_grant.clone())
-    };
     current.has_extension_grant(ExtensionKind::App, name)
         && current.remote_execution() == expected.remote_execution()
-        && grant(current) == grant(expected)
 }
 
 #[cfg(test)]
