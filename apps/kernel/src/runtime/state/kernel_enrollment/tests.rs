@@ -114,6 +114,18 @@ async fn the_owner_gets_one_card_and_approving_it_lets_the_kernel_join() {
     assert!(listed[0].0.starts_with("kernel-enrollment-"));
     assert!(listed[0].1.contains("Drill box") && listed[0].1.contains("ABCD-EFGH"), "{}", listed[0].1);
     assert!(!tool.is_finished(), "the kernel does not join before the owner answers");
+    let answer = crate::local::RespondToInteractionRequest {
+        session_id: room.clone(),
+        interaction_id: listed[0].0.clone(),
+        choice_id: "approve".into(),
+        custom_reply: None,
+        passkey: None,
+        passkey_remember_minutes: None,
+    };
+    assert!(
+        !state.interaction_person_only(&answer),
+        "any client the owner answers from, including an agent acting for them through a grant, may settle it"
+    );
     assert!(cloud.decisions.lock().unwrap().is_empty());
     let owner = state.owned.session_store.get_session(&room).unwrap().owner_user_id().to_owned();
     assert!(
