@@ -56,6 +56,10 @@ pub struct PersistedCloudRelayProfile {
     #[serde(default)]
     pub kernel_credential: Option<String>,
     #[serde(default)]
+    pub kernel_unlinked: bool,
+    #[serde(default)]
+    pub kernel_removal_pending: bool,
+    #[serde(default)]
     pub kernel_public_key_thumbprint: Option<String>,
     #[serde(default)]
     pub cloud_session_token: Option<String>,
@@ -73,10 +77,26 @@ impl PersistedCloudRelayProfile {
         self.kernel_id.as_deref()
     }
 
+    pub(crate) fn kernel_removal(&self) -> Option<CloudKernelRemoval> {
+        if self.kernel_unlinked {
+            Some(CloudKernelRemoval::Permanent)
+        } else if self.kernel_removal_pending {
+            Some(CloudKernelRemoval::Pending)
+        } else {
+            None
+        }
+    }
+
     pub(super) fn canonicalized(mut self) -> Self {
         self.api_url = normalize_url_without_trailing_slash(&self.api_url);
         self
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CloudKernelRemoval {
+    Pending,
+    Permanent,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

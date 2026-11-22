@@ -29,6 +29,9 @@ impl KernelRuntimeState {
             "invoke workflow endpoint",
         ) {
             Ok(authorized_endpoint) => {
+                if let Err(error) = owned.require_linked_workflow_owner(&request.session_id) {
+                    return (Err(error), None);
+                }
                 let obligation = match caller_agent_id
                     .map(|id| {
                         let actor = self.owned.agent_store.get_agent(id)?;
@@ -572,6 +575,9 @@ impl KernelRuntimeState {
             return (Err(error), owned.session_snapshot(&session_id).ok());
         }
         if let Err(error) = self.authorize_current_external_command() {
+            return (Err(error), None);
+        }
+        if let Err(error) = owned.require_linked_workflow_owner(&session_id) {
             return (Err(error), None);
         }
         let result = match owned.workflow_resume_run(&request.session_id, &request.workflow_run_ref)

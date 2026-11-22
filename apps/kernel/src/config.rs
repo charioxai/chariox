@@ -28,6 +28,7 @@ mod provider;
 mod publication_state;
 mod relay_peer_keys;
 mod relay_profile;
+pub(crate) use persisted_daemon::CloudKernelRemoval;
 mod room_environment;
 mod secret_link;
 mod skills;

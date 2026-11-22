@@ -624,6 +624,8 @@ fn relay_url_uses_cloud_profile_tolerates_spacing_and_trailing_slashes() {
         machine_credential: Some("machine-secret".to_string()),
         cloud_session_token: None,
         cloud_session_expires_at_ms: None,
+        kernel_unlinked: false,
+        kernel_removal_pending: false,
         token_expires_at_ms: Some(42),
     });
 
