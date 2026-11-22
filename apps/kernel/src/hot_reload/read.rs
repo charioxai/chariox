@@ -292,7 +292,7 @@ mod tests {
     fn the_format_numbers_follow_the_rule() {
         assert!(PREVIOUS_HANDOVER_FORMAT <= HANDOVER_FORMAT);
         assert!(
-            HANDOVER_FORMAT - PREVIOUS_HANDOVER_FORMAT <= 1,
+            HANDOVER_FORMAT <= PREVIOUS_HANDOVER_FORMAT + 1,
             "a release reads its own handover format and the one before it"
         );
     }
@@ -310,7 +310,7 @@ mod tests {
                 "{name} has format {format}: keep only the previous release's documents"
             );
             let read = read_handover(&body).unwrap_or_else(|error| panic!("{name}: {error}"));
-            for part in &read.unreadable {
+            if let Some(part) = read.unreadable.first() {
                 panic!(
                     "{name}: {} {} cannot be read: {}",
                     part.part, part.name, part.reason
