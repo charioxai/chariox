@@ -470,3 +470,26 @@ test('R2: a DPR2 region of a display-less browser crops a DPR1-geometry screenca
  assert.equal(result.css_width,100);assert.equal(result.css_height,50);
  for(const stream of [...f.host.displays.values()])await stream.close();
 });
+
+// R1 review 1 (P2): a screencast region returns the same validated placement as a native one: the opaque element's clip origin
+// plus the inward rounding (motion runs at DPR1 geometry, R2), captured at admission; input keeps only the rounding.
+const headless=f=>{delete f.host.chromium.display;f.host.chromeWindows={current:()=>null};
+ f.host.screencastFor=async()=>({source:{closed:false,fenced:false,subscribe:()=>()=>{},sample:()=>null},ready:Promise.resolve(),release:()=>{}});
+ return class Screencast {constructor(options){this.options=options;this.region={css_width:options.rect.width,css_height:options.rect.height};}async start(){return this;}async close(){}valid(){return true;}};};
+for(const scale of [1,2])test(`R1: a clipped screencast region carries its placement with inward rounding at DPR${scale}`,async()=>{
+ const f=fixture();f.lease.device_scale_factor=scale;const Screencast=headless(f);
+ f.lease.rect={x:10.2,y:20.2,width:100.1,height:50.1};f.lease.element_offset={x:12.25,y:30.5};
+ const r=await subscribeRegion(f.host,f.command,'terminal:a',undefined,{Screencast});
+ const stream=[...f.host.displays.values()][0];
+ try{
+  assert.deepEqual(r.region_offset,{x:12.25+Math.ceil(10.2)-10.2,y:30.5+Math.ceil(20.2)-20.2});
+  assert.deepEqual(stream.regionPlacement,r.region_offset);
+  f.lease.element_offset.x=999;assert.equal(stream.regionPlacement.x,r.region_offset.x,'captured at admission');
+  assert.deepEqual(stream.regionOffset,{x:Math.ceil(10.2)-10.2,y:Math.ceil(20.2)-20.2},'input uses only the rounding');
+ }finally{await stream.close();}
+});
+for(const value of [undefined,{x:-1,y:0},{x:0,y:NaN}])test(`R1: a screencast region refuses an invalid element offset ${JSON.stringify(value)}`,async()=>{
+ const f=fixture();const Screencast=headless(f);f.lease.element_offset=value;
+ await assert.rejects(subscribeRegion(f.host,f.command,'terminal:a',undefined,{Screencast}));
+ assert.equal(f.host.displays.size,0);
+});

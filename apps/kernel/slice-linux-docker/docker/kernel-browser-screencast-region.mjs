@@ -22,6 +22,12 @@ export async function subscribeScreencastRegion(host,command,scope,signal,{Scree
   const left=Math.ceil(r.x*motion),top=Math.ceil(r.y*motion),width=2*Math.floor((Math.floor((r.x+r.width)*motion)-left)/2),height=2*Math.floor((Math.floor((r.y+r.height)*motion)-top)/2);
   if(width<2||height<2)refuse();
   const offset={x:left/motion-r.x,y:top/motion-r.y};
+  // As a native region: the mirror clip origin is relative to the opaque element; paint uses both offsets (placement, captured
+  // here), input only the inward rounding (offset).
+  const element=lease.element_offset;
+  if(!element||![element.x,element.y].every(v=>Number.isFinite(v)&&v>=0))refuse();
+  const placement=Object.freeze({x:element.x+offset.x,y:element.y+offset.y});
+  if(![placement.x,placement.y].every(v=>Number.isFinite(v)&&v>=0))refuse();
   const shared=await host.screencastFor(tab,motion);
   assertNotCancelled(signal);
   source=new Screencast({shared,tab,scale:motion,policy,rect:{left,top,width,height},
@@ -32,11 +38,11 @@ export async function subscribeScreencastRegion(host,command,scope,signal,{Scree
   if(host.protection!==policy||!await lease.isCurrent())refuse();
   const result={source_kind:'region',binding_id:lease.binding_id,document_id:lease.document_id,sequence:lease.sequence,generation,
    subscription_id:`host-display-${randomUUID()}`,codec:'avc1.420033',bitrate:command.bitrate,device_scale_factor:scale,
-   css_width:source.region.css_width,css_height:source.region.css_height};
+   css_width:source.region.css_width,css_height:source.region.css_height,region_offset:placement};
   stream=new DisplayStream({...result,tab_id:tab.tab_id,observed_by:scope,relay_binary:command.codecs.includes('chariox-relay-binary-v96'),
    dependencies:command.codecs.includes('chariox-video-dependencies-v1'),stripes:false},{timing:host.timing,encoder:new PortableEncoder()});
   // A screencast region has no window: its frames are current while its source is (policy, document and fences).
-  Object.assign(stream,{regionLease:lease,regionSource:source,regionTarget:target,regionOffset:offset,regionCurrent:lease.isCurrent,regionWindow:{isCurrent:()=>source.valid()}});
+  Object.assign(stream,{regionLease:lease,regionSource:source,regionTarget:target,regionOffset:offset,regionPlacement:placement,regionCurrent:lease.isCurrent,regionWindow:{isCurrent:()=>source.valid()}});
   const close=stream.close.bind(stream);
   let closing;
   stream.close=()=>closing??=(async()=>{
