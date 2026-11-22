@@ -61,7 +61,7 @@ fn relay_registration_refusal_is_versioned_and_hashed() {
     let expected = serde_json::json!({
         "RelayStatus": {
             "status": {
-                "local_daemon_protocol_version": 1013,
+                "local_daemon_protocol_version": 1014,
                 "configured": true, "connected": false, "capabilities": [],
                 "relay_url": "ws://127.0.0.1:43210", "relay_token_configured": true,
                 "daemon_id": "kernel-1", "machine_id": "machine-1", "machine_alias": null,
@@ -83,7 +83,7 @@ fn relay_registration_refusal_is_versioned_and_hashed() {
     assert_eq!(encoded, expected);
     assert_eq!(
         format!("{:x}", Sha256::digest(encoded.to_string().as_bytes())),
-        "de7f9f1cbaacd943c453691f1b494777e3d14660fd82f4c46c9c101fd6275346"
+        "af17c5ad6f40ed1da585915a2359670f652fa7b24f8373a81f361a497da6a6cf"
     );
 }
 
