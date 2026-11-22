@@ -53,7 +53,7 @@ export function installScriptFontRecorder(bindingName) {
       const faces = [];
       Reflect.apply(forEach, document.fonts, [face => {
         const source = sources.get(face); if (!source) return;
-        faces[faces.length] = ({ ...source, family: face.family, style: face.style, weight: face.weight, stretch: face.stretch, unicodeRange: face.unicodeRange, featureSettings: face.featureSettings, display: face.display });
+        faces[faces.length] = ({ ...source, family: face.family, style: face.style, weight: face.weight, stretch: face.stretch, unicodeRange: face.unicodeRange, featureSettings: face.featureSettings, display: face.display, ascentOverride: face.ascentOverride, descentOverride: face.descentOverride, lineGapOverride: face.lineGapOverride, sizeAdjust: face.sizeAdjust });
       }]);
       try { binding(stringify(faces)); } catch {}
     });
@@ -61,7 +61,7 @@ export function installScriptFontRecorder(bindingName) {
   // A face already in the set can change its descriptors later with no set operation (#1617 review): a set on a script-made
   // face in the document's set reports the list again. The setters keep Chromium's shapes ('set family', length 1).
   const has = fontSet.has;
-  for (const key of ['family', 'style', 'weight', 'stretch', 'unicodeRange', 'featureSettings', 'display']) {
+  for (const key of ['family', 'style', 'weight', 'stretch', 'unicodeRange', 'featureSettings', 'display', 'ascentOverride', 'descentOverride', 'lineGapOverride', 'sizeAdjust']) {
     const original = Object.getOwnPropertyDescriptor(NativeFontFace.prototype, key)?.set;
     if (typeof original !== 'function') continue;
     const wrapped = Object.getOwnPropertyDescriptor({ set [key](value) { Reflect.apply(original, this, [value]); if (sources.has(this) && Reflect.apply(has, document.fonts, [this])) report(); } }, key).set;

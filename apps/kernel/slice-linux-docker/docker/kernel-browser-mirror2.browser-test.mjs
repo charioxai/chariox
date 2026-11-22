@@ -919,6 +919,21 @@ test("F5: faces the page makes by script reach the viewer as @font-face rules, a
 // #1617 review: a face's src can be a data: URL (its ';' and ',' sit inside the URL), and a page can change a face's descriptors
 // after it is in the set, with no other set operation; the viewer's rule follows both.
 const scriptFontsCss = packet => JSON.stringify([packet.nodes ?? [], packet.ops.filter(op => op.op === "adopted")]);
+// #1617 review 2: a face's metric overrides (ascent, descent, line gap, size adjust) set the baseline and line height the page
+// shows; the viewer's rule carries them, including a change made after the face is in the set.
+test("F5-R2: a script-made face carries its metric overrides, also when changed later", () => mirrored(
+  `<p style="font-family:Metric">a</p><script>
+    window.face = new FontFace("Metric", "url(/f/u.woff2) format('woff2')", { ascentOverride: "90%", descentOverride: "10%", lineGapOverride: "0%", sizeAdjust: "110%" }); document.fonts.add(face);
+  </script>`, async ({ next, evaluate }) => {
+    await new Promise(resolve => setTimeout(resolve, 800));
+    const css = scriptFontsCss(await next());
+    assert.match(css, /@font-face ?\{[^}]*Metric[^}]*ascent-override: ?90%[^}]*descent-override: ?10%[^}]*line-gap-override: ?0%[^}]*size-adjust: ?110%/, `F5: the overrides travel (${css.slice(0, 1200)})`);
+    await evaluate(`face.lineGapOverride = "5%"`);
+    let later = "";
+    for (let i = 0; i < 8 && !/line-gap-override: ?5%/.test(later); i++) later = scriptFontsCss(await next(1000));
+    assert.match(later, /@font-face ?\{[^}]*Metric[^}]*line-gap-override: ?5%/, "F5: a later override change reaches the viewer");
+  }, { "/f/u.woff2": { type: "font/woff2", body: "wOF2" + "\u0001".repeat(60) } }));
+
 test("F5-R1a: a script-made face from a data: URL reaches the viewer", () => mirrored(
   `<p style="font-family:Embedded">a</p><script>
     document.fonts.add(new FontFace("Embedded", "url(data:font/woff2;base64,d09GMgABAAAAAA==) format('woff2')"));

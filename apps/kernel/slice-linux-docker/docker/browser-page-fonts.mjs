@@ -43,7 +43,9 @@ function srcItem(text, base) {
   }
   return rest.trim() === '' ? css : null;
 }
-const descriptors = [['style', 'font-style'], ['weight', 'font-weight'], ['stretch', 'font-stretch'], ['unicodeRange', 'unicode-range'], ['featureSettings', 'font-feature-settings'], ['display', 'font-display']];
+const descriptors = [['style', 'font-style'], ['weight', 'font-weight'], ['stretch', 'font-stretch'], ['unicodeRange', 'unicode-range'], ['featureSettings', 'font-feature-settings'], ['display', 'font-display'],
+  // #1617 review 2: the metric overrides set the face's baseline and line height.
+  ['ascentOverride', 'ascent-override'], ['descentOverride', 'descent-override'], ['lineGapOverride', 'line-gap-override'], ['sizeAdjust', 'size-adjust']];
 
 /** @font-face rules for the faces the page world reported (browser-page-font-recorder.mjs); a face it cannot place is left out. */
 export function scriptFontsCss(faces) {
