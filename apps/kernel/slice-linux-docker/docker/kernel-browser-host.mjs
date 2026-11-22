@@ -521,6 +521,31 @@ export class KernelBrowserHost {
   }
   // MP-08/MP-10: one fixed-label diagnostic per change of native refusal scope.
   nativeScope(reason){if(this.nativeScopeReason!==reason){this.nativeScopeReason=reason;if(reason)this.timing('native_unavailable_scope '+reason,timestamp());}}
+  // R1: a region of a browser without its own display is a crop of the Tab's screencast: the same per-Tab compositor the
+  // whole-tab fallback uses (one capture and decode per frame), kept while a region or a whole-tab display of the Tab uses it.
+  async screencastFor(tab,scale) {
+    let entry=this.compositors.get(tab.tab_id);
+    if(entry&&(entry.document!==tab.document_id||entry.source?.closed||entry.policy!==this.protection)){
+      if(entry.regionUsers)throw new UserDomainRefusal('stale_reference','region_retired');
+      await this.closeCompositors(tab.tab_id);entry=null;
+    }
+    if(!entry){
+      const {connection,sessionId}=await this.browser.resolvePageTarget(tab.target_id);
+      const {CompositorSource}=await import('./kernel-browser-compositor.mjs');
+      const policy=this.protection,generation=this.generation;
+      const source=new CompositorSource({connection,sessionId,tab,scale,policy,timing:this.timing,width:this.pageSize(tab.tab_id).width*scale,height:this.pageSize(tab.tab_id).height*scale,format:'jpeg',acquire:()=>this.sampleLane(tab).run('input',()=>this.browser.inputCapture.hold(connection,sessionId)),
+        screenshot:clip=>this.displayScreenshot(tab,clip),protect:()=>this.displayScreenshot(tab),allowed:p=>this.protection===p&&!p.unknown&&!p.values.length&&!p.targets.length&&this.generation===generation});
+      entry={source,document:tab.document_id,policy,ready:source.start().catch(()=>null)};
+      this.compositors.set(tab.tab_id,entry);
+    }
+    entry.regionUsers=(entry.regionUsers??0)+1;
+    let released=false;
+    return {source:entry.source,ready:entry.ready.then(source=>{if(!source)throw new UserDomainRefusal('stale_reference','region_retired');return source;}),
+      release:async()=>{
+        if(released)return;released=true;entry.regionUsers--;
+        if(!entry.regionUsers&&this.compositors.get(tab.tab_id)===entry&&![...this.displays.values()].some(s=>s.tab_id===tab.tab_id))await this.closeCompositors(tab.tab_id);
+      }};
+  }
   async compositorFor(tab,stream) {
     if(stream.regionSource)return stream.regionSource;
     // MP-08/MP-10/MP-11: mirror capture/input never loads the video backend.
@@ -900,7 +925,8 @@ export class KernelBrowserHost {
     clearTimeout(stream.timer);
     if(stream.source_kind==='desktop')return this.desktopDisplay.remove(stream);
     this.displays.delete(stream.subscription_id);
-    const last=![...this.displays.values()].some(s=>s.tab_id===stream.tab_id);
+    // A Tab's screencast that region crops still use (R1) outlives its last whole-tab display.
+    const last=![...this.displays.values()].some(s=>s.tab_id===stream.tab_id)&&!this.compositors.get(stream.tab_id)?.regionUsers;
     // Detachment ends delivery immediately; the host owns reaping until stop.
     // The Tab's compositor serves only its displays: its captures stop alongside the stream's slower close, never behind it.
     const closing=Promise.allSettled([last?this.closeCompositors(stream.tab_id):undefined,stream.close()]).then(results=>{
