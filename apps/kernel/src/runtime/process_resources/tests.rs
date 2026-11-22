@@ -5,6 +5,31 @@ pub(super) fn roomy() -> Arc<pool::Pool> {
     Arc::new(pool::Pool::new(1 << 50, false))
 }
 
+/// Provider tools such as OpenCode give a command socket streams, which
+/// cannot be reopened by path: the stopped command still reads why.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_command_whose_error_stream_is_a_socket_is_told_why() {
+    use std::io::Read;
+    use std::os::fd::OwnedFd;
+    let (mut ours, theirs) = std::os::unix::net::UnixStream::pair().unwrap();
+    let mut child = std::process::Command::new("sleep")
+        .arg("10")
+        .stderr(std::process::Stdio::from(OwnedFd::from(theirs)))
+        .spawn()
+        .unwrap();
+    announce(child.id(), "chariox: stopped this command: a test reason\n");
+    ours.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+    let mut told = [0u8; 128];
+    let read = ours.read(&mut told).unwrap_or(0);
+    let _ = child.kill();
+    let _ = child.wait();
+    assert_eq!(
+        String::from_utf8_lossy(&told[..read]),
+        "chariox: stopped this command: a test reason\n"
+    );
+}
+
 #[test]
 fn a_bursty_writers_rate_is_what_it_wrote_over_two_seconds() {
     let mut window = std::collections::VecDeque::new();

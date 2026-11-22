@@ -961,18 +961,57 @@ fn announce(pid: u32, notice: &str) {
                 .and_then(|flags| u32::from_str_radix(flags.trim(), 8).ok())
                 .is_some_and(|flags| flags & libc::O_ACCMODE as u32 != libc::O_RDONLY as u32)
         });
-        if writable {
-            if let Ok(mut file) = std::fs::OpenOptions::new()
-                .append(true)
-                .custom_flags(libc::O_NONBLOCK | libc::O_NOCTTY)
-                .open(format!("/proc/{pid}/fd/2"))
-            {
+        if !writable {
+            return;
+        }
+        match std::fs::OpenOptions::new()
+            .append(true)
+            .custom_flags(libc::O_NONBLOCK | libc::O_NOCTTY)
+            .open(format!("/proc/{pid}/fd/2"))
+        {
+            Ok(mut file) => {
                 let _ = file.write_all(notice.as_bytes());
             }
+            // A socket cannot be reopened by path (provider tools such as
+            // OpenCode give commands socket streams): send on its own copy.
+            Err(_) => send_on_stream(pid, notice),
         }
     }
     #[cfg(not(target_os = "linux"))]
     let _ = (pid, notice);
+}
+
+/// Sends `notice` on the socket that is `pid`'s error stream, through a copy
+/// of its descriptor. The copy shares the command's open file, so its flags
+/// stay as they are: the send alone does not wait, and a full or closed
+/// socket drops the line rather than holding the monitor.
+#[cfg(target_os = "linux")]
+fn send_on_stream(pid: u32, notice: &str) {
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    // SAFETY: pidfd_open takes a pid and flags and returns a new descriptor or -1.
+    let pidfd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid as libc::pid_t, 0) };
+    if pidfd < 0 {
+        return;
+    }
+    // SAFETY: pidfd_open returned this fresh descriptor.
+    let pidfd = unsafe { OwnedFd::from_raw_fd(pidfd as libc::c_int) };
+    // SAFETY: pidfd_getfd takes a pidfd, a target descriptor number and flags.
+    let stream = unsafe { libc::syscall(libc::SYS_pidfd_getfd, pidfd.as_raw_fd(), 2, 0) };
+    if stream < 0 {
+        return;
+    }
+    // SAFETY: pidfd_getfd returned this fresh close-on-exec descriptor.
+    let stream = unsafe { OwnedFd::from_raw_fd(stream as libc::c_int) };
+    // SAFETY: the buffer is the notice's bytes; MSG_NOSIGNAL keeps a closed
+    // peer from raising SIGPIPE in the kernel.
+    let _ = unsafe {
+        libc::send(
+            stream.as_raw_fd(),
+            notice.as_ptr().cast(),
+            notice.len(),
+            libc::MSG_DONTWAIT | libc::MSG_NOSIGNAL,
+        )
+    };
 }
 
 /// Why the workload's own process was stopped for memory.
