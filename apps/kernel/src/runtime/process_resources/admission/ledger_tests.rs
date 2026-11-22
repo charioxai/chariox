@@ -91,6 +91,7 @@ fn owner(
                         written: command.writes,
                         rate: command.write_growth,
                         files: [u64::from(command.pid)].into(),
+                        open: [u64::from(command.pid)].into(),
                     }],
                 )
             })
@@ -1548,6 +1549,7 @@ fn the_disk_never_fills_up_while_five_builds_write_and_the_filler_goes() {
                         written: total,
                         rate: STEP,
                         files: [u64::from(pid)].into(),
+                        open: [u64::from(pid)].into(),
                     }],
                 );
             }
@@ -1804,6 +1806,7 @@ fn a_full_volume_stops_its_own_writer_and_leaves_one_on_a_roomy_volume_alone() {
                 written: 8 * GIB,
                 rate: 50 * MIB,
                 files: [1].into(),
+                open: [1].into(),
             }],
         ),
         (
@@ -1814,6 +1817,7 @@ fn a_full_volume_stops_its_own_writer_and_leaves_one_on_a_roomy_volume_alone() {
                 written: GIB,
                 rate: 50 * MIB,
                 files: [2].into(),
+                open: [2].into(),
             }],
         ),
     ]
@@ -1863,6 +1867,7 @@ fn crossed_volume_writer(cwd: &str, output: &str, id: u64, should_stop: bool) {
         vec![disk_use::VolumeWrites {
             id,
             files: [1].into(),
+            open: [1].into(),
             path: output.into(),
             written: 6 * GIB,
             rate: 50 * MIB,
@@ -1931,6 +1936,128 @@ fn unknown_or_reused_output_descriptors_cannot_justify_a_disk_stop() {
             "missing or changed output volume supplied destructive evidence"
         );
     }
+}
+
+/// The writes of `pid` as the sampler sees a copy of many files: between two
+/// files, only the volume it wrote to a moment ago.
+fn between_files() -> Vec<disk_use::VolumeWrites> {
+    vec![disk_use::VolumeWrites {
+        id: 1,
+        path: "/scratch".into(),
+        written: 0,
+        rate: 0,
+        files: Default::default(),
+        open: Default::default(),
+    }]
+}
+
+fn fillers_after_one_pass(free: u64, current: &Arc<Mutex<Observation>>) -> Vec<(u32, Filling)> {
+    let free = Arc::new(AtomicU64::new(free));
+    let volume = volume(&free);
+    let mut ledger = Ledger::new(None);
+    ledger.pass(
+        std::slice::from_ref(current),
+        current,
+        &room(GIB, false, &*volume),
+    );
+    ledger.take_fillers(current)
+}
+
+#[test]
+fn a_many_file_copy_filling_the_disk_in_seconds_is_stopped_while_room_is_left() {
+    // 2 GiB free is far above half the floor; at 1 GiB/s it is 2 s of room.
+    let (_, copy, copy_use) = writing(1, 3 * GIB, GIB);
+    let current = owner("agent", true, vec![copy_use], vec![(1, copy)]);
+    current
+        .lock()
+        .unwrap()
+        .disk_writes
+        .insert(1, between_files());
+    let fillers = fillers_after_one_pass(2 * GIB, &current);
+    assert_eq!(
+        fillers.iter().map(|(pid, _)| *pid).collect::<Vec<_>>(),
+        vec![1],
+        "a copy that fills the disk in two seconds kept writing"
+    );
+    let filling = &fillers[0].1;
+    assert_eq!(
+        (filling.rate, filling.written, filling.full_in),
+        (GIB, 3 * GIB, Some(2))
+    );
+    let line = super::super::waits::filling_line(filling);
+    assert!(
+        line.contains("the disk has 2 GB free, full in about 2 s at the rate it fills,"),
+        "{line}"
+    );
+}
+
+#[test]
+fn a_runaway_writer_is_stopped_before_the_one_that_wrote_most() {
+    // 1 GiB free; together they fill it in under five seconds.
+    let (_, build, build_use) = writing(1, 6 * GIB, 20 * MIB);
+    let (_, copy, copy_use) = writing(2, GIB, 200 * MIB);
+    let current = owner(
+        "agent",
+        true,
+        vec![build_use, copy_use],
+        vec![(1, build), (2, copy)],
+    );
+    let fillers = fillers_after_one_pass(GIB, &current);
+    assert_eq!(
+        fillers.iter().map(|(pid, _)| *pid).collect::<Vec<_>>(),
+        vec![2],
+        "the runaway was not the one stopped"
+    );
+}
+
+#[test]
+fn a_steady_writer_with_room_for_its_rate_is_left_alone() {
+    // 100 MiB/s with 5 GiB free: about 50 s of room.
+    let (_, build, build_use) = writing(1, 6 * GIB, 100 * MIB);
+    let current = owner("agent", true, vec![build_use], vec![(1, build)]);
+    assert!(
+        fillers_after_one_pass(5 * GIB, &current).is_empty(),
+        "a steady writer far from full was stopped"
+    );
+}
+
+#[test]
+fn a_command_rate_is_not_attributed_to_a_volume_it_shares_or_one_of_several() {
+    // Both hold the same open file, which grows between no two samples.
+    let (_, first, first_use) = writing(1, 3 * GIB, GIB);
+    let (_, second, second_use) = writing(2, 3 * GIB, GIB);
+    let current = owner(
+        "agent",
+        true,
+        vec![first_use, second_use],
+        vec![(1, first), (2, second)],
+    );
+    for outputs in current.lock().unwrap().disk_writes.values_mut() {
+        outputs[0].files.clear();
+        outputs[0].rate = 0;
+        outputs[0].open = [42].into();
+    }
+    assert!(
+        fillers_after_one_pass(2 * GIB, &current).is_empty(),
+        "a shared open file gave one command the whole rate"
+    );
+    // One command with outputs open on two volumes: its rate goes to neither.
+    let (_, copy, copy_use) = writing(3, 3 * GIB, GIB);
+    let current = owner("agent", true, vec![copy_use], vec![(3, copy)]);
+    {
+        let mut observation = current.lock().unwrap();
+        let outputs = observation.disk_writes.get_mut(&3).unwrap();
+        outputs[0].files.clear();
+        outputs[0].rate = 0;
+        let mut other = between_files().remove(0);
+        other.id = 2;
+        other.open = [5].into();
+        outputs.push(other);
+    }
+    assert!(
+        fillers_after_one_pass(2 * GIB, &current).is_empty(),
+        "a command writing to two volumes had its whole rate put on one"
+    );
 }
 
 #[test]
@@ -2082,6 +2209,7 @@ fn a_finished_run_remembers_the_volume_that_received_most_of_its_writes() {
             written: 5 * GIB,
             rate: 50 * MIB,
             files: [9].into(),
+            open: [9].into(),
         });
     }
     let mut ledger = Ledger::new(None);
@@ -2283,6 +2411,7 @@ fn unresolved_sampled_destinations_are_not_remembered_as_a_receiving_volume() {
         written: GIB,
         rate: MIB,
         files: Default::default(),
+        open: Default::default(),
     };
     assert_eq!(
         ReceivingVolume::capture(&sample),

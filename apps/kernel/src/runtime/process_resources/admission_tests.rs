@@ -158,7 +158,7 @@ fn a_command_filling_the_disk_is_stopped_with_its_reason_never_paused() {
     assert!(
         events.iter().any(|event| matches!(
             &event.change,
-            WaitChange::Stopped { reason } if reason.contains("was filling it")
+            WaitChange::Stopped { reason, .. } if reason.contains("was filling it")
         )),
         "the room was not told why the writer ended: {events:?}"
     );
@@ -199,7 +199,7 @@ fn a_fast_many_file_copy_is_stopped_while_the_disk_still_has_room() {
     assert!(
         take_wait_events().iter().any(|event| matches!(
             &event.change,
-            WaitChange::Stopped { reason } if reason.contains("was filling it")
+            WaitChange::Stopped { reason, .. } if reason.contains("was filling it")
         )),
         "the room was not told why the copy ended"
     );

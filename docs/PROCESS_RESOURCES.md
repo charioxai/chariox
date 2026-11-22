@@ -38,6 +38,31 @@ process itself, or a job it left running. It is killed at once, without a grace
 period in which a runaway keeps growing, and no second command is stopped for
 the same cause within one second. The owner keeps running.
 
+A full disk is the same last resort, for the volume a command writes to.
+A volume is short when its free space is below half its floor (1% of the
+volume, 64–512 MiB) or when the kernel's commands writing to it would fill
+it within the fill horizon at their current rate. Then the kernel stops ONE
+agent command writing there: a command writing 128 MiB/s or more (a runaway)
+first, the fastest of them; otherwise the one that wrote the most. A person's
+own terminal command is never chosen. A command's writes are what it adds to
+the files it holds open; a command holding writable files on one volume only,
+shared with no other command, has all its write rate counted there, and that
+volume stands for two seconds after it closes its last file, so a copy of
+many short-lived files is seen like one large file. After a stop the next
+writer is judged two seconds later. The stopped command reads the reason on
+its error stream, for example `chariox: stopped this command: the disk has
+3 GB free, full in about 2 s at the rate it fills, and this command was
+filling it, writing 1.5 GB/s (40 GB written so far).`; its agent gets the
+same reason in its inbox (`resource_notice`, state `ended`), the Room gets
+the process `stopped` event, and the kernel logs
+`process_resources.disk_stop`. A steady writer with room for its rate is
+never stopped.
+
+PROPOSED, for the owner to decide: the fill horizon is 5 s (an incident copy
+at about 1.9 GB/s is stopped with about 9 GB still free; a 100 MB/s writer is
+stopped only with less than 500 MB left), and the runaway write rate is the
+memory runaway rate, 128 MiB/s. Until decided, these values apply.
+
 A command that admission paused (it grew toward a full pool) continues when its
 room frees. Its growth estimate is the median of samples over the last 60 s
 before the pause, so a short burst does not require room for repeated bursts.
@@ -84,7 +109,8 @@ A stopped command learns why: the kernel writes one line to its error stream
 (when that is a pipe or terminal it can write to), for example
 `chariox: stopped this command under memory pressure: 3100 MiB resident, 3300 MiB
 for its owner, fair share 1400 MiB of the 8600 MiB shared ceiling`, so the agent
-reads the reason in its tool output; the kernel logs the same record
+reads the reason in its tool output and, at once, in its inbox (a
+`resource_notice` that starts no turn); the kernel logs the same record
 (`process_resources.memory_stop`).
 When the command is the workload's own process (a terminal command, a watched
 process, the provider process itself), the workload ends with the typed

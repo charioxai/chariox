@@ -19,6 +19,10 @@ pub(crate) enum WaitChange {
     /// The pool ended the command, for this reason.
     Stopped {
         reason: String,
+        /// What it was short of when it ran (a waiting command's row says it).
+        resource: WaitReason,
+        /// Its command line, when the kernel saw it.
+        command: String,
     },
 }
 
@@ -155,10 +159,19 @@ pub(super) fn filling_line(filling: &super::admission::Filling) -> String {
     } else {
         String::new()
     };
+    let short = match filling.full_in {
+        Some(seconds) => format!(
+            "the disk has {} free, full in about {seconds} s at the rate it fills,",
+            size(filling.free)
+        ),
+        None => format!(
+            "the disk has {} free (the floor is {})",
+            size(filling.free),
+            size(filling.floor)
+        ),
+    };
     format!(
-        "chariox: stopped this command: the disk has {} free (the floor is {}) and this command was filling it, writing {}/s ({} written so far).{deleted} Free space or move its output elsewhere, then run it again.\n",
-        size(filling.free),
-        size(filling.floor),
+        "chariox: stopped this command: {short} and this command was filling it, writing {}/s ({} written so far).{deleted} Free space or move its output elsewhere, then run it again.\n",
         size(filling.rate),
         size(filling.written),
     )

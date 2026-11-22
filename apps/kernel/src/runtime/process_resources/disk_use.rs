@@ -15,6 +15,8 @@ pub(super) struct VolumeWrites {
     pub rate: u64,
     /// Growing writable inodes; shared writers cannot be attributed safely.
     pub files: BTreeSet<u64>,
+    /// Every writable inode it holds open there, growing or not.
+    pub open: BTreeSet<u64>,
 }
 
 /// Below this written, a process is not looked at: checking its descriptors

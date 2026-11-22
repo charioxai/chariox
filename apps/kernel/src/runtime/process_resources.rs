@@ -644,7 +644,7 @@ impl PreparedDomain {
                             }
                         } else {
                             announce(pid, &notice);
-                            tell_stopped(&watched, pid, notice);
+                            tell_stopped(&watched, pid, notice, WaitReason::Memory);
                         }
                         tree.kill(pid);
                     }
@@ -652,7 +652,7 @@ impl PreparedDomain {
                         let protection = self.pool.protection();
                         if !protection.disk { continue; }
                         announce(pid, &notice);
-                        tell_stopped(&watched, pid, notice);
+                        tell_stopped(&watched, pid, notice, WaitReason::Disk);
                         tree.kill(pid);
                     }
                     Ok(WatchCommand::Stop { process_id, reply }) => {
@@ -856,18 +856,20 @@ fn oom_kills_since(watched: &Arc<Mutex<Observation>>, seen: &mut u64) -> Option<
 }
 
 /// The room hears that the pool ended the command at `pid`, and why.
-fn tell_stopped(watched: &Arc<Mutex<Observation>>, pid: u32, notice: String) {
-    let (process_id, state) = {
+fn tell_stopped(watched: &Arc<Mutex<Observation>>, pid: u32, notice: String, resource: WaitReason) {
+    let (process_id, state, command) = {
         let observation = watched.lock().unwrap_or_else(|e| e.into_inner());
         let Some(sample) = observation.samples.iter().find(|sample| sample.pid == pid) else {
             return;
         };
+        let entry = observation.admission.get(&pid);
         (
             sample.process_id.clone(),
-            observation
-                .admission
-                .get(&pid)
-                .map_or(SessionProcessState::Running, projection::state_of),
+            entry.map_or(SessionProcessState::Running, projection::state_of),
+            entry
+                .and_then(|entry| entry.seen.as_ref())
+                .map(|seen| seen.line.clone())
+                .unwrap_or_default(),
         )
     };
     waits::push(waits::WaitEvent {
@@ -875,6 +877,8 @@ fn tell_stopped(watched: &Arc<Mutex<Observation>>, pid: u32, notice: String) {
         process_id,
         change: waits::WaitChange::Stopped {
             reason: notice.trim_end().to_string(),
+            resource,
+            command,
         },
         state,
     });
