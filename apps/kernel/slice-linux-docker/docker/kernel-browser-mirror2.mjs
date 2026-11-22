@@ -1126,7 +1126,7 @@ export class Mirror2 {
       if (!own) stream.opaqueStills.delete(b.id); // no still of its own this time: it proves nothing
       // YM-C1: a transformed, faded or stacked canvas whose own pixels read clear shows the page through it: a transparent
       // still replaces the viewer's placeholder (its screenshot would hold its compositing, applied again by the mirror).
-      if (own?.clear) { if (b.distorted && b.distorted !== 'canvas') { if (!own.background && (own.flat || !stream.realStills.has(b.id))) send(b.id, { x: 0, y: 0, width: b.box[2], height: b.box[3], data_base64: CLEAR_STILL }); } else shots.push(b); }
+      if (own?.clear) { if (b.distorted && b.distorted !== 'canvas') { if (own.flat || !stream.realStills.has(b.id)) send(b.id, { x: 0, y: 0, width: b.box[2], height: b.box[3], data_base64: CLEAR_STILL }); } else shots.push(b); }
       else if (own) send(b.id, own);
       // A distorted region's screenshot already holds its compositing: as the element's background the mirrored DOM
       // would apply the transform/opacity again, so such a region carries no still (its video lease shows it).

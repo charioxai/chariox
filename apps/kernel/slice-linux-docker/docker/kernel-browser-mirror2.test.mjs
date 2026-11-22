@@ -1433,3 +1433,12 @@ test('T3: a cover skips the region under it only while its sent still is proven 
   assert(third.some(t => t.node_id === 'n3'), 'a cover with no still of its own this time covers nothing');
   assert(![...first, ...second, ...third].some(t => 'opaque' in t), 'the opacity proof stays in the kernel');
 });
+
+// YM-C1 review 4: the viewer recognises the kernel's clear still by its exact bytes and paints nothing for it (the author's
+// background shows): the kernel-client's literal is the kernel's CLEAR_STILL.
+test('YM-C1: the kernel-client knows the kernel clear still by its exact bytes', async () => {
+  const {encodePng} = await import('./kernel-browser-pixels.mjs'), {readFileSync} = await import('node:fs');
+  assert.match(readFileSync(new URL('./kernel-browser-mirror2.mjs', import.meta.url), 'utf8'), /^const CLEAR_STILL = encodePng\(1, 1, Buffer\.alloc\(4\)\);$/m);
+  const viewer = readFileSync(new URL('../../../../packages/kernel-client/src/browser-mirror2.ts', import.meta.url), 'utf8');
+  assert.equal(/^const CLEAR_STILL = '([^']+)'$/m.exec(viewer)?.[1], encodePng(1, 1, Buffer.alloc(4)));
+});
