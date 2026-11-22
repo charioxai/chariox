@@ -27,6 +27,22 @@ test("MP-07 generic unsigned Setup verifies and installs with system Python and 
   }
   const env = { HOME: home, PATH: tools }
   assert.equal((await execute(binary, ["--version"], { env })).stdout, `Chariox Setup ${f.version}\n`)
+  assert.equal((await execute(binary, ["build-toolchain", "status"], { env })).stdout, "Build toolchain: missing\n")
+  await assert.rejects(execute(binary, ["build-toolchain", "run", "--", "python3", "--version"], { env }),
+    /Build toolchain missing.*build-toolchain prepare/)
+  const toolchain = join(home, ".local/share/chariox/build-toolchain")
+  const compiler = join(toolchain, "env/bin/x86_64-conda-linux-gnu-cc")
+  await mkdir(join(toolchain, "env/bin"), { recursive: true })
+  await writeFile(compiler, "", { mode: 0o700 })
+  await writeFile(join(toolchain, "version"), "1\n")
+  assert.equal((await execute(binary, ["build-toolchain", "status"], { env })).stdout, "Build toolchain: managed version 1\n")
+  const build = await execute(binary, ["build-toolchain", "run", "--", "/bin/sh", "-c", 'printf "%s" "$CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER"'], { env })
+  assert.equal(build.stdout, compiler)
+  const bindgen = await execute(binary, ["build-toolchain", "run", "--", "/bin/sh", "-c", 'printf "%s" "$BINDGEN_EXTRA_CLANG_ARGS"'], { env })
+  assert.equal(bindgen.stdout, `--sysroot="${toolchain}/env/x86_64-conda-linux-gnu/sysroot" -resource-dir="${toolchain}/env/lib/clang/23"`)
+  await assert.rejects(execute(binary, ["build-toolchain", "run", "--", "/bin/sh", "-c", "exit 17"], { env }), { code: 17 })
+  assert.equal((await execute(binary, ["build-toolchain", "remove"], { env })).stdout, "Build toolchain: removed\n")
+  assert.equal((await execute(binary, ["build-toolchain", "status"], { env })).stdout, "Build toolchain: missing\n")
   const result = await execute(binary, ["--install-only", "--release-base", `http://127.0.0.1:${server.address().port}`, "--api-url", "http://127.0.0.1:1"], { env, timeout: 30_000 })
   assert.match(result.stdout, /Chariox installed/)
   assert.equal(await readFile(join(home, ".local/share/chariox/machines/local/current/bin/chariox-kernel"), "utf8"), await readFile(join(f.bundle, "bin/chariox-kernel"), "utf8"))
