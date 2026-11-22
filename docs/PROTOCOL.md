@@ -200,17 +200,11 @@ MP-08 / MP-09 / MP-10 / MP-11, local 956 / peer 405: Vault generation is an ordi
 ### App bindings
 
 App bindings use the existing trusted installation, admitted publisher key and
-capability checks; an agent binds a trusted installation itself, with no card. Issued bindings carry an optional `app_grant` generation,
-absolute expiry and prompt/delegation attribution; agents cannot submit this
-issued authority as grant input. App grants default to 8 hours and child
-bindings inherit the parent's deadline. Revocation removes only bindings
-actually delegated from that generation, wakes retained calls and prevents an
-old call or expiry wake from adopting a replacement binding. Recovery rearms
-absolute expiry; recovery without a live expiry executor fails closed. Recovery
-removals record the normal `agent.extension_revoked` event and
-`home_extension.grant.revoked` audit. Leased, remote and slice agents use their Room Browser/Computer route.
-
-
+capability checks; an agent binds the owner's trusted installation to itself or to a
+descendant with no card, no held-subset rule, no lifetime and no delegation. A binding
+names only its installation (`ExtensionGrant` carries no `app_grant`); revoking one
+binding revokes only that one. Leased, remote and slice agents use their Room
+Browser/Computer route.
 
 ## 1. Scope
 

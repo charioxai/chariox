@@ -629,5 +629,6 @@ pub use workspace::*;
 /// App views. `UserDomainGrant`, `UserDomainNotice`, `UserDomainResource` and `UserDomainWindowAccess` are gone; the
 /// `user_domain_grants_changed` snapshot carries only `cursor` and `room_computer`; browser and App view results no
 /// longer carry `kernel_id`, `kernel_name`, `focused_agent_kernel_id` or `reachable_by_focused_agent`; the loader tools
-/// take no arguments and `chariox.kernel_browser_share` is removed.
+/// take no arguments and `chariox.kernel_browser_share` is removed. `ExtensionGrant.app_grant` (the App binding's lifetime and
+/// delegation) is removed.
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1016;
