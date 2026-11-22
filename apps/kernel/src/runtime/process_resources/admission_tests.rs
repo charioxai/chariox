@@ -230,6 +230,47 @@ fn a_fast_writer_on_a_roomy_disk_and_a_slow_one_near_the_floor_keep_running() {
     );
 }
 
+/// A 3 GiB volume (floor 64 MiB) with `free` bytes left.
+#[cfg(target_os = "linux")]
+fn small_volume_with(free: u64) -> Arc<pool::Pool> {
+    Arc::new(pool::Pool::with_volume(
+        1 << 40,
+        Box::new(move |path| {
+            use std::os::unix::fs::MetadataExt;
+            Some(admission::Space {
+                id: std::fs::metadata(path).ok()?.dev(),
+                free,
+                total: 3 * GIB,
+            })
+        }),
+    ))
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_writer_in_bursts_with_room_for_its_average_keeps_running() {
+    take_wait_events();
+    // 8 MiB at once every 0.8 s: one sample reads 32 MiB/s, five seconds of
+    // which would not fit in 120 MiB; its 10 MiB/s average does.
+    let pool = small_volume_with(120 * MIB);
+    let command = format!(
+        "python3 -c '{DIE_WITH_PARENT}import os,sys,time\nf=open(sys.argv[1],\"wb\")\nfor i in range(8):\n f.write(bytes(8388608)); f.flush(); os.fsync(f.fileno()); time.sleep(0.8)\n if i % 2: f.seek(0); f.truncate()' \"$0/out\""
+    );
+    let mut writer = Workload::run(domain(&pool, "bursts", false), &[("write", command)]);
+    settle(5);
+    assert!(
+        writer.alive("write"),
+        "a writer with room for its average was stopped: {}",
+        writer.told("write")
+    );
+    assert!(
+        take_wait_events()
+            .iter()
+            .all(|event| !matches!(event.change, WaitChange::Stopped { .. })),
+        "a bursty writer was stopped without pressure"
+    );
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn an_anonymous_memory_writer_is_not_stopped_as_a_disk_filler() {

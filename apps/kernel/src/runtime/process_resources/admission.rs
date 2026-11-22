@@ -1454,13 +1454,13 @@ fn writers(members: &[Arc<Mutex<Observation>>]) -> Vec<Writer<'_>> {
             };
             for output in outputs {
                 let whole = only == Some(output.id);
+                // One sample of a writer that writes in bursts overstates how
+                // fast it fills the volume: its rate is what it wrote over the
+                // last two seconds.
                 let (rate, written) = if whole {
-                    (
-                        output.rate.max(command.write_growth),
-                        output.written.max(command.writes),
-                    )
+                    (command.write_rate, output.written.max(command.writes))
                 } else {
-                    (output.rate, output.written)
+                    (output.rate.min(command.write_rate), output.written)
                 };
                 if rate < GROWING || shared(output) || (!whole && output.files.is_empty()) {
                     continue;
@@ -1913,6 +1913,7 @@ mod launcher_pause_tests {
                 steady_growth: 0,
                 writes: 0,
                 write_growth: 0,
+                write_rate: 0,
             })
             .collect();
         let mut admission = Ledger::new(None);

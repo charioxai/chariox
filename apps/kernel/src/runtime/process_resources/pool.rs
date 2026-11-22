@@ -59,7 +59,11 @@ pub(super) struct CommandUse {
     /// pause is sized by, since one spike says little of how it goes on.
     pub steady_growth: u64,
     pub writes: u64,
+    /// Its latest write rate, held and halved per sample: says it writes now.
     pub write_growth: u64,
+    /// What it wrote per second over the last two seconds: how fast it fills a
+    /// volume, since one sample of a writer that writes in bursts says little.
+    pub write_rate: u64,
     /// The process it runs past wrapping shells: what admission recognises.
     pub effective: u32,
     /// Part of the harness (the workload's own process and the launcher

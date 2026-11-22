@@ -160,6 +160,10 @@ pub(super) fn filling_line(filling: &super::admission::Filling) -> String {
         String::new()
     };
     let short = match filling.full_in {
+        Some(0) => format!(
+            "the disk has {} free, full in under a second at the rate it fills,",
+            size(filling.free)
+        ),
         Some(seconds) => format!(
             "the disk has {} free, full in about {seconds} s at the rate it fills,",
             size(filling.free)

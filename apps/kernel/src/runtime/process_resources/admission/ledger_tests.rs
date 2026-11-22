@@ -49,6 +49,7 @@ fn command(pid: u32, resident: u64, growth: u64) -> pool::CommandUse {
         measured_growth: growth,
         writes: 0,
         write_growth: 0,
+        write_rate: 0,
         effective: pid,
         root: false,
     }
@@ -1600,6 +1601,7 @@ fn writer(pid: u32, writes: u64, write_growth: u64) -> pool::CommandUse {
         measured_growth: 0,
         writes,
         write_growth,
+        write_rate: write_growth,
         effective: pid,
         root: false,
     }

@@ -6,6 +6,28 @@ pub(super) fn roomy() -> Arc<pool::Pool> {
 }
 
 #[test]
+fn a_bursty_writers_rate_is_what_it_wrote_over_two_seconds() {
+    let mut window = std::collections::VecDeque::new();
+    // 8 MiB at once, then nothing for three samples: 8 MiB/s on average.
+    let mut rates = Vec::new();
+    for tick in 0..16u64 {
+        let writes = (tick / 4 + u64::from(tick % 4 > 0)) * 8 * MIB;
+        rates.push(write_rate(&mut window, tick * 250, writes));
+    }
+    assert_eq!(rates[0], 0, "one sample has no rate");
+    assert_eq!(
+        rates[1],
+        4 * MIB,
+        "a first burst counts over the whole window"
+    );
+    for rate in &rates[8..] {
+        assert!((7 * MIB..=9 * MIB).contains(rate), "{rates:?}");
+    }
+    // The same sample again changes nothing.
+    assert_eq!(write_rate(&mut window, 15 * 250, 32 * MIB), rates[15]);
+}
+
+#[test]
 fn memory_override_rejects_invalid_and_overflowing_limits() {
     for value in ["", "0", "-1", "NaN", "15", "18446744073709551615"] {
         assert!(configured_cap(Some(value)).is_err(), "{value}");

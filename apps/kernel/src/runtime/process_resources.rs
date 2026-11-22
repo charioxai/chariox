@@ -422,6 +422,9 @@ impl PreparedDomain {
         let mut last_resident = (0u64, std::collections::BTreeMap::<u32, u64>::new());
         let mut write_growth_cache =
             std::collections::BTreeMap::<u32, disk_use::WriteGrowth>::new();
+        // Per command: its written bytes over the last two seconds.
+        let mut write_windows =
+            std::collections::BTreeMap::<u32, std::collections::VecDeque<(u64, u64)>>::new();
         // Per command: its growth over the last minute while it ran.
         let mut windows = std::collections::BTreeMap::<u32, growth_window::Window>::new();
         let worker = std::thread::Builder::new()
@@ -507,6 +510,7 @@ impl PreparedDomain {
                         let measured_growth = measured.unwrap_or_else(|| {
                             previous.get(&pid).map_or(0, |before| before.measured_growth)
                         });
+                        let write_rate = write_rate(write_windows.entry(pid).or_default(), sampled_at, writes);
                         if write_growth >= admission::GROWING {
                             let volumes = write_growth_cache.entry(pid).or_default().sample(&pids, sampled_at);
                             disk_writes.insert(pid, volumes);
@@ -526,12 +530,14 @@ impl PreparedDomain {
                             measured_growth,
                             writes,
                             write_growth,
+                            write_rate,
                             effective,
                             root: tree.in_harness(pid),
                         }
                     })
                     .collect::<Vec<_>>();
                 write_growth_cache.retain(|pid, _| disk_writes.contains_key(pid));
+                write_windows.retain(|pid, _| commands.iter().any(|command| command.pid == *pid));
                 windows.retain(|pid, _| commands.iter().any(|command| command.effective == *pid));
                 last_resident = (
                     sampled_at,
@@ -731,6 +737,31 @@ struct Rates {
     measured_growth: u64,
     writes: u64,
     write_growth: u64,
+}
+
+/// Bytes per second a command wrote over the last two seconds (`at` in ms),
+/// from its running total of written bytes. A command younger than that
+/// counts the time before it as idle: one early burst of a writer that writes
+/// in bursts is not a rate, while a runaway's estimate doubles every sample.
+fn write_rate(window: &mut std::collections::VecDeque<(u64, u64)>, at: u64, writes: u64) -> u64 {
+    const WINDOW_MS: u64 = 2000;
+    if window.back().is_none_or(|(last, _)| at > *last) {
+        window.push_back((at, writes));
+    }
+    // Keep one sample at or before the window's start to measure from.
+    while window.len() > 2
+        && window
+            .get(1)
+            .is_some_and(|(seen, _)| at.saturating_sub(*seen) >= WINDOW_MS)
+    {
+        window.pop_front();
+    }
+    match (window.front(), window.back()) {
+        (Some((from, before)), Some((to, now))) if to > from => {
+            now.saturating_sub(*before).saturating_mul(1000) / (to - from).max(WINDOW_MS)
+        }
+        _ => 0,
+    }
 }
 
 /// Growth per second of a command seen for the first time. Its processes

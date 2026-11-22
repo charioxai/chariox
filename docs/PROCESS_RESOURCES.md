@@ -49,8 +49,10 @@ the files it holds open; a command whose output files (not its standard
 streams, which often go to a log) are on one volume only, shared with no other
 command, has all its write rate counted there, and that volume stands for two
 seconds after it closes its last output, so a copy of many short-lived files is
-seen like one large file. After a stop the next
-writer is judged two seconds later. The stopped command reads the reason on
+seen like one large file. A command's rate is what it wrote over the last two
+seconds (a younger command counts the time before it as idle), so a writer
+that writes in bursts is judged by its pace, not by one burst. After a stop the
+next writer is judged two seconds later. The stopped command reads the reason on
 its error stream, for example `chariox: stopped this command: the disk has
 3 GB free, full in about 2 s at the rate it fills, and this command was
 filling it, writing 1.5 GB/s (40 GB written so far).`; its agent gets the
