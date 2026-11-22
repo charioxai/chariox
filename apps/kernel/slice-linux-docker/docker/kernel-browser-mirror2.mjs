@@ -559,6 +559,8 @@ export class Mirror2 {
         stream.ownScrolls.clear(); stream.frames.clear(); stream.frameSlots.clear(); stream.frameSlot = 0;
         for (const [key, entry] of stream.resources) if (entry.slot) stream.resources.delete(key); else if (!entry.sent || entry.sentAt > (stream.acked ?? 0)) { entry.sent = false; entry.offset = 0; }
         if (world.snapshotPending?.policy !== policy) await this.protectTargets(world, tab, maskPolicy(stream, policy), '', patience);
+        // Row 342 F3: the document's loaded stylesheets start reading now, alongside the snapshot that names them.
+        this.prefetchSheets(world);
         const snapshotAt = timestamp();
         const snap = await this.snapshotOnce(world, policy, patience, stream.knownSheets ?? [], this.snapshotOptions(stream, world));
         this.host.timing?.('mirror2_snapshot', snapshotAt);
@@ -880,6 +882,13 @@ export class Mirror2 {
     }
     return out;
   }
+  // Row 342 F3: reads of the stylesheets a document has loaded, kept on that document's world (a world is one document:
+  // a navigation gets a new one, so no read of the old document's sheets can serve the new one).
+  prefetchSheets(world) {
+    if (world.sheetReads) return;
+    world.sheetReads = new Map();
+    for (const url of this.host.browser?.responseBodies?.stylesheets?.(world) ?? []) world.sheetReads.set(url, this.resourceBody(world, url, 16 * 1024 * 1024).catch(() => null));
+  }
   async resourceBody(world, url, maxBytes = RESOURCE_BYTES) {
     return this.host.browser?.responseBodies?.read(world, url, maxBytes) ?? null;
   }
@@ -1033,7 +1042,9 @@ export class Mirror2 {
       if (sheets.length >= 64) return false;
       // CDP names a request without its fragment; a sheet's `href` keeps it (Amazon's end in `#<revision>`).
       const requested = href.split('#')[0];
-      const body = await this.resourceBody(world, requested, 16 * 1024 * 1024);
+      // A read started with the snapshot (prefetchSheets) is this document's; a sheet it missed (loaded later) reads now.
+      const prefetched = world.sheetReads?.get(requested); world.sheetReads?.delete(requested);
+      const body = await prefetched ?? await this.resourceBody(world, requested, 16 * 1024 * 1024);
       let text = body?.toString('utf8');
       // The network buffer had let go of it: the HTTP cache holds the exact bytes. The frame's own text decodes a response
       // without a charset as Latin-1, on most navigations, so the same sheet differed from page to page and the viewer's

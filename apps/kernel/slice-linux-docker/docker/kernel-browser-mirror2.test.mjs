@@ -2,6 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { sanitizeMirrorCss } from './kernel-browser-mirror2-observer.mjs';
+import { BrowserResponseBodies } from './browser-controller-response-bodies.mjs';
 import { inflateRawSync, constants as zlib } from 'node:zlib';
 import { createHash } from 'node:crypto';
 import { Mirror2, ParsedSheets, sheetDigest, BUSY_RENDERER_MS, KERNEL_CONTROLLER_DEADLINE_MS, mirrorResourceType, encodeMirrorRecords, dedupeMirrorSheets, regionArea, regionOverBudget, cssImports, svgTargetPinned } from './kernel-browser-mirror2.mjs';
@@ -685,6 +686,33 @@ test('Row 342 F2: a first-paint sheet the viewer retains is not sent to the page
  assert(!seen.some(e=>e.includes('.usedCss(')),'a retained sheet is not pruned in the page');
  await mirror.crossOriginSheet(world,'https://cdn.example/other.css','n1');
  assert(seen.some(e=>e.includes('.usedCss(')),'a sheet the viewer lacks is still pruned in the page');
+});
+
+// Row 342 F3: the document's loaded stylesheets read alongside the snapshot, never across documents.
+test('Row 342 F3: prefetched stylesheet reads serve only their own document, and a missed one reads as before',async()=>{
+ const bodies=new BrowserResponseBodies(),ev=(method,params)=>bodies.observe({sessionId:'S',method,params});
+ for(const [id,loader,url,type] of [['1','D1','https://cdn.example/a.css','Stylesheet'],['2','D1','https://cdn.example/a.png','Image'],['3','D2','https://cdn.example/b.css','Stylesheet']]){
+  ev('Network.requestWillBeSent',{requestId:id,frameId:'F',loaderId:loader,type,request:{url}});ev('Network.responseReceived',{requestId:id,frameId:'F',loaderId:loader,type,response:{url}});ev('Network.loadingFinished',{requestId:id});
+ }
+ const worldOf=loader=>({sessionId:'S',frame:{id:'F',loaderId:loader,url:'https://site.example/'},ref:'observer',connection:{async send(method,params){if(method==='Network.getResponseBody')return {body:`/*${params.requestId}*/.x{color:red}`,base64Encoded:false};if(method==='Network.loadNetworkResource')return {resource:{success:false}};if(method==='Page.getResourceTree')return {frameTree:{frame:{id:'F'},resources:[]}};if(method==='Page.getResourceContent')throw Error('no such resource');throw Error(`unexpected ${method}`)}}});
+ const d1=worldOf('D1'),d2=worldOf('D2');
+ assert.deepEqual(bodies.stylesheets(d1),['https://cdn.example/a.css'],'only this document\'s loaded stylesheets');
+ assert.deepEqual(bodies.stylesheets(d2),['https://cdn.example/b.css']);
+ const reads=[];
+ const mirror=new Mirror2({host:{browser:{responseBodies:{stylesheets:world=>bodies.stylesheets(world),async read(world,url,limit){reads.push([world.frame.loaderId,url]);return bodies.read(world,url,limit)}}}}});
+ mirror.evaluate=pageSheets();
+ mirror.prefetchSheets(d1);assert.deepEqual(reads,[['D1','https://cdn.example/a.css']],'the read starts before any sheet is asked for');
+ assert.equal(await mirror.crossOriginSheet(d1,'https://cdn.example/a.css'),'/*1*/.x{color:red}');
+ assert.equal(reads.length,1,'the prefetched read served it');
+ // The navigation's new document has its own world: the old document's reads never serve it.
+ mirror.prefetchSheets(d2);
+ await assert.rejects(mirror.crossOriginSheet(d2,'https://cdn.example/a.css'),/no such resource/,'a sheet of the old document is not this document\'s (unreadable here, as before)');
+ assert.equal(await mirror.crossOriginSheet(d2,'https://cdn.example/b.css'),'/*3*/.x{color:red}');
+ assert(!reads.slice(1).some(([loader])=>loader==='D1'),'no read of the old document after the navigation');
+ // A sheet that finished loading after the prefetch (null then) reads as before.
+ const late=worldOf('D3');late.sheetReads=new Map([['https://cdn.example/c.css',Promise.resolve(null)]]);
+ mirror.resourceBody=async()=>Buffer.from('.late{color:blue}');
+ assert.equal(await mirror.crossOriginSheet(late,'https://cdn.example/c.css'),'.late{color:blue}');
 });
 
 test('MP-08/MP-10: the normalized sheet cache stays within its entry and size bounds',()=>{
