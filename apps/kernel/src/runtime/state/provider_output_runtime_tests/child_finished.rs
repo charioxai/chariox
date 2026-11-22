@@ -313,6 +313,113 @@ async fn a_finished_child_is_one_urgent_event_for_its_parent() {
     let _ = &team.child_run;
 }
 
+/// A child whose long foreground command the kernel's restart recovery ended (the real
+/// recovery step: the command row it left open is closed with the restart reason). Its turn
+/// continues, ends, and settles; this is the task that settlement returns.
+async fn child_that_continued_after_a_restart(
+    label: &str,
+) -> (
+    Team,
+    crate::durable_state::agent_lifecycle::AgentTaskExecution,
+    bool,
+) {
+    let team = team_with(label, None, false).await;
+    let open = serde_json::json!({"id": "cargo-ticket", "tool": "Bash", "status": "running"});
+    team.runtime
+        .apply_owned_structured_output_batch(
+            &team.room,
+            &team.child_run,
+            Vec::new(),
+            crate::provider::ProviderPromptSignalBatch {
+                chunks: vec![crate::provider::ProviderPromptChunk {
+                    kind: crate::terminal::TerminalOutputKind::ProviderTool,
+                    merge_key: Some("cargo-ticket".into()),
+                    bytes: serde_json::to_vec(&open).unwrap(),
+                }],
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    team.runtime
+        .flush_provider_history(&team.child_run)
+        .await
+        .unwrap();
+    let prompt = team
+        .runtime
+        .owned
+        .mark_active_prompt_delivery(
+            &team.room,
+            &team.child,
+            team.child_prompt.id(),
+            crate::session::DurablePromptDeliveryPhase::Delivered,
+            Some(team.child_run.clone()),
+            Some("provider-session".into()),
+        )
+        .unwrap();
+    assert!(team
+        .runtime
+        .owned
+        .end_foreground_provider_tools_left_by_restart(&team.room, &team.child, &prompt)
+        .unwrap());
+    team.runtime
+        .flush_provider_history(&team.child_run)
+        .await
+        .unwrap();
+    // The continued turn ends normally, hours later.
+    team.runtime
+        .owned
+        .complete_local_prompt_without_advance(&team.room, &team.child, Some(&team.child_run))
+        .unwrap();
+    let (task, correction) = team
+        .runtime
+        .owned
+        .settle_agent_task(&team.room, &team.child, &prompt, &team.child_run, false)
+        .unwrap()
+        .expect("the turn settles its task");
+    (team, task, correction)
+}
+
+// O0 (queue row 372): a restart cut a command of this turn; the turn continued and finished
+// hours later. Its outcome is what ended it, not the earlier restart.
+#[tokio::test]
+async fn a_turn_that_continued_after_a_restart_and_completed_reports_completed() {
+    let (team, task, correction) =
+        child_that_continued_after_a_restart("child-finished-after-restart").await;
+    team.runtime
+        .finish_agent_task_settlement(Some((task, correction)), &team.child_prompt)
+        .await
+        .unwrap();
+    let events = child_finished(&team);
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0].payload["success"], true);
+    assert_eq!(events[0].payload["outcome"]["kind"], "completed");
+}
+
+// O1 (queue row 372): the provider process died mid-turn, no restart. The outcome says so,
+// also when an earlier restart had cut a command of the same turn.
+#[tokio::test]
+async fn a_provider_that_died_after_an_earlier_restart_reports_the_crash() {
+    let (team, task, _) =
+        child_that_continued_after_a_restart("child-finished-crash-after-restart").await;
+    let crash = crate::provider::TurnOutcome::new(
+        crate::provider::TurnOutcomeKind::ProviderCrashed,
+        true,
+        "Provider CLI exited with status 137.",
+    );
+    team.runtime
+        .publish_agent_task_completion(&task, Some(&crash), None)
+        .await
+        .unwrap();
+    let events = child_finished(&team);
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0].payload["outcome"]["kind"], "provider_crashed");
+    assert!(events[0].payload["outcome"]["reason"]
+        .as_str()
+        .unwrap()
+        .contains("137"));
+}
+
 #[tokio::test]
 async fn a_child_stopped_by_its_deadline_says_so() {
     let team = team("child-finished-deadline", true, false).await;
