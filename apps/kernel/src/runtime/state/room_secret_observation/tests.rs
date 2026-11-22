@@ -1929,3 +1929,55 @@ fn peer_snapshot_compression_keeps_observation_scrubbing_before_encoding() {
     assert_eq!(snapshot.dom_nodes[0].text, "[redacted]");
     assert!(!serde_json::to_string(&snapshot).unwrap().contains(secret));
 }
+
+// A long history scrubs thousands of strings: the values' spellings are
+// computed once per change of the protected lists, not once per string.
+#[test]
+fn spellings_are_computed_once_per_protected_list_change() {
+    let root = TestRoot::new();
+    let store = RoomSecretObservations::new(root.path().join("observations"), BTreeSet::new());
+    store.register("room", "first-protected-value").unwrap();
+    store.register("room", "second-protected-value").unwrap();
+    let computed = || spelling::SPELLINGS_COMPUTED.with(std::cell::Cell::get);
+    let events = |count: usize| {
+        (0..count)
+            .map(|index| {
+                serde_json::json!({
+                    "text": format!("line {index} without a value"),
+                    "nested": {"echo": format!("echo first-protected-value {index}")},
+                })
+            })
+            .collect::<Vec<_>>()
+    };
+    let before = computed();
+    let scrubbed = store.scrub("room", events(1_000)).unwrap();
+    assert_eq!(
+        computed() - before,
+        2,
+        "one computation per protected value"
+    );
+    assert!(scrubbed.iter().all(|event| event["nested"]["echo"]
+        .as_str()
+        .unwrap()
+        .contains("[redacted]")));
+    assert_eq!(scrubbed[7]["text"], "line 7 without a value");
+    let before = computed();
+    store.scrub("room", events(1_000)).unwrap();
+    assert_eq!(
+        computed() - before,
+        0,
+        "an unchanged list reuses its spellings"
+    );
+    store.register("room", "third-protected-value").unwrap();
+    let before = computed();
+    let scrubbed = store
+        .scrub("room", "third-protected-value".to_string())
+        .unwrap();
+    assert_eq!(scrubbed, "[redacted]");
+    store.scrub("room", events(100)).unwrap();
+    assert_eq!(
+        computed() - before,
+        3,
+        "a list change computes the new list once"
+    );
+}
