@@ -107,8 +107,10 @@ impl PendingAgentContextHandoffStore {
         &self,
         session_id: &str,
         agent_id: &str,
-        handoff: PendingAgentContextHandoff,
+        mut handoff: PendingAgentContextHandoff,
     ) {
+        // A stored handoff waits for its run; it does not keep the history it was read from.
+        handoff.conversation.source_events = None;
         self.write()
             .insert(pending_handoff_key(session_id, agent_id), handoff);
     }
@@ -1847,7 +1849,12 @@ mod tests {
         let (stored, events) = fixture
             .runtime
             .owned
-            .handoff_brief_update_history(&fixture.session_id, &fixture.agent_id, "next-dispatch")
+            .handoff_brief_update_history(
+                &fixture.session_id,
+                &fixture.agent_id,
+                "next-dispatch",
+                None,
+            )
             .unwrap();
         assert!(
             stored.is_none(),
@@ -1872,7 +1879,12 @@ mod tests {
         let (stored, events) = fixture
             .runtime
             .owned
-            .handoff_brief_update_history(&fixture.session_id, &fixture.agent_id, "next-dispatch")
+            .handoff_brief_update_history(
+                &fixture.session_id,
+                &fixture.agent_id,
+                "next-dispatch",
+                None,
+            )
             .unwrap();
         assert_eq!(stored.unwrap().brief, current);
         assert!(events.iter().all(|event| event.sequence > 2));

@@ -252,6 +252,8 @@ impl OperationalHistoryStore {
         sequence_end: u64,
     ) -> Result<Vec<HistoryEvent>, DaemonError> {
         self.delay_read_if_configured();
+        #[cfg(test)]
+        self.count_agent_history_load();
         let connection = self.lock_read_connection(Some(session_id))?;
         let mut statement = connection
             .prepare(
@@ -446,6 +448,10 @@ impl OperationalHistoryStore {
         agent_id: Option<&str>,
     ) -> Result<Vec<HistoryEvent>, DaemonError> {
         self.delay_read_if_configured();
+        #[cfg(test)]
+        if agent_id.is_some() {
+            self.count_agent_history_load();
+        }
         let connection = self.lock_read_connection(Some(session_id))?;
         let sql = if agent_id.is_some() {
             "SELECT event_json FROM history_events WHERE session_id = ?1 AND agent_id = ?2 ORDER BY sequence ASC"

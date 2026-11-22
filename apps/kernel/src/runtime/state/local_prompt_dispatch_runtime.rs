@@ -536,13 +536,26 @@ impl KernelRuntimeState {
             if !dispatch.steering {
                 owned.note_prompt_started(&dispatch.provider_run_id);
             }
-            let handoff = owned.context_handoff_for_dispatch(
-                &dispatch.session_id,
-                &dispatch.agent_id,
-                &provider_run,
-                &dispatch.prompt_id,
-                dispatch.steering,
-            )?;
+            // Reading and protecting a long history is blocking work: keep it
+            // off the async workers every other dispatch and the pump share.
+            let handoff = {
+                let (owned, dispatch, run) =
+                    (owned.clone(), dispatch.clone(), provider_run.clone());
+                tokio::task::spawn_blocking(move || {
+                    owned.context_handoff_for_dispatch(
+                        &dispatch.session_id,
+                        &dispatch.agent_id,
+                        &run,
+                        &dispatch.prompt_id,
+                        dispatch.steering,
+                    )
+                })
+                .await
+                .map_err(|error| DaemonError::LocalTransport {
+                    operation: "prepare context handoff",
+                    message: error.to_string(),
+                })??
+            };
             if handoff
                 .as_ref()
                 .is_some_and(|handoff| handoff.needs_brief())
@@ -4208,6 +4221,104 @@ pub(in crate::runtime::state) mod tests {
             stored.is_none(),
             "a cancelled fold must not overwrite the shared stored brief"
         );
+    }
+
+    /// A rebuilt handoff reads the agent's history once per dispatch, for the
+    /// packet, the brief and the final check alike, and the brief deadline
+    /// starts at the first summary call: a slow read still leaves a stored brief.
+    #[tokio::test]
+    async fn a_handoff_dispatch_reads_the_history_once_and_a_slow_read_still_yields_a_brief() {
+        let mut config = DaemonConfig::for_tests();
+        config.operational_history_read_delay_ms = 1_500;
+        let prior = format!("remember amber {}", "notes ".repeat(2_000));
+        let (root, runtime, session_id, agent_id, attachment_id, prompt_id, _) =
+            runtime_with_active_prompt_and_config(config, &[prior.as_str()]).await;
+        let _deadline = super::super::context_handoff::brief_refresh::ShortBriefDeadline::new(
+            std::time::Duration::from_secs(1),
+        );
+        let briefed = root.path().join("brief-called");
+        let submitted = root.path().join("submitted");
+        let brief = "## Goal\nRemember amber\n## Constraints & Preferences\nNone\n## Progress\nDone\n## Key Decisions\nNone\n## Next Steps\nRecall\n## Critical Context\namber";
+        let answer = serde_json::json!({"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":brief}]}}).to_string();
+        let script = format!(
+            "while IFS= read -r line; do u=$(printf '%s' \"$line\" | sed -n 's/.*\"uuid\":\"\\([^\"]*\\)\".*/\\1/p'); case \"$line\" in *'Update the handoff brief'*) touch '{}'; printf '%s\\n' '{}' ;; *) touch '{}' ;; esac; printf '%s\\n' '{{\"type\":\"result\",\"subtype\":\"success\",\"user_message_uuids\":[\"'\"$u\"'\"]}}'; done",
+            briefed.display(), answer, submitted.display()
+        );
+        let executable = root.path().join("brief-cli-fixture");
+        std::fs::write(&executable, format!("#!/bin/sh\n{script}\n")).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let request =
+            LaunchProviderRequest::new(&session_id, "claude", "claude", "default", "sonnet")
+                .with_agent_id(&agent_id);
+        let mut run = crate::provider::RuntimeProviderRun::new(
+            "slow-history-brief-run",
+            &request,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+                process_label: "fixture".into(),
+                pty_target: None,
+                pty_program: Some(executable.display().to_string()),
+                pty_args: vec![],
+                pty_env: Default::default(),
+                pty_env_remove: vec![],
+                working_directory: None,
+                structured_endpoint: None,
+            },
+        );
+        run.mark_running();
+        runtime
+            .owned
+            .provider_store
+            .write()
+            .insert_run_for_test(run.clone());
+        runtime
+            .owned
+            .provider_store
+            .initialize_runtime(&run)
+            .unwrap();
+        runtime.owned.provider_run_projection.update(run.clone());
+        let dispatch = dispatch(
+            &session_id,
+            &agent_id,
+            &attachment_id,
+            run.id(),
+            &prompt_id,
+            "next request",
+            None,
+            false,
+        );
+        let history = runtime.owned.operational_history_store.clone();
+        let loads_before = history.agent_history_loads();
+        runtime.enqueue_prompt_dispatch(&dispatch).await.unwrap();
+        for _ in 0..600 {
+            if submitted.exists() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        let loads = history.agent_history_loads() - loads_before;
+        let stored = history
+            .load_agent_handoff_brief(&session_id, &agent_id)
+            .unwrap();
+        runtime
+            .owned
+            .provider_store
+            .terminate_run_provider_only(&session_id, run.id())
+            .unwrap();
+        assert!(submitted.exists(), "the prompt must reach the provider");
+        assert!(
+            briefed.exists(),
+            "a slow history read must not use up the brief deadline"
+        );
+        assert!(
+            stored.is_some(),
+            "the brief must be stored for the next dispatch"
+        );
+        assert_eq!(loads, 1, "the agent's history is read once per dispatch");
     }
 
     #[tokio::test]
