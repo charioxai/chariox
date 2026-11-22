@@ -848,6 +848,7 @@ mod workflow_request_runtime_state;
 mod workflow_resume_owned_state;
 mod workflow_run_request_runtime_state;
 mod workflow_scheduling_owned_state;
+mod workflow_start_alert;
 mod workflow_tool;
 mod workflow_turn_admin_owned_state;
 mod workflow_turn_prompt_owned_state;
