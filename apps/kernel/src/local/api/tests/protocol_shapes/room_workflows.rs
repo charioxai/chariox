@@ -24,7 +24,7 @@ fn room_history_and_machine_resource_protocol_shapes() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "6b08bf432f4905272c0f53da235b110469a1fac75c44014ce9eccaf4cddf145d"
+        "5cc3fb45bbd924610241876db9520cccf431415ecd90a0279d5e56e5bfb9971f"
     );
 }
 use sha2::{Digest, Sha256};

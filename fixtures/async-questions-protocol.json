@@ -45,6 +45,7 @@
     "sequence": 1,
     "room_id": "room",
     "agent_id": "agent",
+    "arrived_at_ms": null,
     "source_id": "question",
     "occurrence_id": "question-resolved",
     "kind": "source_completed",

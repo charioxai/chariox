@@ -438,7 +438,7 @@ fn local_daemon_protocol_session_history_outline_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "ffedac9dfef1bcafbd27d812d1c536e7c0c92772f4131fa1b242d3cbb2f0c582"
+        "09f6d1706995ec244579c8f958276419d30266d0dfa1e2712d4c56825a2908c4"
     );
 }
 
@@ -1249,6 +1249,6 @@ fn local_daemon_protocol_session_process_memory_outcomes_are_versioned() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "8009678b308dded179be4cfcae1ae378ff48f2da01b65333702e7bd255bd0bfa"
+        "6cb6f97e96ff50676131d3f4f1665132f4f75e7e66d55374ffbb310d0165f8d3"
     );
 }
