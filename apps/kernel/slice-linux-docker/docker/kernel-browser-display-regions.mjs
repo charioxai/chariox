@@ -37,7 +37,7 @@ async function subscribeReservedRegion(host,command,scope,signal,{Capture=Native
  // R1: without a display of its own (headless), a page region is a crop of the Tab's shared screencast; Chrome's own UI and
  // windows still need the display.
  if(!host.chromium?.display){
-  if(target.kind!=='region')throw Error('MP-08: Chrome window video needs the browser\'s own display');
+  if(target.kind!=='region')throw Error('MP-08: region video needs the browser\'s own display');
   if(command._agent_input||command.focused_agent||command.generation!==host.generation)refuse();
   if(!Array.isArray(command.codecs)||command.codecs.length>8||!command.codecs.includes('png')||!command.codecs.includes('avc1.420033')||
    !Number.isInteger(command.bitrate)||command.bitrate<500_000||command.bitrate>64_000_000||![1,2].includes(command.device_scale_factor)||host.displays.size>=maxDisplays)refuse();

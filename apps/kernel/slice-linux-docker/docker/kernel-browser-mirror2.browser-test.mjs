@@ -2108,18 +2108,28 @@ test('MP-08/MP-10/MP-11: opaque leases remeasure actual canvas bounds, protectio
     for(const proof of (await rotated.attestationState()).media){assert.equal(proof.id,region_id);assert.deepEqual(proof.box,[10,0,200,100],'a composited region is excluded from the native attestation by its on-screen box')}
   }
 ));
-// A headless browser has no window to read a region from: it refused every region display as a stale reference, and the
-// viewer asked again every second for as long as the page was open. It now says once, with a fixed reason, that it never can.
-test("MP-08: a browser with no display of its own refuses a region display with that reason", () => mirrored(
-  '<style>body{margin:0}canvas{width:200px;height:100px}</style><canvas id="c"></canvas>',
+// R1 (proposal R): a browser with no display of its own (headless) gives a page region video from Chrome's own frames: the region
+// display is granted as a crop of the Tab's screencast, and a canvas animating at 60 fps reaches it at >= 25 frames a second.
+// (It used to refuse with region_video_no_display, and the viewer showed one still a second.)
+test("R1a: a browser with no display of its own streams a region as a crop of the Tab's screencast", () => mirrored(
+  '<style>body{margin:0}canvas{width:200px;height:100px}</style><canvas id="c" width="200" height="100"></canvas><script>const g=document.getElementById("c").getContext("2d");let n=0;(function f(){g.fillStyle=`hsl(${(n++*7)%360},80%,50%)`;g.fillRect(0,0,200,100);requestAnimationFrame(f)})()</script>',
   async ({ host, next, subscription_id, generation, tab_id }) => {
     const packet = await next(), stream = host.mirror.streams.get(subscription_id);
     const region_id = [...stream.regionRecords].find(([, r]) => r.kind === "tile")?.[0];
     assert(region_id, "MP-10: the canvas is an opaque region");
     const target = { kind: "region", mirror_subscription_id: subscription_id, document_id: stream.document_id, sequence: packet.sequence, region_id };
-    const refused = await host.request({ op: "display_subscribe", tab_id, generation, target, codecs: ["png", "avc1.420033"], bitrate: 2_000_000, device_scale_factor: 1 }).then(() => null, error => error);
-    assert(refused, "MP-08: no region display without a display");
-    assert.match(hostFailureMessage(refused), /\bregion_video_no_display\b/, `the reply names why: ${hostFailureMessage(refused)}`);
+    const reply = await host.request({ op: "display_subscribe", tab_id, generation, target, codecs: ["png", "avc1.420033"], bitrate: 2_000_000, device_scale_factor: 1 });
+    assert.equal(reply.source_kind, "region", `the region display is granted: ${JSON.stringify(reply)}`);
+    assert.deepEqual([reply.css_width, reply.css_height], [200, 100]);
+    const source = host.displays.get(reply.subscription_id)?.regionSource;
+    assert(source, "the region's source is attached");
+    const serials = new Set(), off = source.subscribe(frame => { if (frame?.crop) serials.add(frame.serial); });
+    await settle(500); serials.clear(); const t0 = Date.now(); await settle(2000);
+    const fps = serials.size / ((Date.now() - t0) / 1000); off();
+    assert(fps >= 25, `the region gets >= 25 frames a second from the screencast (${fps.toFixed(1)})`);
+    const sample = source.sample();
+    assert.deepEqual([sample.width, sample.height, sample.crop.width, sample.crop.height], [200, 100, 200, 100], "frames are named at the crop");
+    await host.request({ op: "display_unsubscribe", subscription_id: reply.subscription_id }).catch(() => {});
   }, {}, {}, { ...process.env, CHARIOX_KERNEL_BROWSER_HEADLESS: "1" }));
 // The navigation preview asks for a Tab display. A headless browser answered with a CDP display at the viewer's layout
 // size, which the viewer rejects as invalid geometry: every navigation retried it while the new page stayed hidden.
