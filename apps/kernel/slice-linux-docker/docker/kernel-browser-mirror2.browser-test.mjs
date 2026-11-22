@@ -474,6 +474,28 @@ test("B3: a leave after a hover move ends the page's hover (mouseleave, :hover o
   assert((await evaluate("ev")).includes("leave"), "the page's mouseleave ran");
 }));
 
+// B3 review 2: a hover inside a mirrored cross-origin frame reaches that frame's page (a JS menu opens on mouseenter), and the
+// item it reveals takes the click.
+const frameHover = '<!doctype html><body style="margin:0"><div id="m" style="width:200px;height:30px;background:#ccc">menu</div><a id="item" href="#item" style="display:none;width:200px;height:30px">item</a><script>m.addEventListener("mouseenter",()=>{item.style.display="block";parent.postMessage("open","*")});item.addEventListener("click",e=>{e.preventDefault();parent.postMessage("item","*")})</script>';
+test("B3: a hover move inside a mirrored cross-origin frame opens its JS menu, whose item takes the click", () => mirrored(
+  `<body style="margin:0"><iframe id="cross" src="http://localhost:PORT/menu" style="position:absolute;left:10px;top:20px;width:220px;height:100px;border:0"></iframe><script>window.got=[];addEventListener("message",e=>got.push(e.data))</script></body>`, async ({ next, evaluate, input }) => {
+    await settle(700);
+    const snapshot = await next(600), framed = tag => elements(snapshot).find(([id, t, attrs]) => attrs.id === tag && Number(id.slice(1)) >= 1e9)?.[0];
+    const menu = framed("m");
+    assert(menu, "the frame's menu is mirrored");
+    await input(snapshot.sequence, { kind: "move", node_id: menu, x: 20, y: 10 });
+    for (let i = 0; i < 40 && !(await evaluate("got")).includes("open"); i++) await settle(25);
+    assert((await evaluate("got")).includes("open"), "the frame's page hovers its menu");
+    // The item (hidden until the hover) is in the snapshot already; its style change since then needs a newer packet to aim at.
+    const item = framed("item"); assert(item, "the item is mirrored");
+    let packet = snapshot; for (let i = 0; i < 4; i++) packet = await next(300);
+    await input(packet.sequence, { kind: "click", node_id: item, x: 5, y: 5 });
+    for (let i = 0; i < 40 && !(await evaluate("got")).includes("item"); i++) await settle(25);
+    assert((await evaluate("got")).includes("item"), "the revealed item takes the click");
+  }, {
+    "/menu": { type: "text/html", body: frameHover },
+  }));
+
 // B4 review: a right click inside a frame (same-origin or mirrored cross-origin) cancels Chrome's menu in that frame's
 // own window (a frame's contextmenu never reaches its parent), after the page's listeners saw it uncancelled.
 const frameMenu = '<!doctype html><body style="margin:0"><button id="r" style="width:80px;height:30px">r</button><script>window.ev=[];r.addEventListener("contextmenu",e=>{ev.push("ctx:"+e.defaultPrevented);setTimeout(()=>{ev.push("final:"+e.defaultPrevented);parent.postMessage(ev.join(),"*")})})</script>';

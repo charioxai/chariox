@@ -1122,15 +1122,25 @@ export class Mirror2 {
     if (action.kind === 'selection' && slotOf(action.anchor_id) !== slotOf(action.focus_id)) throw new Error('MP-11: invalid mirror selection');
     // A viewer scrolled ahead of the native page (smooth scrolling still animating): the point comes into range within a moment.
     const retryOffscreen = async resolve => { for (let attempt = 0; ; attempt++) { try { return await resolve(); } catch (error) { if (error?.mirrorReason !== 'offscreen_node' || attempt >= 3) throw error; assertNotCancelled(signal); await new Promise(done => setTimeout(done, 150)); } } };
-    // B3: a hover move aims like a click but never scrolls the page to its node and has no hit fence. A node off the kernel's
-    // viewport, inside a mirrored frame, or changed since the viewer's view drops the move: it has no outcome to report.
     if (action.kind === 'leave') return { input: { kind: 'leave' }, guard: async () => { assertEpoch(); assertNotCancelled(signal); } };
+    // B3: a hover move aims like a click but never scrolls the page (or a frame) to its node and has no hit fence. A node off
+    // the kernel's viewport, a frame no longer mirrored, or a node changed since the viewer's view drops the move: it has no
+    // outcome to report. A node inside a mirrored cross-origin frame is placed through the frame chain, as a click is.
     if (action.kind === 'move') {
       const skip = { perform: async () => {}, fenced: true };
-      if (slotOf(action.node_id) || (stream.attrSequence.get(action.node_id) ?? 0) > input.sequence) return skip;
+      if ((stream.attrSequence.get(action.node_id) ?? 0) > input.sequence) return skip;
+      const slot = slotOf(action.node_id), entry = slot ? stream.frameSlots.get(slot) : null;
+      if (slot && !entry) return skip;
       let at;
-      try { at = await call(`${m}.point(${JSON.stringify({ node_id: action.node_id, x: action.x, y: action.y })})`); }
-      catch (error) { if (error?.mirrorReason === 'offscreen_node') return skip; throw error; }
+      try {
+        if (!entry) at = await call(`${m}.point(${JSON.stringify({ node_id: action.node_id, x: action.x, y: action.y })})`);
+        else {
+          at = await inFrame(entry, `${m}.point(${JSON.stringify({ node_id: localId(action.node_id), x: action.x, y: action.y })})`);
+          for (const level of hosts(entry).toReversed()) { const origin = await onHost(level, `${m}.frameOrigin(${JSON.stringify(ownerOf(level))},${JSON.stringify([at.x, at.y])})`); at = { x: origin[4], y: origin[5] }; }
+        }
+      } catch (error) { if (error?.mirrorReason === 'offscreen_node' || error?.message === 'MP-11: changed mirror input target') return skip; throw error; }
+      const { width, height } = this.host.pageSize(tab.tab_id);
+      if (!(at.x >= 0 && at.y >= 0 && at.x < width && at.y < height)) return skip;
       return { input: { kind: 'move', x: Math.floor(at.x), y: Math.floor(at.y) }, guard: async () => { assertEpoch(); assertNotCancelled(signal); } };
     }
     if (action.kind === 'click' || action.kind === 'scroll') {
