@@ -94,6 +94,8 @@ test('a plain card is bound again to the whole page after the browser restarted,
   assert.equal(first.state, 'present');
   // The kernel restarted: the Tab came back with a new document, and the controller a new generation.
   host.generation = 2; state.document_id = 'doc-2';
+  // The restarted controller remembers nothing: no snapshot references, no anchors.
+  host.cardReferences.clear(); host.cardAnchors.clear();
   const lost = await region({ card_id: 'person-card', generation: 1, document_id: 'doc' });
   assert.equal(lost.state, 'condition_met');
   assert.equal(lost.reason, 'Browser restarted');
