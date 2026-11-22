@@ -17,7 +17,13 @@
 #   systemd-run --unit=restart-stall-drill --collect --property=Type=exec \
 #     scripts/drills/restart-stall/run.sh --binary <kernel> --source-home <CHARIOX_HOME> \
 #       --kernel-id <id the source kernel reports> --work /var/tmp/<new dir> [--window 600] \
-#       [--sessions lost|kept]
+#       [--sessions lost|kept] [--probe-ipc <kernel-client dist/ipc.js> --probe-room <room id>]
+# With --probe-*: the two Claude agents with the longest histories and three
+# small ones get a probe prompt (--probe-owner <the Rooms' owner user id>: the
+# copy is not enrolled in Cloud, so its local client acts as that owner only
+# after the copy's databases name the local owner instead; done on the copy) once the first boot settled and again right as
+# the second boot is ready; report.md lists each probe's time to reach its
+# provider (the stand-in answers at once, so that is its time to first output).
 # --sessions lost (default): no Claude session can be resumed, so every agent
 # with work rebuilds its context from history, the worst case of a restart.
 # Results: <work>/report.md (per boot: per-agent table, kernel CPU), raw logs beside it.
@@ -33,6 +39,9 @@ while [[ $# -gt 0 ]]; do
     --work) work=$2; shift 2;;
     --window) window=$2; shift 2;;
     --sessions) sessions=$2; shift 2;;
+    --probe-ipc) probe_ipc=$(realpath -e "$2"); shift 2;;
+    --probe-room) probe_room=$2; shift 2;;
+    --probe-owner) probe_owner=$2; shift 2;;
     *) echo "unknown argument $1" >&2; exit 2;;
   esac
 done
@@ -68,7 +77,8 @@ log() { printf '%s %s\n' "$(date -u +%FT%TZ)" "$*" | tee -a "$work/drill.log"; }
 # The stand-in Claude CLI: every user message gets an answer and a result. A
 # brief request gets a well-formed brief, so the kernel stores it.
 inside_work "$work/bin/claude"
-{ head -1 "$here/claude-standin.sh"; echo "sessions=$sessions"; tail -n +2 "$here/claude-standin.sh"; } > "$work/bin/claude"
+{ head -1 "$here/claude-standin.sh"; echo "sessions=$sessions"; echo "probes=$work/probes-arrived.tsv"
+  tail -n +2 "$here/claude-standin.sh"; } > "$work/bin/claude"
 chmod 755 "$work/bin/claude"
 
 start_kernel() {  # $1 = unit name
@@ -132,6 +142,12 @@ PY
 # come along; no Vault file, relay identity or provider credential does. The
 # stand-in CLI needs no login.
 if [[ -f $source_home/config.toml ]]; then inside_work "$home/config.toml"; cp -- "$source_home/config.toml" "$home/config.toml"; fi
+# Installed skill packages and agent guides: a new run reloads them.
+for kept in state/skills skills metaagent-guides workflow-instructions; do
+  if [[ -d $source_home/$kept ]]; then
+    inside_work "$home/$kept"; mkdir -p "$(dirname "$home/$kept")"; cp -a -- "$source_home/$kept" "$(dirname "$home/$kept")/"
+  fi
+done
 if [[ -f $source_home/state/provider-accounts.json ]]; then
   # Each profile's login directory becomes an empty directory inside the copy.
   python3 - "$source_home" "$home" <<'PY'
@@ -170,6 +186,66 @@ json.dump(document, open(f"{copy}/state/provider-accounts.json", "w"))
 PY
 fi
 log "state copied: $(du -sh "$home" | cut -f1)"
+if [[ -n "${probe_owner:-}" ]]; then
+  [[ "$probe_owner" =~ ^[a-z0-9]+$ ]] || { echo "--probe-owner looks like a user id" >&2; exit 2; }
+  python3 - "$home" "$probe_owner" <<'PY'
+import sqlite3, sys
+home, owner = sys.argv[1:]
+for rel in ("state/kernel.db", "history/operational.db"):
+    db = sqlite3.connect(f"{home}/{rel}")
+    for (table,) in db.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall():
+        for column in [row[1] for row in db.execute(f"PRAGMA table_info('{table}')")]:
+            db.execute(f"UPDATE '{table}' SET \"{column}\" = REPLACE(\"{column}\", ?, 'local')"
+                       f" WHERE typeof(\"{column}\") = 'text' AND instr(\"{column}\", ?) > 0", (owner, owner))
+    db.commit(); db.close()
+PY
+  log "copy owned by its local owner"
+fi
+probe_agents=()
+if [[ -n "${probe_ipc:-}" ]]; then
+  : "${probe_room:?--probe-room}"
+  mapfile -t probe_agents < <(python3 - "$home/history/operational.db" "$probe_room" "$work/probe-agents.tsv" <<'PY'
+import json, sqlite3, sys
+db, room, out = sys.argv[1:]
+history = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+rows = history.execute(
+    "SELECT agent_id, COUNT(*), SUM(LENGTH(event_json)) FROM history_events"
+    " WHERE session_id = ? AND agent_id IS NOT NULL GROUP BY agent_id", (room,)).fetchall()
+def claude(agent):
+    row = history.execute(
+        "SELECT event_json FROM history_events WHERE session_id = ? AND agent_id = ?"
+        " AND kind = 'provider_output' ORDER BY sequence DESC LIMIT 1", (room, agent)).fetchone()
+    event = json.loads(row[0]) if row else {}
+    return "claude" in (event.get("provider"), event.get("metadata", {}).get("external_provider"))
+rows = [row for row in rows if row[1] >= 20 and claude(row[0])]
+rows.sort(key=lambda row: row[2])
+chosen = rows[-2:] + rows[:3]
+with open(out, "w") as handle:
+    for agent, events, size in chosen:
+        handle.write(f"{agent}\t{events}\t{size}\n")
+        print(agent)
+PY
+)
+  log "probe agents: ${#probe_agents[@]} ($work/probe-agents.tsv)"
+fi
+probe() {  # $1 = unit, $2 = phase
+  [[ ${#probe_agents[@]} -gt 0 ]] || return 0
+  local main kernel
+  main=$(systemctl show -p MainPID --value "$1")
+  kernel=$(pgrep -P "$main" | head -1)
+  [[ -n "$kernel" ]] || { log "probe $2: no kernel process"; return 0; }
+  nsenter -t "$kernel" --net --mount node "$here/probe.mjs" "$probe_ipc" "$source_home" "$port" \
+    "$probe_room" "$2" "$work/probes-sent.tsv" "${probe_agents[@]}" || log "probe $2 failed"
+  log "probe $2 sent"
+}
+wait_ready() {  # $1 = seconds; the kernel accepts local commands
+  local t
+  for t in $(seq 1 "$1"); do
+    grep -qs '"kernel ready for local command"' "$work/logs"/*daemon*.ndjson && return 0
+    sleep 1
+  done
+  return 1
+}
 
 # 3. Two cold boots of the copy: the first is the restart the source state was
 #    captured in, the second restarts what the first left.
@@ -178,11 +254,40 @@ for boot in 1 2; do
   boot_ms=$(date +%s%3N)
   log "boot $boot: starting $unit"
   start_kernel "$unit"
-  watch_cpu "$unit" "$window" "$work/cpu-boot$boot.tsv"
+  watch_cpu "$unit" "$window" "$work/cpu-boot$boot.tsv" &
+  watcher=$!
+  if wait_ready 300; then
+    # The first boot is the baseline: probe once its recovery settled. The
+    # second boot is the restart under test: probe the moment it is ready.
+    if [[ $boot == 1 ]]; then sleep 90; fi
+    probe "$unit" "boot$boot"
+  fi
+  wait "$watcher"
   stop_kernel "$unit"
   log "boot $boot: cold-stopped after ${window}s"
   inside_work "$work/boot$boot"; mkdir -p "$work/boot$boot"
   find "$work/logs" -mindepth 1 -maxdepth 1 -exec mv -- {} "$work/boot$boot/" \;
   python3 "$here/report.py" "$work/boot$boot" "$boot_ms" "$work/cpu-boot$boot.tsv" >> "$work/report.md"
 done
+if [[ -s $work/probes-sent.tsv ]]; then
+  python3 - "$work" >> "$work/report.md" <<'PY'
+import sys
+work = sys.argv[1]
+sizes = {line.split("\t")[0]: line.split("\t")[1:] for line in open(f"{work}/probe-agents.tsv").read().splitlines()}
+arrived = {}
+for line in open(f"{work}/probes-arrived.tsv").read().splitlines() if __import__("os").path.exists(f"{work}/probes-arrived.tsv") else []:
+    marker, at = line.split("\t")
+    arrived.setdefault(marker, int(at))
+print("## Probes: time from prompt to its provider (first output)\n")
+print("| agent | events | history MB | boot | sent as | first output after (s) |")
+print("|---|---|---|---|---|---|")
+for line in open(f"{work}/probes-sent.tsv").read().splitlines():
+    marker, sent, result = line.split("\t")
+    _, _, phase, agent = marker.split("-", 3)
+    events, size = sizes.get(agent, ["?", "0"])
+    took = (arrived[marker] - int(sent)) / 1000 if marker in arrived else "never"
+    print(f"| {agent[:14]} | {events} | {int(size) / 1e6:.1f} | {phase} | {result} | {took} |")
+print()
+PY
+fi
 log "done: $work/report.md"
