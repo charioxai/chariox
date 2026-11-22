@@ -179,12 +179,10 @@ impl KernelRuntimeState {
                     None => "task unavailable in this room and turn".to_owned(),
                 })
             })?;
-        // MP-08/MP-09/MP-10/MP-11 F03: polling cannot keep an accepted wait
-        // inside a native turn or mutate its sources/deadline before settlement.
-        if task.wait.is_some() {
-            return Err(ledger::error(
-                "Wait already accepted. End this provider turn immediately without further tools, including inbox, wakes or subscriptions. The kernel will deliver a new turn for the source or deadline.",
-            ));
+        // The accepted wait owns the turn boundary. Inbox handling can still
+        // settle racing outcomes, without admitting new work or replacing the wait.
+        if task.wait.is_some() && !matches!(name, "chariox.events.inbox" | "chariox.events.ack") {
+            return Err(ledger::accepted_wait_error(&task.reason));
         }
         let now = crate::session::unix_epoch_ms();
         let payload = match name {
@@ -372,7 +370,7 @@ impl KernelRuntimeState {
                 else {
                     unreachable!()
                 };
-                let mut result = serde_json::json!({"yield_requested":true,"waiting_commits_at_native_settlement":true,"next_action":"End this provider turn immediately without further tools. Do not check inbox, wakes or subscriptions: the kernel delivers a new turn for the source or deadline."});
+                let mut result = serde_json::json!({"yield_requested":true,"waiting_commits_at_native_settlement":true,"next_action":"End this turn so the kernel can deliver the wake. You may read and acknowledge an inbox event if you already have one to handle."});
                 let registrations = self
                     .owned
                     .durable_state_store
