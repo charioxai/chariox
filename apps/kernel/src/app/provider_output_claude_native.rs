@@ -19,7 +19,6 @@ use crate::terminal::TerminalOutputKind;
 
 mod attachments;
 mod context_delivery;
-mod first_run_notice;
 mod hidden_context;
 mod local_denial;
 mod permission;
@@ -30,17 +29,21 @@ mod startup_exit;
 #[cfg(test)]
 pub(crate) mod tests;
 mod transcript;
+mod trust_dialog;
 mod typed_prompt;
 mod workspace_trust;
 
 pub(crate) use context_delivery::clear_claude_context_delivery_for_settled_prompt;
-pub(crate) use first_run_notice::claude_native_first_run_notice;
 pub(crate) use permission::{claude_permission_title, format_claude_permission_message};
 pub(crate) use start_screen::{
     claude_headless_owner_decision_pending, claude_headless_prompt_written,
     claude_headless_stuck_screen_line,
 };
 pub(super) use startup_exit::claude_native_startup_exit;
+pub(crate) use trust_dialog::{
+    claude_native_trust_dialog_update, claude_native_trust_interaction_id,
+    claude_native_trust_keys, ClaudeTrustDialog, ClaudeTrustKeys,
+};
 
 use attachments::{
     extract_claude_native_prompt_attachments, format_claude_attachment_context,

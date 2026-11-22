@@ -690,6 +690,7 @@ pub(in crate::runtime) use provider_login_state::{
 mod provider_history_runtime;
 mod provider_mcp_continuation_runtime;
 pub(crate) use provider_mcp_continuation_runtime::arms_catalog_reload;
+mod claude_trust_card;
 mod provider_mcp_task_continuation_runtime;
 mod provider_output_pump_runtime;
 mod provider_output_runtime;
