@@ -234,5 +234,24 @@ impl KernelBrowserHost {
 
 /// The user-domain tools each agent listed, carried across a hot reload.
 #[cfg(unix)]
-#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Default, serde::Serialize)]
 pub(crate) struct LoadedHandover(Vec<(String, String, KernelBrowserCapability)>);
+
+/// L12.1 handed over `{focus, grants, loaded}`; focus and grants ended with the
+/// no-grant kernel browser, so a handover from that release keeps only `loaded`.
+#[cfg(unix)]
+impl<'de> serde::Deserialize<'de> for LoadedHandover {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(serde::Deserialize)]
+        #[serde(untagged)]
+        enum Shape {
+            Loaded(Vec<(String, String, KernelBrowserCapability)>),
+            Previous {
+                loaded: Vec<(String, String, KernelBrowserCapability)>,
+            },
+        }
+        Ok(match Shape::deserialize(deserializer)? {
+            Shape::Loaded(loaded) | Shape::Previous { loaded } => Self(loaded),
+        })
+    }
+}
