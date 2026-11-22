@@ -1378,3 +1378,82 @@ test('region bounds without a committed owner still read the document before and
  mirror.protectTargets=async()=>{};mirror.frames.regionBoxes=async()=>[];mirror.evaluate=async()=>[];
  await mirror.regionBoxes(stream,{target_id:'T',document_id:'D'});assert.equal(reads,2);
 });
+
+// Row 426: a region operation (a lease check, once per region video frame) ends the mirror's long polls so it is not held
+// behind them, but a credit with nothing to send must not answer with an empty packet: each one spends a sequence, and at
+// 60 checks a second the viewer's eight credits came back empty ~400 times a second and outran the `behind` margin (false resets
+// that also retired the regions). The credit waits again; the region operation still runs at once; the next real change answers.
+test('Row 426: a region operation during a waiting credit runs at once and does not make the credit issue an empty packet', async () => {
+  const policy = { targets: [] }, tab = { tab_id: 't', target_id: 'T', document_id: 'D1' };
+  const documents = new Map([['T', 'D1']]);
+  const connection = { isOpen: () => true, send: async () => ({ frameTree: { frame: { loaderId: 'D1' } } }) };
+  const world = { connection, sessionId: 'S', frame: { loaderId: 'D1' }, ref: 'm' };
+  const stream = { tab_id: 't', world, issued: 1, resetAt: 1, document_id: 'D1', policy, fallback: null, resources: new Map(), attrSequence: new Map(), ownScrolls: new Map(), frames: new Map(), frameSlots: new Map(), frameSlot: 0, tileKeys: '', hurry: 0, chain: Promise.resolve(), header: { snapshot_complete: 'false', font_failures: '[]', scroll: '[0,0]', focused: 'null', focus_visible: 'false', selection: 'null', fragment: 'null' } };
+  const host = { protection: policy, generation: 1, pageSize, scales: new Map(), tabs: new Map([['t', tab]]), displayTarget: async () => tab,
+    browser: { connection, documentIdsByTarget: documents, sessionsByTarget: new Map([['T', 'S']]) } };
+  const mirror = new Mirror2({ host, require: () => stream, assertWebTab: () => {}, streams: new Map([['s', stream]]) });
+  mirror.world = async () => world;
+  const started = Date.now(), quiet = { ops: [], changed: [], resources: [], sheets: [], scroll: [0, 0], focused: null, selection: null, fragment: null, opaque: false, pressed: 0 };
+  let woken = null;
+  mirror.evaluate = async (_world, expression) => {
+    if (expression.endsWith('.wake()')) { woken?.(); return null; }
+    if (expression.includes('waitDrain')) {
+      // The page answers its long poll on a wake or at its bound; a real change arrives 300 ms in.
+      const at = Date.now() - started, ms = Number(/waitDrain\((\d+)/.exec(expression)?.[1] ?? 500);
+      await new Promise(resolve => { woken = resolve; setTimeout(resolve, Math.min(ms, Math.max(1, 300 - at))); });
+      woken = null;
+      return Date.now() - started >= 300 ? { ...quiet, ops: [{ op: 'text', id: 'n2', value: 'clicks 1' }] } : quiet;
+    }
+    return quiet;
+  };
+  mirror.frames = { drain: async () => ({ ops: [], resources: [], changed: [] }), project: (_, source) => source };
+  mirror.materialize = async () => [];
+  mirror.encode = async (_stream, packet) => packet;
+  const credit = mirror.next(stream, { subscription_id: 's', generation: 1, after_sequence: 1, wait_ms: 2000 }, 'scope');
+  await new Promise(resolve => setTimeout(resolve, 50));
+  let ranAt = null;
+  await mirror.regions.locked(stream, async () => { ranAt = Date.now() - started; });
+  assert.ok(ranAt !== null && ranAt < 200, `the region operation ran at once (${ranAt} ms), not behind the 2 s long poll`);
+  const packet = await credit;
+  assert.deepEqual(packet.ops, [{ op: 'text', id: 'n2', value: 'clicks 1' }], 'the credit answered the real change, not an empty packet at the region operation');
+  assert.equal(stream.issued, 2, 'one sequence for one change');
+});
+
+// Row 426: the viewer keeps several credits in flight; the ones queued behind the waiting one step aside too (before any page
+// call), so the region operation never waits behind their long polls, and none of them answers empty.
+test('Row 426: credits queued behind a waiting one neither delay a region operation nor answer it with empty packets', async () => {
+  const policy = { targets: [] }, tab = { tab_id: 't', target_id: 'T', document_id: 'D1' };
+  const documents = new Map([['T', 'D1']]);
+  const connection = { isOpen: () => true, send: async () => ({ frameTree: { frame: { loaderId: 'D1' } } }) };
+  const world = { connection, sessionId: 'S', frame: { loaderId: 'D1' }, ref: 'm' };
+  const stream = { tab_id: 't', world, issued: 1, resetAt: 1, document_id: 'D1', policy, fallback: null, resources: new Map(), attrSequence: new Map(), ownScrolls: new Map(), frames: new Map(), frameSlots: new Map(), frameSlot: 0, tileKeys: '', hurry: 0, chain: Promise.resolve(), header: { snapshot_complete: 'false', font_failures: '[]', scroll: '[0,0]', focused: 'null', focus_visible: 'false', selection: 'null', fragment: 'null' } };
+  const host = { protection: policy, generation: 1, pageSize, scales: new Map(), tabs: new Map([['t', tab]]), displayTarget: async () => tab,
+    browser: { connection, documentIdsByTarget: documents, sessionsByTarget: new Map([['T', 'S']]) } };
+  const mirror = new Mirror2({ host, require: () => stream, assertWebTab: () => {}, streams: new Map([['s', stream]]) });
+  mirror.world = async () => world;
+  const started = Date.now(), quiet = { ops: [], changed: [], resources: [], sheets: [], scroll: [0, 0], focused: null, selection: null, fragment: null, opaque: false, pressed: 0 };
+  let woken = null, changes = 0;
+  mirror.evaluate = async (_world, expression) => {
+    if (expression.endsWith('.wake()')) { woken?.(); return null; }
+    if (expression.includes('waitDrain')) {
+      const ms = Number(/waitDrain\((\d+)/.exec(expression)?.[1] ?? 500);
+      await new Promise(resolve => { woken = resolve; setTimeout(resolve, Math.min(ms, Math.max(1, 300 - (Date.now() - started)))); });
+      woken = null;
+      return Date.now() - started >= 300 && changes++ === 0 ? { ...quiet, ops: [{ op: 'text', id: 'n2', value: 'clicks 1' }] } : quiet;
+    }
+    return quiet;
+  };
+  mirror.frames = { drain: async () => ({ ops: [], resources: [], changed: [] }), project: (_, source) => source };
+  mirror.materialize = async () => [];
+  mirror.encode = async (_stream, packet) => packet;
+  const answered = [];
+  const credits = [1, 2, 3].map(() => mirror.next(stream, { subscription_id: 's', generation: 1, after_sequence: 1, wait_ms: 600 }, 'scope').then(packet => { answered.push([Date.now() - started, packet.ops]); return packet; }));
+  await new Promise(resolve => setTimeout(resolve, 50));
+  const times = [];
+  for (let i = 0; i < 3; i++) { await mirror.regions.locked(stream, async () => { times.push(Date.now() - started); }); await new Promise(resolve => setTimeout(resolve, 16)); }
+  assert.ok(times.every(t => t < 250), `every region operation ran at once (${times} ms)`);
+  assert.ok(answered.every(([at, ops]) => ops.length || at >= 290), `no credit answered empty at a region operation (${JSON.stringify(answered)})`);
+  await Promise.all(credits);
+  assert.deepEqual(answered[0][1], [{ op: 'text', id: 'n2', value: 'clicks 1' }], 'the first answer is the real change');
+  assert.equal(stream.issued, 4, 'three credits, three sequences: the change, then two answers at their own wait');
+});
