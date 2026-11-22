@@ -704,7 +704,10 @@ impl KernelRuntimeState {
             .filter(|urgent| {
                 urgent.state == "pending"
                     && (urgent.kind == "message"
-                        || matches!(wake_disposition(urgent, tasks), WakeDisposition::Deliver))
+                        || matches!(
+                            self.wake_disposition(urgent, tasks),
+                            WakeDisposition::Deliver
+                        ))
             })
         else {
             return Ok(None);
