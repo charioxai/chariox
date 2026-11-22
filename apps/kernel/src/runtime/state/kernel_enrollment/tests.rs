@@ -267,3 +267,27 @@ async fn a_card_nobody_answers_is_withdrawn_when_the_code_expires_and_the_agent_
     assert!(error.contains("expired"), "{error}");
     assert!(cloud.decisions.lock().unwrap().is_empty());
 }
+
+#[tokio::test]
+async fn a_card_the_kernel_withdraws_on_its_own_timeout_tells_cloud_nothing_and_can_be_raised_again() {
+    let cloud = cloud("PENDING").await;
+    let (state, token, _workspace) = super::super::machine_acquisition::tool_tests::agent_kernel(cloud.api_url.clone()).await;
+    let room = room_of(&state, &token);
+    let first = state.kernel_enrollment_tool(&token, args()).await.unwrap();
+    assert_eq!(first.payload["status"], "waiting_for_owner");
+    let listed = cards(&state, &room, 1).await;
+    // The kernel's own timeout withdraws the unanswered card.
+    state.timeout_runtime_interaction(&room, &listed[0].0).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !state.owned.session_store.get_session(&room).unwrap().active_interactions().is_empty() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the withdrawn card leaves");
+    assert!(cloud.decisions.lock().unwrap().is_empty(), "a timeout is not a denial: {:?}", cloud.decisions.lock().unwrap());
+    // The code is still open in Cloud, so asking again puts up one fresh card.
+    let again = state.kernel_enrollment_tool(&token, args()).await.unwrap();
+    assert_eq!(again.payload["status"], "waiting_for_owner");
+    assert_eq!(cards(&state, &room, 1).await.len(), 1);
+}

@@ -310,8 +310,13 @@ impl KernelRuntimeState {
                         let _ = decide(&profile, &user_code, "approve").await;
                     }
                 }
-                Ok(Ok(_)) => {
+                Ok(Ok(answer)) if answer.status == "answered" && answer.choice_id.as_deref() == Some("deny") => {
                     let _ = decide(&profile, &user_code, "deny").await;
+                }
+                Ok(Ok(_)) => {
+                    // The kernel withdrew the unanswered card on its own timeout: nobody decided, so
+                    // Cloud is told nothing. The code stays open until it expires, and asking again
+                    // puts one fresh card up.
                 }
                 _ => {
                     let _ = state.timeout_runtime_interaction(&room, &id).await;
