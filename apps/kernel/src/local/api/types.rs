@@ -627,4 +627,6 @@ pub use workspace::*;
 /// 1013 links a folded notification outcome to its answering turn.
 /// Local 1013 (relay peer 450): the mirror v2 header carries `focus_visible`, whether the page's focused element
 /// matches `:focus-visible`, so a viewer draws the focus ring only where the page's browser does; absent means no ring.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1013;
+/// Local 1014 (relay peer 451, provisional): `SetProjectEnvironmentSecret` takes a `source` (a typed value, a Vault entry id, or
+/// `unlink`), and each Secret of the Environment view carries the `link` to the entry it was filled from.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1014;
