@@ -4928,6 +4928,7 @@ mod skill_hook_fakes {
             _: &str,
             _: bool,
             base: String,
+            _: Option<usize>,
         ) -> Result<String, DaemonError> {
             Ok(base)
         }
@@ -4969,8 +4970,17 @@ mod skill_hook_fakes {
             hidden: &str,
             steering: bool,
             base: String,
+            handoff_room: Option<usize>,
         ) -> Result<String, DaemonError> {
-            PassthroughPolicy.prepare_context(session_id, agent_id, run_id, hidden, steering, base)
+            PassthroughPolicy.prepare_context(
+                session_id,
+                agent_id,
+                run_id,
+                hidden,
+                steering,
+                base,
+                handoff_room,
+            )
         }
         fn protect_inputs(
             &self,

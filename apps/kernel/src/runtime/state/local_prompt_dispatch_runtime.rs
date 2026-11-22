@@ -778,7 +778,7 @@ impl KernelRuntimeState {
                             &|room| {
                                 context_handoff
                                     .as_ref()
-                                    .map(|handoff| handoff.render_hidden(room))
+                                    .map(|handoff| handoff.render_switch_hidden(room))
                                     .unwrap_or_default()
                             },
                         )
