@@ -31,6 +31,9 @@ const TARGET_ATTRIBUTES = new Set(['type', 'contenteditable']);
 const HISTORY_BYTES = 8 * 1024 * 1024;
 // GATE-bytes: sheets from this size (normalized text) are pruned to their used rules for a first paint.
 const FIRST_PAINT_SHEET = 32 * 1024;
+// The observer's own patterns: a sheet's image-set() options (loadViewerOptions) and selectors on a link's or element's value (sheetCss).
+const IMAGE_SET = /image-set\(([^()]*(?:\([^()]*\)[^()]*)*)\)/gi;
+const VALUE_SELECTOR = { href: /\[\s*chariox-href\s*[~|^$*]?=/i, src: /\[\s*chariox-src\s*[~|^$*]?=/i };
 // A font sent as a subset is checked against the document's characters at most this often.
 const FONT_REFRESH_MS = 1000;
 // Y3-C1a: how often, at most, a page whose script changed its DOM is asked again whether it takes the wheel.
@@ -303,6 +306,8 @@ export class Mirror2 {
   async snapshotOnce(world, policy, patience, known = [], options = null) {
     if (world.snapshotPending?.policy !== policy) world.snapshotPending = null;
     const args = options ? `${JSON.stringify(known)},${JSON.stringify(options)}` : known.length ? JSON.stringify(known) : '';
+    // The sheets this snapshot tells the page the viewer retains (its usedCss answers null for them): the kernel skips asking.
+    if (!world.snapshotPending) world.retainedSheets = new Set(known);
     const pending = world.snapshotPending ??= { policy, promise: this.evaluate(world, `${world.ref}.snapshot(${args})`, false, SNAPSHOT_MS, true) };
     pending.promise.catch(() => { if (world.snapshotPending === pending) world.snapshotPending = null; }); // a failed snapshot is not kept
     let timer;
@@ -1054,14 +1059,27 @@ export class Mirror2 {
     if (!await read(url, '', '', 0)) return null;
     // A same-site navigation reads the same sheets again. Their normalized text (a lossy sheet's chunk-by-chunk
     // re-parse is most of a large sheet's cost) comes from the last document that parsed the same source under the
-    // same wrapper, origin and compatibility mode. Sanitizing (per-document resource keys) and pruning still run here.
+    // same wrapper, origin and compatibility mode; only a part not seen before parses in the page.
     world.quirks ??= await this.evaluate(world, "document.compatMode === 'BackCompat'");
     const origin = (() => { try { return new URL(world.frame?.url ?? '').origin; } catch { return ''; } })();
     const keys = sheets.map(sheet => createHash('sha256').update(JSON.stringify([origin, world.quirks, sheet.open, sheet.close, sheet.text])).digest('base64'));
-    const input = sheets.map(({ text, url, open, close }, i) => { const body = this.parsedSheets.take(keys[i]); return body === undefined ? { text, url, open, close } : { body, url }; });
-    const reply = await this.evaluate(world, `(sheets=>{${SERIALIZER}let out='';const parsed=[];for(const s of sheets){let body=s.body;if(body===undefined){body=parse(s.text);if(s.open)body=parse(s.open+body+s.close);parsed.push(body)}else parsed.push(null);out+=${world.ref}.sanitize(body,s.url)}return {css:out,parsed,used:${usedBy === null ? 'null' : `out.length<${FIRST_PAINT_SHEET}?null:${world.ref}.usedCss(${JSON.stringify(usedBy)},out)`}}})(${JSON.stringify(input)})`);
-    reply.parsed.forEach((body, i) => { if (typeof body === 'string') this.parsedSheets.put(keys[i], body); });
-    return reply.used === null ? reply.css : [reply.css, reply.used];
+    const bodies = keys.map(key => this.parsedSheets.take(key));
+    const misses = sheets.flatMap(({ text, open, close }, i) => bodies[i] === undefined ? [{ i, text, open, close }] : []);
+    if (misses.length) {
+      const parsed = await this.evaluate(world, `(sheets=>{${SERIALIZER}return sheets.map(s=>{let body=parse(s.text);if(s.open)body=parse(s.open+body+s.close);return body})})(${JSON.stringify(misses.map(({ text, open, close }) => ({ text, open, close })))})`);
+      misses.forEach(({ i }, n) => { bodies[i] = parsed[n]; this.parsedSheets.put(keys[i], parsed[n]); });
+    }
+    // Sanitizing runs here on that text (the page's own sanitizer, shared verbatim), not in the page: only each part's url()
+    // occurrences travel there, to take their per-document resource keys in the sanitizer's order (sheetKeys), and the
+    // whole sheet crosses CDP at most once, for a first paint's pruning (not even then for a sheet
+    // the viewer retains: the page's usedCss would answer null for it). A url() is `mr:r<n>` (its occurrence number, the shape of a key, which the sanitizer's
+    // last pass requires) until its key is known.
+    const drafts = sheets.map((sheet, i) => { const urls = []; return { urls, css: sanitizeMirrorCss(bodies[i], sheet.url, (value, base, kind) => { urls.push([value, base, kind]); return `r${urls.length}`; }) }; });
+    const parts = drafts.map(({ urls, css }) => ({ urls, imageSets: /image-set\(/i.test(css) ? [...css.matchAll(IMAGE_SET)].map(match => match[0]).join(' ') : '', values: ['href', 'src'].filter(name => VALUE_SELECTOR[name].test(css)) }));
+    const resourceKeys = await this.evaluate(world, `${world.ref}.sheetKeys(${JSON.stringify(parts)})`);
+    const css = drafts.map(({ css }, i) => css.replace(/url\("mr:r(\d+)"\)/g, (_, n) => resourceKeys[i][n - 1] ? `url("mr:${resourceKeys[i][n - 1]}")` : 'none')).join('');
+    const used = usedBy === null || css.length < FIRST_PAINT_SHEET || world.retainedSheets?.has(sheetDigest(css)) ? null : await this.evaluate(world, `${world.ref}.usedCss(${JSON.stringify(usedBy)},${JSON.stringify(css)})`);
+    return used === null ? css : [css, used];
   }
   // Opaque regions as lossless stills, refreshed at most once a second until phase 3
   // binds them to video rows: a canvas or video as its own pixels; plugins, closed
