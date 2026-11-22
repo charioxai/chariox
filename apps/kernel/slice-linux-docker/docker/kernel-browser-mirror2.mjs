@@ -1094,7 +1094,8 @@ export class Mirror2 {
     if (stream.fallback || !Number.isSafeInteger(input.sequence) || input.sequence < 1 || input.sequence > stream.issued || !nativeFocus && input.sequence < stream.resetAt) throw new MirrorInputEpochRefusal();
     const validId = id => typeof id === 'string' && /^n[1-9][0-9]{0,15}$/.test(id);
     if (!action || typeof action.kind !== 'string') throw new Error('MP-11: invalid mirror input');
-    if (['click', 'focus', 'scroll', 'blur', 'set'].includes(action.kind) && !validId(action.node_id) || action.kind === 'selection' && (!validId(action.anchor_id) || !validId(action.focus_id))) throw new Error('MP-11: invalid mirror input');
+    if (['click', 'move', 'focus', 'scroll', 'blur', 'set'].includes(action.kind) && !validId(action.node_id) || action.kind === 'selection' && (!validId(action.anchor_id) || !validId(action.focus_id))) throw new Error('MP-11: invalid mirror input');
+    if (action.kind === 'move' && (!Number.isFinite(action.x) || !Number.isFinite(action.y)) || action.kind === 'click' && action.button !== undefined && action.button !== 'right') throw new Error('MP-11: invalid mirror input');
     if (action.kind === 'text' && (typeof action.text !== 'string' || action.text.length > 16384 || action.node_id !== undefined && !validId(action.node_id))) throw new Error('MP-11: invalid mirror input');
     // A pointer target whose attributes changed after the viewer's view is refused (re-sync). Focus, range and
     // control state refuse only a changed identity (type, editability, morph), like text and keys: a field's own
@@ -1121,6 +1122,27 @@ export class Mirror2 {
     if (action.kind === 'selection' && slotOf(action.anchor_id) !== slotOf(action.focus_id)) throw new Error('MP-11: invalid mirror selection');
     // A viewer scrolled ahead of the native page (smooth scrolling still animating): the point comes into range within a moment.
     const retryOffscreen = async resolve => { for (let attempt = 0; ; attempt++) { try { return await resolve(); } catch (error) { if (error?.mirrorReason !== 'offscreen_node' || attempt >= 3) throw error; assertNotCancelled(signal); await new Promise(done => setTimeout(done, 150)); } } };
+    if (action.kind === 'leave') return { input: { kind: 'leave' }, guard: async () => { assertEpoch(); assertNotCancelled(signal); } };
+    // B3: a hover move aims like a click but never scrolls the page (or a frame) to its node and has no hit fence. A node off
+    // the kernel's viewport, a frame no longer mirrored, or a node changed since the viewer's view drops the move: it has no
+    // outcome to report. A node inside a mirrored cross-origin frame is placed through the frame chain, as a click is.
+    if (action.kind === 'move') {
+      const skip = { perform: async () => {}, fenced: true };
+      if ((stream.attrSequence.get(action.node_id) ?? 0) > input.sequence) return skip;
+      const slot = slotOf(action.node_id), entry = slot ? stream.frameSlots.get(slot) : null;
+      if (slot && !entry) return skip;
+      let at;
+      try {
+        if (!entry) at = await call(`${m}.point(${JSON.stringify({ node_id: action.node_id, x: action.x, y: action.y })})`);
+        else {
+          at = await inFrame(entry, `${m}.point(${JSON.stringify({ node_id: localId(action.node_id), x: action.x, y: action.y })})`);
+          for (const level of hosts(entry).toReversed()) { const origin = await onHost(level, `${m}.frameOrigin(${JSON.stringify(ownerOf(level))},${JSON.stringify([at.x, at.y])})`); at = { x: origin[4], y: origin[5] }; }
+        }
+      } catch (error) { if (error?.mirrorReason === 'offscreen_node' || error?.message === 'MP-11: changed mirror input target') return skip; throw error; }
+      const { width, height } = this.host.pageSize(tab.tab_id);
+      if (!(at.x >= 0 && at.y >= 0 && at.x < width && at.y < height)) return skip;
+      return { input: { kind: 'move', x: Math.floor(at.x), y: Math.floor(at.y) }, guard: async () => { assertEpoch(); assertNotCancelled(signal); } };
+    }
     if (action.kind === 'click' || action.kind === 'scroll') {
       const entry = frameOf(action.node_id);
       let at, local = null;
@@ -1172,6 +1194,10 @@ export class Mirror2 {
         else await call(`${m}.hitCheck(${JSON.stringify(at)},${JSON.stringify(action.node_id)})`);
         checked = true;
       };
+      // B4: Chrome's own menu would open in the kernel's window, where no viewer shows it: a one-shot listener in the
+      // target document's window (its frame's world for a mirrored frame) cancels the contextmenu the right click fires,
+      // after the page's own listeners saw it.
+      if (action.kind === 'click' && action.button === 'right') return { input: { kind: 'click', ...at, button: 'right' }, guard: async () => { await guard(); if (entry) await inFrame(entry, `${m}.menuOff(${JSON.stringify(localId(action.node_id))})`); else await call(`${m}.menuOff(${JSON.stringify(action.node_id)})`); } };
       if (action.kind === 'click') return { input: { kind: 'click', ...at }, guard };
       if (!Number.isInteger(action.delta_x) || !Number.isInteger(action.delta_y)) throw new Error('MP-11: invalid mirror input');
       return { input: { kind: 'scroll', ...at, delta_x: action.delta_x, delta_y: action.delta_y }, guard };

@@ -632,4 +632,7 @@ pub use workspace::*;
 /// Local 1014 (provisional): the local direct grant answers `LocalBrowserConnectIssued`/`LocalTerminalConnectIssued` and
 /// `LocalBrowserLeaseRenewed`/`LocalTerminalLeaseRenewed` carry `expires_in_ms`, how long the grant lasts from the kernel's
 /// answer, so a client whose clock is off still renews a grant its identity shortened; absent from an older kernel.
+/// Provisional 1014 (relay peer 451): browser fidelity track shapes on top of 1013: mirror hover moves and right clicks
+/// (KernelBrowser input), and the mirror v2 header's `page_wheel`, whether the page's own script takes the wheel (a
+/// non-passive wheel listener on window, document, html or body); the viewer then sends it every wheel step.
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1014;

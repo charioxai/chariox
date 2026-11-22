@@ -51,6 +51,8 @@ const DELETIONS: Record<string, string[]> = {
 // as named mirror keys from protocol 530 (before: the document-bound display_input key with 517 modifiers).
 type Chord = { kind: 'key'; key: string; modifiers: number }
 type Mirror2Input = Mirror2Action | Chord
+// B3: the pointer's own actions (a hover move, a leave): the newest replaces a queued one, and nothing waits for them.
+const pointerOnly = (action: Mirror2Input): boolean => action.kind === 'move' || action.kind === 'leave'
 const HISTORY: Record<string, Chord> = { historyUndo: { kind: 'key', key: 'z', modifiers: 2 }, historyRedo: { kind: 'key', key: 'z', modifiers: 10 } }
 // Controls whose state the viewer's own UI commits (its popup or picker); protocol 492 `set` carries the result.
 const PICKED = new Set('date time datetime-local month week color range'.split(' '))
@@ -134,6 +136,10 @@ export class BrowserMirror2Renderer {
   private queue: Array<{ resetSerial: number; action: Mirror2Input; epoch: { sequence: number; document_id: string } }> = []
   private sending = false
   private inputReplies = new Set<Promise<void>>() // MP-10: at most two written, unacknowledged inputs
+  // B3: hover moves are not inputs a click, a key or the kernel's focus waits for: one unanswered move at a time, its own set.
+  private moveReplies = new Set<Promise<void>>()
+  private queueWake: (() => void) | undefined
+  private leaveTimer: ReturnType<typeof setTimeout> | undefined
   // Viewer-owned scroll (plan 4.1): kernel echoes wait until the viewer settles.
   private localScrollAt = -Infinity
   private localRootScrollAt = -Infinity
@@ -183,10 +189,12 @@ export class BrowserMirror2Renderer {
     const epoch = { sequence: this.sequence, document_id: this.documentId }
     // Ordered; a queued scroll position for the same scroller is replaced, not appended.
     const last = this.queue.at(-1)
+    // Only the newest pointer position matters: a queued move is replaced, so moves never pile up behind a slow reply.
+    if (pointerOnly(action) && last && pointerOnly(last.action)) { last.action = action; last.epoch = epoch; last.resetSerial = this.resetSerial; return }
     if (action.kind === 'scroll_to' && last?.action.kind === 'scroll_to' && last.action.node_id === action.node_id) { last.action = action; last.epoch = epoch; last.resetSerial = this.resetSerial; return }
     if (action.kind === 'selection' && this.records.get(action.anchor_id)?.kind === 'text') { this.selectionSent = JSON.stringify(action); this.selectionHold = { key: this.selectionSent, until: Infinity, epoch: epoch.sequence }; this.selectionFailure = false }
-    this.queue.push({ action, epoch, resetSerial: this.resetSerial }); this.pendingInputs++
-    void this.pump()
+    this.queue.push({ action, epoch, resetSerial: this.resetSerial }); if (!pointerOnly(action)) this.pendingInputs++
+    this.queueWake?.(); void this.pump()
   }
   // Rust bounds UTF-8 bytes; never split a code point across ordered actions.
   private enqueueText(text: string): void {
@@ -204,7 +212,10 @@ export class BrowserMirror2Renderer {
     this.sending = true
     try {
       while (this.queue.length && !this.disposed) {
-        if (this.inputReplies.size >= 2) await Promise.race(this.inputReplies)
+        const move = this.queue[0] !== undefined && pointerOnly(this.queue[0].action)
+        // B3: a move waits for the previous move's reply only while nothing follows it; an input queued behind it sends it at once.
+        if (move && this.moveReplies.size && this.queue.length === 1) { await Promise.race([...this.moveReplies, new Promise<void>(resolve => { this.queueWake = resolve })]); this.queueWake = undefined; continue }
+        if (!move && this.inputReplies.size >= 2) await Promise.race(this.inputReplies)
         const next = this.queue.shift(); if (!next || this.disposed) break
         const before = this.kernelFocus
         if (next.action.kind === 'scroll_to') { this.scrollReplies.add(next); if (next.action.node_id === null) this.rootScrollReplies.add(next) }
@@ -218,10 +229,10 @@ export class BrowserMirror2Renderer {
         }).then(() => { if (!this.disposed && next.resetSerial === this.resetSerial) { this.holdFocus(next.action, before); if (next.action.kind === 'selection' && this.selectionHold?.key === JSON.stringify(next.action) && this.selectionHold.epoch === next.epoch.sequence && next.epoch.document_id === this.documentId) this.selectionHold.until = this.sequence + CREDIT_WINDOW } })
           .catch(() => { if (next.resetSerial === this.resetSerial && next.action.kind === 'selection' && this.selectionHold?.key === JSON.stringify(next.action) && this.selectionHold.epoch === next.epoch.sequence && next.epoch.document_id === this.documentId) { this.selectionFailure = true; this.selectionHold = null; this.selectionSent = '' } if (!this.disposed) this.frame.dataset.mirrorRefusals = String(Number(this.frame.dataset.mirrorRefusals ?? 0) + 1) })
           .finally(() => {
-            this.inputReplies.delete(replied); this.rootScrollReplies.delete(next); if (this.scrollReplies.delete(next)) this.scrollAnsweredAt = performance.now(); this.pendingInputs = Math.max(0, this.pendingInputs - 1)
+            this.inputReplies.delete(replied); this.moveReplies.delete(replied); this.rootScrollReplies.delete(next); if (this.scrollReplies.delete(next)) this.scrollAnsweredAt = performance.now(); if (!move) this.pendingInputs = Math.max(0, this.pendingInputs - 1)
             written(); this.settleFocus()
           })
-        this.inputReplies.add(replied)
+        ;(move ? this.moveReplies : this.inputReplies).add(replied)
         await sent
       }
     } finally { this.sending = false; this.settleFocus() }
@@ -325,7 +336,22 @@ export class BrowserMirror2Renderer {
     // A press whose gesture forwards no click (a drag, a select or picker, a release elsewhere) sends its focus now.
     on('pointerup', () => { this.syncSelection(doc); this.releasePointer(); origin = null; setTimeout(() => { const id = this.pointerFocus; this.pointerFocus = null; if (id && !this.disposed) { this.focusSent = id; this.enqueue({ kind: 'focus', node_id: id }) } }, 0) })
     on('pointercancel', () => { this.releasePointer(); origin = null; this.pointerFocus = null; pressed = null; dragged = false })
-    on('pointermove', event => { const e = event as PointerEvent; if (origin && (e.buttons & 1) && Math.hypot(e.clientX - origin.x, e.clientY - origin.y) > 4) dragged = true })
+    on('pointermove', event => {
+      const e = event as PointerEvent
+      if (origin && (e.buttons & 1) && Math.hypot(e.clientX - origin.x, e.clientY - origin.y) > 4) dragged = true
+      // B3: a pointer with no button held hovers the kernel's page where the viewer's pointer is (Chromium already coalesces
+      // pointermove to one per frame).
+      if (this.leaveTimer !== undefined) { clearTimeout(this.leaveTimer); this.leaveTimer = undefined }
+      const hit = e.buttons ? null : element(event); if (hit) this.enqueue({ kind: 'move', node_id: hit.id, ...offset(hit.el, e) })
+    })
+    // B3: the pointer left this document with no button held: the kernel's mouse leaves the page too (mouseleave runs, :hover
+    // ends), unless a move inside the copy follows in the same input (from a nested document back to its parent).
+    on('mouseleave', event => {
+      if (event.target !== doc || (event as MouseEvent).buttons || this.leaveTimer !== undefined) return
+      this.leaveTimer = setTimeout(() => { this.leaveTimer = undefined; if (!this.disposed) this.enqueue({ kind: 'leave' }) }, 0)
+    })
+    // B4: the page's own context menu, not the viewer's browser menu over the copy.
+    on('contextmenu', event => { event.preventDefault(); const hit = element(event); if (hit) this.enqueue({ kind: 'click', node_id: hit.id, ...offset(hit.el, event as MouseEvent), button: 'right' }) })
     const selecting = (el: Element): boolean => { if (el.closest('input,textarea,button,select,[contenteditable]')) return false; const s = doc.getSelection(); return Boolean(s && !s.isCollapsed && (el.contains(s.anchorNode) || el.contains(s.focusNode))) }
     // A drag inside a text control focused it here only: its range goes now (the kernel focuses the control with it).
     // A select or picker opens the viewer's own UI; its committed state goes as `set` (the kernel's popup never opens).

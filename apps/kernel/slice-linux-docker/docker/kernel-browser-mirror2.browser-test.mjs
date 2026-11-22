@@ -440,6 +440,78 @@ for (const device_scale_factor of [1, 2]) test(`MP-10: the still of an opaque We
   assert.deepEqual([...stills.values()].map(centre).sort(), ["0,0,0", "26,128,204"]);
 }, {}, {}, { ...process.env, CHARIOX_KERNEL_BROWSER_HEADLESS: "1" }));
 
+// B3/B4 (browserfidelity r16): a viewer's hover move reaches the page (mouseover, :hover reveals a submenu whose item
+// then takes the click), and a right click reaches it as the right button (mousedown 2, contextmenu) with Chrome's own
+// menu cancelled after the page's listeners ran.
+const hover = '<style>body{margin:0}#m{width:200px;height:40px;background:#ccc}#sub{display:none;width:200px;height:40px;background:#9c9}#m:hover #sub{display:block}</style><div id="m">menu<div id="sub"><a id="item" href="#item">item</a></div></div><p id="r" style="margin-top:100px;width:200px;height:40px;background:#c99">right</p><script>window.ev=[];m.addEventListener("mouseover",()=>ev.push("over"));item.addEventListener("click",()=>ev.push("item"));r.addEventListener("mousedown",e=>ev.push("down"+e.button));r.addEventListener("contextmenu",e=>ev.push("ctx:"+e.defaultPrevented))</script>';
+test("B3/B4: a hover move opens a :hover submenu whose item takes the click; a right click is the page's", () => mirrored(hover, async ({ next, evaluate, input }) => {
+  const first = await next(), ids = Object.fromEntries(elements(first).filter(([, , attrs]) => attrs.id).map(([id, , attrs]) => [attrs.id, id]));
+  assert(ids.m && ids.r && ids.item, "menu, item and right-click target are in the snapshot");
+  await input(first.sequence, { kind: "move", node_id: ids.m, x: 20, y: 10 });
+  for (let i = 0; i < 40 && await evaluate("getComputedStyle(sub).display") !== "block"; i++) await settle(25);
+  assert.equal(await evaluate("getComputedStyle(sub).display"), "block", "the kernel page hovers the menu");
+  assert((await evaluate("ev")).includes("over"));
+  let packet = first; for (let i = 0; i < 4; i++) packet = await next(300);
+  await input(packet.sequence, { kind: "click", node_id: ids.item, x: 5, y: 5 });
+  for (let i = 0; i < 40 && !(await evaluate("ev.includes('item')")); i++) await settle(25);
+  assert((await evaluate("ev")).includes("item"), "the revealed item takes the click");
+  await input(packet.sequence, { kind: "click", node_id: ids.r, x: 10, y: 10, button: "right" });
+  for (let i = 0; i < 40 && !(await evaluate("ev.some(e=>e.startsWith('ctx'))")); i++) await settle(25);
+  const events = await evaluate("ev");
+  assert(events.includes("down2"), `right button down reaches the page (${events})`);
+  assert(events.includes("ctx:false"), `the page sees its contextmenu uncancelled (${events})`);
+}));
+
+// B3 review: the viewer's pointer leaving the page leaves the kernel page too: mouseleave runs and :hover ends.
+test("B3: a leave after a hover move ends the page's hover (mouseleave, :hover off)", () => mirrored(hover.replace('m.addEventListener("mouseover",()=>ev.push("over"));', 'm.addEventListener("mouseover",()=>ev.push("over"));m.addEventListener("mouseleave",()=>ev.push("leave"));'), async ({ next, evaluate, input }) => {
+  const first = await next(), ids = Object.fromEntries(elements(first).filter(([, , attrs]) => attrs.id).map(([id, , attrs]) => [attrs.id, id]));
+  await input(first.sequence, { kind: "move", node_id: ids.m, x: 20, y: 10 });
+  for (let i = 0; i < 40 && await evaluate("getComputedStyle(sub).display") !== "block"; i++) await settle(25);
+  assert.equal(await evaluate("getComputedStyle(sub).display"), "block", "the kernel page hovers the menu");
+  await input(first.sequence, { kind: "leave" });
+  for (let i = 0; i < 40 && await evaluate("getComputedStyle(sub).display") !== "none"; i++) await settle(25);
+  assert.equal(await evaluate("getComputedStyle(sub).display"), "none", "the hover ended with the leave");
+  assert((await evaluate("ev")).includes("leave"), "the page's mouseleave ran");
+}));
+
+// B3 review 2: a hover inside a mirrored cross-origin frame reaches that frame's page (a JS menu opens on mouseenter), and the
+// item it reveals takes the click.
+const frameHover = '<!doctype html><body style="margin:0"><div id="m" style="width:200px;height:30px;background:#ccc">menu</div><a id="item" href="#item" style="display:none;width:200px;height:30px">item</a><script>m.addEventListener("mouseenter",()=>{item.style.display="block";parent.postMessage("open","*")});item.addEventListener("click",e=>{e.preventDefault();parent.postMessage("item","*")})</script>';
+test("B3: a hover move inside a mirrored cross-origin frame opens its JS menu, whose item takes the click", () => mirrored(
+  `<body style="margin:0"><iframe id="cross" src="http://localhost:PORT/menu" style="position:absolute;left:10px;top:20px;width:220px;height:100px;border:0"></iframe><script>window.got=[];addEventListener("message",e=>got.push(e.data))</script></body>`, async ({ next, evaluate, input }) => {
+    await settle(700);
+    const snapshot = await next(600), framed = tag => elements(snapshot).find(([id, t, attrs]) => attrs.id === tag && Number(id.slice(1)) >= 1e9)?.[0];
+    const menu = framed("m");
+    assert(menu, "the frame's menu is mirrored");
+    await input(snapshot.sequence, { kind: "move", node_id: menu, x: 20, y: 10 });
+    for (let i = 0; i < 40 && !(await evaluate("got")).includes("open"); i++) await settle(25);
+    assert((await evaluate("got")).includes("open"), "the frame's page hovers its menu");
+    // The item (hidden until the hover) is in the snapshot already; its style change since then needs a newer packet to aim at.
+    const item = framed("item"); assert(item, "the item is mirrored");
+    let packet = snapshot; for (let i = 0; i < 4; i++) packet = await next(300);
+    await input(packet.sequence, { kind: "click", node_id: item, x: 5, y: 5 });
+    for (let i = 0; i < 40 && !(await evaluate("got")).includes("item"); i++) await settle(25);
+    assert((await evaluate("got")).includes("item"), "the revealed item takes the click");
+  }, {
+    "/menu": { type: "text/html", body: frameHover },
+  }));
+
+// B4 review: a right click inside a frame (same-origin or mirrored cross-origin) cancels Chrome's menu in that frame's
+// own window (a frame's contextmenu never reaches its parent), after the page's listeners saw it uncancelled.
+const frameMenu = '<!doctype html><body style="margin:0"><button id="r" style="width:80px;height:30px">r</button><script>window.ev=[];r.addEventListener("contextmenu",e=>{ev.push("ctx:"+e.defaultPrevented);setTimeout(()=>{ev.push("final:"+e.defaultPrevented);parent.postMessage(ev.join(),"*")})})</script>';
+test("B4: a right click inside a same-origin and a cross-origin frame leaves no native menu (contextmenu cancelled in the frame)", () => mirrored(
+  `<body style="margin:0"><iframe id="same" srcdoc='${frameMenu}' style="position:absolute;left:10px;top:10px;width:200px;height:60px;border:0"></iframe><iframe id="cross" src="http://localhost:PORT/menu" style="position:absolute;left:10px;top:200px;width:200px;height:60px;border:0"></iframe><script>window.got=[];addEventListener("message",e=>got.push(e.data))</script></body>`, async ({ next, evaluate, input }) => {
+    await settle(600);
+    const snapshot = await next(600), buttons = elements(snapshot).filter(([, tag, attrs]) => tag === "button" && attrs.id === "r").map(([id]) => id);
+    const same = buttons.find(id => Number(id.slice(1)) < 1e9), cross = buttons.find(id => Number(id.slice(1)) >= 1e9);
+    assert(same && cross, `both frames' buttons are mirrored (${buttons})`);
+    for (const node_id of [same, cross]) await input(snapshot.sequence, { kind: "click", node_id, x: 10, y: 10, button: "right" });
+    for (let i = 0; i < 40 && (await evaluate("got")).length < 2; i++) await settle(25);
+    assert.deepEqual((await evaluate("got")).toSorted(), ["ctx:false,final:true", "ctx:false,final:true"], "each frame's page saw its contextmenu, then it was cancelled");
+  }, {
+    "/menu": { type: "text/html", body: frameMenu },
+  }));
+
 // browserfidelity r4 (vimeo): a consent banner lives in a closed root whose host has no box of its own (0x0, the content is
 // position: fixed). The region's still covers what the closed content paints, placed relative to the host, and a click
 // on it reaches the content.
