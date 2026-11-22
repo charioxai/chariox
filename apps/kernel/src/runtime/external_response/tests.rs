@@ -144,6 +144,7 @@ fn external_response_preserves_executor_error_codes_and_retryability() {
                 worktree_id: CANARY.into(),
                 existing_session_id: CANARY.into(),
                 existing_operation: Box::new(CANARY.into()),
+                existing_workflow_run_id: Some(Box::new(CANARY.into())),
                 requested_session_id: CANARY.into(),
                 requested_operation: Box::new(CANARY.into()),
             },

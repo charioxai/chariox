@@ -22,6 +22,7 @@ export type WorkflowRunOutcome =
         | "provider_profile_usage_exhausted"
         | "blocked_on_workspace_claim"
       node_id: string
+      detail?: string
     }
 
 export type WorkflowDefinition = {
@@ -1021,6 +1022,7 @@ export type WorkflowNodeRun = {
   agent_id: string
   iteration_index?: number
   status: string
+  workspace_claim_holding_run_id?: string
   waiting_reason?: "provider_profile_unavailable" | "provider_profile_unverified" | "provider_profile_unauthenticated" | "provider_profile_usage_exhausted"
   summary: string | null
   completion?: {

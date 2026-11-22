@@ -84,8 +84,14 @@ impl KernelRuntimeOwnedState {
                 node_run.id(),
             ) {
                 Ok(()) => preclaimed = true,
-                Err(DaemonError::WorkspaceClaimConflict { .. }) => {
-                    return Ok(WorkflowPromptDispatches::default())
+                Err(error @ DaemonError::WorkspaceClaimConflict { .. }) => {
+                    self.workflow_record_blocked_claim(
+                        session_id,
+                        workflow_run.id(),
+                        node_run.id(),
+                        &error,
+                    )?;
+                    return Ok(WorkflowPromptDispatches::default());
                 }
                 Err(error) => return Err(error),
             }
@@ -127,14 +133,12 @@ impl KernelRuntimeOwnedState {
             match claim {
                 Ok(()) => {}
                 Err(error @ DaemonError::WorkspaceClaimConflict { .. }) => {
-                    let _ = self
-                        .session_store
-                        .write()
-                        .block_workflow_node_on_workspace_claim(
-                            session_id,
-                            workflow_run.id(),
-                            node_run.id(),
-                        );
+                    self.workflow_record_blocked_claim(
+                        session_id,
+                        workflow_run.id(),
+                        node_run.id(),
+                        &error,
+                    )?;
                     self.record_notice(
                         session_id,
                         None,

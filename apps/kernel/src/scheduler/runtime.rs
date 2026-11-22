@@ -239,6 +239,7 @@ fn dispatch_prepared_workflow_node_prompt(
                 session_id,
                 workflow_run_id,
                 workflow_node_run_id,
+                error.workspace_claim_holding_run_id(),
             );
             app.record_notice(
                 session_id,
@@ -379,7 +380,15 @@ fn retry_prepared_workflow_node_prompt(
                     workflow_node_run_id,
                 );
         }
-        Err(DaemonError::WorkspaceClaimConflict { .. }) => return Ok(()),
+        Err(error @ DaemonError::WorkspaceClaimConflict { .. }) => {
+            app.sessions_mut().block_workflow_node_on_workspace_claim(
+                session_id,
+                workflow_run_id,
+                workflow_node_run_id,
+                error.workspace_claim_holding_run_id(),
+            )?;
+            return Ok(());
+        }
         Err(error) => return Err(error),
     }
     let outcome = submit_claimed_workflow_prompt(

@@ -1,6 +1,6 @@
 {
-  "local": 1013,
-  "peer": 450,
+  "local": 1014,
+  "peer": 451,
   "workflow": {
     "responsible": {
       "kind": "agent",
@@ -24,6 +24,12 @@
     "on": "provider_profile_usage_exhausted",
     "node_id": "node-1"
   },
+  "workspace_wait_outcome": {
+    "kind": "waiting",
+    "on": "blocked_on_workspace_claim",
+    "node_id": "node-1",
+    "detail": "waiting for the workspace, held by run run-2"
+  },
   "set_request": {
     "SetWorkflowResponsible": {
       "session_id": "room-a",
@@ -44,7 +50,7 @@
   },
   "peer_set_request": {
     "kind": "set_workflow_responsible",
-    "protocol_version": 449,
+    "protocol_version": 451,
     "sender": {
       "kernel_id": "kernel-b",
       "room_id": "room-b",
@@ -58,7 +64,7 @@
   },
   "peer_apply_request": {
     "kind": "apply_workflow_responsible",
-    "protocol_version": 449,
+    "protocol_version": 451,
     "action": "attach",
     "workflow": {
       "kernel_id": "kernel-a",
