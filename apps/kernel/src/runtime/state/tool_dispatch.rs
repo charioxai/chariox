@@ -725,7 +725,8 @@ impl KernelRuntimeState {
             }
             if matches!(
                 canonical_tool_name,
-                crate::transport::runtime_tools::LIST_SESSION_AGENTS_TOOL
+                crate::transport::runtime_tools::OWNER_VIEW_TOOL
+                    | crate::transport::runtime_tools::LIST_SESSION_AGENTS_TOOL
                     | crate::transport::runtime_tools::GET_SESSION_AGENT_TOOL
                     | crate::transport::runtime_tools::PEEK_AGENT_TOOL
                     | crate::transport::runtime_tools::READ_AGENT_ENTRY_TOOL
@@ -1086,7 +1087,8 @@ fn unambiguous_runtime_tool_provider_run<'a>(
 fn is_metaagent_direct_runtime_tool_allowed(tool_name: &str, slice_available: bool) -> bool {
     matches!(
         tool_name,
-        crate::transport::runtime_tools::LIST_SESSION_AGENTS_TOOL
+        crate::transport::runtime_tools::OWNER_VIEW_TOOL
+            | crate::transport::runtime_tools::LIST_SESSION_AGENTS_TOOL
             | crate::transport::runtime_tools::GET_SESSION_AGENT_TOOL
             | crate::transport::runtime_tools::PEEK_AGENT_TOOL
             | crate::transport::runtime_tools::READ_AGENT_ENTRY_TOOL

@@ -131,6 +131,7 @@ enum FeedResource {
     AppInstallations {
         session_id: Option<String>,
     },
+    OwnerView,
     /// Changes with the Rooms' pending interactions, which no request signals.
     PersonInbox,
     MachineRoomResources {
@@ -160,6 +161,7 @@ impl FeedResource {
             "vault_status" => allow_only(&[]).map(|()| Self::VaultStatus),
             "vault_entries" => allow_only(&[]).map(|()| Self::VaultEntries),
             "provider_accounts" => allow_only(&[]).map(|()| Self::ProviderAccounts),
+            "owner_view" => allow_only(&[]).map(|()| Self::OwnerView),
             "person_inbox" => allow_only(&[]).map(|()| Self::PersonInbox),
             "machine_room_resources" => {
                 allow_only(&["session_id"])?;
@@ -385,6 +387,12 @@ impl Feed {
             FeedResource::AppInstallations { session_id } => {
                 self.read_app_installations(session_id.clone()).await
             }
+            FeedResource::OwnerView => {
+                self.read_request(LocalDaemonRequest::OwnerView(
+                    crate::local::OwnerViewRequest::Status {},
+                ))
+                .await
+            }
             FeedResource::PersonInbox => {
                 self.read_request(LocalDaemonRequest::GetPersonInbox(GetPersonInboxRequest))
                     .await
@@ -540,6 +548,9 @@ pub(crate) async fn run_kernel_resource_feed<E, F>(
     changes.borrow_and_update();
     let sessions = Arc::clone(&router);
     let mut sessions_seen = sessions.session_projection_change_sequence();
+    let owner_view_runtime = sessions.runtime_state();
+    let owner_view = owner_view_runtime.owner_view_changes();
+    let mut owner_view_seen = owner_view.sequence();
     let mut inbox_seen = sessions.person_inbox_change_sequence();
     let mut feed = Feed {
         router,
@@ -583,6 +594,10 @@ pub(crate) async fn run_kernel_resource_feed<E, F>(
             () = sessions.wait_for_person_inbox_change_after(inbox_seen), if !feed.session_followers().is_empty() => {
                 inbox_seen = sessions.person_inbox_change_sequence();
                 feed.refresh_resources(feed.session_followers()).await
+            }
+            () = owner_view.wait_for_change_after(owner_view_seen), if feed.watched.contains_key(&FeedResource::OwnerView) => {
+                owner_view_seen = owner_view.sequence();
+                feed.refresh_resources(vec![FeedResource::OwnerView]).await
             }
             changed = changes.changed() => {
                 if changed.is_err() {

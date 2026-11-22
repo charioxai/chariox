@@ -2947,6 +2947,23 @@ turn count for the caller, so a client holding another group or turn count, or n
 history (`known_revision: null`), gets the full history. Live Room events stay on
 the session subscription with `resume_from_event_id`.
 
+### Owner Web view
+
+The authenticated owner terminal watches the `owner_view` kernel resource to show
+the names of agents who are watching. The browser publishes the visible Navigator
+and Settings labels over its encrypted kernel connection after drawing the
+indicator. The kernel accepts publications for the current viewer generation
+from one tab, which the browser can resume after a reload. Its status projection
+carries watcher names and the tab identity. The presentation itself is kept in
+memory.
+
+An authenticated provider agent uses `chariox.owner_view` with `watch`, `read`,
+or `leave`. The kernel checks that the agent and its Room belong to the enrolled
+owner. The response contains the presentation and its publication time. The
+owner terminal's `end` operation revokes the agent's grant in the kernel's
+durable state. The agent's request vocabulary supports observation and detach.
+The relay carries encrypted messages as it does for other kernel resources.
+
 ## 4.2 Planned Command-Dispatch Surface
 
 The current local API baseline does not yet expose slash-command discovery/invocation, but the protocol should reserve room for it.

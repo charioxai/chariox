@@ -295,6 +295,7 @@ pub enum LocalDaemonRequest {
     GetRoomListSnapshot(GetRoomListSnapshotRequest),
     GetPaneFeed(GetPaneFeedRequest),
     ReportPaneSettings(ReportPaneSettingsRequest),
+    OwnerView(OwnerViewRequest),
     GetPersonInbox(GetPersonInboxRequest),
     SetInboxCardState(SetInboxCardStateRequest),
     SetInboxMute(SetInboxMuteRequest),

@@ -328,6 +328,11 @@ pub enum LocalDaemonResponse {
     PaneFeed {
         feed: PaneFeed,
     },
+    OwnerViewStatus {
+        generation: String,
+        tab_id: Option<String>,
+        watchers: Vec<OwnerViewWatcher>,
+    },
     PersonInbox {
         cards: Vec<PersonInboxCard>,
         mutes: Vec<PersonInboxOrigin>,

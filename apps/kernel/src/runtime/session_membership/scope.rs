@@ -924,6 +924,7 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::ListRemoteMachines(_)
         | LocalDaemonRequest::ListRemoteMachineKernels(_)
         | LocalDaemonRequest::GetRoomListSnapshot(_)
+        | LocalDaemonRequest::OwnerView(_)
         | LocalDaemonRequest::GetPersonInbox(_)
         | LocalDaemonRequest::SetInboxCardState(_)
         | LocalDaemonRequest::SetInboxMute(_)

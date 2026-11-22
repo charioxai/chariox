@@ -82,6 +82,7 @@ pub const MANAGE_CREDENTIAL_VAULT_TOOL_ALIAS: &str = "manage_credential_vault";
 pub const REQUEST_POPUP_TOOL: &str = "chariox.request_popup";
 pub const REQUEST_POPUP_TOOL_ALIAS: &str = "request_popup";
 pub const PERMISSION_PROMPT_TOOL: &str = "chariox.permission_prompt";
+pub const OWNER_VIEW_TOOL: &str = "chariox.owner_view";
 pub const LIST_SESSION_AGENTS_TOOL: &str = "chariox.list_session_agents";
 pub const GET_SESSION_AGENT_TOOL: &str = "chariox.get_session_agent";
 pub const PEEK_AGENT_TOOL: &str = "chariox.peek_agent";

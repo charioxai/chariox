@@ -966,6 +966,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::GetRoomListSnapshot(_) => "room_list.public_snapshot.get",
         LocalDaemonRequest::GetPaneFeed(_) => "pane_feed.get",
         LocalDaemonRequest::ReportPaneSettings(_) => "pane_feed.report_settings",
+        LocalDaemonRequest::OwnerView(_) => "owner_view",
         LocalDaemonRequest::GetPersonInbox(_) => "person_inbox.get",
         LocalDaemonRequest::SetInboxCardState(_) => "person_inbox.set_card_state",
         LocalDaemonRequest::SetInboxMute(_) => "person_inbox.set_mute",

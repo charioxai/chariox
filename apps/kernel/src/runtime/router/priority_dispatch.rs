@@ -501,6 +501,11 @@ impl CommandRouter {
                         .read_agent_trigger_http_options(request, &caller)
                 })
             }
+            LocalDaemonRequest::OwnerView(request) => {
+                boxed_handler(
+                    || async move { self.runtime_state.owner_view_request(&command, request) },
+                )
+            }
             LocalDaemonRequest::GetPersonInbox(_) => boxed_handler(|| async move {
                 crate::runtime::person_inbox::execute_person_inbox_request(
                     &self.runtime_state,
