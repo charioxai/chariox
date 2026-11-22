@@ -4348,7 +4348,7 @@ pub(in crate::runtime::state) mod tests {
             LaunchProviderRequest::new(session_id, "claude", "claude", "default", "sonnet")
                 .with_agent_id(agent_id);
         if let Some(resume) = resume {
-            let resume = ProviderResumeState::from_claude_session_id(resume);
+            let resume = crate::provider::ProviderResumeState::from_claude_session_id(resume);
             request = request.with_resume_state(resume.clone());
             runtime
                 .owned
