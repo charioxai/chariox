@@ -642,4 +642,5 @@ pub use workspace::*;
 /// `user_domain_grants_changed` snapshot carries only `cursor` and `room_computer`; browser and App view results no
 /// longer carry `kernel_id`, `kernel_name`, `focused_agent_kernel_id` or `reachable_by_focused_agent`; the loader tools
 /// take no arguments and `chariox.kernel_browser_share` is removed.
+/// A Claude compaction is the history kind `context_compacted` (its text is the summary, empty when Claude wrote none), not a user prompt.
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1014;

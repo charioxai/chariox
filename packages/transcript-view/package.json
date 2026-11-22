@@ -17,6 +17,7 @@
     "test": "tsc -p tsconfig.json && node --test dist/markdown/markdown-images.test.js dist/markdown/diff-render.test.js dist/terminal/freeform-transcript-renderer.test.js"
   },
   "dependencies": {
+    "@chariox/kernel-client": "workspace:*",
     "@chariox/tool-display": "workspace:*",
     "markdown-it": "15.0.2",
     "dompurify": "3.4.17",

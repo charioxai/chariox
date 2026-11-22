@@ -3536,6 +3536,12 @@ Workflow trigger and deployment direction:
   on a stale list renews it first; when the renewal outlasts the answer budget the answer is the last
   list with `renewing: true` (omitted when false), the renewal goes on, and its list follows as
   `remote_machines_changed`. Relay registrations carry each kernel's local protocol at peer 449.
+- local 1014: a provider's context compaction is the history and terminal-output kind `context_compacted`
+  (`SessionHistoryEntry.kind` and `TerminalOutputRecord.kind`): its text is the summary the provider wrote, empty when the
+  provider marked the compaction without one. The kernel classifies by the provider's own markers (Claude: the
+  `compact_boundary` event and the transcript entry flagged `isCompactSummary`), never by the summary's wording; it is
+  not a user prompt, so prompt lists, search by role and replay never count it. A client draws one collapsed row
+  ("Context compacted" with the time; "Summary unavailable" for empty text).
 - protocol 1012 / relay peer 449: `OwnerVault {action: "update", id, kind, use_binding}` changes an owner-made entry's Kind
   and Use in place: the id and the saved value stay, the new Use takes effect at once and the entry's Activity records who
   changed it from what to what. A Payment card and a 2FA setup key keep their Kind, and no other entry can become one: the

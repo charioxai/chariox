@@ -88,6 +88,8 @@ if (!contextOnlyHook) {
     ...(eventName === "UserPromptSubmit" ? { hook_context_deadline_ms: hookContextDeadlineMs } : {}),
     ...(notificationContext ? { notification_context: true } : {}),
     native_prompt_id: nativePromptId,
+    ...(["PreCompact", "PostCompact", "StopFailure"].includes(eventName) ? { prompt_id: input.prompt_id ?? null } : {}),
+    ...(eventName === "PostCompact" ? { compact_summary: input.compact_summary ?? null } : {}),
     prompt: input.prompt ?? null,
     transcript_path: input.transcript_path ?? null,
     permission_mode: input.permission_mode ?? null,

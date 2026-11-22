@@ -43,6 +43,34 @@ test("session history transcript hydration reconstructs tools and suppresses ord
   assert.equal(entries[3]?.text, "all green\n")
 })
 
+test("a compaction is one compaction row between the turns, never a user prompt", () => {
+  const entries = hydrateSessionHistoryTranscriptEntries([
+    pageEntry(0, "user_prompt", "plan the migration\n"),
+    pageEntry(1, "provider_output", "step one\n", { merge_key: "a-1" }),
+    pageEntry(2, "context_compacted", JSON.stringify({ state: "done", summary: "Earlier work, condensed by Claude." }), {
+      merge_key: "claude:run-1:compaction:summary-1",
+      timestamp_ms: 1_700_000_000_000,
+    }),
+    pageEntry(3, "provider_output", "step two\n", { merge_key: "a-2" }),
+  ])
+
+  assert.deepEqual(entries.map((entry) => entry.role), ["user", "assistant", "compaction", "assistant"])
+  assert.deepEqual(JSON.parse(entries[2]?.text ?? "null"), { state: "done", summary: "Earlier work, condensed by Claude." })
+  assert.equal(entries.filter((entry) => entry.role === "user").length, 1)
+})
+
+test("a compaction that ran and then finished is one row holding its last state", () => {
+  const key = "claude:run-1:compaction:0"
+  const entries = hydrateSessionHistoryTranscriptEntries([
+    pageEntry(0, "user_prompt", "plan\n"),
+    pageEntry(1, "context_compacted", JSON.stringify({ state: "running", started_at_ms: 5 }), { merge_key: key }),
+    pageEntry(2, "context_compacted", JSON.stringify({ state: "done", summary: "condensed" }), { merge_key: key }),
+  ])
+
+  assert.deepEqual(entries.map((entry) => entry.role), ["user", "compaction"])
+  assert.deepEqual(JSON.parse(entries[1]?.text ?? "null"), { state: "done", summary: "condensed" })
+})
+
 test("session history transcript hydration keeps repeated merge keys scoped to turns", () => {
   const entries = hydrateSessionHistoryTranscriptEntries([
     pageEntry(0, "user_prompt", "first\n", { provider_run_id: "run-1" }),

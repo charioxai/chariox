@@ -4494,6 +4494,7 @@ fn notes_reach_claude_hidden_context_once_and_fit_the_bridge_limit() {
     assert!(context.len() < 48_000, "{}", context.len());
 }
 
+mod compaction;
 mod workspace_scope;
 // MP-08 / MP-10 / MP-11: native PTY dispatch must use the same validated
 // skill bridge as structured runs, including rejection before any PTY write.
@@ -5404,4 +5405,39 @@ fn claude_native_local_typed_redirect_without_loads_consumes_the_pending_handoff
         1,
         "the accepted local typed redirect left the pending handoff unconsumed"
     );
+}
+
+#[test]
+fn claude_transcript_compaction_summary_cannot_settle_a_live_row_or_start_a_prompt() {
+    let root = crate::test_temp_dir::TestTempDir::new("claude-transcript-compaction");
+    let transcript = root.path().join("session.jsonl");
+    let mut cursor = ClaudeTranscriptCursor::default();
+    let lines = [
+        serde_json::json!({
+            "type": "system", "subtype": "compact_boundary", "uuid": "boundary-1",
+            "compactMetadata": {"trigger": "auto", "preservedSegment": {"anchorUuid": "summary-1"}}
+        }),
+        serde_json::json!({
+            "type": "user", "uuid": "summary-1", "isCompactSummary": true,
+            "message": {"role": "user", "content": "Earlier work, condensed by Claude."}
+        }),
+        serde_json::json!({
+            "type": "assistant", "uuid": "assistant-1",
+            "message": {"id": "msg_1", "model": "claude-sonnet-4-6", "role": "assistant",
+                "stop_reason": "end_turn", "content": [{"type": "text", "text": "Back to work."}]}
+        }),
+    ];
+    fs::write(
+        &transcript,
+        lines.map(|line| line.to_string()).join("\n") + "\n",
+    )
+    .expect("fixture should write");
+
+    let drain = drain_claude_transcript_file(&transcript.display().to_string(), &mut cursor);
+
+    assert_eq!(drain.unbound_compaction_summaries, 1);
+    assert_eq!(drain.chunks.len(), 1);
+    assert_eq!(drain.chunks[0].kind, TerminalOutputKind::ProviderOutput);
+    assert_eq!(drain.chunks[0].text, "Back to work.");
+    assert!(drain.enqueued_prompts.is_empty());
 }

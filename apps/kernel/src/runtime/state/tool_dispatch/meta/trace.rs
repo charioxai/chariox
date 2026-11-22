@@ -471,6 +471,10 @@ fn meta_trace_output_item(
         crate::terminal::TerminalOutputKind::ProviderStatus => {
             ("status".to_string(), truncate_single_line(&text, 240))
         }
+        crate::terminal::TerminalOutputKind::ContextCompacted => (
+            "context compacted".to_string(),
+            truncate_single_line(&text, 240),
+        ),
         crate::terminal::TerminalOutputKind::PromptEcho => {
             ("prompt".to_string(), truncate_single_line(&text, 240))
         }

@@ -16,7 +16,7 @@ export type SessionHistoryEntry = {
   provider_run_id?: string | null
   prompt_origin?: "chariox" | "external" | string | null
   prompt_author?: string | null
-  kind: "user_prompt" | "provider_output" | "provider_reasoning" | "provider_tool" | "provider_error" | "provider_status" | "notice"
+  kind: "user_prompt" | "provider_output" | "provider_reasoning" | "provider_tool" | "provider_error" | "provider_status" | "context_compacted" | "notice"
   notice_reason?: "agent_deadline_reached"
   merge_key?: string
   source?: "external_provider_observed" | null
@@ -120,6 +120,7 @@ export type RecallEventKind =
   | "provider_tool"
   | "provider_error"
   | "provider_status"
+  | "context_compacted"
   | "notice"
   | "session_created"
   | "agent_created"
@@ -215,7 +216,7 @@ export type SemanticRecallEventsPayload = {
 
 export type TranscriptEntry = {
   id: number
-  role: "user" | "assistant" | "reasoning" | "tool" | "error" | "status" | "notice" | "turn_toggle"
+  role: "user" | "assistant" | "reasoning" | "tool" | "error" | "status" | "compaction" | "notice" | "turn_toggle"
   text: string
   sourceText?: string
   mergeKey?: string

@@ -707,6 +707,86 @@ fn claude_task_notification_without_active_chariox_prompt_remains_external() {
 }
 
 #[test]
+fn claude_compaction_imports_as_one_compaction_row_between_the_turns() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .expect("session should create");
+    let import = ExternalProviderImportMetadata::observed_history(
+        "claude:thread-compacted".to_string(),
+        "claude".to_string(),
+        "thread-compacted".to_string(),
+    );
+    persist_external_import_metadata(&mut app, session.id(), agent.id(), import.clone())
+        .expect("metadata should persist");
+    let compacted = crate::provider::ContextCompaction::Done {
+        summary: "Earlier work, condensed.".into(),
+    }
+    .to_text();
+    let turn = |id: &str, role, text: &str, at| ObservedExternalProviderTurn {
+        provider_turn_id: Some(id.to_string()),
+        role,
+        text: text.to_string(),
+        observed_at_ms: Some(at),
+    };
+
+    append_observed_external_turns_for_attached_target(
+        &mut app,
+        AttachedExternalObserverRead {
+            target: attached_external_observer_target_from_import(
+                session.id().to_string(),
+                agent.id().to_string(),
+                None,
+                import,
+            ),
+            turns: vec![
+                turn(
+                    "u1",
+                    ObservedExternalProviderTurnRole::User,
+                    "Plan the migration.",
+                    100,
+                ),
+                turn(
+                    "summary-1",
+                    ObservedExternalProviderTurnRole::ContextCompacted,
+                    &compacted,
+                    110,
+                ),
+                turn(
+                    "a1",
+                    ObservedExternalProviderTurnRole::Assistant,
+                    "Continuing.",
+                    120,
+                ),
+            ],
+        },
+    )
+    .expect("compaction should import");
+
+    let entries = app
+        .load_session_history_entries(&session, Some(agent.id()))
+        .expect("history should load");
+    let kinds = entries.iter().map(|entry| entry.kind).collect::<Vec<_>>();
+    assert_eq!(
+        kinds,
+        [
+            SessionHistoryEntryKind::UserPrompt,
+            SessionHistoryEntryKind::ContextCompacted,
+            SessionHistoryEntryKind::ProviderOutput,
+        ]
+    );
+    assert_eq!(entries[1].text, compacted);
+    assert_eq!(
+        entries
+            .iter()
+            .filter(|entry| entry.kind == SessionHistoryEntryKind::UserPrompt)
+            .count(),
+        1,
+        "the summary is not a person's prompt"
+    );
+}
+
+#[test]
 fn observed_external_history_batch_emits_one_refresh_after_all_entries_persist() {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("app should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)

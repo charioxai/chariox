@@ -8,8 +8,8 @@ use crate::app::DaemonApp;
 use crate::app::KernelPromptDispatch;
 use crate::error::DaemonError;
 use crate::provider::{
-    ProviderNativeInteractionBridge, ProviderPromptSignalBatch, ProviderResumeState,
-    RuntimeProviderRun,
+    ContextCompaction, ProviderNativeInteractionBridge, ProviderPromptSignalBatch,
+    ProviderResumeState, RuntimeProviderRun,
 };
 use crate::session::{
     unix_epoch_ms, PromptAttachment, RuntimeInteraction, RuntimeInteractionChoice,
@@ -423,6 +423,141 @@ fn acknowledge_claude_headless_steering_enqueue(
 }
 
 impl<'a> ProviderOutputClaudeNativeBridge<'a> {
+    fn note_compaction_hook(
+        &mut self,
+        session_id: &str,
+        provider_run_id: &str,
+        context_file: &str,
+        agent_id: &str,
+        event_name: &str,
+        event: &Value,
+    ) -> Result<(), DaemonError> {
+        let mut cursor = load_claude_transcript_cursor(context_file);
+        let prompt_id = event
+            .get("prompt_id")
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty());
+        let (number, state) = match event_name {
+            "PreCompact" => {
+                let Some(prompt_id) = prompt_id else {
+                    crate::logging::warn_with_fields(
+                        "daemon.claude_native",
+                        "ignoring compaction start without a Claude prompt ID",
+                        serde_json::json!({ "provider_run_id": provider_run_id }),
+                    );
+                    return Ok(());
+                };
+                let prompt = self
+                    .app
+                    .prompt_owner_active_prompt_for_agent(session_id, agent_id)?;
+                (
+                    cursor.start_compaction(prompt_id, prompt.as_ref().map(|prompt| prompt.id())),
+                    ContextCompaction::Running {
+                        started_at_ms: unix_epoch_ms(),
+                    },
+                )
+            }
+            "PostCompact" => {
+                let Some(number) = prompt_id.and_then(|id| cursor.settle_compaction(id)) else {
+                    crate::logging::info_with_fields(
+                        "daemon.claude_native",
+                        "dropping compaction summary without a matching running compaction",
+                        serde_json::json!({
+                            "provider_run_id": provider_run_id,
+                            "claude_prompt_id": prompt_id,
+                        }),
+                    );
+                    return Ok(());
+                };
+                (
+                    Some(number),
+                    ContextCompaction::Done {
+                        summary: event
+                            .get("compact_summary")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_owned(),
+                    },
+                )
+            }
+            "StopFailure" => (
+                prompt_id.and_then(|id| cursor.settle_compaction(id)),
+                ContextCompaction::Failed {
+                    reason: "Claude encountered an error before it finished compacting context."
+                        .into(),
+                },
+            ),
+            _ => return Ok(()),
+        };
+        if let Some(number) = number {
+            save_claude_transcript_cursor(context_file, &cursor);
+            self.publish_compaction(session_id, provider_run_id, number, state);
+        }
+        Ok(())
+    }
+
+    pub(super) fn cancel_compaction(
+        &mut self,
+        run: &RuntimeProviderRun,
+        prompt_id: &str,
+    ) -> Result<(), DaemonError> {
+        let (Some(agent_id), Some(context_file)) = (
+            run.agent_instance_id(),
+            run.pty_env().get("CHARIOX_CLAUDE_NATIVE_CONTEXT"),
+        ) else {
+            return Ok(());
+        };
+        let session_id = run.session_id();
+        if !self
+            .app
+            .prompt_owner_active_prompt_for_agent(session_id, agent_id)?
+            .is_some_and(|prompt| {
+                prompt.id() == prompt_id
+                    && prompt.status() == crate::session::PromptStatus::Cancelling
+            })
+        {
+            return Ok(());
+        }
+        let mut cursor = load_claude_transcript_cursor(context_file);
+        let compactions = cursor.cancel_compactions(prompt_id);
+        if compactions.is_empty() {
+            return Ok(());
+        }
+        save_claude_transcript_cursor(context_file, &cursor);
+        for number in compactions {
+            self.publish_compaction(
+                session_id,
+                run.id(),
+                number,
+                ContextCompaction::Failed {
+                    reason: "The turn was cancelled before Claude finished compacting context."
+                        .into(),
+                },
+            );
+        }
+        Ok(())
+    }
+
+    fn publish_compaction(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+        number: u64,
+        state: ContextCompaction,
+    ) {
+        ProviderOutputFanout::new(self.app).fan_out(
+            session_id,
+            provider_run_id,
+            TerminalOutputKind::ContextCompacted,
+            Some(format!(
+                "claude-transcript:{provider_run_id}:{}",
+                transcript::compaction_merge_key_suffix(number)
+            )),
+            self.app.attachments.list_session_attachment_ids(session_id),
+            state.to_text().as_bytes(),
+        );
+    }
+
     pub(crate) fn new(app: &'a mut DaemonApp) -> Self {
         Self {
             app,
@@ -599,6 +734,17 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                         }
                     }
                 }
+                continue;
+            }
+            if matches!(event_name, "PreCompact" | "PostCompact") {
+                self.note_compaction_hook(
+                    session_id,
+                    provider_run_id,
+                    context_file,
+                    &agent_id,
+                    event_name,
+                    &event,
+                )?;
                 continue;
             }
             if event_name == "CharioxContextDelivered" {
@@ -937,6 +1083,14 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                     }
                 }
             } else if event_name == "StopFailure" {
+                self.note_compaction_hook(
+                    session_id,
+                    provider_run_id,
+                    context_file,
+                    &agent_id,
+                    event_name,
+                    &event,
+                )?;
                 outcome.terminal_failure = crate::provider::claude_native_stop_failure(&event);
                 return Ok(outcome);
             } else if event_name == "SessionEnd"
@@ -1251,6 +1405,16 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             unix_epoch_ms(),
         );
         save_claude_transcript_cursor(context_file, &cursor);
+        if drain.unbound_compaction_summaries > 0 {
+            crate::logging::info_with_fields(
+                "daemon.claude_native",
+                "dropping transcript compaction summaries without a Claude prompt ID",
+                serde_json::json!({
+                    "provider_run_id": provider_run_id,
+                    "count": drain.unbound_compaction_summaries,
+                }),
+            );
+        }
         let terminal_failure = drain.terminal_failure.clone();
         let active_prompt_id = self
             .app

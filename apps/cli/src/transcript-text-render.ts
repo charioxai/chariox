@@ -2,9 +2,10 @@ import {
   RGBA,
   TextAttributes,
   TextNodeRenderable,
-  type TextRenderable,
+  TextRenderable,
 } from "@opentui/core"
 
+import { parseContextCompaction, type ContextCompaction } from "@chariox/kernel-client"
 import { triggerPromptOriginLabel } from "@chariox/kernel-client/agent-trigger-state"
 import { linkifyTranscriptChunks } from "./transcript-hyperlinks.js"
 
@@ -14,6 +15,13 @@ import { splitInlineCodeSpans } from "./transcript.js"
 import { transcriptInlineCodeColor } from "./transcript-render-theme.js"
 
 export function applyTranscriptTextContent(text: TextRenderable, entry: TranscriptEntry) {
+  if (entry.role === "compaction") {
+    const state = parseContextCompaction(entry.sourceText ?? entry.text)
+    const ended = entry.historyTurnLifecycle !== undefined && entry.historyTurnLifecycle !== "open"
+    if (text instanceof CompactionTextRenderable) text.showCompaction(state, ended)
+    else text.content = compactionText(state, ended)
+    return
+  }
   text.clear()
   if (entry.role === "tool") {
     applyToolTranscriptTextContent(text, entry)
@@ -24,6 +32,35 @@ export function applyTranscriptTextContent(text: TextRenderable, entry: Transcri
     return
   }
   appendTranscriptSpans(text, entry, entry.text)
+}
+
+function compactionText(state: ContextCompaction, ended: boolean): string {
+  switch (state.state) {
+    case "running": return ended
+      ? "Context compaction stopped"
+      : `Compacting context… · ${Math.max(0, Math.floor((Date.now() - state.started_at_ms) / 1000))}s`
+    case "done": return `Context compacted\n${state.summary.trim() || "Summary unavailable"}`
+    case "failed": return `Context compaction failed\n${state.reason.trim() || "Claude gave no reason."}`
+  }
+}
+
+export class CompactionTextRenderable extends TextRenderable {
+  private timer: ReturnType<typeof setInterval> | undefined
+
+  showCompaction(state: ContextCompaction, ended: boolean): void {
+    clearInterval(this.timer)
+    const render = () => { this.content = compactionText(state, ended) }
+    render()
+    if (state.state === "running" && !ended) {
+      this.timer = setInterval(render, 1000)
+      this.timer.unref()
+    }
+  }
+
+  override destroy(): void {
+    clearInterval(this.timer)
+    super.destroy()
+  }
 }
 
 function applyPromptTranscriptTextContent(text: TextRenderable, entry: TranscriptEntry) {
