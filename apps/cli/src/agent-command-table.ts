@@ -18,8 +18,8 @@ const HOST_AGENT: Flag = { name: "--host-agent", value: "AGENT_ID" }
 
 export const COMMANDS: readonly CommandSpec[] = [
   { name: "agent deadline", brief: "Change or clear an agent deadline", flags: [KERNEL, SESSION, SOCKET], args: ["AGENT", "DURATION|none"], summary: "extend, shorten or clear an agent deadline; duration starts now (90s, 30m, 2h, 1d)" },
-  { name: "exec", brief: "Run a command on this kernel, another kernel, or in a Room", flags: [KERNEL, SESSION, { name: "--workspace", value: "PATH" }, DIRECTORY, HOST_AGENT, TIMEOUT, SOCKET],
-    summary: "run argv after --. With no --session and no --workspace it runs on the kernel itself, in no Room, in a terminal of the kernel (stdout and stderr in one stream; --directory PATH, default the kernel user's home; --timeout SECONDS to wait); with --session it runs in that Room and with --workspace in a temporary Room, without a PTY, streaming binary stdin/stdout/stderr live. Returns the command exit code" },
+  { name: "exec", brief: "Run a command on this kernel, another kernel, or in a Room", flags: [KERNEL, SESSION, { name: "--workspace", value: "PATH" }, DIRECTORY, HOST_AGENT, TIMEOUT, { name: "--stdin-file", value: "KERNEL_PATH" }, SOCKET],
+    summary: "run argv after --. With no --session and no --workspace it runs on the kernel itself, in no Room, in a terminal of the kernel (stdout and stderr in one stream; --directory PATH, default the kernel user's home; --timeout SECONDS to wait). Its stdin is yours up to 64 KiB (chariox exec -- bash -s < script.sh), or with --stdin-file KERNEL_PATH a file already on that kernel (chariox files put it first), so a long script goes in one call; an argument is at most 4096 bytes; with --session it runs in that Room and with --workspace in a temporary Room, without a PTY, streaming binary stdin/stdout/stderr live. Returns the command exit code" },
   {
     name: "exec place", brief: "Move a queued command to another kernel",
     flags: [SESSION, { name: "--kernel", value: "NAME", required: true }, { name: "--directory", value: "PATH" }, SOCKET],

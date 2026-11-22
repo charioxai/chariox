@@ -329,6 +329,7 @@ fn outside_router_observes_a_real_terminal_job_without_a_terminal_watch() {
                     rows: 24,
                     title: None,
                     command: Some(vec!["/bin/sh".into(), "-c".into(), "exit 7".into()]),
+                    stdin: None,
                 },
             }),
         )

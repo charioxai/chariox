@@ -383,6 +383,7 @@ impl TerminalCall {
                         rows: args.rows.unwrap_or(DEFAULT_ROWS),
                         title: args.title,
                         command: args.command,
+                        stdin: None,
                     },
                 }
             }

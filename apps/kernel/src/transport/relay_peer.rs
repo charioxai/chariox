@@ -243,6 +243,7 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// Peer 451 (local 1014, the Landing 13 union) carries the holding run of a workspace-claim wait in the workflow run
 /// outcome and the mirror v2 header's `page_wheel`, and requires the relay's registration acknowledgment before reporting
 /// the kernel online.
+/// Peer 451 carries the local 1014 terminal `stdin` of a program.
 pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 451;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.

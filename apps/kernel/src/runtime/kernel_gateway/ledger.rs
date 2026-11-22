@@ -692,6 +692,7 @@ mod tests {
                 rows: 24,
                 title: None,
                 command: None,
+                stdin: None,
             },
             Op::Input {
                 terminal_id: "t".into(),

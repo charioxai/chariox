@@ -1,5 +1,6 @@
 import type {
   KernelTerminalRequest,
+  ProgramInput,
   RoomTerminalOperation,
   RoomTerminalRequest,
   RoomTerminalResponse,
@@ -8,6 +9,8 @@ import type {
 
 // MP-08 / MP-10 / MP-11: the Room terminal service is provisional protocol 569.
 export const roomTerminalMinimumProtocolVersion = 569
+/** A program opened with `stdin`: an older kernel would ignore the field and run it with no input. Provisional protocol number. */
+export const programStdinMinimumProtocolVersion = 1014
 
 /** The terminals of the kernel itself: shells with no Room, for the owner and an agent the owner granted access. */
 export type KernelTerminalTarget = {
@@ -48,7 +51,7 @@ export function roomTerminalRequest<T extends RoomTerminalTarget>(target: T, ope
 export function openRoomTerminalRequest<T extends RoomTerminalTarget>(
   target: T,
   size: { readonly cols: number; readonly rows: number },
-  options: { readonly title?: string; readonly command?: readonly string[] } = {},
+  options: { readonly title?: string; readonly command?: readonly string[]; readonly stdin?: ProgramInput } = {},
 ) {
   return roomTerminalRequest(target, {
     operation: "open",
@@ -56,6 +59,7 @@ export function openRoomTerminalRequest<T extends RoomTerminalTarget>(
     rows: size.rows,
     ...(options.title ? { title: options.title } : {}),
     ...(options.command ? { command: options.command } : {}),
+    ...(options.stdin ? { stdin: options.stdin } : {}),
   })
 }
 

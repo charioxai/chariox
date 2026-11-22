@@ -272,7 +272,7 @@ impl RoomExecService {
         {
             return Err(error(
                 "exec_invalid",
-                "command must contain 1-64 arguments, each at most 4096 bytes",
+                "command must contain 1-64 arguments, each at most 4096 bytes; write a longer script to the command's stdin (for example `bash -s`) instead",
             ));
         }
         let cwd = cwd.canonicalize().map_err(|failure| {

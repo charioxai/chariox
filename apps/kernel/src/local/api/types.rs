@@ -635,4 +635,6 @@ pub use workspace::*;
 /// v2 header carries `page_wheel`, whether the page's own script takes the wheel (a non-passive wheel listener on window,
 /// document, html or body), so the viewer sends it every wheel step.
 /// Machine status includes a readable relay failure reason (#1632).
+/// Local 1014 (relay peer 451, provisional numbers): opening a terminal with a `command` takes `stdin`, inline up to
+/// 64 KiB or a file on the kernel, which the program reads as its standard input (docs/PROTOCOL.md, "Kernel terminals").
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1014;
