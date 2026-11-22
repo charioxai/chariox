@@ -88,6 +88,38 @@ test('an App confirmation region is found by the host in the Tab document, never
   assert.equal(calls.includes('DOM.getDocument'), false, 'the base fake never saw the confirmation query');
 }));
 
+test('a plain card is bound again to the whole page after the browser restarted, and one that waits for text or a proof is not', () => withHost(async ({ host, snapshot, region, state }) => {
+  await snapshot();
+  const first = await region({ card_id: 'person-card' });
+  assert.equal(first.state, 'present');
+  // The kernel restarted: the Tab came back with a new document, and the controller a new generation.
+  host.generation = 2; state.document_id = 'doc-2';
+  const lost = await region({ card_id: 'person-card', generation: 1, document_id: 'doc' });
+  assert.equal(lost.state, 'condition_met');
+  assert.equal(lost.reason, 'Browser restarted');
+  const connection = await host.browser.ensureConnection(), base = connection.send, sent = [];
+  connection.send = async (method, params, session) => {
+    sent.push({ method, params });
+    if (method === 'DOM.getDocument') return { root: { nodeId: 1 } };
+    if (method === 'DOM.querySelector') return { nodeId: 5 };
+    if (method === 'DOM.describeNode') return { node: { backendNodeId: 77 } };
+    return base(method, params, session);
+  };
+  const again = await region({ card_id: 'person-card', ref: undefined, rebind: true });
+  assert.equal(again.state, 'present');
+  assert.equal(again.region.ref, 'backend:77');
+  assert.equal(again.region.generation, 2);
+  assert.equal(again.region.document_id, 'doc-2');
+  assert.equal(again.region.tab_id, 'one');
+  assert.deepEqual(sent.find(call => call.method === 'DOM.querySelector').params, { nodeId: 1, selector: 'body' });
+  // The poll that follows names the new binding and keeps following the page.
+  const followed = await region({ card_id: 'person-card', ref: 'backend:77', generation: 2, document_id: 'doc-2' });
+  assert.equal(followed.state, 'present');
+  for (const refused of [{ done_text: 'Connected' }, { app_confirmation: true }, { release: true }]) {
+    await assert.rejects(region({ card_id: 'person-card', ref: undefined, rebind: true, ...refused }), { code: 'user_domain_stale_reference' });
+  }
+  await assert.rejects(region({ card_id: undefined, ref: undefined, rebind: true }), { code: 'user_domain_stale_reference' });
+}));
 test('MP-08/MP-10 card geometry follows scrolling, movement and viewport resize without another snapshot', () => withHost(async ({ snapshot, region, state }) => {
   await snapshot();
   const initial = (await region({})).region;

@@ -36,7 +36,12 @@ there is no delegation step between parents and children.
 
 A card that shows a live browser page needs no grant to keep observing it, so a
 kernel restart (hot reload or cold) keeps the same card; the watcher resumes at
-recovery and the person finishes it as before.
+recovery and the person finishes it as before. The restart ends the kernel's
+browser; the watcher starts it again, the Tab comes back with a new document, and
+a plain card (no awaited text, no verification) is bound again to the whole page of
+that Tab, so the person sees the page fresh. A card that waits for page text or a
+verification keeps closing when its document changes, because its proof belongs to
+one document.
 
 ## Room Computer switches
 
