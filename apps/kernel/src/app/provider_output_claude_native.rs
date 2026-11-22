@@ -35,7 +35,6 @@ mod workspace_trust;
 
 pub(crate) use context_delivery::clear_claude_context_delivery_for_settled_prompt;
 pub(crate) use first_run_notice::claude_native_first_run_notice;
-pub(crate) use permission::write_claude_hook_context_response;
 pub(crate) use permission::{claude_permission_title, format_claude_permission_message};
 pub(crate) use start_screen::{
     claude_headless_owner_decision_pending, claude_headless_prompt_written,
@@ -66,7 +65,7 @@ use permission::{
     update_claude_permission_recent, write_claude_headless_bypass_selection_marker,
     write_claude_headless_startup_wait_marker, write_claude_headless_submit_retry,
     write_claude_headless_workspace_trust_denied_marker,
-    write_claude_headless_workspace_trust_interaction_marker,
+    write_claude_headless_workspace_trust_interaction_marker, write_claude_hook_context_response,
     write_claude_hook_permission_tombstone, write_claude_native_marker,
     write_claude_permission_input, write_claude_permission_passthrough,
     write_claude_permission_response, write_claude_workspace_trust_selection_marker,

@@ -361,10 +361,11 @@ pub(crate) fn drain_claude_events(
         }
     }
     apply_claude_usage_capture(run, state, &mut batch);
-    if let Err(error) = hook_receipts::read_prompt_hook_events(state, &mut batch) {
-        batch
-            .notices
-            .push(format!("Claude prompt hook events are unreadable: {error}"));
+    match hook_receipts::take_context_delivered(state) {
+        Ok(delivered) => batch.hook_context_delivered = delivered,
+        Err(error) => batch.notices.push(format!(
+            "Claude hook delivery receipts are unreadable: {error}"
+        )),
     }
 
     if let Some(limit) = state

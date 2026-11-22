@@ -50,49 +50,6 @@ pub(super) struct HeldRelease {
 }
 
 impl KernelRuntimeState {
-    pub(super) fn reply_to_claude_notification_context(
-        &self,
-        session_id: &str,
-        run: &crate::provider::RuntimeProviderRun,
-        request: &crate::provider::ClaudeNotificationContext,
-    ) -> Result<(), DaemonError> {
-        if request.deadline_ms <= crate::session::unix_epoch_ms() {
-            return Ok(());
-        }
-        let Some(agent_id) = run.agent_instance_id() else {
-            return Ok(());
-        };
-        let Some(context_file) = run.pty_env().get("CHARIOX_CLAUDE_NATIVE_CONTEXT") else {
-            return Ok(());
-        };
-        let owned = &self.owned;
-        let session = owned.session_store.get_session(session_id)?;
-        let notification = owned
-            .prompt_state_owner
-            .adopted_provider_turn(&session, agent_id, run.id())
-            .filter(|prompt| prompt.status() == crate::session::PromptStatus::Running);
-        let context = match notification {
-            Some(prompt) => {
-                let origin = crate::prompt_assembly::agent_message_origin_context(prompt.id());
-                let task = owned
-                    .agent_task_context_hint(session_id, agent_id, prompt.id())?
-                    .unwrap_or_default();
-                super::local_prompt_dispatch_runtime::join_hidden_context(&origin, &task)
-            }
-            None => "There is no active Chariox turn for this notification. Wait for a running Chariox turn before using its ID.".into(),
-        };
-        let context = owned.room_secret_observations.scrub(session_id, context)?;
-        let context = crate::provider::fit_claude_native_hidden_context(run.id(), context)?;
-        if request.deadline_ms > crate::session::unix_epoch_ms() {
-            crate::app::write_claude_hook_context_response(
-                context_file,
-                &request.request_id,
-                &context,
-            )?;
-        }
-        Ok(())
-    }
-
     /// Follows one batch's report of the provider's own turn, before the batch's output is
     /// recorded, so that output belongs to the turn it reports. A held task the turn's end
     /// releases is returned: the caller releases it after the batch is flushed to history.
@@ -123,14 +80,7 @@ impl KernelRuntimeState {
             }
             ProviderOwnTurnSignal::Running | ProviderOwnTurnSignal::StartedAndEnded => {}
         }
-        let mut ended_now = crate::app::ended_background_call_ids(&batch.chunks);
-        // The hook can get here before the stream reports the completed call.
-        ended_now.extend(
-            batch
-                .claude_notification_context
-                .as_ref()
-                .and_then(|request| request.ended_tool_use_id.clone()),
-        );
+        let ended_now = crate::app::ended_background_call_ids(&batch.chunks);
         self.adopt_provider_started_turn(session_id, provider_run_id, &ended_now)?;
         let preceding_turn_ended = owned
             .prompt_state_owner
@@ -306,8 +256,7 @@ impl KernelRuntimeState {
         let session = owned.session_store.get_session(session_id)?;
         if owned
             .prompt_state_owner
-            .adopted_provider_turn(&session, agent_id, provider_run_id)
-            .is_some()
+            .provider_turn_running(&session, agent_id)
         {
             return Ok(());
         }

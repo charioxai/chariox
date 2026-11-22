@@ -24,18 +24,16 @@ pub(crate) fn finished_background_task(value: &Value) -> Option<BackgroundTaskEn
         "user" => value.get("message")?.get("content")?,
         _ => return None,
     };
-    let text = content.as_str().or_else(|| {
-        let block = content.as_array()?.first()?;
-        if block.get("type")?.as_str()? != "text" {
-            return None;
-        }
-        block.get("text")?.as_str()
-    })?;
-    finished_background_task_text(text)
-}
-
-pub(super) fn finished_background_task_text(text: &str) -> Option<BackgroundTaskEnd<'_>> {
-    let text = text.trim_start();
+    let text = content
+        .as_str()
+        .or_else(|| {
+            let block = content.as_array()?.first()?;
+            if block.get("type")?.as_str()? != "text" {
+                return None;
+            }
+            block.get("text")?.as_str()
+        })?
+        .trim_start();
     // Nested background command notifications carry this provider-written preamble.
     let notification = if text.starts_with("[SYSTEM NOTIFICATION - NOT USER INPUT]") {
         text.split_once("<task-notification>")?.1
