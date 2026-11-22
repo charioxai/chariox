@@ -197,6 +197,19 @@ impl PendingAgentContextHandoffStore {
 }
 
 impl PendingAgentContextHandoff {
+    /// A packet that fits keeps the verbatim history alone: a stored brief
+    /// would only repeat it, maybe stale. A harness that writes briefs gets
+    /// the stored one only when its packet needs one.
+    fn with_stored_brief_where_needed(mut self, target_run: &RuntimeProviderRun) -> Self {
+        if brief_refresh::writes_handoff_briefs(target_run) {
+            let brief = self.conversation.brief.take();
+            if self.needs_brief() {
+                self.conversation.brief = brief;
+            }
+        }
+        self
+    }
+
     pub(super) fn needs_brief(&self) -> bool {
         self.derived
             && (self.conversation.older_history_left_out
@@ -496,7 +509,8 @@ impl super::KernelRuntimeOwnedState {
                     derived: true,
                     compaction_revision: Some(boundary.revision),
                     room_revision: self.room_secret_observations.revision(session_id).ok(),
-                };
+                }
+                .with_stored_brief_where_needed(target_run);
                 self.pending_agent_context_handoffs
                     .set(session_id, agent_id, handoff.clone());
                 return Ok(Some(handoff));
@@ -592,8 +606,9 @@ impl super::KernelRuntimeOwnedState {
             return Ok(None);
         };
         self.add_session_facts(session_id, agent_id, prompt_id, &mut conversation);
-        // The packet carries the last stored brief; a harness that writes briefs
-        // brings it up to date in the background, never ahead of the turn.
+        // The packet carries the last stored brief where it needs one; a harness
+        // that writes briefs brings it up to date in the background, never ahead
+        // of the turn.
         conversation.brief = self.stored_handoff_brief(session_id, agent_id);
         let latest = latest.as_ref();
         crate::logging::info_with_fields(
@@ -608,23 +623,26 @@ impl super::KernelRuntimeOwnedState {
                 "derive_ms": started.elapsed().as_millis() as u64,
             }),
         );
-        Ok(Some(PendingAgentContextHandoff {
-            source_provider: latest
-                .and_then(|latest| latest.provider.clone())
-                .unwrap_or_default(),
-            source_model: latest
-                .and_then(|latest| latest.model.clone())
-                .unwrap_or_default(),
-            target_provider_run_id: Some(target_run.id().to_string()),
-            target_provider: target_run.provider().to_string(),
-            target_account_profile: target_run.account_profile().to_string(),
-            target_model: Some(target_run.model().to_string()),
-            target_1m_context_disabled: crate::provider::claude_1m_context_disabled(target_run),
-            conversation,
-            derived: true,
-            compaction_revision: None,
-            room_revision: self.room_secret_observations.revision(session_id).ok(),
-        }))
+        Ok(Some(
+            PendingAgentContextHandoff {
+                source_provider: latest
+                    .and_then(|latest| latest.provider.clone())
+                    .unwrap_or_default(),
+                source_model: latest
+                    .and_then(|latest| latest.model.clone())
+                    .unwrap_or_default(),
+                target_provider_run_id: Some(target_run.id().to_string()),
+                target_provider: target_run.provider().to_string(),
+                target_account_profile: target_run.account_profile().to_string(),
+                target_model: Some(target_run.model().to_string()),
+                target_1m_context_disabled: crate::provider::claude_1m_context_disabled(target_run),
+                conversation,
+                derived: true,
+                compaction_revision: None,
+                room_revision: self.room_secret_observations.revision(session_id).ok(),
+            }
+            .with_stored_brief_where_needed(target_run),
+        ))
     }
 
     pub(super) fn stored_handoff_brief(&self, session_id: &str, agent_id: &str) -> Option<String> {

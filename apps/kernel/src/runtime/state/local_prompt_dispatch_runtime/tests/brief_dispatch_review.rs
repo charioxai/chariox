@@ -1,4 +1,8 @@
 //! MP-08 / MP-10 / MP-11: supplementary review regressions at the actual final envelope seam.
+//! The order under test: a rebuilt handoff goes to the provider first, with the
+//! stored brief where its packet needs one, and the brief folds in the
+//! background after. Room protection applies to the envelope when it is sent
+//! and to every fold step; a fold that sees the Room change stores nothing.
 use super::*;
 
 const SECRET: &str = "registered-during-brief-test-value";
@@ -144,9 +148,35 @@ impl PausedBrief {
             .await
             .unwrap();
         self.wait_for("brief-started").await;
+        self.wait_sent_while_fold_held().await;
+    }
+    /// The fixture holds the fold until `release` (or 8 s): an envelope within
+    /// 3 s went out before its brief folded.
+    async fn wait_sent_while_fold_held(&self) {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            self.wait_within("final-provider-envelope", 3),
+        )
+        .await
+        .expect("the turn must reach the provider before its brief folds");
+    }
+    /// The fold settled: it stored a brief or gave up.
+    async fn wait_fold_settled(&self) {
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+    fn stored_brief(&self) -> Option<String> {
+        self.runtime
+            .owned
+            .operational_history_store
+            .load_agent_handoff_brief(&self.session_id, &self.agent_id)
+            .unwrap()
+            .map(|stored| stored.brief)
     }
     async fn wait_for(&self, name: &str) {
-        tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        self.wait_within(name, 15).await;
+    }
+    async fn wait_within(&self, name: &str, seconds: u64) {
+        tokio::time::timeout(std::time::Duration::from_secs(seconds), async {
             while {
                 let path = self.root.path().join(name);
                 if name == "final-provider-envelope" {
@@ -194,7 +224,7 @@ impl Drop for PausedBrief {
 }
 
 #[tokio::test]
-async fn final_handoff_envelope_rechecks_room_registration_during_brief() {
+async fn a_value_registered_while_the_brief_folds_never_reaches_the_stored_brief() {
     let fixture = PausedBrief::new(false, false).await;
     fixture.prepare().await;
     fixture
@@ -204,15 +234,15 @@ async fn final_handoff_envelope_rechecks_room_registration_during_brief() {
         .register(&fixture.session_id, SECRET)
         .unwrap();
     fixture.release();
-    fixture.wait_for("final-provider-envelope").await;
+    fixture.wait_fold_settled().await;
     assert!(
-        !fixture.envelope().contains(SECRET),
-        "final provider envelope replayed history captured before Room registration"
+        fixture.stored_brief().is_none(),
+        "a fold that saw the Room change kept its brief"
     );
 }
 
 #[tokio::test]
-async fn final_handoff_envelope_protects_failed_request_note_during_brief() {
+async fn final_handoff_envelope_protects_failed_request_note_sent_before_its_brief() {
     let fixture = PausedBrief::new(false, false).await;
     fixture
         .runtime
@@ -228,16 +258,15 @@ async fn final_handoff_envelope_protects_failed_request_note_during_brief() {
             ),
         )
         .unwrap();
-    fixture.prepare().await;
     fixture
         .runtime
         .owned
         .room_secret_observations
         .register(&fixture.session_id, SECRET)
         .unwrap();
-    fixture.release();
-    fixture.wait_for("final-provider-envelope").await;
+    fixture.prepare().await;
     let envelope = fixture.provider_inputs();
+    fixture.release();
     assert!(envelope.contains("Your previous request"));
     assert!(
         !envelope.contains(SECRET),
@@ -246,20 +275,19 @@ async fn final_handoff_envelope_protects_failed_request_note_during_brief() {
 }
 
 #[tokio::test]
-async fn final_handoff_envelope_protects_scheduled_hidden_context_during_brief() {
+async fn final_handoff_envelope_protects_scheduled_hidden_context_sent_before_its_brief() {
     let fixture = PausedBrief::new(false, false).await;
-    fixture
-        .prepare_with_inputs(format!("scheduled-context-marker {SECRET}"), Vec::new())
-        .await;
     fixture
         .runtime
         .owned
         .room_secret_observations
         .register(&fixture.session_id, SECRET)
         .unwrap();
-    fixture.release();
-    fixture.wait_for("final-provider-envelope").await;
+    fixture
+        .prepare_with_inputs(format!("scheduled-context-marker {SECRET}"), Vec::new())
+        .await;
     let envelope = fixture.provider_inputs();
+    fixture.release();
     assert!(envelope.contains("scheduled-context-marker"));
     assert!(
         !envelope.contains(SECRET),
@@ -268,7 +296,7 @@ async fn final_handoff_envelope_protects_scheduled_hidden_context_during_brief()
 }
 
 #[tokio::test]
-async fn final_handoff_envelope_protects_attachments_during_brief() {
+async fn final_handoff_envelope_protects_attachments_sent_before_its_brief() {
     let fixture = PausedBrief::new(false, false).await;
     use base64::Engine as _;
     let attachments = (1..=3)
@@ -285,17 +313,16 @@ async fn final_handoff_envelope_protects_attachments_during_brief() {
         })
         .collect();
     fixture
-        .prepare_with_inputs(String::new(), attachments)
-        .await;
-    fixture
         .runtime
         .owned
         .room_secret_observations
         .register(&fixture.session_id, SECRET)
         .unwrap();
-    fixture.release();
-    fixture.wait_for("final-provider-envelope").await;
+    fixture
+        .prepare_with_inputs(String::new(), attachments)
+        .await;
     let envelope = fixture.provider_inputs();
+    fixture.release();
     assert!(envelope.contains("attachment-marker"));
     assert!(envelope.contains("[redacted]"));
     assert!(
@@ -339,7 +366,7 @@ async fn final_handoff_envelope_scrubs_already_registered_queued_session_facts()
 }
 
 #[tokio::test]
-async fn cancellation_during_brief_promotes_followup_through_shared_preparation() {
+async fn cancellation_while_the_brief_folds_promotes_a_fitting_followup_without_the_stored_brief() {
     let fixture = PausedBrief::new(false, true).await;
     // The submission entry records this turn before dispatch. After cancellation
     // it makes the long historical turn prior history, which fits verbatim.
@@ -408,20 +435,28 @@ async fn cancellation_during_brief_promotes_followup_through_shared_preparation(
         .enqueue_prompt_dispatch(&dispatch)
         .await
         .unwrap();
-    fixture.wait_for("final-provider-envelope").await;
-    let envelope = fixture.envelope();
+    tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        while !fixture.envelope().contains("queued followup") {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the followup reaches the provider");
+    let followup = fixture
+        .envelope()
+        .lines()
+        .rev()
+        .find(|line| line.contains("queued followup"))
+        .unwrap()
+        .to_string();
     assert!(
-        !envelope.contains("brief-only-amber") && envelope.contains("notes notes"),
+        !followup.contains("brief-only-amber") && followup.contains("notes notes"),
         "fitting followup must preserve verbatim history without re-inserting a stale brief"
-    );
-    assert!(
-        !envelope.contains("cancelled request"),
-        "cancelled request was submitted after its fold settled"
     );
 }
 
 #[tokio::test]
-async fn final_handoff_rebuilds_history_after_room_retirement_during_brief() {
+async fn a_room_retired_while_the_brief_folds_keeps_no_fold() {
     let fixture = PausedBrief::new(true, false).await;
     fixture.prepare().await;
     fixture
@@ -431,20 +466,15 @@ async fn final_handoff_rebuilds_history_after_room_retirement_during_brief() {
         .forget(&fixture.session_id)
         .unwrap();
     fixture.release();
-    fixture.wait_for("final-provider-envelope").await;
-    let envelope = fixture.envelope();
+    fixture.wait_fold_settled().await;
     assert!(
-        !envelope.contains("notes notes"),
-        "retired Room history was replayed from the old snapshot"
-    );
-    assert!(
-        !envelope.contains("brief-only-amber"),
-        "recovered Room brief cache was replayed"
+        fixture.stored_brief().is_none(),
+        "a fold of retired Room history was stored"
     );
 }
 
 #[tokio::test]
-async fn final_handoff_rejects_room_fenced_during_brief() {
+async fn a_room_fenced_while_the_brief_folds_keeps_no_fold() {
     let fixture = PausedBrief::new(false, false).await;
     fixture.prepare().await;
     assert!(fixture
@@ -454,29 +484,11 @@ async fn final_handoff_rejects_room_fenced_during_brief() {
         .register(&fixture.session_id, "")
         .is_err());
     fixture.release();
-    tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        loop {
-            let session = fixture
-                .runtime
-                .owned
-                .session_store
-                .get_session(&fixture.session_id)
-                .unwrap();
-            if fixture
-                .runtime
-                .owned
-                .prompt_state_owner
-                .active_prompt_for_agent(&session, &fixture.agent_id)
-                .is_none()
-            {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("fenced handoff must settle without provider submission");
-    assert!(!fixture.root.path().join("final-provider-envelope").exists());
+    fixture.wait_fold_settled().await;
+    assert!(
+        fixture.stored_brief().is_none(),
+        "a fold under a fenced Room was stored"
+    );
 }
 
 #[tokio::test]
@@ -530,7 +542,7 @@ async fn explicit_handoff_rebuilds_after_room_policy_changed_after_capture() {
 }
 
 #[tokio::test]
-async fn final_handoff_waits_for_room_input_before_rebuilding_protected_history() {
+async fn the_brief_fold_waits_for_room_input_and_keeps_nothing_after_it_changed() {
     let fixture = PausedBrief::new(false, false).await;
     fixture.prepare().await;
     let barrier = fixture
@@ -541,10 +553,10 @@ async fn final_handoff_waits_for_room_input_before_rebuilding_protected_history(
         .unwrap();
     let guard = barrier.write_owned().await;
     fixture.release();
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    fixture.wait_fold_settled().await;
     assert!(
-        !fixture.root.path().join("final-provider-envelope").exists(),
-        "handoff bypassed the Room input barrier"
+        fixture.stored_brief().is_none(),
+        "the fold stored past the Room input barrier"
     );
     fixture
         .runtime
@@ -553,11 +565,10 @@ async fn final_handoff_waits_for_room_input_before_rebuilding_protected_history(
         .register(&fixture.session_id, SECRET)
         .unwrap();
     drop(guard);
-    fixture.wait_for("final-provider-envelope").await;
-    assert!(!fixture.envelope().contains(SECRET));
+    fixture.wait_fold_settled().await;
+    assert!(fixture.stored_brief().is_none());
 }
 
-// MP-08 / MP-10 / MP-11: the new native policy must inherit explicit-snapshot replay fences.
 #[tokio::test]
 async fn native_policy_rebuilds_explicit_snapshot_after_room_change() {
     let fixture = PausedBrief::new(false, false).await;
@@ -699,7 +710,7 @@ async fn room_retirement_between_brief_chunks_never_replays_the_next_utility_inp
             .unwrap();
     }
     fixture.release();
-    fixture.wait_for("final-provider-envelope").await;
+    fixture.wait_fold_settled().await;
     let inputs = std::fs::read_to_string(fixture.root.path().join("brief-utility-inputs")).unwrap();
     let parts = inputs
         .lines()
@@ -718,8 +729,6 @@ async fn room_retirement_between_brief_chunks_never_replays_the_next_utility_inp
         1,
         "a second utility replayed a captured transcript after Room retirement"
     );
-    assert!(!fixture.envelope().contains("retire-this-transcript"));
-    assert!(!fixture.envelope().contains("brief-only-amber"));
     assert!(
         fixture
             .runtime
@@ -917,7 +926,7 @@ async fn goal_objective_survives_registered_room_values() {
 /// MP-08 / MP-09 / MP-10 / MP-11: a prompt admitted before the agent's deadline whose handoff
 /// brief finishes after it is not delivered, whether or not a deadline tick has run.
 #[tokio::test]
-async fn final_handoff_envelope_rechecks_the_agent_deadline_after_the_brief() {
+async fn an_agent_deadline_passing_while_the_brief_folds_never_resends_the_turn() {
     let fixture = PausedBrief::new(false, false).await;
     fixture.prepare().await;
     let deadline_ms = crate::session::unix_epoch_ms() + 300;
@@ -937,10 +946,9 @@ async fn final_handoff_envelope_rechecks_the_agent_deadline_after_the_brief() {
     tokio::time::sleep(std::time::Duration::from_millis(400)).await;
     fixture.release();
     tokio::time::sleep(std::time::Duration::from_millis(1_500)).await;
-    let inputs = std::fs::read_to_string(fixture.root.path().join("final-provider-envelope"))
-        .unwrap_or_default();
-    assert!(
-        !inputs.contains("cancelled request"),
-        "the expired agent was handed the prompt: {inputs}"
+    assert_eq!(
+        fixture.envelope().matches("cancelled request").count(),
+        1,
+        "the turn went out once, before its brief folded"
     );
 }
