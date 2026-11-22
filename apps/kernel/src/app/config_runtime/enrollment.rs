@@ -399,7 +399,6 @@ mod tests {
             "durable_event_delivery_receipts",
             "durable_room_environments",
             "durable_room_setups",
-            "durable_room_setup_storage_failures",
             "durable_state_metadata",
             "durable_state_owner_checkpoint_entities",
             "durable_state_owner_checkpoint_manifest",
