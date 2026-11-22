@@ -4,9 +4,9 @@ use crate::local::{
     EnvironmentEntryKind, EnvironmentOperationRequest, EnvironmentOperationState,
     EnvironmentOperationView, ExtensionPresence, GetEnvironmentOperationRequest,
     GetProjectEnvironmentRequest, ProjectEnvironmentExtension, ProjectEnvironmentExtensionView,
-    ProjectEnvironmentFileView, ProjectEnvironmentSecretLink, ProjectEnvironmentSecretSource,
-    ProjectEnvironmentSecretView, ProjectEnvironmentSetupField, ProjectEnvironmentSetupState,
-    ProjectEnvironmentView, RunProjectEnvironmentSetupRequest, SaveProjectEnvironmentRequest,
+    ProjectEnvironmentFileView, ProjectEnvironmentSecretSource, ProjectEnvironmentSecretView,
+    ProjectEnvironmentSetupField, ProjectEnvironmentSetupState, ProjectEnvironmentView,
+    RunProjectEnvironmentSetupRequest, SaveProjectEnvironmentRequest,
     SetProjectEnvironmentSecretRequest,
 };
 use crate::project_environment::{
@@ -141,7 +141,6 @@ impl KernelRuntimeState {
             ..Default::default()
         });
         let presence = secret_presence(&config, project.id(), &record.secrets)?;
-        let links = self.secret_link_views(project.id(), &record.secrets)?;
         let registrations = self.user_registrations(project.id());
         let setup_state = if exists {
             self.owned.project_environment_setups.state_for(
@@ -164,11 +163,9 @@ impl KernelRuntimeState {
                 .secrets
                 .iter()
                 .zip(presence)
-                .zip(links)
-                .map(|((name, presence), link)| ProjectEnvironmentSecretView {
+                .map(|(name, presence)| ProjectEnvironmentSecretView {
                     name: name.clone(),
                     presence,
-                    link,
                 })
                 .collect(),
             files: record
@@ -263,7 +260,6 @@ impl KernelRuntimeState {
         let record = self.environment_secret_record(project.id(), &request.name)?;
         let links = self.secret_links();
         match &request.source {
-            ProjectEnvironmentSecretSource::Unlink => links.remove(project.id(), &request.name)?,
             ProjectEnvironmentSecretSource::Value(value) => {
                 self.require_unlocked_vault()?;
                 self.store_environment_secret(project.id(), &request.name, value.expose_secret())?;
@@ -420,35 +416,6 @@ impl KernelRuntimeState {
                 "this Vault entry is not made for the environment variable {name}; capture it for {name}"
             ))),
         }
-    }
-
-    /// Where each Secret's value came from, for the view: the entry's name while it still fits, else broken.
-    fn secret_link_views(
-        &self,
-        project_id: &str,
-        names: &[String],
-    ) -> Result<Vec<Option<ProjectEnvironmentSecretLink>>, DaemonError> {
-        let links = self.secret_links().of_project(project_id)?;
-        if links.is_empty() {
-            return Ok(names.iter().map(|_| None).collect());
-        }
-        let service = self.home_runtime_secret_service()?;
-        Ok(names
-            .iter()
-            .map(|name| {
-                let id = links.get(name)?;
-                Some(match Self::environment_use_target(&service, id, name) {
-                    Ok(_) => ProjectEnvironmentSecretLink::Linked {
-                        entry: service
-                            .credential(id)
-                            .ok()
-                            .and_then(|credential| credential.description.clone())
-                            .unwrap_or_else(|| id.clone()),
-                    },
-                    Err(_) => ProjectEnvironmentSecretLink::Broken,
-                })
-            })
-            .collect())
     }
 
     pub(crate) fn run_project_environment_setup(
