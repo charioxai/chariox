@@ -191,7 +191,7 @@ pub(crate) use prompt_signals::{
     classify_provider_terminal_failure_output_text, classify_provider_terminal_failure_text,
     claude_native_stop_failure, find_provider_terminal_failure_output, provider_coded_failure_text,
     provider_error_frame, provider_exit_error_message, provider_retry_status,
-    text_reports_resource_limit, PROVIDER_CONNECTION_RETRY_MERGE_KEY,
+    text_reports_resource_limit, ClaudeNotificationContext, PROVIDER_CONNECTION_RETRY_MERGE_KEY,
 };
 pub use prompt_signals::{
     ProviderAssistantCompletion, ProviderBackgroundNotification, ProviderOwnTurnSignal,

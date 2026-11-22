@@ -99,8 +99,9 @@ pub(crate) use provider_output_claude_native::{
     claude_headless_prompt_written, claude_headless_stuck_screen_line,
     claude_native_first_run_notice, claude_native_pending_prompt_cancel_input,
     claude_native_recent_terminal_failure, claude_permission_title,
-    claude_workspace_trust_declined, format_claude_permission_message, ClaudeNativeDispatchAttempt,
-    ClaudeNativeProcessOutcome, NativePromptHandoffPolicy, CLAUDE_NATIVE_CONTEXT_REJECTION_MESSAGE,
+    claude_workspace_trust_declined, format_claude_permission_message,
+    write_claude_hook_context_response, ClaudeNativeDispatchAttempt, ClaudeNativeProcessOutcome,
+    NativePromptHandoffPolicy, CLAUDE_NATIVE_CONTEXT_REJECTION_MESSAGE,
 };
 pub(crate) use provider_tool_close::{
     background_calls, ended_background_call_ids, ended_background_provider_tool_rows,

@@ -345,7 +345,7 @@ pub(super) fn validate_context_request_id(
     Ok(())
 }
 
-pub(super) fn write_claude_hook_context_response(
+pub(crate) fn write_claude_hook_context_response(
     context_file: &str,
     request_id: &str,
     context: &str,

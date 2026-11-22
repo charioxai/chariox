@@ -681,6 +681,9 @@ impl KernelRuntimeState {
             .follow_provider_own_turn(session_id, provider_run_id, &poll_result)
             .await?;
         let provider_run = owned.ensure_provider_run_in_session(session_id, provider_run_id)?;
+        if let Some(request) = poll_result.claude_notification_context.take() {
+            self.reply_to_claude_notification_context(session_id, &provider_run, &request)?;
+        }
         let active_prompt = if let Some(agent) = provider_run.agent_instance_id() {
             let session = owned.session_store.get_session(session_id)?;
             owned
