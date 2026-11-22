@@ -325,9 +325,6 @@ pub enum LocalDaemonResponse {
     },
     RoomListSessionsListed { page: RoomListSessionPage, },
     RoomListSnapshot { snapshot: RoomListSnapshot, },
-    PaneFeed {
-        feed: PaneFeed,
-    },
     OwnerViewStatus {
         generation: String,
         tab_id: Option<String>,

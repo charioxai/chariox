@@ -6,7 +6,6 @@ mod critical_approval_passkey;
 mod kernel_operation_interactions;
 mod native_skills_foundation;
 mod output_seen;
-mod pane_feed;
 mod person_inbox;
 mod prompt_lifecycle;
 mod prompt_routing;

@@ -33,7 +33,6 @@ mod dispatch;
 pub(crate) mod event_connection_lifecycle;
 mod kernel_access;
 mod managed_context_bridge;
-mod pane_feed;
 mod session_view;
 pub(crate) use managed_context_bridge::{
     RelayManagedContextArmRequest, RelayManagedContextChunkRequest,

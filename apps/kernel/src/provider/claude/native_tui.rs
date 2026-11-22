@@ -19,20 +19,15 @@ pub(crate) const CLAUDE_NATIVE_MAX_HIDDEN_CONTEXT_BYTES: usize =
 /// The timeout of the kernel interaction a Claude permission request raises.
 pub(crate) const CLAUDE_NATIVE_PERMISSION_TIMEOUT_SECS: u64 = 300;
 /// How long the hook waits for the kernel's decision (`deadline` in the
-/// handler): past the longest a provider terminal holds a card, the interaction
-/// timeout and a forwarded interaction's relay buffer, so whatever the kernel
-/// settles the card with finds it waiting. The kernel always settles first.
+/// handler): past the interaction timeout plus a forwarded interaction's relay
+/// buffer, so the deny a timed-out interaction resolves to finds it waiting.
 #[allow(
     dead_code,
     reason = "Retains the compile-time ordering check against the native hook timeout"
 )]
-pub(crate) const CLAUDE_NATIVE_PERMISSION_HOOK_WAIT_SECS: u64 =
-    crate::runtime::native_interaction_bridge::PROVIDER_TERMINAL_HOLD_LIMIT_SECS
-        + CLAUDE_NATIVE_PERMISSION_TIMEOUT_SECS
-        + 60;
+pub(crate) const CLAUDE_NATIVE_PERMISSION_HOOK_WAIT_SECS: u64 = 330;
 /// Claude's timeout for the permission hook, past the hook's own wait.
-const CLAUDE_NATIVE_PERMISSION_HOOK_TIMEOUT_SECS: u64 =
-    CLAUDE_NATIVE_PERMISSION_HOOK_WAIT_SECS + 30;
+const CLAUDE_NATIVE_PERMISSION_HOOK_TIMEOUT_SECS: u64 = 360;
 const _: () =
     assert!(CLAUDE_NATIVE_PERMISSION_HOOK_TIMEOUT_SECS > CLAUDE_NATIVE_PERMISSION_HOOK_WAIT_SECS);
 
@@ -380,7 +375,7 @@ mod tests {
         claude_native_hidden_context_room, claude_native_hook_handler, claude_native_tui_args,
         ensure_claude_native_hidden_context_fits, prepare_claude_native_tui_files,
         CLAUDE_NATIVE_CONTEXT_CHUNK_BYTES, CLAUDE_NATIVE_CONTEXT_HOOK_CHUNKS,
-        CLAUDE_NATIVE_MAX_HIDDEN_CONTEXT_BYTES, CLAUDE_NATIVE_PERMISSION_HOOK_TIMEOUT_SECS,
+        CLAUDE_NATIVE_MAX_HIDDEN_CONTEXT_BYTES,
     };
     use crate::error::DaemonError;
 
@@ -1353,8 +1348,7 @@ mod tests {
         );
         assert_eq!(
             yolo_settings["hooks"]["PermissionRequest"][0]["hooks"][0]["timeout"],
-            CLAUDE_NATIVE_PERMISSION_HOOK_TIMEOUT_SECS,
-            "Claude keeps the hook past every card the kernel may hold"
+            360
         );
     }
 }

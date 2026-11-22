@@ -18,10 +18,6 @@ pub use api::{
 };
 pub use api::{CreatedResource, CreatedResourceState, ResourceRevokeMethod};
 pub use api::{
-    GetPaneFeedRequest, PaneCard, PaneCardChoice, PaneCardReply, PaneFeed, PaneIdentity,
-    PaneNotice, PaneSettings, PaneState, PaneStripe, ReportPaneSettingsRequest,
-};
-pub use api::{
     GetPersonInboxRequest, InboxCardChange, PersonInboxCard, PersonInboxCardBody,
     PersonInboxNotice, PersonInboxNoticeAction, PersonInboxOrigin, PersonInboxPriority,
     SetInboxCardStateRequest, SetInboxMuteRequest,

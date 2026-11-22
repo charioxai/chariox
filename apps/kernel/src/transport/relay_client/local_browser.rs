@@ -394,7 +394,7 @@ fn current_authority(config: &crate::config::DaemonConfig) -> Option<LocalBrowse
 
 /// The exact web Origin of the paired Cloud: HTTPS, or HTTP on loopback for
 /// local development. Anything else is not a browser origin we admit.
-pub(crate) fn paired_cloud_origin(api_url: &str) -> Option<String> {
+fn paired_cloud_origin(api_url: &str) -> Option<String> {
     let url = url::Url::parse(api_url).ok()?;
     let loopback = matches!(
         url.host(),

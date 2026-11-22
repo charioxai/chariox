@@ -44,15 +44,6 @@ impl CommandRouter {
                 .await
                 .map(Some);
         }
-        if let LocalDaemonRequest::GetPaneFeed(request) = request {
-            return self.get_pane_feed(command, request.clone()).await.map(Some);
-        }
-        if let LocalDaemonRequest::ReportPaneSettings(request) = request {
-            return self
-                .report_pane_settings(command, request.clone())
-                .await
-                .map(Some);
-        }
         if let Some(response) = self
             .dispatch_app_pre_lane(command, request, caller_user_id)
             .await?

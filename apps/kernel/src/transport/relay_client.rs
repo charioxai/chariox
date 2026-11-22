@@ -55,7 +55,6 @@ mod incoming_envelopes;
 mod incoming_tasks;
 mod kernel_resources;
 mod local_browser;
-pub(crate) use local_browser::paired_cloud_origin;
 mod metadata_client;
 mod peer_client;
 mod peer_events;
