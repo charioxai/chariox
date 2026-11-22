@@ -14,14 +14,17 @@ export async function subscribeScreencastRegion(host,command,scope,signal,{Scree
  let source,stream;
  try{
   if(lease.tab_id!==tab.tab_id||lease.document_id!==tab.document_id||!await lease.isCurrent())refuse();
-  const scale=lease.device_scale_factor,r=lease.rect;
+  // R2 (P5): motion at DPR1 geometry for every viewer density (R0: full DPR2 frames cost 3x headed CPU and +43 ms P95, DPR1
+  // geometry 1.8x and +25 ms). The shared screencast runs at the page's CSS size and the crop is the lease rect in CSS pixels;
+  // the lossless exact still at rest keeps the viewer's density.
+  const scale=lease.device_scale_factor,motion=1,r=lease.rect;
   // Inside the canonical clip, even dimensions (as a native region); the page is the screencast's whole frame.
-  const left=Math.ceil(r.x*scale),top=Math.ceil(r.y*scale),width=2*Math.floor((Math.floor((r.x+r.width)*scale)-left)/2),height=2*Math.floor((Math.floor((r.y+r.height)*scale)-top)/2);
+  const left=Math.ceil(r.x*motion),top=Math.ceil(r.y*motion),width=2*Math.floor((Math.floor((r.x+r.width)*motion)-left)/2),height=2*Math.floor((Math.floor((r.y+r.height)*motion)-top)/2);
   if(width<2||height<2)refuse();
-  const offset={x:left/scale-r.x,y:top/scale-r.y};
-  const shared=await host.screencastFor(tab,scale);
+  const offset={x:left/motion-r.x,y:top/motion-r.y};
+  const shared=await host.screencastFor(tab,motion);
   assertNotCancelled(signal);
-  source=new Screencast({shared,tab,scale,policy,rect:{left,top,width,height},
+  source=new Screencast({shared,tab,scale:motion,policy,rect:{left,top,width,height},
    // As the whole-tab screencast: no pixels while Vault-protected values or targets are on the page (R1c).
    allowed:p=>host.protection===p&&!p.unknown&&!p.values?.length&&!p.targets?.length&&host.generation===generation,validateCurrent:()=>lease.isCurrent(),timing:host.timing});
   await source.start();

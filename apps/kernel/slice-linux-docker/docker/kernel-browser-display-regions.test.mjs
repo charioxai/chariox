@@ -390,12 +390,12 @@ for(const kind of ['browser_chrome','browser_auxiliary'])test(`MP-08/MP-10 retir
 test('R1a/R1b: a headless browser grants a region lease as a crop of the Tab\'s one shared screencast',async()=>{
  const f=fixture();delete f.host.chromium.display;f.host.chromeWindows={current:()=>null,resolve:async()=>{throw Error('no window on a headless browser')}};
  const shared=[];f.host.screencastFor=async(tab,scale)=>{let entry=shared.find(s=>s.tab===tab);if(!entry){entry={tab,scale,starts:1};shared.push(entry);}return entry;};
- class Screencast {constructor(options){this.options=options;this.region={css_width:options.rect.width/2,css_height:options.rect.height/2};f.calls.push(['screencast',options]);}async start(){return this;}async close(){f.calls.push('close');}valid(){return true;}}
+ class Screencast {constructor(options){this.options=options;this.region={css_width:options.rect.width/options.scale,css_height:options.rect.height/options.scale};f.calls.push(['screencast',options]);}async start(){return this;}async close(){f.calls.push('close');}valid(){return true;}}
  const first=await subscribeRegion(f.host,f.command,'terminal:a',undefined,{Screencast});
  assert.equal(first.source_kind,'region');assert.equal(first.css_width,100);assert.equal(first.css_height,50);assert.equal(first.device_scale_factor,2);
  const source=[...f.host.displays.values()][0].regionSource;
  assert(source instanceof Screencast,'the region source is the screencast crop');
- assert.deepEqual(source.options.rect,{left:20,top:40,width:200,height:100},'the lease rect in device pixels, relative to the page');
+ assert.deepEqual(source.options.rect,{left:10,top:20,width:100,height:50},'the lease rect relative to the page, at DPR1 geometry (R2)');
  await subscribeRegion(f.host,{...f.command},'terminal:a',undefined,{Screencast});
  assert.equal(shared.length,1,'two regions of one Tab share one screencast');
  for(const stream of [...f.host.displays.values()])await stream.close();
@@ -454,4 +454,19 @@ test('R1 S2/S3: navigation and protection events fence the region screencast; ol
  for(const l of listeners)l({sessionId:'s',method:'Page.frameNavigated',params:{frame:{id:'main',loaderId:'new'}}});
  frame(clock+50);assert.equal(out.length,2,'S2: nothing goes out after a navigation');assert.equal(cast.valid(),false);assert.equal(cast.sample(),null);
  await cast.close();assert(sent.includes('Page.stopScreencast'));
+});
+
+// R2 (P5 for screencast regions): a DPR2 viewer's region gets motion at DPR1 geometry (R0: full DPR2 frames cost 3x headed CPU
+// and +43 ms P95; DPR1 geometry 1.8x and +25 ms). The shared screencast runs at the page's CSS size and the crop is the lease
+// rect in CSS pixels; the exact still at rest stays the lossless DPR2 picture (unchanged).
+test('R2: a DPR2 region of a display-less browser crops a DPR1-geometry screencast',async()=>{
+ const f=fixture();delete f.host.chromium.display;f.host.chromeWindows={current:()=>null};
+ const asked=[];f.host.screencastFor=async(tab,scale)=>{asked.push(scale);return {source:{closed:false,fenced:false,subscribe:()=>()=>{},sample:()=>null},ready:Promise.resolve(),release:()=>{}};};
+ class Screencast {constructor(options){this.options=options;this.region={css_width:options.rect.width/options.scale,css_height:options.rect.height/options.scale};}async start(){return this;}async close(){}valid(){return true;}}
+ const result=await subscribeRegion(f.host,f.command,'terminal:a',undefined,{Screencast});
+ assert.deepEqual(asked,[1],'the shared screencast is asked at DPR1 geometry');
+ const source=[...f.host.displays.values()][0].regionSource;
+ assert.deepEqual(source.options.rect,{left:10,top:20,width:100,height:50},'the crop is the lease rect in CSS pixels');
+ assert.equal(result.css_width,100);assert.equal(result.css_height,50);
+ for(const stream of [...f.host.displays.values()])await stream.close();
 });
