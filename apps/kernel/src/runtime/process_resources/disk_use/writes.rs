@@ -5,18 +5,16 @@ use std::collections::BTreeMap;
 #[cfg(target_os = "linux")]
 use std::path::PathBuf;
 
-/// A command that writes one file after another holds none open between
-/// two of them: its last receiving volume stands this long (ms).
-#[cfg(target_os = "linux")]
-const REMEMBERED_MS: u64 = 2000;
-
 #[derive(Default)]
 pub(in crate::runtime::process_resources) struct WriteGrowth {
     #[cfg(target_os = "linux")]
     files: BTreeMap<(u64, u64), FileGrowth>,
-    /// The one volume it last sent output to: its id, a directory on it, and when.
+    /// The one volume it last sent output to: its id and a directory on it.
+    /// A command that writes one short-lived file after another is seen with
+    /// a file open in few samples; the volume stands until it is seen sending
+    /// output elsewhere.
     #[cfg(target_os = "linux")]
-    last: Option<(u64, PathBuf, u64)>,
+    last: Option<(u64, PathBuf)>,
 }
 
 #[cfg(target_os = "linux")]
@@ -129,28 +127,22 @@ impl WriteGrowth {
             }
         }
         self.files = files;
-        self.remember(&mut volumes, &outputs, at);
+        self.remember(&mut volumes, &outputs);
         volumes.into_values().collect()
     }
 
     /// A many-file copy is between two files at most samples. While it
-    /// holds no output open, the one volume it sent output to a moment ago
-    /// still receives it.
+    /// holds no output open, the one volume it last sent output to still
+    /// receives it.
     #[cfg(target_os = "linux")]
     fn remember(
         &mut self,
         volumes: &mut BTreeMap<u64, VolumeWrites>,
         outputs: &BTreeMap<u64, PathBuf>,
-        at: u64,
     ) {
         match outputs.iter().next() {
             None => {
-                let Some((id, dir, _)) = self
-                    .last
-                    .as_ref()
-                    .filter(|(.., seen)| at.saturating_sub(*seen) <= REMEMBERED_MS)
-                else {
-                    self.last = None;
+                let Some((id, dir)) = self.last.as_ref() else {
                     return;
                 };
                 let volume = volumes.entry(*id).or_insert_with(|| VolumeWrites {
@@ -171,7 +163,7 @@ impl WriteGrowth {
                     .ok()
                     .and_then(|file| file.parent().map(PathBuf::from));
                 if let Some(dir) = dir {
-                    self.last = Some((*id, dir, at));
+                    self.last = Some((*id, dir));
                 }
             }
             Some(_) => self.last = None,
@@ -249,7 +241,7 @@ mod tests {
     }
 
     #[test]
-    fn a_closed_output_leaves_its_volume_known_for_a_moment() {
+    fn a_closed_output_leaves_its_volume_known_while_the_command_lives() {
         use std::io::{BufRead, BufReader};
         let dir = std::env::temp_dir().join(format!("volume-last-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -299,10 +291,10 @@ mod tests {
         );
         assert!(
             growth
-                .sample(&pids, 5000)
+                .sample(&pids, 60_000)
                 .iter()
-                .all(|volume| !volume.receiving),
-            "an old volume stood in"
+                .any(|volume| volume.receiving && volume.id == meta.dev()),
+            "the volume was forgotten while the command still lives"
         );
         drop(input);
         child.wait().unwrap();

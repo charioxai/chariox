@@ -47,9 +47,9 @@ first, the fastest of them; otherwise the one that wrote the most. A person's
 own terminal command is never chosen. A command's writes are what it adds to
 the files it holds open; a command whose output files (not its standard
 streams, which often go to a log) are on one volume only, shared with no other
-command, has all its write rate counted there, and that volume stands for two
-seconds after it closes its last output, so a copy of many short-lived files is
-seen like one large file. A command's rate is what it wrote over the last two
+command, has all its write rate counted there, and that volume stands until it
+is seen sending output elsewhere, so a copy of many short-lived files is seen
+like one large file. A command's rate is what it wrote over the last two
 seconds (a younger command counts the time before it as idle), so a writer
 that writes in bursts is judged by its pace, not by one burst. After a stop the
 next writer is judged two seconds later. The stopped command reads the reason on

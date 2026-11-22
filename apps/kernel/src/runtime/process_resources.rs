@@ -511,11 +511,12 @@ impl PreparedDomain {
                             previous.get(&pid).map_or(0, |before| before.measured_growth)
                         });
                         let write_rate = write_rate(write_windows.entry(pid).or_default(), sampled_at, writes);
+                        // Only a writing command's descriptors are worth reading; its
+                        // cache, with the volume it last sent output to, lives as
+                        // long as the command.
                         if write_growth >= admission::GROWING {
                             let volumes = write_growth_cache.entry(pid).or_default().sample(&pids, sampled_at);
                             disk_writes.insert(pid, volumes);
-                        } else {
-                            write_growth_cache.remove(&pid);
                         }
                         pool::CommandUse {
                             pid,
@@ -536,7 +537,7 @@ impl PreparedDomain {
                         }
                     })
                     .collect::<Vec<_>>();
-                write_growth_cache.retain(|pid, _| disk_writes.contains_key(pid));
+                write_growth_cache.retain(|pid, _| commands.iter().any(|command| command.pid == *pid));
                 write_windows.retain(|pid, _| commands.iter().any(|command| command.pid == *pid));
                 windows.retain(|pid, _| commands.iter().any(|command| command.effective == *pid));
                 last_resident = (

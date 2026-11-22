@@ -273,6 +273,26 @@ fn a_writer_in_bursts_with_room_for_its_average_keeps_running() {
 
 #[cfg(target_os = "linux")]
 #[test]
+fn a_writer_of_short_lived_files_is_stopped_on_the_volume_it_was_last_seen_on() {
+    take_wait_events();
+    // One output held open long enough to be seen, a pause, then 8 MiB files
+    // each open for a few milliseconds, twice a second: almost no sample
+    // sees one open, and 40 MiB lasts less than five seconds at that pace.
+    let pool = small_volume_with(40 * MIB);
+    let command = format!(
+        "python3 -c '{DIE_WITH_PARENT}import os,sys,time\nd=sys.argv[1]\nf=open(os.path.join(d,\"first\"),\"wb\")\nfor _ in range(8):\n f.write(bytes(1048576)); f.flush(); time.sleep(0.1)\nf.close(); time.sleep(3)\nend=time.time()+10\ni=0\nwhile time.time()<end and os.path.isdir(d):\n p=os.path.join(d,\"part-%d\" % i); i+=1\n with open(p,\"wb\") as g: g.write(bytes(8388608))\n os.unlink(p); time.sleep(0.5)' \"$0\""
+    );
+    let mut writer = Workload::run(domain(&pool, "parts", false), &[("parts", command)]);
+    settle(9);
+    assert!(
+        !writer.alive("parts"),
+        "a writer filling a nearly full volume through short-lived files kept writing"
+    );
+    writer.assert_told("parts", "was filling it");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
 fn an_anonymous_memory_writer_is_not_stopped_as_a_disk_filler() {
     take_wait_events();
     let pool = pool(1536);
