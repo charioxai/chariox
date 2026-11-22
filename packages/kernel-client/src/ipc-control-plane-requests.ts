@@ -17,9 +17,20 @@ export type ControlPlaneResponse =
   | { kind: "job_cancelled"; job_ref: string }
   | { kind: "capabilities"; machine_allocation: null | { revision: string; actions: string[]; offer: MachineAcquisitionOffer | null; offers?: MachineOption[]; job_offers: JobMachineOffer[]; job_default_class_id: string | null } }
   | { kind: "machines"; machines: ControlPlaneMachineRow[]; saved_states: ControlPlaneSavedStateRow[] }
-  | { kind: "machine"; revision: number; available_actions: string[]; allocation_ref: string; state: string; access_state: string; access_reason: string | null; purpose?: string; machine_label?: string; address?: string | null; kernel_target: null | {
+  | { kind: "machine"; revision: number; available_actions: string[]; allocation_ref: string; state: string; access_state: string; access_reason: string | null; purpose?: string; machine_label?: string; address?: string | null; kernel_diagnostics?: MachineKernelDiagnostics; kernel_target: null | {
       kernel_id: string; machine_id: string; relay_realm_id: string; key_thumbprint: string
     } }
+
+export type MachineKernelDiagnostics = {
+  kernel_version: string | null
+  kernel_protocol: number | null
+  last_relay_refusal: {
+    reason: string
+    next_step: string
+    since_ms: number
+    next_retry_at_ms: number | null
+  } | null
+}
 
 export function controlPlaneRequest(request: ControlPlaneRequest) { return { ControlPlane: request } }
 

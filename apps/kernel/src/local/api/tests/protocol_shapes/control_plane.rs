@@ -78,3 +78,39 @@ fn machine_options_1011_shapes_and_hash() {
     )
     .is_err());
 }
+
+#[test]
+fn rental_kernel_diagnostics_are_part_of_machine_status() {
+    let shape = serde_json::json!({
+        "ControlPlane": {
+            "result": {
+                "kind": "machine",
+                "allocation_ref": "allocation",
+                "revision": 2,
+                "available_actions": [
+                    "release"
+                ],
+                "state": "reconnecting",
+                "access_state": "pending",
+                "access_reason": "kernel_offline",
+                "kernel_target": null,
+                "kernel_diagnostics": {
+                    "kernel_version": "0.1.0",
+                    "kernel_protocol": 1014,
+                    "last_relay_refusal": {
+                        "reason": "invalid relay registration: missing registration proof",
+                        "next_step": "update this kernel",
+                        "since_ms": 1000,
+                        "next_retry_at_ms": 2000
+                    }
+                }
+            }
+        }
+    });
+    let parsed: LocalDaemonResponse = serde_json::from_value(shape.clone()).unwrap();
+    assert_eq!(serde_json::to_value(parsed).unwrap(), shape);
+    assert_eq!(
+        format!("{:x}", Sha256::digest(serde_json::to_vec(&shape).unwrap())),
+        "422f51a09adf5217630bd87661022831db929d5b667f74d79d2f5749cf78346c",
+    );
+}

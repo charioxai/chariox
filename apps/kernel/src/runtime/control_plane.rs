@@ -9,9 +9,35 @@ use crate::runtime::state::KernelRuntimeState;
 fn cloud_request_body(
     account_id: &str,
     credential: &str,
-    request: &ControlPlaneRequest,
+    request: impl serde::Serialize,
 ) -> serde_json::Value {
     serde_json::json!({"accountId": account_id, "kernelCredential": credential, "request": request})
+}
+
+pub(crate) async fn kernel_was_released(config: &DaemonConfig, kernel_id: &str) -> bool {
+    #[derive(serde::Deserialize)]
+    struct ReleaseStatus {
+        released: bool,
+    }
+
+    let Some(profile) = crate::runtime::cloud_relay_control::active_cloud_profile(config) else {
+        return false;
+    };
+    let Some(credential) = profile.kernel_credential.as_deref() else {
+        return false;
+    };
+    crate::runtime::cloud_api_client::post_cloud_json_with_timeout::<ReleaseStatus>(
+        profile.api_url.clone(),
+        "/control-plane",
+        cloud_request_body(
+            &profile.account_id,
+            credential,
+            serde_json::json!({"action": "released_kernel", "kernel_id": kernel_id}),
+        ),
+        std::time::Duration::from_secs(2),
+    )
+    .await
+    .is_ok_and(|status| status.released)
 }
 
 pub(crate) async fn execute(
@@ -237,6 +263,12 @@ pub(crate) async fn execute(
                 Ok(()) => *access_state = "available".into(),
                 Err(error) => *access_reason = Some(error.code().to_string()),
             }
+        }
+        // The service tracks compute lifecycle. A ready response also requires verified access
+        // to the kernel, which can disappear independently of the compute instance.
+        if machine_state == "ready" && access_state != "available" {
+            *machine_state = "reconnecting".into();
+            access_reason.get_or_insert_with(|| "kernel_target_unverified".into());
         }
     }
     Ok(LocalDaemonResponse::ControlPlane { result })

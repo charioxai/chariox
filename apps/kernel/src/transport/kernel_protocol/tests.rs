@@ -789,6 +789,7 @@ fn room_list_snapshot(
             configured: false,
             connected: false,
             relay_url: None,
+            registration_refused: None,
             relay_token_configured: false,
             daemon_id: "daemon-1".to_string(),
             machine_id: "machine-1".to_string(),

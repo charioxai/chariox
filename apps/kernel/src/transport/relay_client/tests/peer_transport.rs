@@ -767,7 +767,7 @@ impl ControlledWorkspaceLiveSyncWorker {
             accepting_remote_leases: false,
             leased_agent_count: 0,
             local_session_count: 0,
-            local_protocol: None,
+            local_protocol: Some(chariox_relay::protocol::MINIMUM_KERNEL_REGISTRATION_PROTOCOL),
         };
         let actions = Arc::new(Mutex::new(actions.into_iter().collect::<VecDeque<_>>()));
         let request_count = Arc::new(AtomicUsize::new(0));

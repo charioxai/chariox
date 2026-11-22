@@ -52,7 +52,7 @@ async fn daemon_registration_is_tracked_and_removed_on_disconnect() {
             accepting_remote_leases: false,
             leased_agent_count: 0,
             local_session_count: 1,
-            local_protocol: None,
+            local_protocol: Some(crate::protocol::MINIMUM_KERNEL_REGISTRATION_PROTOCOL),
         },
     );
     socket

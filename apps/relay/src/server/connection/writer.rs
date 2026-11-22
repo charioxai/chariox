@@ -98,7 +98,7 @@ fn control(message: &Message) -> bool {
         message,
         Message::Ping(_) | Message::Pong(_) | Message::Close(_)
     ) || matches!(message, Message::Text(text) if text.len() <= CHUNK_BYTES && serde_json::from_str::<serde_json::Value>(text).ok()
-            .is_some_and(|v| v.get("kind").and_then(|v|v.as_str()) == Some("close")))
+            .is_some_and(|v| matches!(v.get("kind").and_then(|v|v.as_str()), Some("close" | "daemon_registered"))))
 }
 struct Transfer {
     id: u32,

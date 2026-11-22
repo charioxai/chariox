@@ -47,8 +47,10 @@ impl WakeDriver for JobDriver {
             return Recovery::Lost("job service unavailable".into());
         };
         let wake = wake.clone();
-        let (cancel, cancelled) =
-            watch::channel(record.placement == JobPlacement::Local && wake.state == "cancelling");
+        let (cancel, cancelled) = watch::channel(
+            (record.placement == JobPlacement::Local || record.request.machine.is_some())
+                && wake.state == "cancelling",
+        );
         {
             let mut live = self.live.lock().expect("job live");
             if record.placement == JobPlacement::Local && live.contains_key(&wake.id) {
@@ -273,10 +275,9 @@ impl KernelRuntimeState {
             pending: Default::default(),
             live: Default::default(),
             local: Default::default(),
-            remote_requested: Default::default(),
+            remote_moves: Default::default(),
             owner_stops: Default::default(),
             remote_samples: Default::default(),
-            remote_origins: Default::default(),
             return_grants: Default::default(),
         });
         let _ = driver.this.set(Arc::downgrade(&driver));

@@ -34,10 +34,33 @@ pub struct RunJobRequest {
     pub wait_s: u64,
     #[serde(default)]
     pub outputs: Vec<String>,
-    /// The allocation_ref of a machine the agent already holds (from `chariox.machines.acquire`):
-    /// the job runs on that machine's kernel and leaves the machine held afterwards.
+    /// A machine the job can use without allocating or releasing it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub machine: Option<String>,
+    pub machine: Option<JobMachineTarget>,
+    /// Run on the named machine without sending or returning workspace files.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub machine_only: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged, deny_unknown_fields)]
+pub enum JobMachineTarget {
+    Allocation(String),
+    Enrolled {
+        kernel: String,
+        /// An existing folder on the target, populated with chariox.files.copy if needed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        directory: Option<String>,
+    },
+}
+
+impl RunJobRequest {
+    pub(crate) fn target_directory(&self) -> Option<&str> {
+        match &self.machine {
+            Some(JobMachineTarget::Enrolled { directory, .. }) => directory.as_deref(),
+            _ => None,
+        }
+    }
 }
 
 fn job_timeout() -> u64 {

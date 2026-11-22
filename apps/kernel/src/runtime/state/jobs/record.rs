@@ -19,6 +19,8 @@ pub(super) struct Record {
     pub(super) allocation_ref: Option<String>,
     pub(super) capability_revision: Option<String>,
     pub(super) machine_label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) held_kernel_id: Option<String>,
     pub(super) address: Option<String>,
     pub(super) result: Option<JobResult>,
     #[serde(default)]
