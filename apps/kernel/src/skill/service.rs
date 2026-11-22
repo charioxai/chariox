@@ -467,7 +467,7 @@ impl SkillCatalogService {
             );
             total_bytes = total_bytes.saturating_add(wrapper.len() as u64);
             if total_bytes > remaining_body_tokens {
-                return Err(failure("selected skill bodies exceed remaining turn budget; select fewer or smaller skills"));
+                return Err(failure("this agent's context leaves no room for its selected skills: start a fresh agent, or select fewer or smaller skills"));
             }
             loaded.push(SkillResolvedBody {
                 skill_id: row.skill.id.clone(),

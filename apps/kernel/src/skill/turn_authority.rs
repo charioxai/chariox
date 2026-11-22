@@ -45,9 +45,9 @@ impl SkillTurnAuthority {
             };
         }
         let used = self.reserved_body_tokens.values().try_fold(tokens, |total, amount|total.checked_add(*amount))
-            .ok_or("selected skill bodies exceed remaining turn budget; select fewer or smaller skills")?;
+            .ok_or("this agent's context leaves no room for its selected skills: start a fresh agent, or select fewer or smaller skills")?;
         if used > self.body_budget_tokens {
-            return Err("selected skill bodies exceed remaining turn budget; select fewer or smaller skills");
+            return Err("this agent's context leaves no room for its selected skills: start a fresh agent, or select fewer or smaller skills");
         }
         self.reserved_body_tokens.insert(skill_id.into(), tokens);
         Ok(())
