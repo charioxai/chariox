@@ -2342,7 +2342,7 @@ pub(crate) async fn send_authenticated_peer_request_for_test(
     let decrypted =
         relay_crypto::decrypt_payload_for_private_key(source_private_key, &encrypted_response)
             .map_err(|error| relay_error("test_peer_request_failed", &error.to_string(), false))?;
-    serde_json::from_slice(&decrypted.plaintext)
+    crate::transport::relay_peer::open_peer_plaintext(&decrypted.plaintext)
         .map_err(|error| relay_error("test_peer_request_failed", &error.to_string(), false))
 }
 
@@ -3168,7 +3168,7 @@ mod tests {
         let decrypted =
             relay_crypto::decrypt_payload_for_private_key(source_private_key, &encrypted_response)
                 .expect("response should decrypt");
-        serde_json::from_slice(&decrypted.plaintext).expect("response should decode")
+        crate::transport::relay_peer::open_peer_plaintext(&decrypted.plaintext).expect("response should decode")
     }
 
     /// MP-08 / MP-09 / MP-10 / MP-11: `chariox.file.copy` slices reach a leased agent's workspace
@@ -4146,7 +4146,7 @@ mod tests {
             relay_crypto::decrypt_payload_for_private_key(&source_private_key, &encrypted)
                 .expect("decrypt lease response");
         let RelayPeerResponse::ExecutionLeaseCreated { lease, .. } =
-            serde_json::from_slice(&plaintext.plaintext).expect("decode lease response")
+            crate::transport::relay_peer::open_peer_plaintext(&plaintext.plaintext).expect("decode lease response")
         else {
             panic!("unexpected lease response")
         };
@@ -4348,7 +4348,7 @@ mod tests {
             relay_crypto::decrypt_payload_for_private_key(&source_private_key, &encrypted_response)
                 .expect("decrypt identity rejection");
         let response: RelayPeerResponse =
-            serde_json::from_slice(&decrypted.plaintext).expect("decode identity rejection");
+            crate::transport::relay_peer::open_peer_plaintext(&decrypted.plaintext).expect("decode identity rejection");
         assert!(matches!(
             response,
             RelayPeerResponse::ManagedContextImportFailed {
@@ -6234,7 +6234,7 @@ mod tests {
         let decrypted =
             relay_crypto::decrypt_payload_for_private_key(source_private_key, &encrypted_response)
                 .expect("decrypt peer response");
-        serde_json::from_slice(&decrypted.plaintext).expect("decode peer response")
+        crate::transport::relay_peer::open_peer_plaintext(&decrypted.plaintext).expect("decode peer response")
     }
 
     fn context_completion_fixture(
