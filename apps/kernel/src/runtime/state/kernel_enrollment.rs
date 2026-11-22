@@ -7,6 +7,9 @@ use sha2::Digest;
 
 /// The owner answers within the code's own lifetime; the card never outlives it.
 const MAX_WAIT: Duration = Duration::from_secs(600);
+/// How long one tool call waits for the owner before saying the card is still open.
+const ANSWER_WINDOW: Duration = if cfg!(test) { Duration::from_secs(2) } else { Duration::from_secs(60) };
+const POLL_EVERY: Duration = if cfg!(test) { Duration::from_millis(100) } else { Duration::from_secs(2) };
 
 pub(super) const ENROLL_TOOL: &str = "chariox.kernels.enroll";
 
@@ -175,107 +178,175 @@ impl KernelRuntimeState {
                 "Only the owner of this kernel can let another kernel join their account",
             ));
         }
-        let query = format!(
-            "/v1/kernel-device-approvals?userCode={}",
-            crate::runtime::cloud_api_client::cloud_url_component(&user_code)
-        );
-        let waiting: Waiting =
-            serde_json::from_value(blocking_call(profile.clone(), "GET", query, None).await?)
-                .map_err(|_| enrollment_error("enrollment_unavailable", "Chariox did not answer; ask again in a moment"))?;
-        let machine = waiting
-            .machine_name
-            .as_deref()
-            .map(str::trim)
-            .filter(|name| !name.is_empty())
-            .map(str::to_owned);
-        match waiting.status.as_str() {
-            "APPROVED" | "CONSUMED" => return Ok(done("approved", &machine)),
-            "DENIED" => {
-                return Err(enrollment_error(
-                    "enrollment_denied",
-                    "The owner denied this kernel, so it did not join; start a new login on the kernel to ask again",
-                ))
-            }
-            "PENDING" => {}
-            _ => return Err(expired()),
-        }
         let id = format!(
             "kernel-enrollment-{:x}",
-            sha2::Sha256::digest(format!("{}:{}", waiting.user_code, reach.agent_id).as_bytes())
+            sha2::Sha256::digest(format!("{user_code}:{}", reach.agent_id).as_bytes())
         );
-        let already_answered = !self
+        let started = tokio::time::Instant::now();
+        let mut asked = false;
+        loop {
+            let waiting = login_status(&profile, &user_code).await?;
+            let machine = waiting
+                .machine_name
+                .as_deref()
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .map(str::to_owned);
+            match waiting.status.as_str() {
+                "APPROVED" | "CONSUMED" => return Ok(done("approved", &machine)),
+                "DENIED" => {
+                    return Err(enrollment_error(
+                        "enrollment_denied",
+                        "The owner denied this kernel, so it did not join; start a new login on the kernel to ask again",
+                    ))
+                }
+                "PENDING" => {}
+                _ => return Err(expired()),
+            }
+            if !asked {
+                asked = true;
+                self.ask_owner(&profile, &room, &session, &reach.agent_id, &id, &waiting, &machine)
+                    .await?;
+            }
+            // The call never holds longer than a provider's tool timeout: past the window it says
+            // the owner has not answered yet, and asking again with the same code reads the answer.
+            if started.elapsed() >= ANSWER_WINDOW {
+                return Ok(crate::transport::runtime_tools::RuntimeToolResult {
+                    ok: true,
+                    payload: serde_json::json!({
+                        "status": "waiting_for_owner",
+                        "kernel": machine,
+                        "next": "The owner has one card to answer. Call this tool again with the same user_code to read the answer; it never raises a second card."
+                    }),
+                });
+            }
+            tokio::time::sleep(POLL_EVERY).await;
+        }
+    }
+
+    /// Raises the one card for this code and leaves a background task to apply the owner's answer
+    /// in Cloud, so no tool call has to stay open while the owner decides.
+    #[allow(clippy::too_many_arguments)]
+    async fn ask_owner(
+        &self,
+        profile: &crate::config::PersistedCloudRelayProfile,
+        room: &str,
+        session: &crate::session::RuntimeSession,
+        agent: &str,
+        id: &str,
+        waiting: &Waiting,
+        machine: &Option<String>,
+    ) -> Result<(), DaemonError> {
+        let answered = !self
             .owned
             .durable_state_store
-            .load_subject_events_by_kind(&id, "kernel.enrollment_approved", 1)?
+            .load_subject_events_by_kind(id, "kernel.enrollment_approved", 1)?
             .is_empty();
-        if !already_answered {
-            let lifetime = chrono::DateTime::parse_from_rfc3339(&waiting.expires_at)
-                .ok()
-                .and_then(|at| (at.with_timezone(&chrono::Utc) - chrono::Utc::now()).to_std().ok())
-                .ok_or_else(expired)?;
-            let description = match &machine {
-                Some(name) => format!("Let the new kernel {name} join your account? Its code is {}.", waiting.user_code),
-                None => format!("Let a new kernel join your account? Its code is {}.", waiting.user_code),
-            };
-            let mut interaction = RuntimeInteraction::for_kernel_operation(
-                &id,
-                &id,
-                "",
-                description,
-                vec![
-                    RuntimeInteractionChoice::new("approve", "Approve", "approve", Some(RuntimeInteractionChoiceStyle::Primary)),
-                    RuntimeInteractionChoice::new("deny", "Deny", "deny", Some(RuntimeInteractionChoiceStyle::Danger)),
-                ],
-            );
-            interaction = interaction.with_related_agent_id(reach.agent_id.clone());
-            let receiver = self
-                .create_kernel_operation_interaction(&room, session.owner_user_id(), interaction)
-                .await?;
-            let mut pending = PendingEnrollment(Some((self.clone(), room.clone(), id.clone())));
-            let answer = match tokio::time::timeout(lifetime.min(MAX_WAIT), receiver).await {
-                Ok(Ok(answer)) => answer,
-                _ => {
-                    self.timeout_runtime_interaction(&room, &id).await?;
-                    pending.0 = None;
-                    return Err(enrollment_error(
-                        "enrollment_expired",
-                        "The owner did not answer before the code expired, so the kernel did not join; start a new login on the kernel and ask again",
-                    ));
-                }
-            };
-            pending.0 = None;
-            if answer.status != "answered" || answer.choice_id.as_deref() != Some("approve") {
-                let _ = blocking_call(
-                    profile,
-                    "POST",
-                    "/v1/kernel-device-approvals".into(),
-                    Some(serde_json::json!({"userCode": waiting.user_code, "decision": "deny"})),
-                )
-                .await;
-                return Err(enrollment_error(
-                    "enrollment_denied",
-                    "The owner denied this kernel, so it did not join; start a new login on the kernel to ask again",
-                ));
-            }
-            self.owned.durable_state_store.append_event(
-                "kernel.enrollment_approved",
-                Some(id),
-                serde_json::json!({"owner": session.owner_user_id(), "approved_at_ms": crate::session::unix_epoch_ms()}),
-            )?;
+        if answered {
+            // The owner approved earlier but Cloud did not take it: apply it again, no second card.
+            decide(profile, &waiting.user_code, "approve").await?;
+            return Ok(());
         }
-        blocking_call(
-            profile,
-            "POST",
-            "/v1/kernel-device-approvals".into(),
-            Some(serde_json::json!({"userCode": waiting.user_code, "decision": "approve"})),
-        )
-        .await
-        .map_err(|error| match error {
-            DaemonError::MachineRequest { code, message } if code == "enrollment_refused" && message.contains("expired") => expired(),
-            other => other,
-        })?;
-        Ok(done("approved", &machine))
+        if self
+            .owned
+            .session_store
+            .get_session(room)?
+            .active_interactions()
+            .iter()
+            .any(|card| card.id() == id)
+        {
+            return Ok(());
+        }
+        let lifetime = chrono::DateTime::parse_from_rfc3339(&waiting.expires_at)
+            .ok()
+            .and_then(|at| (at.with_timezone(&chrono::Utc) - chrono::Utc::now()).to_std().ok())
+            .ok_or_else(expired)?;
+        let description = match machine {
+            Some(name) => format!("Let the new kernel {name} join your account? Its code is {}.", waiting.user_code),
+            None => format!("Let a new kernel join your account? Its code is {}.", waiting.user_code),
+        };
+        let mut interaction = RuntimeInteraction::for_kernel_operation(
+            id,
+            id,
+            "",
+            description,
+            vec![
+                RuntimeInteractionChoice::new("approve", "Approve", "approve", Some(RuntimeInteractionChoiceStyle::Primary)),
+                RuntimeInteractionChoice::new("deny", "Deny", "deny", Some(RuntimeInteractionChoiceStyle::Danger)),
+            ],
+        );
+        interaction = interaction.with_related_agent_id(agent.to_owned());
+        let receiver = self
+            .create_kernel_operation_interaction(room, session.owner_user_id(), interaction)
+            .await?;
+        let (state, profile, room, id, owner, user_code) = (
+            self.clone(),
+            profile.clone(),
+            room.to_owned(),
+            id.to_owned(),
+            session.owner_user_id().to_owned(),
+            waiting.user_code.clone(),
+        );
+        tokio::spawn(async move {
+            let mut pending = PendingEnrollment(Some((state.clone(), room.clone(), id.clone())));
+            let answer = tokio::time::timeout(lifetime.min(MAX_WAIT), receiver).await;
+            pending.0 = None;
+            match answer {
+                Ok(Ok(answer)) if answer.status == "answered" && answer.choice_id.as_deref() == Some("approve") => {
+                    if state
+                        .owned
+                        .durable_state_store
+                        .append_event(
+                            "kernel.enrollment_approved",
+                            Some(id.clone()),
+                            serde_json::json!({"owner": owner, "approved_at_ms": crate::session::unix_epoch_ms()}),
+                        )
+                        .is_ok()
+                    {
+                        let _ = decide(&profile, &user_code, "approve").await;
+                    }
+                }
+                Ok(Ok(_)) => {
+                    let _ = decide(&profile, &user_code, "deny").await;
+                }
+                _ => {
+                    let _ = state.timeout_runtime_interaction(&room, &id).await;
+                }
+            }
+        });
+        Ok(())
     }
+}
+
+async fn login_status(
+    profile: &crate::config::PersistedCloudRelayProfile,
+    user_code: &str,
+) -> Result<Waiting, DaemonError> {
+    let query = format!(
+        "/v1/kernel-device-approvals?userCode={}",
+        crate::runtime::cloud_api_client::cloud_url_component(user_code)
+    );
+    serde_json::from_value(blocking_call(profile.clone(), "GET", query, None).await?)
+        .map_err(|_| enrollment_error("enrollment_unavailable", "Chariox did not answer; ask again in a moment"))
+}
+
+async fn decide(
+    profile: &crate::config::PersistedCloudRelayProfile,
+    user_code: &str,
+    decision: &str,
+) -> Result<(), DaemonError> {
+    blocking_call(
+        profile.clone(),
+        "POST",
+        "/v1/kernel-device-approvals".into(),
+        Some(serde_json::json!({"userCode": user_code, "decision": decision})),
+    )
+    .await
+    .map(|_| ())
+    .map_err(|error| match error {
+        DaemonError::MachineRequest { code, message } if code == "enrollment_refused" && message.contains("expired") => expired(),
+        other => other,
+    })
 }
 
 fn expired() -> DaemonError {

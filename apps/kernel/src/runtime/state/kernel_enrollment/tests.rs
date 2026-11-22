@@ -227,3 +227,43 @@ async fn only_the_owners_terminal_answers_the_card() {
     state.resolve_terminal_runtime_interaction(&room, &listed[0].0, "deny", None, Some(&owner)).await.unwrap();
     assert!(tool.await.unwrap().is_err());
 }
+
+#[tokio::test]
+async fn a_call_never_outlives_the_wait_window_and_asking_again_raises_no_second_card() {
+    let cloud = cloud("PENDING").await;
+    let (state, token, _workspace) = super::super::machine_acquisition::tool_tests::agent_kernel(cloud.api_url.clone()).await;
+    let room = room_of(&state, &token);
+    let first = state.kernel_enrollment_tool(&token, args()).await.unwrap();
+    assert_eq!(first.payload["status"], "waiting_for_owner");
+    let second = state.kernel_enrollment_tool(&token, args()).await.unwrap();
+    assert_eq!(second.payload["status"], "waiting_for_owner");
+    let listed = cards(&state, &room, 1).await;
+    assert_eq!(listed.len(), 1, "one card however often the agent asks");
+    assert!(cloud.decisions.lock().unwrap().is_empty());
+    let owner = state.owned.session_store.get_session(&room).unwrap().owner_user_id().to_owned();
+    state.resolve_terminal_runtime_interaction(&room, &listed[0].0, "approve", None, Some(&owner)).await.unwrap();
+    let third = state.kernel_enrollment_tool(&token, args()).await.unwrap();
+    assert_eq!(third.payload["status"], "approved");
+    assert_eq!(cloud.decisions.lock().unwrap().len(), 1, "Cloud is told once");
+}
+
+#[tokio::test]
+async fn a_card_nobody_answers_is_withdrawn_when_the_code_expires_and_the_agent_is_told() {
+    let cloud = cloud("PENDING").await;
+    *cloud.expires_in_s.lock().unwrap() = 2;
+    let (state, token, _workspace) = super::super::machine_acquisition::tool_tests::agent_kernel(cloud.api_url.clone()).await;
+    let room = room_of(&state, &token);
+    let first = state.kernel_enrollment_tool(&token, args()).await.unwrap();
+    assert_eq!(first.payload["status"], "waiting_for_owner");
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while !state.owned.session_store.get_session(&room).unwrap().active_interactions().is_empty() {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("the unanswered card is withdrawn");
+    *cloud.status.lock().unwrap() = "EXPIRED".into();
+    let error = state.kernel_enrollment_tool(&token, args()).await.unwrap_err().to_string();
+    assert!(error.contains("expired"), "{error}");
+    assert!(cloud.decisions.lock().unwrap().is_empty());
+}
