@@ -29,12 +29,21 @@ export function subscribeRegion(host,command,scope,signal,options={}) {
   throw error;
  });
 }
-async function subscribeReservedRegion(host,command,scope,signal,{Capture=NativeWindowRegionCapture}={}) {
+async function subscribeReservedRegion(host,command,scope,signal,{Capture=NativeWindowRegionCapture,Screencast}={}) {
  assertNotCancelled(signal);
  const target=checkedTarget(command.target);
  // A browser with no display of its own (headless, or not on Linux) has no window to read a region from, now or later:
  // say so once instead of refusing as a stale reference the viewer retries.
- if(!host.chromium?.display)throw Error('MP-08: region video needs the browser\'s own display');
+ // R1: without a display of its own (headless), a page region is a crop of the Tab's shared screencast; Chrome's own UI and
+ // windows still need the display.
+ if(!host.chromium?.display){
+  if(target.kind!=='region')throw Error('MP-08: Chrome window video needs the browser\'s own display');
+  if(command._agent_input||command.focused_agent||command.generation!==host.generation)refuse();
+  if(!Array.isArray(command.codecs)||command.codecs.length>8||!command.codecs.includes('png')||!command.codecs.includes('avc1.420033')||
+   !Number.isInteger(command.bitrate)||command.bitrate<500_000||command.bitrate>64_000_000||![1,2].includes(command.device_scale_factor)||host.displays.size>=maxDisplays)refuse();
+  const {subscribeScreencastRegion,ScreencastRegionCapture}=await import('./kernel-browser-screencast-region.mjs');
+  return subscribeScreencastRegion(host,command,scope,signal,{Screencast:Screencast??ScreencastRegionCapture});
+ }
  // State advertisement is not admission: a terminal can guess a window epoch.
  // Only managed lockdown proves Chrome cannot replace this unmasked band
  // with same-size fullscreen page pixels.

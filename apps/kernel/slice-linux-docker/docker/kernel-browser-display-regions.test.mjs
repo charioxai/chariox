@@ -383,3 +383,20 @@ for(const kind of ['browser_chrome','browser_auxiliary'])test(`MP-08/MP-10 retir
  await assert.rejects(subscribeRegion(f.host,f.command,'terminal:a',undefined,{Capture}),{code:'user_domain_stale_reference'});
  assert.equal(f.calls.filter(c=>c==='close').length,1);assert.equal(f.host.displays.size,0);
 });
+
+// R1 (proposal R, row 343): a browser without its own display (headless: macOS always, test rigs on Linux) gets region video
+// from Chrome's own frames: the lease is granted, its source is a crop of the Tab's one shared screencast (lease rect in device
+// pixels, no window offset), and two regions of one Tab share that screencast.
+test('R1a/R1b: a headless browser grants a region lease as a crop of the Tab\'s one shared screencast',async()=>{
+ const f=fixture();delete f.host.chromium.display;f.host.chromeWindows={current:()=>null,resolve:async()=>{throw Error('no window on a headless browser')}};
+ const shared=[];f.host.screencastFor=async(tab,scale)=>{let entry=shared.find(s=>s.tab===tab);if(!entry){entry={tab,scale,starts:1};shared.push(entry);}return entry;};
+ class Screencast {constructor(options){this.options=options;this.region={css_width:options.rect.width/2,css_height:options.rect.height/2};f.calls.push(['screencast',options]);}async start(){return this;}async close(){f.calls.push('close');}valid(){return true;}}
+ const first=await subscribeRegion(f.host,f.command,'terminal:a',undefined,{Screencast});
+ assert.equal(first.source_kind,'region');assert.equal(first.css_width,100);assert.equal(first.css_height,50);assert.equal(first.device_scale_factor,2);
+ const source=[...f.host.displays.values()][0].regionSource;
+ assert(source instanceof Screencast,'the region source is the screencast crop');
+ assert.deepEqual(source.options.rect,{left:20,top:40,width:200,height:100},'the lease rect in device pixels, relative to the page');
+ await subscribeRegion(f.host,{...f.command},'terminal:a',undefined,{Screencast});
+ assert.equal(shared.length,1,'two regions of one Tab share one screencast');
+ for(const stream of [...f.host.displays.values()])await stream.close();
+});
