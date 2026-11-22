@@ -28,7 +28,7 @@ fn mcp_payload(result: crate::transport::runtime_tools::RuntimeToolResult) -> Va
 
 #[tokio::test]
 async fn mcp_paging_keeps_room_agents_and_task_history_reachable() {
-    let f = fixture_with_agent_limit("paging-agents", true, Some(64)).await;
+    let f = fixture("paging-agents", true).await;
     let primary = f.begin(&f.prompt_id);
     let token = auth(&f).await;
     let mut agents = vec![f.agent.clone()];
