@@ -7483,8 +7483,9 @@ its own Vault under the Project scope, so presence differs per machine and is co
   `{ "vaultEntry": "<credential id>" }`: the kernel then copies the value of that Vault entry into the
   Project's Secret inside the kernel (no value crosses the wire), through the entry's ordinary use check and
   audit. The entry must have been made for the environment variable of the same name
-  (`command_environment` use). Agents do the same with the Room tool `chariox.environment.use_vault_entry
-  { name, credential_id }`.
+  (`command_environment` use). The kernel keeps the link, invisible to clients: a later Replace of the entry
+  re-fills the Secret, a removed entry leaves the copy as a normal Secret, and a typed value ends the link.
+  Agents do the same with the Room tool `chariox.environment.use_vault_entry { name, credential_id }`.
 - `RunProjectEnvironmentSetup { projectId, operationId, checkoutPath? }` runs the script in the checkout with
   Variables and the present Secrets in its environment. `GetEnvironmentOperation` returns the state and the
   last 64 KiB of output with Secret values replaced by their names; `CancelEnvironmentOperation` ends the

@@ -83,14 +83,6 @@ impl SecretLinks {
         self.write(&links)
     }
 
-    /// Secret name -> Vault entry id, for one Project.
-    pub(crate) fn of_project(
-        &self,
-        project: &str,
-    ) -> Result<BTreeMap<String, String>, DaemonError> {
-        Ok(self.read()?.remove(project).unwrap_or_default())
-    }
-
     pub(crate) fn set(&self, project: &str, name: &str, entry_id: &str) -> Result<(), DaemonError> {
         self.change(|links| {
             links
@@ -132,11 +124,9 @@ mod tests {
         let dir =
             std::env::temp_dir().join(format!("chariox-links-{:032x}", rand::random::<u128>()));
         let links = SecretLinks::new(&dir);
-        assert!(links.of_project("p").unwrap().is_empty());
         links.set("p", "GH_TOKEN", "cap-1").unwrap();
         links.set("q", "OTHER", "cap-1").unwrap();
         links.set("p", "KEY", "cap-2").unwrap();
-        assert_eq!(links.of_project("p").unwrap().len(), 2);
         let mut found = links.filled_from("cap-1").unwrap();
         found.sort();
         assert_eq!(

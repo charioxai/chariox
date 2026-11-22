@@ -113,7 +113,7 @@ async fn an_entry_made_for_another_variable_or_an_unsaved_name_is_refused_and_no
 }
 
 #[tokio::test]
-async fn a_filled_secret_stays_linked_follows_a_rotated_entry_and_keeps_its_value_when_the_entry_goes(
+async fn a_filled_secret_follows_a_rotated_entry_until_a_typed_value_ends_the_link_and_keeps_its_value_when_the_entry_goes(
 ) {
     crate::test_support::isolated_env_test!();
     let f = fixture();
@@ -127,13 +127,11 @@ async fn a_filled_secret_stays_linked_follows_a_rotated_entry_and_keeps_its_valu
     )
     .await
     .unwrap();
-    let link = |read: Value| read["secrets"][0]["link"].clone();
-    let read = || async {
-        call(&f, "chariox.environment.read", json!({}))
-            .await
-            .unwrap()
-    };
-    assert_eq!(link(read().await)["state"], "linked");
+    let links = f.state.secret_links();
+    assert_eq!(
+        links.filled_from(&handle).unwrap(),
+        vec![(project_id(&f), "GH_TOKEN".to_owned())]
+    );
 
     // The owner replaces the entry's value: the copy follows it.
     let service = f.state.home_runtime_secret_service().unwrap();
@@ -147,13 +145,16 @@ async fn a_filled_secret_stays_linked_follows_a_rotated_entry_and_keeps_its_valu
     f.state.refill_linked_environment_secrets(&handle);
     assert_eq!(held(&f, "GH_TOKEN").as_deref(), Some("ghp_RotatedValue77"));
 
-    // The entry is removed: the copy stays and the link reads as broken.
+    // The entry is removed: the copy stays as a normal Secret.
     crate::credential::CharioxCredentialRegistry::user()
         .unwrap()
         .remove(&handle)
         .unwrap();
     f.state.refill_linked_environment_secrets(&handle);
     assert_eq!(held(&f, "GH_TOKEN").as_deref(), Some("ghp_RotatedValue77"));
-    assert_eq!(link(read().await)["state"], "broken");
+
+    // A typed value ends the link: a later change of the entry no longer reaches the Secret.
+    links.remove(&project_id(&f), "GH_TOKEN").unwrap();
+    assert!(links.filled_from(&handle).unwrap().is_empty());
     f.state.shutdown_cleanup().await.unwrap();
 }
