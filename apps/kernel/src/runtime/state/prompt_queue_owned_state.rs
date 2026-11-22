@@ -801,13 +801,6 @@ impl KernelRuntimeOwnedState {
                 return Err(error);
             }
         };
-        let started_next =
-            self.add_pending_wakes_to_notification(&session, agent_id, started_next)?;
-        let waiting = if started_next.inbox_wakes().is_empty() {
-            Vec::new()
-        } else {
-            self.waiting_tasks(session_id, agent_id)
-        };
         let (active_prompt, queued_prompts) =
             self.prompt_state_owner.state_parts(&session, agent_id);
         self.mirror_prompt_owner_agent_state_with_activity_mutation(
@@ -817,15 +810,6 @@ impl KernelRuntimeOwnedState {
             queued_prompts,
             activity_mutation,
         )?;
-        if !waiting.is_empty() {
-            if let Some(lead) = self.durable_state_store.agent_event_for_prompt(
-                session_id,
-                agent_id,
-                started_next.id(),
-            )? {
-                self.record_woken_waits(&waiting, &lead);
-            }
-        }
         let source_attachment_id = self.promoted_prompt_source_attachment_id(
             session_id,
             started_next.source_attachment_id(),
@@ -2055,8 +2039,8 @@ impl KernelRuntimeOwnedState {
         Ok(Some(prompt))
     }
 
-    /// While the agent is busy, a queue-mode occurrence joins the notification
-    /// prompt already waiting in the agent's queue instead of queueing a turn
+    /// While the agent is busy, an occurrence of a notification trigger joins that
+    /// trigger's prompt already waiting in the agent's queue instead of queueing a turn
     /// of its own. Returns the prompt that now delivers it and whether it joined just
     /// now, or `None` when no such prompt waits and the occurrence needs its own.
     pub(super) fn join_queued_agent_notification(
@@ -2064,7 +2048,7 @@ impl KernelRuntimeOwnedState {
         session_id: &str,
         agent_id: &str,
         trigger_id: &str,
-        mut notification: crate::session::QueuedNotification,
+        notification: crate::session::QueuedNotification,
         deadline_ms: u64,
     ) -> Result<Option<(String, bool)>, DaemonError> {
         let session = self.session_store.get_session(session_id)?;
@@ -2075,19 +2059,28 @@ impl KernelRuntimeOwnedState {
         else {
             return Ok(None);
         };
+        // A workflow's responsible agent gets the kernel's own text per run; a steering
+        // trigger joins the running turn instead of waiting.
+        // A trigger that is off admits nothing, joined or not.
         if !trigger.enabled()
             || trigger.busy_policy() != crate::session::AgentTriggerBusyPolicy::Queue
             || trigger.responsible_for().is_some()
         {
             return Ok(None);
         }
-        notification.batch_instruction = Some(trigger.prompt().to_owned());
+        let base = trigger.prompt().to_string();
         let Some((prompt, changed)) = self.prompt_state_owner.join_queued_notification(
             &session,
             agent_id,
+            trigger_id,
             notification,
             deadline_ms,
-            super::agent_inbox_wake_text::coalesced_notification_notice,
+            |notifications| {
+                format!(
+                    "{base}\n\n{}",
+                    super::agent_inbox_wake_text::coalesced_notification_notice(notifications)
+                )
+            },
         ) else {
             return Ok(None);
         };
