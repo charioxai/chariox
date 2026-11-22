@@ -167,6 +167,7 @@ async fn terminal_workflow_runs_remove_their_instructions() {
         &scratch,
         &[
             ("CHARIOX_DAEMON_ID", DAEMON.into()),
+            ("CHARIOX_PROVIDER_DEV_STUB", "1".into()),
             ("CHARIOX_DEV_STUB_WORKFLOW_OUTPUT_DELAY_MS", "3000".into()),
         ],
         None,
@@ -216,6 +217,7 @@ async fn cold_start_removes_instructions_left_after_a_terminal_commit() {
     let home = scratch.join(".chariox");
     let environment = [
         ("CHARIOX_DAEMON_ID", DAEMON.into()),
+        ("CHARIOX_PROVIDER_DEV_STUB", "1".into()),
         ("CHARIOX_HOME", home.clone().into_os_string()),
     ];
     let first = scratch.join("first");
