@@ -248,18 +248,22 @@ impl CommandRouter {
         Ok(LocalDaemonResponse::AttachmentsHeartbeated { lapsed })
     }
 
-    /// Pairing the gateway with a kernel, or forgetting one, is a person's act at
-    /// a Chariox terminal; a grant holder or a forwarded request never reaches it.
+    /// Pairing the gateway with a kernel carries an admission secret: a person's act at a
+    /// Chariox terminal. Forgetting one only reduces reach: an ordinary owner action that the
+    /// owner's agents also take (row 405), already admitted as the owner upstream.
     async fn machine_pairing(
         &self,
         command: &KernelCommand,
         request: &LocalDaemonRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        let owner = command.is_terminal_caller()
-            && command_caller_user_id(command) == self.config_projection.local_owner_user_id();
+        let as_owner =
+            command_caller_user_id(command) == self.config_projection.local_owner_user_id();
+        let owner = as_owner
+            && (command.is_terminal_caller()
+                || matches!(request, LocalDaemonRequest::ForgetGatewayKernel(_)));
         if !owner {
             return Err(denied(
-                "only the kernel's owner at a Chariox terminal can pair or forget a kernel",
+                "only the kernel's owner at a Chariox terminal can pair a kernel",
             ));
         }
         let outcome = match request {
