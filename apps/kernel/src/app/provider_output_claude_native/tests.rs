@@ -2468,8 +2468,12 @@ fn claude_native_handoff_takes_only_the_room_its_turn_leaves() {
     let context_file = context_file.display().to_string();
     let workflow_context = "w".repeat(30_000);
     let rooms = std::cell::RefCell::new(Vec::new());
-    // The worst case: a handoff that fills the room with two-byte scalars.
+    // The worst case: a handoff that fills the room with two-byte scalars. #1578 first asks
+    // for the preferred (unbounded) handoff, then fits it to the room the turn leaves.
     let handoff = |room: usize| {
+        if room == usize::MAX {
+            return "é".repeat(20_000);
+        }
         rooms.borrow_mut().push(room);
         "é".repeat(room / 2)
     };
