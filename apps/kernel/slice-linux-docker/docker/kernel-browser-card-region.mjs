@@ -203,6 +203,9 @@ export async function resolveCardRegion(host, command, scope, signal) {
     if (anchor?.verification || command.done_text !== undefined) return {state:'unavailable',reason};
     return {state:'condition_met',reason};
   };
+  // A card bound under an earlier controller generation outlives a restart only by rebinding: tell the
+  // kernel the browser restarted before the empty reference memory reads as a changed document.
+  if (command.generation !== undefined && command.generation !== host.generation) return gone('Browser restarted');
   if ((!remembered || !remembered.refs.has(command.ref)) && command.document_id !== undefined) {
     const tab = await host.displayTarget({ tab_id: command.tab_id, generation: command.generation });
     if (tab.document_id !== command.document_id) return gone('Browser document changed');
