@@ -265,7 +265,11 @@ async fn dismissing_a_blocked_question_keeps_its_task_and_inbox_card() {
         .iter()
         .all(|card| card.id() != id));
     let crate::local::LocalDaemonResponse::PersonInbox { cards, .. } =
-        crate::runtime::person_inbox::execute_person_inbox_request(&t.runtime, "local").unwrap()
+        crate::runtime::person_inbox::execute_person_inbox_request(
+            &t.runtime,
+            &crate::runtime::command::KernelCaller::default(),
+        )
+        .unwrap()
     else {
         panic!("expected the person's Inbox");
     };
