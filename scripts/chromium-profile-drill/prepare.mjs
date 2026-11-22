@@ -37,6 +37,8 @@ const browserCloseModules = [
   "browser-focus-world.mjs",
   "browser-memory.mjs",
   "browser-observation-regions.mjs",
+  "browser-page-font-recorder.mjs",
+  "browser-page-fonts.mjs",
   "browser-page-permission-shim.mjs",
   "browser-page-permissions.mjs",
   "browser-protection-regions.mjs",
