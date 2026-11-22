@@ -1415,7 +1415,16 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
           // An axis-aligned transform (subvysion's canvas has matrix(1, 0, 0, 1, 0, 0)) paints exactly its bounding box.
           const m = /^matrix\(([^)]*)\)$/.exec(style.transform)?.[1].split(',').map(Number), aligned = style.transform === 'none' || m?.length === 6 && m[1] === 0 && m[2] === 0;
           if (alphaKept(style) && aligned && style.visibility === 'visible') {
-            if (node.localName === 'video') yes = node.readyState >= 2 && ['fill', 'cover'].includes(style.objectFit) && fillsBox(node, style, node.videoWidth, node.videoHeight);
+            // A video can carry transparency (VP9 with alpha): its current frame's alpha is proven like a canvas bitmap's.
+            if (node.localName === 'video') {
+              if (node.readyState >= 2 && ['fill', 'cover'].includes(style.objectFit) && fillsBox(node, style, node.videoWidth, node.videoHeight)) {
+                if (node.videoWidth * node.videoHeight > COVER_PROBE_PIXELS) throw Error('cover too large to prove');
+                const probe = new OffscreenCanvas(node.videoWidth, node.videoHeight), g = probe.getContext('2d');
+                g.drawImage(node, 0, 0); const data = g.getImageData(0, 0, node.videoWidth, node.videoHeight).data; let all = true;
+                for (let i = 3; i < data.length && all; i += 4) all = data[i] === 255;
+                yes = all;
+              }
+            }
             else if (node.localName === 'canvas' && node.width > 0 && node.height > 0 && fillsBox(node, style, node.width, node.height)) {
               // Every source pixel's alpha, never a resized probe (a narrow transparent strip can fall between its samples); a bitmap
               // too large to read whole within COVER_PROBE_PIXELS proves nothing and covers nothing.

@@ -488,6 +488,17 @@ for (const device_scale_factor of [1, 2]) {
   }, {}, {}, { ...process.env, CHARIOX_KERNEL_BROWSER_HEADLESS: "1" }));
 }
 
+// T3 review 3: a video can carry transparency (VP9 with alpha): a ready video over a canvas covers it only when its frame's alpha
+// is proven opaque, as a canvas cover's is. A fully transparent 64x64 VP9 clip stretched over a noise canvas: both stills travel.
+const alphaWebm = { type: "video/webm", binary: Buffer.from("GkXfo59ChoEBQveBAULygQRC84EIQoKEd2VibUKHgQJChYECGFOAZwEAAAAAAAPyEU2bdLpNu4tTq4QVSalmU6yBoU27i1OrhBZUrmtTrIHWTbuMU6uEElTDZ1OsggEnTbuMU6uEHFO7a1OsggPc7AEAAAAAAABZAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAVSalmsCrXsYMPQkBNgIxMYXZmNjIuMy4xMDBXQYxMYXZmNjIuMy4xMDBEiYhAj0AAAAAAABZUrmvMrgEAAAAAAABD14EBc8WINszwV3Jcik6cgQAitZyDdW5kiIEAhoVWX1ZQOYOBASPjg4QF9eEA4JSwgUC6gUCagQJTwIEBVbCEVbmBARJUw2dAf3Nzn2PAgGfImUWjh0VOQ09ERVJEh4xMYXZmNjIuMy4xMDBzc9pjwItjxYg2zPBXclyKTmfIpUWjh0VOQ09ERVJEh5hMYXZjNjIuMTEuMTAwIGxpYnZweC12cDlnyKFFo4hEVVJBVElPTkSHkzAwOjAwOjAxLjAwMDAwMDAwMAAfQ7Z1QirngQCg2qGvgQAAAIJJg0IAA/AD9gA4JBwYQgAAMGAAAGc///5plf////6Za/////9imB1EwAB1oaampO6BAaWfgkmDQgAD8AP2ADgkHBhCAAAwYAAAZz///18RYTuzAKCxoZOBAGQAhgBAkpwASUAAAyAAAFRwdaGWppTugQGlj4YAQJKcAElAAAMgAABUcPuBnKCxoZOBAMgAhgBAkpwASsAAAyAAAFRwdaGWppTugQGlj4YAQJKcAErAAAMgAABUcPuBnKCxoZOBASwAhgBAkpwAScAAAyAAAFRwdaGWppTugQGlj4YAQJKcAEnAAAMgAABUcPuBnKCxoZOBAZAAhgBAkpwASKAAAyAAAFRwdaGWppTugQGlj4YAQJKcAEigAAMgAABUcPuBnKCxoZOBAfQAhgBAkpwAR4AAAyAAAFRwdaGWppTugQGlj4YAQJKcAEeAAAMgAABUcPuBnKCxoZOBAlgAhgBAkpwARuAAAyAAAFRwdaGWppTugQGlj4YAQJKcAEbgAAMgAABUcPuBnKCxoZOBArwAhgBAkpwARkAAAyAAAFRwdaGWppTugQGlj4YAQJKcAEZAAAMgAABUcPuBnKCxoZOBAyAAhgBAkpwARcAAAyAAAFRwdaGWppTugQGlj4YAQJKcAEXAAAMgAABUcPuBnKCxoZOBA4QAhgBAkpwARUAAAyAAAFRwdaGWppTugQGlj4YAQJKcAEVAAAMgAABUcPuBnBxTu2uRu4+zgQC3iveBAfGCAazwgQM=", "base64") };
+const videoOver = `<style>body{margin:0}canvas,video{position:absolute;left:0;top:0;width:100vw;height:100vh}video{z-index:1;object-fit:fill}</style><canvas id="b"></canvas><video id="t" src="/alpha.webm" autoplay muted loop playsinline></video><script>const c=document.querySelector("#b");c.width=innerWidth*devicePixelRatio;c.height=innerHeight*devicePixelRatio;const g=c.getContext("2d"),d=g.createImageData(c.width,c.height);for(let i=0;i<d.data.length;i++)d.data[i]=i%4===3?255:Math.random()*256|0;g.putImageData(d,0,0)</script>`;
+for (const device_scale_factor of [1, 2]) test(`T3: under a transparent video both stills still travel (DPR${device_scale_factor})`, () => mirrored(videoOver, async (page) => {
+  for (let i = 0; i < 40 && await page.evaluate('document.querySelector("#t").readyState') < 2; i++) await settle(50);
+  assert(await page.evaluate('document.querySelector("#t").readyState') >= 2, "fixture: the transparent video has a frame");
+  const { tiles } = await stackStills(page, device_scale_factor);
+  assert.equal(new Set(tiles.map(t => t.node_id)).size, 2, `both stills reach the viewer (${tiles.length} stills)`);
+}, { "/alpha.webm": alphaWebm }, {}, { ...process.env, CHARIOX_KERNEL_BROWSER_HEADLESS: "1" }));
+
 // browserfidelity r16 (YC sites, three.js): an opaque WebGL canvas (alpha:false, three.js's default) read after
 // compositing is opaque black, not transparent, so its own-pixels still was black. Its still must show what the page
 // shows; a 2D canvas the page fills black stays black.
