@@ -230,6 +230,50 @@ const observerRef = stream => `globalThis.__charioxMirror2.get(${JSON.stringify(
 // source is never published: the label selects the whole-page video (MIRROR-FIDELITY-GUARD).
 const SERIALIZER = String.raw`const lossy=/[;{]\s*(?!--)[a-z][a-z-]*:\s*;/;const sheetOf=text=>{const sheet=new CSSStyleSheet();sheet.replaceSync(text);return sheet};const dump=sheet=>{let out='';for(const rule of sheet.cssRules)out+=rule.cssText+'\n';return out};const rules=text=>dump(sheetOf(text));const scan=(text,visit)=>{let quote='';for(let i=0;i<text.length;i++){const c=text[i];if(quote){if(c==='\\')i++;else if(c===quote)quote=''}else if(c==='\\')i++;else if(c==='"'||c==="'")quote=c;else if(c==='/'&&text[i+1]==='*'){i=text.indexOf('*/',i+2);if(i<0)break;i++}else if(visit(c,i))return i}return -1};const chunks=text=>{const out=[];let depth=0,start=0;scan(text,(c,i)=>{if(c==='{')depth++;else if((c==='}'&&!--depth)||(c===';'&&!depth)){out.push(text.slice(start,i+1));start=i+1}});if(text.slice(start).trim())out.push(text.slice(start));return out};const serialize=(text,sheet)=>{const out=sheet?dump(sheet):rules(text);if(!lossy.test(out))return out;let result='';for(const chunk of chunks(text)){const one=rules(chunk);if(!lossy.test(one)){result+=one;continue}const open=scan(chunk,c=>c==='{');result+=/^\s*@/.test(chunk)?chunk.slice(0,open+1)+serialize(chunk.slice(open+1,chunk.lastIndexOf('}')))+'}\n':chunk+'\n'}return result};const count=text=>{const sheet=new CSSStyleSheet();sheet.replaceSync(text);return sheet.cssRules.length};const parse=text=>{const sheet=sheetOf(text),out=serialize(text,sheet);if(count(out)!==sheet.cssRules.length)throw new Error('mirror2:css_incomplete');return out};`;
 // CSSOM-normalized cross-origin sheet bodies by source (see crossOriginSheet), least recently used first out.
+// Row 342 (b): a cross-origin sheet's rules as the page's usedCss walks them after re-parsing the sanitized text (it is a CSSOM
+// serialization): style rules (selector, text), grouping rules (@media, @supports, @container, @layer blocks: opening, children)
+// and anything else kept whole. Strings, escapes, comments and brackets never end a prelude or a block.
+const GROUPING_RULE = /^@(?:media|supports|container|layer)\b/i;
+export function cssRules(text, from = 0, to = text.length) {
+  const skip = j => {
+    const c = text[j];
+    if (c === '\\') return j + 2;
+    if (c === '"' || c === "'") { for (j++; j < to && text[j] !== c; j++) if (text[j] === '\\') j++; return j + 1; }
+    if (c === '/' && text[j + 1] === '*') { const end = text.indexOf('*/', j + 2); return end < 0 || end >= to ? to : end + 2; }
+    return -1;
+  };
+  const rules = [];
+  for (let i = from; i < to;) {
+    while (i < to && /\s/.test(text[i])) i++;
+    if (i >= to) break;
+    if (text[i] === '/' && text[i + 1] === '*') { i = skip(i); continue; }
+    let j = i, depth = 0;
+    while (j < to) { const next = skip(j); if (next >= 0) { j = next; continue; } const c = text[j]; if (c === '(' || c === '[') depth++; else if (c === ')' || c === ']') depth--; else if (!depth && (c === '{' || c === ';')) break; j++; }
+    if (j >= to) { rules.push({ text: text.slice(i, to) }); break; }
+    if (text[j] === ';') { rules.push({ text: text.slice(i, j + 1) }); i = j + 1; continue; }
+    let end = j, level = 0;
+    while (end < to) { const next = skip(end); if (next >= 0) { end = next; continue; } if (text[end] === '{') level++; else if (text[end] === '}' && --level === 0) break; end++; }
+    if (end >= to) { rules.push({ text: text.slice(i, to) }); break; }
+    const prelude = text.slice(i, j).trim();
+    if (!prelude.startsWith('@')) rules.push({ selector: prelude, text: text.slice(i, end + 1) });
+    else if (GROUPING_RULE.test(prelude)) rules.push({ open: text.slice(i, j + 1), layer: /^@layer\b/i.test(prelude), children: cssRules(text, j + 1, end) });
+    else rules.push({ text: text.slice(i, end + 1) });
+    i = end + 1;
+  }
+  return rules;
+}
+// usedCss's pruned(): a style rule stays if its selector is in use, a grouping rule if any child stays (a layer block always,
+// it keeps its place in the layer order), anything else always.
+export function prunedCss(rules, used) {
+  let out = '';
+  for (const rule of rules) {
+    if (rule.selector !== undefined) { if (used(rule.selector)) out += `${rule.text}\n`; }
+    else if (rule.children) { const inner = prunedCss(rule.children, used); if (inner || rule.layer) out += `${rule.open}${inner}}\n`; }
+    else out += `${rule.text}\n`;
+  }
+  return out;
+}
+const ruleSelectors = (rules, out = new Set()) => { for (const rule of rules) if (rule.selector !== undefined) out.add(rule.selector); else if (rule.children) ruleSelectors(rule.children, out); return out; };
 export class ParsedSheets {
   constructor(entries = 32, chars = 32 * 1024 * 1024) { this.bodies = new Map(); this.entries = entries; this.chars = chars; this.size = 0; }
   take(key) { const body = this.bodies.get(key); if (body !== undefined) { this.bodies.delete(key); this.bodies.set(key, body); } return body; }
@@ -1082,14 +1126,21 @@ export class Mirror2 {
     }
     // Sanitizing runs here on that text (the page's own sanitizer, shared verbatim), not in the page: only each part's url()
     // occurrences travel there, to take their per-document resource keys in the sanitizer's order (sheetKeys), and the
-    // whole sheet crosses CDP at most once, for a first paint's pruning (not even then for a sheet
-    // the viewer retains: the page's usedCss would answer null for it). A url() is `mr:r<n>` (its occurrence number, the shape of a key, which the sanitizer's
+    // whole sheet never crosses CDP (a first paint's pruning sends its selectors, and nothing for a sheet the viewer
+    // retains: the page's usedCss would answer null for it). A url() is `mr:r<n>` (its occurrence number, the shape of a key, which the sanitizer's
     // last pass requires) until its key is known.
     const drafts = sheets.map((sheet, i) => { const urls = []; return { urls, css: sanitizeMirrorCss(bodies[i], sheet.url, (value, base, kind) => { urls.push([value, base, kind]); return `r${urls.length}`; }) }; });
     const parts = drafts.map(({ urls, css }) => ({ urls, imageSets: /image-set\(/i.test(css) ? [...css.matchAll(IMAGE_SET)].map(match => match[0]).join(' ') : '', values: ['href', 'src'].filter(name => VALUE_SELECTOR[name].test(css)) }));
     const resourceKeys = await this.evaluate(world, `${world.ref}.sheetKeys(${JSON.stringify(parts)})`);
     const css = drafts.map(({ css }, i) => css.replace(/url\("mr:r(\d+)"\)/g, (_, n) => resourceKeys[i][n - 1] ? `url("mr:${resourceKeys[i][n - 1]}")` : 'none')).join('');
-    const used = usedBy === null || css.length < FIRST_PAINT_SHEET || world.retainedSheets?.has(sheetDigest(css)) ? null : await this.evaluate(world, `${world.ref}.usedCss(${JSON.stringify(usedBy)},${JSON.stringify(css)})`);
+    // A first paint prunes the rules no element uses. The page answers only which selectors are in use (usedSelectors, the
+    // same matcher as usedCss); the kernel keeps the rules, so the page never re-parses the sheet behind its own work.
+    let used = null;
+    if (usedBy !== null && css.length >= FIRST_PAINT_SHEET && !world.retainedSheets?.has(sheetDigest(css))) {
+      const rules = cssRules(css), selectors = [...ruleSelectors(rules)];
+      const flags = selectors.length ? await this.evaluate(world, `${world.ref}.usedSelectors(${JSON.stringify(usedBy)},${JSON.stringify(selectors)})`) : null;
+      if (typeof flags === 'string' && flags.length === selectors.length) { const keep = new Map(selectors.map((selector, n) => [selector, flags[n] === '1'])); used = prunedCss(rules, selector => keep.get(selector)); }
+    }
     return used === null ? css : [css, used];
   }
   // Opaque regions as lossless stills, refreshed at most once a second until phase 3

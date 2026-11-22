@@ -5,7 +5,7 @@ import { sanitizeMirrorCss } from './kernel-browser-mirror2-observer.mjs';
 import { BrowserResponseBodies } from './browser-controller-response-bodies.mjs';
 import { inflateRawSync, constants as zlib } from 'node:zlib';
 import { createHash } from 'node:crypto';
-import { Mirror2, ParsedSheets, sheetDigest, BUSY_RENDERER_MS, KERNEL_CONTROLLER_DEADLINE_MS, mirrorResourceType, encodeMirrorRecords, dedupeMirrorSheets, regionArea, regionOverBudget, cssImports, svgTargetPinned } from './kernel-browser-mirror2.mjs';
+import { Mirror2, ParsedSheets, sheetDigest, cssRules, prunedCss, BUSY_RENDERER_MS, KERNEL_CONTROLLER_DEADLINE_MS, mirrorResourceType, encodeMirrorRecords, dedupeMirrorSheets, regionArea, regionOverBudget, cssImports, svgTargetPinned } from './kernel-browser-mirror2.mjs';
 const pageSize=()=>({width:1280,height:800});
 
 const keys = () => { const seen = []; return { seen, resource: (url, base, kind) => { const href = new URL(url, base).href; if (!/^(https?|data):/.test(href)) return null; seen.push([href, kind]); return `r${seen.length}`; } }; };
@@ -575,11 +575,12 @@ test('MP-08/MP-10: a navigation ends a waiting long poll before its deadline', a
 
 // Row 342 F2: the page parses a part it has not seen, gives the url() occurrences their keys (sheetKeys) and prunes a
 // first-paint sheet; the kernel sanitizes. This stub answers those three calls; `keyOf` plays the page's registry.
-const pageSheets=(seen=[],keyOf=(value,n)=>`r${n+1}`,parse=text=>text)=>async(world,expression)=>{
+const pageSheets=(seen=[],keyOf=(value,n)=>`r${n+1}`,parse=text=>text,used=()=>true)=>async(world,expression)=>{
  if(expression.includes('compatMode'))return world.mode==='BackCompat';
  seen.push(expression);
  if(expression.includes('.sheetKeys('))return JSON.parse(expression.slice(expression.indexOf('.sheetKeys(')+11,-1)).map(part=>part.urls.map(([value,base,kind],n)=>keyOf(value,n,base,kind)));
  if(expression.includes('.usedCss('))return null;
+ if(expression.includes('.usedSelectors(')){const at=expression.indexOf('.usedSelectors(')+15,args=JSON.parse(`[${expression.slice(at,-1)}]`);return args[1].map(selector=>used(selector)?'1':'0').join('')}
  return JSON.parse(expression.slice(expression.lastIndexOf('})(')+3,-1)).map(sheet=>parse(sheet.text));
 };
 
@@ -683,9 +684,28 @@ test('Row 342 F2: a first-paint sheet the viewer retains is not sent to the page
  const seen=[];mirror.evaluate=pageSheets(seen);
  const world={connection:{async send(method){throw Error(`unexpected ${method}`)}},sessionId:'S',frame:{id:'F',url:'https://site.example/'},ref:'observer',retainedSheets:new Set([sheetDigest(big)])};
  assert.equal(await mirror.crossOriginSheet(world,'https://cdn.example/big.css','n1'),big);
- assert(!seen.some(e=>e.includes('.usedCss(')),'a retained sheet is not pruned in the page');
+ assert(!seen.some(e=>e.includes('.usedSelectors(')),'a retained sheet is not pruned');
  await mirror.crossOriginSheet(world,'https://cdn.example/other.css','n1');
- assert(seen.some(e=>e.includes('.usedCss(')),'a sheet the viewer lacks is still pruned in the page');
+ assert(seen.some(e=>e.includes('.usedSelectors(')),'a sheet the viewer lacks is still pruned, from its selectors');
+ assert(!seen.some(e=>e.includes('.usedCss(')),'no whole-sheet prune call');
+ assert(!seen.find(e=>e.includes('.usedSelectors(')).includes('color:blue'),'the prune call carries selectors, not declarations');
+});
+
+test('Row 342 (b): a sheet prunes from its selector list exactly as usedCss walks its rules',()=>{
+ const css=['@charset "utf-8";','@layer base, theme;','.keep { content: "a { b; } c"; }','.drop { color: red; }',
+  '@media (max-width: 600px) {\n  .keep { color: blue; }\n  .drop { color: green; }\n}',
+  '@media print {\n  .drop { color: black; }\n}',
+  '@supports (display: grid) {\n  @media screen {\n    .keep, .x { display: grid; }\n  }\n}',
+  '@layer theme {\n  .drop { color: pink; }\n}',
+  '@font-face { font-family: "F"; src: url("mr:r1"); }',
+  '.esc\\{x { color: red; }','/* note { */ .keep::after { content: "\\"}" }',
+  '@keyframes spin {\n  from { transform: none; }\n  to { transform: rotate(1turn); }\n}'].join('\n')+'\n';
+ const rules=cssRules(css);
+ const used=new Set(['.keep','.keep, .x','.keep::after']);
+ assert.equal(prunedCss(rules,selector=>used.has(selector)),['@charset "utf-8";','@layer base, theme;','.keep { content: "a { b; } c"; }',
+  '@media (max-width: 600px) {.keep { color: blue; }\n}','@supports (display: grid) {@media screen {.keep, .x { display: grid; }\n}\n}',
+  '@layer theme {}','@font-face { font-family: "F"; src: url("mr:r1"); }','.keep::after { content: "\\"}" }',
+  '@keyframes spin {\n  from { transform: none; }\n  to { transform: rotate(1turn); }\n}'].join('\n')+'\n');
 });
 
 // Row 342 F3: the document's loaded stylesheets read alongside the snapshot, never across documents.
