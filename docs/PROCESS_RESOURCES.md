@@ -59,10 +59,10 @@ the process `stopped` event, and the kernel logs
 `process_resources.disk_stop`. A steady writer with room for its rate is
 never stopped.
 
-PROPOSED, for the owner to decide: the fill horizon is 5 s (an incident copy
-at about 1.9 GB/s is stopped with about 9 GB still free; a 100 MB/s writer is
-stopped only with less than 500 MB left), and the runaway write rate is the
-memory runaway rate, 128 MiB/s. Until decided, these values apply.
+The fill horizon is 5 s and the runaway write rate is the memory runaway
+rate, 128 MiB/s (owner decision, 2026-11-22). A copy at about 1.9 GB/s is
+stopped with about 9 GB still free; a steady 100 MB/s writer is stopped only
+when less than 500 MB is left, and a writer with room for its rate never is.
 
 A command that admission paused (it grew toward a full pool) continues when its
 room frees. Its growth estimate is the median of samples over the last 60 s

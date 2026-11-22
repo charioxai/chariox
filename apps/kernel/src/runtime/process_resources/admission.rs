@@ -31,8 +31,8 @@ const AHEAD: u64 = 2;
 /// one is judged.
 const FILLER_SETTLE: Duration = Duration::from_secs(2);
 /// A volume the kernel's commands fill within this many seconds is short of
-/// room now, whatever its floor: a runaway copy fills gigabytes in seconds.
-/// Proposed, for the owner to set (docs/PROCESS_RESOURCES.md).
+/// room now, whatever its floor: a runaway copy fills gigabytes in seconds
+/// (owner decision, docs/PROCESS_RESOURCES.md).
 const FILL_HORIZON_SECONDS: u64 = 5;
 /// A command writing this fast is a runaway and is stopped first (the
 /// memory runaway rate).
