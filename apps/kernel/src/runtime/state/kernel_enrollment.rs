@@ -9,6 +9,7 @@ use sha2::Digest;
 const MAX_WAIT: Duration = Duration::from_secs(600);
 /// How long one tool call waits for the owner before saying the card is still open.
 const ANSWER_WINDOW: Duration = if cfg!(test) { Duration::from_secs(2) } else { Duration::from_secs(60) };
+const RETRY_AFTER_MS: u64 = 5_000;
 const POLL_EVERY: Duration = if cfg!(test) { Duration::from_millis(100) } else { Duration::from_secs(2) };
 
 pub(super) const ENROLL_TOOL: &str = "chariox.kernels.enroll";
@@ -237,14 +238,17 @@ impl KernelRuntimeState {
         waiting: &Waiting,
         machine: &Option<String>,
     ) -> Result<(), DaemonError> {
-        let answered = !self
+        let approved = self
             .owned
             .durable_state_store
-            .load_subject_events_by_kind(id, "kernel.enrollment_approved", 1)?
-            .is_empty();
-        if answered {
-            // The owner approved earlier but Cloud did not take it: apply it again, no second card.
-            decide(profile, &waiting.user_code, "approve").await?;
+            .load_subject_events_by_kind(id, "kernel.enrollment_approved", 1)?;
+        if let Some(event) = approved.first() {
+            // The owner approved. The background task is telling Cloud; only when Cloud still waits
+            // well after the answer did that fail, and then it is applied again. No second card.
+            let at = event.payload["approved_at_ms"].as_u64().unwrap_or(0);
+            if crate::session::unix_epoch_ms().saturating_sub(at) > RETRY_AFTER_MS {
+                decide(profile, &waiting.user_code, "approve").await?;
+            }
             return Ok(());
         }
         if self
@@ -346,6 +350,15 @@ async fn decide(
     .map_err(|error| match error {
         DaemonError::MachineRequest { code, message } if code == "enrollment_refused" && message.contains("expired") => expired(),
         other => other,
+    })
+    .or_else(|error| match &error {
+        // Already approved is the state asked for.
+        DaemonError::MachineRequest { code, message }
+            if decision == "approve" && code == "enrollment_refused" && message.contains("already approved") =>
+        {
+            Ok(())
+        }
+        _ => Err(error),
     })
 }
 
