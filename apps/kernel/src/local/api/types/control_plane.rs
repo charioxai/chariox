@@ -14,9 +14,6 @@ pub enum ControlPlaneRequest {
         class_id: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         region: Option<String>,
-        /// The Room agent’s reason is only used by its local approval card.
-        #[serde(skip)]
-        reason: Option<String>,
     },
     AcquireJob {
         capability_revision: String,
@@ -77,10 +74,6 @@ pub enum ControlPlaneRequest {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ControlPlaneResponse {
-    AcquisitionWaiting {
-        registration_id: String,
-        expires_at_ms: u64,
-    },
     JobCancelled {
         job_ref: String,
     },

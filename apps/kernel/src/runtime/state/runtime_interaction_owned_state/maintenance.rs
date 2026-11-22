@@ -25,10 +25,6 @@ impl KernelRuntimeOwnedState {
             if shutdown && super::super::is_handoff_interaction_id(&id) {
                 continue;
             }
-            // A machine approval wait settles with its own task, not with this sweep.
-            if pending.async_task_id.is_some() {
-                continue;
-            }
             let backing_card = self.kernel_operation_card(&id, &pending, &|session_id| {
                 self.session_store.get_session(session_id).ok()
             });
@@ -151,6 +147,5 @@ impl KernelRuntimeOwnedState {
 /// operation decisions and every vault prompt (`vault-unlock-…`,
 /// `vault-manage-…`, `vault-passphrase-…`).
 fn waits_in_memory(interaction: &crate::session::RuntimeInteraction) -> bool {
-    interaction.asking_task_id().is_none()
-        && (interaction.kernel_operation_id().is_some() || interaction.id().starts_with("vault-"))
+    interaction.kernel_operation_id().is_some() || interaction.id().starts_with("vault-")
 }

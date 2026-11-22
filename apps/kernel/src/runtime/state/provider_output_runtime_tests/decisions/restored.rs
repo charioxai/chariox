@@ -45,7 +45,7 @@ impl Tree {
         let store = &self.runtime.owned.durable_state_store;
         let now = crate::session::unix_epoch_ms();
         self.runtime
-            .arm_interaction_wake(&self.room, agent, permission(id, agent), None)
+            .arm_interaction_wake(&self.room, agent, permission(id, agent))
             .unwrap();
         let wake = store.agent_wake(id).unwrap().unwrap();
         store

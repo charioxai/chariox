@@ -93,7 +93,6 @@ export type KernelEvent =
     event: "runtime_interactions_changed"
     session_id: string
     active_interactions: Array<Record<string, unknown>>
-    machine_approval_receipts: Array<Record<string, unknown>>
   }
   | {
     event: "session_unavailable"

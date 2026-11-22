@@ -3,13 +3,7 @@ use crate::config::DaemonConfig;
 use crate::error::DaemonError;
 use crate::local::{ControlPlaneRequest, ControlPlaneResponse, LocalDaemonResponse};
 use crate::runtime::command::KernelCommand;
-use crate::runtime::state::machine_acquisition::direct::{log_milestone, AcquireTrace};
 use crate::runtime::state::KernelRuntimeState;
-use serde_json::json;
-use std::time::Duration;
-
-const OFFER_TIMEOUT: Duration = Duration::from_secs(2);
-const ACQUIRE_TIMEOUT: Duration = Duration::from_secs(4);
 
 /// What Cloud's control-plane route receives; the owner's kernel enrollment is the credential.
 fn cloud_request_body(
@@ -52,7 +46,6 @@ pub(crate) async fn execute(
     command: &KernelCommand,
     gateway: &crate::runtime::kernel_gateway::KernelGateway,
     request: &ControlPlaneRequest,
-    trace: Option<&AcquireTrace<'_>>,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let capabilities = matches!(request, ControlPlaneRequest::Capabilities {});
     // People use their authenticated owner connection; agents use the same process-bound
@@ -87,114 +80,30 @@ pub(crate) async fn execute(
             ))
         };
     };
-    let acquire_id = trace.map(|trace| trace.request_id).or(match request {
-        ControlPlaneRequest::Acquire { request_id, .. } => Some(request_id.as_str()),
-        _ => None,
-    });
-    if matches!(request, ControlPlaneRequest::AcquireJob { .. })
-        && !command.caller.caller_id.starts_with("job:")
-    {
-        return Err(unavailable(
-            "job_acquisition_required",
-            "Start the work as a job so the kernel can manage its machine",
-        ));
-    }
-    let post = |request: &ControlPlaneRequest, stage: &str| {
-        let body = cloud_request_body(&profile.account_id, credential, request);
-        let api_url = profile.api_url.clone();
-        let offer = matches!(request, ControlPlaneRequest::Capabilities {});
-        let fields = trace.map(|trace| trace.service_fields(stage));
-        async move {
-            use crate::runtime::cloud_api_client::{
-                cloud_error_code, post_cloud_json, post_cloud_json_with_dispatch,
-            };
-            let Some(request_id) = acquire_id else {
-                return post_cloud_json(api_url, "/control-plane", body).await;
-            };
-            let deadline = if offer {
-                OFFER_TIMEOUT
-            } else {
-                ACQUIRE_TIMEOUT
-            };
-            // Bound blocking-executor queue time as well as the HTTP request.
-            let dispatch = fields.clone();
-            let response = tokio::time::timeout(
-                deadline,
-                post_cloud_json_with_dispatch(
-                    api_url,
-                    "/control-plane",
-                    body,
-                    deadline + Duration::from_millis(250),
-                    move || {
-                        if let Some(fields) = dispatch {
-                            log_milestone(fields);
-                        }
-                    },
-                ),
-            )
-            .await;
-            if let Some(mut fields) = fields {
-                fields["milestone"] = json!("service_request_answered");
-                fields["outcome"] = json!(match &response {
-                    Ok(Ok(_)) => "ok",
-                    Ok(Err(error)) if cloud_error_code(error).is_some() => "service_error",
-                    Ok(Err(_)) => "transport_error",
-                    Err(_) => "timeout",
-                });
-                log_milestone(fields);
-            }
-            if offer {
-                return response
-                    .ok()
-                    .and_then(Result::ok)
-                    .ok_or_else(|| DaemonError::MachineRequest {
-                        code: "acquisition_offer_unavailable".into(),
-                        message: format!(
-                            "The machine service did not return its offer, so this try was not sent. Retry with request_id {}.",
-                            request_id,
-                        ),
-                    });
-            }
-            match response {
-                Ok(Err(error @ DaemonError::LocalTransport { .. }))
-                    if crate::runtime::cloud_api_client::cloud_error_code(&error).is_none() =>
-                {
-                    Err(DaemonError::MachineRequest {
-                        code: "acquisition_service_unconfirmed".into(),
-                        message: format!(
-                            "The machine service did not confirm the allocation. Retry with request_id {} to recover any allocation it accepted: {error}",
-                            request_id,
-                        ),
-                    })
-                }
-                Ok(result) => result,
-                Err(_) => Err(DaemonError::MachineRequest {
-                    code: "acquisition_service_timeout".into(),
-                    message: format!(
-                        "The machine service did not confirm the allocation in time. Retry with request_id {} to recover any allocation it accepted.",
-                        request_id,
-                    ),
-                }),
-            }
-        }
-    };
     if matches!(
         request,
         ControlPlaneRequest::Acquire { .. } | ControlPlaneRequest::AcquireJob { .. }
     ) {
-        let offered = post(&ControlPlaneRequest::Capabilities {}, "offer_recheck").await.map_err(|error| {
-            if acquire_id.is_some() {
-                return error;
-            }
-            // A failed offer read is never a service refusal of the acquisition itself.
-            DaemonError::RelayTransport {
-                operation: "connected control plane",
-                code: "control_plane_offer_unavailable".into(),
-                retryable: true,
-                message: format!(
-                    "The connected service did not return its machine offer, so this try was not sent; retry it: {error}"
-                ),
-            }
+        let offered = crate::runtime::cloud_api_client::post_cloud_json::<ControlPlaneResponse>(
+            profile.api_url.clone(),
+            "/control-plane",
+            cloud_request_body(
+                &profile.account_id,
+                credential,
+                &ControlPlaneRequest::Capabilities {},
+            ),
+        )
+        .await
+        // A Cloud code on an acquire's error is the service's answer to that acquire, and the
+        // refusal the agent reads names it. This answer is not about the acquire, so it passes on
+        // without its code.
+        .map_err(|error| DaemonError::RelayTransport {
+            operation: "connected control plane",
+            code: "control_plane_offer_unavailable".into(),
+            retryable: true,
+            message: format!(
+                "The connected service did not return its machine offer, so this try was not sent; retry it: {error}"
+            ),
         })?;
         let ControlPlaneResponse::Capabilities { machine_allocation } = offered else {
             return Err(unavailable(
@@ -202,12 +111,9 @@ pub(crate) async fn execute(
                 "The connected service did not return its machine offer",
             ));
         };
-        if let Some(waiting) = state
-            .approve_machine_acquisition(command, request, machine_allocation.as_ref(), trace)
-            .await?
-        {
-            return Ok(LocalDaemonResponse::ControlPlane { result: waiting });
-        }
+        state
+            .approve_machine_acquisition(command, request, machine_allocation.as_ref())
+            .await?;
         if let Some(grant) = &grant {
             state.authorize_external_request(grant, &request_shape)?;
         } else if let Some(reach) = command.reach_caller_id() {
@@ -216,7 +122,6 @@ pub(crate) async fn execute(
         if let (ControlPlaneRequest::AcquireJob { job_ref, .. }, Some(job_id)) =
             (request, command.caller.caller_id.strip_prefix("job:"))
         {
-            // Owner approval can outlive the job that requested it.
             let (room, agent, owner) = state.job_acquisition_subject(job_id)?;
             if job_ref != job_id
                 || command.session_id.as_deref() != Some(room.as_str())
@@ -231,33 +136,23 @@ pub(crate) async fn execute(
             }
         }
     }
-    let stage = if capabilities {
-        "offer_read"
-    } else {
-        "acquire"
-    };
-    if let Some(trace) = trace.filter(|_| matches!(request, ControlPlaneRequest::Acquire { .. })) {
-        state.mark_acquire_submitted(trace)?;
-    }
-    let service_response = post(request, stage).await;
-    if let Err(error) = state.machine_approval_sent(command, request) {
-        tracing::warn!(%error, "could not close the machine approval receipt");
-    }
-    let mut result =
-        service_response.map_err(
-            |error| match crate::runtime::cloud_api_client::cloud_error_code(&error) {
-                Some(
-                    "authorization_denied"
-                    | "session_invalid"
-                    | "client_revoked"
-                    | "identity_revoked",
-                ) => unavailable(
-                    "control_plane_authorization_denied",
-                    "Check this kernel's owner enrollment and refresh machine capabilities",
-                ),
-                _ => error,
-            },
-        )?;
+    let mut result = crate::runtime::cloud_api_client::post_cloud_json::<ControlPlaneResponse>(
+        profile.api_url.clone(),
+        "/control-plane",
+        cloud_request_body(&profile.account_id, credential, request),
+    )
+    .await
+    .map_err(
+        |error| match crate::runtime::cloud_api_client::cloud_error_code(&error) {
+            Some(
+                "authorization_denied" | "session_invalid" | "client_revoked" | "identity_revoked",
+            ) => unavailable(
+                "control_plane_authorization_denied",
+                "Check this kernel's owner enrollment and refresh machine capabilities",
+            ),
+            _ => error,
+        },
+    )?;
     let response_matches = matches!(
         (&result, request),
         (
@@ -358,21 +253,13 @@ pub(crate) async fn execute(
                     )
                     .await
             } else {
-                let command_id = format!("{}:machine-access", command.command_id);
-                let attach = gateway.attach_machine(target, &origin, &command_id);
-                if acquire_id.is_some() {
-                    tokio::time::timeout(OFFER_TIMEOUT, attach)
-                        .await
-                        .unwrap_or_else(|_| {
-                            Err(
-                                crate::runtime::kernel_gateway::GatewayError::RequestTimeout {
-                                    name: target.kernel_id.clone(),
-                                },
-                            )
-                        })
-                } else {
-                    attach.await
-                }
+                gateway
+                    .attach_machine(
+                        target,
+                        &origin,
+                        &format!("{}:machine-access", command.command_id),
+                    )
+                    .await
             };
             match attached {
                 Ok(()) => *access_state = "available".into(),
@@ -421,7 +308,6 @@ mod tests {
             &command,
             router.kernel_gateway(),
             &ControlPlaneRequest::Capabilities {},
-            None,
         )
         .await
         .unwrap();
@@ -434,36 +320,21 @@ mod tests {
             }
         ));
         let acquire = ControlPlaneRequest::Acquire {
-            reason: None,
             capability_revision: "forged".into(),
             request_id: "one".into(),
             class_id: None,
             region: None,
         };
-        let error = execute(
-            &config,
-            &state,
-            &command,
-            router.kernel_gateway(),
-            &acquire,
-            None,
-        )
-        .await
-        .unwrap_err();
+        let error = execute(&config, &state, &command, router.kernel_gateway(), &acquire)
+            .await
+            .unwrap_err();
         assert!(error.to_string().contains("control_plane_unavailable"), "the owner reaches the connected-service boundary without a separate agent grant: {error}");
         command.source = crate::runtime::command::KernelCommandSource::RelayClient;
         command.caller.caller_kind = crate::runtime::command::KernelCallerKind::RemoteClient;
         command.caller.user_id = Some("another-user".into());
-        let error = execute(
-            &config,
-            &state,
-            &command,
-            router.kernel_gateway(),
-            &acquire,
-            None,
-        )
-        .await
-        .unwrap_err();
+        let error = execute(&config, &state, &command, router.kernel_gateway(), &acquire)
+            .await
+            .unwrap_err();
         assert!(error.to_string().contains("control_plane_grant_required"));
     }
 
@@ -471,7 +342,6 @@ mod tests {
     #[test]
     fn the_acquire_request_matches_the_shared_contract() {
         let request = ControlPlaneRequest::Acquire {
-            reason: None,
             capability_revision: "a".repeat(128),
             request_id: "kernel-acquire-1".into(),
             class_id: None,

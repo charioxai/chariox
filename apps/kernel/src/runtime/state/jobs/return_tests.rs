@@ -351,7 +351,6 @@ pub(super) fn test_machine(grant: Arc<Outage>) -> super::super::job_compute::Job
         machine_label: "offload-test".into(),
         address: None,
         kernel_id: "worker".into(),
-        target_verified: true,
         grant,
         class: Some(super::super::job_compute::JobClass {
             allocation_ref: "cleanup-test".into(),

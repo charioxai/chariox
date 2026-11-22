@@ -493,53 +493,6 @@ impl KernelRuntimeState {
         let destination = self
             .files_machine(agent, args.destination.machine.as_deref())
             .await?;
-        self.files_copy_between(agent, args, source, destination)
-            .await
-    }
-
-    pub(super) async fn copy_acquired_file(
-        &self,
-        agent_id: &str,
-        kernel: String,
-        copy: super::machine_acquisition::access::AllocationCopy,
-    ) -> Result<RuntimeToolResult, DaemonError> {
-        use super::machine_acquisition::access::CopyDirection;
-        let agent = self.owned.agent_store.get_agent(agent_id)?;
-        let acquired = Target::There {
-            name: kernel.clone(),
-            kernel,
-        };
-        let (source, destination) = match copy.direction {
-            CopyDirection::Upload => (Target::Here, acquired),
-            CopyDirection::Download => (acquired, Target::Here),
-        };
-        let args = CopyArgs {
-            source: SourceArgs {
-                machine: None,
-                path: copy.path,
-            },
-            destination: DestinationArgs {
-                machine: None,
-                folder: copy.folder,
-                name: copy.name,
-            },
-            conflict: FileTransferConflict::default(),
-            delete_source: false,
-            wait_seconds: Some(20),
-        };
-        Ok(self
-            .files_copy_between(&agent, args, source, destination)
-            .await
-            .unwrap_or_else(failure))
-    }
-
-    async fn files_copy_between(
-        &self,
-        agent: &crate::agent::AgentInstance,
-        args: CopyArgs,
-        source: Target,
-        destination: Target,
-    ) -> Result<RuntimeToolResult, String> {
         let source_kernel = match &source {
             Target::Here => self.owned.config_projection.snapshot().daemon_id,
             Target::There { kernel, .. } => kernel.clone(),

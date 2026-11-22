@@ -1348,7 +1348,7 @@ async fn async_popup_reconciles_source_ended_during_card_registration() {
     )
     .closing_with_wake(source.id);
     f.runtime
-        .arm_interaction_wake(&f.room, &f.agent, card, None)
+        .arm_interaction_wake(&f.room, &f.agent, card)
         .unwrap();
     assert!(!f
         .runtime

@@ -124,19 +124,14 @@ impl KernelRuntimeOwnedState {
             );
         }
         if let Some(task_id) = interaction.asking_task_id() {
-            let mut wake = self
+            let wake = self
                 .durable_state_store
                 .agent_wake(interaction.id())?
                 .ok_or_else(|| interaction_error("Async question has no admitted wake"))?;
-            if super::super::machine_acquisition::approval::is_machine_approval(&interaction) {
-                // The acquisition trace accompanies the durable question but isn't part of its card.
-                super::super::machine_acquisition::direct::remove_wake_trace(&mut wake.detail);
-            }
             if wake.kind != super::super::interaction_wake::KIND
                 || wake.task_id != task_id
                 || wake.room_id != session_id
-                || super::super::interaction_wake::question_agent(&interaction)
-                    != Some(wake.agent_id.as_str())
+                || interaction.agent_id() != Some(wake.agent_id.as_str())
                 || !matches!(wake.state.as_str(), "starting" | "running")
                 || serde_json::to_value(&interaction).ok().as_ref() != Some(&wake.detail)
             {
@@ -147,15 +142,11 @@ impl KernelRuntimeOwnedState {
         }
         // Kernel action cards keep their human authority and also belong to
         // the requesting agent's exact prompt/run.
-        let lifetime_agent = if interaction.asking_task_id().is_some() {
-            super::super::interaction_wake::question_agent(&interaction)
-        } else {
-            interaction.agent_id().or_else(|| {
-                interaction
-                    .native_origin()
-                    .and(interaction.related_agent_id())
-            })
-        };
+        let lifetime_agent = interaction.agent_id().or_else(|| {
+            interaction
+                .native_origin()
+                .and(interaction.related_agent_id())
+        });
         // The agent a card brings back is whichever one it concerns, with or without prompt-lifetime authority.
         let concerned_agent = interaction
             .agent_id()
@@ -339,14 +330,6 @@ impl KernelRuntimeOwnedState {
                 return Err(error);
             }
         }
-        // Acquisition may have settled between its initial lookup and registration.
-        if super::super::machine_acquisition::approval::is_machine_approval(&interaction)
-            && self
-                .machine_decision(interaction.id(), session.owner_user_id())?
-                .is_some()
-        {
-            return Err(interaction_error("Machine approval already settled"));
-        }
         // Where the user sees a card is the kernel's: a restored question is the same question
         // whichever panel lists it.
         if session.active_interactions().iter().any(|existing| {
@@ -480,9 +463,7 @@ impl KernelRuntimeOwnedState {
             terminal_credential_owner: terminal_credential_owner.map(str::to_owned),
             // A card payment ends at its own deadline like a kernel operation; its popup lives as
             // long as the card.
-            kernel_operation_deadline: ((kernel_operation_owner.is_some()
-                && interaction.asking_task_id().is_none())
-                || payment)
+            kernel_operation_deadline: (kernel_operation_owner.is_some() || payment)
                 .then(|| interaction.timeout_sec())
                 .flatten()
                 .map(|seconds| std::time::Instant::now() + std::time::Duration::from_secs(seconds)),

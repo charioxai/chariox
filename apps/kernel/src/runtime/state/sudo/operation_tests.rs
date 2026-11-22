@@ -819,7 +819,7 @@ async fn sudo_task_job_acquisition_asks_no_second_owner_decision() {
     tokio::time::timeout(
         Duration::from_secs(5),
         f.state
-            .approve_machine_acquisition(&command, &request, Some(&capability), None),
+            .approve_machine_acquisition(&command, &request, Some(&capability)),
     )
     .await
     .expect("a sudo task's job waited for an owner decision")

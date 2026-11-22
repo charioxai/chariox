@@ -504,14 +504,7 @@ async fn handle_json_rpc_value(
                 .get("arguments")
                 .cloned()
                 .unwrap_or_else(|| serde_json::json!({}));
-            let machine_acquire = tool_name == "chariox.machines.acquire";
-            // A machine request does not change the tool catalog. Its receipt must not
-            // queue behind catalog regeneration on either side of the actual request.
-            let previous_catalog = if machine_acquire {
-                None
-            } else {
-                catalog::listing(&router, auth_token).await
-            };
+            let previous_catalog = catalog::listing(&router, auth_token).await;
             let result = router
                 .dispatch_authenticated_runtime_tool_call(auth_token, tool_name, arguments)
                 .await;
@@ -563,8 +556,7 @@ async fn handle_json_rpc_value(
                     };
                     let (content, structured_content) =
                         tool_content::runtime_tool_content_ordered(result.payload, first_keys);
-                    let changed = !machine_acquire
-                        && previous_catalog != catalog::listing(&router, auth_token).await;
+                    let changed = previous_catalog != catalog::listing(&router, auth_token).await;
                     Ok(catalog::tool_response(
                         changed,
                         serde_json::json!({
@@ -578,9 +570,6 @@ async fn handle_json_rpc_value(
                         }),
                     ))
                 }
-                Err(DaemonError::MachineRequest { code, message }) if machine_acquire => Ok(
-                    json_rpc_error_response(id, -32000, &format!("{code}: {message}")),
-                ),
                 Err(error) => Ok(json_rpc_error_response(
                     id,
                     -32000,

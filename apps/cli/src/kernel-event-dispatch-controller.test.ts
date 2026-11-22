@@ -482,7 +482,6 @@ test("kernel event dispatch applies runtime interaction deltas without resyncing
   await harness.controller.handleKernelEvent({
     event: "runtime_interactions_changed",
     session_id: "session-1",
-    machine_approval_receipts: [],
     active_interactions: [{
       id: "interaction-1",
       agent_id: "agent-1",
