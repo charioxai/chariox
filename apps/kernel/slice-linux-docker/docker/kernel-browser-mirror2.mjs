@@ -212,6 +212,8 @@ export class ParsedSheets {
   }
 }
 // Row 426: a credit that steps aside for a region operation (never reaches the viewer; next() queues it again).
+// Row 426 F3: what the kernel had issued when a credit arrived (the credit's after_sequence can only account for those).
+const ARRIVAL_ISSUED = Symbol('mirror credit arrival');
 const MIRROR_YIELD = Object.freeze(Object.assign(new Error('mirror credit yields to a region operation'), { code: 'mirror_yield' }));
 export class Mirror2 {
   constructor(service) { this.service = service; this.host = service.host; this.frames = new MirrorFrames(this); this.css = new MirrorCssEvents(); this.regions = new Mirror2Regions(this); this.parsedSheets = new ParsedSheets(); this.fontSubsets = new FontSubsets(); this.host.visitedLinks?.listeners.add((origin, url) => this.visited(origin, url)); }
@@ -379,6 +381,7 @@ export class Mirror2 {
       return run;
     }
     const arrival = Date.now(), wait = command.wait_ms ?? 0;
+    command[ARRIVAL_ISSUED] = stream.issued ?? 0;
     // A reset credit (lost base) must not queue behind a waiting long poll.
     if (command.after_sequence === 0 || resend || command.flush) this.hurry(stream);
     const hurry = stream.hurry;
@@ -491,8 +494,10 @@ export class Mirror2 {
     if (stream.acked > (stream.prunedAt ?? 0)) { stream.prunedAt = stream.acked; for (const entry of stream.resources.values()) if (entry.sent && entry.sentAt <= stream.acked && entry.resource) { entry.resource = entry.preview = null; entry.url = ''; } }
     // A viewer whose base predates the newest reset has that reset on its way (a large one crossing a slow link
     // while small credits are answered): a second reset only queues behind it (r47: a 420 KB reset storm).
+    // `behind` counts only packets issued before this credit arrived: the ones issued while it queued (up to seconds on a quiet
+    // page with the viewer's eight credits in flight) answered earlier credits and say nothing about this viewer (row 426 F3).
     const layoutKey = this.layoutKey(tab.tab_id);
-    const resetReason = after === 0 ? 'client' : after > stream.issued ? 'ahead' : after < stream.issued - 8 && after >= stream.resetAt ? 'behind' : stream.document_id !== tab.document_id ? 'document' : stream.policy !== policy ? 'policy' : (stream.layoutKey ?? layoutKey) !== layoutKey ? 'layout' : stream.resetAt > stream.issued ? 'snapshot' : stream.fallback !== null ? 'fallback' : null;
+    const resetReason = after === 0 ? 'client' : after > stream.issued ? 'ahead' : after < (command[ARRIVAL_ISSUED] ?? stream.issued) - 8 && after >= stream.resetAt ? 'behind' : stream.document_id !== tab.document_id ? 'document' : stream.policy !== policy ? 'policy' : (stream.layoutKey ?? layoutKey) !== layoutKey ? 'layout' : stream.resetAt > stream.issued ? 'snapshot' : stream.fallback !== null ? 'fallback' : null;
     let reset = resetReason !== null;
     // A snapshot waits for a busy renderer in every call it makes (the viewer's reset has 30 s). Any other credit waits
     // somewhat longer than the default, but answers before the viewer's own 8 s request timeout.

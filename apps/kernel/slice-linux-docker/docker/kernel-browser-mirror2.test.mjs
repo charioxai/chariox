@@ -1457,3 +1457,36 @@ test('Row 426: credits queued behind a waiting one neither delay a region operat
   assert.deepEqual(answered[0][1], [{ op: 'text', id: 'n2', value: 'clicks 1' }], 'the first answer is the real change');
   assert.equal(stream.issued, 4, 'three credits, three sequences: the change, then two answers at their own wait');
 });
+
+// Row 426 F3: a credit names what the viewer had applied when it sent it; packets the kernel issued after the credit arrived
+// (answering earlier credits while this one queued, up to 6 s on a quiet page with eight in flight) are not the viewer falling
+// behind. Judged at build time they read as `behind` and reset the page (and retire its regions) for nothing.
+test('Row 426: packets issued while a credit queued do not make it a `behind` reset', async () => {
+  const policy = { targets: [] }, tab = { tab_id: 't', target_id: 'T', document_id: 'D1' };
+  const documents = new Map([['T', 'D1']]);
+  const connection = { isOpen: () => true, send: async () => ({ frameTree: { frame: { loaderId: 'D1' } } }) };
+  const world = { connection, sessionId: 'S', frame: { loaderId: 'D1' }, ref: 'm' };
+  let release;
+  const stream = { tab_id: 't', world, issued: 12, resetAt: 1, document_id: 'D1', policy, fallback: null, resources: new Map(), attrSequence: new Map(), ownScrolls: new Map(), frames: new Map(), frameSlots: new Map(), frameSlot: 0, tileKeys: '', hurry: 0, chain: new Promise(resolve => { release = resolve; }), header: { snapshot_complete: 'false', font_failures: '[]', scroll: '[0,0]', focused: 'null', focus_visible: 'false', selection: 'null', fragment: 'null' } };
+  const host = { protection: policy, generation: 1, pageSize, scales: new Map(), tabs: new Map([['t', tab]]), displayTarget: async () => tab,
+    browser: { connection, documentIdsByTarget: documents, sessionsByTarget: new Map([['T', 'S']]) } };
+  const mirror = new Mirror2({ host, require: () => stream, assertWebTab: () => {}, streams: new Map([['s', stream]]) });
+  mirror.world = async () => world;
+  const quiet = { ops: [], changed: [], resources: [], sheets: [], scroll: [0, 0], focused: null, selection: null, fragment: null, opaque: false, pressed: 0 };
+  mirror.evaluate = async (_world, expression) => expression.includes('waitDrain') ? { ...quiet, ops: [{ op: 'text', id: 'n2', value: 'clicks 2' }] } : quiet;
+  mirror.frames = { drain: async () => ({ ops: [], resources: [], changed: [] }), project: (_, source) => source };
+  mirror.materialize = async () => [];
+  mirror.encode = async (_stream, packet) => packet;
+  const resets = []; host.timing = name => { if (String(name).startsWith('mirror2_reset')) resets.push(name); };
+  // The viewer had applied 10 of the 12 issued (two in flight) when it sent this credit; earlier credits then take issued to 20.
+  const credit = mirror.next(stream, { subscription_id: 's', generation: 1, after_sequence: 10, wait_ms: 500 }, 'scope');
+  stream.issued = 20; release();
+  const packet = await credit;
+  assert.deepEqual(resets, [], 'no reset for packets issued after the credit arrived');
+  assert.ok(!packet.reset, 'an ordinary delta, not a snapshot');
+  // A viewer that really is behind (it names a base older than what had been issued when it asked, past the margin) still resets.
+  const lost = await mirror.next(stream, { subscription_id: 's', generation: 1, after_sequence: 5, wait_ms: 500 }, 'scope');
+  assert.deepEqual(resets, ['mirror2_reset behind'], 'a lost viewer still resets');
+  assert.equal(lost.reset, true);
+});
+
