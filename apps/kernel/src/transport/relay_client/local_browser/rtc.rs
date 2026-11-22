@@ -204,7 +204,10 @@ impl RtcEndpoint {
         let (pending, known) = {
             let mut cache = self.reflexive.lock().expect("reflexive cache poisoned");
             if cache.key.as_ref() != Some(&key) {
-                *cache = ReflexiveCache { key: Some(key.clone()), ..ReflexiveCache::default() };
+                *cache = ReflexiveCache {
+                    key: Some(key.clone()),
+                    ..ReflexiveCache::default()
+                };
             }
             let stale = cache
                 .found
@@ -213,22 +216,19 @@ impl RtcEndpoint {
             if stale && cache.looking.is_none() {
                 let (done, wait) = watch::channel(false);
                 cache.looking = Some(wait);
-                let shared = Arc::clone(&self.reflexive);
-                let bound = bound.clone();
-                let stun_port = self.stun_port;
-                tokio::spawn(async move {
-                    let found = bound.reflexive(&stun_servers(&relay_url, stun_port).await).await;
-                    {
-                        let mut cache = shared.lock().expect("reflexive cache poisoned");
-                        if cache.key.as_ref() == Some(&key) {
-                            cache.found = Some((std::time::Instant::now(), found));
-                            cache.looking = None;
-                        }
-                    }
-                    let _ = done.send(true);
-                });
+                tokio::spawn(learn_reflexive(
+                    Arc::clone(&self.reflexive),
+                    bound.clone(),
+                    relay_url,
+                    self.stun_port,
+                    key,
+                    done,
+                ));
             }
-            (cache.looking.clone(), cache.found.as_ref().map(|(_, found)| found.clone()))
+            (
+                cache.looking.clone(),
+                cache.found.as_ref().map(|(_, found)| found.clone()),
+            )
         };
         if let Some(found) = known {
             return found;
@@ -412,6 +412,29 @@ impl Bound {
 }
 
 /// The STUN responder runs on the relay's host at the STUN port.
+/// Learns the reflexive candidates for `key` in the background and keeps them for the endpoint, unless the
+/// addresses or relay changed meanwhile.
+async fn learn_reflexive(
+    shared: Arc<std::sync::Mutex<ReflexiveCache>>,
+    bound: Bound,
+    relay_url: String,
+    stun_port: u16,
+    key: (Vec<SocketAddr>, String),
+    done: watch::Sender<bool>,
+) {
+    let found = bound
+        .reflexive(&stun_servers(&relay_url, stun_port).await)
+        .await;
+    {
+        let mut cache = shared.lock().expect("reflexive cache poisoned");
+        if cache.key.as_ref() == Some(&key) {
+            cache.found = Some((std::time::Instant::now(), found));
+            cache.looking = None;
+        }
+    }
+    let _ = done.send(true);
+}
+
 async fn stun_servers(relay_url: &str, port: u16) -> Vec<SocketAddr> {
     let Some(host) = url::Url::parse(relay_url).ok().and_then(|url| {
         url.host_str()
