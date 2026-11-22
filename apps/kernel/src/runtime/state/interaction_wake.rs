@@ -1,4 +1,6 @@
 //! MP-08 / MP-09 / MP-10 / MP-11: task-owned questions use the ordinary wake ledger.
+use super::machine_acquisition::approval::{is_machine_approval, MachineDecision};
+use super::machine_acquisition::direct::{record_wake, set_wake_trace};
 use super::wake_driver::{Cancel, Liveness, Recovery, WakeDriver};
 use super::*;
 use crate::durable_state::agent_lifecycle::{
@@ -12,11 +14,19 @@ pub(super) struct InteractionWakeDriver {
     owned: KernelRuntimeOwnedState,
 }
 
+pub(super) fn question_agent(card: &RuntimeInteraction) -> Option<&str> {
+    if is_machine_approval(card) {
+        card.related_agent_id()
+    } else {
+        card.agent_id()
+    }
+}
+
 fn question(wake: &AgentWake) -> Result<RuntimeInteraction, DaemonError> {
     let interaction: RuntimeInteraction = serde_json::from_value(wake.detail.clone())
         .map_err(|_| ledger::error("question wake detail is unreadable"))?;
     if interaction.id() != wake.id
-        || interaction.agent_id() != Some(wake.agent_id.as_str())
+        || question_agent(&interaction) != Some(wake.agent_id.as_str())
         || interaction.asking_task_id() != Some(wake.task_id.as_str())
     {
         return Err(ledger::error("question wake binding is invalid"));
@@ -37,12 +47,23 @@ impl WakeDriver for InteractionWakeDriver {
             .get(&wake.id)
             .is_some_and(|p| p.belongs_to(&self.owned.session_store))
         {
+            let owner = if is_machine_approval(&interaction) {
+                Some(
+                    self.owned
+                        .session_store
+                        .get_session(&wake.room_id)?
+                        .owner_user_id()
+                        .to_owned(),
+                )
+            } else {
+                None
+            };
             let (tx, _rx) = tokio::sync::oneshot::channel();
             self.owned.register_runtime_interaction(
                 &wake.room_id,
                 interaction,
                 tx,
-                None,
+                owner.as_deref(),
                 None,
                 None,
             )?;
@@ -73,6 +94,7 @@ impl WakeDriver for InteractionWakeDriver {
                     id: wake.id.clone(),
                     now: crate::session::unix_epoch_ms(),
                 })?;
+            record_wake(wake, "card_raised");
         } else if current.state != "running" {
             return Err(ledger::error("question is no longer pending"));
         }
@@ -90,6 +112,7 @@ impl WakeDriver for InteractionWakeDriver {
             wake,
             "Question withdrawn because its task, agent or wake was cancelled",
         )?;
+        record_wake(wake, "cancelled");
         Ok(Cancel::Done)
     }
     fn recover(&self, wake: &AgentWake) -> Recovery {
@@ -151,9 +174,10 @@ impl KernelRuntimeState {
         room: &str,
         agent: &str,
         interaction: RuntimeInteraction,
+        machine_trace: Option<serde_json::Value>,
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
         let task = self.asking_task_for_turn(room, agent)?;
-        self.arm_interaction_wake_for_task(&task, interaction)
+        self.arm_interaction_wake_for_task(&task, interaction, machine_trace)
     }
 
     pub(super) fn asking_task_for_turn(
@@ -181,6 +205,7 @@ impl KernelRuntimeState {
         &self,
         task: &AgentTaskExecution,
         interaction: RuntimeInteraction,
+        machine_trace: Option<serde_json::Value>,
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
         if task.wait.is_some() {
             return Err(ledger::error(
@@ -191,7 +216,11 @@ impl KernelRuntimeState {
         let mut wake = super::tool_dispatch::agent_wakes::new_wake(
             task,
             KIND,
-            "Question awaiting an answer".into(),
+            if is_machine_approval(&interaction) {
+                "Waiting for machine approval".into()
+            } else {
+                "Question awaiting an answer".into()
+            },
             crate::session::unix_epoch_ms(),
         );
         wake.id = interaction.id().into();
@@ -204,6 +233,9 @@ impl KernelRuntimeState {
         });
         wake.detail = serde_json::to_value(interaction)
             .map_err(|_| ledger::error("question encoding failed"))?;
+        if let Some(trace) = machine_trace {
+            set_wake_trace(&mut wake.detail, trace);
+        }
         self.arm_wake_source(task, &wake)?;
         // The source can finish after popup validation but before registration.
         // Once the question exists, its condition is the current durable source.
@@ -355,6 +387,8 @@ impl KernelRuntimeOwnedState {
         resolution: &super::PendingInteractionResolution,
         caller: Option<&str>,
         answerer: Option<&crate::runtime::command::KernelCaller>,
+        machine: Option<(&str, &MachineDecision)>,
+        now: u64,
     ) -> Result<(), DaemonError> {
         if interaction.asking_task_id().is_none() {
             return Ok(());
@@ -366,25 +400,72 @@ impl KernelRuntimeOwnedState {
         if !matches!(wake.state.as_str(), "starting" | "running") {
             return Err(ledger::error("question was already answered or withdrawn"));
         }
-        self.durable_state_store
+        let machine_decision = machine.map(|(_, decision)| decision);
+        let status = match machine_decision {
+            Some(MachineDecision::Approved { .. }) => "approved",
+            Some(MachineDecision::Expired { .. }) => "expired",
+            Some(MachineDecision::Denied { .. }) => "denied",
+            _ => super::tool_dispatch::popup_status(
+                resolution.status,
+                resolution.choice_id.as_deref(),
+            ),
+        };
+        let mut payload = serde_json::json!({
+            "interaction_id": wake.id,
+            "status": status,
+            "choice_id": resolution.choice_id,
+            "reply": resolution.reply,
+            "answered_by": answerer.map(|a| a.caller_id.as_str()).or(caller),
+            "user_id": answerer.and_then(|a| a.user_id.as_deref()).or(caller),
+            "agent_id": answerer.and_then(|a| a.metaagent_id.as_deref()),
+            "client_id": answerer.map(|a| a.client_id.as_deref().unwrap_or(&a.caller_id)),
+            "connection_class": answerer.and_then(|a| a.connection_class),
+        });
+        if let Some((owner, decision)) = machine {
+            payload["_machine_approval"] = serde_json::json!({"owner":owner,"decision":decision});
+        }
+        let summary = match machine_decision {
+            Some(MachineDecision::Approved { .. }) => {
+                "Machine approved. Complete the acquisition with the same request_id".to_owned()
+            }
+            Some(MachineDecision::Denied { person, at_ms }) => {
+                payload["denied_by"] = serde_json::json!(person);
+                payload["denied_at_ms"] = serde_json::json!(at_ms);
+                format!(
+                    "Denied by {person} at {}",
+                    super::machine_acquisition::approval::timestamp(*at_ms)
+                )
+            }
+            Some(MachineDecision::Expired { at_ms }) => {
+                payload["expired_at_ms"] = serde_json::json!(at_ms);
+                format!(
+                    "Expired at {} without an answer. Use a new request_id to ask again",
+                    super::machine_acquisition::approval::timestamp(*at_ms)
+                )
+            }
+            None => format!("Question {status}"),
+        };
+        if machine_decision.is_some() {
+            payload["message"] = serde_json::json!(&summary);
+        }
+        let committed = self
+            .durable_state_store
             .agent_lifecycle(Operation::WakeOccurred {
                 id: wake.id.clone(),
                 occurrence: format!("{}-resolved", wake.id),
                 kind: "interaction_resolved".into(),
-                summary: Some(format!("Question {}", resolution.status)),
-                payload: serde_json::json!({
-                    "interaction_id": wake.id,
-                    "status": super::tool_dispatch::popup_status(resolution.status, resolution.choice_id.as_deref()),
-                    "choice_id": resolution.choice_id, "reply": resolution.reply,
-                    "answered_by": answerer.map(|a| a.caller_id.as_str()).or(caller),
-                    "user_id": answerer.and_then(|a| a.user_id.as_deref()).or(caller),
-                    "agent_id": answerer.and_then(|a| a.metaagent_id.as_deref()),
-                    "client_id": answerer.map(|a| a.client_id.as_deref().unwrap_or(&a.caller_id)),
-                    "connection_class": answerer.and_then(|a| a.connection_class),
-                }),
+                summary: Some(summary),
+                payload,
                 end: Some(WakeEnd::Succeeded),
-                now: crate::session::unix_epoch_ms(),
+                now,
             })?;
+        if !matches!(committed, ledger::Outcome::Wakes(ref wakes) if wakes.iter().any(|wake| wake.state == "exited"))
+        {
+            return Err(ledger::error("question was already answered or withdrawn"));
+        }
+        if machine_decision.is_some() {
+            record_wake(&wake, status);
+        }
         self.settle_vault_payment(interaction, resolution);
         Ok(())
     }

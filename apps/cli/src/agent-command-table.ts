@@ -51,7 +51,7 @@ export const COMMANDS: readonly CommandSpec[] = [
     name: "interaction answer", brief: "Answer a card for the owner",
     flags: [{ name: "--reply", value: "TEXT" }, KERNEL, SOCKET],
     args: ["INTERACTION_ID", "CHOICE_ID"],
-    summary: "answer one of those cards for the person; --reply TEXT with the card's reply_choice_id. Secret entry, Vault unlock, passkeys and payments stay the person's own"
+    summary: "answer one of those cards for the person; --reply TEXT with the card's reply_choice_id. Secret entry, Vault unlock, passkeys and external payments (such as payment cards in a browser) stay the person's own"
   },
   { name: "notifications list", brief: "List notification subscriptions", flags: [KERNEL, SOCKET, { name: "--kernel-url", value: "URL" }], summary: "list notifications subscribed to on this kernel, with subscription IDs and pause state" },
   { name: "notifications pause", brief: "Pause a notification subscription", flags: [KERNEL, SOCKET, { name: "--kernel-url", value: "URL" }, { name: "--command-id", value: "ID" }], args: ["SUBSCRIPTION_ID"], summary: "pause delivery for a notification subscription" },

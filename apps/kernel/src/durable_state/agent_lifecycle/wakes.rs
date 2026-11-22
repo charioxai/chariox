@@ -510,6 +510,13 @@ fn cancel_settle_because(
     wake.state = "cancelled".into();
     wake.next_due_ms = None;
     let mut answer = serde_json::json!({"wake_id":wake.id,"label":wake.label,"cancelled":true});
+    if wake.kind == "interaction"
+        && crate::runtime::state::machine_acquisition::direct::has_wake_trace(wake)
+    {
+        answer["interaction_id"] = wake.id.clone().into();
+        answer["status"] = "cancelled".into();
+        answer["message"] = "Machine approval cancelled. Use a new request_id to ask again".into();
+    }
     if let Some(reason) = reason {
         answer["reason"] = reason.into();
     }
@@ -887,8 +894,10 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 if matches!(task.state, ExecutionState::Done | ExecutionState::Cancelled) {
                     return Err(error("asking task ended; question withdrawn"));
                 }
-                if payload["status"] == "answered"
-                    && wake.next_due_ms.is_some_and(|deadline| deadline <= now)
+                if matches!(
+                    payload["status"].as_str(),
+                    Some("answered" | "denied" | "approved")
+                ) && wake.next_due_ms.is_some_and(|deadline| deadline <= now)
                 {
                     return Err(error("question deadline elapsed"));
                 }
@@ -946,6 +955,15 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             }
             .into();
             let mut payload = payload;
+            // A machine decision and the receipt that wakes its agent must survive together.
+            if wake.kind == "interaction" && kind == "interaction_resolved" {
+                if let Some(decision) = payload
+                    .as_object_mut()
+                    .and_then(|fields| fields.remove("_machine_approval"))
+                {
+                    super::audit::audit(tx, "compute.acquisition_decided", &wake.id, decision)?;
+                }
+            }
             payload["end"] = match end {
                 WakeEnd::Succeeded => "succeeded",
                 WakeEnd::Failed => "failed",

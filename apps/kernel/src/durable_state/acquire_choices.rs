@@ -55,10 +55,18 @@ pub(crate) enum AcquireChoiceState {
     Accepted { allocation_ref: String },
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AcquireSubmission {
+    Ready,
+    Submitted,
+    Closed,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct AcquireChoice {
     pub(crate) option: AcquireOption,
     pub(crate) state: AcquireChoiceState,
+    pub(crate) submission: AcquireSubmission,
 }
 
 /// One compare-and-set on the row of `agent_id` and `request_id`.
@@ -66,6 +74,8 @@ pub(crate) struct AcquireChoice {
 pub(crate) enum AcquireChoiceWrite {
     /// No row becomes pending with `option`; a request's option is never written again.
     Choose { option: AcquireOption },
+    /// The kernel reached the service submission; the allocation is unconfirmed until a reply.
+    Submit,
     /// The row becomes accepted with `option` and the allocation, whatever it was or whether it
     /// was removed meanwhile: the service's acceptance is the truth, and a try that waited for it
     /// past its window must still record it. Only a row accepted under another allocation or
@@ -95,11 +105,26 @@ pub(super) fn initialize(connection: &Connection) -> rusqlite::Result<()> {
             state TEXT NOT NULL CHECK (state IN ('pending', 'accepted')),
             allocation_ref TEXT CHECK ((state = 'accepted') = (allocation_ref IS NOT NULL)),
             touched_ms INTEGER NOT NULL,
+            submission TEXT NOT NULL DEFAULT 'ready' CHECK (submission IN ('ready', 'submitted', 'closed')),
             PRIMARY KEY (agent_id, request_id)
         );
         CREATE INDEX IF NOT EXISTS durable_acquire_choices_touched
-            ON durable_acquire_choices (touched_ms);",
+            ON durable_acquire_choices (touched_ms);
+        CREATE TABLE IF NOT EXISTS durable_allocation_owners (
+            allocation_ref TEXT PRIMARY KEY NOT NULL, agent_id TEXT NOT NULL
+        );",
     )?;
+    let tracks_submission: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('durable_acquire_choices') WHERE name = 'submission')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !tracks_submission {
+        connection.execute_batch(
+            "ALTER TABLE durable_acquire_choices ADD COLUMN submission TEXT NOT NULL DEFAULT 'ready'
+                CHECK (submission IN ('ready', 'submitted', 'closed'))",
+        )?;
+    }
     // Rows a restart left past their window: their try is long over.
     connection.execute(
         "DELETE FROM durable_acquire_choices WHERE touched_ms <= ?1",
@@ -117,7 +142,7 @@ impl DurableKernelStateStore {
     ) -> Result<Option<AcquireChoice>, DaemonError> {
         self.lock_connection("acquire_choices.read")?
             .query_row(
-                "SELECT class_id, region, state, allocation_ref FROM durable_acquire_choices
+                "SELECT class_id, region, state, allocation_ref, submission FROM durable_acquire_choices
                 WHERE agent_id = ?1 AND request_id = ?2 AND touched_ms > ?3",
                 params![agent_id, request_id, expired_before(now_ms)],
                 |row| {
@@ -133,10 +158,33 @@ impl DurableKernelStateStore {
                         (None, None) => AcquireOption::ServiceDefault,
                         (None, Some(_)) => return Err(rusqlite::Error::InvalidQuery),
                     };
-                    Ok(AcquireChoice { option, state })
+                    let submission = match row.get::<_, String>(4)?.as_str() {
+                        "ready" => AcquireSubmission::Ready,
+                        "submitted" => AcquireSubmission::Submitted,
+                        "closed" => AcquireSubmission::Closed,
+                        _ => return Err(rusqlite::Error::InvalidQuery),
+                    };
+                    Ok(AcquireChoice { option, state, submission })
                 },
             )
             .optional()
+            .map_err(|error| state_error(error.to_string()))
+    }
+
+    /// The accepted allocation belongs to its agent for its lifetime, independent of the
+    /// request's replay window. Read current service state before using this association.
+    pub(crate) fn allocation_belongs_to_agent(
+        &self,
+        allocation_ref: &str,
+        agent_id: &str,
+    ) -> Result<bool, DaemonError> {
+        self.lock_connection("acquire_choices.allocation_owner")?
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM durable_allocation_owners
+                    WHERE allocation_ref = ?1 AND agent_id = ?2)",
+                params![allocation_ref, agent_id],
+                |row| row.get(0),
+            )
             .map_err(|error| state_error(error.to_string()))
     }
 
@@ -177,6 +225,17 @@ pub(super) fn apply(
         "DELETE FROM durable_acquire_choices WHERE touched_ms <= ?1",
         params![expired_before(*now_ms)],
     )?;
+    if let AcquireChoiceWrite::Accept { allocation_ref, .. } = write {
+        let other_agent: bool = transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM durable_allocation_owners
+                WHERE allocation_ref = ?1 AND agent_id != ?2)",
+            params![allocation_ref, agent_id],
+            |row| row.get(0),
+        )?;
+        if other_agent {
+            return Ok(0);
+        }
+    }
     let changed = match write {
         AcquireChoiceWrite::Choose { option } => transaction.execute(
             "INSERT INTO durable_acquire_choices
@@ -191,16 +250,22 @@ pub(super) fn apply(
                 *now_ms as i64
             ],
         )?,
+        AcquireChoiceWrite::Submit => transaction.execute(
+            "UPDATE durable_acquire_choices SET submission = 'submitted', touched_ms = ?3
+            WHERE agent_id = ?1 AND request_id = ?2 AND state = 'pending' AND submission != 'closed'",
+            params![agent_id, request_id, *now_ms as i64],
+        )?,
         AcquireChoiceWrite::Accept {
             option,
             allocation_ref,
         } => transaction.execute(
             "INSERT INTO durable_acquire_choices
-                (agent_id, request_id, class_id, region, state, allocation_ref, touched_ms)
-            VALUES (?1, ?2, ?3, ?4, 'accepted', ?5, ?6)
+                (agent_id, request_id, class_id, region, state, allocation_ref, touched_ms, submission)
+            VALUES (?1, ?2, ?3, ?4, 'accepted', ?5, ?6, 'submitted')
             ON CONFLICT (agent_id, request_id) DO UPDATE SET
                 class_id = excluded.class_id, region = excluded.region, state = 'accepted',
-                allocation_ref = excluded.allocation_ref, touched_ms = excluded.touched_ms
+                allocation_ref = excluded.allocation_ref, touched_ms = excluded.touched_ms,
+                submission = excluded.submission
             WHERE durable_acquire_choices.state != 'accepted'
                 OR (durable_acquire_choices.allocation_ref = excluded.allocation_ref
                     AND durable_acquire_choices.class_id IS excluded.class_id
@@ -215,7 +280,7 @@ pub(super) fn apply(
             ],
         )?,
         AcquireChoiceWrite::Closed { option } => transaction.execute(
-            "UPDATE durable_acquire_choices SET touched_ms = ?5
+            "UPDATE durable_acquire_choices SET submission = 'closed', touched_ms = ?5
             WHERE agent_id = ?1 AND request_id = ?2 AND class_id IS ?3 AND region IS ?4
                 AND state = 'pending'",
             params![
@@ -227,6 +292,15 @@ pub(super) fn apply(
             ],
         )?,
     };
+    if changed > 0 {
+        if let AcquireChoiceWrite::Accept { allocation_ref, .. } = write {
+            transaction.execute(
+                "INSERT INTO durable_allocation_owners (allocation_ref, agent_id) VALUES (?1, ?2)
+                    ON CONFLICT (allocation_ref) DO NOTHING",
+                params![allocation_ref, agent_id],
+            )?;
+        }
+    }
     Ok(changed as u64)
 }
 
@@ -263,6 +337,38 @@ mod tests {
             option: option(class_id),
             allocation_ref: allocation_ref.into(),
         }
+    }
+
+    #[test]
+    fn allocation_authority_outlives_the_request_replay_window() {
+        let dir = crate::test_support::TestTempDir::new("allocation-owner");
+        let path = dir.path().join("kernel.db");
+        let store = DurableKernelStateStore::open(path).unwrap();
+        let first = now();
+        assert!(store
+            .write_acquire_choice("asker", "r1", accept("small", "allocation"), first)
+            .unwrap());
+        assert!(!store
+            .write_acquire_choice(
+                "other",
+                "r2",
+                accept("small", "allocation"),
+                first + REPLAY_WINDOW_MS + 1,
+            )
+            .unwrap());
+        assert!(store
+            .acquire_choice("asker", "r1", first + REPLAY_WINDOW_MS + 1)
+            .unwrap()
+            .is_none());
+        assert!(store
+            .allocation_belongs_to_agent("allocation", "asker")
+            .unwrap());
+        assert!(!store
+            .allocation_belongs_to_agent("allocation", "other")
+            .unwrap());
+        assert!(!store
+            .allocation_belongs_to_agent("foreign", "asker")
+            .unwrap());
     }
 
     #[test]
@@ -349,6 +455,7 @@ mod tests {
             Some(AcquireChoice {
                 option: AcquireOption::ServiceDefault,
                 state: AcquireChoiceState::Pending,
+                submission: AcquireSubmission::Ready,
             })
         );
         assert!(store

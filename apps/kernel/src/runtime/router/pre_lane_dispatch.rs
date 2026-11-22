@@ -27,6 +27,7 @@ impl CommandRouter {
                 command,
                 &self.kernel_gateway,
                 request,
+                None,
             )
             .await
             .map(Some);
