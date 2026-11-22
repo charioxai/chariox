@@ -16,7 +16,7 @@ const HIDDEN_HANDOFF_SUFFIX: &str = "The active user request is supplied separat
 /// The packet's share of the target model's window, and the bytes it allows
 /// per token: conservative, since code and paths tokenize densely.
 const HANDOFF_WINDOW_PERCENT: u64 = 15;
-const HANDOFF_BYTES_PER_TOKEN: u64 = 3;
+const HANDOFF_BYTES_PER_TOKEN: u64 = crate::skill::resolver::BYTES_PER_TOKEN;
 /// The prompt-prefix transport's cap, whatever the window.
 const MAX_PROMPT_HANDOFF_BYTES: u64 = 256_000;
 

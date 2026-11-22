@@ -311,6 +311,18 @@ pub(crate) fn effective_model_context_window_tokens(
     }
 }
 
+/// The window a run's next turn has: the one the provider reported, or before
+/// its first report (a fresh run) the window of the model it runs.
+pub(crate) fn run_context_window_tokens(run: &RuntimeProviderRun) -> u64 {
+    run.usage().context_window.unwrap_or_else(|| {
+        effective_model_context_window_tokens(
+            run.provider(),
+            run.model(),
+            claude_1m_context_disabled(run),
+        )
+    })
+}
+
 pub(crate) fn claude_1m_context_disabled(run: &RuntimeProviderRun) -> bool {
     run.pty_env()
         .get("CLAUDE_CODE_DISABLE_1M_CONTEXT")
