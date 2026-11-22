@@ -85,6 +85,8 @@ const BWRAP_PATH: &str = "/usr/bin/bwrap";
 const MANAGED_PROVIDER_BWRAP_ENV: &str = "CHARIOX_MANAGED_PROVIDER_BWRAP";
 const SANDBOX_HOME: &str = "/home/chariox";
 const SANDBOX_ACCOUNT_ROOT: &str = "/home/chariox/.provider-account";
+#[cfg(target_os = "linux")]
+const SANDBOX_ACCESS_SOCKET: &str = "/run/chariox-agent-access.sock";
 const SANDBOX_PREPARATION_HOME: &str = "/home/chariox/.chariox-preparation";
 
 // These values are inherited from the kernel's process environment unless a
@@ -107,6 +109,8 @@ const AMBIENT_PROVIDER_CREDENTIAL_ENVIRONMENT: &[&str] = &[
 
 const CONTROL_ENVIRONMENT_NAMES: &[&str] = &[
     "CHARIOX_HOME",
+    "CHARIOX_CLI",
+    "CHARIOX_CLI_BIN",
     "CHARIOX_MANAGED_REPOSITORY_ROOT",
     "CHARIOX_KERNEL_HOST",
     "CHARIOX_KERNEL_PORT",
@@ -1122,7 +1126,23 @@ pub(crate) fn apply_managed_provider_isolation(
         }
         launch.pty_env_remove.sort();
         launch.pty_env_remove.dedup();
-        return super::state_confinement::confine_launch(launch, &request.skill_cache_roots);
+        let mut shared = request.skill_cache_roots.clone();
+        if let Some((cli, socket)) = agent_cli(request) {
+            if let Some(path) = agent_cli_search_path(&cli, &launch) {
+                launch.pty_env.insert("PATH".into(), path);
+            }
+            launch
+                .pty_env_remove
+                .retain(|name| name != "CHARIOX_CLI" && name != "CHARIOX_DAEMON_SOCKET");
+            launch
+                .pty_env
+                .insert("CHARIOX_CLI".into(), cli.display().to_string());
+            launch
+                .pty_env
+                .insert("CHARIOX_DAEMON_SOCKET".into(), socket.display().to_string());
+            shared.extend([cli, socket.to_path_buf()]);
+        }
+        return super::state_confinement::confine_launch(launch, &shared);
     }
 
     let Some(program) = launch.pty_program.take() else {
@@ -1355,6 +1375,28 @@ pub(crate) fn apply_managed_provider_isolation(
         }
         // After the scrub: the control set also names the isolation marker.
         append_managed_namespace_environment(&mut args, request);
+        if let Some((cli, socket)) = agent_cli(request) {
+            append_read_only_bind(&mut args, &cli, &cli, &mut created_directories);
+            if let Some(path) = agent_cli_search_path(&cli, &launch) {
+                args.extend(["--setenv".into(), "PATH".into(), path]);
+            }
+            append_read_only_bind(
+                &mut args,
+                socket,
+                Path::new(SANDBOX_ACCESS_SOCKET),
+                &mut created_directories,
+            );
+            args.extend([
+                "--setenv".into(),
+                "CHARIOX_CLI".into(),
+                cli.display().to_string(),
+            ]);
+            args.extend([
+                "--setenv".into(),
+                "CHARIOX_DAEMON_SOCKET".into(),
+                SANDBOX_ACCESS_SOCKET.into(),
+            ]);
+        }
         append_managed_git_safe_directory_environment(&mut args, &workspace_roots);
         args.extend([
             "--chdir".to_string(),
@@ -1378,6 +1420,49 @@ pub(crate) fn apply_managed_provider_isolation(
         launch.process_label = format!("{}:managed-isolated", launch.process_label);
         Ok(launch)
     }
+}
+
+fn agent_cli_search_path(cli: &Path, launch: &ProviderLaunchResult) -> Option<String> {
+    // A differently named developer override is invoked using CHARIOX_CLI.
+    if cli.file_name()? != "chariox" {
+        return None;
+    }
+    let path = launch
+        .pty_env
+        .get("PATH")
+        .map(std::ffi::OsString::from)
+        .or_else(|| std::env::var_os("PATH"))
+        .unwrap_or_default();
+    let bin = cli.parent()?;
+    let inherited = std::env::split_paths(&path).filter(|dir| dir != bin);
+    std::env::join_paths(std::iter::once(bin.to_owned()).chain(inherited))
+        .ok()?
+        .into_string()
+        .ok()
+}
+
+fn agent_cli(request: &LaunchProviderRequest) -> Option<(PathBuf, &Path)> {
+    use std::os::unix::fs::{FileTypeExt, PermissionsExt};
+
+    let socket = request.local_access_socket.as_deref()?;
+    if !socket.metadata().ok()?.file_type().is_socket() {
+        return None;
+    }
+    let executable = |path: PathBuf| {
+        let path = path.canonicalize().ok()?;
+        let metadata = path.metadata().ok()?;
+        (metadata.is_file() && metadata.permissions().mode() & 0o111 != 0).then_some(path)
+    };
+    let cli = if let Some(path) = std::env::var_os("CHARIOX_CLI_BIN") {
+        executable(PathBuf::from(path))?
+    } else {
+        let kernel = std::env::current_exe().ok()?;
+        let bin = kernel.parent()?;
+        ["chariox", "chariox-cli"]
+            .into_iter()
+            .find_map(|name| executable(bin.join(name)))?
+    };
+    Some((cli, socket))
 }
 
 #[cfg(any(target_os = "linux", test))]

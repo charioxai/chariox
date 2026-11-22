@@ -30,7 +30,8 @@ test("kernel errors keep their code and lose the transport wrapper; local connec
 test("a lost connection is definitive only when a fresh probe says the grant ended", () => {
   const ended = lostConnectionFailure(new LocalIpcError("handle kernel response", "Access ended.", "kernel_access_ended"))
   assert.equal(ended.code, "kernel_access_ended")
-  assert.match(ended.message, /the access grant ended while this request was in flight; the request may or may not have run/)
+  assert.match(ended.message, /Access ended while the request was in flight/)
+  assert.match(ended.message, /chariox access request --no-wait/)
   for (const probe of [null, new LocalIpcError("handle kernel response", "no access", "kernel_access_not_covered"), new Error("ECONNREFUSED")]) {
     assert.equal(lostConnectionFailure(probe).code, "kernel_connection_lost")
   }

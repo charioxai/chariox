@@ -582,6 +582,9 @@ pub struct LaunchProviderRequest {
     /// provider request boundary; it is applied to the fresh runtime launch.
     #[serde(skip)]
     pub(crate) preparation_environment: Option<(String, String)>,
+    /// Kernel-supplied local endpoint for the agent CLI. It grants no authority on its own.
+    #[serde(skip)]
+    pub(crate) local_access_socket: Option<PathBuf>,
     #[serde(
         default,
         skip_serializing_if = "ProviderWriteAccessMode::is_unrestricted"
@@ -784,6 +787,7 @@ impl LaunchProviderRequest {
             provider_credential_env: super::ProviderCredentialEnvironment::default(),
             project_environment_revision: None,
             preparation_environment: None,
+            local_access_socket: None,
             write_access_mode: ProviderWriteAccessMode::Unrestricted,
             execution_mode: None,
             permission_level: None,

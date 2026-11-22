@@ -103,6 +103,9 @@ impl DaemonApp {
             .agent_id
             .as_deref()
             .and_then(|agent_id| self.agents.get_agent(agent_id).ok());
+        request.local_access_socket = agent
+            .as_ref()
+            .map(|_| self.config.local_socket_path.clone());
         if let Some(agent) = agent.as_ref() {
             if agent.session_id() != session.id() {
                 return Err(DaemonError::AgentNotInSession {

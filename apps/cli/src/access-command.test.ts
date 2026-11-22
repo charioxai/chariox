@@ -8,6 +8,9 @@ test("access request has no session scope and leaves the holder to the kernel un
   const result = parseAccessRequest(["--holder-pid", "42", "--minutes", "480", "--socket", "/tmp/k.sock"])
   assert.deepEqual(result, { request: { RequestKernelAccess: { holder_pid: 42, term: { minutes: 480 } } }, socket: "/tmp/k.sock", noWait: false })
   assert.deepEqual(parseAccessRequest([]).request, { RequestKernelAccess: {} })
+  assert.deepEqual(parseAccessRequest(["--reason", "Check the test kernel"]).request, {
+    RequestKernelAccess: { reason: "Check the test kernel" },
+  })
   for (const argv of [["--session", "s"], ["--holder-pid", "0"], ["--holder-pid", "1"], ["--minutes", "1.5"], ["--holder-pid", "5", "--holder-pid", "6"], ["--passkey", "never"], ["--until-exit", "--minutes", "30"], ["--until-exit", "--until-exit"]]) {
     assert.throws(() => parseAccessRequest(argv))
   }
@@ -42,7 +45,7 @@ const status = (state: string, extra: Record<string, unknown> = {}) => ({ respon
 test("--no-wait leaves the pending request with the kernel: exit 6 and no process left behind", async () => {
   const pending = await run(["access", "request", "--until-exit", "--no-wait"], status("pending"))
   assert.deepEqual(pending.requests, [{ RequestKernelAccess: { term: "until_holder_exits", no_wait: true } }])
-  assert.deepEqual(JSON.parse(pending.out), { status: "pending", holder_pid: 4242, note: "approve in your Chariox client, then run chariox access status" })
+  assert.deepEqual(JSON.parse(pending.out), { status: "pending", holder_pid: 4242, message: "Waiting for the owner.", note: "Run chariox access status to check the decision." })
   assert.equal(pending.exit, 6)
   const grant = { grant_id: "access-1", owner_user_id: "local", holder_pid: 4242, holder_executable: "/usr/bin/codex", term: "until_holder_exits" }
   const standing = await run(["access", "request", "--until-exit", "--no-wait"], status("granted", { grant }))
