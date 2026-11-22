@@ -690,8 +690,8 @@ impl CommandRouter {
                 .slice_development_selection_for_session(session, &worktree_id)
             {
                 Ok(development) => development,
-                Err(DaemonError::ManagedContext { message, .. }) => {
-                    return Ok(meta_command_failure_result(command, message))
+                Err(error @ DaemonError::ManagedContext { .. }) => {
+                    return Ok(meta_command_failure_result(command, error))
                 }
                 Err(error) => return Ok(meta_command_failure_result(command, error)),
             };

@@ -93,9 +93,8 @@ impl KernelRuntimeState {
         let _ = owned.session_snapshot(&session_id)?;
         if scope_changed {
             // A lowered agent and its subtree may no longer hold the decisions they held.
-            let (moved, announce) = owned.recheck_subtree_decisions(&session_id, &agent_id)?;
-            self.finish_moved_decisions(&session_id, moved, announce)
-                .await?;
+            let moved = owned.recheck_subtree_decisions(&agent_id)?;
+            self.finish_moved_decisions(&moved).await?;
         }
         // The agent as it now is, every reported field applied, survives a restart.
         let agent = owned.agent_store.get_agent(&agent_id)?;

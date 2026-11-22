@@ -46,6 +46,7 @@ async fn a_folded_receipt_replaces_its_initial_history_outcome_after_reopen() {
         session_id: "room".into(),
         agent_ids: Some(vec!["child".into()]),
         latest_prompt_count: Some(4),
+        after_sequence: None,
         include_prefetched_content: true,
         cursor: None,
     };
