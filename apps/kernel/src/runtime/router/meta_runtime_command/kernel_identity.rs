@@ -45,7 +45,9 @@ impl CommandRouter {
                 Err(error) => {
                     return Some(result::meta_command_failure_result(
                         command,
-                        format!("could not read local kernel presence: {error}"),
+                        result::meta_command_error(format!(
+                            "could not read local kernel presence: {error}"
+                        )),
                     ));
                 }
             }

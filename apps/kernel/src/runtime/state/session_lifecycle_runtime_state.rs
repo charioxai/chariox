@@ -451,9 +451,6 @@ impl KernelRuntimeState {
     ) -> Result<crate::attachment::RuntimeAttachment, DaemonError> {
         let attachment = self.owned.attach(request)?;
         self.refresh_kernel_browser_audience(&attachment).await?;
-        if terminal_caller {
-            self.owned.announce_agent_release_to_client(&attachment);
-        }
         let runtime_state = self.clone();
         let app = Arc::clone(&self.app);
         let session_id = attachment.session_id().to_string();
