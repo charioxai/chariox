@@ -164,8 +164,9 @@ impl KernelRuntimeState {
             .is_some_and(|grant| Instant::now() < grant.deadline)
     }
 
-    /// Worker: a leased run's privileged call passes its own fence, then goes
-    /// home. `None` means `run` is not leased and stays on the local path.
+    /// Worker: a leased run's kernel request goes home, which judges it (row 405: the owner's
+    /// agent needs no window; a live one keeps its attribution). `None` means `run` is not
+    /// leased and stays on the local path.
     pub(crate) async fn try_forward_leased_kernel_request(
         &self,
         run: &crate::provider::RuntimeProviderRun,
@@ -174,24 +175,6 @@ impl KernelRuntimeState {
         let Some(context) = self.leased_forward_context(run).await? else {
             return Ok(None);
         };
-        let live = run.agent_instance_id().is_some_and(|agent| {
-            self.owned
-                .leased_sudo_grants
-                .lock()
-                .expect("leased sudo grants poisoned")
-                .get(agent)
-                .is_some_and(|grant| {
-                    grant.catalog_ready
-                        && Instant::now() < grant.deadline
-                        && grant.leased_agent_id == context.leased_agent_id
-                        && context.home_prompt_id.as_deref() == Some(&grant.home_prompt_id)
-                })
-        });
-        if !live {
-            return Err(error(
-                "this leased turn has no live sudo window on this worker",
-            ));
-        }
         self.forward_meta_runtime_tool(
             context,
             "chariox_kernel_request",
@@ -203,7 +186,7 @@ impl KernelRuntimeState {
     }
 
     /// Home: the leased agent whose current worker run is `run_id`.
-    pub(super) fn leased_agent_for_projected_run(
+    pub(in crate::runtime::state) fn leased_agent_for_projected_run(
         &self,
         run_id: &str,
     ) -> Option<crate::agent::AgentInstance> {

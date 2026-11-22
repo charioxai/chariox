@@ -90,6 +90,10 @@ impl KernelRuntimeState {
                 "reach revoked: the owner ended this run's gateway access",
             ));
         }
+        // A leased agent's run lives on its worker; at home it is the agent's current worker run.
+        if let Some(agent) = self.leased_agent_for_projected_run(run_id) {
+            return self.reach_caller(run_id, &agent);
+        }
         let run = self
             .owned
             .provider_store
@@ -108,10 +112,23 @@ impl KernelRuntimeState {
             return Err(reach_error("this provider run has ended"));
         }
         let agent = self.owned.agent_store.get_agent(agent_id)?;
+        if agent.remote_execution().is_some() {
+            return Err(reach_error(
+                "only agents of this kernel's owner reach other rooms and kernels",
+            ));
+        }
+        self.reach_caller(run_id, &agent)
+    }
+
+    fn reach_caller(
+        &self,
+        run_id: &str,
+        agent: &crate::agent::AgentInstance,
+    ) -> Result<ReachCaller, DaemonError> {
+        let agent_id = agent.id();
         let owner = agent.owner_user_id();
         let daemon_id = self.owned.config_projection.snapshot().daemon_id;
         if agent.archived()
-            || agent.remote_execution().is_some()
             || !self
                 .owned
                 .config_projection
@@ -127,7 +144,7 @@ impl KernelRuntimeState {
             agent_id: agent_id.to_owned(),
             owner_user_id: owner.to_owned(),
             harness: self
-                .agent_harness_name(run.session_id(), agent_id)
+                .agent_harness_name(agent.session_id(), agent_id)
                 .ok_or_else(|| reach_error("this agent's room is unavailable"))?,
         })
     }
