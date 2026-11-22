@@ -38,10 +38,16 @@ pub fn agent_messaging_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
     vec![
         RuntimeToolSpec {
             name: LIST_SESSION_AGENTS_TOOL.to_string(),
-            description: "List the agents in the current Chariox session with their stable ids, unique aliases, provider configuration, runtime availability, queue depth, extension capabilities, and local or remote placement. Use this before addressing another agent.".to_string(),
+            description: "List Room agents (alias, state, queue) and tasks newest first. Use include_history for finished tasks and settled obligations. Use task_id for a task's obligations. Resume a list with next_*_cursor as *_cursor.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
-                "properties": {},
+                "properties": {
+                    "agents_cursor": {"type":"string","maxLength":512},
+                    "tasks_cursor": {"type":"integer","minimum":1},
+                    "include_history": {"type":"boolean","default":false},
+                    "task_id": {"type":"string"},
+                    "obligations_cursor": {"type":"integer","minimum":1}
+                },
                 "additionalProperties": false
             }),
         },
