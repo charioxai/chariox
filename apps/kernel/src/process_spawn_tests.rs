@@ -52,6 +52,7 @@ fn ordinary_user_spawns_from_a_non_dumpable_kernel() {
     use std::os::unix::process::CommandExt;
     const ENV: &str = "CHARIOX_NON_DUMPABLE_SPAWN_REGRESSION_CHILD";
     if std::env::var_os(ENV).is_some() {
+        assert_ne!(unsafe { libc::geteuid() }, 0);
         // The kernel does this at startup; it makes /proc/self files root-owned.
         assert_eq!(unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0) }, 0);
         let output = super::command("/bin/cat")
@@ -70,6 +71,9 @@ fn ordinary_user_spawns_from_a_non_dumpable_kernel() {
             .block_on(async { super::async_command("/bin/true").status().await })
             .expect("async spawns must not depend on /proc/self write access");
         assert!(status.success());
+        return;
+    }
+    if unsafe { libc::geteuid() } == 0 && !crate::test_support::test_binary_allows_other_execute() {
         return;
     }
     let mut probe = Command::new("/proc/self/exe");
@@ -121,6 +125,9 @@ fn check_inherited_oom_policy(inherited: i32) {
     const ENV: &str = "CHARIOX_OOM_PROTECTION_REGRESSION_CHILD";
     let expected = inherited.max(0).to_string();
     if std::env::var_os(ENV).is_some() {
+        if inherited >= 0 {
+            assert_ne!(unsafe { libc::geteuid() }, 0);
+        }
         assert_eq!(
             std::fs::read_to_string("/proc/self/oom_score_adj")
                 .unwrap()
@@ -199,6 +206,12 @@ fn check_inherited_oom_policy(inherited: i32) {
         let output = Command::new(program).args(args).output().unwrap();
         assert!(output.status.success());
         assert_eq!(output.stdout, format!("{expected}\n").as_bytes());
+        return;
+    }
+    if inherited >= 0
+        && unsafe { libc::geteuid() } == 0
+        && !crate::test_support::test_binary_allows_other_execute()
+    {
         return;
     }
     // /proc/self/exe remains executable after dropping uid even when this

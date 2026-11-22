@@ -900,8 +900,7 @@ mod tests {
     /// A session whose agent runs on this kernel, with no lease, and its running
     /// structured Claude provider run.
     pub(super) async fn local_claude_fixture(
-        config: crate::DaemonConfig,
-        worktree: Option<&crate::test_support::TestWorktree>,
+        worktree: &crate::test_support::TestWorktree,
     ) -> (
         KernelRuntimeState,
         String,
@@ -909,12 +908,9 @@ mod tests {
         String,
         crate::provider::RuntimeProviderRun,
     ) {
-        let mut app = DaemonApp::bootstrap(config).unwrap();
+        let mut app = DaemonApp::bootstrap(crate::DaemonConfig::for_tests()).unwrap();
         let (session, agent) = KernelSessionService::new(&mut app)
-            .create_session(worktree.map_or_else(
-                || CreateSessionRequest::new("local-home", "local-home"),
-                |worktree| worktree.session_request(),
-            ))
+            .create_session(worktree.session_request())
             .unwrap();
         let attachment = KernelSessionService::new(&mut app)
             .attach(AttachRequest::new(
@@ -940,17 +936,13 @@ mod tests {
                 pty_target: None,
                 pty_program: None,
                 pty_args: Vec::new(),
-                pty_env: worktree
-                    .map(|root| {
-                        [(
-                            "CLAUDE_CONFIG_DIR".into(),
-                            root.path().join("claude-config").display().to_string(),
-                        )]
-                        .into()
-                    })
-                    .unwrap_or_default(),
+                pty_env: [(
+                    "CLAUDE_CONFIG_DIR".into(),
+                    worktree.path().join("claude-config").display().to_string(),
+                )]
+                .into(),
                 pty_env_remove: Vec::new(),
-                working_directory: worktree.map(|root| root.path().to_path_buf()),
+                working_directory: Some(worktree.path().to_path_buf()),
                 structured_endpoint: None,
             },
         );
