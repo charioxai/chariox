@@ -195,7 +195,7 @@ impl TurnOutcome {
                 "The provider is rate limiting requests; wait a minute, then send the request again."
             }
             (TurnOutcomeKind::UsageLimit, false) => {
-                "Wait for the limit to reset or choose another account, then send the request again."
+                "Wait for the limit to reset or choose another model or account, then send the request again."
             }
             (TurnOutcomeKind::SignInRequired, _) => {
                 "Sign in again in Provider Accounts, then send the request again."

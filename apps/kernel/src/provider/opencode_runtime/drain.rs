@@ -238,6 +238,25 @@ pub(in crate::provider) fn drain_opencode_events(
             Ok(OpenCodeEvent::SessionStatus { session_id, status }) => {
                 if session_id == state.session_id {
                     let kind = &status.kind;
+                    if status.is_free_tier_limit() {
+                        if let Some(message) =
+                            end_free_limit_retry(state, provider_run_id, &status)
+                        {
+                            record_terminal_failure(
+                                state,
+                                message,
+                                &mut chunks,
+                                &mut completions,
+                                &mut notices,
+                                &mut terminal_failure,
+                                &mut explicit_provider_error,
+                                true,
+                                &mut prompt_completed,
+                                drain_active_user_message_id.as_deref(),
+                            );
+                        }
+                        continue;
+                    }
                     if kind != "idle" {
                         let _ = state.unmatched_session_error_after_idle_grace(
                             false,
@@ -442,7 +461,22 @@ pub(in crate::provider) fn drain_opencode_events(
                 });
             }
         };
-        if status.kind != "idle" {
+        if status.is_free_tier_limit() {
+            if let Some(message) = end_free_limit_retry(state, provider_run_id, &status) {
+                record_terminal_failure(
+                    state,
+                    message,
+                    &mut chunks,
+                    &mut completions,
+                    &mut notices,
+                    &mut terminal_failure,
+                    &mut explicit_provider_error,
+                    true,
+                    &mut prompt_completed,
+                    drain_active_user_message_id.as_deref(),
+                );
+            }
+        } else if status.kind != "idle" {
             if state.last_status.as_ref() != Some(&status) {
                 state.last_status = Some(status.clone());
                 chunks.push(OpenCodeOutputChunk {
@@ -603,6 +637,48 @@ fn event_needs_blocking_work(state: &OpenCodeRuntimeState, event: &OpenCodeEvent
         }
         OpenCodeEvent::PermissionAsked { request } => request.session_id == state.session_id,
     }
+}
+
+/// What the person reads when the free model's usage limit ends a turn; the technical
+/// reason (OpenCode's own status, HTTP 429 `FreeUsageLimitError`) goes to the log.
+const FREE_USAGE_LIMIT_MESSAGE: &str =
+    "Free usage limit reached; sign in to OpenCode Go for more.";
+
+/// OpenCode keeps retrying a free-usage refusal for hours and reports no error, so the
+/// turn would stay open with nothing to show. Stop the session's retry loop and return
+/// the coded failure text the turn ends with (a usage limit, not clearing by itself).
+fn end_free_limit_retry(
+    state: &OpenCodeRuntimeState,
+    provider_run_id: &str,
+    status: &crate::provider::opencode_client::OpenCodeSessionStatus,
+) -> Option<String> {
+    // Only a turn that is still waiting on the provider can end on it.
+    state.active_user_message_id.as_ref()?;
+    crate::logging::info_with_fields(
+        "daemon.provider",
+        "OpenCode free usage limit reached (HTTP 429 FreeUsageLimitError); ending the turn",
+        serde_json::json!({
+            "provider_run_id": provider_run_id,
+            "session_id": state.session_id,
+            "attempt": status.attempt,
+            "next_retry_ms": status.next,
+            "provider_message": status.message,
+        }),
+    );
+    if let Err(error) = OpenCodeClient::new(provider_run_id, &state.base_url)
+        .and_then(|client| client.abort_session(&state.session_id))
+    {
+        crate::logging::info_with_fields(
+            "daemon.provider",
+            "OpenCode session abort after the free usage limit failed",
+            serde_json::json!({"provider_run_id": provider_run_id, "error": error.to_string()}),
+        );
+    }
+    Some(crate::provider::provider_coded_failure_text(
+        "OpenCode",
+        "usage_limit_exceeded",
+        FREE_USAGE_LIMIT_MESSAGE,
+    ))
 }
 
 #[allow(clippy::too_many_arguments)]

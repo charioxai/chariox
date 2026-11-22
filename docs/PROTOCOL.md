@@ -6278,6 +6278,15 @@ include specific recovery details such as a missing workspace path.
 Chariox resumes usage-limit stops according to the Room settings and leaves other
 retry decisions to the orchestrating agent.
 
+OpenCode's free service answers an exhausted free model with HTTP 429
+`FreeUsageLimitError`; OpenCode then reports no error and retries for hours, only
+as a `retry` session status whose `action.reason` is `free_tier_limit`. The kernel
+reads that status (live event or poll) as the end of the turn: it aborts the
+OpenCode session so it stops retrying and settles the turn as `usage_limit`, not
+retryable, with the reason `Free usage limit reached; sign in to OpenCode Go for
+more.` and the usual usage-limit recovery and decision. The provider's own text,
+the retry time and the HTTP status go to the kernel log only.
+
 The kernel types a failure once from the harness's native error: Codex
 `codexErrorInfo` codes, Claude `result` errors and `StopFailure` kinds, OpenCode
 error names with their HTTP status and native `isRetryable` flag, then the words of
