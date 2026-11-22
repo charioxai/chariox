@@ -145,6 +145,16 @@ impl KernelRuntimeState {
                 ))
             }
         };
+        let description = match request {
+            ControlPlaneRequest::Acquire {
+                timeout_s: Some(timeout_s),
+                ..
+            } => format!(
+                "{description} It stops by itself after {} minutes.",
+                timeout_s.saturating_add(59) / 60
+            ),
+            _ => description,
+        };
         let mut interaction = RuntimeInteraction::for_kernel_operation(
             &id,
             &id,
@@ -224,7 +234,7 @@ pub(crate) fn machine_tool_specs() -> Vec<crate::transport::runtime_tools::Runti
     let schema = |properties, required| serde_json::json!({"type":"object","properties":properties,"required":required,"additionalProperties":false});
     [
         ("chariox.machines.options", "List the machines you can acquire now, as the connected service offers them: class_id, region, size, rate per minute in the account's currency and whether it is in stock. Pick one for chariox.machines.acquire. An option that is not available cannot be acquired.", schema(serde_json::json!({}),serde_json::json!([]))),
-        ("chariox.machines.acquire", "Acquire a machine through Chariox for work you need to run elsewhere. Pass class_id (and region when the class is offered in several) from chariox.machines.options to acquire exactly that option; without class_id the first option in stock is acquired. A named option that is out of stock is refused with the options in stock, never replaced. The kernel asks the person first unless they enabled automatic offload and allocation. Service limits and the daily spend cap always apply. Returns allocation_ref, the machine type and service terms; poll status until access is available, then reach the returned kernel with Room commands. Release it when finished. Reuse request_id for a retry, after a lost response, a timeout or a refusal: it is safe, keeps the option the first try chose and returns the allocation the service accepted. Use a new request_id only when a refusal says the service closed the old one: nothing was allocated under it then, and nothing ever will be.", schema(serde_json::json!({"request_id":{"type":"string"},"class_id":{"type":"string"},"region":{"type":"string"}}),serde_json::json!([]))),
+        ("chariox.machines.acquire", "Acquire a machine through Chariox for work you need to run elsewhere. Pass class_id (and region when the class is offered in several) from chariox.machines.options to acquire exactly that option; without class_id the first option in stock is acquired. A named option that is out of stock is refused with the options in stock, never replaced. The kernel asks the person first unless they enabled automatic offload and allocation. Service limits and the daily spend cap always apply. Returns allocation_ref, the machine type and service terms; poll status until access is available, then reach the returned kernel with Room commands. Pass timeout_s (seconds) as the rental's hard stop: the service stops the machine then, with nobody to remember it; release it earlier when the work is finished. Reuse request_id for a retry, after a lost response, a timeout or a refusal: it is safe, keeps the option the first try chose and returns the allocation the service accepted. Use a new request_id only when a refusal says the service closed the old one: nothing was allocated under it then, and nothing ever will be.", schema(serde_json::json!({"request_id":{"type":"string"},"class_id":{"type":"string"},"region":{"type":"string"},"timeout_s":{"type":"integer","minimum":1}}),serde_json::json!([]))),
         ("chariox.machines.status", "Read an allocation's state, its verified target kernel and the installed build toolchain version when the target answers. Use the allocation_ref returned by acquire. The machine remains charged until deletion is confirmed.", schema(serde_json::json!({"allocation_ref":{"type":"string"}}),serde_json::json!(["allocation_ref"]))),
         ("chariox.machines.release", "Delete an acquired machine when its work is finished. Returns the allocation state; poll status until deleted to confirm the allocation has ended.", schema(serde_json::json!({"allocation_ref":{"type":"string"}}),serde_json::json!(["allocation_ref"]))),
     ].into_iter().map(|(name,description,input_schema)|RuntimeToolSpec{name:name.into(),description:description.into(),input_schema}).collect()
@@ -243,11 +253,12 @@ impl KernelRuntimeState {
             allocation_ref: Option<String>,
             class_id: Option<String>,
             region: Option<String>,
+            timeout_s: Option<u64>,
         }
         let args: Args = serde_json::from_value(args).map_err(|_| {
             acquisition_error(
                 "invalid_request",
-                "Use request_id, class_id and region for acquire, allocation_ref for status and release, and no arguments for options",
+                "Use request_id, class_id, region and timeout_s for acquire, allocation_ref for status and release, and no arguments for options",
             )
         })?;
         let runs = self
@@ -314,6 +325,7 @@ impl KernelRuntimeState {
                             request_id: service_request_id.clone(),
                             class_id: option.class_id().map(str::to_owned),
                             region: option.region().map(str::to_owned),
+                            timeout_s: args.timeout_s,
                         },
                         &format!("machine:{service_request_id}:acquire"),
                     )

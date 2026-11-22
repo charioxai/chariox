@@ -306,6 +306,7 @@ async fn offload_manual_machine_request_uses_the_same_owner_gate_and_service_min
         request_id: "manual".into(),
         class_id: None,
         region: None,
+        timeout_s: None,
     };
     let room = command.session_id.clone().unwrap();
     let gate_state = state.clone();
@@ -402,6 +403,7 @@ async fn the_owner_is_asked_about_the_option_the_agent_chose() {
         request_id: "chosen".into(),
         class_id: Some("agent-vm-s".into()),
         region: Some("auto".into()),
+        timeout_s: None,
     };
     let room = command.session_id.clone().unwrap();
     let gate_state = state.clone();
@@ -435,6 +437,7 @@ async fn the_owner_is_asked_about_a_named_option_even_when_it_is_no_longer_liste
         request_id: "retry".into(),
         class_id: Some("gone".into()),
         region: Some("auto".into()),
+        timeout_s: None,
     };
     let room = command.session_id.clone().unwrap();
     let gate_state = state.clone();

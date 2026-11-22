@@ -439,6 +439,32 @@ async fn acquire_without_a_class_takes_the_first_option_in_stock() {
     assert_eq!(acquires[0]["region"], "north");
 }
 
+// Row 368: the agent's hard stop travels to the service in a generic field; the service enforces it.
+#[tokio::test]
+async fn acquire_passes_the_requested_hard_stop_to_the_service() {
+    let service = service(vec![option("small", "north", true)], &[]).await;
+    let (state, token, _workspace) = agent_kernel(service.api_url.clone()).await;
+    state
+        .machine_tool(
+            &token,
+            "chariox.machines.acquire",
+            serde_json::json!({"request_id":"with-stop","timeout_s":300}),
+        )
+        .await
+        .unwrap();
+    state
+        .machine_tool(
+            &token,
+            "chariox.machines.acquire",
+            serde_json::json!({"request_id":"without-stop"}),
+        )
+        .await
+        .unwrap();
+    let acquires = service.acquires.lock().unwrap();
+    assert_eq!(acquires[0]["timeout_s"], 300);
+    assert!(acquires[1].get("timeout_s").is_none(), "no limit is invented for a request without one");
+}
+
 #[tokio::test]
 async fn acquire_with_nothing_in_stock_is_refused_before_the_service_is_asked() {
     let service = service(vec![option("big", "north", false)], &[]).await;
