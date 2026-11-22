@@ -540,7 +540,10 @@ export class Mirror2 {
         const known = new Set(stream.knownSheets ?? []);
         stream.deferredSheets = [];
         for (const op of sheetOps) if (op.full) { if (known.has(sheetDigest(op.full))) op.css = op.full; else stream.deferredSheets.push({ op: 'css', id: op.id, css: op.full }); delete op.full; }
-        stream.deferredAt = Date.now(); stream.fullPending = snap.full_pending ?? 0; stream.title = snap.title;
+        stream.deferredAt = Date.now(); stream.fullPending = snap.full_pending ?? 0;
+        // T1: a reset (recovery, layout) can be the first to see a retitled page: it wakes a parked state read as a drain does.
+        if (typeof snap.title === 'string' && stream.title !== undefined && snap.title !== stream.title) this.host.stateSignal?.notify();
+        stream.title = snap.title;
         this.opaque(snap.nodes, frames.opaque);
         return this.frames.project(stream, { ...snap, sheets: [], nodes: [...snap.nodes, ...frames.records], ops: this.viewerOps(stream, [...(snap.ops ?? []), ...frames.ops, ...sheetOps]), resources: [...snap.resources, ...(frames.resources ?? [])] });
       }
