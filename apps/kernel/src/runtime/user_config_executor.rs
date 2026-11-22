@@ -40,7 +40,9 @@ pub(crate) async fn execute_user_config_request(
             runtime_state.owner_vault(command, request).await
         }
         LocalDaemonRequest::SetProjectEnvironmentSecret(request) => {
-            runtime_state.set_project_environment_secret(command, request)
+            runtime_state
+                .set_project_environment_secret(command, request)
+                .await
         }
         LocalDaemonRequest::SetCredentialSecret(request) => {
             execute_set_credential_secret_request(

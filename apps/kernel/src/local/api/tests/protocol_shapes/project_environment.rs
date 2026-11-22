@@ -16,10 +16,19 @@ fn view() -> ProjectEnvironmentView {
             ProjectEnvironmentSecretView {
                 name: "NOTION_TOKEN".into(),
                 presence: crate::project_environment::SecretPresence::Missing,
+                link: None,
             },
             ProjectEnvironmentSecretView {
                 name: "DATABASE_URL".into(),
                 presence: crate::project_environment::SecretPresence::Locked,
+                link: Some(ProjectEnvironmentSecretLink::Linked {
+                    entry: "github push".into(),
+                }),
+            },
+            ProjectEnvironmentSecretView {
+                name: "STRIPE_KEY".into(),
+                presence: crate::project_environment::SecretPresence::Present,
+                link: Some(ProjectEnvironmentSecretLink::Broken),
             },
         ],
         files: vec![
@@ -120,9 +129,25 @@ fn environment_requests_have_the_camel_case_wire_of_protocol_972() {
             LocalDaemonRequest::SetProjectEnvironmentSecret(SetProjectEnvironmentSecretRequest {
                 project_id: "p".into(),
                 name: "T".into(),
-                value: VaultPassphrase::new("synthetic"),
+                source: ProjectEnvironmentSecretSource::Value(VaultPassphrase::new("synthetic")),
             }),
-            json!({"SetProjectEnvironmentSecret": {"projectId": "p", "name": "T", "value": "synthetic"}}),
+            json!({"SetProjectEnvironmentSecret": {"projectId": "p", "name": "T", "source": {"value": "synthetic"}}}),
+        ),
+        (
+            LocalDaemonRequest::SetProjectEnvironmentSecret(SetProjectEnvironmentSecretRequest {
+                project_id: "p".into(),
+                name: "GH_TOKEN".into(),
+                source: ProjectEnvironmentSecretSource::VaultEntry("cap-1".into()),
+            }),
+            json!({"SetProjectEnvironmentSecret": {"projectId": "p", "name": "GH_TOKEN", "source": {"vaultEntry": "cap-1"}}}),
+        ),
+        (
+            LocalDaemonRequest::SetProjectEnvironmentSecret(SetProjectEnvironmentSecretRequest {
+                project_id: "p".into(),
+                name: "GH_TOKEN".into(),
+                source: ProjectEnvironmentSecretSource::Unlink,
+            }),
+            json!({"SetProjectEnvironmentSecret": {"projectId": "p", "name": "GH_TOKEN", "source": "unlink"}}),
         ),
         (
             LocalDaemonRequest::RunProjectEnvironmentSetup(RunProjectEnvironmentSetupRequest {
@@ -255,7 +280,8 @@ fn environment_views_carry_names_and_presence_never_a_value() {
             "projectId": "p", "exists": true, "revision": 2,
             "setup": {"script": "mise install"}, "variables": "LOG_LEVEL=debug",
             "secrets": [{"name": "NOTION_TOKEN", "presence": "missing"},
-                        {"name": "DATABASE_URL", "presence": "locked"}],
+                        {"name": "DATABASE_URL", "presence": "locked", "link": {"state": "linked", "entry": "github push"}},
+                        {"name": "STRIPE_KEY", "presence": "present", "link": {"state": "broken"}}],
             "files": [{"path": "config/secrets.json", "presence": "present", "sizeBytes": 2800},
                       {"path": ".env", "presence": "missing", "sizeBytes": null}],
             "mcps": [{"name": "github", "source": {"kind": "file", "path": ".mcp.json"}, "presence": "present"},

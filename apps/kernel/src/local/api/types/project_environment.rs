@@ -67,13 +67,24 @@ pub struct ProjectEnvironmentExtensionView {
     pub presence: ExtensionPresence,
 }
 
+/// Where a Secret's value comes from: typed by the owner, or an entry already in this kernel's Vault
+/// (named by its credential id; the value moves Vault to Vault inside the kernel).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ProjectEnvironmentSecretSource {
+    Value(VaultPassphrase),
+    VaultEntry(String),
+    /// Keeps the value and ends the link to the Vault entry it was filled from.
+    Unlink,
+}
+
 /// The owner puts a Secret's value into this kernel's Vault under the Project scope.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SetProjectEnvironmentSecretRequest {
     pub project_id: String,
     pub name: String,
-    pub value: VaultPassphrase,
+    pub source: ProjectEnvironmentSecretSource,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -226,6 +237,18 @@ pub struct GetEnvironmentOperationRequest {
 pub struct ProjectEnvironmentSecretView {
     pub name: String,
     pub presence: SecretPresence,
+    /// The Vault entry the value was filled from, when it was; a rotated entry re-fills the value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link: Option<ProjectEnvironmentSecretLink>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "camelCase")]
+pub enum ProjectEnvironmentSecretLink {
+    /// The entry exists and is still made for this variable.
+    Linked { entry: String },
+    /// The entry was removed or is no longer made for this variable; the copied value stays.
+    Broken,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
