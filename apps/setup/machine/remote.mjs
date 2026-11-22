@@ -3,6 +3,7 @@ import { spawn } from "node:child_process"
 import { createHash } from "node:crypto"
 import { lstat, mkdir, mkdtemp, readFile, readdir, readlink, realpath, rename, rm, symlink, writeFile } from "node:fs/promises"
 import { createServer } from "node:net"
+import { userInfo } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 
@@ -73,6 +74,18 @@ export async function command(program, args, capture = false, input, env = proce
     })
     return out
   } finally { clearTimeout(timer) }
+}
+// MP-07/MP-08: Setup keeps the kernel as a systemd user service, so the user needs a user manager.
+// A login user has one; an exec/su user on a host without lingering does not. This only looks, before
+// Setup creates, downloads or enables anything, and says in plain words what is missing and how to fix it.
+export async function requireUserManager(invoke = command, uid = process.getuid(), user = userInfo().username, exists = path => lstat(path).then(() => true, () => false)) {
+  if (!Number.isSafeInteger(uid) || uid < 0) fail("cannot identify the user service owner")
+  if (await invoke("systemctl", ["--user", "show-environment"], true).then(() => true, () => false)) return
+  const run = `/run/user/${uid}`
+  const missing = await exists(run)
+    ? `${run} exists, but this shell cannot reach the user manager there (XDG_RUNTIME_DIR is not set to it)`
+    : `${user} has no systemd user session (${run} does not exist) and lingering is off`
+  fail(`Setup cannot install the Chariox service: ${missing}, so a user service could not run or survive logout. Nothing was changed. Log in through a session that has a user manager (for example an ssh or console login), or ask the host administrator to run "loginctl enable-linger ${user}", then run Setup again.`)
 }
 // MP-07/MP-08: an enabled user unit must survive the login session that installs it.
 // logind permits users to enable their own lingering where host policy allows it.

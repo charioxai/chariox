@@ -3,7 +3,7 @@ import { createHash, verify } from "node:crypto"
 import { spawn } from "node:child_process"
 import { copyFile, lstat, mkdir, mkdtemp, readFile, readlink, realpath, rename, rm, symlink, writeFile } from "node:fs/promises"
 import { join } from "node:path"
-import { runMachine, command, regular, tree, validateRequest } from "./machine/remote.mjs"
+import { runMachine, command, regular, tree, validateRequest, requireUserManager } from "./machine/remote.mjs"
 import { launchdDefinition, launchdManager } from "./launchd.mjs"
 import { publicKeyFromHex, verifyBundle } from "../../scripts/release-bundle.mjs"
 
@@ -153,6 +153,9 @@ export async function installLocal(options) {
   publicUrl(apiUrl)
   validateRequest({ action, installId, port, releaseDigest: `sha256:${"a".repeat(64)}` })
   if (!home || !home.startsWith("/") || home === "/" || await realpath(home) !== home) fail("user HOME must be canonical and absolute")
+  // Linux services run in the user's systemd manager: prove it exists before creating or downloading anything.
+  // An injected service manager is a test seam and brings its own answer.
+  if (!platform.startsWith("darwin")) await (options.userManager ?? (serviceManager ? async () => {} : requireUserManager))()
   const parent = await tree(home, ".local/share/chariox/machines")
   const root = join(parent, installId)
   const stage = await mkdtemp(join(parent, ".setup-"))

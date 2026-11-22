@@ -10,7 +10,11 @@ never a user enrollment code or credential. Linux x86_64 and macOS arm64 share
 PR1's marked per-user installer, signed immutable release trees, isolated service
 and state roots. Linux uses systemd --user; macOS uses launchd in the user's GUI
 domain. Setup requires Python 3 for the existing bounded archive extractor.
-For MP-07 / MP-08, Linux Setup checks logind lingering before enrollment/start,
+Before it creates, downloads or enables anything, Linux Setup checks that the user has a systemd
+user manager. A user without one (for example an exec/su user on a host without lingering) gets one
+plain message saying so, with both fixes (log in through a session that has a user manager, or ask
+the host administrator to run `loginctl enable-linger <user>`), and Setup exits non-zero having
+changed nothing. For MP-07 / MP-08, Linux Setup checks logind lingering before enrollment/start,
 repair or upgrade so the user service survives logout. It enables lingering
 for the current user when host policy permits. Otherwise it stops with the exact
 administrator command before consuming an enrollment code; it never invokes sudo.
