@@ -18,6 +18,24 @@ test("new slices have a finite process limit by default", async () => {
   assert.equal(create.includes("--cap-add"), false, "normal Chromium slices need no extra capabilities")
 })
 
+test("a drill-owned slice records the run on the container and home volume", async () => {
+  const { calls, result } = await invoke({ drill: {
+    CHARIOX_SLICE_DRILL_RUN: "isolated-slice",
+    CHARIOX_SLICE_DRILL_STARTED: "2026-01-01T00:00:00Z",
+    CHARIOX_SLICE_DRILL_HARNESS: "slice-provisioner-test",
+  } })
+  for (const create of [
+    calls.find(args => args[0] === "create"),
+    calls.find(args => args[0] === "volume" && args[1] === "create"),
+  ]) {
+    assert.ok(create, result.stderr)
+    assert.ok(create.includes("io.chariox.drill.run=isolated-slice"))
+    assert.ok(create.includes("io.chariox.drill.started=2026-01-01T00:00:00Z"))
+    assert.ok(create.includes("io.chariox.drill.harness=slice-provisioner-test"))
+    assert.ok(!create.includes("--restart"))
+  }
+})
+
 test("invalid process limits fail before any Docker operation", async () => {
   for (const limit of ["0", "-1", "1.5", "abc", "2147483648", "9999999999999999999999999"]) {
     const { result, calls } = await invoke({ limit })
@@ -98,6 +116,7 @@ test("invalid caps never prevent stopping or destroying a running slice", async 
 async function invoke({
   limit,
   nofileLimit,
+  drill,
   existingNofile = "8192:8192",
   existing = false,
   running = false,
@@ -153,6 +172,10 @@ if (args[0] === "ps") {
   if (process.env.CHARIOX_TEST_EXISTING === "1" && (args.includes("-a") || process.env.CHARIOX_TEST_RUNNING === "1")) console.log("chariox-process-limit-fixture");
   process.exit(0);
 }
+if (args[0] === "volume" && args[1] === "inspect" && process.env.CHARIOX_TEST_EXISTING !== "1") {
+  console.error("Error: No such volume: " + args[2]);
+  process.exit(1);
+}
 if (["volume", "create", "start", "stop", "rm"].includes(args[0])) process.exit(0);
 if (args[0] === "update") process.exit(process.env.CHARIOX_TEST_UPDATE_FAILS === "1" ? 73 : 0);
 if (args[0] === "unpause") {
@@ -172,7 +195,8 @@ throw new Error("unexpected Docker call: " + args[0]);
     const protocol = (await readFile(new URL("../src/transport/relay_peer.rs", import.meta.url), "utf8")).match(/RELAY_PEER_PROTOCOL_VERSION: u32 = (\d+)/)[1]
     const result = spawnSync("bash", [provisioner, action], {
       encoding: "utf8", timeout: 15_000,
-      env: { ...env, PATH: `${root}:${env.PATH}`, TMPDIR: root,
+      env: {
+        ...drill, ...env, PATH: `${root}:${env.PATH}`, TMPDIR: root,
         CHARIOX_TEST_DOCKER_LOG: log, CHARIOX_TEST_PROTOCOL: protocol,
         CHARIOX_TEST_EXISTING: existing ? "1" : "0", CHARIOX_TEST_UPDATE_FAILS: updateFails ? "1" : "0",
         CHARIOX_TEST_RUNNING: running ? "1" : "0", CHARIOX_TEST_NOFILE: existingNofile,

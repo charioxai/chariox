@@ -147,7 +147,9 @@ def main():
         fixture_html = Path(__file__).with_name("lib") / "computer-input-fixture.html"
         report["fixtureSha256"] = hashlib.sha256(fixture_html.read_bytes()).hexdigest()
         report["imageId"] = docker("image", "inspect", "--format", "{{.Id}}", args.image).decode().strip()
-        docker("run", "-d", "--name", name, "--label", "chariox.drill=computer-input", "--network", "none",
+        labels = run(["node", str(REPO / "scripts/lib/drill-docker-owner.mjs"), "labels",
+                      "live-computer-input-x11-drill.py", str(os.getpid())]).decode().splitlines()
+        docker("run", "-d", *labels, "--name", name, "--label", "chariox.drill=computer-input", "--network", "none",
                "--memory", "2g", "--memory-swap", "2g", "--cpus", "1", "--pids-limit", "512",
                "--security-opt", f"seccomp={SOURCE.parent}/chromium-seccomp.json",
                "--mount", f"type=bind,source={SOURCE},target=/opt/computer-source,readonly",

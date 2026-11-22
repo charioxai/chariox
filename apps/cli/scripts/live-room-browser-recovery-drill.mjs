@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { drillEnvironment, drillOwner } from "../../../scripts/lib/drill-docker-owner.mjs";
 // Run with slot-run. Uses only a disposable kernel, public signed fixture,
 // private Docker slice and temporary HOME; never reads provider credentials.
 import assert from "node:assert/strict";
@@ -125,7 +126,7 @@ try {
   await writeFile(path.join(home,"config.toml"),`version = 1\n[credential_vault]\nbackend = "process_memory"\npath = "${scratch}/vault.json"\nservice = "${run}"\n[state]\npath = "${scratch}/state.db"\n[slices]\nroot = "${scratch}/slices"\n[slices.linux]\ndocker_image = "${args["--image"]}"\nbuild_image = "never"\nmemory_mb = 2048\ncpus = "2.0"\n`);
   // A small explicit environment prevents accidental inheritance of live
   // kernel/provider configuration. No auth files, keys or accounts are copied.
-  const env={PATH:process.env.PATH,HOME:scratch,LANG:"C.UTF-8",CHARIOX_HOME:home,XDG_CONFIG_HOME:path.join(scratch,"config"),CHARIOX_ALLOW_VOLATILE_PROCESS_MEMORY_VAULT:"1",CHARIOX_KERNEL_PORT:String(port),CHARIOX_MCP_PORT:String(port+1),CHARIOX_CODEX_PORT:String(port+2),CHARIOX_OPENCODE_PORT:String(port+3),CHARIOX_DAEMON_ID:run,CHARIOX_SLICE_DOCKER_PROVISIONER:provisioner};
+  const env={...drillEnvironment(drillOwner(import.meta.url)),PATH:process.env.PATH,HOME:scratch,LANG:"C.UTF-8",CHARIOX_HOME:home,XDG_CONFIG_HOME:path.join(scratch,"config"),CHARIOX_ALLOW_VOLATILE_PROCESS_MEMORY_VAULT:"1",CHARIOX_KERNEL_PORT:String(port),CHARIOX_MCP_PORT:String(port+1),CHARIOX_CODEX_PORT:String(port+2),CHARIOX_OPENCODE_PORT:String(port+3),CHARIOX_DAEMON_ID:run,CHARIOX_SLICE_DOCKER_PROVISIONER:provisioner};
   kernel=spawn(path.resolve(args["--kernel"]),[],{cwd:repo,env,stdio:["ignore","pipe","pipe"]});
   let output="";kernel.stdout.on("data",b=>output+=b);kernel.stderr.on("data",b=>output+=b);
   await waitFor(()=>rpc({ListSlices:{}},true),30000);
