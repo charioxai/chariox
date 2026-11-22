@@ -2131,6 +2131,38 @@ test("R1a: a browser with no display of its own streams a region as a crop of th
     assert.deepEqual([sample.width, sample.height, sample.crop.width, sample.crop.height], [200, 100, 200, 100], "frames are named at the crop");
     await host.request({ op: "display_unsubscribe", subscription_id: reply.subscription_id }).catch(() => {});
   }, {}, {}, { ...process.env, CHARIOX_KERNEL_BROWSER_HEADLESS: "1" }));
+// R1 S4/S1 (orch14 decision 11-22 under AGENTS.md "Secrets and agents"): a Vault fill on a page whose region streams raw screencast
+// pixels fences before the value is written (the kernel registers the target, host.protect, then fills): no frame captured at or
+// after that moment reaches the lease, and the region stops. The same when the target is in a child frame.
+const fillPage = child => `<style>body{margin:0}canvas{width:300px;height:120px;display:block}#v{position:absolute;left:20px;top:40px;width:200px;font:20px monospace}</style><canvas id="c" width="300" height="120"></canvas>${child ? '<iframe id="f" srcdoc="<input id=v>" style="position:absolute;left:20px;top:40px;width:220px;height:40px;border:0"></iframe>' : '<input id="v">'}<script>const g=document.getElementById("c").getContext("2d");let n=0;(function f(){g.fillStyle=\`hsl(\${(n++*7)%360},80%,50%)\`;g.fillRect(0,0,300,120);requestAnimationFrame(f)})()</script>`;
+for (const child of [false, true]) test(`R1 S4${child ? "/S1 (target in a child frame)" : ""}: a Vault fill fences the region screencast before the value is written`, () => mirrored(fillPage(child),
+  async ({ host, next, subscription_id, generation, tab_id }) => {
+    await settle(400);
+    const packet = await next(), stream = host.mirror.streams.get(subscription_id);
+    const region_id = [...stream.regionRecords].find(([, r]) => r.kind === "tile")?.[0];
+    const target = { kind: "region", mirror_subscription_id: subscription_id, document_id: stream.document_id, sequence: packet.sequence, region_id };
+    const reply = await host.request({ op: "display_subscribe", tab_id, generation, target, codecs: ["png", "avc1.420033"], bitrate: 2_000_000, device_scale_factor: 1 });
+    const source = host.displays.get(reply.subscription_id).regionSource, frames = [];
+    source.subscribe(frame => frames.push({ at: Date.now(), captured: frame.capturedAt }));
+    await settle(700);
+    assert(frames.length > 5, `frames flow before the fill (${frames.length})`);
+    const tab = [...host.tabs.values()][0], { connection, sessionId } = await host.browser.resolvePageTarget(tab.target_id);
+    const { root } = await connection.send("DOM.getDocument", { depth: -1, pierce: true }, sessionId);
+    const { nodeIds } = await connection.send("DOM.querySelectorAll", { nodeId: root.nodeId, selector: child ? "iframe" : "#v" }, sessionId);
+    let backendNodeId = (await connection.send("DOM.describeNode", { nodeId: nodeIds[0] }, sessionId)).node.backendNodeId;
+    if (child) { const frame = (await connection.send("DOM.describeNode", { nodeId: nodeIds[0], depth: -1, pierce: true }, sessionId)).node; const find = n => n.attributes?.includes("v") && n.nodeName === "INPUT" ? n : (n.children ?? []).concat(n.contentDocument ? [n.contentDocument] : []).map(find).find(Boolean); backendNodeId = find(frame).backendNodeId; }
+    const before = frames.length, fillStart = Date.now();
+    await host.protect({ values: ["SECRET-4242"], targets: [{ kind: "browser", target_id: tab.target_id, document_id: tab.document_id, node_ref: `backend:${backendNodeId}` }] });
+    await evaluate_fill(host, tab, child);
+    await settle(1200);
+    const late = frames.slice(before).filter(f => f.captured >= fillStart);
+    assert.deepEqual(late, [], `no frame captured after the fill started reached the lease (${late.length} of ${frames.length - before} after)`);
+    assert.equal(source.valid(), false, "the region stops"); assert.equal(source.sample(), null);
+  }, {}, {}, { ...process.env, CHARIOX_KERNEL_BROWSER_HEADLESS: "1" }));
+async function evaluate_fill(host, tab, child) {
+  const { connection, sessionId } = await host.browser.resolvePageTarget(tab.target_id);
+  await connection.send("Runtime.evaluate", { expression: child ? `document.getElementById("f").contentDocument.getElementById("v").value="SECRET-4242"` : `document.getElementById("v").value="SECRET-4242"` }, sessionId);
+}
 // The navigation preview asks for a Tab display. A headless browser answered with a CDP display at the viewer's layout
 // size, which the viewer rejects as invalid geometry: every navigation retried it while the new page stayed hidden.
 test("MP-08: a browser with no display of its own refuses a Tab display with that reason", () => mirrored(
