@@ -7478,8 +7478,13 @@ its own Vault under the Project scope, so presence differs per machine and is co
   `cancelled`, `running`; a changed script makes any earlier run `notRun`).
 - `SaveProjectEnvironment` carries the revision the client read. A stale revision answers
   `ProjectEnvironmentConflict` with the current record and writes nothing.
-- `SetProjectEnvironmentSecret` is owner-only like `OwnerVault`, is never cached or logged with its value
-  and writes the value to this kernel's Vault.
+- `SetProjectEnvironmentSecret { projectId, name, source }` is owner-only like `OwnerVault`, is never cached or
+  logged with its value and writes the value to this kernel's Vault. `source` is `{ "value": "<typed>" }` or
+  `{ "vaultEntry": "<credential id>" }`: the kernel then copies the value of that Vault entry into the
+  Project's Secret inside the kernel (no value crosses the wire), through the entry's ordinary use check and
+  audit. The entry must have been made for the environment variable of the same name
+  (`command_environment` use). Agents do the same with the Room tool `chariox.environment.use_vault_entry
+  { name, credential_id }`.
 - `RunProjectEnvironmentSetup { projectId, operationId, checkoutPath? }` runs the script in the checkout with
   Variables and the present Secrets in its environment. `GetEnvironmentOperation` returns the state and the
   last 64 KiB of output with Secret values replaced by their names; `CancelEnvironmentOperation` ends the

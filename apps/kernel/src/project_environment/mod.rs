@@ -4,6 +4,7 @@ mod detect;
 mod draft;
 mod files;
 mod launch;
+mod links;
 mod operations;
 mod presence;
 mod proposals;
@@ -19,6 +20,7 @@ pub(crate) use files::{environment_file_rules, register_environment_files};
 pub(crate) use launch::{
     attach_project_provider_environment, project_launch_environment, project_mcp_environment,
 };
+pub(crate) use links::SecretLinks;
 pub(crate) use operations::{Begun, EnvironmentOperations, OperationChanges, OperationHandle};
 pub(crate) use presence::{file_presence, secret_presence};
 pub use presence::{FilePresence, SecretPresence};

@@ -8,8 +8,8 @@ import type {
   SetupState,
 } from "./kernel-types-project-environment.js"
 
-// Protocol 982 carries the Environment requests including Import, Draft, held operation reads and MCPs and Skills; older kernels answer an unknown-variant error.
-export const projectEnvironmentMinimumProtocolVersion = 982
+// Protocol 1014 carries the Environment requests including Import, Draft, held operation reads, MCPs and Skills, and a Secret source (typed value, Vault entry or unlink); older kernels answer an unknown-variant error.
+export const projectEnvironmentMinimumProtocolVersion = 1014
 
 export type SaveProjectEnvironmentInput = {
   readonly projectId: string
@@ -43,7 +43,12 @@ export function saveProjectEnvironmentRequest(input: SaveProjectEnvironmentInput
 }
 
 export function setProjectEnvironmentSecretRequest(projectId: string, name: string, value: string) {
-  return { SetProjectEnvironmentSecret: { projectId, name, value } } as const
+  return { SetProjectEnvironmentSecret: { projectId, name, source: { value } } } as const
+}
+
+/** The Secret's value comes from an entry of the kernel's Vault, by its credential id; no value crosses the wire. */
+export function setProjectEnvironmentSecretFromVaultRequest(projectId: string, name: string, credentialId: string) {
+  return { SetProjectEnvironmentSecret: { projectId, name, source: { vaultEntry: credentialId } } } as const
 }
 
 export function runProjectEnvironmentSetupRequest(projectId: string, operationId: string, checkoutPath?: string) {

@@ -38,6 +38,8 @@ mod card_action_tests;
 #[cfg(test)]
 mod catalog_tests;
 #[cfg(test)]
+mod environment_secret_tests;
+#[cfg(test)]
 mod forgotten_machine_tests;
 #[cfg(test)]
 mod goal_tests;

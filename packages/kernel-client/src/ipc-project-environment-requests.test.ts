@@ -19,6 +19,7 @@ import {
   projectEnvironmentSavedFromResponse,
   runProjectEnvironmentSetupRequest,
   saveProjectEnvironmentRequest,
+  setProjectEnvironmentSecretFromVaultRequest,
   setProjectEnvironmentSecretRequest,
 } from "./ipc-project-environment-requests.js"
 
@@ -56,7 +57,7 @@ const operation = {
 }
 
 test("Environment v2 requests use the wire names and drop absent checkoutPath", () => {
-  assert.equal(projectEnvironmentMinimumProtocolVersion, 982)
+  assert.equal(projectEnvironmentMinimumProtocolVersion, 1014)
   assert.deepEqual(getProjectEnvironmentRequest("p"), { GetProjectEnvironment: { projectId: "p" } })
   assert.deepEqual(getProjectEnvironmentRequest("p", "/work/p"), { GetProjectEnvironment: { projectId: "p", checkoutPath: "/work/p" } })
   assert.deepEqual(runProjectEnvironmentSetupRequest("p", "op"), { RunProjectEnvironmentSetup: { projectId: "p", operationId: "op" } })
@@ -64,7 +65,8 @@ test("Environment v2 requests use the wire names and drop absent checkoutPath", 
   assert.deepEqual(getEnvironmentOperationRequest("op"), { GetEnvironmentOperation: { operationId: "op" } })
   assert.deepEqual(getEnvironmentOperationRequest("op", 0), { GetEnvironmentOperation: { operationId: "op", waitAfterUpdates: 0 } })
   assert.deepEqual(cancelEnvironmentOperationRequest("op"), { CancelEnvironmentOperation: { operationId: "op" } })
-  assert.deepEqual(setProjectEnvironmentSecretRequest("p", "API_KEY", "v"), { SetProjectEnvironmentSecret: { projectId: "p", name: "API_KEY", value: "v" } })
+  assert.deepEqual(setProjectEnvironmentSecretRequest("p", "API_KEY", "v"), { SetProjectEnvironmentSecret: { projectId: "p", name: "API_KEY", source: { value: "v" } } })
+  assert.deepEqual(setProjectEnvironmentSecretFromVaultRequest("p", "GH_TOKEN", "cap-1"), { SetProjectEnvironmentSecret: { projectId: "p", name: "GH_TOKEN", source: { vaultEntry: "cap-1" } } })
 })
 
 test("Import names its source and leaves out entries for Update; Draft and Check name only the Project", () => {

@@ -4,9 +4,10 @@ use crate::local::{
     EnvironmentEntryKind, EnvironmentOperationRequest, EnvironmentOperationState,
     EnvironmentOperationView, ExtensionPresence, GetEnvironmentOperationRequest,
     GetProjectEnvironmentRequest, ProjectEnvironmentExtension, ProjectEnvironmentExtensionView,
-    ProjectEnvironmentFileView, ProjectEnvironmentSecretView, ProjectEnvironmentSetupField,
-    ProjectEnvironmentSetupState, ProjectEnvironmentView, RunProjectEnvironmentSetupRequest,
-    SaveProjectEnvironmentRequest, SetProjectEnvironmentSecretRequest,
+    ProjectEnvironmentFileView, ProjectEnvironmentSecretLink, ProjectEnvironmentSecretSource,
+    ProjectEnvironmentSecretView, ProjectEnvironmentSetupField, ProjectEnvironmentSetupState,
+    ProjectEnvironmentView, RunProjectEnvironmentSetupRequest, SaveProjectEnvironmentRequest,
+    SetProjectEnvironmentSecretRequest,
 };
 use crate::project_environment::{
     declared_in, environment_error, file_presence, project_environment_vault_service,
@@ -140,6 +141,7 @@ impl KernelRuntimeState {
             ..Default::default()
         });
         let presence = secret_presence(&config, project.id(), &record.secrets)?;
+        let links = self.secret_link_views(project.id(), &record.secrets)?;
         let registrations = self.user_registrations(project.id());
         let setup_state = if exists {
             self.owned.project_environment_setups.state_for(
@@ -162,9 +164,11 @@ impl KernelRuntimeState {
                 .secrets
                 .iter()
                 .zip(presence)
-                .map(|(name, presence)| ProjectEnvironmentSecretView {
+                .zip(links)
+                .map(|((name, presence), link)| ProjectEnvironmentSecretView {
                     name: name.clone(),
                     presence,
+                    link,
                 })
                 .collect(),
             files: record
@@ -247,38 +251,204 @@ impl KernelRuntimeState {
         })
     }
 
-    /// The owner's value for a Secret row goes into this kernel's Vault and nowhere else.
-    pub(crate) fn set_project_environment_secret(
+    /// The owner's value for a Secret row, typed or taken from an entry of this kernel's Vault, goes into
+    /// this kernel's Vault under the Project scope and nowhere else.
+    pub(crate) async fn set_project_environment_secret(
         &self,
         command: &crate::runtime::command::KernelCommand,
         request: SetProjectEnvironmentSecretRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let owner = self.owner_client_user_id(command)?;
         let project = self.owned_project(&request.project_id, &owner)?;
-        let record = self
-            .environment_store()
-            .load(project.id())?
-            .filter(|record| record.secrets.contains(&request.name))
+        let record = self.environment_secret_record(project.id(), &request.name)?;
+        let links = self.secret_links();
+        match &request.source {
+            ProjectEnvironmentSecretSource::Unlink => links.remove(project.id(), &request.name)?,
+            ProjectEnvironmentSecretSource::Value(value) => {
+                self.require_unlocked_vault()?;
+                self.store_environment_secret(project.id(), &request.name, value.expose_secret())?;
+                // A typed value replaces the copy, so the entry no longer stands behind it.
+                links.remove(project.id(), &request.name)?;
+            }
+            ProjectEnvironmentSecretSource::VaultEntry(credential_id) => {
+                self.require_unlocked_vault()?;
+                self.copy_vault_entry_into_environment(
+                    &owner,
+                    Default::default(),
+                    project.id(),
+                    &request.name,
+                    credential_id,
+                    || Ok(()),
+                )
+                .await?
+            }
+        }
+        let checkout = self.project_checkout(&project, None)?;
+        Ok(LocalDaemonResponse::ProjectEnvironmentSaved {
+            environment: self.project_environment_view(&project, checkout, Some(record))?,
+        })
+    }
+
+    /// The saved record, which must already name the Secret.
+    fn environment_secret_record(
+        &self,
+        project_id: &str,
+        name: &str,
+    ) -> Result<ProjectEnvironmentRecord, DaemonError> {
+        self.environment_store()
+            .load(project_id)?
+            .filter(|record| record.secrets.iter().any(|secret| secret == name))
             .ok_or_else(|| {
                 environment_error("add the Secret to the Environment before giving it a value")
-            })?;
-        let value = request.value.expose_secret();
+            })
+    }
+
+    fn store_environment_secret(
+        &self,
+        project_id: &str,
+        name: &str,
+        value: &str,
+    ) -> Result<(), DaemonError> {
         if value.is_empty() || value.len() > MAX_SECRET_VALUE_BYTES || value.contains('\0') {
             return Err(environment_error(
                 "a Secret value takes 1 byte to 64 KiB without NUL",
             ));
         }
-        self.require_unlocked_vault()?;
         let config = self.owned.config_projection.snapshot();
         crate::secret::project_environment_vault(&config)?.set_secret(
-            &project_environment_vault_service(project.id()),
-            &request.name,
+            &project_environment_vault_service(project_id),
+            name,
             value,
         )?;
-        let checkout = self.project_checkout(&project, None)?;
-        Ok(LocalDaemonResponse::ProjectEnvironmentSaved {
-            environment: self.project_environment_view(&project, checkout, Some(record))?,
-        })
+        Ok(())
+    }
+
+    /// Copies one Vault entry into the Project's Secret inside the kernel: the entry must be made for
+    /// the environment variable of the same name, and the use is checked and recorded like any other
+    /// use of that entry. The value never leaves this function.
+    pub(super) async fn copy_vault_entry_into_environment(
+        &self,
+        actor: &str,
+        ask: super::vault_use::VaultUseAsk<'_>,
+        project_id: &str,
+        name: &str,
+        credential_id: &str,
+        still_current: impl Fn() -> Result<(), DaemonError>,
+    ) -> Result<(), DaemonError> {
+        let target = Self::environment_use_target(
+            &self.home_runtime_secret_service()?,
+            credential_id,
+            name,
+        )?;
+        let value = self
+            .read_vault_value_for_use(actor, ask, credential_id, &target, still_current)
+            .await?;
+        self.store_environment_secret(project_id, name, &value)?;
+        self.secret_links().set(project_id, name, credential_id)
+    }
+
+    pub(super) fn secret_links(&self) -> crate::project_environment::SecretLinks {
+        crate::project_environment::SecretLinks::new(
+            &self
+                .owned
+                .config_projection
+                .snapshot()
+                .private_runtime_state_root(),
+        )
+    }
+
+    /// The Vault entry named `entry_id` changed: every Secret filled from it takes the new value, through the
+    /// same use check and audit as the first fill. A Secret whose entry no longer fits stays as it was; its
+    /// link then reads as broken.
+    pub(crate) fn refill_linked_environment_secrets(&self, entry_id: &str) {
+        let refill = || -> Result<(), DaemonError> {
+            for (project_id, name) in self.secret_links().filled_from(entry_id)? {
+                if let Err(error) = self.refill_environment_secret(&project_id, &name, entry_id) {
+                    tracing::warn!(%error, project_id, name, "an Environment secret could not be re-filled");
+                }
+            }
+            Ok(())
+        };
+        if let Err(error) = refill() {
+            tracing::warn!(%error, "the Environment secret links could not be read");
+        }
+    }
+
+    fn refill_environment_secret(
+        &self,
+        project_id: &str,
+        name: &str,
+        entry_id: &str,
+    ) -> Result<(), DaemonError> {
+        let service = self.home_runtime_secret_service()?;
+        let target = Self::environment_use_target(&service, entry_id, name)?;
+        let actor = "Environment secret link";
+        let attempt = service.begin_vault_use(
+            entry_id,
+            &format!(
+                "Use attempted at {} by {actor}",
+                super::vault_use::vault_use_destination(&target)
+            ),
+        )?;
+        let value =
+            zeroize::Zeroizing::new(service.workspace_secret_input_for_target(entry_id, &target)?);
+        attempt.finish(&format!(
+            "Used at {} by {actor}",
+            super::vault_use::vault_use_destination(&target)
+        ))?;
+        self.store_environment_secret(project_id, name, &value)
+    }
+
+    /// The use the entry was made for, when that is a command's environment variable of this name.
+    fn environment_use_target(
+        service: &crate::secret::RuntimeSecretService,
+        credential_id: &str,
+        name: &str,
+    ) -> Result<crate::config::VaultUseTarget, DaemonError> {
+        let binding = service
+            .credential(credential_id)?
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.use_binding.as_ref());
+        match binding.map(|binding| &binding.target) {
+            Some(target @ crate::config::VaultUseTarget::CommandEnvironment { name: bound, .. })
+                if bound == name =>
+            {
+                Ok(target.clone())
+            }
+            _ => Err(environment_error(format!(
+                "this Vault entry is not made for the environment variable {name}; capture it for {name}"
+            ))),
+        }
+    }
+
+    /// Where each Secret's value came from, for the view: the entry's name while it still fits, else broken.
+    fn secret_link_views(
+        &self,
+        project_id: &str,
+        names: &[String],
+    ) -> Result<Vec<Option<ProjectEnvironmentSecretLink>>, DaemonError> {
+        let links = self.secret_links().of_project(project_id)?;
+        if links.is_empty() {
+            return Ok(names.iter().map(|_| None).collect());
+        }
+        let service = self.home_runtime_secret_service()?;
+        Ok(names
+            .iter()
+            .map(|name| {
+                let id = links.get(name)?;
+                Some(match Self::environment_use_target(&service, id, name) {
+                    Ok(_) => ProjectEnvironmentSecretLink::Linked {
+                        entry: service
+                            .credential(id)
+                            .ok()
+                            .and_then(|credential| credential.description.clone())
+                            .unwrap_or_else(|| id.clone()),
+                    },
+                    Err(_) => ProjectEnvironmentSecretLink::Broken,
+                })
+            })
+            .collect())
     }
 
     pub(crate) fn run_project_environment_setup(
