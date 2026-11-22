@@ -696,6 +696,63 @@ test('MP-10: protocol 501 an external <use> sprite renders from a validated blob
   } finally { await page.close(); }
 });
 
+// browserfidelity r18 (Y3-C1a): a page whose own script takes the wheel (page_wheel) gets every wheel step, as in its browser;
+// the copy never scrolls itself. When the page gives the wheel back, the viewer scrolls its copy again.
+test('Y3-C1a: with page_wheel every wheel over the document goes to the kernel\'s page and the copy stays; without it the copy scrolls', async () => {
+  const page = await viewer();
+  try {
+    await apply(page, { ...snapshot([{ id: 'n1', parent: null, kind: 'document' }, { id: 'n2', parent: 'n1', kind: 'element', tag: 'html' }, { id: 'n3', parent: 'n2', kind: 'element', tag: 'body', attrs: { style: 'margin:0' } }, { id: 'n4', parent: 'n3', kind: 'element', tag: 'div', attrs: { style: 'height:4000px' } }]), page_wheel: true });
+    const box = await page.evaluate(() => { const b = window.r.frame.getBoundingClientRect(); return { x: b.left + 300, y: b.top + 300 }; });
+    await page.mouse.move(box.x, box.y);
+    for (let i = 0; i < 3; i++) { await page.mouse.wheel(0, 300); await page.waitForTimeout(30); }
+    await page.waitForTimeout(500);
+    const taken = await page.evaluate(() => ({ y: window.r.frame.contentWindow.scrollY, scrolls: window.sent.filter(a => a.kind === 'scroll').map(a => [a.node_id, a.delta_y]), positions: window.sent.filter(a => a.kind === 'scroll_to').length }));
+    assert.equal(taken.y, 0, `Y3-C1a: the copy does not scroll itself (${JSON.stringify(taken)})`);
+    assert.equal(taken.scrolls.reduce((n, [, dy]) => n + dy, 0), 900, `Y3-C1a: every step reaches the kernel's page (${JSON.stringify(taken)})`);
+    assert.equal(taken.positions, 0, 'Y3-C1a: no position is written');
+    await apply(page, delta(2, [], { page_wheel: false }));
+    await page.evaluate(() => { window.sent.length = 0; });
+    await page.mouse.wheel(0, 300); await page.waitForTimeout(600);
+    const local = await page.evaluate(() => ({ y: window.r.frame.contentWindow.scrollY, scrolls: window.sent.filter(a => a.kind === 'scroll').length }));
+    assert.ok(local.y >= 298 && local.scrolls === 0, `Y3-C1a: page_wheel false gives the wheel back to the copy (${JSON.stringify(local)})`);
+  } finally { await page.close(); }
+});
+
+// Y3-C1a review 2: a protected field (a mask record, no node the viewer may name) under the pointer on a page that takes the
+// wheel: the wheel scrolls the copy as before (nothing about the field is sent), instead of being swallowed.
+test('Y3-C1a: with page_wheel a wheel over a protected field still scrolls the copy', async () => {
+  const page = await viewer();
+  try {
+    await apply(page, { ...snapshot([{ id: 'n1', parent: null, kind: 'document' }, { id: 'n2', parent: 'n1', kind: 'element', tag: 'html' }, { id: 'n3', parent: 'n2', kind: 'element', tag: 'body', attrs: { style: 'margin:0' } },
+      { id: 'n4', parent: 'n3', kind: 'mask', tag: 'textarea', size: [600, 400] }, { id: 'n5', parent: 'n3', kind: 'element', tag: 'div', attrs: { style: 'height:4000px' } }]), page_wheel: true });
+    const box = await page.evaluate(() => { const b = window.r.frame.getBoundingClientRect(); return { x: b.left + 100, y: b.top + 100 }; });
+    await page.evaluate(() => { window.sent.length = 0; });
+    await page.mouse.move(box.x, box.y); await page.mouse.wheel(0, 300); await page.waitForTimeout(600);
+    const out = await page.evaluate(() => ({ y: window.r.frame.contentWindow.scrollY, sent: window.sent.filter(a => a.kind === 'scroll').length }));
+    assert.ok(out.y >= 298 && out.sent === 0, `the copy scrolled locally and nothing named the field (${JSON.stringify(out)})`);
+  } finally { await page.close(); }
+});
+
+// Y3-C1a review: wheel steps waiting behind a slow reply add up, but the kernel takes at most 10000 px per axis in one step:
+// past that the rest waits as the next step, so the whole movement arrives and no step is refused.
+test('Y3-C1a: wheel steps held behind replies add up to at most 10000 px per step, and their sum is the whole movement', async () => {
+  const page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
+  try {
+    await page.goto(url);
+    await page.evaluate(async () => { window.sent = []; window.release = []; window.r = new Mirror2.BrowserMirror2Renderer(document.getElementById('c'), action => new Promise(resolve => { window.sent.push(action); window.release.push(resolve); })); await window.r.ready(); });
+    await apply(page, { ...snapshot([{ id: 'n1', parent: null, kind: 'document' }, { id: 'n2', parent: 'n1', kind: 'element', tag: 'html' }, { id: 'n3', parent: 'n2', kind: 'element', tag: 'body', attrs: { style: 'margin:0' } }, { id: 'n4', parent: 'n3', kind: 'element', tag: 'div', attrs: { style: 'height:40000px' } }]), page_wheel: true });
+    const box = await page.evaluate(() => { const b = window.r.frame.getBoundingClientRect(); return { x: b.left + 300, y: b.top + 300 }; });
+    await page.mouse.move(box.x, box.y);
+    // Replies held: two steps go out, the other 38 x 300 px queue behind them.
+    for (let i = 0; i < 40; i++) await page.mouse.wheel(0, 300);
+    await page.waitForTimeout(300);
+    for (let i = 0; i < 10; i++) { await page.evaluate(() => { for (const resolve of window.release.splice(0)) resolve(); }); await page.waitForTimeout(50); }
+    const steps = await page.evaluate(() => window.sent.filter(a => a.kind === 'scroll').map(a => a.delta_y));
+    assert.ok(steps.every(dy => Math.abs(dy) <= 10000), `Y3-C1a: every step is one the kernel takes (${steps})`);
+    assert.equal(steps.reduce((n, dy) => n + dy, 0), 12000, `Y3-C1a: the whole movement arrives (${steps})`);
+  } finally { await page.close(); }
+});
+
 // MP-10 strict Selkies scroll gap: precise wheel steps every 50 ms (a CDP pixel wheel) jumped once per step, so the
 // viewer presented one change per step (~20 fps) where a browser animating its wheel ticks presents every frame.
 // The viewer eases each step over the frames until the next one and ends exactly where the native steps would.

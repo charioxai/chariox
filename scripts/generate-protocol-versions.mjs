@@ -14,6 +14,7 @@ update("fixtures/protocol-versions.json", JSON.stringify({ local: localProtocolV
 const currentSnapshots = [
   "apps/kernel/src/local/api/tests/protocol_shapes/local-browser-expires-in-1014.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/folded-answer-1013.json",
+  "apps/kernel/src/local/api/tests/protocol_shapes/browser-mirror2-page-wheel-1014.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/files-watch-1011.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/watcher-1012.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/event-follow-1012.json",
