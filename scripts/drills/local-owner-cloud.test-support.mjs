@@ -4,9 +4,8 @@
 import http from "node:http"
 import { randomBytes } from "node:crypto"
 
-export async function startOwnerCloud({ token, note, realm, relayPort, onServer, onPresence, listTargets = targets => targets }) {
+export async function startOwnerCloud({ token, note, realm, relayPort, onServer, onPresence }) {
   const kernels = new Map()
-  const machineIdsByCredential = new Map()
   const answer = (res, body, code = 200) => res.writeHead(code, { "content-type": "application/json" }).end(JSON.stringify(body))
   const server = http.createServer((req, res) => {
     let raw = ""
@@ -15,18 +14,11 @@ export async function startOwnerCloud({ token, note, realm, relayPort, onServer,
       try {
         const url = new URL(req.url, "http://local")
         const ask = raw ? JSON.parse(raw) : {}
-        if (req.method === "GET" && url.pathname === "/relay/targets") {
-          const targets = listTargets([...kernels.values()].map(k => ({
-            daemonId: k.kernelId, machineId: k.machineId, status: "ONLINE", alias: k.alias,
-          })), machineIdsByCredential.get(req.headers["x-chariox-kernel-credential"]))
-          return targets === null ? answer(res, { error: "directory unavailable" }, 503) : answer(res, { targets })
-        }
+        if (req.method === "GET" && url.pathname === "/relay/targets") return answer(res, { targets: [...kernels.values()].map(k => ({ daemonId: k.kernelId, status: "ONLINE", alias: k.alias })) })
         if (url.pathname === "/auth/kernel/migrate") {
           kernels.set(ask.kernelId, { kernelId: ask.kernelId, machineId: ask.machineId, thumbprint: ask.publicKeyThumbprint, alias: null })
           note("owner-cloud-migrate", { kernel: ask.kernelId })
-          const kernelCredential = `kernel-credential-${randomBytes(8).toString("hex")}`
-          machineIdsByCredential.set(kernelCredential, ask.machineId)
-          return answer(res, { kernelCredential })
+          return answer(res, { kernelCredential: `kernel-credential-${randomBytes(8).toString("hex")}` })
         }
         if (url.pathname === "/kernels/presence") {
           kernels.set(ask.kernelId, { ...kernels.get(ask.kernelId), kernelId: ask.kernelId, machineId: ask.machineId, publicKey: ask.metadata?.relay_public_key, alias: ask.kernelAlias ?? null })
