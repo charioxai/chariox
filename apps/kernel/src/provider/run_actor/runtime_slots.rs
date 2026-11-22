@@ -180,9 +180,10 @@ impl ProviderRunRuntimeRegistry {
         opencode_slot(&self.opencode_runs, run_id)
     }
 
-    /// Claude runs whose process ended while idle. A run a command holds now
-    /// is not idle: that command sees the exit itself.
-    pub(super) fn claude_runs_exited_while_idle(&self, only: Option<&str>) -> Vec<String> {
+    /// Claude runs whose process ended while idle, each with whether it ended
+    /// before it took any turn. A run a command holds now is not idle: that
+    /// command sees the exit itself.
+    pub(super) fn claude_runs_exited_while_idle(&self, only: Option<&str>) -> Vec<(String, bool)> {
         let slots = self
             .claude_runs
             .lock()
@@ -193,13 +194,14 @@ impl ProviderRunRuntimeRegistry {
             .collect::<Vec<_>>();
         slots
             .into_iter()
-            .filter(|(_, slot)| {
-                slot.lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .as_mut()
-                    .is_some_and(crate::provider::claude_runtime::claude_runtime_child_exited)
+            .filter_map(|(run_id, slot)| {
+                let mut slot = slot
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let state = slot.as_mut()?;
+                crate::provider::claude_runtime::claude_runtime_child_exited(state)
+                    .then(|| (run_id, state.took_no_turn()))
             })
-            .map(|(run_id, _)| run_id)
             .collect()
     }
 

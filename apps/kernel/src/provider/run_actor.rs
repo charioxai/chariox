@@ -144,7 +144,7 @@ impl ProviderRunActorMailbox {
         self.runtime_registry.claude_process_identities()
     }
 
-    pub(crate) fn claude_runs_exited_while_idle(&self, only: Option<&str>) -> Vec<String> {
+    pub(crate) fn claude_runs_exited_while_idle(&self, only: Option<&str>) -> Vec<(String, bool)> {
         self.runtime_registry.claude_runs_exited_while_idle(only)
     }
 

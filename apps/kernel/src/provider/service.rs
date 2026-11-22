@@ -83,7 +83,7 @@ impl ProviderProcessService {
         self.run_actor_mailbox.completion_signal()
     }
 
-    pub(crate) fn claude_runs_exited_while_idle(&self, only: Option<&str>) -> Vec<String> {
+    pub(crate) fn claude_runs_exited_while_idle(&self, only: Option<&str>) -> Vec<(String, bool)> {
         self.run_actor_mailbox.claude_runs_exited_while_idle(only)
     }
 }

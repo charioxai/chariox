@@ -4335,6 +4335,7 @@ pub(in crate::runtime::state) mod tests {
         agent_id: &str,
         run_id: &str,
         script: &str,
+        resume: Option<&str>,
     ) -> crate::provider::RuntimeProviderRun {
         let executable = root.join(format!("{run_id}-fixture"));
         std::fs::write(&executable, format!("#!/bin/sh\n{script}\n")).unwrap();
@@ -4343,9 +4344,19 @@ pub(in crate::runtime::state) mod tests {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
         }
-        let request =
+        let mut request =
             LaunchProviderRequest::new(session_id, "claude", "claude", "default", "sonnet")
                 .with_agent_id(agent_id);
+        if let Some(resume) = resume {
+            let resume = ProviderResumeState::from_claude_session_id(resume);
+            request = request.with_resume_state(resume.clone());
+            runtime
+                .owned
+                .agent_store
+                .write()
+                .set_agent_provider_resume_state(agent_id, resume)
+                .unwrap();
+        }
         let mut run = crate::provider::RuntimeProviderRun::new(
             run_id,
             &request,
@@ -4395,6 +4406,8 @@ pub(in crate::runtime::state) mod tests {
 
     /// The provider process sweep notices a Claude process that ended while its
     /// agent was idle: the run ends and the process is reaped, not left a zombie.
+    /// It ended before any turn, so it could not open the session it was started
+    /// to resume: the agent's next run starts a new one instead of looping.
     #[tokio::test]
     async fn the_process_sweep_ends_a_run_whose_claude_process_exited_while_idle() {
         let (root, runtime, session_id, agent_id, _attachment_id, _prompt_id, _) =
@@ -4406,7 +4419,8 @@ pub(in crate::runtime::state) mod tests {
             &session_id,
             &agent_id,
             "idle-exit-run",
-            &format!("echo $$ > '{}'; exit 0", pid_file.display()),
+            &format!("echo $$ > '{}'; exit 1", pid_file.display()),
+            Some("session-the-cli-cannot-open"),
         );
         let pid = wait_for_pid(&pid_file);
         std::thread::sleep(std::time::Duration::from_millis(300));
@@ -4425,6 +4439,12 @@ pub(in crate::runtime::state) mod tests {
             !is_zombie_or_running(pid),
             "the exited process must be reaped"
         );
+        let agent = runtime.owned.agent_store.get_agent(&agent_id).unwrap();
+        assert_eq!(
+            agent.provider_resume_state().provider_session_id("claude"),
+            None,
+            "the next run must not resume a session the CLI could not open"
+        );
     }
 
     /// A prompt dispatched to a run whose Claude process died while idle moves
@@ -4442,6 +4462,7 @@ pub(in crate::runtime::state) mod tests {
             &agent_id,
             "dead-idle-run",
             &format!("echo $$ > '{}'; exit 0", pid_file.display()),
+            None,
         );
         wait_for_pid(&pid_file);
         std::thread::sleep(std::time::Duration::from_millis(300));

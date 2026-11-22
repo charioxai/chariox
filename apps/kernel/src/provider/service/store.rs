@@ -184,8 +184,9 @@ impl ProviderProcessServiceStore {
         self.read().run_actor_completion_signal()
     }
 
-    /// Claude runs (all, or `only` that one) whose process ended while idle.
-    pub(crate) fn claude_runs_exited_while_idle(&self, only: Option<&str>) -> Vec<String> {
+    /// Claude runs (all, or `only` that one) whose process ended while idle,
+    /// each with whether it ended before it took any turn.
+    pub(crate) fn claude_runs_exited_while_idle(&self, only: Option<&str>) -> Vec<(String, bool)> {
         self.read().claude_runs_exited_while_idle(only)
     }
 
