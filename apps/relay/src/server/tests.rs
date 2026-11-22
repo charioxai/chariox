@@ -1,6 +1,7 @@
 mod admission;
 mod backlog;
 mod binary_event;
+mod binary_peer;
 mod binary_request;
 mod client_renewal;
 mod control_during_bulk;
