@@ -117,47 +117,6 @@ async fn offload_job_local_completion_has_durable_result_and_log() {
 }
 
 #[tokio::test]
-async fn job_accepts_an_absolute_directory_inside_the_active_workspace() {
-    let (state, run, task, worktree) = fixture().await;
-    let selected = worktree.path().canonicalize().unwrap().join("build space");
-    std::fs::create_dir(&selected).unwrap();
-    let result = state
-        .dispatch_job_tool(
-            Some(&run),
-            "chariox.jobs.run",
-            &serde_json::json!({"command":["/bin/pwd"],"cwd":selected,"wait_s":10}),
-            &task,
-        )
-        .await
-        .unwrap();
-    assert_eq!(result["result"]["exit_code"], 0, "{result}");
-    assert_eq!(
-        result["result"]["output_tail"].as_str().unwrap().trim(),
-        selected.to_str().unwrap()
-    );
-
-    let outside = crate::test_support::TestWorktree::new("unrelated-job-directory");
-    let link = worktree.path().join("unrelated");
-    #[cfg(unix)]
-    std::os::unix::fs::symlink(outside.path(), &link).unwrap();
-    for directory in [outside.path(), link.as_path()] {
-        let error = state
-            .dispatch_job_tool(
-                Some(&run),
-                "chariox.jobs.run",
-                &serde_json::json!({"command":["/bin/pwd"],"cwd":directory,"wait_s":10}),
-                &task,
-            )
-            .await
-            .unwrap_err();
-        assert!(
-            error.to_string().contains("inside the agent's workspace"),
-            "{error}"
-        );
-    }
-}
-
-#[tokio::test]
 async fn offload_job_time_limit_stops_owned_command() {
     let (state, run, task, _worktree) = fixture().await;
     let result = state
@@ -256,9 +215,8 @@ async fn offload_job_remote_upload_exec_environment_artifact_and_conflict_return
         home: home.path().to_owned(),
     });
     let record = Record { job_id: "job-remote-test".into(), wake_id: "wake-remote-test".into(), registration_id: "completion-wake-remote-test".into(), room_id: "home-room".into(), agent_id: "home-agent".into(), request: RunJobRequest { command: JobCommand::Argv(vec!["/bin/sh".into(), "-c".into(), "printf remote > source.txt; mkdir -p target; printf artifact > target/build.bin; printf '%s' \"$NAMED\"".into()]), cwd: None, env: vec!["NAMED".into()], needs: JobNeeds::default(), timeout_s: 30, wait_s: 0, outputs: vec!["target/*.bin".into()], machine: None, machine_only: false }, workspace: source.path().to_owned(), cwd: source.path().to_owned(), placement: JobPlacement::Remote, started_at_ms: crate::session::unix_epoch_ms(), running_at_ms: None, state: "uploading".into(), allocation_ref: None, capability_revision: None, machine_label: Some("offload-test".into()), held_kernel_id: None, address: Some("2001:db8::1".into()), result: None, exec_id: None, class_id: None, rate_per_minute: None, estimate_micros: None, deleted: false, remote_available: true, remote_refusal: None, estimated_minutes: None, memory_mib: None, remote: RemoteStage::Idle };
-    let workspace = record.transfer_workspace().unwrap();
-    let base = workspace.snapshot(&record.request.outputs).unwrap();
-    let upload = workspace.snapshot(&[]).unwrap();
+    let base = crate::jobs::snapshot(source.path(), &record.request.outputs).unwrap();
+    let upload = crate::jobs::snapshot(source.path(), &[]).unwrap();
     let (_cancel, cancelled) = watch::channel(false);
     let located = remote::Remote::locate(worker.clone(), &record.job_id)
         .await

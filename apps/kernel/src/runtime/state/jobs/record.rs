@@ -88,27 +88,6 @@ impl Record {
         }
     }
 
-    /// The folder a remote job uploads and returns: its whole workspace, or the absolute
-    /// directory inside it that the request named.
-    pub(super) fn transfer_root(&self) -> &Path {
-        if self
-            .request
-            .cwd
-            .as_deref()
-            .is_some_and(|cwd| Path::new(cwd).is_absolute())
-        {
-            &self.cwd
-        } else {
-            &self.workspace
-        }
-    }
-
-    pub(super) fn transfer_workspace(
-        &self,
-    ) -> Result<crate::jobs::TransferWorkspace<'_>, DaemonError> {
-        crate::jobs::TransferWorkspace::new(&self.workspace, self.transfer_root())
-    }
-
     pub(super) fn runs_for_lease(&self, wake: &AgentWake) -> bool {
         // A worker executes in its backing room. The wake belongs to the home room.
         self.room_id != wake.room_id

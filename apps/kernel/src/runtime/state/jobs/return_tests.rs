@@ -75,9 +75,8 @@ pub(super) async fn finish_on_worker(
     outputs: &[&str],
 ) -> FinishedCommand {
     let record = remote_record(source, script, outputs);
-    let workspace = record.transfer_workspace().unwrap();
-    let base = workspace.snapshot(&record.request.outputs).unwrap();
-    let upload = workspace.snapshot(&[]).unwrap();
+    let base = crate::jobs::snapshot(source, &record.request.outputs).unwrap();
+    let upload = crate::jobs::snapshot(source, &[]).unwrap();
     let (_cancel, cancelled) = watch::channel(false);
     let located = remote::Remote::locate(worker.clone(), &record.job_id)
         .await

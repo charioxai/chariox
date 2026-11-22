@@ -266,24 +266,10 @@ pub(super) fn job_workspace(
     request: &RunJobRequest,
 ) -> Result<(PathBuf, PathBuf), DaemonError> {
     let workspace = super::super::agent_process_watch::workspace_cwd(run, None)?;
-    if let Some(directory) = request.target_directory() {
-        let cwd = Path::new(directory).join(request.cwd.as_deref().unwrap_or(""));
-        return Ok((workspace, cwd));
-    }
-    let Some(directory) = &request.cwd else {
-        return Ok((workspace.clone(), workspace));
+    let cwd = match request.target_directory() {
+        Some(directory) => Path::new(directory).join(request.cwd.as_deref().unwrap_or("")),
+        None => super::super::agent_process_watch::workspace_cwd(run, request.cwd.as_deref())?,
     };
-    let cwd = workspace
-        .join(directory)
-        .canonicalize()
-        .ok()
-        .filter(|path| path.is_dir() && path.starts_with(&workspace))
-        .ok_or_else(|| {
-            ledger::error(format!(
-                "Job directory `{directory}` must be an existing directory inside the agent's workspace `{}`",
-                workspace.display()
-            ))
-        })?;
     Ok((workspace, cwd))
 }
 
@@ -306,11 +292,7 @@ pub(super) fn validate(request: &RunJobRequest) -> Result<Vec<String>, DaemonErr
             ));
         }
     }
-    if let Some(cwd) = request
-        .cwd
-        .as_deref()
-        .filter(|cwd| request.target_directory().is_some() || !Path::new(cwd).is_absolute())
-    {
+    if let Some(cwd) = &request.cwd {
         crate::jobs::relative(cwd)?;
     }
     for output in &request.outputs {
