@@ -118,6 +118,16 @@ impl KernelRuntimeState {
             self.audit_human_only_denial(id, &caller.owner_user_id);
             return Err(Refusal::HumanOnly.error());
         }
+        // No session has an empty id, so the request cannot work as written.
+        if matches!(
+            crate::runtime::session_membership::scope::request_session_scope(request),
+            Some(crate::runtime::session_membership::scope::SessionMembershipScope::SessionId(id))
+                if id.trim().is_empty()
+        ) {
+            return Err(error(
+                "this kernel request names an empty session_id; pass a session id from chariox.room.overview or ListSessions",
+            ));
+        }
         Ok(())
     }
 

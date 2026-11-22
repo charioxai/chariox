@@ -1179,6 +1179,7 @@ async fn sudo_cached_mcp_catalog_and_owner_authority() {
         .runtime_tool_specs_for_auth_token("sudo-fixture-bearer")
         .iter()
         .any(|spec| spec.name == "chariox_kernel_request"));
+    // Row 405: the ended window takes nothing from the owner's agent.
     assert!(f
         .router
         .dispatch_authenticated_runtime_tool_call(
@@ -1187,7 +1188,7 @@ async fn sudo_cached_mcp_catalog_and_owner_authority() {
             serde_json::json!({"request": {"ListSessions": null}})
         )
         .await
-        .is_err());
+        .is_ok_and(|result| result.ok));
 }
 
 #[tokio::test]

@@ -1973,7 +1973,11 @@ async fn leased_work_continues_after_a_wake(restart_worker: bool) {
             listed,
             "MP-08/MP-11: the cached interface stays listed after restart; invocation denies"
         );
-        assert!(elevated.is_err(), "the restarted worker denies elevation");
+        // Row 405: the lost window takes nothing from the owner's leased agent.
+        assert!(
+            elevated.is_ok(),
+            "the restarted worker forwards the leased agent home: {elevated:?}"
+        );
         assert!(
             remaining_windows.is_empty(),
             "the home ends the lost window"

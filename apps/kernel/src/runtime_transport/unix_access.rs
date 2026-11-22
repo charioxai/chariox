@@ -165,9 +165,27 @@ pub(super) async fn admit_frame(
             KernelIncomingFrame::Request { request, .. } => runtime_state
                 .authorize_reach_request(&reach.id, request)
                 .map_err(|error| Refusal::of(&error)),
-            KernelIncomingFrame::Subscribe { .. } | KernelIncomingFrame::Unsubscribe { .. } => {
-                Ok(())
+            KernelIncomingFrame::Subscribe {
+                kernel: Some(_), ..
             }
+            | KernelIncomingFrame::Unsubscribe { .. } => Ok(()),
+            // Any of the owner's sessions, through an attachment of the owner's own.
+            KernelIncomingFrame::Subscribe {
+                session_id,
+                attachment_id,
+                ..
+            } => (runtime_state
+                .attachment_owner_user_id(attachment_id)
+                .await
+                .is_ok_and(|owner| {
+                    runtime_state.acts_for_owner(session_id, &reach.owner_user_id, &owner)
+                })
+                && router
+                    .session_id_for_attachment_access(attachment_id)
+                    .as_deref()
+                    == Some(session_id.as_str()))
+            .then_some(())
+            .ok_or(Refusal::NotCovered),
         };
         if let Err(refusal) = verdict {
             deny_frame(
