@@ -125,6 +125,7 @@ impl KernelRuntimeState {
         Ok(turn)
     }
 
+    #[cfg(test)]
     pub(crate) fn sudo_for_auth_token(&self, token: &str) -> Result<KernelSudoTurn, DaemonError> {
         let runs = self
             .owned

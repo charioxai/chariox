@@ -388,7 +388,7 @@ async fn sudo_window_survives_waits_and_admits_only_its_own_work() {
         .sudo_work_held(&session(&f), &agent));
     assert!(outcomes(&f, &window.entry_id).contains(&"expired".to_owned()));
     // MP-08/MP-10/MP-11: main advertises the dormant interface before the
-    // first provider turn; expiry must revoke authority, not discovery.
+    // first provider turn; expiry ends the window; row 405: the owner's agent keeps the owner's authority.
     assert!(f
         .router
         .runtime_tool_specs_for_auth_token("sudo-fixture-bearer")
@@ -402,7 +402,7 @@ async fn sudo_window_survives_waits_and_admits_only_its_own_work() {
             serde_json::json!({"request":{"ListSessions":null}})
         )
         .await
-        .is_err());
+        .is_ok_and(|result| result.ok));
 }
 
 #[tokio::test]

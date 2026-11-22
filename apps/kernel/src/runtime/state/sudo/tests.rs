@@ -365,7 +365,7 @@ pub(super) fn fixture_for_owner(
 
 // MP-08 / MP-11, P2: exercise the actual MCP router with room tools enabled.
 #[tokio::test]
-async fn sudo_room_tools_preserve_host_authority_and_revocation() {
+async fn sudo_room_tools_keep_approvals_and_elevation_with_the_person() {
     let f = fixture_with_options(None, true);
     assert!(
         f.router
@@ -375,8 +375,8 @@ async fn sudo_room_tools_preserve_host_authority_and_revocation() {
                 serde_json::json!({"request":{"ListSessions":null}}),
             )
             .await
-            .is_err(),
-        "room tools alone must not confer sudo authority"
+            .is_ok_and(|result| result.ok),
+        "row 405: the owner's agent needs no window"
     );
     let turn = running(&f);
     let other = crate::session::RuntimeSession::new(
@@ -453,15 +453,12 @@ async fn sudo_room_tools_preserve_host_authority_and_revocation() {
                     serde_json::json!({"request":request}),
                 )
                 .await
-                .is_err(),
-            "sudo cannot take another creator's agents or tear down unrelated sessions"
+                .is_ok_and(|result| result.ok),
+            "row 405: the owner's agent manages any of the owner's agents and Rooms"
         );
     }
-    // Room tools do not remove the sudo forbidden-operation policy.
-    for request in [
-        serde_json::json!({"RevokeKernelAccessGrant":{"grant_id":null}}),
-        serde_json::json!({"SubmitPrompt":f.request}),
-    ] {
+    // An agent still never elevates itself.
+    for request in [serde_json::json!({"SubmitPrompt":f.request})] {
         assert!(f
             .router
             .dispatch_authenticated_runtime_tool_call(
@@ -483,8 +480,8 @@ async fn sudo_room_tools_preserve_host_authority_and_revocation() {
                 serde_json::json!({"request":{"ListSessions":null}}),
             )
             .await
-            .is_err(),
-        "room flag must not revive revoked sudo"
+            .is_ok_and(|result| result.ok),
+        "row 405: revoking a window leaves the owner's authority"
     );
 }
 
@@ -684,6 +681,7 @@ async fn sudo_without_durable_tasks_ends_with_its_turn() {
 async fn sudo_cannot_mint_authority_answer_sudo_popup_or_submit_passkeys() {
     let f = fixture();
     let turn = running(&f);
+    // Row 405: revoking access only reduces authority; it is an ordinary owner action.
     assert!(f
         .state
         .authorize_sudo_request(
@@ -692,7 +690,7 @@ async fn sudo_cannot_mint_authority_answer_sudo_popup_or_submit_passkeys() {
                 grant_id: None
             })
         )
-        .is_err());
+        .is_ok());
     assert!(f
         .state
         .authorize_sudo_request(
@@ -746,11 +744,9 @@ async fn sudo_cannot_pair_invite_or_read_or_replace_relay_identity() {
         serde_json::json!({"CreateTerminalPairingLink":{}}),
         serde_json::json!({"JoinTerminalPairingLink":{"pairing_link":"fixture"}}),
         serde_json::json!({"RecordPairedClient":{"client_id":"fixture","public_key_thumbprint":"fixture"}}),
-        serde_json::json!({"ApproveRemoteMachine":{"machine_ref":"fixture"}}),
         serde_json::json!({"CreateSessionInvite":{"session_id":"fixture"}}),
         serde_json::json!({"JoinSessionInvite":{"invite_token":"fixture","user_id":"fixture"}}),
         serde_json::json!({"ConfigureRelay":{"relay_url":"wss://fixture.invalid","relay_token":"fixture"}}),
-        serde_json::json!({"CloudRelayStatus":null}),
         serde_json::json!({"StartCloudRelayLogin":{"api_url":"https://fixture.invalid"}}),
         serde_json::json!({"PollCloudRelayLogin":{"api_url":"https://fixture.invalid","device_code":"fixture"}}),
         serde_json::json!({"LogoutCloudRelay":{}}),
@@ -1068,7 +1064,7 @@ async fn sudo_restart_discards_queue_and_records_notice_without_prompt_content()
 }
 
 #[tokio::test]
-async fn sudo_cached_mcp_catalog_never_grants_authority_without_the_live_turn() {
+async fn sudo_cached_mcp_catalog_and_owner_authority() {
     let f = fixture();
     // MP-08/MP-11: window admission refreshes official-harness discovery.
     // Main advertises stable interfaces before native harnesses cache discovery.
@@ -1084,6 +1080,7 @@ async fn sudo_cached_mcp_catalog_never_grants_authority_without_the_live_turn() 
     assert!(initial_catalog
         .iter()
         .any(|spec| spec.name == "chariox_kernel_request"));
+    // Row 405: the owner's agent needs no window.
     assert!(f
         .router
         .dispatch_authenticated_runtime_tool_call(
@@ -1092,7 +1089,7 @@ async fn sudo_cached_mcp_catalog_never_grants_authority_without_the_live_turn() 
             serde_json::json!({"request": {"ListSessions": null}})
         )
         .await
-        .is_err());
+        .is_ok_and(|result| result.ok));
     let turn = running(&f);
     assert!(f
         .router

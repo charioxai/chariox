@@ -58,7 +58,10 @@ pub(super) async fn admit_frame(
         return Err(());
     }
     let bound = bound_grant.lock().expect("bound grant poisoned").clone();
-    let sudo = if bound.as_deref().is_none_or(|id| id.starts_with("sudo:")) {
+    // Row 405: an owner's agent acts with the owner's authority; a /sudo window adds nothing
+    // for agents, so its shell never takes the narrower sudo path.
+    let owners_agent = runtime_state.reach_for_peer(peer).is_ok();
+    let sudo = if !owners_agent && bound.as_deref().is_none_or(|id| id.starts_with("sudo:")) {
         runtime_state
             .sudo_for_peer(peer)
             .ok()

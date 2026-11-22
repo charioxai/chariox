@@ -588,20 +588,27 @@ async fn room_boundaries() {
         .unwrap()
         .project_id()
         .to_string();
+    // Row 405 (PA8): ending, archiving and deleting are the owner's ordinary actions.
     for value in [
         serde_json::json!({"EndSession":{"session_id":session.id()}}),
-        // Archiving or deleting a Project ends or deletes its Rooms, as the two above do.
         serde_json::json!({"ArchiveProject":{"project_id":project_id}}),
         serde_json::json!({"DeleteProject":{"project_id":project_id}}),
         serde_json::json!({"DeleteSession":{"session_ref":session.id(),"workspace_id":null}}),
-        serde_json::json!({"UpdateAgentProfile":{"session_id":session.id(),"agent_id":peer.id(),"model":"takeover"}}),
     ] {
         let request: LocalDaemonRequest = serde_json::from_value(value).unwrap();
         assert!(router
             .runtime_state
             .authorize_room_agent_request(a.id(), &request)
-            .is_err());
+            .is_ok());
     }
+    let takeover: LocalDaemonRequest = serde_json::from_value(serde_json::json!(
+        {"UpdateAgentProfile":{"session_id":session.id(),"agent_id":peer.id(),"model":"takeover"}}
+    ))
+    .unwrap();
+    assert!(router
+        .runtime_state
+        .authorize_room_agent_request(a.id(), &takeover)
+        .is_err());
     // Neither aliases nor a stale provider-run credential can revive an actor.
     {
         let app = app.lock().await;
@@ -1652,10 +1659,10 @@ async fn other_room_fence() {
     );
 }
 
-// Tearing down a Room, Project or kernel is refused for an agent caller whether or not the Room
-// tool surface is switched on (it is opt-in, and the older metaagent path runs without it).
+// Row 405 (PA8): ending, deleting and archiving the owner's Rooms and Projects are ordinary owner
+// actions for the owner's agents, whether or not the Room tool surface is switched on.
 #[test]
-fn room_admission_refuses_teardown_with_room_agent_tools_off() {
+fn room_admission_admits_teardown_with_room_agent_tools_off() {
     run_large_stack_async_test("room-teardown-tools-off", teardown_with_tools_off);
 }
 
@@ -1686,8 +1693,8 @@ async fn teardown_with_tools_off() {
             router
                 .runtime_state
                 .authorize_room_agent_request(actor.id(), &request)
-                .is_err(),
-            "{value} reached its handler"
+                .is_ok(),
+            "{value} was refused to the owner's agent"
         );
     }
 }

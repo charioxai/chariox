@@ -255,7 +255,8 @@ async fn prompt_table() {
 }
 
 #[test]
-fn only_the_user_moves_an_agent_in_the_tree() {
+// Row 405: moving the owner's agents in the tree is an ordinary owner action.
+fn an_owners_agent_moves_an_agent_in_the_tree() {
     run_large_stack_async_test("subtree-set-parent", set_parent);
 }
 
@@ -279,8 +280,8 @@ async fn set_parent() {
                         .unwrap_or_else(|| world.ids["a"].clone()),
                     &request
                 )
-                .is_err(),
-            "{who} must not reparent anyone"
+                .is_ok(),
+            "{who} was refused a move of the owner's agent"
         );
     }
     let mut command = KernelCommand::from_local_request("user-set-parent", None, None, &request);
