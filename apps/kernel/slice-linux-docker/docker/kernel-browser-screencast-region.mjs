@@ -48,3 +48,34 @@ export async function subscribeScreencastRegion(host,command,scope,signal,{Scree
   throw error;
  }
 }
+// One region's view of the Tab's shared screencast. Frames are the shared ones, named at the crop's size with the crop
+// rectangle (device pixels) for the encoder; validity, protection fences and wakes are the shared source's. Closing a
+// region only lets go of the shared source: it stops with its last user (host.screencastFor).
+export class ScreencastRegionCapture {
+ constructor({shared,tab,scale,policy,rect,allowed,validateCurrent,timing=()=>{}}){
+  Object.assign(this,{shared,tab,scale,policy,rect,allowed,validateCurrent,timing});
+  this.region={css_width:rect.width/scale,css_height:rect.height/scale};this.listeners=new Set();this.closed=false;
+ }
+ get source(){return this.shared.source;}
+ get regionRevision(){return this.source.regionRevision;}
+ get changedAt(){return this.source.changedAt;}
+ crop(frame){return frame&&{...frame,width:this.rect.width,height:this.rect.height,crop:{...this.rect},motion:true};}
+ async start(){
+  if(this.closed)throw Error('MD-DISPLAY: region source closed');
+  await this.shared.ready;
+  if(!this.valid())throw Error('MD-DISPLAY: compositor policy fenced');
+  this.off=this.source.subscribe(frame=>{if(this.valid())for(const listener of this.listeners)listener(this.crop(frame));});
+  return this;
+ }
+ subscribe(fn){this.listeners.add(fn);return()=>this.listeners.delete(fn);}
+ sample(after=-1){return this.valid()?this.crop(this.source.sample(after)):null;}
+ valid(){return !this.closed&&!this.source.closed&&!this.source.fenced&&this.allowed(this.policy);}
+ wake(){this.source.wake?.();}
+ pause(){this.source.pause?.();}
+ resume(){this.source.resume?.();}
+ close(){
+  if(this.closing)return this.closing;
+  this.closed=true;this.off?.();this.off=null;this.listeners.clear();
+  return this.closing=Promise.resolve(this.shared.release?.());
+ }
+}

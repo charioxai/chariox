@@ -400,3 +400,20 @@ test('R1a/R1b: a headless browser grants a region lease as a crop of the Tab\'s 
  assert.equal(shared.length,1,'two regions of one Tab share one screencast');
  for(const stream of [...f.host.displays.values()])await stream.close();
 });
+
+// R1: a region's view of the shared screencast: frames at the crop's size with the crop for the encoder; a fenced or closed shared
+// source fences the region; closing the region only releases the shared source.
+test('R1: a screencast region crops the shared frames and follows the shared fences',async()=>{
+ const {ScreencastRegionCapture}=await import('./kernel-browser-screencast-region.mjs');
+ const listeners=new Set(),source={closed:false,fenced:false,regionRevision:4,changedAt:1,subscribe(fn){listeners.add(fn);return()=>listeners.delete(fn);},sample:()=>({data_base64:'j',width:2560,height:1600,serial:7,signature:'s'})};
+ let released=0;const shared={source,ready:Promise.resolve(),release:()=>{released++;}};
+ const policy={},rect={left:20,top:40,width:200,height:100};
+ const region=new ScreencastRegionCapture({shared,tab:{tab_id:'t'},scale:2,policy,rect,allowed:p=>p===policy});
+ await region.start();
+ assert.deepEqual(region.region,{css_width:100,css_height:50});
+ assert.deepEqual(region.sample(),{data_base64:'j',width:200,height:100,serial:7,signature:'s',crop:rect,motion:true},'the shared frame named at the crop');
+ const seen=[];region.subscribe(f=>seen.push(f));for(const l of listeners)l({data_base64:'k',width:2560,height:1600,serial:8});
+ assert.deepEqual(seen.map(f=>[f.serial,f.width,f.crop.left]),[[8,200,20]]);
+ source.fenced=true;assert.equal(region.valid(),false,'a fenced shared source fences the region');assert.equal(region.sample(),null);
+ source.fenced=false;await region.close();assert.equal(released,1,'closing releases the shared source');assert.equal(listeners.size,0);
+});
