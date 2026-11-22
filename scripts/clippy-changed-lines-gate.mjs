@@ -6,6 +6,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { pathToFileURL } from "node:url"
 import { createInterface } from "node:readline"
+import { isMainReference, requireCurrentOriginMain } from "./lib/ratchet.mjs"
 
 function primarySpan(message) {
   return (message.spans ?? []).find((span) => span.is_primary) ?? null
@@ -100,13 +101,16 @@ function runGit(args, options = {}) {
 export function clippyComparisonBase(explicitBase, env) {
   if (explicitBase?.trim()) return explicitBase.trim()
   if (env.GITHUB_BASE_REF) return `origin/${env.GITHUB_BASE_REF}`
-  return env.GITHUB_EVENT_NAME === "workflow_dispatch" ? "origin/main" : "HEAD^"
+  return !env.GITHUB_EVENT_NAME || env.GITHUB_EVENT_NAME === "workflow_dispatch" ? "origin/main" : "HEAD^"
 }
 
 async function main() {
   const explicitBase = process.argv[2]?.trim()
   const base = clippyComparisonBase(explicitBase, process.env)
   const repositoryRoot = runGit(["rev-parse", "--show-toplevel"])
+  const baseCommit = isMainReference(base) || !process.env.GITHUB_EVENT_NAME
+    ? requireCurrentOriginMain(repositoryRoot, base)
+    : base
   // The baseline checkout may carry an older pin; compare both with HEAD's compiler.
   const active = spawnSync("rustup", ["show", "active-toolchain"], {
     cwd: repositoryRoot, encoding: "utf8",
@@ -121,7 +125,7 @@ async function main() {
   let baseAdded = false
   try {
     const headWarnings = await runClippy(repositoryRoot, targetDir, toolchain)
-    runGit(["worktree", "add", "--detach", "--quiet", baseWorktree, base], {
+    runGit(["worktree", "add", "--detach", "--quiet", baseWorktree, baseCommit], {
       cwd: repositoryRoot,
     })
     baseAdded = true
