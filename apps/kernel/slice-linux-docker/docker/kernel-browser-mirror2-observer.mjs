@@ -1385,6 +1385,8 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     // inset corners, is fully opaque (a video frame or canvas bitmap filling its box, the canvas's readback opaque everywhere),
     // and it and its own wrappers draw without transparency (opacity, blending, alpha filters, clip, mask) or a rotation.
     // Anything else (unreadable pixels, a hole, a cover below) names no cover.
+    // 4 MP: a 2560x1600 canvas (a full DPR2 viewport) is read whole; larger ones keep both stills.
+    const COVER_PROBE_PIXELS = 4 * 1024 * 1024;
     const coveredBy = list => {
       const out = {};
       // Compositing that keeps every pixel's alpha: colour-only filter functions, no clip or mask, full opacity, normal blending.
@@ -1415,8 +1417,11 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
           if (alphaKept(style) && aligned && style.visibility === 'visible') {
             if (node.localName === 'video') yes = node.readyState >= 2 && ['fill', 'cover'].includes(style.objectFit) && fillsBox(node, style, node.videoWidth, node.videoHeight);
             else if (node.localName === 'canvas' && node.width > 0 && node.height > 0 && fillsBox(node, style, node.width, node.height)) {
-              const w = Math.min(256, node.width), h = Math.max(1, Math.round(node.height * w / node.width)), probe = new OffscreenCanvas(w, h), g = probe.getContext('2d');
-              g.drawImage(node, 0, 0, w, h); const data = g.getImageData(0, 0, w, h).data; let all = true, black = true;
+              // Every source pixel's alpha, never a resized probe (a narrow transparent strip can fall between its samples); a bitmap
+              // too large to read whole within COVER_PROBE_PIXELS proves nothing and covers nothing.
+              if (node.width * node.height > COVER_PROBE_PIXELS) throw Error('cover too large to prove');
+              const w = node.width, h = node.height, probe = new OffscreenCanvas(w, h), g = probe.getContext('2d');
+              g.drawImage(node, 0, 0); const data = g.getImageData(0, 0, w, h).data; let all = true, black = true;
               for (let i = 0; i < data.length && all; i += 4) { all = data[i + 3] === 255; black &&= !data[i] && !data[i + 1] && !data[i + 2]; }
               // An all-black readback of a WebGL canvas is its cleared buffer, not what it shows (as elementPixels).
               yes = all && !(black && !(() => { try { return !!node.getContext('2d'); } catch { return false; } })());
