@@ -291,6 +291,7 @@ mod tests {
     mod runtime_persistence;
     mod session_actor_projection;
     mod session_lifecycle_projection;
+    mod slice_hosted_placement;
     mod session_read_projection;
     mod stack_budget;
     mod status_projection;
