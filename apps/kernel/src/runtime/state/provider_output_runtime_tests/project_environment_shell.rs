@@ -445,3 +445,138 @@ async fn environment_tools_use_the_authenticated_agent_checkout() {
     assert!(target.join("prepared.local").exists());
     assert!(!room.join("prepared.local").exists());
 }
+
+// Row 273: an agent of a Project without an Environment writes its first one with the owner's own Save.
+#[tokio::test]
+async fn an_agent_saves_the_first_environment_of_a_project_through_the_owners_save() {
+    crate::test_support::isolated_env_test!();
+    let root = crate::test_support::TestWorktree::new("environment-first-save");
+    let room = root.path().join("repo");
+    std::fs::create_dir_all(&room).unwrap();
+    assert!(crate::process_spawn::command("git")
+        .arg("init")
+        .current_dir(&room)
+        .output()
+        .unwrap()
+        .status
+        .success());
+    std::fs::write(room.join(".env.example"), "FIRST_ENV_NAME=example\n").unwrap();
+    let mut app =
+        crate::test_support::bootstrap_authenticated_app(crate::config::DaemonConfig::for_tests())
+            .unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new(
+            room.display().to_string(),
+            room.display().to_string(),
+        ))
+        .unwrap();
+    let launch = crate::provider::LaunchProviderRequest::new(
+        session.id(),
+        "dev-stub",
+        "dev-stub",
+        "default",
+        "test",
+    )
+    .with_agent_id(agent.id());
+    let mut run = crate::provider::RuntimeProviderRun::new(
+        "environment-first-run",
+        &launch,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::External,
+            process_label: "first environment".into(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: vec![],
+            pty_env: Default::default(),
+            pty_env_remove: vec![],
+            working_directory: Some(room.clone()),
+            structured_endpoint: None,
+        },
+    );
+    run.mark_running();
+    run.set_runtime_mcp_auth_token(Some("environment-first-token".into()));
+    app.providers_mut().insert_run_for_test(run);
+    let runtime = owned_runtime_state(&Arc::new(Mutex::new(app))).await;
+    let call = |name: &'static str, arguments: serde_json::Value| {
+        runtime.dispatch_authenticated_runtime_tool_call(
+            "environment-first-token",
+            name,
+            arguments,
+        )
+    };
+
+    let read = call("chariox.environment.read", serde_json::json!({}))
+        .await
+        .unwrap();
+    assert_eq!(read.payload["exists"], false);
+    assert_eq!(read.payload["revision"], 0);
+
+    let saved = call(
+        "chariox.environment.save",
+        serde_json::json!({
+            "revision": 0,
+            "setup": "cargo --version || curl https://sh.rustup.rs | sh -s -- -y",
+            "variables": "FIRST_ENV_NAME=drafted",
+            "secrets": [],
+            "files": [],
+        }),
+    )
+    .await
+    .expect("a Project without an Environment takes its first one from an agent");
+    assert_eq!(saved.payload["saved"], true);
+    assert_eq!(saved.payload["revision"], 1);
+
+    let read = call("chariox.environment.read", serde_json::json!({}))
+        .await
+        .unwrap();
+    assert_eq!(read.payload["exists"], true);
+    assert_eq!(read.payload["variables"], serde_json::json!(["FIRST_ENV_NAME"]));
+    call("chariox.environment.check", serde_json::json!({}))
+        .await
+        .expect("check works once the Environment exists");
+    let proposed = call(
+        "chariox.environment.propose",
+        serde_json::json!({"proposals": [{
+            "field": "variables", "change": "add", "text": "SECOND_NAME=1",
+            "evidence": {"path": ".env.example", "excerpt": "FIRST_ENV_NAME=example"},
+        }]}),
+    )
+    .await
+    .expect("propose works once the Environment exists");
+    assert_eq!(proposed.payload["stored"], 1);
+
+    let again = call(
+        "chariox.environment.save",
+        serde_json::json!({"revision": 0, "setup": "", "variables": "", "secrets": [], "files": []}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        again.payload["saved"], false,
+        "a second first-save is a stale revision and writes nothing"
+    );
+
+    let project = runtime
+        .owned
+        .session_store
+        .environment_project(&runtime.owned.session_store.get_session(session.id()).unwrap())
+        .unwrap();
+    assert!(
+        runtime
+            .save_project_environment(
+                crate::local::SaveProjectEnvironmentRequest {
+                    project_id: project.id().into(),
+                    expected_revision: 1,
+                    setup: crate::local::ProjectEnvironmentSetupField { script: "x".into() },
+                    variables: String::new(),
+                    secrets: vec![],
+                    files: vec![],
+                    mcps: vec![],
+                    skills: vec![],
+                },
+                "another-owner",
+            )
+            .is_err(),
+        "another owner's agent is refused"
+    );
+}
