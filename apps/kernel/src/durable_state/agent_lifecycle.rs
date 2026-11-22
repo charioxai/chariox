@@ -288,19 +288,6 @@ impl DurableKernelStateStore {
             .read_tasks("agent.lifecycle.task", "task_id=?1", [task])?
             .pop())
     }
-    pub(crate) fn task_card_is_dismissed(
-        &self,
-        task: &str,
-        revision: u64,
-    ) -> Result<bool, DaemonError> {
-        self.lock_connection("agent.lifecycle.task_card_is_dismissed")?
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM agent_tasks WHERE task_id=?1 AND dismissed_card_revision=?2)",
-                params![task, sql_integer(revision)?],
-                |row| row.get(0),
-            )
-            .map_err(sql)
-    }
     /// A blocking waiter took the result. Its receipt is independent of whether the parent's
     /// delegate source was bound before the worker finished.
     pub(crate) fn record_agent_worker_result_returned(
@@ -1411,13 +1398,6 @@ fn index_task_lookups(db: &Connection) -> Result<(), DaemonError> {
              RELEASE task_terminal_projection;",
         )
         .map_err(sql)?;
-    }
-    if !columns
-        .iter()
-        .any(|column| column == "dismissed_card_revision")
-    {
-        db.execute_batch("ALTER TABLE agent_tasks ADD COLUMN dismissed_card_revision INTEGER")
-            .map_err(sql)?;
     }
     let registration_columns: Vec<String> = db
         .prepare("PRAGMA table_xinfo(agent_registrations)")

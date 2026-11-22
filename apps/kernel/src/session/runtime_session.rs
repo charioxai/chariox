@@ -1104,10 +1104,9 @@ impl RuntimeSession {
             .collect()
     }
 
-    /// Names the Room's cards by their askers and leaves dismissed cards in the Inbox.
-    pub(crate) fn project_room_interactions(&mut self) {
-        self.active_interactions
-            .retain(|card| !card.room_dismissed());
+    /// Names each agent's card by its asker as the session's agents name it now, so a client
+    /// shows who asks without a lookup.
+    pub(crate) fn name_interaction_askers(&mut self) {
         self.active_interactions = self.named_active_interactions();
     }
 

@@ -60,9 +60,6 @@ impl KernelRuntimeState {
                 } else {
                     self.owner_card(owner, &id, &pending)?
                 };
-                let reply_choice = interaction.custom_choice().filter(|custom| {
-                    custom.input_kind() == crate::session::RuntimeInteractionInputKind::Text
-                });
                 Some((
                     interaction.requested_at_ms(),
                     OwnerInteraction {
@@ -77,13 +74,15 @@ impl KernelRuntimeState {
                             .map(|choice| OwnerInteractionChoice {
                                 id: choice.id().to_owned(),
                                 label: choice.label().to_owned(),
-                                description: choice.description().map(str::to_owned),
                             })
                             .collect(),
-                        reply_choice_id: reply_choice.map(|choice| choice.id().to_owned()),
-                        reply_choice_description: reply_choice
-                            .and_then(|choice| choice.description())
-                            .map(str::to_owned),
+                        reply_choice_id: interaction
+                            .custom_choice()
+                            .filter(|custom| {
+                                custom.input_kind()
+                                    == crate::session::RuntimeInteractionInputKind::Text
+                            })
+                            .map(|custom| custom.id().to_owned()),
                         person_only: pending.person_only(&interaction).map(str::to_owned),
                     },
                 ))

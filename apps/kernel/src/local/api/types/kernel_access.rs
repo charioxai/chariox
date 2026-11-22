@@ -322,8 +322,6 @@ pub struct OwnerInteraction {
     /// The choice that takes a text reply (`custom_reply`), when the card asks for one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reply_choice_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reply_choice_description: Option<String>,
     /// Why only the person answers this card; absent when an external agent may answer it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub person_only: Option<String>,
@@ -333,8 +331,6 @@ pub struct OwnerInteraction {
 pub struct OwnerInteractionChoice {
     pub id: String,
     pub label: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
 }
 
 /// Protocol 415: a grant holder requests a human-authorized turn. Identity and

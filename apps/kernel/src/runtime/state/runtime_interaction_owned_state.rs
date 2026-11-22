@@ -73,7 +73,7 @@ impl KernelRuntimeOwnedState {
         })
     }
 
-    /// A blocked task's decision is bound to whoever owned the room when it was raised, who
+    /// A blocked task's Resume or Cancel is bound to whoever owned the room when it was raised, who
     /// may be gone by the time anyone answers (a restart left it open). The room's current owner and
     /// the blocked agent's owner can always answer it, so the card never stays open with nobody
     /// allowed to close it.
@@ -665,24 +665,6 @@ impl KernelRuntimeOwnedState {
                 message: format!("interaction {interaction_id} does not define choice {choice_id}"),
             });
         };
-        if super::agent_task_owner_interactions::is_blocked_task_decision(interaction_id)
-            && choice_id == super::agent_task_owner_interactions::DISMISS_BLOCKED_TASK_CARD
-        {
-            let mut room = session
-                .take()
-                .ok_or_else(|| interaction_error("Task card has no Room"))?;
-            if !interaction.room_dismissed() {
-                self.dismiss_blocked_task_card(session_id, interaction_id)?;
-                room.replace_active_interaction(interaction.with_room_dismissed(true));
-                sessions.restore_session(room);
-            }
-            drop(sessions);
-            activity_mutation.record();
-            self.session_snapshot(session_id)?;
-            self.terminal_stream
-                .notify_terminal_projection_change(session_id);
-            return Ok(());
-        }
         // A Vault passphrase is checked while its card stays on screen: the waiter
         // closes the card when the Vault is open, or shows the refusal in it.
         let holds_card = pending.terminal_credential_owner.is_some()

@@ -456,11 +456,6 @@ pub(crate) enum Operation {
         prompt: String,
         reason: String,
     },
-    DismissTaskCard {
-        room: String,
-        task: String,
-        blocked_revision: u64,
-    },
     /// An agent's own question to the owner: the card carries a reply box, not Resume.
     BlockForQuestion {
         task: String,

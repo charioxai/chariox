@@ -84,6 +84,7 @@ impl KernelRuntimeOwnedState {
         let mut session = self.session_store.get_session(session_id)?;
         let agents = self.agent_store.get_session_agents(session_id);
         session.set_agents(agents);
+        session.name_interaction_askers();
         session.set_agent_tasks(
             self.durable_state_store
                 .visible_agent_tasks(
@@ -113,7 +114,6 @@ impl KernelRuntimeOwnedState {
     ) {
         #[cfg(test)]
         call_counts::RUNTIME_VIEW_PROJECTIONS.with(|count| count.set(count.get() + 1));
-        session.project_room_interactions();
         // MP-08/MP-10/MP-11: every ordinary refresh carries current window state.
         session.set_sudo_windows(self.sudo_windows_for_session(session.id()));
         session.set_room_setup(self.room_setup.state(session.id()));

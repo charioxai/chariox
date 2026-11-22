@@ -160,10 +160,10 @@ impl KernelRuntimeOwnedState {
             }
             Ok(_) => {}
             Err(error) => {
-                // Damaged registrations must not take away the task's Stop choice.
+                // Damaged registrations must not take away the task's Cancel choice.
                 let reason =
                     crate::secret_redaction::redact_secrets(&error.to_string()).into_owned();
-                text.push_str(&format!(" Recovery instructions could not be read: {reason}. Stop this task or restore its authoritative receipts before Resume."));
+                text.push_str(&format!(" Recovery instructions could not be read: {reason}. Cancel this task or restore its authoritative receipts before Resume."));
             }
         }
         text

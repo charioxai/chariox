@@ -50,8 +50,6 @@ pub struct RuntimeInteractionChoice {
     label: String,
     reply: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    description: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     style: Option<RuntimeInteractionChoiceStyle>,
     /// Answering with this choice needs the Chariox passkey (the vault
     /// passphrase) or an open remember window; a card payment always needs
@@ -75,7 +73,6 @@ impl RuntimeInteractionChoice {
             id: id.into(),
             label: label.into(),
             reply: reply.into(),
-            description: None,
             style,
             requires_passkey: false,
             vault_unlock: None,
@@ -114,15 +111,6 @@ impl RuntimeInteractionChoice {
         &self.reply
     }
 
-    pub(crate) fn with_description(mut self, description: impl Into<String>) -> Self {
-        self.description = Some(description.into());
-        self
-    }
-
-    pub fn description(&self) -> Option<&str> {
-        self.description.as_deref()
-    }
-
     pub fn style(&self) -> Option<RuntimeInteractionChoiceStyle> {
         self.style
     }
@@ -132,8 +120,6 @@ impl RuntimeInteractionChoice {
 pub struct RuntimeInteractionCustomChoice {
     id: String,
     label: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    description: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     placeholder: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -158,7 +144,6 @@ impl RuntimeInteractionCustomChoice {
         Self {
             id: id.into(),
             label: label.into(),
-            description: None,
             placeholder,
             min_length,
             max_length,
@@ -176,7 +161,6 @@ impl RuntimeInteractionCustomChoice {
         Self {
             id: id.into(),
             label: label.into(),
-            description: None,
             placeholder,
             min_length,
             max_length,
@@ -190,15 +174,6 @@ impl RuntimeInteractionCustomChoice {
 
     pub fn label(&self) -> &str {
         &self.label
-    }
-
-    pub(crate) fn with_description(mut self, description: impl Into<String>) -> Self {
-        self.description = Some(description.into());
-        self
-    }
-
-    pub fn description(&self) -> Option<&str> {
-        self.description.as_deref()
     }
 
     pub fn placeholder(&self) -> Option<&str> {
@@ -326,9 +301,6 @@ pub struct RuntimeInteraction {
     /// Protocol 477: a protected owner hand-off (safe target metadata only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     handoff: Option<RuntimeHandoff>,
-    /// Dismissed from the Room. The open decision still appears in the owner's Inbox.
-    #[serde(skip)]
-    room_dismissed: bool,
     /// Local only: when a forwarded decision stops being actionable.
     #[serde(skip)]
     decision_expires_at: Option<tokio::time::Instant>,
@@ -461,7 +433,6 @@ impl RuntimeInteraction {
             handoff: None,
             requester: None,
             payment: None,
-            room_dismissed: false,
             decision_expires_at: None,
             sudo_request: None,
             app_install: None,
@@ -695,7 +666,6 @@ impl RuntimeInteraction {
             handoff: None,
             requester: None,
             payment: None,
-            room_dismissed: false,
             decision_expires_at: None,
             sudo_request: None,
             app_install: None,
@@ -767,15 +737,6 @@ impl RuntimeInteraction {
 
     pub fn title(&self) -> Option<&str> {
         self.title.as_deref()
-    }
-
-    pub(crate) fn with_room_dismissed(mut self, dismissed: bool) -> Self {
-        self.room_dismissed = dismissed;
-        self
-    }
-
-    pub(crate) fn room_dismissed(&self) -> bool {
-        self.room_dismissed
     }
 
     pub(crate) fn with_message(mut self, message: String) -> Self {

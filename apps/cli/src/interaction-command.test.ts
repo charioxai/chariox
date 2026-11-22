@@ -4,7 +4,7 @@ import { test } from "node:test"
 import { runInteractionCommand } from "./interaction-command.js"
 import { replyWith, startFakeKernel } from "./fake-unix-kernel.test-support.js"
 
-const card = { session_id: "room-1", interaction_id: "task-blocked-1", reply_choice_id: "reply", reply_choice_description: "Send your reply and continue the waiting task.", title: "Allow browser access", message: "m", choices: [{ id: "cancel", label: "Dismiss", description: "Hide the card. The task keeps waiting." }, { id: "allow_browser", label: "Allow browser" }] }
+const card = { session_id: "room-1", interaction_id: "task-blocked-1", title: "Allow browser access", message: "m", choices: [{ id: "cancel", label: "Cancel" }, { id: "allow_browser", label: "Allow browser" }] }
 const detached = { interaction_id: "app_host_1", title: "Open a link from an App", message: "m", choices: [{ id: "decline", label: "Decline" }] }
 const listed = { response: { OwnerInteractionsListed: { interactions: [card, detached] } } }
 
@@ -42,7 +42,6 @@ test("interaction answer finds the card's Room and answers it", async () => {
   ])
   assert.deepEqual(JSON.parse(result.out), { interaction_id: "task-blocked-1", choice_id: "allow_browser", status: "answered" })
   const reply = await run(["interaction", "answer", "task-blocked-1", "reply", "--reply", "go on"])
-  assert.match(reply.err, /Send your reply and continue the waiting task/)
   assert.deepEqual(reply.requests[1], { RespondToInteraction: { session_id: "room-1", interaction_id: "task-blocked-1", choice_id: "reply", custom_reply: "go on" } })
 })
 
@@ -60,10 +59,4 @@ test("interaction answer names a card that is not open and sends no answer", asy
   assert.deepEqual(result.requests, [{ ListOwnerInteractions: {} }])
   assert.match(result.err, /no open card gone-1/)
   assert.ok(result.exit)
-})
-
-test("interaction answer describes Dismiss before sending the existing choice id", async () => {
-  const result = await run(["interaction", "answer", "task-blocked-1", "cancel"])
-  assert.match(result.err, /Dismiss\. Hide the card\. The task keeps waiting\./)
-  assert.deepEqual(result.requests[1], { RespondToInteraction: { session_id: "room-1", interaction_id: "task-blocked-1", choice_id: "cancel" } })
 })
