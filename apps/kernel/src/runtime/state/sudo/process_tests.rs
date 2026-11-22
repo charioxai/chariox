@@ -768,7 +768,7 @@ async fn sudo_review_shell_subscriptions_are_owner_session_bound() {
             f.request.attachment_id.as_str(),
             true,
         ),
-        // Row 405: any of the owner's sessions, through the owner's own attachment.
+        // Row 405: any of the owner's sessions, through an attachment of the owner's own.
         (
             "other session",
             other_session.id(),

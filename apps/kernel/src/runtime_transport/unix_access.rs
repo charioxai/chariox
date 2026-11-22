@@ -180,10 +180,10 @@ pub(super) async fn admit_frame(
                 .is_ok_and(|owner| {
                     runtime_state.acts_for_owner(session_id, &reach.owner_user_id, &owner)
                 })
-                && router
-                    .session_id_for_attachment_access(attachment_id)
-                    .as_deref()
-                    == Some(session_id.as_str()))
+                && runtime_state
+                    .attachment_session_id(attachment_id)
+                    .await
+                    .is_ok_and(|attached| attached == *session_id))
             .then_some(())
             .ok_or(Refusal::NotCovered),
         };
