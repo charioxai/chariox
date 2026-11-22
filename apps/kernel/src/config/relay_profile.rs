@@ -74,7 +74,7 @@ impl DaemonConfig {
             // An explicit relay override suppresses the in-memory Cloud profile.
             // Transport configuration is not an enrollment unlink operation.
             let mut retained = self.clone();
-            retained.try_load_kernel_cloud_state()?;
+            retained.try_load_kernel_cloud_state(false)?;
             retained.relay_url = self.relay_url.clone();
             retained.relay_token = self.relay_token.clone();
             return retained.persist_kernel_cloud_state();
