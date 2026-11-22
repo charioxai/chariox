@@ -170,6 +170,66 @@ fn a_command_filling_the_disk_is_stopped_with_its_reason_never_paused() {
     );
 }
 
+/// A copy of many files (the 11-22 runaway's shape): 8 MiB files, each
+/// written, closed and removed between two samples, at about 200 MiB/s for
+/// at most 8 s. No single file is ever seen growing.
+fn many_file_writer() -> String {
+    format!(
+        "python3 -c '{DIE_WITH_PARENT}import os,sys,time\nchunk=bytes(8388608)\nend=time.time()+8\ni=0\nwhile time.time()<end and os.path.isdir(sys.argv[1]):\n p=os.path.join(sys.argv[1],\"copy-%d\" % i); i+=1\n with open(p,\"wb\") as f: f.write(chunk)\n os.unlink(p); time.sleep(0.04)' \"$0\""
+    )
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_fast_many_file_copy_is_stopped_while_the_disk_still_has_room() {
+    take_wait_events();
+    // 512 MiB free is above half the floor: only the rate says the disk is
+    // seconds from full.
+    let pool = volume_with(512 * MIB);
+    let mut writer = Workload::run(
+        domain(&pool, "copy", false),
+        &[("copy", many_file_writer())],
+    );
+    settle(4);
+    assert!(
+        !writer.alive("copy"),
+        "a copy filling the disk in seconds kept writing"
+    );
+    writer.assert_told("copy", "was filling it");
+    assert!(
+        take_wait_events().iter().any(|event| matches!(
+            &event.change,
+            WaitChange::Stopped { reason } if reason.contains("was filling it")
+        )),
+        "the room was not told why the copy ended"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_fast_writer_on_a_roomy_disk_and_a_slow_one_near_the_floor_keep_running() {
+    take_wait_events();
+    let roomy = volume_with(50 * GIB);
+    let mut fast = Workload::run(
+        domain(&roomy, "fast", false),
+        &[("copy", many_file_writer())],
+    );
+    let tight = volume_with(512 * MIB);
+    let mut slow = Workload::run(
+        domain(&tight, "slow", false),
+        &[("write", writer_command())],
+    );
+    settle(4);
+    assert!(fast.alive("copy"), "a fast writer with room was stopped");
+    assert!(slow.alive("write"), "a slow writer with room was stopped");
+    assert!(
+        take_wait_events()
+            .iter()
+            .all(|event| !matches!(event.change, WaitChange::Stopped { .. })),
+        "a writer was stopped without pressure"
+    );
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn an_anonymous_memory_writer_is_not_stopped_as_a_disk_filler() {
