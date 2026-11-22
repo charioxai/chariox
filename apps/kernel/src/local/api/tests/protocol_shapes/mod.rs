@@ -60,6 +60,7 @@ mod multi_project_context;
 mod native_spawn_slice;
 mod notes;
 mod panes_history;
+mod program_stdin;
 mod project_environment;
 mod prompt_receipts;
 mod prompt_settings;
