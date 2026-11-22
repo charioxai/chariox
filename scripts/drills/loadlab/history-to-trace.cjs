@@ -43,8 +43,12 @@ function keep(row) {
 
 /** The history outline of GetSessionHistoryOutline (agents -> turns -> user_prompt, entries, summary) as flat rows. */
 function rowsFromOutline(outline) {
-  return outline.agents.flatMap(agent => agent.turns.flatMap(turn => [turn.user_prompt, ...turn.entries, ...(turn.summary ? [turn.summary] : [])]
-    .map(({ total_chars, entry }) => ({ kind: entry.kind, agent_id: agent.agent_id, timestamp_ms: entry.timestamp_ms, total_chars, text: entry.text }))))
+  return outline.agents.flatMap(agent => agent.turns.flatMap(turn => [
+    ...[turn.user_prompt, ...turn.entries, ...(turn.summary ? [turn.summary] : [])]
+      .map(({ total_chars, entry }) => ({ kind: entry.kind, agent_id: agent.agent_id, timestamp_ms: entry.timestamp_ms, total_chars, text: entry.text })),
+    // A blob stands for a run of collapsed entries: its kind, size and time only (its title, summary and preview are text and are never read).
+    ...turn.blobs.map(blob => ({ kind: blob.kind, agent_id: agent.agent_id, timestamp_ms: blob.timestamp_ms, total_chars: blob.total_chars })),
+  ]))
 }
 
 function turnsOf(entries) {

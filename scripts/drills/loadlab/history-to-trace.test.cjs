@@ -90,9 +90,10 @@ test('an outline from the kernel is read by size, and its text fragment never re
     user_prompt: entry('user_prompt', `use ${secret}`, 100, 4_000),
     entries: [entry('provider_tool', `Bash ${secret}`, 200, 90_000), entry('provider_output', `the value ${secret}`, 700, 12_000)],
     summary: null,
+    blobs: [{ kind: 'provider_output', title: `title ${secret}`, summary: `summary ${secret}`, preview: `preview ${secret}`, total_chars: 33_000, timestamp_ms: 900 }],
   }] }] }
   const traces = convertHistory(rowsFromOutline(outline))
   assert.ok(![...traces.values()].join('').includes(secret))
   const steps = parseTrace(traces.get('agent-1.jsonl')).turns[0]
-  assert.deepEqual(steps.map(step => [step.kind, step.chars ?? step.output_bytes]), [['prompt', 4_000], ['tool', 90_000], ['text', 12_000], ['end', undefined]])
+  assert.deepEqual(steps.map(step => [step.kind, step.chars ?? step.output_bytes]), [['prompt', 4_000], ['tool', 90_000], ['text', 12_000], ['text', 33_000], ['end', undefined]])
 })
