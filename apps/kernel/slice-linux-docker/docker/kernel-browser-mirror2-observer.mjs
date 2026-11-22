@@ -1358,6 +1358,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     // The still keeps its CSS box: past the packet's byte budget it travels at a lower pixel density, the one its measured size
     // predicts (side x 0.9 x sqrt(budget / bytes), drawn again from the full-size pixels), again until it fits. Halving left a
     // video frame that missed the budget by 1% at a quarter of its density (subvysion, T3).
+    const drawnCanvases = new WeakSet();
     const elementPixels = async (id, scale, budget) => {
       const node = nodes.get(id);
       if (!node?.isConnected || kindOf.get(id) !== 'tile' || node.namespaceURI !== HTML || !['canvas', 'video'].includes(node.localName) || node.localName === 'video' && node.readyState < 2) return null;
@@ -1387,7 +1388,11 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
           const data = g.getImageData(0, 0, W, H).data; let clear = true, black = true;
           for (let i = 0; i < data.length && (clear || black); i += 4) { clear &&= !data[i + 3]; black &&= !data[i] && !data[i + 1] && !data[i + 2] && data[i + 3] === 255; }
           // Nothing drawn (or cleared to transparent): the page shows through, as natively. The kernel decides the still.
-          if (clear) return { clear: true };
+          // A composited WebGL buffer (preserveDrawingBuffer false) reads clear too, while the page still shows its frame:
+          // a canvas that once read real pixels has a context, so asking for '2d' creates none and names a 2D one; any
+          // other context keeps the still it has.
+          if (clear) { if (drawnCanvases.has(node)) { let flat = false; try { flat = !!node.getContext('2d'); } catch {} if (!flat) return null; } return { clear: true }; }
+          drawnCanvases.add(node);
           if (black) { let flat = false; try { flat = !!node.getContext('2d'); } catch {} if (!flat) return null; }
         }
         for (let still = canvas; ;) {
