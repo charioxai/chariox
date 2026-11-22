@@ -949,6 +949,14 @@ impl SessionService {
             .map(|session| session.owner_user_id().to_owned())
     }
 
+    /// The owner of a live or retired Room, without copying the Room.
+    pub fn owner_of_session(&self, session_id: &str) -> Result<String, DaemonError> {
+        if let Some(session) = self.store.get(session_id) {
+            return Ok(session.owner_user_id().to_owned());
+        }
+        Ok(self.get_session(session_id)?.owner_user_id().to_owned())
+    }
+
     pub fn get_session(&self, session_id: &str) -> Result<RuntimeSession, DaemonError> {
         if let Some(session) = self.store.get(session_id) {
             return Ok(session.clone());

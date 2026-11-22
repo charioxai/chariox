@@ -8,7 +8,7 @@ impl crate::app::DaemonApp {
         session_id: &str,
         agent_id: Option<&str>,
     ) -> Result<String, DaemonError> {
-        let session = self.sessions.get_session(session_id)?;
+        let session_owner = self.sessions.owner_of_session(session_id)?;
         let agent = agent_id.map(|id| self.agents.get_agent(id)).transpose()?;
         if let Some(agent) = agent.as_ref() {
             if agent.session_id() != session_id {
@@ -21,7 +21,7 @@ impl crate::app::DaemonApp {
         let owner = agent
             .as_ref()
             .map(|agent| agent.owner_user_id())
-            .unwrap_or_else(|| session.owner_user_id());
+            .unwrap_or(session_owner.as_str());
         let mut bindings = self.leased_agents.values().filter(|leased| {
             leased.backing_session_id == session_id
                 && agent_id == Some(leased.backing_agent_id.as_str())
@@ -34,7 +34,7 @@ impl crate::app::DaemonApp {
             })?;
             if bindings.next().is_some()
                 || lease.owner_user_id != owner
-                || lease.owner_user_id != session.owner_user_id()
+                || lease.owner_user_id != session_owner
             {
                 return Err(DaemonError::LocalTransport {
                     operation: "resolve leased provider account authority",
