@@ -1358,7 +1358,17 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       const fit = style.objectFit, k = fit === 'fill' ? null : fit === 'cover' ? Math.max(W / sw, H / sh) : Math.min(W / sw, H / sh);
       const [dw, dh] = k ? [sw * k, sh * k] : [W, H];
       try {
-        g.drawImage(node, (W - dw) / 2, (H - dh) / 2, dw, dh);
+        // T3: the frame is read once, at its source size when that is within COVER_PROBE_PIXELS, and the still is drawn from that
+        // copy: `opaque` (every source pixel's alpha, as coveredBy proves it) is then the opacity of exactly the frame that goes
+        // out, even while a video plays on. A larger source is drawn directly and proves nothing.
+        let source = node, opaque = false;
+        if (sw * sh <= COVER_PROBE_PIXELS) {
+          const copy = new OffscreenCanvas(sw, sh), c = copy.getContext('2d'); c.drawImage(node, 0, 0);
+          const data = c.getImageData(0, 0, sw, sh).data; let all = true;
+          for (let i = 3; i < data.length && all; i += 4) all = data[i] === 255;
+          source = copy; opaque = all;
+        }
+        g.drawImage(source, (W - dw) / 2, (H - dh) / 2, dw, dh);
         // WebGL's cleared buffer reads as all transparent, or all opaque black with alpha:false (three.js's default).
         // All black is the page's own pixels only on a 2D canvas (getContext('2d') returns its context, null for WebGL;
         // a canvas without a context read transparent above, so this creates none).
@@ -1371,7 +1381,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
         for (let still = canvas; ;) {
           const bytes = new Uint8Array(await (await still.convertToBlob({ type: 'image/png' })).arrayBuffer());
           const encoded = 4 * Math.ceil(bytes.length / 3);
-          if (encoded <= budget) { let binary = ''; for (let i = 0; i < bytes.length; i += 32768) binary += String.fromCharCode(...bytes.subarray(i, i + 32768)); return { x, y, width, height, data_base64: btoa(binary) }; }
+          if (encoded <= budget) { let binary = ''; for (let i = 0; i < bytes.length; i += 32768) binary += String.fromCharCode(...bytes.subarray(i, i + 32768)); return { x, y, width, height, data_base64: btoa(binary), opaque }; }
           if (still.width === 1 && still.height === 1) return null;
           const ratio = 0.9 * Math.sqrt(Math.max(0, budget) / encoded);
           const smaller = new OffscreenCanvas(Math.max(1, Math.min(still.width - 1, Math.floor(still.width * ratio))), Math.max(1, Math.min(still.height - 1, Math.floor(still.height * ratio))));

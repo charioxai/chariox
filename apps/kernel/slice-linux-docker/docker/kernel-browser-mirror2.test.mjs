@@ -1378,3 +1378,30 @@ test('region bounds without a committed owner still read the document before and
  mirror.protectTargets=async()=>{};mirror.frames.regionBoxes=async()=>[];mirror.evaluate=async()=>[];
  await mirror.regionBoxes(stream,{target_id:'T',document_id:'D'});assert.equal(reads,2);
 });
+
+// T3 review 4: a cover's opacity is the opacity of the still that went out, never of an earlier read of a moving cover. A video
+// cover whose first still was proven opaque and whose next still is not (an opaque-to-transparent transition) must let the
+// region under it travel again; the proof never reaches the viewer (tile shape unchanged).
+test('T3: a cover skips the region under it only while its sent still is proven opaque', async () => {
+  const {encodePng} = await import('./kernel-browser-pixels.mjs');
+  const size = {width: 1192, height: 666}, boxes = [{id: 'n2', box: [100, 100, 200, 100]}, {id: 'n3', box: [100, 100, 200, 100]}];
+  const host = {pageSize: () => size, scales: new Map(), chromium: {display: {}}, async screenshot(tab, clip) { return {data_base64: encodePng(clip.width, clip.height, Buffer.alloc(clip.width * clip.height * 4, 255))}; }};
+  const mirror = new Mirror2({host}); mirror.opaqueBoxes = async () => boxes;
+  let packet = 0;
+  mirror.evaluate = async (world, expression) => {
+    if (expression.includes('coveredBy')) return {n3: 'n2'};
+    const id = /elementPixels\("(n\d+)"/.exec(expression)?.[1];
+    if (id === 'n2' && packet === 3) return null; // the cover read clear: it proves nothing
+    return {x: 0, y: 0, width: 200, height: 100, data_base64: `${id}-${packet}`, opaque: id === 'n2' ? packet !== 2 : false};
+  };
+  const stream = {frames: new Map()};
+  packet = 1; const first = await mirror.tiles({ref: 'world'}, {tab_id: 'tab'}, stream, true, true);
+  assert.deepEqual(first.map(t => t.node_id), ['n2'], 'an opaque cover alone travels');
+  stream.tilesAt = 0; // the next refresh is due
+  packet = 2; const second = await mirror.tiles({ref: 'world'}, {tab_id: 'tab'}, stream, false, true);
+  assert.deepEqual(second.map(t => t.node_id).sort(), ['n2', 'n3'], 'a cover whose sent still is not opaque covers nothing');
+  stream.tilesAt = 0; packet = 1; await mirror.tiles({ref: 'world'}, {tab_id: 'tab'}, stream, false, true);
+  stream.tilesAt = 0; packet = 3; const third = await mirror.tiles({ref: 'world'}, {tab_id: 'tab'}, stream, false, true);
+  assert(third.some(t => t.node_id === 'n3'), 'a cover with no still of its own this time covers nothing');
+  assert(![...first, ...second, ...third].some(t => 'opaque' in t), 'the opacity proof stays in the kernel');
+});
