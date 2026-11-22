@@ -455,6 +455,12 @@ impl KernelRuntimeState {
         if !owned.ensure_prompt_dispatch_matches_active_prompt(dispatch)? {
             return Ok(PromptDispatchAcceptance::Dropped);
         }
+        if !dispatch.steering {
+            // A run whose process died while idle cannot take the prompt: end it
+            // now, so the dispatch below moves to a fresh run and prepares its
+            // handoff once, for that run.
+            owned.end_runs_whose_idle_process_exited(Some(&dispatch.provider_run_id));
+        }
         let rerouted = match self.dispatch_off_finished_turn_substitute(dispatch).await? {
             Some(rerouted) => Some(rerouted),
             None => self.dispatch_off_ended_run(dispatch).await?,
@@ -4319,6 +4325,153 @@ pub(in crate::runtime::state) mod tests {
             "the brief must be stored for the next dispatch"
         );
         assert_eq!(loads, 1, "the agent's history is read once per dispatch");
+    }
+
+    /// A Claude run whose fixture program is `script`, started as the kernel starts one.
+    fn start_fixture_claude_run(
+        runtime: &KernelRuntimeState,
+        root: &std::path::Path,
+        session_id: &str,
+        agent_id: &str,
+        run_id: &str,
+        script: &str,
+    ) -> crate::provider::RuntimeProviderRun {
+        let executable = root.join(format!("{run_id}-fixture"));
+        std::fs::write(&executable, format!("#!/bin/sh\n{script}\n")).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let request =
+            LaunchProviderRequest::new(session_id, "claude", "claude", "default", "sonnet")
+                .with_agent_id(agent_id);
+        let mut run = crate::provider::RuntimeProviderRun::new(
+            run_id,
+            &request,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+                process_label: "fixture".into(),
+                pty_target: None,
+                pty_program: Some(executable.display().to_string()),
+                pty_args: vec![],
+                pty_env: Default::default(),
+                pty_env_remove: vec![],
+                working_directory: None,
+                structured_endpoint: None,
+            },
+        );
+        run.mark_running();
+        runtime
+            .owned
+            .provider_store
+            .write()
+            .insert_run_for_test(run.clone());
+        runtime
+            .owned
+            .provider_store
+            .initialize_runtime(&run)
+            .unwrap();
+        runtime.owned.provider_run_projection.update(run.clone());
+        run
+    }
+
+    fn wait_for_pid(path: &std::path::Path) -> u32 {
+        for _ in 0..100 {
+            if let Some(pid) = std::fs::read_to_string(path)
+                .ok()
+                .and_then(|pid| pid.trim().parse().ok())
+            {
+                return pid;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        panic!("the fixture never wrote its pid");
+    }
+
+    fn is_zombie_or_running(pid: u32) -> bool {
+        std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok()
+    }
+
+    /// The provider process sweep notices a Claude process that ended while its
+    /// agent was idle: the run ends and the process is reaped, not left a zombie.
+    #[tokio::test]
+    async fn the_process_sweep_ends_a_run_whose_claude_process_exited_while_idle() {
+        let (root, runtime, session_id, agent_id, _attachment_id, _prompt_id, _) =
+            runtime_with_active_prompt_and_history(Some("earlier work")).await;
+        let pid_file = root.path().join("idle-exit.pid");
+        let run = start_fixture_claude_run(
+            &runtime,
+            root.path(),
+            &session_id,
+            &agent_id,
+            "idle-exit-run",
+            &format!("echo $$ > '{}'; exit 0", pid_file.display()),
+        );
+        let pid = wait_for_pid(&pid_file);
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        runtime
+            .reap_idle_provider_processes(crate::session::unix_epoch_ms())
+            .await
+            .unwrap();
+        let state = runtime
+            .owned
+            .provider_store
+            .get_run(run.id())
+            .unwrap()
+            .state();
+        assert_eq!(state, crate::provider::ProviderRunState::Ended);
+        assert!(
+            !is_zombie_or_running(pid),
+            "the exited process must be reaped"
+        );
+    }
+
+    /// A prompt dispatched to a run whose Claude process died while idle moves
+    /// to a fresh run before any handoff is prepared, so the agent's history is
+    /// read once, for the run that takes the prompt.
+    #[tokio::test]
+    async fn a_dispatch_to_a_run_whose_idle_process_died_moves_to_a_fresh_run_once() {
+        let (root, runtime, session_id, agent_id, attachment_id, prompt_id, _) =
+            runtime_with_active_prompt_and_history(Some("earlier work")).await;
+        let pid_file = root.path().join("dead-run.pid");
+        let run = start_fixture_claude_run(
+            &runtime,
+            root.path(),
+            &session_id,
+            &agent_id,
+            "dead-idle-run",
+            &format!("echo $$ > '{}'; exit 0", pid_file.display()),
+        );
+        wait_for_pid(&pid_file);
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let history = runtime.owned.operational_history_store.clone();
+        let loads_before = history.agent_history_loads();
+        runtime
+            .enqueue_prompt_dispatch(&dispatch(
+                &session_id,
+                &agent_id,
+                &attachment_id,
+                run.id(),
+                &prompt_id,
+                "next request",
+                None,
+                false,
+            ))
+            .await
+            .unwrap();
+        let old = runtime.owned.provider_store.get_run(run.id()).unwrap();
+        let current = runtime
+            .owned
+            .provider_store
+            .get_run_for_agent(&session_id, &agent_id)
+            .expect("the agent has a run again");
+        assert_eq!(old.state(), crate::provider::ProviderRunState::Ended);
+        assert_ne!(current.id(), run.id(), "the prompt moved to a fresh run");
+        assert!(
+            history.agent_history_loads() - loads_before <= 1,
+            "the handoff is prepared once"
+        );
     }
 
     #[tokio::test]

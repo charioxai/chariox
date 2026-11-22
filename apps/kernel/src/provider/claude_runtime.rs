@@ -657,7 +657,9 @@ fn claude_env_remove(run: &RuntimeProviderRun) -> Vec<String> {
     env_remove
 }
 
-fn claude_runtime_child_exited(state: &mut ClaudeRuntimeState) -> bool {
+/// Whether the process ended while no turn ran. Polling it reaps an ended
+/// process, so it never lingers as a zombie.
+pub(crate) fn claude_runtime_child_exited(state: &mut ClaudeRuntimeState) -> bool {
     if state.active_turn_id.is_some() {
         return false;
     }

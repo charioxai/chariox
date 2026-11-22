@@ -632,6 +632,7 @@ pub(crate) use decision_holder::ChildDecisionStatus;
 use decision_holder::DecisionHolder;
 pub(in crate::runtime) use pending_runtime_state::PendingInteractionResolution;
 use pending_runtime_state::*;
+mod idle_provider_exit;
 mod local_prompt_dispatch_runtime;
 mod local_prompt_submission_owned_state;
 mod managed_activity_persistence;

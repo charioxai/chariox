@@ -184,6 +184,11 @@ impl ProviderProcessServiceStore {
         self.read().run_actor_completion_signal()
     }
 
+    /// Claude runs (all, or `only` that one) whose process ended while idle.
+    pub(crate) fn claude_runs_exited_while_idle(&self, only: Option<&str>) -> Vec<String> {
+        self.read().claude_runs_exited_while_idle(only)
+    }
+
     /// A per-run execution permit orders credential-bearing spawn against retirement.
     /// The lane map and STORE are released before any process or filesystem work.
     fn acquire_spawn_permit(
