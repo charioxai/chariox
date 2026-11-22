@@ -2791,3 +2791,72 @@ fn resset_disk_off_releases_waits_and_never_stops_a_filler() {
     assert_eq!(wait(&current, 1), None);
     assert!(ledger.take_fillers(&current).is_empty());
 }
+
+/// D-GOOD3: replays a recorded hour of a machine's real write rates (one JSON
+/// line per second: `free`, `total` and bytes/s per process group) through the
+/// stop decision. Each group is one agent command writing all it writes to the
+/// recorded volume, the harshest attribution the samples allow. A stop is a
+/// false stop: nothing filled that volume. Run with
+/// `DH_REPLAY=<file> cargo test --lib replay_recorded -- --ignored --nocapture`.
+#[test]
+#[ignore = "needs a recorded rates file in DH_REPLAY"]
+fn replay_recorded_write_rates_stops_nothing() {
+    let path = std::env::var("DH_REPLAY").expect("DH_REPLAY names the recorded rates");
+    let text = std::fs::read_to_string(path).unwrap();
+    let space = Arc::new(Mutex::new((0u64, 1u64)));
+    let volume: Box<Volume> = {
+        let space = space.clone();
+        Box::new(move |_| {
+            let (free, total) = *space.lock().unwrap();
+            Some(Space { id: 1, free, total })
+        })
+    };
+    let mut ledger = Ledger::new(None);
+    let mut pids = BTreeMap::<String, u32>::new();
+    let (mut seconds, mut stops, mut busiest, mut tightest) = (0u64, Vec::new(), 0u64, u64::MAX);
+    let mut written = BTreeMap::<String, u64>::new();
+    for line in text.lines().filter(|line| !line.trim().is_empty()) {
+        let sample: serde_json::Value = serde_json::from_str(line).unwrap();
+        let free = sample["free"].as_u64().unwrap();
+        *space.lock().unwrap() = (free, sample["total"].as_u64().unwrap());
+        tightest = tightest.min(free);
+        let groups = sample["groups"].as_object().unwrap();
+        let mut members = Vec::new();
+        let mut all = 0;
+        for (group, rate) in groups {
+            let rate = rate.as_u64().unwrap();
+            all += rate;
+            let next = pids.len() as u32 + 1;
+            let pid = *pids.entry(group.clone()).or_insert(next);
+            let total = written.entry(group.clone()).or_default();
+            *total += rate;
+            let (_, entry, usage) = writing(pid, *total, rate);
+            let member = owner(group, true, vec![usage], vec![(pid, entry)]);
+            member
+                .lock()
+                .unwrap()
+                .disk_writes
+                .insert(pid, between_files());
+            members.push(member);
+        }
+        busiest = busiest.max(all);
+        for member in &members {
+            ledger.pass(&members, member, &room(GIB, false, &*volume));
+            for (pid, filling) in ledger.take_fillers(member) {
+                stops.push((seconds, pid, filling.rate, filling.free));
+            }
+        }
+        seconds += 1;
+    }
+    println!(
+        "replayed {seconds} s: busiest second {} MB/s on the volume, least free {} GB; a stop needs less than {} GB free at that rate",
+        busiest / 1_000_000,
+        tightest / 1_000_000_000,
+        busiest.saturating_mul(FILL_HORIZON_SECONDS) / 1_000_000_000
+    );
+    assert!(seconds >= 60, "too short a recording: {seconds} s");
+    assert!(
+        stops.is_empty(),
+        "false stops (second, pid, rate, free): {stops:?}"
+    );
+}
