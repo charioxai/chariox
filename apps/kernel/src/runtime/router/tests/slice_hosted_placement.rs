@@ -58,12 +58,24 @@ async fn a_refused_hosted_slice_with_another_machine_as_worker_leaves_no_record(
         .expect_err("a hosted slice cannot take another machine as its worker");
 
     let text = error.to_string();
-    for internal in ["slice.relay_identity", "slice:", "worker reference", "machine-scoped"] {
+    for internal in [
+        "slice.relay_identity",
+        "slice:",
+        "worker reference",
+        "machine-scoped",
+    ] {
         assert!(!text.contains(internal), "{internal} leaks into: {text}");
     }
-    assert!(text.contains("without --slice"), "names the next step: {text}");
+    assert!(
+        text.contains("without --slice"),
+        "names the next step: {text}"
+    );
     let slices = app.lock().await.slices();
-    assert_eq!(slices.list().len(), before, "refusal must not create a record");
+    assert_eq!(
+        slices.list().len(),
+        before,
+        "refusal must not create a record"
+    );
     assert!(slices
         .resolve_by_worker_kernel_ref("kernel-05ac923c384c5ea3")
         .is_none());
