@@ -71,6 +71,9 @@ impl DaemonApp {
         // workflows of the enrolled owner.
         self.durable_state
             .enroll_app_owner(DEFAULT_LOCAL_USER_ID, owner)?;
+        // A view the owner took away from an agent stays taken away after enrollment.
+        self.durable_state
+            .enroll_owner_view_owner(DEFAULT_LOCAL_USER_ID, owner)?;
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
         self.app_control.enroll_owner(DEFAULT_LOCAL_USER_ID, owner);
         Ok(())
@@ -420,6 +423,8 @@ mod tests {
             "workflow_notification_source_cache",
             "workflow_notification_source_fence",
         ];
+        // Adopted by `enroll_owner_view_owner`: a revoked owner view stays revoked.
+        const OWNER_VIEW_ADOPTED: &[&str] = &["owner_view_revocations"];
         // Adopted by `enroll_app_owner`: an App stays with its Rooms.
         const APP_ADOPTED: &[&str] = crate::durable_state::app_owner_enrollment::APP_OWNER_TABLES;
         // Keyed by the project's creator, not an App record. Known gap, reported
@@ -429,6 +434,7 @@ mod tests {
             .iter()
             .chain(KERNEL_KEYED)
             .chain(KEPT_FOR_ROOM)
+            .chain(OWNER_VIEW_ADOPTED)
             .chain(APP_ADOPTED)
             .chain(NOT_ADOPTED)
             .map(|t| t.to_string())
