@@ -93,6 +93,7 @@ const UNRECOVERABLE_PROMPT_VAULT_REASON: &str =
 const UNIDENTIFIED_PROMPT_REASON: &str = "The prompt could not be resumed after the restart: no provider session or transcript identified the interrupted turn";
 const UNTRACKED_PROVIDER_TURN_REASON: &str =
     "The kernel restarted during a provider-started turn whose process was not handed over. Send the request again to continue the conversation";
+const NO_LIVE_RUN_REASON: &str = "The kernel restarted and no provider run took this turn over, so it was ended. Send the request again to continue";
 const UNANSWERABLE_PROMPT_REASON: &str = "The kernel restarted while this turn waited for an answer to a question, and that answer can no longer reach it. Send the request again to continue the conversation";
 const RESTART_RECOVERY_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(1);
 
@@ -103,6 +104,36 @@ impl Drop for DurableRestartRecoveryTask {
         // In particular, a publication which never activates must not retain
         // its runtime and exclusive state lease after the listener stops.
         self.0.abort();
+    }
+}
+
+impl KernelRuntimeOwnedState {
+    /// The target is still its agent's active turn, runs locally, and its agent
+    /// has no running provider run.
+    fn recovered_prompt_has_no_live_run(
+        &self,
+        (session_id, agent_id, prompt_id): &DurableRestartRecoveryTarget,
+    ) -> bool {
+        let Ok(session) = self.session_store.get_session(session_id) else {
+            return false;
+        };
+        let active = self
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, agent_id)
+            .is_some_and(|prompt| {
+                prompt.id() == prompt_id
+                    && prompt.status() != crate::session::PromptStatus::Cancelling
+            });
+        let local = self
+            .agent_store
+            .get_agent(agent_id)
+            .is_ok_and(|agent| agent.remote_execution().is_none());
+        active
+            && local
+            && !self
+                .provider_store
+                .get_run_for_agent(session_id, agent_id)
+                .is_some_and(|run| run.state() == crate::provider::ProviderRunState::Running)
     }
 }
 
@@ -205,6 +236,22 @@ impl KernelRuntimeState {
         #[cfg(unix)]
         crate::hot_reload::end_unclaimed_providers();
         self.end_background_provider_tools_left_by_restart();
+        // Recovery gave every turn it could continue a running provider. A turn
+        // still active without one would show as running while nothing works
+        // on it, and hold the prompts queued behind it.
+        let mut summary = summary;
+        let stranded = recovery_targets
+            .iter()
+            .filter(|target| self.owned.recovered_prompt_has_no_live_run(target))
+            .cloned()
+            .collect::<Vec<_>>();
+        self.end_prompts_interrupted_by_restart(
+            &mut summary,
+            stranded
+                .into_iter()
+                .map(|target| (target, NO_LIVE_RUN_REASON)),
+        )
+        .await;
         summary
     }
 
@@ -3906,6 +3953,62 @@ mod tests {
             task.reason.contains("could not be resumed"),
             "{}",
             task.reason
+        );
+    }
+
+    /// A turn recovery keeps (its provider has no transcript to identify it by)
+    /// but no provider run takes over is not left showing as running: once
+    /// recovery is done it ends as interrupted with its reason, so the prompts
+    /// queued behind it can start.
+    #[tokio::test]
+    async fn restart_recovery_ends_a_kept_turn_that_no_provider_run_took_over() {
+        let (runtime, session_id, agent_id, prompt_id) =
+            runtime_with_active_prompt(crate::session::DurablePromptDeliveryPhase::Dispatching);
+        runtime
+            .owned
+            .agent_store
+            .update_agent_profile(&agent_id, Some("unobserved-harness".into()), None, None)
+            .expect("agent provider should change");
+        // After a cold restart no provider process of the old kernel runs.
+        if let Some(run) = runtime
+            .owned
+            .provider_store
+            .get_run_for_agent(&session_id, &agent_id)
+        {
+            runtime
+                .owned
+                .provider_store
+                .terminate_run_provider_only(&session_id, run.id())
+                .expect("the old run should end");
+        }
+        let targets = runtime.durable_restart_recovery_targets();
+
+        let summary = runtime
+            .drive_durable_restart_recovery(
+                &targets,
+                &BTreeSet::new(),
+                std::time::Duration::from_millis(20),
+                std::time::Duration::from_millis(1),
+            )
+            .await;
+
+        assert_eq!(summary.uncertain_local_prompts_preserved, 1, "{summary:?}");
+        assert_eq!(
+            summary.unrecoverable_local_prompts_cancelled, 1,
+            "{summary:?}"
+        );
+        let session = runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .expect("session should load");
+        assert!(
+            runtime
+                .owned
+                .prompt_state_owner
+                .active_prompt_for_agent(&session, &agent_id)
+                .is_none_or(|prompt| prompt.id() != prompt_id),
+            "a turn no provider run took over must not stay active"
         );
     }
 
