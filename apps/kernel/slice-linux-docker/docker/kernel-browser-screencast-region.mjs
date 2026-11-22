@@ -32,7 +32,8 @@ export async function subscribeScreencastRegion(host,command,scope,signal,{Scree
    css_width:source.region.css_width,css_height:source.region.css_height};
   stream=new DisplayStream({...result,tab_id:tab.tab_id,observed_by:scope,relay_binary:command.codecs.includes('chariox-relay-binary-v96'),
    dependencies:command.codecs.includes('chariox-video-dependencies-v1'),stripes:false},{timing:host.timing,encoder:new PortableEncoder()});
-  Object.assign(stream,{regionLease:lease,regionSource:source,regionTarget:target,regionOffset:offset,regionCurrent:lease.isCurrent});
+  // A screencast region has no window: its frames are current while its source is (policy, document and fences).
+  Object.assign(stream,{regionLease:lease,regionSource:source,regionTarget:target,regionOffset:offset,regionCurrent:lease.isCurrent,regionWindow:{isCurrent:()=>source.valid()}});
   const close=stream.close.bind(stream);
   let closing;
   stream.close=()=>closing??=(async()=>{
@@ -58,9 +59,13 @@ export class ScreencastRegionCapture {
   this.region={css_width:rect.width/scale,css_height:rect.height/scale};this.listeners=new Set();this.closed=false;
  }
  get source(){return this.shared.source;}
+ // The page session the display credit path reads layout from (as a native region's capture carries it).
+ get connection(){return this.source.connection;}
+ get sessionId(){return this.source.sessionId;}
  get regionRevision(){return this.source.regionRevision;}
  get changedAt(){return this.source.changedAt;}
- crop(frame){return frame&&{...frame,width:this.rect.width,height:this.rect.height,crop:{...this.rect},motion:true};}
+ // The crop in the encoder's terms (device pixels): PortableEncoder.encode(..., {crop}) crops the shared image after decoding.
+ crop(frame){return frame&&{...frame,width:this.rect.width,height:this.rect.height,crop:{x:this.rect.left,y:this.rect.top,width:this.rect.width,height:this.rect.height},motion:true};}
  async start(){
   if(this.closed)throw Error('MD-DISPLAY: region source closed');
   await this.shared.ready;

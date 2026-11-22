@@ -139,6 +139,16 @@ def main():
                 png = base64.b64decode(request['png'], validate=True)
                 if len(png) > 4 * 1024 * 1024:raise ValueError('frame bound')
                 with av.open(io.BytesIO(png)) as source:frame = next(source.decode(video=0))
+                # R1: a region of a display-less browser sends its Tab's screencast image with the region's crop (device pixels);
+                # odd sides round down, so the encoder sees the shapes the uncropped path can produce. Masks are whole-frame
+                # coordinates: a crop never carries them (a region's raw screencast only runs with no Vault value or target).
+                crop=request.get('crop')
+                if crop is not None:
+                    x,y,cw,ch=(crop.get(k) for k in ('x','y','width','height')) if isinstance(crop,dict) else (None,)*4
+                    if regions or not all(isinstance(v,int) and not isinstance(v,bool) for v in (x,y,cw,ch)) or x<0 or y<0 or cw<2 or ch<2 or x+cw>frame.width or y+ch>frame.height:
+                        raise ValueError('crop bound')
+                    cw-=cw%2;ch-=ch%2
+                    frame=av.VideoFrame.from_ndarray(frame.to_ndarray(format='rgb24')[y:y+ch,x:x+cw],format='rgb24')
             if request.get('operation')!='stripes' and (frame.width > 2560 or frame.height > 2560 or frame.width * frame.height > 2560 * 1600):
                 raise ValueError('geometry bound')
             if request.get('operation')=='stripes':

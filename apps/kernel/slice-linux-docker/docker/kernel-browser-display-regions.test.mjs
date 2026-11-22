@@ -411,9 +411,9 @@ test('R1: a screencast region crops the shared frames and follows the shared fen
  const region=new ScreencastRegionCapture({shared,tab:{tab_id:'t'},scale:2,policy,rect,allowed:p=>p===policy});
  await region.start();
  assert.deepEqual(region.region,{css_width:100,css_height:50});
- assert.deepEqual(region.sample(),{data_base64:'j',width:200,height:100,serial:7,signature:'s',crop:rect,motion:true},'the shared frame named at the crop');
+ assert.deepEqual(region.sample(),{data_base64:'j',width:200,height:100,serial:7,signature:'s',crop:{x:20,y:40,width:200,height:100},motion:true},'the shared frame named at the crop');
  const seen=[];region.subscribe(f=>seen.push(f));for(const l of listeners)l({data_base64:'k',width:2560,height:1600,serial:8});
- assert.deepEqual(seen.map(f=>[f.serial,f.width,f.crop.left]),[[8,200,20]]);
+ assert.deepEqual(seen.map(f=>[f.serial,f.width,f.crop.x]),[[8,200,20]]);
  source.fenced=true;assert.equal(region.valid(),false,'a fenced shared source fences the region');assert.equal(region.sample(),null);
  source.fenced=false;await region.close();assert.equal(released,1,'closing releases the shared source');assert.equal(listeners.size,0);
 });

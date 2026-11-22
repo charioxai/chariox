@@ -2129,6 +2129,14 @@ test("R1a: a browser with no display of its own streams a region as a crop of th
     assert(fps >= 25, `the region gets >= 25 frames a second from the screencast (${fps.toFixed(1)})`);
     const sample = source.sample();
     assert.deepEqual([sample.width, sample.height, sample.crop.width, sample.crop.height], [200, 100, 200, 100], "frames are named at the crop");
+    // The display's own frame path: the shared screencast image goes to the encoder with the region's crop, and the video is
+    // the crop's size.
+    const display = host.displays.get(reply.subscription_id), calls = [], encode = display.encoder.encode.bind(display.encoder);
+    const encoded = [];
+    display.encoder.encode = async (...args) => { const data = typeof args[0] === "string" ? args[0] : ""; const call = { crop: args[5]?.crop ?? null, jpeg: data.startsWith("/9j/") }; calls.push(call); const result = await encode(...args); encoded.push(Boolean(result?.data_base64)); return result; };
+    for (let i = 0; i < 20 && !encoded.includes(true); i++) { await host.request({ op: "screenshot", generation, display_subscription_id: reply.subscription_id, after_sequence: display.sequence }).catch(() => null); await settle(100); }
+    assert(calls.length >= 1 && calls.every(c => !c.jpeg || c.crop?.width === 200 && c.crop?.height === 100), `a screencast image reaches the encoder only with the region's crop (${JSON.stringify(calls)})`);
+    assert(encoded.includes(true), `the encoder produced video for the crop (${JSON.stringify(encoded)})`);
     await host.request({ op: "display_unsubscribe", subscription_id: reply.subscription_id }).catch(() => {});
   }, {}, {}, { ...process.env, CHARIOX_KERNEL_BROWSER_HEADLESS: "1" }));
 // R1 S4/S1 (orch14 decision 11-22 under AGENTS.md "Secrets and agents"): a Vault fill on a page whose region streams raw screencast

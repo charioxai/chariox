@@ -52,7 +52,7 @@ export class MotionEncoder {
     }
    }
    let encoded;
-   try{encoded=rowMode?await this.encoder.encodeStripes({...sample.raw,motion:true},this.rate.bitrate,reset,this.codec):await this.encoder.encode(sample.raw?{...sample.raw,motion:true}:sample.data_base64,this.rate.bitrate,key,this.codec,sample[displayMaskRegions]??[]);}
+   try{encoded=rowMode?await this.encoder.encodeStripes({...sample.raw,motion:true},this.rate.bitrate,reset,this.codec):await this.encoder.encode(sample.raw?{...sample.raw,motion:true}:sample.data_base64,this.rate.bitrate,key,this.codec,sample[displayMaskRegions]??[],sample.crop?{crop:sample.crop}:{});}
    // MP-11: an overlapping exact encode (busy) or one refused protected frame
    // skips this sample; the next one starts an independent reference chain.
    catch(error){if(!error?.busy&&!error?.refused)throw error;this.keyed(error.busy?'busy':'refused');continue;}

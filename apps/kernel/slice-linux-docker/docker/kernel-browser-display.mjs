@@ -57,9 +57,11 @@ export async function closeDisplayChild(child, graceMs = 500) {
 }
 export class PortableEncoder {
   constructor() { this.child = null; this.pending = null; this.failure = null; this.packets=new Set();this.nativeSession=randomUUID(); }
-  async encode(png, bitrate, reset = false, codec = 'vp09.00.10.08', regions = []) {
+  // R1 (agreed with webperf-r19 11-22): options.crop {x,y,width,height} in device pixels: an encoded image (a region of a
+  // display-less browser's Tab screencast) is cropped in the child right after decoding; the raw frame shape is unchanged.
+  async encode(png, bitrate, reset = false, codec = 'vp09.00.10.08', regions = [], {crop} = {}) {
     if(png?.nativeEncode&&codec==='avc1.420033')return this.nativeEncode(png,bitrate,reset,false);
-    return typeof png==='object' ? this.exchange({raw:png,bitrate,reset,codec}) : this.exchange({png,bitrate,reset,codec,protected_regions:regions});
+    return typeof png==='object' ? this.exchange({raw:png,bitrate,reset,codec}) : this.exchange({png,bitrate,reset,codec,protected_regions:regions,...(crop?{crop}:{})});
   }
   async encodeStripes(raw,bitrate,reset=false,codec='avc1.420033'){
     if(raw.nativeEncode&&codec==='avc1.420033')return this.nativeEncode(raw,bitrate,reset,true);
@@ -387,7 +389,7 @@ export class DisplayStream {
     else if (this.codec === 'png'||source.force_lossless) payload = full();
     else {
       codec.used = true;
-      const encoded = source.encoded ?? await this.encoder.encode(png(), this.bitrate, !this.dependencies || !bound || !this.previous || this.exact || Boolean(this.repair),this.codec,source[displayMaskRegions]??[]);
+      const encoded = source.encoded ?? await this.encoder.encode(png(), this.bitrate, !this.dependencies || !bound || !this.previous || this.exact || Boolean(this.repair),this.codec,source[displayMaskRegions]??[],source.crop?{crop:source.crop}:{});
       offer=encoded.lease??null;
       if(encoded.dropped)payload=full();
       else if(encoded.stripes){payload={kind:'stripes',base_sequence:this.sequence,stripes:encoded.stripes,...(encoded.packet?{native_packet:encoded.packet}:{})};}

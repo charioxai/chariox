@@ -33,6 +33,27 @@ class EncoderTest(unittest.TestCase):
                 decoded=av.CodecContext.create('h264','r').decode(av.Packet(encoded))
                 self.assertEqual(len(decoded),1)
 
+    def test_R1_crop_encodes_the_region_of_a_screencast_image_with_even_sides(self):
+        # R1 (webperf-r19 agreement 11-22): a region of a display-less browser sends the Tab's screencast JPEG with its crop (device
+        # pixels); the child crops right after decoding, rounding an odd side down, before the size checks. A crop with protected
+        # region masks (whole-frame coordinates) is refused.
+        import base64
+        from fractions import Fraction
+        jpeg=av.CodecContext.create('mjpeg','w');jpeg.width=640;jpeg.height=400;jpeg.pix_fmt='yuvj420p';jpeg.time_base=Fraction(1,1)
+        image=base64.b64encode(bytes(jpeg.encode(av.VideoFrame(width=640,height=400,format='rgb24').reformat(format='yuvj420p'))[0])).decode()
+        for crop,expected in [({'x':20,'y':40,'width':200,'height':100},(200,100)),({'x':0,'y':0,'width':201,'height':99},(200,98))]:
+            header={'png':image,'codec':'avc1.420033','bitrate':2000000,'reset':True,'crop':crop}
+            run=subprocess.run([sys.executable,'-u',str(path)],input=json.dumps(header).encode()+b'\n',stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=20)
+            reply=json.loads(run.stdout.splitlines()[0])
+            self.assertIn('data_base64',reply,reply)
+            decoded=av.CodecContext.create('h264','r').decode(av.Packet(base64.b64decode(reply['data_base64'])))
+            self.assertEqual((decoded[0].width,decoded[0].height),expected)
+        for bad in [{'x':600,'y':0,'width':100,'height':100},{'x':0,'y':0,'width':1,'height':100}]:
+            run=subprocess.run([sys.executable,'-u',str(path)],input=json.dumps({'png':image,'codec':'avc1.420033','bitrate':2000000,'reset':True,'crop':bad}).encode()+b'\n',stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=20)
+            self.assertNotIn('data_base64',json.loads(run.stdout.splitlines()[0]))
+        run=subprocess.run([sys.executable,'-u',str(path)],input=json.dumps({'png':image,'codec':'avc1.420033','bitrate':2000000,'reset':True,'crop':{'x':0,'y':0,'width':100,'height':100},'protected_regions':[[0,0,10,10]]}).encode()+b'\n',stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=20)
+        self.assertNotIn('data_base64',json.loads(run.stdout.splitlines()[0]))
+
     def test_motion_scales_only_software_video_and_keeps_exact_inputs_native(self):
         import base64
         pixels=bytes(2560*1600*4)
