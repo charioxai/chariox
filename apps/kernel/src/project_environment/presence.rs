@@ -30,18 +30,23 @@ pub(crate) fn secret_presence(
     }
     let vault = crate::secret::project_environment_vault(config)?;
     let service = project_environment_vault_service(project_id);
-    let mut presence = Vec::with_capacity(names.len());
-    for name in names {
-        presence.push(match vault.find_secret(&service, name) {
-            Ok(Some(_)) => SecretPresence::Present,
-            Ok(None) => SecretPresence::Missing,
-            Err(error) if crate::secret::is_chariox_vault_locked_error(&error) => {
-                SecretPresence::Locked
-            }
-            Err(_) => return Err(environment_error("the Vault could not be read")),
-        });
+    // One Vault read for every name: opening an Environment must not decrypt the whole Vault once per name.
+    match vault.secrets_present(&service, names) {
+        Ok(found) => Ok(found
+            .into_iter()
+            .map(|present| {
+                if present {
+                    SecretPresence::Present
+                } else {
+                    SecretPresence::Missing
+                }
+            })
+            .collect()),
+        Err(error) if crate::secret::is_chariox_vault_locked_error(&error) => {
+            Ok(vec![SecretPresence::Locked; names.len()])
+        }
+        Err(_) => Err(environment_error("the Vault could not be read")),
     }
-    Ok(presence)
 }
 
 /// A file counts only when it is a regular file inside the checkout; links are not followed.
