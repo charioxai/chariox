@@ -435,10 +435,13 @@ async fn a02_interrupted_agent_card_speaks_plainly() {
     assert_eq!(
         card.choices()
             .iter()
-            .map(|choice| (choice.id(), choice.label()))
+            .map(|choice| choice.id())
             .collect::<Vec<_>>(),
-        vec![("cancel", "Cancel"), ("resume", "Resume")]
+        vec!["cancel", "resume", "stop"]
     );
+    assert_eq!(card.choices()[0].label(), "Dismiss");
+    assert_eq!(card.choices()[1].label(), "Resume");
+    assert!(card.choices()[2].label().ends_with("task"));
 }
 
 #[tokio::test]

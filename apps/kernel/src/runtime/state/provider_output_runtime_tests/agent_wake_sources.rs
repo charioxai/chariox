@@ -2695,11 +2695,13 @@ async fn an_agents_question_is_a_reply_card_and_the_reply_resumes_the_task() {
     assert_eq!(
         card.choices()
             .iter()
-            .map(|choice| (choice.id(), choice.label()))
+            .map(|choice| choice.id())
             .collect::<Vec<_>>(),
-        vec![("cancel", "Dismiss")],
-        "a question offers a reply or Dismiss, never Resume"
+        vec!["cancel", "stop"],
+        "a question offers a reply, Dismiss or Stop, never Resume"
     );
+    assert_eq!(card.choices()[0].label(), "Dismiss");
+    assert!(card.choices()[1].label().ends_with("task"));
     f.runtime
         .owned
         .resolve_attributed_terminal_runtime_interaction(
