@@ -42,7 +42,7 @@ An agent of the kernel's owner has the owner's authority on every kernel of the 
 - The shell: the `chariox` CLI run from the agent's own process tree acts as the agent, here or with `--kernel` on another kernel of the owner. No `chariox access request` is needed; it answers that access is already granted.
 - Identity: the agent's own live provider run (`reach:<run>`), never a token. The target kernel admits the request because it arrives from a gateway kernel paired to its owner over the relay, and it applies the same refusal list itself.
 - Agents of another account, and guests' agents, are refused: "only agents of this kernel's owner reach other rooms and kernels".
-- Not yet: an agent leased to a worker kernel still needs a `/sudo` window for `chariox_kernel_request`.
+- An agent leased to a worker kernel acts the same way: the worker forwards its `chariox_kernel_request` home, which judges it as that agent.
 
 ### Development standing grants
 
