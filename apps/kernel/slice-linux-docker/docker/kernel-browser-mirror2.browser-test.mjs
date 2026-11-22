@@ -557,6 +557,17 @@ test("YM-C1: a default WebGL canvas whose still came from the rendered page keep
   assert(!later.some(clearOf), `the transformed canvas keeps its still (${later.length} later stills, ${later.filter(clearOf).length} clear)`);
 }, {}, {}, { ...process.env, CHARIOX_KERNEL_BROWSER_HEADLESS: "1" }));
 
+// YM-C1 review 3: an undrawn faded canvas still paints its authored CSS background (a gradient): its clear readback must not send
+// the transparent still, which the viewer paints over that background (background-image !important) and so hides the gradient.
+const fadedGradient = '<style>body{margin:0}canvas{display:block;width:240px;height:120px;margin:20px;opacity:.5;background-image:linear-gradient(red,blue)}</style><canvas id="g" width="240" height="120"></canvas>';
+test("YM-C1: an undrawn faded canvas with an authored background gets no transparent still", () => mirrored(fadedGradient, async ({ subscribe }) => {
+  const { next } = await subscribe({ device_scale_factor: 1 });
+  const stills = [];
+  for (let i = 0; i < 4; i++) stills.push(...(await next(1100)).tiles);
+  const clear = stills.filter(t => decodePng(t.data_base64, 1).pixels.every((v, i) => i % 4 !== 3 || v === 0));
+  assert.equal(clear.length, 0, `no transparent still over the authored gradient (${stills.length} stills)`);
+}, {}, {}, { ...process.env, CHARIOX_KERNEL_BROWSER_HEADLESS: "1" }));
+
 // browserfidelity r16 (YC sites, three.js): an opaque WebGL canvas (alpha:false, three.js's default) read after
 // compositing is opaque black, not transparent, so its own-pixels still was black. Its still must show what the page
 // shows; a 2D canvas the page fills black stays black.

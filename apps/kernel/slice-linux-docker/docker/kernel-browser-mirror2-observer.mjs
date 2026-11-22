@@ -1393,7 +1393,9 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
           // other context keeps the still it has.
           // `flat`: proven a 2D canvas the page cleared (only asked of a canvas with a context): the kernel may then replace a real
           // still with a clear one; otherwise it keeps whatever real still it has (one from the rendered page included).
-          if (clear) { if (drawnCanvases.has(node)) { let flat = false; try { flat = !!node.getContext('2d'); } catch {} return flat ? { clear: true, flat: true } : null; } return { clear: true }; }
+          // `background`: the element paints an authored CSS background image (a gradient) under its bitmap; the viewer would paint
+          // a transparent still over it, so the kernel sends none for such an element.
+          if (clear) { const background = style.backgroundImage !== 'none'; if (drawnCanvases.has(node)) { let flat = false; try { flat = !!node.getContext('2d'); } catch {} return flat ? { clear: true, flat: true, background } : null; } return { clear: true, background }; }
           drawnCanvases.add(node);
           if (black) { let flat = false; try { flat = !!node.getContext('2d'); } catch {} if (!flat) return null; }
         }
