@@ -90,7 +90,7 @@ impl DaemonApp {
             }
         }
         if let Some(access) = crate::hot_reload::take_user_domain() {
-            self.kernel_browser_host.adopt_access(access);
+            self.kernel_browser_host.adopt_loaded(access);
         }
     }
 

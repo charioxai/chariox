@@ -190,10 +190,6 @@ async fn mp11_leased_computer_home_fences_context_epoch_and_ordinary_focus() {
         .lock()
         .unwrap()
         .insert(agent.id().into(), grant.clone());
-    state
-        .owned
-        .kernel_browser_host
-        .set_focus(&user, Some(agent.id()));
     assert!(
         state
             .check_leased_computer_grant(&context, "epoch")
@@ -203,7 +199,11 @@ async fn mp11_leased_computer_home_fences_context_epoch_and_ordinary_focus() {
     state
         .owned
         .kernel_browser_host
-        .grant_desktop(&user, agent.id(), "surface");
+        .load_for(
+            &user,
+            agent.id(),
+            crate::runtime::kernel_browser_host::KernelBrowserCapability::Computer,
+        );
     assert_eq!(
         state
             .check_leased_computer_grant(&context, "epoch")
@@ -241,7 +241,7 @@ async fn mp11_leased_computer_home_fences_context_epoch_and_ordinary_focus() {
         .insert(agent.id().into(), newer.clone());
     assert!(
         state
-            .retire_leased_computer_grant(&user, agent.id(), Some("epoch"))
+            .retire_leased_computer_grant(agent.id(), Some("epoch"))
             .is_none(),
         "MP-11: a late failure/revoke cannot retire a newer grant"
     );
@@ -252,14 +252,10 @@ async fn mp11_leased_computer_home_fences_context_epoch_and_ordinary_focus() {
         newer
     );
     assert_eq!(
-        state.retire_leased_computer_grant(&user, agent.id(), Some("new-epoch")),
+        state.retire_leased_computer_grant(agent.id(), Some("new-epoch")),
         Some(newer)
     );
     state.owned.kernel_browser_host.revoke_agent(agent.id());
-    state
-        .owned
-        .kernel_browser_host
-        .set_focus(&user, Some(agent.id()));
     assert!(
         state
             .check_leased_computer_grant(&context, "epoch")

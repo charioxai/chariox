@@ -598,7 +598,7 @@ mod tests {
 
         for agent_id in [target.id(), "nonexistent-agent"] {
             let error = runtime
-                .focus_agent(session.id(), agent_id, "non-member", false)
+                .focus_agent(session.id(), agent_id, "non-member")
                 .await
                 .expect_err("Room membership must be checked before the agent");
             assert!(
@@ -662,7 +662,7 @@ mod tests {
 
         for agent_id in [target.id(), "nonexistent-agent", archived.id()] {
             let error = runtime
-                .focus_agent(session.id(), agent_id, "room-member", false)
+                .focus_agent(session.id(), agent_id, "room-member")
                 .await
                 .expect_err("active agent Room membership must be checked before ownership");
             assert!(

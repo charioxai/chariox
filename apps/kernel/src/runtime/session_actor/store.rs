@@ -889,7 +889,6 @@ impl SessionRuntimeStore {
         &self,
         request: FocusAgentRequest,
         caller_user_id: String,
-        terminal_caller: bool,
     ) -> (
         Result<LocalDaemonResponse, DaemonError>,
         Option<SessionProjectionAction>,
@@ -900,7 +899,6 @@ impl SessionRuntimeStore {
                 &request.session_id,
                 &request.agent_id,
                 &caller_user_id,
-                terminal_caller,
             )
             .await
             .map_err(|error| match error {
@@ -954,14 +952,13 @@ impl SessionRuntimeStore {
         &self,
         request: CycleAgentFocusRequest,
         caller_user_id: String,
-        terminal_caller: bool,
     ) -> (
         Result<LocalDaemonResponse, DaemonError>,
         Option<SessionProjectionAction>,
     ) {
         let result = self
             .state
-            .cycle_agent_focus(&request.session_id, &caller_user_id, terminal_caller)
+            .cycle_agent_focus(&request.session_id, &caller_user_id)
             .await
             .map(|agent| LocalDaemonResponse::AgentFocusCycled { agent });
         self.with_session_projection_action_result(result).await

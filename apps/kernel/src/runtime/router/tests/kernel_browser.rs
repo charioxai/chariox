@@ -6,7 +6,6 @@ mod access;
 mod agent_reads;
 mod capability_grants;
 mod computer;
-mod focus_authority;
 mod implicit_start;
 mod screenshot;
 mod state_wait;

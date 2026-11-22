@@ -40,11 +40,7 @@ fn mp08_mp11_kernel_computer_461_92_shapes_are_hashed() {
         assert_eq!(serde_json::to_value(typed).unwrap(), wire);
         requests.push(wire);
     }
-    let resource = serde_json::json!({"kind":"desktop","surface_id":"s"});
-    let typed: crate::local::UserDomainResource = serde_json::from_value(resource.clone()).unwrap();
-    assert_eq!(serde_json::to_value(typed).unwrap(), resource);
-    let snapshot =
-        serde_json::json!({"local":461,"peer":92,"requests":requests,"resource":resource});
+    let snapshot = serde_json::json!({"local":461,"peer":92,"requests":requests});
     assert_eq!(
         format!(
             "{:x}",

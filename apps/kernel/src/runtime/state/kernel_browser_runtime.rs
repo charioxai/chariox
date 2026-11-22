@@ -87,14 +87,6 @@ pub(crate) struct KernelBrowserPushCredit {
 const LOADER: &str = "chariox.load_kernel_browser";
 pub(super) const PASTE: &str = "chariox.kernel_browser_paste_secret";
 const BROWSER: &str = "chariox.kernel_browser";
-const SHARE: &str = "chariox.kernel_browser_share";
-
-#[derive(serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct LoaderArguments {
-    #[serde(default)]
-    lifetime_hours: Option<u64>,
-}
 
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -365,7 +357,6 @@ impl KernelRuntimeState {
             KernelBrowserCommand::DisplayActors => KernelBrowserDisplayRequest::Actors,
             command => {
                 let (user, actor) = self.kernel_browser_terminal_context(caller)?;
-                self.refresh_user_domain_grants();
                 match &command {
                     KernelBrowserCommand::GrantLeasedComputer { agent_id, target } => {
                         return self
@@ -386,31 +377,23 @@ impl KernelRuntimeState {
                         }
                         if let KernelBrowserCommand::RevokeGrants { agent_id } = &command {
                             self.set_room_computer_access(&user, agent_id.as_deref(), false)?;
-                            self.owned
-                                .kernel_browser_host
-                                .revoke_grants(&user, agent_id.as_deref());
                             self.revoke_user_leased_computer(&user, agent_id.as_deref())
                                 .await?;
-                            self.owned
-                                .kernel_browser_host
-                                .revoke_grants(&user, agent_id.as_deref());
                         }
                         if let KernelBrowserCommand::SubscribeGrants { after, wait_ms } = command {
                             if wait_ms > 25_000 {
                                 return Err(host_error(
-                                    "MP-08: grant subscription wait exceeds 25000 ms".into(),
+                                    "MP-08: access subscription wait exceeds 25000 ms".into(),
                                 ));
                             }
                             let deadline = tokio::time::Instant::now()
                                 + std::time::Duration::from_millis(wait_ms.into());
-                            while self.owned.kernel_browser_host.grant_snapshot(&user, "")["cursor"]
-                                .as_u64()
-                                == Some(after)
+                            while self.owned.kernel_browser_host.access_cursor(&user)
+                                == after
                                 && tokio::time::Instant::now() < deadline
                             {
                                 tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                                 self.kernel_browser_terminal_context(caller)?;
-                                self.refresh_user_domain_grants();
                             }
                         }
                         let kernel = self.owned.config_projection.snapshot().daemon_id;
@@ -445,14 +428,6 @@ impl KernelRuntimeState {
                     )
                     .await?;
                 super::kernel_browser_favicons::name_favicons(&mut result, None);
-                if let Some(object) = result.as_object_mut() {
-                    object.extend(
-                        self.user_domain_window_projection(&user)
-                            .as_object()
-                            .unwrap()
-                            .clone(),
-                    );
-                }
                 // MP-08/MP-11: the owner's live browser brings back its App Tabs.
                 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
                 if !stop {
@@ -839,8 +814,8 @@ impl KernelRuntimeState {
             return Vec::new();
         };
         let loader = RuntimeToolSpec { name: LOADER.into(),
-            description: "Load the kernel browser tools: the user's own browser, with every tab. Every agent has it; loading needs no approval and no focus. The grant lasts lifetime_hours (default 8, max 24) and ends early on idle lapse or revocation; load again when the tools are gone. If effective=after_provider_reload, end this turn; Chariox refreshes the tools and automatically continues the request.".into(),
-            input_schema: serde_json::json!({"type":"object","properties":{"lifetime_hours":{"type":"integer","minimum":1,"maximum":24}},"additionalProperties":false}), };
+            description: "Load the kernel browser tools: the user's own browser, with every tab. Every agent has it; loading needs no approval, no focus and no delegation. Load again when the tools are gone. If effective=after_provider_reload, end this turn; Chariox refreshes the tools and automatically continues the request.".into(),
+            input_schema: serde_json::json!({"type":"object","properties":{},"additionalProperties":false}), };
         let Some(agent) = self.kernel_browser_agent(run) else {
             // Every local Room agent may load the browser; leased and remote runs may not.
             if self.room_agent_tools_enabled() && self.user_domain_agent_placement(run).is_ok() {
@@ -857,11 +832,6 @@ impl KernelRuntimeState {
             tools.push(super::kernel_browser_vault_capture::capture_spec());
             tools.push(super::kernel_browser_vault_capture::fill_spec());
             tools.extend(self.owner_handoff_tool_spec());
-            if self.room_agent_tools_enabled() {
-                tools.push(RuntimeToolSpec { name: SHARE.into(),
-                    description: "MP-08: give your direct child agent an explicit subset of the browser resources you were granted. It cannot open new tabs and is revoked with your grant.".into(),
-                    input_schema: serde_json::json!({"type":"object","properties":{"agent":{"type":"string","minLength":1},"resources":{"type":"array","minItems":1,"maxItems":64,"items":{"type":"object","properties":{"kind":{"type":"string","enum":["browser_tab","app_view"]},"tab_id":{"type":"string"},"view_id":{"type":"string"}},"required":["kind"]}}},"required":["agent","resources"],"additionalProperties":false}), });
-            }
             tools.push(RuntimeToolSpec { name: BROWSER.into(),
                 description: "MD-3: control the user's kernel browser outside sessions/slices. Read state/snapshot/screenshot to obtain tab IDs, generation and document_id. If a snapshot is too large, find returns matching fields/buttons/links with node_ref, labels and bounds: {op:find,tab_id,generation,query,kind:field|button|link|any}. query is a case-insensitive substring of a label, role, id, name, placeholder or control text; empty query lists controls. Results are bounded: to continue repeat the same find with next_offset as offset and its document_id beside command. A changed document requires a fresh find. Find never returns field values; Downloads appear in state.downloads (in_progress/done/failed/cancelled); a done path is readable with file tools until the Room ends or the browser stops. Downloads are limited to 256 MiB per file and 1 GiB per Room. Cancel with cancel_download and its download_id, tab_id and generation. The input op requires the observed document_id beside command and accepts click/text/key/scroll/upload; scroll with target=node_ref scrolls that node into view; upload uses target=node_ref from snapshot and path (or paths, 1 through 20 files, 512 MiB total) inside the Room workspace; traversal and symlink escapes are refused; only input type=file is supported, not drop zones or chooser buttons; click/scroll x,y are CSS pixels inside the state viewport (screenshot pixels / device_scale_factor). Pending dialogs appear in state.dialogs; answer with dialog using its dialog_id, tab_id, document_id, generation and action accept/dismiss (optional prompt_text, empty allowed). Permission dialogs use accept for Allow and dismiss for Deny; unanswered requests deny after 30 seconds. screenshot returns the viewport; add node_ref (from a snapshot), clip {x,y,width,height} in CSS pixels inside the viewport, or full_page:true (one image pixel per CSS pixel, cut at 16000 px) to get one element, a region or the whole page; full_page uses viewport masks when the page fits; a taller page with a plain Vault-filled field requires a masked viewport screenshot instead. save writes the bytes of an image or other resource the page shows (node_ref from a snapshot, or an http(s) or data url; fetched with the page's own session) to path inside the Room workspace: {path, bytes, mime_type, sha256}, at most 25 MiB; paths outside the workspace, .. and symlink escapes are refused. wait ends when a condition holds, so do not poll snapshots: text (case-insensitive, as the page shows it to you), node_ref (that node is on the page) or url_contains, with timeout_ms up to 30000; it answers {matched, waited_ms} with the tab state, and matched false means the time ran out. Camera, microphone and screen capture are unavailable. A first state/snapshot/screenshot starts a browser that is not running; after a stop only start brings it back. If start fails, the error ends with a reason class (browser_executable_missing, browser_sandbox_unavailable, browser_display_unavailable, browser_disk_full, browser_out_of_memory, browser_profile_locked, browser_startup_timeout or browser_launch_failed): retry start once, then tell the owner in plain words that the browser did not start. Never ask the owner to allow browser access for a failed start. Vault input is separate.".into(),
                 input_schema: serde_json::json!({"type":"object","properties":{"document_id":{"type":"string","minLength":1,"maxLength":256},"command":{"type":"object","properties":{"op":{"type":"string","enum":["start","state","stop","open","close","navigate","snapshot","find","input","dialog","cancel_download","screenshot","save","wait"]},"tab_id":{"type":"string"},"generation":{"type":"integer","minimum":1},"url":{"type":"string"},"query":{"type":"string","maxLength":512,"description":"find: label, role, id, name, placeholder or control text substring; empty lists controls."},"kind":{"type":"string","enum":["field","button","link","any"],"description":"find: the control kind, as in slice_browser_find."},"offset":{"type":"integer","minimum":0,"maximum":100000,"description":"find: next_offset from a prior page; pass its document_id beside command."},"node_ref":{"type":"string","description":"screenshot, save or wait: a top-level node_ref from a fresh snapshot (backend:N). A screenshot never scrolls: scroll to an off-screen node first (input scroll with target)."},"clip":{"type":"object","properties":{"x":{"type":"integer","minimum":0},"y":{"type":"integer","minimum":0},"width":{"type":"integer","minimum":1},"height":{"type":"integer","minimum":1}},"required":["x","y","width","height"],"additionalProperties":false,"description":"screenshot: a region in CSS pixels inside the state viewport."},"full_page":{"type":"boolean","description":"screenshot: true captures the whole page."},"text":{"type":"string","minLength":1,"maxLength":512,"description":"wait: text that must show on the page."},"url_contains":{"type":"string","minLength":1,"maxLength":512,"description":"wait: part of the tab's URL."},"timeout_ms":{"type":"integer","minimum":0,"maximum":30000,"description":"wait: how long to wait at most."},"path":{"type":"string","minLength":1,"maxLength":4096,"description":"save: the file to write, relative to the Room workspace or an absolute path inside it."},"subscription_id":{"type":"string"},"document_id":{"type":"string","minLength":1,"maxLength":256},"download_id":{"type":"string","minLength":1,"maxLength":128},"dialog_id":{"type":"string","minLength":1,"maxLength":256},"action":{"type":"string","enum":["accept","dismiss"]},"prompt_text":{"type":"string","maxLength":2048},"input":{"type":"object","properties":{"kind":{"type":"string","enum":["click","text","key","scroll","upload"]},"target":{"type":"string","description":"Upload: node_ref from a fresh snapshot of an input type=file. Scroll: a node_ref to scroll into view instead of x, y and deltas."},"path":{"type":"string","minLength":1,"maxLength":4096,"description":"Upload: a file relative to the Room workspace, or an absolute path inside it. Use path or paths."},"paths":{"type":"array","minItems":1,"maxItems":20,"items":{"type":"string","minLength":1,"maxLength":4096}},"x":{"type":"integer","minimum":0,"maximum":1279},"y":{"type":"integer","minimum":0,"maximum":799},"text":{"type":"string","maxLength":16384},"key":{"type":"string","minLength":1,"maxLength":16,"description":"Named navigation/editing key or a single printable character; validated by the shared browser input path."},"modifiers":{"type":"integer","minimum":0,"maximum":15,"description":"Optional bounded CDP keyboard bitset: Alt=1, Ctrl=2, Meta=4, Shift=8; omitted means zero."},"delta_x":{"type":"integer","minimum":-10000,"maximum":10000},"delta_y":{"type":"integer","minimum":-10000,"maximum":10000}},"required":["kind"],"additionalProperties":false}},"required":["op"],"additionalProperties":false}},"required":["command"],"additionalProperties":false}), });
@@ -886,7 +856,6 @@ impl KernelRuntimeState {
             PASTE,
             super::kernel_browser_vault_capture::CAPTURE,
             super::kernel_browser_vault_capture::FILL,
-            SHARE,
             super::owner_handoff_runtime::HANDOFF,
         ]
         .contains(&name)
@@ -937,9 +906,6 @@ impl KernelRuntimeState {
                 };
                 current.id() == run_id && authority.kernel_browser_agent(current).is_some()
             });
-        if name == SHARE {
-            return self.kernel_browser_share(&agent, arguments, &admission);
-        }
         if name == super::owner_handoff_runtime::HANDOFF {
             return self
                 .kernel_browser_handoff(&agent, arguments, admission)
@@ -993,7 +959,7 @@ impl KernelRuntimeState {
             params["_save_roots"] =
                 serde_json::json!([self.room_project_directory(run.session_id())?]);
         }
-        self.claim_app_view_tab(&user, &admission, &mut params)?;
+        self.mark_app_view_tab(&user, &mut params)?;
         params["_download_session"] = serde_json::json!(agent.session_id());
         let mut payload = if params["op"] == "wait" {
             self.kernel_browser_wait(&user, admission, params).await?
@@ -1019,17 +985,15 @@ pub(super) fn image_for_mcp(payload: &mut serde_json::Value) {
     }
 }
 impl KernelRuntimeState {
-    /// MP-08/MP-11: an agent drives an owner's App Tab (input or Vault fill)
-    /// only after claiming that App view in its own grant; the host then runs
+    /// An agent drives an owner's App Tab (input or Vault fill): the host then runs
     /// the Tab's bridge calls as the agent.
     #[cfg_attr(
         not(any(target_os = "macos", all(target_os = "linux", target_env = "gnu"))),
         allow(unused_variables)
     )]
-    pub(super) fn claim_app_view_tab(
+    pub(super) fn mark_app_view_tab(
         &self,
         user: &str,
-        admission: &crate::runtime::kernel_browser_host::KernelBrowserAdmission,
         params: &mut serde_json::Value,
     ) -> Result<(), DaemonError> {
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
@@ -1045,67 +1009,35 @@ impl KernelRuntimeState {
                     .as_ref()
                     .is_some_and(|browser| browser.tab_id == tab)
                 {
-                    self.owned
-                        .kernel_browser_host
-                        .claim_resource(
-                            Some(admission),
-                            crate::local::UserDomainResource::AppView {
-                                view_id: view.view_id,
-                            },
-                        )
-                        .map_err(host_error)?;
                     params["_app_view_tab"] = tab.clone().into();
                 }
             }
         }
         Ok(())
     }
-    /// Every local agent has the kernel browser, like Apps: loading grants it
-    /// at once, with no card and no focus.
+    /// Every local agent has the kernel browser, like Apps: loading only lists
+    /// its tools; nothing is granted, so there is no card, focus or delegation.
     async fn kernel_browser_loader(
         &self,
         run: &crate::provider::RuntimeProviderRun,
         arguments: serde_json::Value,
     ) -> Result<RuntimeToolResult, DaemonError> {
-        let arguments: LoaderArguments = serde_json::from_value(arguments)
-            .map_err(|_| host_error("MD-3: loader accepts only lifetime_hours".into()))?;
-        self.refresh_user_domain_grants();
-        // MP-08/MP-11: placement refuses leased and remote runs with a typed
-        // NotGranted before the Room epoch check can mask it.
+        if !arguments.as_object().is_some_and(|arguments| arguments.is_empty()) {
+            return Err(host_error("MD-3: the loader takes no arguments".into()));
+        }
         let agent = self.user_domain_agent_placement(run)?;
         self.authorize_current_external_command()?;
         let host = &self.owned.kernel_browser_host;
         let user = self.provider_account_authority_owner_user_id(agent.owner_user_id());
         let previous_catalog = self.runtime_catalog_signature_for_agent(&agent);
         let already_loaded = host.is_loaded(&user, agent.id());
-        let lifetime = crate::runtime::kernel_browser_host::KernelBrowserHost::grant_lifetime(
-            arguments.lifetime_hours,
-        )
-        .map_err(host_error)?;
-        let granted = self.grant_kernel_browser(run, &agent, lifetime)?;
-        host.load(&user, agent.id()).map_err(host_error)?;
+        host.load_for(&user, agent.id(), crate::runtime::kernel_browser_host::KernelBrowserCapability::Browser);
         Ok(self.runtime_catalog_loader_result(
             &agent,
             &previous_catalog,
             already_loaded,
-            serde_json::json!({"loaded": BROWSER, "granted": granted}),
+            serde_json::json!({"loaded": BROWSER}),
         ))
-    }
-    /// The agent's own kernel browser grant; an existing live grant is kept.
-    pub(super) fn grant_kernel_browser(
-        &self,
-        run: &crate::provider::RuntimeProviderRun,
-        agent: &crate::agent::AgentInstance,
-        lifetime: std::time::Duration,
-    ) -> Result<bool, DaemonError> {
-        let user = self.provider_account_authority_owner_user_id(agent.owner_user_id());
-        let granted = self
-            .owned
-            .kernel_browser_host
-            .grant_agent(&user, agent.id(), lifetime, agent.session_id())
-            .map_err(host_error)?;
-        self.user_domain_agent_authority(run)?;
-        Ok(granted)
     }
 }
 

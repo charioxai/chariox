@@ -17,11 +17,10 @@ never establish an authorization refusal.
 
 | Reason | Meaning |
 |---|---|
-| `not_focused_agent` | The authenticated local agent is not the current focused agent. |
 | `foreign_owner` | An internal admitted identity is mismatched to the requested owner scope; never a global resource existence lookup. |
-| `stale_epoch` | A focus, browser or observation-protection epoch changed. |
+| `stale_epoch` | A browser document generation or observation-protection epoch changed. |
 | `stale_reference` | A document, selection receipt or subscription reference is no longer usable. |
-| `not_granted` | This owner/actor has no usable reference or capability, including nonexistent and foreign IDs. |
+| `not_granted` | The operation is not allowed for this caller (person-only step, path outside the Room, foreign or nonexistent ID). It never means a missing grant: owner agents need none. |
 | `sensitive_requires_focus` | A Vault fill or Computer action needs focus or human approval. Browser typing and drags are never refused for the field they touch. |
 
 Host policy refusals are branded `UserDomainRefusal` instances. Arbitrary page,
@@ -46,7 +45,7 @@ notes are attributed at the kernel notes boundary.
 Reservation overlap: lane mdaccess is building grant holders/revoke/sensitive
 access under local432. This lane adds refusal attribution under local434/relay80
 and does not introduce grants or change their policy. `not_granted`,
-`not_focused_agent`, `stale_epoch`, `stale_reference`, `foreign_owner` and
+`stale_epoch`, `stale_reference`, `foreign_owner` and
 `sensitive_requires_focus` are the proposed shared vocabulary; no remote agent
 for mdaccess appeared in this runtime session, so the coordinator contact route
 was requested while implementation continued. Fold the reason module and

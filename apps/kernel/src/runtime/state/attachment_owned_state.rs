@@ -192,6 +192,6 @@ impl KernelRuntimeState {
         {
             request.capability_level = crate::attachment::ClientCapabilityLevel::AutomationOnly;
         }
-        self.attach(request, terminal_caller).await
+        self.attach(request).await
     }
 }

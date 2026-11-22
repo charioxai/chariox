@@ -1,10 +1,10 @@
-//! MP-08/MP-11: allocated 507/115 grant and reachability shape guard.
+//! MP-08/MP-11: Room Computer switch shapes (no user-domain grants).
 use super::*;
 use crate::local::*;
 use sha2::{Digest, Sha256};
 
 #[test]
-fn mdaccess_protocol_462_grant_shapes_and_hash() {
+fn room_computer_switch_shapes_and_hash() {
     assert_eq!(
         LOCAL_DAEMON_PROTOCOL_VERSION,
         crate::test_support::expected_local_protocol_version()
@@ -37,34 +37,7 @@ fn mdaccess_protocol_462_grant_shapes_and_hash() {
         );
         values.push(value);
     }
-    let grant = UserDomainGrant {
-        agent_id: "a".into(),
-        session_id: "s".into(),
-        kernel_id: "home".into(),
-        resources: vec![
-            UserDomainResource::BrowserTab { tab_id: "t".into() },
-            UserDomainResource::AppView {
-                view_id: "v".into(),
-            },
-            UserDomainResource::Capture {
-                capture_id: "c".into(),
-            },
-        ],
-        since_ms: 1,
-        focused: false,
-        idle_since_ms: Some(2),
-        idle_timeout_seconds: 1800,
-        expiry_rule: "active turn or pending wake; then idle window".into(),
-        delegated_by_agent_id: None,
-        expires_at_ms: Some(28_800_001),
-    };
-    let delegated = UserDomainGrant {
-        agent_id: "child".into(),
-        delegated_by_agent_id: Some("a".into()),
-        resources: vec![UserDomainResource::BrowserTab { tab_id: "t".into() }],
-        ..grant.clone()
-    };
-    values.push(serde_json::to_value(LocalDaemonResponse::KernelBrowser { result: serde_json::json!({"event":"user_domain_grants_changed","cursor":4,"room_computer":[{"agent_id":"a","session_id":"s","allowed":false}],"grants":[grant, delegated],"notice":UserDomainNotice {agent_id:"a".into(),resource:UserDomainResource::BrowserTab {tab_id:"t".into()},at_ms:3}}) }).unwrap());
+    values.push(serde_json::to_value(LocalDaemonResponse::KernelBrowser { result: serde_json::json!({"event":"user_domain_grants_changed","cursor":4,"room_computer":[{"agent_id":"a","session_id":"s","allowed":false}]}) }).unwrap());
     values.push(
         serde_json::to_value(LocalDaemonResponse::UserAppViewsListed {
             views: vec![UserAppView {
@@ -73,12 +46,6 @@ fn mdaccess_protocol_462_grant_shapes_and_hash() {
                 generation: "7".into(),
                 origin: "https://app.a.invalid".into(),
                 browser: None,
-                access: Some(UserDomainWindowAccess {
-                    kernel_id: "home".into(),
-                    kernel_name: "home".into(),
-                    focused_agent_kernel_id: Some("worker".into()),
-                    reachable_by_focused_agent: false,
-                }),
             }],
         })
         .unwrap(),
