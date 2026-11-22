@@ -417,3 +417,20 @@ test('R1: a screencast region crops the shared frames and follows the shared fen
  source.fenced=true;assert.equal(region.valid(),false,'a fenced shared source fences the region');assert.equal(region.sample(),null);
  source.fenced=false;await region.close();assert.equal(released,1,'closing releases the shared source');assert.equal(listeners.size,0);
 });
+
+// R1c: a page with Vault-protected values or targets on it never gets region video from the screencast (as the whole-tab
+// fallback): the lease is refused, and a region already streaming stops being valid once protection appears.
+test('R1c: a protected page gets no screencast region video',async()=>{
+ const f=fixture();delete f.host.chromium.display;f.host.chromeWindows={current:()=>null};
+ f.host.screencastFor=async()=>({source:{closed:false,fenced:false,subscribe:()=>()=>{},sample:()=>null},ready:Promise.resolve(),release:()=>{}});
+ const {ScreencastRegionCapture}=await import('./kernel-browser-screencast-region.mjs');
+ f.host.protection={unknown:false,values:['v'],targets:[]};
+ await assert.rejects(subscribeRegion(f.host,f.command,'terminal:a',undefined,{Screencast:ScreencastRegionCapture}),/refused|fenced/);
+ assert.equal(f.host.displays.size,0,'no region stream is left');
+ const g=fixture();delete g.host.chromium.display;g.host.chromeWindows={current:()=>null};g.host.screencastFor=f.host.screencastFor;
+ g.host.protection={unknown:false,values:[],targets:[]};
+ await subscribeRegion(g.host,g.command,'terminal:a',undefined,{Screencast:ScreencastRegionCapture});
+ const source=[...g.host.displays.values()][0].regionSource;assert.equal(source.valid(),true);
+ g.host.protection={unknown:false,values:[],targets:['t']};assert.equal(source.valid(),false,'protection appearing stops the region');
+ for(const stream of [...g.host.displays.values()])await stream.close();
+});

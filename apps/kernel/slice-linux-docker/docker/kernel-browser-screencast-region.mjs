@@ -22,7 +22,8 @@ export async function subscribeScreencastRegion(host,command,scope,signal,{Scree
   const shared=await host.screencastFor(tab,scale);
   assertNotCancelled(signal);
   source=new Screencast({shared,tab,scale,policy,rect:{left,top,width,height},
-   allowed:p=>host.protection===p&&!p.unknown&&host.generation===generation,validateCurrent:()=>lease.isCurrent(),timing:host.timing});
+   // As the whole-tab screencast: no pixels while Vault-protected values or targets are on the page (R1c).
+   allowed:p=>host.protection===p&&!p.unknown&&!p.values?.length&&!p.targets?.length&&host.generation===generation,validateCurrent:()=>lease.isCurrent(),timing:host.timing});
   await source.start();
   assertNotCancelled(signal);
   if(host.protection!==policy||!await lease.isCurrent())refuse();
