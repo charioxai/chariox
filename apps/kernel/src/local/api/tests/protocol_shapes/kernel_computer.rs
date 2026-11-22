@@ -46,7 +46,7 @@ fn mp08_mp11_kernel_computer_461_92_shapes_are_hashed() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "b1bb646228363ee41be24efdaa50df31ef39f19742eaf667a41c2df1f70c2f82"
+        "aceb8fd91c0e83083910ed5f04031d1a5713296c4167351f00e41ac3c567077a"
     );
     for command in [
         serde_json::json!({"op":"input","target":{"surface_id":"s","generation":"g","user_id":"forged"},"input":{"kind":"keycode","keycode":38,"state":"down"}}),

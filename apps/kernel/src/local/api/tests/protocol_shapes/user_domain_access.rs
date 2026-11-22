@@ -58,7 +58,7 @@ fn room_computer_switch_shapes_and_hash() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&expected).unwrap())
         ),
-        "98fdf1b5376c3bfded18392728a232f6a012d4abd44d514cd0982a1b30f523ca"
+        "d904ca32d5953be83f725a0a5ff67c0dc53069a539f5f853937a72c4cab13912"
     );
     assert!(serde_json::from_value::<KernelBrowserRequest>(
         serde_json::json!({"command":{"op":"revoke_grants","agent_id":null,"owner":"forged"}})
@@ -98,6 +98,6 @@ fn mp11_leased_computer_protocol_507_115_snapshot() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&expected).unwrap())
         ),
-        "3b30d3723048e917bde79319db22b5ca8aad2d30970fa18dad0712420c6339d3"
+        "1570b84f2ce5e4ab46b940367e561c5e9190de7894e40f9bcc4b6082122ca01e"
     );
 }

@@ -8,7 +8,7 @@ fn event_follow_1012_snapshot_and_hash() {
     let bytes = include_bytes!("event-follow-1012.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "fc0bd4c1e3a5ad8bfb4cbe3f526b95d92fa69625c39c17f97a1840feea0d057d"
+        "267f095c9dbfbe6c9b1e40c40ae68e83751eb788e5b0592b2d99081f72c9b656"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(fixture["local"], LOCAL_DAEMON_PROTOCOL_VERSION);

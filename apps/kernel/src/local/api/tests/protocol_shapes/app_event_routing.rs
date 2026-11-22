@@ -40,7 +40,7 @@ fn app_event_routing_contract_snapshot() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "7ed6038a3d874b56c8f7b76661aea17b4933b2903cd808f1a0af3e5efc898616"
+        "5389e42a92e525382e5bb95bcbc91016f06386013845bfa45295061ff85a29bd"
     );
     // Neither request names a connection, owner or agent: the kernel decides those.
     for forged in [

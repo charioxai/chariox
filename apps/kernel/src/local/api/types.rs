@@ -625,4 +625,9 @@ pub use workspace::*;
 /// 1013 links a folded notification outcome to its answering turn.
 /// Local 1013 (relay peer 450): the mirror v2 header carries `focus_visible`, whether the page's focused element
 /// matches `:focus-visible`, so a viewer draws the focus ring only where the page's browser does; absent means no ring.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1013;
+/// Local 1016 (relay peer 453, provisional): the owner's agents need no grant for the kernel browser, Computer or
+/// App views. `UserDomainGrant`, `UserDomainNotice`, `UserDomainResource` and `UserDomainWindowAccess` are gone; the
+/// `user_domain_grants_changed` snapshot carries only `cursor` and `room_computer`; browser and App view results no
+/// longer carry `kernel_id`, `kernel_name`, `focused_agent_kernel_id` or `reachable_by_focused_agent`; the loader tools
+/// take no arguments and `chariox.kernel_browser_share` is removed.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1016;

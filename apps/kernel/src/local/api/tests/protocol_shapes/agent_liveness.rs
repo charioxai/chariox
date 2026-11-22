@@ -26,7 +26,7 @@ fn waiting_events_wait_without_long_notice_and_question_task_are_bound_to_protoc
     let bytes = include_bytes!("agent-waiting-events-1011.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "60a244c61ebca507301e5d8d04c0e3708eb2794b05b08e9cd985234298be7eef"
+        "d3a9394acf377124c3e43a82d41ed0409cd1628c006966389396f02dbb06331f"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(
