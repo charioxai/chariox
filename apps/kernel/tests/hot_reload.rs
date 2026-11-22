@@ -672,6 +672,54 @@ fn a_kernel_whose_token_came_from_a_file_keeps_it_across_a_hot_reload() {
     assert_runs(kernel.child.id(), &scratch.join("bin/chariox-kernel"));
 }
 
+// O3 (queue row 372): the kernel itself names the running kernel in its pid file.
+#[test]
+fn the_pid_file_names_the_running_kernel_after_start_and_after_a_hot_reload() {
+    let scratch = std::env::temp_dir().join(format!("hr-pid-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).unwrap();
+    let mut kernel = start_kernel(&scratch);
+    let pid_file = scratch
+        .join("home/.chariox/state/kernel-pid")
+        .join(format!("{}.pid", kernel.port));
+    let pid = kernel.child.id();
+    let named = |what: &str| {
+        std::fs::read_to_string(&pid_file)
+            .unwrap_or_else(|error| panic!("{what}: no pid file: {error}"))
+            .trim()
+            .to_string()
+    };
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let socket = connect(&kernel, Duration::from_secs(60)).await;
+        assert_eq!(named("after start"), pid.to_string());
+        // A reload replaces the program in place; the new program writes it again.
+        std::fs::remove_file(&pid_file).unwrap();
+        let installed = scratch.join("bin/chariox-kernel");
+        install(
+            |staged| {
+                std::fs::copy(&installed, staged).unwrap();
+            },
+            &installed,
+        );
+        unsafe { libc::kill(pid as i32, libc::SIGUSR2) };
+        closed_by_the_old_program(socket).await;
+        connect(&kernel, Duration::from_secs(60)).await;
+        assert_eq!(named("after the hot reload"), pid.to_string());
+        // A planned stop leaves no file naming a kernel that is gone.
+        unsafe { libc::kill(pid as i32, libc::SIGTERM) };
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while kernel.child.try_wait().unwrap().is_none() {
+            assert!(Instant::now() < deadline, "the kernel stopped");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    });
+    assert!(!pid_file.exists(), "a stopped kernel leaves no pid file");
+}
+
 /// A client resumes its subscription on the attachment it had: a browser whose
 /// attachment is gone waits for its Room to retry (seconds) before it shows the
 /// output again.
