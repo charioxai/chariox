@@ -156,7 +156,10 @@ struct ClaudeTurn {
     session_id: Option<String>,
     active_turn_id: Option<String>,
     active_prompt_message: Option<Value>,
+    // A predecessor program (L12) hands neither over: its turns had no own-turn state.
+    #[serde(default)]
     own_turn: bool,
+    #[serde(default)]
     background_notification_pending: bool,
     active_stream_message_id: Option<String>,
     next_turn_number: u64,
