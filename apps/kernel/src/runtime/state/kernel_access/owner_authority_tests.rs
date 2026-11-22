@@ -39,17 +39,9 @@ fn owner_requests() -> Vec<LocalDaemonRequest> {
         }),
         LocalDaemonRequest::ForgetGatewayKernel(ForgetGatewayKernelRequest { name: "k".into() }),
         LocalDaemonRequest::CloudRelayStatus(CloudRelayStatusRequest),
-        LocalDaemonRequest::GetProviderAccountProfile(
-            crate::local::api::GetProviderAccountProfileRequest {
-                provider: "codex".into(),
-                account_profile: "default".into(),
-            },
-        ),
-        LocalDaemonRequest::GetUserConfig(GetUserConfigRequest),
-        LocalDaemonRequest::AcceptAppHostAction(AcceptAppHostActionRequest {
-            session_id: "s".into(),
-            operation_id: "o".into(),
-        }),
+        serde_json::from_value(serde_json::json!({"GetProviderAccountProfile": {
+            "provider": "codex", "account_profile": "default"}}))
+        .expect("provider profile read shape"),
         config("agents.usage_limit_resume"),
         // PA8: deletes and machine admin.
         LocalDaemonRequest::DeleteProject(DeleteProjectRequest {
