@@ -1441,12 +1441,20 @@ fn writers(members: &[Arc<Mutex<Observation>>]) -> Vec<Writer<'_>> {
                         .is_none_or(|count| *count != 1)
                 })
             };
-            // A command writing to one volume only, through files nobody else
-            // holds, writes all it writes there: a copy of many files shows no
-            // file growing from one sample to the next.
-            let only = matches!(outputs, [output] if !shared(output));
+            // A command sending output to one volume only, through files
+            // nobody else holds, writes all it writes there: a copy of many
+            // files shows no file growing from one sample to the next.
+            let receiving = outputs
+                .iter()
+                .filter(|output| output.receiving)
+                .collect::<Vec<_>>();
+            let only = match receiving.as_slice() {
+                [output] if !shared(output) => Some(output.id),
+                _ => None,
+            };
             for output in outputs {
-                let (rate, written) = if only {
+                let whole = only == Some(output.id);
+                let (rate, written) = if whole {
                     (
                         output.rate.max(command.write_growth),
                         output.written.max(command.writes),
@@ -1454,7 +1462,7 @@ fn writers(members: &[Arc<Mutex<Observation>>]) -> Vec<Writer<'_>> {
                 } else {
                     (output.rate, output.written)
                 };
-                if rate < GROWING || shared(output) || (!only && output.files.is_empty()) {
+                if rate < GROWING || shared(output) || (!whole && output.files.is_empty()) {
                     continue;
                 }
                 writers.push(Writer {

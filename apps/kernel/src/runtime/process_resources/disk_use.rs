@@ -17,6 +17,10 @@ pub(super) struct VolumeWrites {
     pub files: BTreeSet<u64>,
     /// Every writable inode it holds open there, growing or not.
     pub open: BTreeSet<u64>,
+    /// Its output goes here: it holds a writable file open here other than
+    /// its standard streams, or did a moment ago. A log its streams go to
+    /// does not say where a copy writes.
+    pub receiving: bool,
 }
 
 /// Below this written, a process is not looked at: checking its descriptors

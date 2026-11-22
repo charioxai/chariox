@@ -45,10 +45,11 @@ it within the fill horizon at their current rate. Then the kernel stops ONE
 agent command writing there: a command writing 128 MiB/s or more (a runaway)
 first, the fastest of them; otherwise the one that wrote the most. A person's
 own terminal command is never chosen. A command's writes are what it adds to
-the files it holds open; a command holding writable files on one volume only,
-shared with no other command, has all its write rate counted there, and that
-volume stands for two seconds after it closes its last file, so a copy of
-many short-lived files is seen like one large file. After a stop the next
+the files it holds open; a command whose output files (not its standard
+streams, which often go to a log) are on one volume only, shared with no other
+command, has all its write rate counted there, and that volume stands for two
+seconds after it closes its last output, so a copy of many short-lived files is
+seen like one large file. After a stop the next
 writer is judged two seconds later. The stopped command reads the reason on
 its error stream, for example `chariox: stopped this command: the disk has
 3 GB free, full in about 2 s at the rate it fills, and this command was

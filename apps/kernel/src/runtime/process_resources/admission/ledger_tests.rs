@@ -92,6 +92,7 @@ fn owner(
                         rate: command.write_growth,
                         files: [u64::from(command.pid)].into(),
                         open: [u64::from(command.pid)].into(),
+                        receiving: true,
                     }],
                 )
             })
@@ -1550,6 +1551,7 @@ fn the_disk_never_fills_up_while_five_builds_write_and_the_filler_goes() {
                         rate: STEP,
                         files: [u64::from(pid)].into(),
                         open: [u64::from(pid)].into(),
+                        receiving: true,
                     }],
                 );
             }
@@ -1807,6 +1809,7 @@ fn a_full_volume_stops_its_own_writer_and_leaves_one_on_a_roomy_volume_alone() {
                 rate: 50 * MIB,
                 files: [1].into(),
                 open: [1].into(),
+                receiving: true,
             }],
         ),
         (
@@ -1818,6 +1821,7 @@ fn a_full_volume_stops_its_own_writer_and_leaves_one_on_a_roomy_volume_alone() {
                 rate: 50 * MIB,
                 files: [2].into(),
                 open: [2].into(),
+                receiving: true,
             }],
         ),
     ]
@@ -1868,6 +1872,7 @@ fn crossed_volume_writer(cwd: &str, output: &str, id: u64, should_stop: bool) {
             id,
             files: [1].into(),
             open: [1].into(),
+            receiving: true,
             path: output.into(),
             written: 6 * GIB,
             rate: 50 * MIB,
@@ -1948,6 +1953,7 @@ fn between_files() -> Vec<disk_use::VolumeWrites> {
         rate: 0,
         files: Default::default(),
         open: Default::default(),
+        receiving: true,
     }]
 }
 
@@ -2210,6 +2216,7 @@ fn a_finished_run_remembers_the_volume_that_received_most_of_its_writes() {
             rate: 50 * MIB,
             files: [9].into(),
             open: [9].into(),
+            receiving: true,
         });
     }
     let mut ledger = Ledger::new(None);
@@ -2412,6 +2419,7 @@ fn unresolved_sampled_destinations_are_not_remembered_as_a_receiving_volume() {
         rate: MIB,
         files: Default::default(),
         open: Default::default(),
+        receiving: true,
     };
     assert_eq!(
         ReceivingVolume::capture(&sample),

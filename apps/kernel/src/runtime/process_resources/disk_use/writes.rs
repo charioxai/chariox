@@ -14,7 +14,7 @@ const REMEMBERED_MS: u64 = 2000;
 pub(in crate::runtime::process_resources) struct WriteGrowth {
     #[cfg(target_os = "linux")]
     files: BTreeMap<(u64, u64), FileGrowth>,
-    /// The one volume it last wrote to: its id, a directory on it, and when.
+    /// The one volume it last sent output to: its id, a directory on it, and when.
     #[cfg(target_os = "linux")]
     last: Option<(u64, PathBuf, u64)>,
 }
@@ -40,6 +40,8 @@ impl WriteGrowth {
         // Partial attribution cannot justify a stop; bound each monitor tick.
         let mut budget = 16_384usize;
         let mut volumes = BTreeMap::<u64, VolumeWrites>::new();
+        // A descriptor (other than a standard stream) per receiving volume.
+        let mut outputs = BTreeMap::<u64, PathBuf>::new();
         for pid in pids {
             let base = PathBuf::from(format!("/proc/{pid}"));
             let Ok(fds) = std::fs::read_dir(base.join("fd")) else {
@@ -107,8 +109,18 @@ impl WriteGrowth {
                     rate: 0,
                     files: Default::default(),
                     open: Default::default(),
+                    receiving: false,
                 });
                 volume.open.insert(key.1);
+                let stream = fd
+                    .file_name()
+                    .to_str()
+                    .and_then(|fd| fd.parse::<u32>().ok())
+                    .is_some_and(|fd| fd <= 2);
+                if !stream {
+                    volume.receiving = true;
+                    outputs.entry(key.0).or_insert_with(|| fd.path());
+                }
                 if rate > 0 {
                     volume.files.insert(key.1);
                 }
@@ -117,16 +129,22 @@ impl WriteGrowth {
             }
         }
         self.files = files;
-        self.remember(&mut volumes, at);
+        self.remember(&mut volumes, &outputs, at);
         volumes.into_values().collect()
     }
 
-    /// A many-file copy is between two files at most samples. While nothing
-    /// is open, the one volume it wrote to a moment ago still receives it.
+    /// A many-file copy is between two files at most samples. While it
+    /// holds no output open, the one volume it sent output to a moment ago
+    /// still receives it.
     #[cfg(target_os = "linux")]
-    fn remember(&mut self, volumes: &mut BTreeMap<u64, VolumeWrites>, at: u64) {
-        match volumes.len() {
-            0 => {
+    fn remember(
+        &mut self,
+        volumes: &mut BTreeMap<u64, VolumeWrites>,
+        outputs: &BTreeMap<u64, PathBuf>,
+        at: u64,
+    ) {
+        match outputs.iter().next() {
+            None => {
                 let Some((id, dir, _)) = self
                     .last
                     .as_ref()
@@ -135,31 +153,28 @@ impl WriteGrowth {
                     self.last = None;
                     return;
                 };
-                volumes.insert(
-                    *id,
-                    VolumeWrites {
-                        id: *id,
-                        path: dir.clone(),
-                        written: 0,
-                        rate: 0,
-                        files: Default::default(),
-                        open: Default::default(),
-                    },
-                );
+                let volume = volumes.entry(*id).or_insert_with(|| VolumeWrites {
+                    id: *id,
+                    path: dir.clone(),
+                    written: 0,
+                    rate: 0,
+                    files: Default::default(),
+                    open: Default::default(),
+                    receiving: false,
+                });
+                volume.path = dir.clone();
+                volume.receiving = true;
             }
-            1 => {
-                let Some(volume) = volumes.values().next() else {
-                    return;
-                };
+            Some((id, output)) if outputs.len() == 1 => {
                 // The descriptor closes soon; its directory stays measurable.
-                let dir = std::fs::canonicalize(&volume.path)
+                let dir = std::fs::canonicalize(output)
                     .ok()
                     .and_then(|file| file.parent().map(PathBuf::from));
                 if let Some(dir) = dir {
-                    self.last = Some((volume.id, dir, at));
+                    self.last = Some((*id, dir, at));
                 }
             }
-            _ => self.last = None,
+            Some(_) => self.last = None,
         }
     }
 
@@ -248,6 +263,8 @@ mod tests {
             .arg(&path)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
+            // A log on the same volume through a standard stream.
+            .stderr(std::fs::File::create(dir.join("err.log")).unwrap())
             .spawn()
             .unwrap();
         let mut input = child.stdin.take().unwrap();
@@ -275,9 +292,16 @@ mod tests {
         );
         assert_eq!(between[0].id, meta.dev());
         assert_eq!(between[0].path, std::fs::canonicalize(&dir).unwrap());
-        assert!(between[0].open.is_empty() && between[0].files.is_empty());
+        assert!(between[0].receiving && between[0].files.is_empty());
         assert!(
-            growth.sample(&pids, 5000).is_empty(),
+            !between[0].open.contains(&meta.ino()),
+            "a closed output is held"
+        );
+        assert!(
+            growth
+                .sample(&pids, 5000)
+                .iter()
+                .all(|volume| !volume.receiving),
             "an old volume stood in"
         );
         drop(input);
