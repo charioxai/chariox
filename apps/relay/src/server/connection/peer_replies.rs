@@ -6,6 +6,7 @@ use std::io::Cursor;
 
 use serde::{Deserialize, Serialize};
 
+use crate::binary_response::{self, ResponseHeader};
 use crate::frame_transport::CHUNK_BYTES;
 use crate::outgoing::RelaySender;
 use crate::packed_peer_reply::{decoded_len_lower_bound, PackedReplyPlan};
@@ -87,6 +88,23 @@ fn packing_plan<'a>(
     PackedReplyPlan::new(envelope, &payload.ciphertext)
 }
 
+/// The reply as one binary message, when its ciphertext is canonical Base64 and its routing
+/// names fit the header. Anything else goes the ordinary text way.
+fn binary_reply(
+    reply: &RoutedPeerReply<'_>,
+    payload: &OpaquePayload<'_>,
+) -> Option<crate::packed_peer_reply::BinaryPeerReply> {
+    let header = ResponseHeader::DaemonPeerResponse {
+        request_id: reply.request_id.to_owned(),
+        from_daemon_id: reply.from_daemon_id.to_owned(),
+        sender_public_key: payload.sender_public_key.to_string(),
+        nonce: payload.nonce.to_string(),
+    };
+    let decoded = decoded_len_lower_bound(payload.ciphertext.len());
+    let head = binary_response::head(&header, decoded).ok()?;
+    crate::packed_peer_reply::BinaryPeerReply::new(head, &payload.ciphertext)
+}
+
 fn deliver_reply(receiver: &RelaySender, reply: &RoutedPeerReply<'_>) -> Delivery {
     let retry = reply.encrypted_response.map(|payload| EncryptedPeerReply {
         request_id: reply.request_id,
@@ -102,6 +120,11 @@ fn deliver_reply(receiver: &RelaySender, reply: &RoutedPeerReply<'_>) -> Deliver
             receiver.check_peer_reply_size(decoded_len_lower_bound(payload.ciphertext.len()))
         {
             return finish_delivery(receiver, Err(error), retry);
+        }
+        if receiver.binary_peer() {
+            if let Some(reply) = binary_reply(reply, payload) {
+                return finish_delivery(receiver, receiver.try_send_binary_peer_reply(reply), retry);
+            }
         }
         let mut scratch = [0; CHUNK_BYTES];
         if let Some(plan) =
@@ -205,7 +228,10 @@ mod tests {
             let mut text = PeerReply::Text(text);
             let mut delivered = String::new();
             let mut offset = 0;
-            while let Some((frame, end)) = text.next_chunk(1, offset, CHUNK_BYTES) {
+            while let Some((frame, end)) = text.next_chunk(1, offset, CHUNK_BYTES, false) {
+                let tokio_tungstenite::tungstenite::Message::Text(frame) = frame else {
+                    panic!("expected a text frame");
+                };
                 let crate::frame_transport::TransportFrame::TransportChunk { payload, .. } =
                     serde_json::from_str(&frame).unwrap()
                 else {

@@ -1,4 +1,5 @@
-//! A request the relay sent as a `CXR3` frame, back as the envelope text the request handler reads.
+//! A request (`CXR3`) or peer reply (`CXR2`) the relay sent as a binary frame, back as the
+//! envelope text the handlers read.
 use chariox_relay::frame_transport::FrameReceiver;
 use tokio_tungstenite::tungstenite::Message;
 
@@ -11,6 +12,7 @@ pub(super) fn payload(
     frames: &mut FrameReceiver,
     message: Message,
     negotiated: bool,
+    binary_peer: bool,
 ) -> (Option<String>, Option<String>) {
     let Message::Binary(bytes) = message else {
         return (Some(INVALID_FRAME.into()), None);
@@ -24,7 +26,17 @@ pub(super) fn payload(
     let Some(complete) = complete else {
         return (None, receipt);
     };
-    match chariox_relay::binary_request::into_envelope(&complete)
+    // A `CXR2` message is a peer reply, which only a connection that negotiated binary peer
+    // messages can receive.
+    let envelope = if complete.starts_with(b"CXR2") {
+        if !binary_peer {
+            return (Some(INVALID_FRAME.into()), receipt);
+        }
+        chariox_relay::binary_response::into_envelope(&complete)
+    } else {
+        chariox_relay::binary_request::into_envelope(&complete)
+    };
+    match envelope
         .ok()
         .and_then(|envelope| serde_json::to_string(&envelope).ok())
     {

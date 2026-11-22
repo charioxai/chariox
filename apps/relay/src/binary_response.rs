@@ -17,6 +17,19 @@ pub enum ResponseHeader {
         sender_public_key: String,
         nonce: String,
     },
+    /// A kernel's answer to a peer request, as the answering kernel gives it to the relay.
+    DaemonIncomingPeerResponse {
+        relay_request_id: String,
+        sender_public_key: String,
+        nonce: String,
+    },
+    /// The same answer as the relay hands it to the asking kernel.
+    DaemonPeerResponse {
+        request_id: String,
+        from_daemon_id: String,
+        sender_public_key: String,
+        nonce: String,
+    },
 }
 impl ResponseHeader {
     fn fields(&self) -> (&str, &str, &str) {
@@ -25,16 +38,32 @@ impl ResponseHeader {
                 relay_request_id,
                 sender_public_key,
                 nonce,
+            }
+            | Self::DaemonIncomingPeerResponse {
+                relay_request_id,
+                sender_public_key,
+                nonce,
             } => (relay_request_id, sender_public_key, nonce),
             Self::ClientResponse {
                 request_id,
                 sender_public_key,
                 nonce,
+            }
+            | Self::DaemonPeerResponse {
+                request_id,
+                sender_public_key,
+                nonce,
+                ..
             } => (request_id, sender_public_key, nonce),
         }
     }
     fn valid(&self) -> bool {
         let (id, key, nonce) = self.fields();
+        if let Self::DaemonPeerResponse { from_daemon_id, .. } = self {
+            if from_daemon_id.is_empty() || from_daemon_id.len() > 1024 {
+                return false;
+            }
+        }
         !id.is_empty()
             && id.len() <= 1024
             && !key.is_empty()
@@ -67,19 +96,27 @@ pub fn decode(bytes: &[u8]) -> Result<(ResponseHeader, &[u8]), std::io::Error> {
     Ok((header, &bytes[8 + size..]))
 }
 pub fn encode(header: &ResponseHeader, ciphertext: &[u8]) -> Result<Vec<u8>, std::io::Error> {
+    if ciphertext.len() < 16 {
+        return Err(invalid());
+    }
+    let mut bytes = head(header, ciphertext.len())?;
+    bytes.extend_from_slice(ciphertext);
+    Ok(bytes)
+}
+
+/// Everything of a binary response before its ciphertext, which is `ciphertext_len` bytes long.
+pub fn head(header: &ResponseHeader, ciphertext_len: usize) -> Result<Vec<u8>, std::io::Error> {
     let metadata = serde_json::to_vec(header).map_err(|_| invalid())?;
     if !header.valid()
         || metadata.len() > HEADER_LIMIT
-        || ciphertext.len() < 16
-        || metadata.len() + 8 + ciphertext.len() > crate::frame_transport::MAX_MESSAGE_BYTES
+        || metadata.len() + 8 + ciphertext_len > crate::frame_transport::MAX_MESSAGE_BYTES
     {
         return Err(invalid());
     }
-    let mut bytes = Vec::with_capacity(8 + metadata.len() + ciphertext.len());
+    let mut bytes = Vec::with_capacity(8 + metadata.len());
     bytes.extend_from_slice(b"CXR2");
     bytes.extend_from_slice(&(metadata.len() as u32).to_be_bytes());
     bytes.extend_from_slice(&metadata);
-    bytes.extend_from_slice(ciphertext);
     Ok(bytes)
 }
 pub fn from_envelope(envelope: &RelayEnvelope) -> Result<Option<Vec<u8>>, std::io::Error> {
@@ -103,6 +140,32 @@ pub fn from_envelope(envelope: &RelayEnvelope) -> Result<Option<Vec<u8>>, std::i
         } => (
             ResponseHeader::ClientResponse {
                 request_id: request_id.clone(),
+                sender_public_key: p.sender_public_key.clone(),
+                nonce: p.nonce.clone(),
+            },
+            p,
+        ),
+        RelayEnvelope::DaemonIncomingPeerResponse {
+            relay_request_id,
+            encrypted_response: Some(p),
+            error: None,
+        } => (
+            ResponseHeader::DaemonIncomingPeerResponse {
+                relay_request_id: relay_request_id.clone(),
+                sender_public_key: p.sender_public_key.clone(),
+                nonce: p.nonce.clone(),
+            },
+            p,
+        ),
+        RelayEnvelope::DaemonPeerResponse {
+            request_id,
+            from_daemon_id,
+            encrypted_response: Some(p),
+            error: None,
+        } => (
+            ResponseHeader::DaemonPeerResponse {
+                request_id: request_id.clone(),
+                from_daemon_id: from_daemon_id.clone(),
                 sender_public_key: p.sender_public_key.clone(),
                 nonce: p.nonce.clone(),
             },
@@ -133,6 +196,23 @@ pub fn into_envelope(bytes: &[u8]) -> Result<RelayEnvelope, std::io::Error> {
         },
         ResponseHeader::ClientResponse { request_id, .. } => RelayEnvelope::ClientResponse {
             request_id,
+            encrypted_response: payload,
+            error: None,
+        },
+        ResponseHeader::DaemonIncomingPeerResponse {
+            relay_request_id, ..
+        } => RelayEnvelope::DaemonIncomingPeerResponse {
+            relay_request_id,
+            encrypted_response: payload,
+            error: None,
+        },
+        ResponseHeader::DaemonPeerResponse {
+            request_id,
+            from_daemon_id,
+            ..
+        } => RelayEnvelope::DaemonPeerResponse {
+            request_id,
+            from_daemon_id,
             encrypted_response: payload,
             error: None,
         },

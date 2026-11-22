@@ -5,8 +5,10 @@ use std::mem::size_of;
 use base64::{engine::general_purpose::STANDARD, Engine};
 
 use crate::frame_transport::{
-    peer_reply_block_size, peer_reply_chunk, peer_reply_ciphertext_chunk,
+    binary_chunk, binary_chunk_payload, peer_reply_block_size, peer_reply_chunk,
+    peer_reply_ciphertext_chunk, BINARY_CHUNK_PAYLOAD_BYTES,
 };
+use tokio_tungstenite::tungstenite::Message;
 
 pub(crate) struct PackedReplyPlan<'a> {
     envelope: &'a str,
@@ -173,5 +175,116 @@ impl PackedPeerReply {
             offset = end;
         }
         text
+    }
+}
+
+/// A peer reply as one binary message (`CXR2` header, then the ciphertext as bytes) kept as
+/// independently owned blocks, each exactly one full binary chunk, so a written chunk frees
+/// its block and the reply is never held twice.
+pub(crate) struct BinaryPeerReply {
+    head: Box<[u8]>,
+    blocks: Box<[CiphertextBlock]>,
+    len: usize,
+    block_index: usize,
+    charge: usize,
+}
+
+impl BinaryPeerReply {
+    /// `head` is the encoded header with no ciphertext yet; `encoded` is canonical base64.
+    pub(crate) fn new(head: Vec<u8>, encoded: &str) -> Option<Self> {
+        let decoded_len = canonical_decoded_len(encoded.as_bytes())?;
+        let block_encoded = BINARY_CHUNK_PAYLOAD_BYTES / 3 * 4;
+        let block_raw = block_encoded / 4 * 3;
+        let blocks: Box<[CiphertextBlock]> = encoded
+            .as_bytes()
+            .chunks(block_encoded)
+            .map(|part| {
+                let mut block = vec![0; part.len() / 4 * 3];
+                let size = STANDARD
+                    .decode_slice(part, &mut block)
+                    .expect("canonical ciphertext fits its decoded block");
+                block.truncate(size);
+                Some(block.into_boxed_slice())
+            })
+            .collect();
+        debug_assert!(blocks
+            .iter()
+            .rev()
+            .skip(1)
+            .all(|block| block.as_ref().is_some_and(|b| b.len() == block_raw)));
+        let len = head.len() + decoded_len;
+        Some(Self {
+            charge: len + blocks.len() * size_of::<CiphertextBlock>(),
+            head: head.into_boxed_slice(),
+            blocks,
+            len,
+            block_index: 0,
+        })
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.len
+    }
+
+    pub(crate) fn charge(&self) -> usize {
+        self.charge
+    }
+
+    fn block_raw() -> usize {
+        BINARY_CHUNK_PAYLOAD_BYTES / 3 * 4 / 4 * 3
+    }
+
+    pub(crate) fn next_chunk(
+        &self,
+        id: u32,
+        offset: usize,
+        limit: usize,
+        adaptive: bool,
+    ) -> Option<(Message, usize)> {
+        let room = binary_chunk_payload(limit, adaptive);
+        let payload: &[u8] = if offset < self.head.len() {
+            let end = (offset + room).min(self.head.len());
+            &self.head[offset..end]
+        } else {
+            let in_blocks = offset - self.head.len();
+            let index = in_blocks / Self::block_raw();
+            let block = self.blocks.get(index)?.as_deref()?;
+            let from = in_blocks - index * Self::block_raw();
+            &block[from..(from + room).min(block.len())]
+        };
+        if payload.is_empty() {
+            return None;
+        }
+        let end = offset + payload.len();
+        Some((
+            Message::Binary(binary_chunk(id, offset, self.len, payload).into()),
+            end,
+        ))
+    }
+
+    pub(crate) fn written(&mut self, end: usize) -> Option<usize> {
+        let block = self.blocks.get_mut(self.block_index)?;
+        let block_len = block.as_ref()?.len();
+        let block_end = self.head.len() + self.block_index * Self::block_raw() + block_len;
+        if end < block_end {
+            return None;
+        }
+        drop(block.take());
+        self.block_index += 1;
+        Some(block_len)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn into_test_bytes(mut self) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(self.len);
+        let mut offset = 0;
+        while let Some((Message::Binary(frame), end)) =
+            self.next_chunk(1, offset, crate::frame_transport::CHUNK_BYTES, false)
+        {
+            bytes.extend_from_slice(&frame[crate::frame_transport::BINARY_CHUNK_HEADER_BYTES..]);
+            self.written(end);
+            offset = end;
+        }
+        bytes
     }
 }

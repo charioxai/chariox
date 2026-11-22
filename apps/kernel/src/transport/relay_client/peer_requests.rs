@@ -59,7 +59,9 @@ pub(super) async fn handle_daemon_peer_request(
                 };
             }
         };
-        let request = match serde_json::from_slice::<RelayPeerRequest>(&decrypted.plaintext) {
+        let request = match crate::transport::relay_peer::open_peer_plaintext::<RelayPeerRequest>(
+            &decrypted.plaintext,
+        ) {
             Ok(request) => request,
             Err(_) => {
                 return RelayRequestOutcome {
@@ -2374,7 +2376,7 @@ fn encrypt_peer_response(
     requester_public_key: &str,
     response: RelayPeerResponse,
 ) -> RelayRequestOutcome {
-    let plaintext = match serde_json::to_vec(&response) {
+    let plaintext = match crate::transport::relay_peer::seal_peer_plaintext(&response) {
         Ok(bytes) => bytes,
         Err(error) => {
             return RelayRequestOutcome {
@@ -2793,6 +2795,7 @@ fn managed_context_request(request: &RelayPeerRequest) -> bool {
 mod tests {
     mod agent_move;
     mod environment_setup_worker;
+    mod file_slice_wire;
     mod signed_slice;
 
     use super::*;

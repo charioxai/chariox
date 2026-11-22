@@ -919,6 +919,8 @@ async fn run_daemon_relay_connector_inner(
                     crate::transport::relay_socket_connect::binary_events_accepted(&handshake);
                 let binary_requests =
                     crate::transport::relay_socket_connect::binary_requests_accepted(&handshake);
+                let binary_peer = binary_requests
+                    && crate::transport::relay_socket_connect::binary_peer_accepted(&handshake);
                 // A relay that reassembles chunked uploads answers the offer; an older one does not.
                 let upload_chunks =
                     crate::transport::relay_socket_connect::upload_chunks_accepted(&handshake);
@@ -931,6 +933,7 @@ async fn run_daemon_relay_connector_inner(
                         "connect_ms": connect_ms,
                         "upload_chunks": upload_chunks,
                         "binary_requests": binary_requests,
+                        "binary_peer": binary_peer,
                     }),
                 );
                 let registration_started = Instant::now();
@@ -963,6 +966,7 @@ async fn run_daemon_relay_connector_inner(
                         upload_chunks.then_some(upload_receipt_rx),
                         binary_events,
                         binary_requests,
+                        binary_peer,
                         writer_closing,
                         writer_notes,
                     )
@@ -1130,7 +1134,7 @@ async fn run_daemon_relay_connector_inner(
                             let (payload, receipt) = match message {
                                 Message::Text(payload) => relay_frames.receive(&payload).unwrap_or_else(|_| (
                                     Some("{\"kind\":\"close\",\"reason\":\"invalid relay transport frame\"}".to_string()), None)),
-                                binary => binary_request::payload(&mut relay_frames, binary, binary_requests),
+                                binary => binary_request::payload(&mut relay_frames, binary, binary_requests, binary_peer),
                             };
                             if let Some(payload) = payload {
                                 if let Err(error) = payload_tasks.spawn(

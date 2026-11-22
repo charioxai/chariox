@@ -683,6 +683,20 @@ impl RemoteFileBytes {
     }
 }
 
+/// The plaintext of a peer request or response: its `data_base64` file bytes travel as bytes,
+/// not as base64 text, so a file slice costs its own size on the wire (see `framed_plaintext`).
+pub(crate) fn seal_peer_plaintext<T: Serialize>(value: &T) -> Result<Vec<u8>, serde_json::Error> {
+    serde_json::to_vec(value).map(|json| crate::transport::framed_plaintext::frame_bytes_only(&json))
+}
+
+/// The value inside a peer request or response plaintext.
+pub(crate) fn open_peer_plaintext<T: serde::de::DeserializeOwned>(
+    plaintext: &[u8],
+) -> Result<T, String> {
+    let (json, _) = crate::transport::framed_plaintext::open(plaintext).map_err(str::to_owned)?;
+    serde_json::from_slice(&json).map_err(|error| error.to_string())
+}
+
 /// An MCP registration or a skill inside an encrypted kernel-to-kernel response; an MCP may carry literal settings.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -1182,6 +1196,7 @@ pub enum RelayPeerRequest {
         total_size: u64,
         sha256: String,
         overwrite: bool,
+        #[serde(rename = "data_base64")]
         content: RemoteFileBytes,
     },
     /// Native file interests leased by a home kernel; renewals do no filesystem I/O.
@@ -1605,6 +1620,7 @@ pub enum RelayPeerResponse {
         /// the file is not there.
         sha256: Option<String>,
         /// The slice at the requested offset; absent when the file is not there.
+        #[serde(rename = "data_base64")]
         content: Option<RemoteFileBytes>,
     },
     AgentMove {
@@ -1751,6 +1767,7 @@ pub enum RelayPeerResponse {
         /// Changes whenever the file is written or replaced; every slice of one copy carries the
         /// same one.
         revision: String,
+        #[serde(rename = "data_base64")]
         content: RemoteFileBytes,
     },
     LeasedAgentFileWritten {
