@@ -247,6 +247,43 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn flexible_steer_falls_back_when_the_turn_ends_while_waiting_for_the_provider_lane() {
+        let (_worktree, runtime, session_id, agent_id, attachment_id, active_prompt_id, run_id) =
+            super::super::local_prompt_dispatch_runtime::tests::runtime_with_active_prompt().await;
+        let request = crate::local::SteerActivePromptRequest {
+            session_id,
+            attachment_id,
+            target_agent_id: agent_id,
+            expected_active_prompt_id: active_prompt_id,
+            require_exact_turn: false,
+            prompt: "change direction".into(),
+            attachments: vec![],
+        };
+
+        let lane = runtime.provider_runtime_lanes.acquire(&run_id).await;
+        let mut steer = std::pin::pin!(runtime.steer_active_prompt(&request));
+        assert!(futures_util::poll!(&mut steer).is_pending());
+
+        let session = runtime
+            .owned
+            .session_store
+            .get_session(&request.session_id)
+            .unwrap();
+        runtime
+            .owned
+            .prompt_state_owner
+            .complete_active_prompt_only(&session, &request.target_agent_id)
+            .expect("the selected turn was running");
+        drop(lane);
+
+        let result = steer.await;
+        assert!(
+            matches!(result, Ok(None)),
+            "the caller can submit a next prompt: {result:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn active_prompt_steer_rejects_missing_grant_before_reading_session() {
         let app =
             crate::app::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
