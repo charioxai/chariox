@@ -188,8 +188,16 @@ impl CommandRouter {
                         return Ok(result);
                     }
                 }
-                let turn = self.runtime_state.sudo_for_auth_token(auth_token)?;
-                return self.dispatch_sudo_kernel_request(turn, arguments).await;
+                // A live window keeps its own attribution; otherwise the agent acts with the
+                // owner's authority (row 405), here or on another of the owner's kernels.
+                if arguments.get("kernel").is_none() {
+                    if let Ok(turn) = self.runtime_state.sudo_for_auth_token(auth_token) {
+                        return self.dispatch_sudo_kernel_request(turn, arguments).await;
+                    }
+                }
+                return self
+                    .dispatch_owner_kernel_request(auth_token, arguments)
+                    .await;
             }
             if crate::transport::runtime_tools::canonical_meta_tool_name(tool_name)
                 == Some(crate::transport::runtime_tools::META_RUN_COMMAND_TOOL)
@@ -224,6 +232,81 @@ impl CommandRouter {
         })
     }
 
+    /// Row 405: an owner's agent runs a typed kernel request with the owner's authority, on
+    /// this kernel or, through the gateway under its own live reach, on another kernel of the
+    /// owner. Only payments and secrets are refused (`reach_need`).
+    async fn dispatch_owner_kernel_request(
+        &self,
+        auth_token: &str,
+        arguments: serde_json::Value,
+    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        let run = self.runtime_mcp_catalog_run(auth_token).ok_or_else(|| {
+            crate::runtime::kernel_access::error(
+                "kernel_request needs the agent's own running turn",
+            )
+        })?;
+        let reach = self.runtime_state.reach_caller_for_run(run.id())?;
+        let request = parse_kernel_request(&arguments)?;
+        let kernel = arguments
+            .get("kernel")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|kernel| !kernel.is_empty());
+        let response = match kernel {
+            Some(kernel) => {
+                self.runtime_state
+                    .authorize_gateway_request(&reach.id, &request)?;
+                let origin = reach.origin();
+                let command_id = format!("{}:{}", reach.id, rand::random::<u64>());
+                crate::runtime::kernel_gateway::forward_audited(
+                    self,
+                    &origin,
+                    &origin,
+                    &command_id,
+                    kernel,
+                    &request,
+                )
+                .await
+                .map_err(|failure| DaemonError::LocalTransport {
+                    operation: "chariox_kernel_request",
+                    message: failure.message(),
+                })?
+            }
+            None => self.dispatch_as_owner_agent(&reach, request).await?,
+        };
+        Ok(crate::transport::runtime_tools::RuntimeToolResult {
+            ok: true,
+            payload: response,
+        })
+    }
+
+    /// One request on this kernel as the owner's agent `reach`, with the owner's authority.
+    pub(super) async fn dispatch_as_owner_agent(
+        &self,
+        reach: &crate::runtime::state::reach::ReachCaller,
+        request: crate::local::LocalDaemonRequest,
+    ) -> Result<serde_json::Value, DaemonError> {
+        self.runtime_state
+            .authorize_reach_request(&reach.id, &request)?;
+        let mut command = crate::runtime::command::KernelCommand::from_local_request(
+            format!("{}:{}", reach.id, rand::random::<u64>()),
+            None,
+            None,
+            &request,
+        );
+        command.caller = crate::runtime::command::KernelCaller::for_source(
+            &crate::runtime::command::KernelCommandSource::LocalIpc,
+        )
+        .with_connection_class(crate::local::KernelConnectionClass::KernelAgent);
+        command.provider_run_id = Some(reach.run_id.clone());
+        command.caller.caller_id = reach.id.clone();
+        command.caller.user_id = Some(reach.owner_user_id.clone());
+        let response = Box::pin(self.dispatch(command, request)).await?;
+        serde_json::to_value(response).map_err(|_| {
+            crate::runtime::kernel_access::error("kernel response serialization failed")
+        })
+    }
+
     /// One privileged call under a window that both the caller's kernel and,
     /// for a leased agent, its worker fence admitted.
     pub(super) async fn dispatch_sudo_kernel_request(
@@ -231,11 +314,7 @@ impl CommandRouter {
         turn: crate::local::KernelSudoTurn,
         arguments: serde_json::Value,
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
-        let request: crate::local::LocalDaemonRequest =
-            serde_json::from_value(arguments.get("request").cloned().ok_or_else(|| {
-                crate::runtime::kernel_access::error("kernel_request needs request")
-            })?)
-            .map_err(|_| crate::runtime::kernel_access::error("invalid kernel request: use externally tagged JSON in request, for example {\"AliasSession\":{\"session_id\":\"SESSION_ID\",\"alias\":\"new-name\"}}; do not use method/params or type fields"))?;
+        let request = parse_kernel_request(&arguments)?;
         let response = self.dispatch_sudo_request(turn, request).await?;
         Ok(crate::transport::runtime_tools::RuntimeToolResult {
             ok: true,
@@ -519,4 +598,13 @@ impl CommandRouter {
             .resolve_forwarded_home_credential_secret(context, credential_id, injection)
             .await
     }
+}
+
+fn parse_kernel_request(
+    arguments: &serde_json::Value,
+) -> Result<crate::local::LocalDaemonRequest, DaemonError> {
+    serde_json::from_value(arguments.get("request").cloned().ok_or_else(|| {
+        crate::runtime::kernel_access::error("kernel_request needs request")
+    })?)
+    .map_err(|_| crate::runtime::kernel_access::error("invalid kernel request: use externally tagged JSON in request, for example {\"AliasSession\":{\"session_id\":\"SESSION_ID\",\"alias\":\"new-name\"}}; do not use method/params or type fields"))
 }

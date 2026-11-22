@@ -72,17 +72,6 @@ impl KernelRuntimeState {
         actor_id: &str,
         request: &LocalDaemonRequest,
     ) -> Result<(), DaemonError> {
-        if matches!(request, LocalDaemonRequest::HideAgent(_)) {
-            return Err(denied("only the owner can hide or unhide agents"));
-        }
-        if matches!(request, LocalDaemonRequest::SetAgentParent(_)) {
-            return Err(denied("only the user can change an agent's parent"));
-        }
-        if super::sudo::teardown_request(request) {
-            return Err(denied(
-                "room agents cannot tear down sessions, projects or kernels",
-            ));
-        }
         if !self.room_agent_tools_enabled() {
             return Ok(());
         }
@@ -165,21 +154,21 @@ impl KernelRuntimeState {
             LocalDaemonRequest::GetAgentDeadline(r) => (&r.session_id, &r.agent_id, false),
             LocalDaemonRequest::ListDescendants(r) => (&r.session_id, &r.agent_id, false),
             LocalDaemonRequest::AliasAgent(r) => (&r.session_id, &r.agent_id, false),
-            LocalDaemonRequest::HideAgent(_) => {
-                return Err(denied("only the owner can hide or unhide agents"));
+            // Organising the owner's agents is an ordinary owner action (row 405).
+            LocalDaemonRequest::HideAgent(_) | LocalDaemonRequest::SetAgentParent(_) => {
+                return Ok(());
             }
             LocalDaemonRequest::DestroyAgent(r) => (&r.session_id, &r.agent_id, true),
             LocalDaemonRequest::UpdateAgentConfig(r) => (&r.session_id, &r.agent_id, false),
             LocalDaemonRequest::UpdateAgentProfile(r) => (&r.session_id, &r.agent_id, false),
             LocalDaemonRequest::UpdateAgentSubstitutes(r) => (&r.session_id, &r.agent_id, false),
+            // Ending, archiving and deleting are the owner's ordinary actions (row 405).
             LocalDaemonRequest::EndSession(_)
             | LocalDaemonRequest::DeleteSession(_)
             | LocalDaemonRequest::ArchiveProject(_)
             | LocalDaemonRequest::DeleteProject(_)
             | LocalDaemonRequest::DeleteKernel(_) => {
-                return Err(denied(
-                    "room agents cannot tear down sessions, projects or kernels",
-                ));
+                return Ok(());
             }
             LocalDaemonRequest::ForkAgent(_) => {
                 return Err(denied(

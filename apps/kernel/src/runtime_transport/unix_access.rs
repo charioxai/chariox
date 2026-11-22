@@ -131,7 +131,70 @@ pub(super) async fn admit_frame(
         caller.user_id = Some(turn.owner_user_id);
         return Ok(caller);
     }
-    if bound.as_deref().is_some_and(|id| id.starts_with("sudo:")) {
+    // Row 405: the owner's agent, from its own shell, has the owner's authority here and,
+    // with --kernel, on the owner's other kernels. Only payments and secrets are refused.
+    let reach_prefix = crate::runtime::state::reach::REACH_PREFIX;
+    let reach = if bound
+        .as_deref()
+        .is_none_or(|id| id.starts_with(reach_prefix))
+    {
+        runtime_state
+            .reach_for_peer(peer)
+            .ok()
+            .filter(|reach| bound.as_ref().is_none_or(|id| id == &reach.id))
+    } else {
+        None
+    };
+    if let Some(reach) = reach {
+        let verdict = match frame {
+            KernelIncomingFrame::Request {
+                request: crate::local::LocalDaemonRequest::RequestKernelAccess(_),
+                kernel: None,
+                ..
+            } => Err(Refusal::AlreadyGranted),
+            KernelIncomingFrame::Request {
+                kernel: Some(_),
+                request,
+                ..
+            } => runtime_state
+                .authorize_gateway_request(&reach.id, request)
+                .map_err(|error| Refusal::of(&error)),
+            KernelIncomingFrame::Request { request, .. } => runtime_state
+                .authorize_reach_request(&reach.id, request)
+                .map_err(|error| Refusal::of(&error)),
+            KernelIncomingFrame::Subscribe { .. } | KernelIncomingFrame::Unsubscribe { .. } => {
+                Ok(())
+            }
+        };
+        if let Err(refusal) = verdict {
+            deny_frame(
+                runtime,
+                outgoing_tx,
+                close_tx,
+                close_requested,
+                frame,
+                refusal,
+            );
+            return Err(());
+        }
+        bound_grant
+            .lock()
+            .expect("bound grant poisoned")
+            .get_or_insert_with(|| reach.id.clone());
+        let mut caller = router
+            .local_command_caller(
+                KernelCommandSource::LocalIpc,
+                KernelConnectionClass::KernelAgent,
+            )
+            .await;
+        caller.caller_id = reach.id;
+        caller.user_id = Some(reach.owner_user_id);
+        return Ok(caller);
+    }
+    if bound
+        .as_deref()
+        .is_some_and(|id| id.starts_with("sudo:") || id.starts_with(reach_prefix))
+    {
         deny_frame(
             runtime,
             outgoing_tx,
@@ -500,6 +563,8 @@ pub(super) fn delivery_live(
                 .is_none_or(|id| {
                     if id.starts_with("sudo:") {
                         runtime.sudo_peer_live(id, peer)
+                    } else if id.starts_with(crate::runtime::state::reach::REACH_PREFIX) {
+                        runtime.reach_peer_live(id, peer)
                     } else {
                         runtime.access_grant_live(id, peer)
                     }

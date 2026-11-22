@@ -488,10 +488,9 @@ async fn sudo_room_tools_preserve_host_authority_and_revocation() {
     );
 }
 
-// MP-08 / MP-11: archiving or deleting a Project ends or deletes its Rooms; /sudo cannot do that
-// to a Room (`EndSession`, `DeleteSession`), so it cannot do it through the Project either.
+// Row 405 (PA8): the owner's agent archives and deletes a Project as the owner does.
 #[tokio::test]
-async fn sudo_cannot_archive_or_delete_a_project() {
+async fn an_owners_agent_archives_and_deletes_a_project() {
     let f = fixture_with_options(None, true);
     let turn = running(&f);
     // The turn's own Project has a running prompt, so it is never idle; archive another one.
@@ -536,12 +535,18 @@ async fn sudo_cannot_archive_or_delete_a_project() {
                 serde_json::json!({"request":request}),
             )
             .await;
+        // Row 405: archiving and deleting a Project are the owner's ordinary actions.
         assert!(
-            matches!(&result, Err(error) if error.to_string().contains("cannot end or delete a Room, Project or kernel")),
-            "a sudo window tore down the Project's Rooms with {request}, or without saying why: {result:?}"
+            result.is_ok(),
+            "the owner's agent could not run {request}: {result:?}"
         );
     }
-    assert!(f.state.owned.session_store.get_project(&project_id).is_ok());
+    assert!(f
+        .state
+        .owned
+        .session_store
+        .get_project(&project_id)
+        .is_err());
 }
 
 pub(super) fn running(f: &Fixture) -> KernelSudoTurn {
@@ -2337,13 +2342,63 @@ async fn terminal_commands_use_only_the_exact_live_sudo_turn() {
 }
 
 #[test]
-fn agent_hide_cannot_be_escalated_with_sudo() {
+// Row 405: hiding the owner's agents is an ordinary owner action.
+fn agent_hide_is_an_ordinary_owner_action() {
     for hidden in [true, false] {
         let request = crate::local::LocalDaemonRequest::HideAgent(crate::local::HideAgentRequest {
             session_id: "room".into(),
             agent_id: "agent".into(),
             hidden,
         });
-        assert!(super::policy::sudo_request_forbidden(&request));
+        assert!(!super::policy::sudo_request_forbidden(&request));
     }
+}
+
+// Row 405 (PA1): the owner's agent runs typed kernel requests with the owner's authority and no
+// /sudo window, card or passkey; secrets stay with the person (PA4).
+#[tokio::test]
+async fn an_owners_agent_needs_no_sudo_for_kernel_requests() {
+    let f = fixture();
+    let call = |request: serde_json::Value| {
+        f.router.dispatch_authenticated_runtime_tool_call(
+            "sudo-fixture-bearer",
+            "chariox_kernel_request",
+            serde_json::json!({ "request": request }),
+        )
+    };
+    let listed = call(serde_json::json!({"ListProjects": {"include_archived": false}})).await;
+    assert!(
+        listed.is_ok(),
+        "the owner's agent could not list Projects: {listed:?}"
+    );
+    let skills = call(serde_json::json!({"SkillsV2": {"action": "catalog", "project_id": null, "agent_id": null}})).await;
+    assert!(
+        skills
+            .as_ref()
+            .is_err_and(|error| !error.to_string().contains("sudo"))
+            || skills.is_ok(),
+        "the skills catalog asked for /sudo: {skills:?}"
+    );
+    let vault = call(serde_json::json!({"OwnerVault": {"action": "reveal", "id": "entry"}})).await;
+    assert!(vault.is_err(), "an agent revealed a Vault entry: {vault:?}");
+    assert!(f.state.list_sudo_turns("local").is_empty());
+    assert!(f.state.passkey_prompts_for("local").is_empty());
+}
+
+// Row 405 (PA3): an agent of another owner gets none of this kernel owner's authority.
+#[tokio::test]
+async fn another_owners_agent_gets_no_owner_authority() {
+    let f = fixture_for_owner(None, false, "dev-stub", "dev-stub", None, "stranger");
+    let listed = f
+        .router
+        .dispatch_authenticated_runtime_tool_call(
+            "sudo-fixture-bearer",
+            "chariox_kernel_request",
+            serde_json::json!({"request": {"ListProjects": {"include_archived": false}}}),
+        )
+        .await;
+    assert!(
+        matches!(&listed, Err(error) if error.to_string().contains("only agents of this kernel's owner")),
+        "a stranger's agent acted for the owner, or without saying why: {listed:?}"
+    );
 }

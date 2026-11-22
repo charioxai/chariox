@@ -1,8 +1,7 @@
-//! MP-08 / MP-09 / MP-10 / MP-11 reach: the kernel owner's Room agents act on other
-//! rooms and kernels. The identity is the agent's own live provider run, never a
-//! token the agent holds. Without /sudo a reach caller may do elsewhere what a Room
-//! agent without /sudo may do in its own room; a live /sudo window of its own turn
-//! adds what /sudo adds at home. Human-only requests are refused on every path.
+//! Reach: the kernel owner's agents act with the owner's authority on the owner's rooms and
+//! kernels (row 405). The identity is the agent's own live provider run, never a token the
+//! agent holds. Payments and secrets go through the person; those requests are refused to
+//! agents on every path.
 use super::super::outside_events::is_outside_event_request;
 use super::super::sudo::sudo_request_forbidden;
 use super::policy::restricted_request;
@@ -38,75 +37,32 @@ impl ReachCaller {
 /// What a request needs from a reach caller.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ReachNeed {
-    /// A Room agent without /sudo may do this in its own room.
-    Room,
-    /// A Room agent needs a /sudo window for this in its own room.
-    Sudo,
+    /// The owner's authority: an owner's agent does this readily, with no card, passkey or
+    /// /sudo, on any of the owner's kernels (row 405).
+    Owner,
     /// Owner-only: no agent gets it, with or without /sudo.
     HumanOnly,
     /// Excluded for agents even inside a /sudo window.
     Excluded,
 }
 
+/// An owner's agent has the owner's authority on every kernel of the owner. Only payments and
+/// secrets go through the person; everything else is the default.
 pub(crate) fn reach_need(request: &LocalDaemonRequest) -> ReachNeed {
     if restricted_request(request) {
         return ReachNeed::HumanOnly;
     }
     // Following other agents and answering the routine decision of another room are part of
-    // driving it; both stay outside /sudo's reach for the caller's own room (see `reach_request`).
+    // driving it; the person's own cards stay theirs (`answers_a_person_only_card`).
     if is_outside_event_request(request)
         || matches!(request, LocalDaemonRequest::RespondToInteraction(_))
     {
-        return ReachNeed::Room;
+        return ReachNeed::Owner;
     }
     if sudo_request_forbidden(request) {
         return ReachNeed::Excluded;
     }
-    // Deleting a saved machine state loses the user's data, so it needs /sudo like every other destructive request.
-    if matches!(
-        request,
-        LocalDaemonRequest::ControlPlane(ControlPlaneRequest::DeleteSavedState { .. })
-    ) {
-        return ReachNeed::Sudo;
-    }
-    // The room tools: discover and read sessions, agents and history, create a room, attach, message
-    // and steer agents, a room's own terminals and workspace files, and machines under
-    // the acquisition setting. Kernel-wide file access and every other kernel mutation need /sudo.
-    if matches!(
-        request,
-        LocalDaemonRequest::ListGatewayKernels(_)
-            | LocalDaemonRequest::ListSessions(_)
-            | LocalDaemonRequest::ResolveSession(_)
-            | LocalDaemonRequest::GetSessionState(_)
-            | LocalDaemonRequest::ListFinishedRoomTasks(_)
-            | LocalDaemonRequest::CreateSession(_)
-            | LocalDaemonRequest::ListAgents(_)
-            | LocalDaemonRequest::QueryRecall(_)
-            | LocalDaemonRequest::SearchRecall(_)
-            | LocalDaemonRequest::SemanticSearchRecall(_)
-            | LocalDaemonRequest::GetSessionHistoryOutline(_)
-            | LocalDaemonRequest::GetSessionHistoryBlobContent(_)
-            | LocalDaemonRequest::GetSessionHistoryBlobContents(_)
-            | LocalDaemonRequest::PeekAgentTranscript(_)
-            | LocalDaemonRequest::ReadAgentTranscriptEntry(_)
-            | LocalDaemonRequest::AttachToSession(_)
-            | LocalDaemonRequest::DetachFromSession(_)
-            | LocalDaemonRequest::HeartbeatAttachments(_)
-            | LocalDaemonRequest::SubmitPrompt(_)
-            | LocalDaemonRequest::SubmitPrompts(_)
-            | LocalDaemonRequest::SteerQueuedPrompt(_)
-            | LocalDaemonRequest::SteerActivePrompt(_)
-            | LocalDaemonRequest::RoomTerminal(_)
-            | LocalDaemonRequest::RunShellCommand(_)
-            | LocalDaemonRequest::ReadDirectoryTree(_)
-            | LocalDaemonRequest::ReadFile(_)
-            | LocalDaemonRequest::EditFile(_)
-            | LocalDaemonRequest::ListRemoteMachines(_)
-            | LocalDaemonRequest::ControlPlane(_)
-    ) {
-        return ReachNeed::Room;
-    }
-    ReachNeed::Sudo
+    ReachNeed::Owner
 }
 
 impl KernelRuntimeState {
@@ -114,6 +70,11 @@ impl KernelRuntimeState {
     pub(crate) fn reach_for_id(&self, id: &str) -> Option<ReachCaller> {
         self.reach_for_run(id.strip_prefix(REACH_PREFIX)?, true)
             .ok()
+    }
+
+    /// The live reach caller of `run_id`, or why the run cannot act for the owner.
+    pub(crate) fn reach_caller_for_run(&self, run_id: &str) -> Result<ReachCaller, DaemonError> {
+        self.reach_for_run(run_id, true)
     }
 
     fn reach_for_run(&self, run_id: &str, live: bool) -> Result<ReachCaller, DaemonError> {
@@ -267,15 +228,83 @@ fn reach_error(message: &str) -> DaemonError {
 }
 
 #[cfg(test)]
-mod kernel_terminal_tests {
+mod owner_authority_tests {
     use super::*;
+    use crate::local::*;
 
+    fn config(path: &str) -> LocalDaemonRequest {
+        LocalDaemonRequest::SetUserConfigValue(SetUserConfigValueRequest {
+            path: path.into(),
+            value: "true".into(),
+        })
+    }
+
+    // Row 405: an owner's agent does what the owner does, deletes and machine admin included.
     #[test]
-    fn a_room_agents_reach_grant_does_not_cover_the_kernels_terminals() {
-        let request = LocalDaemonRequest::KernelTerminal(crate::local::KernelTerminalRequest {
-            directory: None,
-            operation: crate::local::RoomTerminalOperation::List,
-        });
-        assert_ne!(reach_need(&request), ReachNeed::Room);
+    fn an_owners_agent_has_the_owners_authority() {
+        for request in [
+            LocalDaemonRequest::ListProjects(ListProjectsRequest {
+                include_archived: false,
+            }),
+            LocalDaemonRequest::KernelTerminal(KernelTerminalRequest {
+                directory: None,
+                operation: RoomTerminalOperation::List,
+            }),
+            LocalDaemonRequest::DeleteProject(DeleteProjectRequest {
+                project_id: "p".into(),
+            }),
+            LocalDaemonRequest::DeleteSession(DeleteSessionRequest {
+                session_ref: "s".into(),
+                workspace_id: None,
+            }),
+            LocalDaemonRequest::DeleteKernel(DeleteKernelRequest),
+            LocalDaemonRequest::ControlPlane(ControlPlaneRequest::DeleteSavedState {
+                allocation_ref: "a".into(),
+                saved_state_ref: "v".into(),
+                capability_revision: "c".into(),
+                request_id: "r".into(),
+                expected_revision: 1,
+            }),
+            LocalDaemonRequest::ApproveRemoteMachine(ApproveRemoteMachineRequest {
+                machine_ref: "m".into(),
+            }),
+            LocalDaemonRequest::HideAgent(HideAgentRequest {
+                session_id: "s".into(),
+                agent_id: "a".into(),
+                hidden: true,
+            }),
+            LocalDaemonRequest::ForgetGatewayKernel(ForgetGatewayKernelRequest {
+                name: "k".into(),
+            }),
+            LocalDaemonRequest::CloudRelayStatus(CloudRelayStatusRequest),
+            LocalDaemonRequest::GetProviderAccountProfile(GetProviderAccountProfileRequest {
+                provider: "codex".into(),
+                account_profile: "default".into(),
+            }),
+            LocalDaemonRequest::GetUserConfig(GetUserConfigRequest),
+            config("agents.usage_limit_resume"),
+        ] {
+            assert_eq!(reach_need(&request), ReachNeed::Owner, "{request:?}");
+        }
+    }
+
+    // Only payments and secrets go through the person.
+    #[test]
+    fn payments_and_secrets_stay_with_the_person() {
+        for request in [
+            LocalDaemonRequest::OwnerVault(OwnerVaultRequest::Reveal { id: "e".into() }),
+            LocalDaemonRequest::ListCredentials(ListCredentialsRequest),
+            LocalDaemonRequest::ExportDebugBundle(ExportDebugBundleRequest {
+                session_id: "s".into(),
+                bundle_label: None,
+                limit: None,
+            }),
+            config("agents.offload_without_asking"),
+            config("agents"),
+            config("credential_vault.path"),
+            config("relay.url"),
+        ] {
+            assert_ne!(reach_need(&request), ReachNeed::Owner, "{request:?}");
+        }
     }
 }

@@ -34,9 +34,15 @@ An external agent (Claude Code, Codex, OpenCode) talks only to its local kernel 
 - A person pairs this kernel with a self-hosted kernel with `/kernel add <link>` in a Chariox terminal (`/kernel linked`, `/kernel unlink NAME`); agents cannot.
 - Output is one JSON document on stdout. Errors are `{"error":{"code","message","kernel"}}` on stderr.
 
-### Agent reach (retired)
+### The owner's agents act as the owner (row 405)
 
-Room agents no longer get a second runtime MCP server: the `chariox-reach` server (`/mcp/reach`) and its passthrough of kernel requests to other rooms and kernels are retired (`docs/design/sub-agents.md` 7.2). A Room agent reaches a peer in another room or on another kernel of the same owner only with the room commands `agent message`, `agent steer`, `agent cancel` and `agent spawn --room [--kernel | --machine]`, and follows it with `chariox.events.subscribe`; nobody reads another room's history. A `chariox` room tool given a `kernel` argument is still refused, since it would run in the agent's own room. Acting as the user on other kernels stays with external agents (above).
+An agent of the kernel's owner has the owner's authority on every kernel of the owner, with no card, passkey or `/sudo`: exactly what the owner's own client can do. Only payments and secrets go through the person: billing, passkey critical approvals, opening or unlocking the Vault, setting secrets, raw credential and MCP registry reads, provider logins, pairing and invite links, relay and Cloud identity tokens, and the unredacted debug bundle. Settings read without their secret-bearing sections. Chariox-managed rentals, paid ones included, follow only `agents.offload_without_asking`: on means no card, off means exactly one card; only the owner sets that toggle.
+
+- The tool: `chariox_kernel_request` takes one `LocalDaemonRequest` and, with `kernel`, runs it on another kernel of the owner through this kernel's gateway (`ListGatewayKernels` lists them). An action card (`request_popup` with `action`) for a request the agent may make itself runs it at once, with no card.
+- The shell: the `chariox` CLI run from the agent's own process tree acts as the agent, here or with `--kernel` on another kernel of the owner. No `chariox access request` is needed; it answers that access is already granted.
+- Identity: the agent's own live provider run (`reach:<run>`), never a token. The target kernel admits the request because it arrives from a gateway kernel paired to its owner over the relay, and it applies the same refusal list itself.
+- Agents of another account, and guests' agents, are refused: "only agents of this kernel's owner reach other rooms and kernels".
+- Not yet: an agent leased to a worker kernel still needs a `/sudo` window for `chariox_kernel_request`.
 
 ### Development standing grants
 

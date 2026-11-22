@@ -45,6 +45,9 @@ impl KernelRuntimeState {
         if grant_id.starts_with("sudo:") {
             return self.authorize_sudo_request(grant_id, request).map(|_| ());
         }
+        if grant_id.starts_with(super::reach::REACH_PREFIX) {
+            return self.authorize_reach_request(grant_id, request);
+        }
         if carries_passkey(request) {
             return Err(Refusal::HumanOnly.error());
         }
@@ -79,19 +82,7 @@ impl KernelRuntimeState {
             };
         }
         if grant_id.starts_with(super::reach::REACH_PREFIX) {
-            let caller = self
-                .reach_for_id(grant_id)
-                .ok_or_else(|| error("reach ended: the agent's run is no longer live"))?;
-            return match super::reach::reach_need(request) {
-                super::reach::ReachNeed::Room => Ok(()),
-                super::reach::ReachNeed::HumanOnly => {
-                    self.audit_human_only_denial(grant_id, &caller.owner_user_id);
-                    Err(Refusal::HumanOnly.error())
-                }
-                super::reach::ReachNeed::Sudo | super::reach::ReachNeed::Excluded => {
-                    Err(error("this request needs the owner's /sudo for this agent"))
-                }
-            };
+            return self.authorize_reach_request(grant_id, request);
         }
         let owner = if grant_id.starts_with("sudo:") {
             self.sudo_window_bound(grant_id)?.owner_user_id
@@ -100,6 +91,31 @@ impl KernelRuntimeState {
         };
         if restricted_request(request) {
             self.audit_human_only_denial(grant_id, &owner);
+            return Err(Refusal::HumanOnly.error());
+        }
+        Ok(())
+    }
+
+    /// An owner's agent (`reach:<run>`) has the owner's authority here and, through the
+    /// gateway, on the owner's other kernels: no card, passkey or /sudo, except what goes
+    /// through the person (payments, secrets).
+    pub(crate) fn authorize_reach_request(
+        &self,
+        id: &str,
+        request: &LocalDaemonRequest,
+    ) -> Result<(), DaemonError> {
+        let caller = self
+            .reach_for_id(id)
+            .ok_or_else(|| error("reach ended: the agent's run is no longer live"))?;
+        match super::reach::reach_need(request) {
+            super::reach::ReachNeed::Owner => {}
+            super::reach::ReachNeed::HumanOnly | super::reach::ReachNeed::Excluded => {
+                self.audit_human_only_denial(id, &caller.owner_user_id);
+                return Err(Refusal::HumanOnly.error());
+            }
+        }
+        if self.answers_a_person_only_card(request) {
+            self.audit_human_only_denial(id, &caller.owner_user_id);
             return Err(Refusal::HumanOnly.error());
         }
         Ok(())
@@ -148,8 +164,18 @@ impl KernelRuntimeState {
         request: &LocalDaemonRequest,
     ) -> Result<(), DaemonError> {
         refuse_forwarded_exec_place(request)?;
+        // An owner's agent: the same classification its origin applied, so a request kept
+        // from agents is refused here too, whatever the origin decided.
+        let kept_from_agents = on_behalf_of
+            .grant_id
+            .starts_with(super::reach::REACH_PREFIX)
+            && matches!(
+                super::reach::reach_need(request),
+                super::reach::ReachNeed::HumanOnly | super::reach::ReachNeed::Excluded
+            );
         let forbidden = carries_passkey(request)
             || restricted_request(request)
+            || kept_from_agents
             || self.answers_a_person_only_card(request);
         if forbidden {
             self.audit_human_only_denial(
@@ -302,10 +328,12 @@ fn protected_config(path: &str) -> bool {
         "credential_vault",
         "relay",
         "secret_link",
-        "agents",
     ]
     .iter()
     .any(|prefix| path == *prefix || path.starts_with(&format!("{prefix}.")))
+        // The rentals toggle spends the owner's money: only the owner turns it (row 405).
+        || path == "agents"
+        || path == "agents.offload_without_asking"
 }
 
 fn carries_passkey(request: &LocalDaemonRequest) -> bool {
@@ -345,12 +373,9 @@ pub(crate) fn restricted_request(request: &LocalDaemonRequest) -> bool {
                 | LocalDaemonRequest::CreateTerminalPairingLink(_)
                 | LocalDaemonRequest::JoinTerminalPairingLink(_)
                 | LocalDaemonRequest::JoinKernelLink(_)
-                | LocalDaemonRequest::ForgetGatewayKernel(_)
                 | LocalDaemonRequest::RecordPairedClient(_)
-                | LocalDaemonRequest::ApproveRemoteMachine(_)
                 | LocalDaemonRequest::JoinSessionInvite(_)
                 | LocalDaemonRequest::ConfigureRelay(_)
-                | LocalDaemonRequest::CloudRelayStatus(_)
                 | LocalDaemonRequest::StartCloudRelayLogin(_)
                 | LocalDaemonRequest::PollCloudRelayLogin(_)
                 | LocalDaemonRequest::LogoutCloudRelay(_)
