@@ -197,6 +197,40 @@ mod subtree_cascade;
 mod visual_tools;
 
 #[test]
+fn dev_stub_runtime_mcp_fixture_keeps_its_turn_open_between_requests() {
+    for (model, settles) in [("runtime-mcp-fixture", false), ("default", true)] {
+        let request = crate::provider::LaunchProviderRequest::new(
+            "session-1",
+            "dev-stub",
+            "dev-stub",
+            "default",
+            model,
+        )
+        .with_agent_id("agent-1");
+        let run = crate::provider::RuntimeProviderRun::new(
+            "provider-run-dev-stub",
+            &request,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+                process_label: "dev-stub-test".into(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: Vec::new(),
+                pty_env: Default::default(),
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: None,
+            },
+        );
+        assert_eq!(
+            provider_run_allows_quiet_pty_settlement(&run),
+            settles,
+            "{model}"
+        );
+    }
+}
+
+#[test]
 fn claude_native_runs_never_use_quiet_pty_settlement() {
     let native_request = crate::provider::LaunchProviderRequest::new(
         "session-1",

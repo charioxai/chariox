@@ -19,6 +19,7 @@ const currentSnapshots = [
   "apps/kernel/src/local/api/tests/protocol_shapes/program-stdin-1014.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/files-watch-1011.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/watcher-1012.json",
+  "apps/kernel/src/local/api/tests/protocol_shapes/runtime-mcp-paging-1014.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/event-follow-1012.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/provider-catalog-aliases-1012.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/kernel-trash-1012.json",

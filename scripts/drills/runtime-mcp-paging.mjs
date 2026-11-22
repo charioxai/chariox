@@ -1,5 +1,5 @@
 // Exercise paging through a real private kernel and its dev-stub provider.
-// Run on a dedicated rented builder with the shared kernel client built.
+// Run on a dedicated test host with the shared kernel client built.
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { mkdir, mkdtemp, open, rm, writeFile } from 'node:fs/promises'

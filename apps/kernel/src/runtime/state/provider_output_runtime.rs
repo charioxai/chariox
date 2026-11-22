@@ -473,7 +473,12 @@ fn provider_run_uses_transient_native_terminal(
 pub(super) fn provider_run_allows_quiet_pty_settlement(
     provider_run: &crate::provider::RuntimeProviderRun,
 ) -> bool {
-    !provider_run_uses_structured_output_pump(provider_run)
+    // The private MCP fixture writes a terminal answer for each request in
+    // the same turn. Silence between those answers cannot end the turn.
+    let private_mcp_fixture =
+        provider_run.adapter_key() == "dev-stub" && provider_run.model() == "runtime-mcp-fixture";
+    !private_mcp_fixture
+        && !provider_run_uses_structured_output_pump(provider_run)
         && !crate::provider::provider_run_uses_claude_native_bridge(provider_run)
 }
 
