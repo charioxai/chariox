@@ -59,3 +59,21 @@ test('MP-08/MP-11 an unwatched display parks every 20 s for minutes and keeps it
   assert.equal(host.displays.has('d'),false,'silence alone still ends it');assert.deepEqual(closed,['d']);assert.deepEqual(parks.slice(-1),[true]);
  }finally{if(previous===undefined)delete process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY=previous;}
 });
+
+// Row 401 F1 (webperf-r19 A1): after a re-subscribe the push credit used to arrive before the restarted screencast's first frame
+// and, with no producer yet, sleep a blind 100 ms. A screencast region's credit now wakes on the source's next frame.
+test('row 401 F1: a screencast region credit with no producer wakes on the source\'s first frame, not a blind 100 ms',async()=>{
+ const listeners=new Set(),passes=[],abort=new AbortController();let sample=null;
+ const source={valid:()=>true,closed:false,allowed:()=>true,policy:{},tab:{tab_id:'t',document_id:'d'},regionRevision:0,changedAt:-Infinity,sessionId:'s',
+  connection:{send:async()=>({cssVisualViewport:{pageX:0,pageY:0,scale:1}})},subscribe(fn){listeners.add(fn);return()=>listeners.delete(fn);},sample:()=>sample};
+ const stream=Object.assign(Object.create(DisplayStream.prototype),{tab_id:'t',codec:'avc1.420033',regionScreencast:true,regionLease:{isAlive:()=>true},
+  regionSource:source,regionWindow:{isCurrent:()=>true},compositorRegionRevision:0,device_scale_factor:1,css_width:10,css_height:10});
+ const at=performance.now();
+ // Each credit pass reads the region's compositor; the pass after the first frame ends the test (the stub has no encoder).
+ const host={generation:1,timing(){},protection:source.policy,inputEpochs:new Map(),inputChangedAt:new Map(),compositors:new Map(),
+  compositorFor:async()=>{passes.push(performance.now()-at);if(sample){sample=null;abort.abort();}return source;}};
+ setTimeout(()=>{sample={serial:1};for(const listener of listeners)listener(sample);},6);
+ await displayPushCredit(host,stream,{generation:1,after_sequence:0,push:{}},abort.signal,{budgetMs:100});
+ assert.ok(passes.length>=2,`a second credit pass follows the first frame (passes at ${passes.map(t=>t.toFixed(1)).join(', ')} ms)`);
+ assert.ok(passes[1]<40,`the credit woke on the frame, not after a blind sleep (second pass at ${passes[1]?.toFixed(1)} ms)`);
+});

@@ -540,3 +540,54 @@ test('R1: a screencast region refines again after an exact capture the viewport 
   assert.deepEqual([exact.width,exact.height],[100,50]);
  }finally{await refiner.close();await stream.close();}
 });
+
+// Row 401 F2 (webperf-r19 A1): each subscription builds a new encoder, and its helper's cold first key frame (~96 ms: start,
+// imports, first decode and crop) delayed the first picture after every re-subscribe. The encoder starts at subscribe, before
+// the screencast source starts.
+test('row 401 F2: a screencast region subscription starts its encoder before its source starts',async()=>{
+ const {PortableEncoder}=await import('./kernel-browser-display.mjs');
+ const f=fixture();delete f.host.chromium.display;f.host.chromeWindows={current:()=>null,resolve:async()=>{throw Error('no window on a headless browser')}};
+ f.host.screencastFor=async(tab,scale)=>({tab,scale});
+ const order=[],warm=PortableEncoder.prototype.warm;
+ PortableEncoder.prototype.warm=function(){order.push('encoder warm');return Promise.resolve();};
+ class Screencast {constructor(options){this.options=options;this.region={css_width:options.rect.width/options.scale,css_height:options.rect.height/options.scale};}async start(){order.push('source start');return this;}async close(){}valid(){return true;}}
+ try{
+  await subscribeRegion(f.host,f.command,'terminal:a',undefined,{Screencast});
+  assert.deepEqual(order,['encoder warm','source start']);
+ }finally{
+  PortableEncoder.prototype.warm=warm;
+  for(const stream of [...f.host.displays.values()])await stream.close();
+ }
+});
+
+// Row 401 F2 (spare): a region retired by a mirror reset is re-subscribed 15-65 ms later, less than the helper's ~96 ms warm-up.
+// Closing a screencast region stream warms one fresh helper; the next subscription takes it already warm. Unused, it closes.
+test('row 401 F2: a re-subscribe takes a helper warmed when the last region closed; an unused one closes after 5 s',async t=>{
+ const {PortableEncoder}=await import('./kernel-browser-display.mjs');
+ t.mock.timers.enable({apis:['setTimeout']});
+ const f=fixture();delete f.host.chromium.display;f.host.chromeWindows={current:()=>null,resolve:async()=>{throw Error('no window on a headless browser')}};
+ f.host.screencastFor=async(tab,scale)=>({tab,scale});
+ const warmed=[],closed=[],warm=PortableEncoder.prototype.warm,close=PortableEncoder.prototype.close;
+ PortableEncoder.prototype.warm=function(){warmed.push(this);return Promise.resolve();};
+ PortableEncoder.prototype.close=async function(){closed.push(this);};
+ class Screencast {constructor(options){this.options=options;this.region={css_width:options.rect.width/options.scale,css_height:options.rect.height/options.scale};}async start(){return this;}async close(){}valid(){return true;}}
+ try{
+  await subscribeRegion(f.host,f.command,'terminal:a',undefined,{Screencast});
+  const first=[...f.host.displays.values()][0];
+  assert.equal(warmed.length,1,'the first subscription warms its own encoder');
+  await first.close();f.host.displays.clear();
+  assert.equal(warmed.length,2,'closing the region warms one spare helper');
+  const spare=warmed[1];
+  f.retire?.();
+  const g=fixture();delete g.host.chromium.display;g.host.chromeWindows=f.host.chromeWindows;g.host.screencastFor=f.host.screencastFor;
+  g.host.spareRegionEncoder=f.host.spareRegionEncoder;
+  await subscribeRegion(g.host,g.command,'terminal:a',undefined,{Screencast});
+  const second=[...g.host.displays.values()][0];
+  assert.equal(second.encoder,spare,'the re-subscribe takes the warm spare');
+  assert.equal(warmed.length,2,'no new cold encoder for it');
+  await second.close();
+  const unused=warmed[2];assert.ok(unused,'the second close warms a new spare');
+  t.mock.timers.tick(5000);await Promise.resolve();
+  assert.ok(closed.includes(unused),'an unused spare closes after 5 s');
+ }finally{PortableEncoder.prototype.warm=warm;PortableEncoder.prototype.close=close;}
+});

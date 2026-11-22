@@ -108,7 +108,14 @@ export class PortableEncoder {
       this.nativeRevision=reply.revision;return {stripes:reply.stripes,native_revision:reply.revision,native_deliver:raw.nativeDelivered,...(reply.packet?{packet:reply.packet}:{})};
     }
   async hash(png) { return this.exchange({png,operation:'fingerprint'}); }
+  // Row 401 F2: start the helper ahead of the first frame. Its cold start (process, imports, first decode and crop) cost ~96 ms
+  // of a region's first key frame after every (re)subscribe; a frame sent meanwhile waits for it rather than being refused busy.
+  warm() {
+    if(this.child||this.failure)return Promise.resolve();
+    return this.warming??=this.exchange({operation:'warm'}).then(()=>{},()=>{}).finally(()=>{this.warming=null;});
+  }
   async exchange(request) {
+    if(this.warming&&request.operation!=='warm')await this.warming;
     if(request.raw)request={...request,protected_regions:request.raw[displayMaskRegions]??[]};
     if (this.failure) throw this.failure;
     if (!this.child) {
@@ -148,6 +155,8 @@ export class PortableEncoder {
               this.packets.add(reply.packet.name);
             }
             this.pending.resolve({stripes:reply.stripes,...(reply.packet?{packet:reply.packet}:{})});
+          }else if(this.pending?.warm){
+            this.pending.resolve(reply.warm===true);
           }else if(this.pending?.hash){
             if(!/^[a-f0-9]{64}$/.test(reply.signature)||!Number.isInteger(reply.width)||!Number.isInteger(reply.height)||reply.width<1||reply.height<1||reply.width>2560||reply.height>2560||reply.width*reply.height>2560*1600)return fail();
             this.pending.resolve(reply);
@@ -165,7 +174,7 @@ export class PortableEncoder {
     try {
       return await new Promise((resolve, reject) => {
         const timer = setTimeout(() => reject(new Error('MD-DISPLAY: encode timeout')), 10_000);
-        this.pending = { stripes:request.operation==='stripes',hash:request.operation==='fingerprint', resolve: value => { clearTimeout(timer); resolve(value); }, reject: error => { clearTimeout(timer); reject(error); } };
+        this.pending = { stripes:request.operation==='stripes',hash:request.operation==='fingerprint',warm:request.operation==='warm', resolve: value => { clearTimeout(timer); resolve(value); }, reject: error => { clearTimeout(timer); reject(error); } };
         if(request.raw?.[displayNativeMaskSource]){
           // MP-08/MP-10/MP-11: lease held by MotionEncoder until the native
           // helper finishes. No unmasked bytes enter a codec or packet file.

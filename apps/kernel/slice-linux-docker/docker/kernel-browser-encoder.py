@@ -95,6 +95,14 @@ class VaapiEncoder:
             child.wait(timeout=2);child.stdin.close();child.stdout.close()
         self.configuration=None
 
+def warm_up():
+    # Row 401 F2: the first request of a fresh helper paid its imports and first-use set-up (~96 ms of a region's first key frame
+    # on b3): one tiny JPEG through the same decode and crop path (numpy) as a screencast region's frames does it ahead.
+    jpeg=av.CodecContext.create('mjpeg','w');jpeg.width=16;jpeg.height=16;jpeg.pix_fmt='yuvj420p';jpeg.time_base=Fraction(1,1)
+    data=bytes(list(jpeg.encode(av.VideoFrame(16,16,'rgb24').reformat(format='yuvj420p')))[0])
+    with av.open(io.BytesIO(data)) as source:frame=next(source.decode(video=0))
+    av.VideoFrame.from_ndarray(frame.to_ndarray(format='rgb24')[0:8,0:8],format='rgb24').reformat(format='yuv420p')
+
 def main():
     stripes = None
     codec = None
@@ -109,6 +117,9 @@ def main():
         mapping = None
         try:
             request = json.loads(line)
+            if request.get('operation')=='warm':
+                warm_up()
+                print(json.dumps({'warm':True}),flush=True);continue
             regions=request.get('protected_regions',[])
             if 'raw' in request:
                 raw=request['raw'];w=raw['width'];h=raw['height'];size=w*h*4

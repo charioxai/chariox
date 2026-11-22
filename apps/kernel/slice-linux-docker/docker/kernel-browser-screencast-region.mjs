@@ -7,12 +7,30 @@ import {assertNotCancelled} from './browser-controller-actions.mjs';
 import {DisplayStream,PortableEncoder} from './kernel-browser-display.mjs';
 import {displayMaskRegions,displayFullMaskRegions} from './kernel-browser-pixels.mjs';
 const refuse=()=>{throw new UserDomainRefusal('stale_reference');};
+// Row 401 F2 (webperf-r19 A1): a stream's encoder helper needs ~96 ms on b3 before its first key frame (process start, imports,
+// first decode and crop). A region a mirror reset retires is re-subscribed 15-65 ms later, so warming at subscribe hides only part
+// of it: closing a screencast region stream also warms one fresh helper (it never encoded anything), which the next screencast
+// region subscription takes; unused, it closes after SPARE_ENCODER_MS.
+const SPARE_ENCODER_MS=5000;
+function regionEncoder(host){
+ const spare=host.spareRegionEncoder;
+ if(spare){host.spareRegionEncoder=null;clearTimeout(spare.timer);return spare.encoder;}
+ const encoder=new PortableEncoder();void encoder.warm();return encoder;
+}
+function warmSpareEncoder(host){
+ if(host.spareRegionEncoder)return;
+ const encoder=new PortableEncoder();void encoder.warm();
+ const timer=setTimeout(()=>{if(host.spareRegionEncoder?.encoder===encoder){host.spareRegionEncoder=null;void encoder.close();}},SPARE_ENCODER_MS);
+ timer.unref?.();host.spareRegionEncoder={encoder,timer};
+}
 export async function subscribeScreencastRegion(host,command,scope,signal,{Screencast}){
  const target=command.target,tab=await host.displayTarget(command),policy=host.protection,generation=host.generation;
  if(tab.tab_id!==command.tab_id||!host.mirror.v2?.regions||typeof host.screencastFor!=='function')refuse();
  const {kind,...reference}=target;
  const lease=await host.mirror.v2.regions.resolve({...reference,generation},scope,{signal});
  let source,stream;
+ // Row 401 F2: the stream's encoder is warm (a spare) or starts now, ahead of the source and its first frame.
+ const encoder=regionEncoder(host);
  try{
   if(lease.tab_id!==tab.tab_id||lease.document_id!==tab.document_id||!await lease.isCurrent())refuse();
   // R2 (P5): motion at DPR1 geometry for every viewer density (R0: full DPR2 frames cost 3x headed CPU and +43 ms P95, DPR1
@@ -59,21 +77,21 @@ export async function subscribeScreencastRegion(host,command,scope,signal,{Scree
    subscription_id:`host-display-${randomUUID()}`,codec:'avc1.420033',bitrate:command.bitrate,device_scale_factor:scale,
    css_width:source.region.css_width,css_height:source.region.css_height,region_offset:placement};
   stream=new DisplayStream({...result,tab_id:tab.tab_id,observed_by:scope,relay_binary:command.codecs.includes('chariox-relay-binary-v96'),
-   dependencies:command.codecs.includes('chariox-video-dependencies-v1'),stripes:false},{timing:host.timing,encoder:new PortableEncoder()});
+   dependencies:command.codecs.includes('chariox-video-dependencies-v1'),stripes:false},{timing:host.timing,encoder});
   // A screencast region has no window: its frames are current while its source is (policy, document and fences).
-  Object.assign(stream,{regionLease:lease,regionSource:source,regionTarget:target,regionOffset:offset,regionPlacement:placement,regionCurrent:lease.isCurrent,regionWindow:{isCurrent:()=>source.valid()}});
+  Object.assign(stream,{regionScreencast:true,regionLease:lease,regionSource:source,regionTarget:target,regionOffset:offset,regionPlacement:placement,regionCurrent:lease.isCurrent,regionWindow:{isCurrent:()=>source.valid()}});
   const close=stream.close.bind(stream);
   let closing;
   stream.close=()=>closing??=(async()=>{
    try{const errors=(await Promise.allSettled([close(),source.close()])).filter(r=>r.status==='rejected').map(r=>r.reason);if(errors.length)throw new AggregateError(errors,'MD-DISPLAY: region teardown failed');}
-   finally{await lease.close();}
+   finally{await lease.close();warmSpareEncoder(host);}
   })();
   lease.attachDisplay(stream);host.armDisplayExpiry(stream);
   return result;
  }catch(error){
   let current;
   try{current=await lease.isCurrent();}
-  finally{if(stream)await stream.close();else{try{await source?.close();}finally{await lease.close();}}}
+  finally{if(stream)await stream.close();else{try{await Promise.all([source?.close(),encoder.close()]);}finally{await lease.close();}}}
   if(!current)refuse();
   throw error;
  }
