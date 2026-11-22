@@ -283,7 +283,18 @@ Only a real stop or restart ends it. This covers:
 
 Not carried, as after any restart: processes the kernel does not own (idle provider processes),
 live watched-process wakes (`chariox.events.process` ends with `process_lost`; the owner re-arms).
-A handover whose program prints another `--handover-format` is refused and nothing changes.
+A handover whose program prints a `--handover-format` other than this program's number or the next
+one is refused and nothing changes.
+
+The handover document is read part by part. A running agent turn, terminal, attachment or job whose
+part cannot be read ends as after a restart, with its reason in the log, and every other part is
+handed on: one agent's damaged part never costs the others their turns. A change to a handover
+shape that the previous release cannot read bumps `HANDOVER_FORMAT` by one and the release that
+bumps it keeps reading the previous format (`PREVIOUS_HANDOVER_FORMAT`); a field added with a serde
+default needs no bump. The fixtures in `apps/kernel/tests/fixtures/hot_reload/` are documents the
+previous release's kernel wrote with a Claude turn and a Codex turn running; a unit test reads them
+whole, so a required field added without a default fails the build. At each release, replace them
+with the release's own (`apps/kernel/tests/fixtures/hot_reload/README.md`).
 A change that would end something at a reload that a restart keeps alive is a bug in the handover.
 
 ### 3.4 Relay Server
