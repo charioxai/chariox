@@ -18,7 +18,9 @@ mod snapshot;
 mod spelling;
 mod storage;
 
-use self::spelling::{redact_split_values, secret_spellings, Spelling};
+#[cfg(test)]
+use self::spelling::redact_split_values;
+use self::spelling::{secret_spellings, Redactor};
 use super::KernelRuntimeState;
 use crate::error::DaemonError;
 use crate::transport::room_browser_controller::{
@@ -54,12 +56,25 @@ struct Protection {
     revision: u64,
     recovered_artifacts: bool,
     history_before_ms: u64,
-    history_boundary_bytes: Option<usize>,
+    /// Built on first use after each change of the value lists; a change clears it.
+    redactor: Option<Arc<Redactor>>,
 }
 
 impl Protection {
     fn value_count(&self) -> usize {
         self.values.len() + self.retired_values.len() + self.stored_values.len()
+    }
+
+    fn redactor(&mut self) -> Arc<Redactor> {
+        self.redactor
+            .get_or_insert_with(|| {
+                Arc::new(Redactor::new([
+                    &self.values,
+                    &self.retired_values,
+                    &self.stored_values,
+                ]))
+            })
+            .clone()
     }
 }
 
@@ -191,20 +206,7 @@ impl RoomSecretObservations {
         let Some(protection) = rooms.get_mut(room) else {
             return usize::MAX;
         };
-        if let Some(bytes) = protection.history_boundary_bytes {
-            return bytes;
-        }
-        let bytes = protection
-            .values
-            .iter()
-            .chain(&protection.retired_values)
-            .chain(&protection.stored_values)
-            .flat_map(|value| secret_spellings(value))
-            .map(|variant| variant.len().saturating_sub(1))
-            .max()
-            .unwrap_or(0);
-        protection.history_boundary_bytes = Some(bytes);
-        bytes
+        protection.redactor().boundary_bytes()
     }
 
     pub(super) fn register_credential_source(
@@ -316,7 +318,7 @@ impl RoomSecretObservations {
         let known = live_known || has(&protection.retired_values) || has(&protection.stored_values);
         let invalid = value.is_empty() || (!known && protection.value_count() >= 256);
         if invalid || (live && !live_known) || (!live && !known) {
-            protection.history_boundary_bytes = None;
+            protection.redactor = None;
             // Fence actual changes before persistence; a repeated value keeps prepared handoffs valid.
             protection.revision = protection.revision.saturating_add(1);
         }
@@ -487,7 +489,7 @@ impl RoomSecretObservations {
         {
             return Ok(false);
         }
-        protection.history_boundary_bytes = None;
+        protection.redactor = None;
         protection.revision = protection.revision.saturating_add(1);
         self.persist_marker(room, protection)?;
         Ok(true)
@@ -699,19 +701,22 @@ impl RoomSecretObservations {
     ) -> Result<T, DaemonError> {
         let room = self.room_key(room);
         self.blocked(room, false)?;
-        let rooms = self.rooms.lock().map_err(|_| protection_error())?;
-        let protection = &rooms[room];
-        // Recheck under the value lock: another mutation can follow admission.
-        if observation && protection.unknown {
-            return Err(fenced_observation_error());
-        }
-        if protection.value_count() == 0 {
-            return Ok(input);
-        }
+        // Snapshot the values under the lock and redact outside it: one Room's
+        // long history must not hold every other Room's scrubs and registrations.
+        let redactor = {
+            let mut rooms = self.rooms.lock().map_err(|_| protection_error())?;
+            let protection = rooms.get_mut(room).ok_or_else(protection_error)?;
+            // Recheck under the value lock: another mutation can follow admission.
+            if observation && protection.unknown {
+                return Err(fenced_observation_error());
+            }
+            if protection.value_count() == 0 {
+                return Ok(input);
+            }
+            protection.redactor()
+        };
         let mut value = serde_json::to_value(input).map_err(|_| protection_error())?;
-        scrub_value(&mut value, &protection.values);
-        scrub_value(&mut value, &protection.retired_values);
-        scrub_value(&mut value, &protection.stored_values);
+        redactor.scrub_value(&mut value);
         serde_json::from_value(value).map_err(|_| protection_error())
     }
 
@@ -837,15 +842,18 @@ impl RoomSecretObservations {
                 crate::history::HistoryEventKind::ProviderOutput
                     | crate::history::HistoryEventKind::ProviderReasoning
             );
-            if let (true, true, Some(room)) =
-                (streamed, end - start > 1, head.session_id.as_deref())
-            {
-                let variants = self.scrub_variants(room);
+            if let (true, true, Some(redactor)) = (
+                streamed,
+                end - start > 1,
+                head.session_id
+                    .as_deref()
+                    .and_then(|room| self.redactor_of(room)),
+            ) {
                 let mut parts: Vec<String> = events[start..end]
                     .iter()
                     .map(|event| event.content.clone().unwrap_or_default())
                     .collect();
-                if redact_split_values(&mut parts, &variants) {
+                if redactor.redact_split(&mut parts) {
                     for (event, part) in events[start..end].iter_mut().zip(parts) {
                         event.content = Some(part);
                     }
@@ -855,24 +863,12 @@ impl RoomSecretObservations {
         }
     }
 
-    fn scrub_variants(&self, room: &str) -> Vec<Spelling> {
+    fn redactor_of(&self, room: &str) -> Option<Arc<Redactor>> {
         let room = self.room_key(room);
         // A Room whose registry failed to initialize has no entry; its events are already withheld.
-        let Ok(rooms) = self.rooms.lock() else {
-            return Vec::new();
-        };
-        let Some(protection) = rooms.get(room) else {
-            return Vec::new();
-        };
-        let mut variants = protection
-            .values
-            .iter()
-            .chain(&protection.retired_values)
-            .chain(&protection.stored_values)
-            .flat_map(|secret| secret_spellings(secret))
-            .collect::<Vec<_>>();
-        variants.sort_by_key(|variant| std::cmp::Reverse(variant.len()));
-        variants
+        let mut rooms = self.rooms.lock().ok()?;
+        let protection = rooms.get_mut(room)?;
+        (protection.value_count() > 0).then(|| protection.redactor())
     }
 
     fn withholds_history(&self, room: &str, timestamp_ms: u64) -> bool {
@@ -887,36 +883,6 @@ impl RoomSecretObservations {
                 protection.recovered_artifacts && timestamp_ms <= protection.history_before_ms
             })
             .unwrap_or(true)
-    }
-}
-
-fn scrub_value(value: &mut serde_json::Value, secrets: &[Zeroizing<String>]) {
-    match value {
-        serde_json::Value::String(text) => {
-            let mut variants = Vec::new();
-            for secret in secrets {
-                variants.extend(secret_spellings(secret));
-            }
-            variants.sort_by_key(|variant| std::cmp::Reverse(variant.len()));
-            for variant in variants {
-                *text = variant.redact_in(text);
-            }
-        }
-        serde_json::Value::Array(values) => {
-            for value in values {
-                scrub_value(value, secrets);
-            }
-        }
-        serde_json::Value::Object(values) => {
-            let entries = std::mem::take(values);
-            for (key, mut value) in entries {
-                let mut key = serde_json::Value::String(key);
-                scrub_value(&mut key, secrets);
-                scrub_value(&mut value, secrets);
-                values.insert(key.as_str().unwrap_or("[redacted]").into(), value);
-            }
-        }
-        _ => {}
     }
 }
 

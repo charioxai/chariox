@@ -456,6 +456,12 @@ impl KernelRuntimeState {
         if !owned.ensure_prompt_dispatch_matches_active_prompt(dispatch)? {
             return Ok(PromptDispatchAcceptance::Dropped);
         }
+        if !dispatch.steering {
+            // A run whose process died while idle cannot take the prompt: end it
+            // now, so the dispatch below moves to a fresh run and prepares its
+            // handoff once, for that run.
+            owned.end_runs_whose_idle_process_exited(Some(&dispatch.provider_run_id));
+        }
         let rerouted = match self.dispatch_off_finished_turn_substitute(dispatch).await? {
             Some(rerouted) => Some(rerouted),
             None => self.dispatch_off_ended_run(dispatch).await?,
@@ -543,13 +549,26 @@ impl KernelRuntimeState {
             if !dispatch.steering {
                 owned.note_prompt_started(&dispatch.provider_run_id);
             }
-            let handoff = owned.context_handoff_for_dispatch(
-                &dispatch.session_id,
-                &dispatch.agent_id,
-                &provider_run,
-                &dispatch.prompt_id,
-                dispatch.steering,
-            )?;
+            // Reading and protecting a long history is blocking work: keep it
+            // off the async workers every other dispatch and the pump share.
+            let handoff = {
+                let (owned, dispatch, run) =
+                    (owned.clone(), dispatch.clone(), provider_run.clone());
+                tokio::task::spawn_blocking(move || {
+                    owned.context_handoff_for_dispatch(
+                        &dispatch.session_id,
+                        &dispatch.agent_id,
+                        &run,
+                        &dispatch.prompt_id,
+                        dispatch.steering,
+                    )
+                })
+                .await
+                .map_err(|error| DaemonError::LocalTransport {
+                    operation: "prepare context handoff",
+                    message: error.to_string(),
+                })??
+            };
             if handoff
                 .as_ref()
                 .is_some_and(|handoff| handoff.needs_brief())
@@ -4227,6 +4246,272 @@ pub(in crate::runtime::state) mod tests {
         assert!(
             stored.is_none(),
             "a cancelled fold must not overwrite the shared stored brief"
+        );
+    }
+
+    /// A rebuilt handoff reads the agent's history once per dispatch, for the
+    /// packet, the brief and the final check alike, and the brief deadline
+    /// starts at the first summary call: a slow read still leaves a stored brief.
+    #[tokio::test]
+    async fn a_handoff_dispatch_reads_the_history_once_and_a_slow_read_still_yields_a_brief() {
+        let mut config = DaemonConfig::for_tests();
+        config.operational_history_read_delay_ms = 1_500;
+        let prior = format!("remember amber {}", "notes ".repeat(2_000));
+        let (root, runtime, session_id, agent_id, attachment_id, prompt_id, _) =
+            runtime_with_active_prompt_and_config(config, &[prior.as_str()]).await;
+        let _deadline = super::super::context_handoff::brief_refresh::ShortBriefDeadline::new(
+            std::time::Duration::from_secs(1),
+        );
+        let briefed = root.path().join("brief-called");
+        let submitted = root.path().join("submitted");
+        let brief = "## Goal\nRemember amber\n## Constraints & Preferences\nNone\n## Progress\nDone\n## Key Decisions\nNone\n## Next Steps\nRecall\n## Critical Context\namber";
+        let answer = serde_json::json!({"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":brief}]}}).to_string();
+        let script = format!(
+            "while IFS= read -r line; do u=$(printf '%s' \"$line\" | sed -n 's/.*\"uuid\":\"\\([^\"]*\\)\".*/\\1/p'); case \"$line\" in *'Update the handoff brief'*) touch '{}'; printf '%s\\n' '{}' ;; *) touch '{}' ;; esac; printf '%s\\n' '{{\"type\":\"result\",\"subtype\":\"success\",\"user_message_uuids\":[\"'\"$u\"'\"]}}'; done",
+            briefed.display(), answer, submitted.display()
+        );
+        let executable = root.path().join("brief-cli-fixture");
+        std::fs::write(&executable, format!("#!/bin/sh\n{script}\n")).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let request =
+            LaunchProviderRequest::new(&session_id, "claude", "claude", "default", "sonnet")
+                .with_agent_id(&agent_id);
+        let mut run = crate::provider::RuntimeProviderRun::new(
+            "slow-history-brief-run",
+            &request,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+                process_label: "fixture".into(),
+                pty_target: None,
+                pty_program: Some(executable.display().to_string()),
+                pty_args: vec![],
+                pty_env: Default::default(),
+                pty_env_remove: vec![],
+                working_directory: None,
+                structured_endpoint: None,
+            },
+        );
+        run.mark_running();
+        runtime
+            .owned
+            .provider_store
+            .write()
+            .insert_run_for_test(run.clone());
+        runtime
+            .owned
+            .provider_store
+            .initialize_runtime(&run)
+            .unwrap();
+        runtime.owned.provider_run_projection.update(run.clone());
+        let dispatch = dispatch(
+            &session_id,
+            &agent_id,
+            &attachment_id,
+            run.id(),
+            &prompt_id,
+            "next request",
+            None,
+            false,
+        );
+        let history = runtime.owned.operational_history_store.clone();
+        let loads_before = history.agent_history_loads();
+        runtime.enqueue_prompt_dispatch(&dispatch).await.unwrap();
+        for _ in 0..600 {
+            if submitted.exists() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        let loads = history.agent_history_loads() - loads_before;
+        let stored = history
+            .load_agent_handoff_brief(&session_id, &agent_id)
+            .unwrap();
+        runtime
+            .owned
+            .provider_store
+            .terminate_run_provider_only(&session_id, run.id())
+            .unwrap();
+        assert!(submitted.exists(), "the prompt must reach the provider");
+        assert!(
+            briefed.exists(),
+            "a slow history read must not use up the brief deadline"
+        );
+        assert!(
+            stored.is_some(),
+            "the brief must be stored for the next dispatch"
+        );
+        assert_eq!(loads, 1, "the agent's history is read once per dispatch");
+    }
+
+    /// A Claude run whose fixture program is `script`, started as the kernel starts one.
+    fn start_fixture_claude_run(
+        runtime: &KernelRuntimeState,
+        root: &std::path::Path,
+        session_id: &str,
+        agent_id: &str,
+        run_id: &str,
+        script: &str,
+        resume: Option<&str>,
+    ) -> crate::provider::RuntimeProviderRun {
+        let executable = root.join(format!("{run_id}-fixture"));
+        std::fs::write(&executable, format!("#!/bin/sh\n{script}\n")).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let mut request =
+            LaunchProviderRequest::new(session_id, "claude", "claude", "default", "sonnet")
+                .with_agent_id(agent_id);
+        if let Some(resume) = resume {
+            let resume = crate::provider::ProviderResumeState::from_claude_session_id(resume);
+            request = request.with_resume_state(resume.clone());
+            runtime
+                .owned
+                .agent_store
+                .write()
+                .set_agent_provider_resume_state(agent_id, resume)
+                .unwrap();
+        }
+        let mut run = crate::provider::RuntimeProviderRun::new(
+            run_id,
+            &request,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+                process_label: "fixture".into(),
+                pty_target: None,
+                pty_program: Some(executable.display().to_string()),
+                pty_args: vec![],
+                pty_env: Default::default(),
+                pty_env_remove: vec![],
+                working_directory: None,
+                structured_endpoint: None,
+            },
+        );
+        run.mark_running();
+        runtime
+            .owned
+            .provider_store
+            .write()
+            .insert_run_for_test(run.clone());
+        runtime
+            .owned
+            .provider_store
+            .initialize_runtime(&run)
+            .unwrap();
+        runtime.owned.provider_run_projection.update(run.clone());
+        run
+    }
+
+    fn wait_for_pid(path: &std::path::Path) -> u32 {
+        for _ in 0..100 {
+            if let Some(pid) = std::fs::read_to_string(path)
+                .ok()
+                .and_then(|pid| pid.trim().parse().ok())
+            {
+                return pid;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        panic!("the fixture never wrote its pid");
+    }
+
+    fn is_zombie_or_running(pid: u32) -> bool {
+        std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok()
+    }
+
+    /// The provider process sweep notices a Claude process that ended while its
+    /// agent was idle: the run ends and the process is reaped, not left a zombie.
+    /// It ended before any turn, so it could not open the session it was started
+    /// to resume: the agent's next run starts a new one instead of looping.
+    #[tokio::test]
+    async fn the_process_sweep_ends_a_run_whose_claude_process_exited_while_idle() {
+        let (root, runtime, session_id, agent_id, _attachment_id, _prompt_id, _) =
+            runtime_with_active_prompt_and_history(Some("earlier work")).await;
+        let pid_file = root.path().join("idle-exit.pid");
+        let run = start_fixture_claude_run(
+            &runtime,
+            root.path(),
+            &session_id,
+            &agent_id,
+            "idle-exit-run",
+            &format!("echo $$ > '{}'; exit 1", pid_file.display()),
+            Some("session-the-cli-cannot-open"),
+        );
+        let pid = wait_for_pid(&pid_file);
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        runtime
+            .reap_idle_provider_processes(crate::session::unix_epoch_ms())
+            .await
+            .unwrap();
+        let state = runtime
+            .owned
+            .provider_store
+            .get_run(run.id())
+            .unwrap()
+            .state();
+        assert_eq!(state, crate::provider::ProviderRunState::Ended);
+        assert!(
+            !is_zombie_or_running(pid),
+            "the exited process must be reaped"
+        );
+        let agent = runtime.owned.agent_store.get_agent(&agent_id).unwrap();
+        assert_eq!(
+            agent.provider_resume_state().provider_session_id("claude"),
+            None,
+            "the next run must not resume a session the CLI could not open"
+        );
+    }
+
+    /// A prompt dispatched to a run whose Claude process died while idle moves
+    /// to a fresh run before any handoff is prepared, so the agent's history is
+    /// read once, for the run that takes the prompt.
+    #[tokio::test]
+    async fn a_dispatch_to_a_run_whose_idle_process_died_moves_to_a_fresh_run_once() {
+        let (root, runtime, session_id, agent_id, attachment_id, prompt_id, _) =
+            runtime_with_active_prompt_and_history(Some("earlier work")).await;
+        let pid_file = root.path().join("dead-run.pid");
+        let run = start_fixture_claude_run(
+            &runtime,
+            root.path(),
+            &session_id,
+            &agent_id,
+            "dead-idle-run",
+            &format!("echo $$ > '{}'; exit 0", pid_file.display()),
+            None,
+        );
+        wait_for_pid(&pid_file);
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let history = runtime.owned.operational_history_store.clone();
+        let loads_before = history.agent_history_loads();
+        runtime
+            .enqueue_prompt_dispatch(&dispatch(
+                &session_id,
+                &agent_id,
+                &attachment_id,
+                run.id(),
+                &prompt_id,
+                "next request",
+                None,
+                false,
+            ))
+            .await
+            .unwrap();
+        let old = runtime.owned.provider_store.get_run(run.id()).unwrap();
+        let current = runtime
+            .owned
+            .provider_store
+            .get_run_for_agent(&session_id, &agent_id)
+            .expect("the agent has a run again");
+        assert_eq!(old.state(), crate::provider::ProviderRunState::Ended);
+        assert_ne!(current.id(), run.id(), "the prompt moved to a fresh run");
+        assert!(
+            history.agent_history_loads() - loads_before <= 1,
+            "the handoff is prepared once"
         );
     }
 

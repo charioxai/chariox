@@ -741,6 +741,8 @@ pub struct OperationalHistoryStore {
     read_delay_ms: u64,
     #[cfg(test)]
     delayed_reads: Arc<AtomicU64>,
+    #[cfg(test)]
+    agent_history_loads: Arc<AtomicU64>,
     max_size_bytes: u64,
     capture_enabled: Arc<AtomicBool>,
     writer: Arc<OperationalHistoryWriter>,
@@ -877,6 +879,8 @@ impl OperationalHistoryStore {
             read_delay_ms,
             #[cfg(test)]
             delayed_reads: Arc::default(),
+            #[cfg(test)]
+            agent_history_loads: Arc::default(),
             max_size_bytes: max_size_bytes.clamp(1, OPERATIONAL_HISTORY_HARD_MAX_BYTES),
             capture_enabled: Arc::new(AtomicBool::new(true)),
             writer: Arc::new(OperationalHistoryWriter {
@@ -913,6 +917,17 @@ impl OperationalHistoryStore {
     #[cfg(test)]
     pub(crate) fn reads_served(&self) -> u64 {
         self.delayed_reads.load(Ordering::SeqCst)
+    }
+
+    /// How many times one agent's history was read, whole or from a sequence on.
+    #[cfg(test)]
+    pub(crate) fn agent_history_loads(&self) -> u64 {
+        self.agent_history_loads.load(Ordering::SeqCst)
+    }
+
+    #[cfg(test)]
+    pub(super) fn count_agent_history_load(&self) {
+        self.agent_history_loads.fetch_add(1, Ordering::SeqCst);
     }
 
     pub fn capture_enabled(&self) -> bool {

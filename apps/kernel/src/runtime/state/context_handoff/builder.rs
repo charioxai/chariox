@@ -35,6 +35,10 @@ pub(super) struct AgentConversation {
     // MP-08 / MP-10 / MP-11: raw history boundary for policy revalidation,
     // including explicit snapshots whose target is a different agent.
     history_source: Option<(String, u64)>,
+    /// The protected events this conversation was read from, under the Room
+    /// revision the handoff records: the brief update reads its unfolded
+    /// source from them instead of reading the history again.
+    pub(super) source_events: Option<std::sync::Arc<Vec<HistoryEvent>>>,
     pub(super) facts: KernelFacts,
     pub(super) brief: Option<String>,
 }
@@ -53,6 +57,7 @@ pub(super) fn load_agent_conversation(
         agent_id.into(),
         events.iter().map(|event| event.sequence).max().unwrap_or(0),
     ));
+    conversation.source_events = Some(std::sync::Arc::new(events));
     Ok(match dispatching_prompt_id {
         Some(prompt_id) => conversation.before_prompt(prompt_id),
         None => conversation,
@@ -87,6 +92,7 @@ impl AgentConversation {
         Self {
             turns: collect_turns(&sorted),
             history_source: None,
+            source_events: None,
             facts: KernelFacts::from_events(&sorted),
             brief: None,
         }

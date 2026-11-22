@@ -151,6 +151,11 @@ impl ClaudeRuntimeState {
     pub(crate) fn session_id(&self) -> Option<&str> {
         self.session_id.as_deref()
     }
+
+    /// No prompt was ever written to this run's process.
+    pub(crate) fn took_no_turn(&self) -> bool {
+        self.next_turn_number == 1
+    }
 }
 
 impl Drop for ClaudeRuntimeState {

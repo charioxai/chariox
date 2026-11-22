@@ -21,8 +21,43 @@ use super::brief::{
 };
 use super::PendingAgentContextHandoff;
 
-/// How long a dispatch waits for its brief before it falls back.
+/// How long a dispatch waits for its brief before it falls back, counted from
+/// its first summary call: reading the history is not part of it.
 const BRIEF_DEADLINE: Duration = Duration::from_secs(120);
+#[cfg(test)]
+static TEST_BRIEF_DEADLINE_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn brief_deadline() -> Duration {
+    #[cfg(test)]
+    match TEST_BRIEF_DEADLINE_MS.load(std::sync::atomic::Ordering::SeqCst) {
+        0 => {}
+        ms => return Duration::from_millis(ms),
+    }
+    BRIEF_DEADLINE
+}
+
+/// Shortens the brief deadline until dropped, so a test can outlast it.
+#[cfg(test)]
+pub(in crate::runtime::state) struct ShortBriefDeadline;
+
+#[cfg(test)]
+impl ShortBriefDeadline {
+    pub(in crate::runtime::state) fn new(deadline: Duration) -> Self {
+        TEST_BRIEF_DEADLINE_MS.store(
+            deadline.as_millis() as u64,
+            std::sync::atomic::Ordering::SeqCst,
+        );
+        Self
+    }
+}
+
+#[cfg(test)]
+impl Drop for ShortBriefDeadline {
+    fn drop(&mut self) {
+        TEST_BRIEF_DEADLINE_MS.store(0, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 /// Writes a Codex brief in about 5 s where the default gpt-5.5 took up to 19.
 const CODEX_BRIEF_MODEL: &str = "gpt-6-luna";
 
@@ -43,11 +78,14 @@ impl KernelRuntimeOwnedState {
 
     /// The protected source that a current fold has not covered. Older rendering
     /// revisions replay source once, retaining the old durable fold on failure.
+    /// `loaded` is the agent's history this dispatch already read and protected
+    /// under the current Room revision; without it the history is read here.
     pub(super) fn handoff_brief_update_history(
         &self,
         session_id: &str,
         agent_id: &str,
         prompt_id: &str,
+        loaded: Option<&[crate::history::HistoryEvent]>,
     ) -> Result<(Option<AgentHandoffBrief>, Vec<crate::history::HistoryEvent>), DaemonError> {
         let history = &self.operational_history_store;
         let stored = self.protected_stored_handoff_brief(session_id, agent_id)?;
@@ -57,13 +95,21 @@ impl KernelRuntimeOwnedState {
         let after = stored
             .as_ref()
             .map_or(0, |stored| stored.covered_through_sequence);
-        let events = history.load_session_events_for_agent_sequence_range(
-            session_id,
-            agent_id,
-            after + 1,
-            i64::MAX as u64,
-        )?;
-        let mut events = self.room_secret_observations.protect_history_events(events);
+        let mut events = match loaded {
+            Some(loaded) => loaded
+                .iter()
+                .filter(|event| event.sequence > after)
+                .cloned()
+                .collect(),
+            None => self.room_secret_observations.protect_history_events(
+                history.load_session_events_for_agent_sequence_range(
+                    session_id,
+                    agent_id,
+                    after + 1,
+                    i64::MAX as u64,
+                )?,
+            ),
+        };
         // The dispatching prompt is the request itself, not history to brief.
         if let Some(end) = events
             .iter()
@@ -98,6 +144,7 @@ impl KernelRuntimeState {
             return handoff;
         }
         let started = Instant::now();
+        let first_call = std::sync::OnceLock::new();
         let update = self
             .update_handoff_brief(
                 owned,
@@ -106,7 +153,7 @@ impl KernelRuntimeState {
                 agent_id,
                 prompt_id,
                 target_run,
-                started,
+                &first_call,
                 &prompt_is_current,
             )
             .await;
@@ -157,7 +204,7 @@ impl KernelRuntimeState {
         agent_id: &str,
         prompt_id: &str,
         target_run: &RuntimeProviderRun,
-        started: Instant,
+        first_call: &std::sync::OnceLock<Instant>,
         prompt_is_current: &(impl Fn() -> bool + Sync),
     ) -> Result<(Option<String>, usize), DaemonError> {
         let history = &owned.operational_history_store;
@@ -169,8 +216,17 @@ impl KernelRuntimeState {
                 .await;
             owned.room_secret_observations.require(session_id, false)?;
             let source_revision = owned.room_secret_observations.revision(session_id)?;
-            let (stored, events) =
-                owned.handoff_brief_update_history(session_id, agent_id, prompt_id)?;
+            let loaded = handoff
+                .conversation
+                .source_events
+                .as_deref()
+                .filter(|_| handoff.room_revision == Some(source_revision));
+            let (stored, events) = owned.handoff_brief_update_history(
+                session_id,
+                agent_id,
+                prompt_id,
+                loaded.map(Vec::as_slice),
+            )?;
             (source_revision, stored, events)
         };
         let mut brief = stored.map(|stored| stored.brief);
@@ -223,7 +279,7 @@ impl KernelRuntimeState {
                             .room_secret_observations
                             .scrub(session_id, prompt.visible_user_prompt)?;
                         drop(guard);
-                        self.brief_call(&run, prompt, started, owned, source_revision)
+                        self.brief_call(&run, prompt, first_call, owned, source_revision)
                             .await
                     },
                 )
@@ -271,17 +327,18 @@ impl KernelRuntimeState {
 }
 
 impl KernelRuntimeState {
-    /// One utility call within what is left of the brief deadline.
+    /// One utility call within what is left of the brief deadline, which the
+    /// first call starts.
     async fn brief_call(
         &self,
         utility_run: &RuntimeProviderRun,
         prompt: AgentUtilityPromptParts,
-        started: Instant,
+        first_call: &std::sync::OnceLock<Instant>,
         owned: &KernelRuntimeOwnedState,
         source_revision: u64,
     ) -> Result<String, DaemonError> {
-        let remaining = BRIEF_DEADLINE
-            .checked_sub(started.elapsed())
+        let remaining = brief_deadline()
+            .checked_sub(first_call.get_or_init(Instant::now).elapsed())
             .filter(|remaining| !remaining.is_zero())
             .ok_or_else(|| brief_error("the brief deadline passed"))?;
         let observations = owned.room_secret_observations.clone();

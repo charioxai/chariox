@@ -907,11 +907,12 @@ impl SkillPromptBridge for SkillDispatchService {
             .map(|inventory| inventory.entries.as_slice())
             .unwrap_or_default();
         let usage = run.usage();
+        let context_window = Some(crate::provider::run_context_window_tokens(run));
         let attachment_bytes = envelope.attachments.iter().fold(0u64, |total, attachment| {
             total.saturating_add(attachment.contents_base64().map(str::len).unwrap_or(0) as u64)
         });
         let remaining = crate::skill::resolver::remaining_turn_budget(
-            usage.context_window,
+            context_window,
             usage.context_tokens,
             (envelope.hidden_system_context.len() as u64)
                 .saturating_add(envelope.visible_user_prompt.len() as u64)
@@ -941,7 +942,7 @@ impl SkillPromptBridge for SkillDispatchService {
             },
             prompt.skill_selections(),
             native,
-            usage.context_window,
+            context_window,
             config.user_config.skills.metadata_budget_percent.get(),
             if envelope.switch_skill_budget.is_some() {
                 u64::MAX

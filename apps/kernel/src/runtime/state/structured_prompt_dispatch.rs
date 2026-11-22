@@ -45,13 +45,16 @@ impl KernelRuntimeState {
                 .await;
             // Order the final ownership/cancellation check and Submit with Abort.
             // No lane is held while the brief utility runs.
-            let _permit = state
+            let permit = state
                 .provider_runtime_lanes
                 .acquire(&dispatch.provider_run_id)
                 .await;
             if !state.owned.handoff_brief_dispatch_is_current(&dispatch) {
+                drop(permit);
+                state.redispatch_if_brief_outlived_its_run(dispatch).await;
                 return;
             }
+            let _permit = permit;
             match state
                 .submit_structured_prompt_with_handoff(
                     &dispatch,
@@ -215,6 +218,46 @@ impl KernelRuntimeState {
             }
         }
         Ok(true)
+    }
+}
+
+impl KernelRuntimeState {
+    /// The run ended while its brief was prepared (its process exited, or it
+    /// was replaced) but the prompt is still the agent's to answer: dispatch it
+    /// again, which moves it to a fresh run, rather than leave it active with
+    /// nothing to deliver it.
+    async fn redispatch_if_brief_outlived_its_run(
+        &self,
+        dispatch: crate::app::KernelPromptDispatch,
+    ) {
+        let owned = &self.owned;
+        let prompt_still_active = owned
+            .ensure_prompt_dispatch_matches_active_prompt(&dispatch)
+            .unwrap_or(false)
+            && owned
+                .session_store
+                .get_session(&dispatch.session_id)
+                .is_ok_and(|session| {
+                    owned
+                        .prompt_state_owner
+                        .active_prompt_for_agent(&session, &dispatch.agent_id)
+                        .is_some_and(|prompt| {
+                            prompt.status() != crate::session::PromptStatus::Cancelling
+                        })
+                });
+        let run_ended = owned
+            .provider_store
+            .get_run(&dispatch.provider_run_id)
+            .is_ok_and(|run| run.state() == crate::provider::ProviderRunState::Ended);
+        if !(prompt_still_active && run_ended) {
+            return;
+        }
+        if let Err(error) = self
+            .enqueue_prompt_dispatch_after_liveness(&dispatch, owned)
+            .await
+        {
+            let _ = self.fail_prompt_dispatch(dispatch, error).await;
+        }
     }
 }
 
