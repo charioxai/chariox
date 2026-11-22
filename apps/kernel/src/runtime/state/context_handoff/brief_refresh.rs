@@ -216,11 +216,10 @@ impl KernelRuntimeState {
                 .await;
             owned.room_secret_observations.require(session_id, false)?;
             let source_revision = owned.room_secret_observations.revision(session_id)?;
-            let loaded = handoff
-                .conversation
-                .source_events
-                .as_deref()
-                .filter(|_| handoff.room_revision == Some(source_revision));
+            let loaded = handoff.conversation.source_events.as_deref().filter(|_| {
+                !handoff.conversation.older_history_left_out
+                    && handoff.room_revision == Some(source_revision)
+            });
             let (stored, events) = owned.handoff_brief_update_history(
                 session_id,
                 agent_id,

@@ -8,6 +8,10 @@ use super::facts::{KernelFacts, ToolCall};
 /// The handoff size the tests render at: the old fixed budget.
 #[cfg(test)]
 pub(super) const MAX_HANDOFF_BYTES: usize = 24_000;
+/// The newest stored history a rebuilt handoff reads: four packets' worth,
+/// enough for the packet's turns and their tool output, the same for any
+/// history length. Older work reaches the new session through the brief.
+pub(super) const MAX_HANDOFF_SOURCE_BYTES: usize = 4 * super::MAX_PROMPT_HANDOFF_BYTES as usize;
 const MAX_LATEST_TURN_BYTES: usize = 6_500;
 const MAX_LATEST_ITEM_BYTES: usize = 1_500;
 const MAX_PRIOR_USER_BYTES: usize = 1_000;
@@ -39,6 +43,8 @@ pub(super) struct AgentConversation {
     /// revision the handoff records: the brief update reads its unfolded
     /// source from them instead of reading the history again.
     pub(super) source_events: Option<std::sync::Arc<Vec<HistoryEvent>>>,
+    /// The read left the agent's older history out: only a brief carries it.
+    pub(super) older_history_left_out: bool,
     pub(super) facts: KernelFacts,
     pub(super) brief: Option<String>,
 }
@@ -50,9 +56,11 @@ pub(super) fn load_agent_conversation(
     dispatching_prompt_id: Option<&str>,
     protection: &super::super::room_secret_observation::RoomSecretObservations,
 ) -> Result<AgentConversation, DaemonError> {
-    let events = history_store.load_session_events(session_id, Some(agent_id))?;
+    let (events, older_left_out) =
+        history_store.load_newest_agent_events(session_id, agent_id, MAX_HANDOFF_SOURCE_BYTES)?;
     let events = protection.protect_history_events(events);
     let mut conversation = AgentConversation::from_events(&events);
+    conversation.older_history_left_out = older_left_out;
     conversation.history_source = Some((
         agent_id.into(),
         events.iter().map(|event| event.sequence).max().unwrap_or(0),
@@ -93,6 +101,7 @@ impl AgentConversation {
             turns: collect_turns(&sorted),
             history_source: None,
             source_events: None,
+            older_history_left_out: false,
             facts: KernelFacts::from_events(&sorted),
             brief: None,
         }

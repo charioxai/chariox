@@ -49,6 +49,8 @@ pub(crate) struct PendingAgentContextHandoffStore {
     /// Each agent's run known to hold its conversation, so later prompts to it
     /// skip the history checks and the derived handoff is delivered once.
     conversation_runs: Arc<StdMutex<BTreeMap<String, ConversationRun>>>,
+    /// Agents whose brief is being brought up to date: one fold at a time each.
+    folding_briefs: Arc<StdMutex<std::collections::BTreeSet<String>>>,
     /// Unsupported brief models are remembered only for this kernel lifetime,
     /// and only for the selected provider account and exact model.
     unavailable_brief_models: Arc<StdMutex<std::collections::BTreeSet<(String, String, String)>>>,
@@ -75,6 +77,21 @@ pub(super) fn native_session_id(run: &RuntimeProviderRun) -> Option<&str> {
 }
 
 impl PendingAgentContextHandoffStore {
+    /// Claims the agent's brief fold; false while another fold runs.
+    pub(super) fn begin_brief_fold(&self, session_id: &str, agent_id: &str) -> bool {
+        self.folding_briefs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(pending_handoff_key(session_id, agent_id))
+    }
+
+    pub(super) fn end_brief_fold(&self, session_id: &str, agent_id: &str) {
+        self.folding_briefs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&pending_handoff_key(session_id, agent_id));
+    }
+
     pub(super) fn brief_model_is_unavailable(&self, run: &RuntimeProviderRun) -> bool {
         self.unavailable_brief_models
             .lock()
@@ -181,7 +198,9 @@ impl PendingAgentContextHandoffStore {
 
 impl PendingAgentContextHandoff {
     pub(super) fn needs_brief(&self) -> bool {
-        self.derived && !self.conversation.fits_without_brief(self.budget())
+        self.derived
+            && (self.conversation.older_history_left_out
+                || !self.conversation.fits_without_brief(self.budget()))
     }
 
     fn matches_target(&self, target_run: &RuntimeProviderRun) -> bool {
@@ -462,9 +481,7 @@ impl super::KernelRuntimeOwnedState {
                         message: "Retained conversation is unavailable at the pending compaction boundary".into(),
                     })?;
                 self.add_session_facts(session_id, agent_id, prompt_id, &mut conversation);
-                if !brief_refresh::writes_handoff_briefs(target_run) {
-                    conversation.brief = self.stored_handoff_brief(session_id, agent_id);
-                }
+                conversation.brief = self.stored_handoff_brief(session_id, agent_id);
                 let handoff = PendingAgentContextHandoff {
                     source_provider: boundary.source_provider,
                     source_model: boundary.source_model,
@@ -575,11 +592,9 @@ impl super::KernelRuntimeOwnedState {
             return Ok(None);
         };
         self.add_session_facts(session_id, agent_id, prompt_id, &mut conversation);
-        // Structured harnesses load the brief once during refresh. Other harnesses
-        // carry the last stored brief alongside their deterministic packet.
-        if !brief_refresh::writes_handoff_briefs(target_run) {
-            conversation.brief = self.stored_handoff_brief(session_id, agent_id);
-        }
+        // The packet carries the last stored brief; a harness that writes briefs
+        // brings it up to date in the background, never ahead of the turn.
+        conversation.brief = self.stored_handoff_brief(session_id, agent_id);
         let latest = latest.as_ref();
         crate::logging::info_with_fields(
             "daemon.provider_context_handoff",
@@ -1575,6 +1590,41 @@ mod tests {
         assert_eq!(fixture.prompt(&resumed), "next");
         let other = fixture.run("provider-run-2", "claude", Some("claude-session-2"));
         assert!(fixture.prompt(&other).contains("amber-kestrel"));
+    }
+
+    /// C-FALLBACK / C-HIST: a rebuilt handoff reads only the newest history,
+    /// the same amount however long the history grows; older work reaches the
+    /// new session through the brief.
+    #[tokio::test]
+    async fn a_rebuilt_handoff_reads_the_same_newest_history_whatever_its_length() {
+        let fixture = DerivedHandoffFixture::new().await;
+        let filler = "x".repeat(100_000);
+        let mut read = Vec::new();
+        for round in 0..2u64 {
+            for turn in 0..20u64 {
+                let sequence = round * 100 + turn + 1;
+                fixture.user(sequence, &format!("turn {sequence} {filler}"));
+            }
+            let conversation = load_agent_conversation(
+                &fixture.history,
+                &fixture.session_id,
+                &fixture.agent_id,
+                None,
+                &fixture.runtime.owned.room_secret_observations,
+            )
+            .unwrap();
+            assert!(conversation.older_history_left_out);
+            let events = conversation.source_events.unwrap();
+            let newest = format!("turn {} ", round * 100 + 20);
+            assert!(events.iter().any(|event| event
+                .content
+                .as_deref()
+                .unwrap_or_default()
+                .starts_with(&newest)));
+            read.push(events.len());
+        }
+        assert!(read[0] < 20, "older turns are left to the brief: {read:?}");
+        assert_eq!(read[0], read[1], "the read does not grow with the history");
     }
 
     #[tokio::test]
