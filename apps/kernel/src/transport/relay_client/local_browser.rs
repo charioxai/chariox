@@ -178,6 +178,8 @@ impl LocalBrowserDirect {
             "kernel_id": self.router.relay_daemon_id(),
             "endpoint_epoch": endpoint.epoch,
             "expires_at_ms": grant.expires_at_ms,
+            // c#794 review (row 236): how long the grant lasts from now, independent of any clock but the kernel's own.
+            "expires_in_ms": grant.expires_at_ms.saturating_sub(crate::session::unix_epoch_ms()),
         });
         let name = match client {
             LocalDirectClient::Browser => "LocalBrowserConnectIssued",
@@ -209,6 +211,7 @@ impl LocalBrowserDirect {
             "kernel_id": self.router.relay_daemon_id(),
             "endpoint_epoch": epoch,
             "expires_at_ms": grant.expires_at_ms,
+            "expires_in_ms": grant.expires_at_ms.saturating_sub(crate::session::unix_epoch_ms()),
         }}))
     }
 
