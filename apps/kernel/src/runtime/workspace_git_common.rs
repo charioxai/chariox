@@ -17,6 +17,14 @@ pub(crate) fn git_command_output(path: &str, args: &[&str]) -> Option<String> {
     (!value.is_empty()).then_some(value)
 }
 
+pub(crate) fn git_common_directory(directory: &Path) -> Option<PathBuf> {
+    let common = git_command_output(
+        directory.to_str()?,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    )?;
+    Path::new(&common).canonicalize().ok()
+}
+
 /// Whether a `git` executable runs here. Only a positive answer is remembered, so installing
 /// Git while the kernel runs is noticed.
 pub(crate) fn git_available() -> bool {
