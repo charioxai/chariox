@@ -333,6 +333,7 @@ fn mp08_mp10_mp11_initial_view_is_a_bounded_latest_turn_not_a_blob_download() {
                     agent_ids: Some(vec![agent.agent_id]),
                     latest_prompt_count: Some(4),
                     cursor: agent.next_cursor,
+                    after_sequence: None,
                     include_prefetched_content: false,
                 },
             ))

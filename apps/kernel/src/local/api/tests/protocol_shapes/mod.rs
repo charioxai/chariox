@@ -85,6 +85,7 @@ mod room_list;
 mod room_setup;
 mod room_terminal;
 mod session_feed_596;
+mod session_outline_delta;
 mod session_view;
 mod slice_disk_quota;
 mod slice_display;

@@ -223,6 +223,7 @@ async fn panes_stream_terminal_delivery_does_not_wait_for_history_writer() {
                     agent_ids: Some(vec![history_agent]),
                     latest_prompt_count: Some(4),
                     cursor: None,
+                    after_sequence: None,
                     include_prefetched_content: true,
                 },
             ),

@@ -64,6 +64,7 @@ async fn initial_outline_batches_three_agents_and_marks_budgeted_steers() {
         agent_ids: Some(vec!["a".into(), "b".into(), "c".into()]),
         latest_prompt_count: Some(4),
         cursor: None,
+        after_sequence: None,
         include_prefetched_content: true,
     };
     let response = execute_session_history_outline_request(store.clone(), request)
@@ -221,6 +222,7 @@ async fn initial_outline_compacts_word_delta_metadata_before_relay_delivery() {
             agent_ids: Some(vec!["a".into()]),
             latest_prompt_count: Some(4),
             cursor: None,
+            after_sequence: None,
             include_prefetched_content: true,
         },
     )

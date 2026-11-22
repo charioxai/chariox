@@ -74,6 +74,7 @@ fn mp10_a_stored_tool_call_with_pictures_has_their_count_in_the_outline_preview(
                 agent_ids: Some(vec![agent_id]),
                 latest_prompt_count: Some(1),
                 cursor: None,
+                after_sequence: None,
                 include_prefetched_content: false,
             },
         ))

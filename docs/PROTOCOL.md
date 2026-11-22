@@ -314,6 +314,29 @@ requests. The outline's `steering` flag identifies budgeted steering prompts;
 observed and recovery prompt envelopes retain their collapsed, on-demand role.
 Clients that omit the request flag retain the earlier outline and blob paths.
 
+Local protocol 1014 (provisional) adds latest-page deltas to `GetSessionHistoryOutline`.
+An `after_sequence` map keys each agent ID to the previous reply's
+`delta_cursor { after_sequence, revision }`. An empty map asks for a full page
+and a cursor. The sequence is the highest projected sequence on the page and
+the revision is an opaque witness for its rows. An expired, missing, or
+out-of-window cursor returns the ordinary full latest page and a fresh cursor.
+`AttachSessionView.history` and a latest read with both prefetch and an empty
+map also return a full page with cursors. Older-page requests use
+`cursor.before_sequence` and return the full requested page.
+
+A delta agent has an empty `turns` array, the current `next_cursor`, and
+`turn_deltas` in page order. Each turn lists its header (the ordinary turn
+with empty entries and blobs and no summary), optional summary, entries, and
+blobs. A number is an index into the previous page, flattened in this same
+order for each turn with absent summaries skipped. An object replaces the
+part in that position. A growing summary may be
+`{ append_to, suffix }`: take the previous summary's text at that index and
+append `suffix.entry.text`, using the suffix row's other fields. Missing
+parts disappear from the page. A blob's revision changes when its contents
+change even if its sequence range and display metadata are identical.
+The caller applies the result as an ordinary outline before merging it into
+the displayed transcript.
+
 MP-08 / MP-10 / MP-11: `AttachSessionView` was introduced in 508/116 and
 its first-screen behavior is updated in the allocated 518/126 bump. It
 accepts the ordinary session/client/capability binding plus an optional
