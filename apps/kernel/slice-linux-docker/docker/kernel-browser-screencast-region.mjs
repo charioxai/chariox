@@ -80,3 +80,48 @@ export class ScreencastRegionCapture {
   return this.closing=Promise.resolve(this.shared.release?.());
  }
 }
+// orch14 decision 11-22 04:4xZ under AGENTS.md "Secrets and agents" (Mac informed): a region crop may use Chrome's raw screencast
+// pixels while the page's protection policy is known and has no Vault values or Vault-fill targets; the pixel-exact start check
+// and the per-frame protected screenshot of the whole-tab fallback (CompositorSource, unchanged) protect nothing in that state.
+// Every other MP-11 fence holds: no frame while a value or target is present; a navigation, a protection change or a policy
+// replacement (a Vault fill registers its target first) fences at once, and a frame captured at or after a fence never reaches
+// a lease (each frame carries its capture time and the fence generation it was taken under, checked again at publication).
+import {regionProtectionChanged} from './kernel-browser-region-protection.mjs';
+export class RegionScreencast {
+ constructor({connection,sessionId,tab,width,height,policy,allowed,quality=80,timing=()=>{},now=()=>Date.now()}){
+  Object.assign(this,{connection,sessionId,tab,width,height,policy,allowed,quality,timing,now});
+  this.listeners=new Set();this.latest=null;this.serial=0;this.generation=0;this.fenceAt=0;this.fenced=false;this.closed=false;this.regionRevision=0;this.changedAt=0;
+ }
+ subscribe(fn){this.listeners.add(fn);return()=>this.listeners.delete(fn);}
+ // Synchronous: called by the host before a policy replacement takes effect, and on every protection or navigation event.
+ fence(reason,permanent=false){this.generation++;this.regionRevision++;this.fenceAt=this.now();this.latest=null;if(permanent)this.fenced=true;this.timing(`region_screencast_fenced ${reason}`,performance.timeOrigin+performance.now());}
+ valid(){return !this.closed&&!this.fenced&&this.allowed(this.policy);}
+ admits(frame){return !!frame&&this.valid()&&frame.generation===this.generation&&frame.capturedAt>=this.fenceAt&&frame.document_id===this.tab.document_id;}
+ onMessage(message){
+  if(message.sessionId!==this.sessionId||this.closed)return;
+  if(message.method==='Page.frameNavigated'&&!message.params?.frame?.parentId){this.fence('navigation',true);return;}
+  if(regionProtectionChanged(message,this.sessionId,{targets:true})){this.fence('protection');return;}
+  if(message.method!=='Page.screencastFrame')return;
+  void this.connection.send('Page.screencastFrameAck',{sessionId:message.params?.sessionId},this.sessionId).catch(()=>{});
+  const data=message.params?.data,stamp=message.params?.metadata?.timestamp;
+  if(typeof data!=='string'||data.length>4*1024*1024||!Number.isFinite(stamp))return;
+  // CDP stamps the frame's capture in seconds since the epoch.
+  const frame={data_base64:data,format:'jpeg',width:this.width,height:this.height,capturedAt:stamp*1000,generation:this.generation,document_id:this.tab.document_id,tab_id:this.tab.tab_id,motion:true};
+  if(!this.admits(frame))return;
+  frame.serial=++this.serial;frame.signature=`${this.generation}:${frame.serial}`;this.latest=frame;this.changedAt=performance.now();
+  for(const listener of this.listeners)if(this.admits(frame))listener(frame);
+ }
+ async start(){
+  if(!this.valid())throw Error('MD-DISPLAY: region screencast policy fenced');
+  this.off=this.connection.subscribe(message=>this.onMessage(message));
+  await this.connection.send('Page.startScreencast',{format:'jpeg',quality:this.quality,maxWidth:this.width,maxHeight:this.height,everyNthFrame:1},this.sessionId);
+  return this;
+ }
+ sample(after=-1){const frame=this.latest;return this.admits(frame)&&frame.serial>after?frame:null;}
+ wake(){}
+ close(){
+  if(this.closing)return this.closing;
+  this.closed=true;this.latest=null;this.listeners.clear();this.off?.();this.off=null;
+  return this.closing=this.connection.send('Page.stopScreencast',{},this.sessionId).catch(()=>{});
+ }
+}

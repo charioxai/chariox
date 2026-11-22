@@ -205,6 +205,8 @@ export class KernelBrowserHost {
     // Counts only: which part of the policy replaced every bound stream.
     this.timing?.event?.('protection_replaced', { values_before: before.values.length, values_after: policy.values.length, values_changed: changed(before.values, policy.values),
       targets_before: before.targets.length, targets_after: policy.targets.length, targets_changed: changed(before.targets, policy.targets), unknown_before: Number(before.unknown === true), unknown_after: Number(policy.unknown === true) });
+    // R1-S3/S4: a region screencast fences before the new policy (a Vault fill registers its target here first) takes effect.
+    for (const entry of this.regionScreencasts?.values() ?? []) entry.source.fence('policy', true);
     this.protection = policy;
     this.stateSignal.notify();
     await this.desktopDisplay.retireSource();
@@ -521,29 +523,31 @@ export class KernelBrowserHost {
   }
   // MP-08/MP-10: one fixed-label diagnostic per change of native refusal scope.
   nativeScope(reason){if(this.nativeScopeReason!==reason){this.nativeScopeReason=reason;if(reason)this.timing('native_unavailable_scope '+reason,timestamp());}}
-  // R1: a region of a browser without its own display is a crop of the Tab's screencast: the same per-Tab compositor the
-  // whole-tab fallback uses (one capture and decode per frame), kept while a region or a whole-tab display of the Tab uses it.
+  // R1: a region of a browser without its own display is a crop of its Tab's raw region screencast (orch14 decision 11-22 under
+  // AGENTS.md "Secrets and agents"): one per Tab, shared by its regions, kept while one of them uses it. The whole-tab fallback
+  // keeps its own attested, protected-screenshot compositor.
   async screencastFor(tab,scale) {
-    let entry=this.compositors.get(tab.tab_id);
-    if(entry&&(entry.document!==tab.document_id||entry.source?.closed||entry.policy!==this.protection)){
-      if(entry.regionUsers)throw new UserDomainRefusal('stale_reference','region_retired');
-      await this.closeCompositors(tab.tab_id);entry=null;
+    this.regionScreencasts??=new Map();
+    let entry=this.regionScreencasts.get(tab.tab_id);
+    if(entry&&(entry.document!==tab.document_id||entry.scale!==scale||!entry.source.valid())){
+      if(entry.users)throw new UserDomainRefusal('stale_reference','region_retired');
+      this.regionScreencasts.delete(tab.tab_id);await entry.source.close();entry=null;
     }
     if(!entry){
       const {connection,sessionId}=await this.browser.resolvePageTarget(tab.target_id);
-      const {CompositorSource}=await import('./kernel-browser-compositor.mjs');
+      const {RegionScreencast}=await import('./kernel-browser-screencast-region.mjs');
       const policy=this.protection,generation=this.generation;
-      const source=new CompositorSource({connection,sessionId,tab,scale,policy,timing:this.timing,width:this.pageSize(tab.tab_id).width*scale,height:this.pageSize(tab.tab_id).height*scale,format:'jpeg',acquire:()=>this.sampleLane(tab).run('input',()=>this.browser.inputCapture.hold(connection,sessionId)),
-        screenshot:clip=>this.displayScreenshot(tab,clip),protect:()=>this.displayScreenshot(tab),allowed:p=>this.protection===p&&!p.unknown&&!p.values.length&&!p.targets.length&&this.generation===generation});
-      entry={source,document:tab.document_id,policy,ready:source.start().catch(()=>null)};
-      this.compositors.set(tab.tab_id,entry);
+      const source=new RegionScreencast({connection,sessionId,tab,width:this.pageSize(tab.tab_id).width*scale,height:this.pageSize(tab.tab_id).height*scale,policy,timing:this.timing,
+        allowed:p=>this.protection===p&&!p.unknown&&!p.values.length&&!p.targets.length&&this.generation===generation});
+      entry={source,document:tab.document_id,scale,users:0,ready:source.start().catch(()=>null)};
+      this.regionScreencasts.set(tab.tab_id,entry);
     }
-    entry.regionUsers=(entry.regionUsers??0)+1;
+    entry.users++;
     let released=false;
     return {source:entry.source,ready:entry.ready.then(source=>{if(!source)throw new UserDomainRefusal('stale_reference','region_retired');return source;}),
       release:async()=>{
-        if(released)return;released=true;entry.regionUsers--;
-        if(!entry.regionUsers&&this.compositors.get(tab.tab_id)===entry&&![...this.displays.values()].some(s=>s.tab_id===tab.tab_id))await this.closeCompositors(tab.tab_id);
+        if(released)return;released=true;
+        if(--entry.users===0&&this.regionScreencasts.get(tab.tab_id)===entry){this.regionScreencasts.delete(tab.tab_id);await entry.source.close();}
       }};
   }
   async compositorFor(tab,stream) {
@@ -925,8 +929,7 @@ export class KernelBrowserHost {
     clearTimeout(stream.timer);
     if(stream.source_kind==='desktop')return this.desktopDisplay.remove(stream);
     this.displays.delete(stream.subscription_id);
-    // A Tab's screencast that region crops still use (R1) outlives its last whole-tab display.
-    const last=![...this.displays.values()].some(s=>s.tab_id===stream.tab_id)&&!this.compositors.get(stream.tab_id)?.regionUsers;
+    const last=![...this.displays.values()].some(s=>s.tab_id===stream.tab_id);
     // Detachment ends delivery immediately; the host owns reaping until stop.
     // The Tab's compositor serves only its displays: its captures stop alongside the stream's slower close, never behind it.
     const closing=Promise.allSettled([last?this.closeCompositors(stream.tab_id):undefined,stream.close()]).then(results=>{
