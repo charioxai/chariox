@@ -19,6 +19,7 @@ use crate::registry::{
 };
 
 mod client_connect;
+mod peer_replies;
 mod support;
 #[cfg(test)]
 mod tests;
@@ -472,6 +473,22 @@ pub(crate) async fn handle_connection(
                         }
                     }
                     first_message_received = true;
+                    if text.starts_with(peer_replies::WIRE_PREFIX) {
+                        let reply: peer_replies::IncomingPeerReply<'_> = serde_json::from_str(&text)
+                            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string()))?;
+                        if !counted {
+                            connection_meter.record(Direction::In, CONTROL_SCOPE, text.len());
+                        }
+                        let Some(daemon) = registered_daemon_key.as_ref() else {
+                            send_close(&outgoing_tx, "daemon must register before sending peer responses".to_string());
+                            break;
+                        };
+                        peer_replies::forward(
+                            &routes, daemon, &reply.relay_request_id,
+                            reply.encrypted_response.as_ref(), reply.error.as_ref(),
+                        );
+                        continue;
+                    }
                     let envelope: RelayEnvelope = match serde_json::from_str(&text) {
                         Ok(envelope) => envelope,
                         Err(error) => {
@@ -1036,7 +1053,7 @@ pub(crate) async fn handle_connection(
                             encrypted_response,
                             error,
                         } => {
-                            let Some(current_daemon_key) = registered_daemon_key.clone() else {
+                            let Some(current_daemon_key) = registered_daemon_key.as_ref() else {
                                 send_close(
                                     &outgoing_tx,
                                     "daemon must register before sending peer responses"
@@ -1044,34 +1061,11 @@ pub(crate) async fn handle_connection(
                                 );
                                 break;
                             };
-                            let daemon_target = routes
-                                .take_pending_daemon_if(&relay_request_id, |pending| {
-                                    pending.target_daemon_key == current_daemon_key
-                                })
-                                .and_then(|pending| {
-                                    routes
-                                    .daemon_sender(&pending.requester_daemon_key)
-                                    .map(|sender| {
-                                        (
-                                            sender,
-                                            pending.requester_request_id,
-                                            pending.target_daemon_key.daemon_id,
-                                        )
-                                    })
-                                });
-                            if let Some((daemon_sender, requester_request_id, target_daemon_id)) =
-                                daemon_target
-                            {
-                                deliver(
-                                    &daemon_sender,
-                                    &RelayEnvelope::DaemonPeerResponse {
-                                        request_id: requester_request_id,
-                                        from_daemon_id: target_daemon_id,
-                                        encrypted_response,
-                                        error,
-                                    },
-                                );
-                            }
+                            let encrypted = encrypted_response.as_ref().map(peer_replies::OpaquePayload::from);
+                            peer_replies::forward(
+                                &routes, current_daemon_key, &relay_request_id,
+                                encrypted.as_ref(), error.as_ref(),
+                            );
                         }
                         RelayEnvelope::DaemonDisplayTunnelRegister { registration } => {
                             let Some(current_daemon_key) = registered_daemon_key.clone() else {
