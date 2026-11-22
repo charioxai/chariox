@@ -498,11 +498,7 @@ async fn an_agent_saves_the_first_environment_of_a_project_through_the_owners_sa
     app.providers_mut().insert_run_for_test(run);
     let runtime = owned_runtime_state(&Arc::new(Mutex::new(app))).await;
     let call = |name: &'static str, arguments: serde_json::Value| {
-        runtime.dispatch_authenticated_runtime_tool_call(
-            "environment-first-token",
-            name,
-            arguments,
-        )
+        runtime.dispatch_authenticated_runtime_tool_call("environment-first-token", name, arguments)
     };
 
     let read = call("chariox.environment.read", serde_json::json!({}))
@@ -530,7 +526,10 @@ async fn an_agent_saves_the_first_environment_of_a_project_through_the_owners_sa
         .await
         .unwrap();
     assert_eq!(read.payload["exists"], true);
-    assert_eq!(read.payload["variables"], serde_json::json!(["FIRST_ENV_NAME"]));
+    assert_eq!(
+        read.payload["variables"],
+        serde_json::json!(["FIRST_ENV_NAME"])
+    );
     call("chariox.environment.check", serde_json::json!({}))
         .await
         .expect("check works once the Environment exists");
@@ -559,7 +558,13 @@ async fn an_agent_saves_the_first_environment_of_a_project_through_the_owners_sa
     let project = runtime
         .owned
         .session_store
-        .environment_project(&runtime.owned.session_store.get_session(session.id()).unwrap())
+        .environment_project(
+            &runtime
+                .owned
+                .session_store
+                .get_session(session.id())
+                .unwrap(),
+        )
         .unwrap();
     assert!(
         runtime
