@@ -44,11 +44,15 @@ while IFS= read -r line; do
         sleep 0.1
         i=$((i + 1))
       done
-      printf '{"type":"result","subtype":"success","user_message_uuids":["%s"]}\n' "$uuid" ;;
+      printf '{"type":"result","subtype":"success","user_message_uuids":["%s"]}\n' "$uuid"
+      marker=$(printf '%s' "$line" | grep -o 'drill-stream-[a-z0-9-]*' | tail -1)
+      printf '%s\t%s\n' "$marker" "$(date +%s%3N)" >> "$(dirname "$probes")/endturn.tsv" ;;
     *)
       probe=$(printf '%s' "$line" | grep -o 'drill-probe-[a-z0-9]*-agent-[0-9a-f]*' | tail -1)
       [ -z "$probe" ] || printf '%s\t%s\n' "$probe" "$(date +%s%3N)" >> "$probes"
       printf '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Back after the restart."}]}}\n'
-      printf '{"type":"result","subtype":"success","user_message_uuids":["%s"]}\n' "$uuid" ;;
+      printf '{"type":"result","subtype":"success","user_message_uuids":["%s"]}\n' "$uuid"
+      marker=$(printf '%s' "$line" | grep -o 'drill-turn-[a-z0-9-]*' | tail -1)
+      [ -z "$marker" ] || printf '%s\t%s\n' "$marker" "$(date +%s%3N)" >> "$(dirname "$probes")/endturn.tsv" ;;
   esac
 done

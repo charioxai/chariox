@@ -260,6 +260,7 @@ wait_ready() {  # $1 = seconds; the kernel accepts local commands
 if [[ -n "${latency_runs:-}" ]]; then
   [[ ${#probe_agents[@]} -gt 0 && "$latency_runs" =~ ^[0-9]+$ ]] || { echo "--latency-runs needs --probe-* and a count" >&2; exit 2; }
   big=$(sort -t$'\t' -k3,3n "$work/probe-agents.tsv" | tail -1 | cut -f1)
+  big2=$(sort -t$'\t' -k3,3n "$work/probe-agents.tsv" | tail -2 | head -1 | cut -f1)
   unit=restart-stall-latency-$$
   start_kernel "$unit"
   watch_cpu "$unit" 3600 "$work/cpu-latency.tsv" &
@@ -281,11 +282,17 @@ if [[ -n "${latency_runs:-}" ]]; then
   for run in $(seq 1 "$latency_runs"); do
     for mode in busy idle; do
       nsenter -t "$kernel" --net --mount node "$here/lat1.mjs" "$probe_ipc" "$source_home" "$port" \
-        "$probe_room" "$big" "$mode" "$run" "$work/latency-sent.tsv" || log "lat1 $mode $run failed"
+        "$probe_room" "$big" "$mode" "$run" "$work/latency-sent.tsv" "$big2" || log "lat1 $mode $run failed"
       log "lat1 $mode $run sent"
       sleep 60
     done
   done
+  # LAT-1b: the kernel's completion of every marked turn, read as the UI reads it.
+  sleep 60
+  fresh=$(awk -F'\t' '$3 ~ /^agent-/ {print $3}' "$work/latency-sent.tsv" | tr '\n' ' ')
+  # shellcheck disable=SC2086
+  nsenter -t "$kernel" --net --mount node "$here/lat1.mjs" "$probe_ipc" "$source_home" "$port" \
+    "$probe_room" "$big" outline 0 "$work/latency-turns.tsv" "$big" "$big2" $fresh || log "outline failed"
   kill "$watcher" 2>/dev/null || true
   stop_kernel "$unit"
   python3 - "$work" "$home/history/operational.db" "$big" > "$work/report.md" <<'PY'
@@ -304,6 +311,20 @@ for line in open(f"{work}/latency-sent.tsv").read().splitlines():
     row = history.execute("SELECT MIN(timestamp_ms) FROM history_events WHERE agent_id = ? AND kind = 'provider_output'", (agent,)).fetchone()
     reply = (row[0] - int(prompt_sent)) / 1000 if row and row[0] else "never"
     print(f"| {run} | {mode} | {(int(spawn_done) - int(spawn_sent)) / 1000} | {reply} |")
+import os
+ended = dict(line.split("\t") for line in open(f"{work}/endturn.tsv").read().splitlines()) if os.path.exists(f"{work}/endturn.tsv") else {}
+closed = {}
+if os.path.exists(f"{work}/latency-turns.tsv"):
+    for line in open(f"{work}/latency-turns.tsv").read().splitlines():
+        marker, agent, completed, lifecycle = line.split("\t")
+        closed[marker] = (agent, completed, lifecycle)
+print("\n## LAT-1b: provider end_turn (stand-in) -> kernel turn completion (outline completed_at_ms)\n")
+print("| turn | agent | provider end_turn -> kernel completion (s) | lifecycle |")
+print("|---|---|---|---|")
+for marker in sorted(set(ended) | set(closed)):
+    agent, completed, lifecycle = closed.get(marker, ("?", "", "not in outline"))
+    gap = (int(completed) - int(ended[marker])) / 1000 if completed and marker in ended else ("provider never ended" if marker not in ended else "open")
+    print(f"| {marker} | {agent[:14]} | {gap} | {lifecycle} |")
 PY
   log "done: $work/report.md"
   exit 0
