@@ -167,34 +167,13 @@ impl DaemonApp {
                         },
                     )?;
                 }
-                let admission = self.provider_account_profiles.require_authenticated(
+                self.provider_account_profiles.require_authenticated(
                     &account_owner_user_id,
                     &request.provider,
                     &request.account_profile,
                     Some(&request.model),
                     operation,
-                );
-                match admission {
-                    // OpenCode's native catalog validates the selected model on this
-                    // profile before the first prompt. A signed-out profile can
-                    // still offer models. Go requires its own verified login.
-                    Err(DaemonError::ProviderProfileRefused {
-                        reason:
-                            crate::error::ProviderProfileRefusal::Unauthenticated
-                            | crate::error::ProviderProfileRefusal::Unverified,
-                        provider,
-                        ..
-                    }) if provider == "opencode"
-                        && !crate::account_profile::is_opencode_go_model(Some(&request.model)) =>
-                    {
-                        self.provider_account_profiles.get(
-                            &account_owner_user_id,
-                            &request.provider,
-                            &request.account_profile,
-                        )?
-                    }
-                    other => other?,
-                }
+                )?
             } else {
                 self.provider_account_profiles.get(
                     &account_owner_user_id,

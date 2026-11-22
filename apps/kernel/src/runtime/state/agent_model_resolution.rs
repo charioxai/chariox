@@ -22,19 +22,11 @@ impl KernelRuntimeState {
         let Some(family) = crate::provider::canonical_provider_family(provider) else {
             return Ok((model, effort));
         };
-        let registry = self.provider_account_profile_registry();
-        let account_selection = account_profile.unwrap_or("default");
-        let account_owner = crate::account_profile::provider_account_authority_owner_for_profile(
-            &self.owned.config_projection.snapshot(),
-            registry,
-            owner_user_id,
-            family,
-            account_selection,
-        )?;
+        let account_owner = self.provider_account_authority_owner_user_id(owner_user_id);
         let is_explicit_go =
             family == "opencode" && crate::account_profile::is_opencode_go_model(model.as_deref());
         if is_explicit_go {
-            self.verify_opencode_go_account(&account_owner, account_selection)
+            self.verify_opencode_go_account(&account_owner, account_profile.unwrap_or("default"))
                 .await?;
         }
         if model.is_some() && effort.is_some() && model_source != Source::Named {
@@ -42,7 +34,11 @@ impl KernelRuntimeState {
         }
         // An account the owner does not have is refused by the launch admission that follows, with
         // the action to take; this step only chooses among the models of an account that exists.
-        let Ok(profile) = registry.get(&account_owner, provider, account_selection) else {
+        let Ok(profile) = self.provider_account_profile_registry().get(
+            &account_owner,
+            provider,
+            account_profile.unwrap_or("default"),
+        ) else {
             return Ok((model, effort));
         };
         let profile = profile.profile_id;
@@ -234,8 +230,7 @@ impl KernelRuntimeState {
             &self.owned.provider_account_profiles,
             owner_user_id,
             request,
-            // OpenCode can replace its bundled list after the native catalog refresh.
-            family != "opencode",
+            true,
         )
         .await
         .map_err(|error| DaemonError::LocalTransport {
@@ -269,11 +264,6 @@ fn model_refused(provider: &str, profile_id: &str, refusal: ModelRefusal) -> Dae
                 ""
             },
         ),
-    };
-    let message = if crate::provider::canonical_provider_family(provider) == Some("opencode") {
-        format!("{message}. If this model needs an account, sign in to its provider in Provider Accounts")
-    } else {
-        message
     };
     DaemonError::LocalTransport {
         operation: "resolve agent model",
