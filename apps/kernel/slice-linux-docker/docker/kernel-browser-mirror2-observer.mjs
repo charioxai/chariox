@@ -1382,10 +1382,29 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     // T3 (subvysion): a region whose still would never show, because another region's opaque still covers all of it from above
     // (a page's hidden <video> under the canvas that paints its frames), names that cover; the kernel then spends the packet's
     // still budget on the cover alone. Only what is proven counts: the cover contains the box, is above it at its centre and four
-    // inset corners, is fully opaque (a video frame filling its box, or a canvas whose readback is opaque everywhere) and draws
-    // without opacity, blending or transform. Anything else (unreadable pixels, a hole, a cover below) names no cover.
+    // inset corners, is fully opaque (a video frame or canvas bitmap filling its box, the canvas's readback opaque everywhere),
+    // and it and its own wrappers draw without transparency (opacity, blending, alpha filters, clip, mask) or a rotation.
+    // Anything else (unreadable pixels, a hole, a cover below) names no cover.
     const coveredBy = list => {
       const out = {};
+      // Compositing that keeps every pixel's alpha: colour-only filter functions, no clip or mask, full opacity, normal blending.
+      const alphaKept = style => style.opacity === '1' && style.mixBlendMode === 'normal' && style.clipPath === 'none' && (style.maskImage ?? style.webkitMaskImage ?? 'none') === 'none'
+        && (style.filter === 'none' || /^(?:\s*(?:brightness|contrast|grayscale|hue-rotate|invert|saturate|sepia)\([^)]*\))+\s*$/.test(style.filter));
+      // The cover's pixels fill its whole box: no padding or border around them, and a bitmap that object-fit stretches or
+      // crops over the box (contain only when the bitmap has the box's own aspect ratio).
+      const fillsBox = (node, style, w, h) => {
+        if (['paddingLeft', 'paddingRight', 'paddingTop', 'paddingBottom', 'borderLeftWidth', 'borderRightWidth', 'borderTopWidth', 'borderBottomWidth'].some(name => parseFloat(style[name]) > 0)) return false;
+        if (['fill', 'cover'].includes(style.objectFit)) return true;
+        return style.objectFit === 'contain' && w > 0 && h > 0 && node.clientWidth > 0 && node.clientHeight > 0 && Math.abs(w / h - node.clientWidth / node.clientHeight) < 0.005 * (w / h);
+      };
+      // Every ancestor of the cover below the one it shares with the covered region composites it the same way: a half-transparent
+      // or filtered wrapper of the cover alone lets the covered region show through.
+      const composedOpaque = (cover, below) => {
+        const up = e => e.parentElement ?? (e.parentNode instanceof ShadowRoot ? e.parentNode.host : null), shared = new Set();
+        for (let at = below; at; at = up(at)) shared.add(at);
+        for (let at = up(cover); at && !shared.has(at); at = up(at)) if (!alphaKept(getComputedStyle(at))) return false;
+        return true;
+      };
       const opaque = new Map(), isOpaque = (id, node) => {
         if (opaque.has(id)) return opaque.get(id);
         let yes = false;
@@ -1393,9 +1412,9 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
           const style = getComputedStyle(node);
           // An axis-aligned transform (subvysion's canvas has matrix(1, 0, 0, 1, 0, 0)) paints exactly its bounding box.
           const m = /^matrix\(([^)]*)\)$/.exec(style.transform)?.[1].split(',').map(Number), aligned = style.transform === 'none' || m?.length === 6 && m[1] === 0 && m[2] === 0;
-          if (style.opacity === '1' && style.mixBlendMode === 'normal' && aligned && style.visibility === 'visible') {
-            if (node.localName === 'video') yes = node.readyState >= 2 && ['fill', 'cover'].includes(style.objectFit);
-            else if (node.localName === 'canvas' && node.width > 0 && node.height > 0) {
+          if (alphaKept(style) && aligned && style.visibility === 'visible') {
+            if (node.localName === 'video') yes = node.readyState >= 2 && ['fill', 'cover'].includes(style.objectFit) && fillsBox(node, style, node.videoWidth, node.videoHeight);
+            else if (node.localName === 'canvas' && node.width > 0 && node.height > 0 && fillsBox(node, style, node.width, node.height)) {
               const w = Math.min(256, node.width), h = Math.max(1, Math.round(node.height * w / node.width)), probe = new OffscreenCanvas(w, h), g = probe.getContext('2d');
               g.drawImage(node, 0, 0, w, h); const data = g.getImageData(0, 0, w, h).data; let all = true, black = true;
               for (let i = 0; i < data.length && all; i += 4) { all = data[i + 3] === 255; black &&= !data[i] && !data[i + 1] && !data[i + 2]; }
@@ -1431,7 +1450,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
           if (!above || cover && above !== cover) { cover = null; break; }
           cover = above;
         }
-        if (cover) out[id] = mirrored(cover);
+        if (cover && composedOpaque(cover, node)) out[id] = mirrored(cover);
       }
       return out;
     };

@@ -455,7 +455,9 @@ for (const device_scale_factor of [1, 2]) test(`T3: two stills over the budget s
 
 // T3 (subvysion): a still another region's opaque still covers from above is never seen; the one on top takes the whole budget.
 // Guards: a half-transparent cover, a cover with a hole and a smaller cover cover nothing, and both stills still travel.
-const noiseStack = ({ top = "", bottom = "", hole = false, small = false } = {}) => `<style>body{margin:0}canvas{position:absolute;left:0;top:0;width:100vw;height:100vh}#t{z-index:1;${top}}#b{${bottom}}${small ? "#t{width:90vw}" : ""}</style><canvas id="b"></canvas><canvas id="t"></canvas><script>for(const c of document.querySelectorAll("canvas")){c.width=innerWidth*devicePixelRatio;c.height=innerHeight*devicePixelRatio;const g=c.getContext("2d"),d=g.createImageData(c.width,c.height);for(let i=0;i<d.data.length;i++)d.data[i]=i%4===3?255:Math.random()*256|0;g.putImageData(d,0,0)}${hole ? 'document.querySelector("#t").getContext("2d").clearRect(innerWidth*devicePixelRatio/2-40,innerHeight*devicePixelRatio/2-40,80,80)' : ''}</script>`;
+// Review guards: a cover inside a half-transparent (or alpha-filtered) wrapper, a cover whose pixels do not fill its box
+// (object-fit: contain of a square bitmap, padding), and an alpha-changing filter on the cover itself.
+const noiseStack = ({ top = "", bottom = "", hole = false, small = false, wrap = "", square = false } = {}) => `<style>body{margin:0}canvas{position:absolute;left:0;top:0;width:100vw;height:100vh;box-sizing:border-box}#t{z-index:1;${top}}#b{${bottom}}${small ? "#t{width:90vw}" : ""}${wrap ? `#w{position:absolute;inset:0;z-index:1;${wrap}}` : ""}</style><canvas id="b"></canvas>${wrap ? '<div id="w"><canvas id="t"></canvas></div>' : '<canvas id="t"></canvas>'}<script>for(const c of document.querySelectorAll("canvas")){c.width=innerWidth*devicePixelRatio;c.height=innerHeight*devicePixelRatio;${square ? 'if(c.id==="t")c.width=c.height;' : ''}const g=c.getContext("2d"),d=g.createImageData(c.width,c.height);for(let i=0;i<d.data.length;i++)d.data[i]=i%4===3?255:Math.random()*256|0;g.putImageData(d,0,0)}${hole ? 'document.querySelector("#t").getContext("2d").clearRect(innerWidth*devicePixelRatio/2-40,innerHeight*devicePixelRatio/2-40,80,80)' : ''}</script>`;
 const stackStills = async ({ subscribe, evaluate }, device_scale_factor) => {
   const canvasWidth = await evaluate('document.querySelector("#b").width'), { next } = await subscribe({ device_scale_factor });
   let tiles = [];
@@ -470,12 +472,17 @@ for (const device_scale_factor of [1, 2]) {
     assert.equal(new Set(tiles.map(t => t.node_id)).size, 1, `only the covering still travels (${tiles.length} stills)`);
     assert(tiles[0].data_base64.length <= 512 * 1024 && shares[0] > 0.27, `the cover keeps the whole budget's density (a lone canvas's) (${shares[0].toFixed(3)})`);
   }, {}, {}, { ...process.env, CHARIOX_KERNEL_BROWSER_HEADLESS: "1" }));
+  // subvysion's canvas: a colour-only filter (brightness) keeps the cover opaque; so does an opaque wrapper.
+  for (const [name, options] of [["a brightness filter", { top: "filter:brightness(.8)" }], ["an opaque wrapper", { wrap: "opacity:1" }]]) test(`T3: a cover with ${name} still skips the still it covers (DPR${device_scale_factor})`, () => mirrored(noiseStack(options), async (page) => {
+    const { tiles } = await stackStills(page, device_scale_factor);
+    assert.equal(new Set(tiles.map(t => t.node_id)).size, 1, `only the covering still travels (${tiles.length} stills)`);
+  }, {}, {}, { ...process.env, CHARIOX_KERNEL_BROWSER_HEADLESS: "1" }));
   // subvysion's own shape: the covered one cannot be hit (pointer-events:none) and paints at z-index -1 in the root context.
   test(`T3: an unhittable still at a negative z-index under an opaque still is skipped (DPR${device_scale_factor})`, () => mirrored(noiseStack({ bottom: "pointer-events:none;z-index:-1", top: "transform:translateX(0)" }), async (page) => {
     const { tiles } = await stackStills(page, device_scale_factor);
     assert.equal(new Set(tiles.map(t => t.node_id)).size, 1, `only the covering still travels (${tiles.length} stills)`);
   }, {}, {}, { ...process.env, CHARIOX_KERNEL_BROWSER_HEADLESS: "1" }));
-  for (const [name, options] of [["a half-transparent cover", { top: "opacity:.5" }], ["a cover with a hole", { hole: true }], ["a smaller cover", { small: true }], ["an unhittable still that paints above", { bottom: "pointer-events:none;z-index:2" }], ["a rotated cover", { top: "transform:rotate(1deg)" }]]) test(`T3: under ${name} both stills still travel (DPR${device_scale_factor})`, () => mirrored(noiseStack(options), async (page) => {
+  for (const [name, options] of [["a half-transparent cover", { top: "opacity:.5" }], ["a cover with a hole", { hole: true }], ["a smaller cover", { small: true }], ["an unhittable still that paints above", { bottom: "pointer-events:none;z-index:2" }], ["a rotated cover", { top: "transform:rotate(1deg)" }], ["a cover in a half-transparent wrapper", { wrap: "opacity:.5" }], ["a cover in a wrapper with an alpha filter", { wrap: "filter:opacity(.5)" }], ["a blurred cover", { top: "filter:blur(4px)" }], ["a square cover drawn with object-fit:contain", { square: true, top: "object-fit:contain" }], ["a padded cover", { top: "padding:20px" }]]) test(`T3: under ${name} both stills still travel (DPR${device_scale_factor})`, () => mirrored(noiseStack(options), async (page) => {
     const { tiles } = await stackStills(page, device_scale_factor);
     assert.equal(new Set(tiles.map(t => t.node_id)).size, 2, "both stills reach the viewer");
   }, {}, {}, { ...process.env, CHARIOX_KERNEL_BROWSER_HEADLESS: "1" }));
