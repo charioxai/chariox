@@ -391,7 +391,8 @@ export class BrowserMirror2Renderer {
       const hit = element(event), wheel = event as WheelEvent
       // Y3-C1a: the page's own script takes the wheel (a smooth-scroll or full-page library): as in its browser, every wheel over
       // its document reaches it (the kernel's page), never the copy's own scrolling; the copy follows the page's positions.
-      if (doc === this.doc && this.pageWheel && !wheel.ctrlKey && wheel.deltaMode === 0 && (!hit || this.records.get(hit.id)?.kind !== 'tile')) {
+      // A protected field (a mask: no node the viewer may name) keeps the copy's own scrolling, as before the page took the wheel.
+      if (doc === this.doc && this.pageWheel && !wheel.ctrlKey && wheel.deltaMode === 0 && hit && this.records.get(hit.id)?.kind !== 'tile') {
         event.preventDefault()
         const x = this.pageWheelRest[0] + wheel.deltaX, y = this.pageWheelRest[1] + wheel.deltaY, dx = Math.trunc(x), dy = Math.trunc(y)
         this.pageWheelRest = [x - dx, y - dy]

@@ -718,6 +718,21 @@ test('Y3-C1a: with page_wheel every wheel over the document goes to the kernel\'
   } finally { await page.close(); }
 });
 
+// Y3-C1a review 2: a protected field (a mask record, no node the viewer may name) under the pointer on a page that takes the
+// wheel: the wheel scrolls the copy as before (nothing about the field is sent), instead of being swallowed.
+test('Y3-C1a: with page_wheel a wheel over a protected field still scrolls the copy', async () => {
+  const page = await viewer();
+  try {
+    await apply(page, { ...snapshot([{ id: 'n1', parent: null, kind: 'document' }, { id: 'n2', parent: 'n1', kind: 'element', tag: 'html' }, { id: 'n3', parent: 'n2', kind: 'element', tag: 'body', attrs: { style: 'margin:0' } },
+      { id: 'n4', parent: 'n3', kind: 'mask', tag: 'textarea', size: [600, 400] }, { id: 'n5', parent: 'n3', kind: 'element', tag: 'div', attrs: { style: 'height:4000px' } }]), page_wheel: true });
+    const box = await page.evaluate(() => { const b = window.r.frame.getBoundingClientRect(); return { x: b.left + 100, y: b.top + 100 }; });
+    await page.evaluate(() => { window.sent.length = 0; });
+    await page.mouse.move(box.x, box.y); await page.mouse.wheel(0, 300); await page.waitForTimeout(600);
+    const out = await page.evaluate(() => ({ y: window.r.frame.contentWindow.scrollY, sent: window.sent.filter(a => a.kind === 'scroll').length }));
+    assert.ok(out.y >= 298 && out.sent === 0, `the copy scrolled locally and nothing named the field (${JSON.stringify(out)})`);
+  } finally { await page.close(); }
+});
+
 // Y3-C1a review: wheel steps waiting behind a slow reply add up, but the kernel takes at most 10000 px per axis in one step:
 // past that the rest waits as the next step, so the whole movement arrives and no step is refused.
 test('Y3-C1a: wheel steps held behind replies add up to at most 10000 px per step, and their sum is the whole movement', async () => {
