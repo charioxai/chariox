@@ -97,12 +97,8 @@ fn rental_kernel_diagnostics_are_part_of_machine_status() {
                 "kernel_diagnostics": {
                     "kernel_version": "0.1.0",
                     "kernel_protocol": 1014,
-                    "last_relay_refusal": {
-                        "reason": "invalid relay registration: missing registration proof",
-                        "next_step": "update this kernel",
-                        "since_ms": 1000,
-                        "next_retry_at_ms": 2000
-                    }
+                    "last_relay_refusal": null,
+                    "relay_error": "The relay closed the connection because its reply queue filled."
                 }
             }
         }
@@ -111,6 +107,6 @@ fn rental_kernel_diagnostics_are_part_of_machine_status() {
     assert_eq!(serde_json::to_value(parsed).unwrap(), shape);
     assert_eq!(
         format!("{:x}", Sha256::digest(serde_json::to_vec(&shape).unwrap())),
-        "422f51a09adf5217630bd87661022831db929d5b667f74d79d2f5749cf78346c",
+        "23b3a48818d406b92d7d9a0971a0c2bbe92415ab5e306bf86664977fad967a2b",
     );
 }
