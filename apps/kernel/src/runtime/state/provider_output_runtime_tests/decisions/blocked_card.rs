@@ -644,3 +644,50 @@ async fn a_refused_resume_says_why_on_the_agent() {
         "the notice must name why the Resume did not take: {notices:?}"
     );
 }
+
+#[tokio::test]
+async fn d1_dismissing_a_question_card_does_not_cancel_the_task() {
+    use crate::durable_state::agent_lifecycle::{Operation, Outcome};
+    let t = tree(
+        "d1-dismiss",
+        AgentPermissionLevel::Yolo,
+        AgentPermissionLevel::Yolo,
+    )
+    .await;
+    let task = t.working_task_of(&t.g);
+    let store = &t.runtime.owned.durable_state_store;
+    let Outcome::Task(task) = store
+        .agent_lifecycle(Operation::BlockForQuestion {
+            task: task.task_id,
+            prompt: task.prompt_id,
+            reason: "Which branch should I use?".into(),
+        })
+        .unwrap()
+    else {
+        panic!("expected a blocked task");
+    };
+    t.runtime
+        .ensure_task_owner_interaction(task.clone())
+        .await
+        .unwrap();
+    let id = Tree::blocked_card_id(&task);
+    t.runtime
+        .owned
+        .resolve_runtime_interaction(&t.room, &id, "cancel", None, Some("local"), false)
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+    assert_eq!(
+        store.agent_task(&task.task_id).unwrap().unwrap().state,
+        ExecutionState::Blocked,
+        "Dismiss must not cancel the agent's question task"
+    );
+    // D3: any client reads the same session projection; the card is closed for everyone.
+    assert!(t
+        .runtime
+        .owned
+        .session_snapshot(&t.room)
+        .unwrap()
+        .active_interactions()
+        .iter()
+        .all(|card| card.id() != id));
+}
