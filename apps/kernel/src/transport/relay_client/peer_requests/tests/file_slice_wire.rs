@@ -45,3 +45,23 @@ fn a_file_slice_reply_is_sealed_at_its_own_size() {
     };
     assert_eq!(content.decode().unwrap().as_slice(), bytes.as_slice());
 }
+
+// A request that carries a file slice (the leased agent's write) is sealed the same way.
+#[test]
+fn a_file_slice_write_request_is_sealed_at_its_own_size() {
+    let bytes: Vec<u8> = (0..3_584_000u32).map(|n| (n % 241) as u8).collect();
+    let request = crate::transport::relay_peer::RelayPeerRequest::WriteLeasedAgentFile {
+        leased_agent_id: "leased-agent".into(),
+        path: "out.bin".into(),
+        offset: 0,
+        total_size: bytes.len() as u64,
+        sha256: "00".repeat(32),
+        overwrite: false,
+        content: RemoteFileBytes::encode(&bytes),
+    };
+    let plaintext = crate::transport::relay_peer::seal_peer_plaintext(&request).unwrap();
+    assert!(plaintext.len() < bytes.len() + bytes.len() / 20, "{} bytes", plaintext.len());
+    let opened: crate::transport::relay_peer::RelayPeerRequest =
+        crate::transport::relay_peer::open_peer_plaintext(&plaintext).unwrap();
+    assert_eq!(opened, request);
+}

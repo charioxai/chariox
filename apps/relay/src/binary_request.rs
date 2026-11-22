@@ -355,4 +355,28 @@ mod tests {
         .concat();
         assert!(decode(&forged).is_err());
     }
+
+    #[test]
+    fn peer_requests_travel_as_ciphertext_bytes_and_come_back_unchanged() {
+        for envelope in [
+            RelayEnvelope::DaemonPeerRequest {
+                request_id: "peer-request".into(),
+                target: ClientTarget {
+                    daemon_id: Some("kernel-2".into()),
+                    daemon_alias: None,
+                },
+                encrypted_request: payload(100 * 1024),
+            },
+            RelayEnvelope::DaemonIncomingPeerRequest {
+                relay_request_id: "relay-peer-request".into(),
+                from_daemon_id: "kernel-1".into(),
+                caller_identity: None,
+                encrypted_request: payload(100 * 1024),
+            },
+        ] {
+            let wire = from_envelope(&envelope).unwrap().unwrap();
+            assert!(wire.len() < 101 * 1024);
+            assert_eq!(into_envelope(&wire).unwrap(), envelope);
+        }
+    }
 }

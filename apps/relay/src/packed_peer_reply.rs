@@ -288,3 +288,41 @@ impl BinaryPeerReply {
         bytes
     }
 }
+
+#[cfg(test)]
+mod binary_tests {
+    use super::*;
+    use crate::frame_transport::{BINARY_CHUNK_HEADER_BYTES, CHUNK_BYTES};
+
+    // Every frame fits a transport chunk, the chunks rebuild head and ciphertext exactly, and
+    // writing them frees exactly the ciphertext bytes (the head and block table stay charged
+    // until the last chunk).
+    #[test]
+    fn a_binary_reply_streams_in_full_chunks_and_frees_its_blocks() {
+        for size in [1usize, 16367, 16368, 16369, 100_000, 3_584_000] {
+            let bytes: Vec<u8> = (0..size).map(|index| (index * 13) as u8).collect();
+            let head = b"CXR2\0\0\0\x02{}".to_vec();
+            let mut reply = BinaryPeerReply::new(head.clone(), &STANDARD.encode(&bytes)).unwrap();
+            assert_eq!(reply.len(), head.len() + size);
+            let mut rebuilt = Vec::new();
+            let mut freed = 0;
+            let mut offset = 0;
+            while let Some((Message::Binary(frame), end)) =
+                reply.next_chunk(7, offset, CHUNK_BYTES, false)
+            {
+                assert!(frame.len() <= CHUNK_BYTES, "{size}: a {} byte frame", frame.len());
+                rebuilt.extend_from_slice(&frame[BINARY_CHUNK_HEADER_BYTES..]);
+                freed += reply.written(end).unwrap_or(0);
+                offset = end;
+            }
+            assert_eq!(&rebuilt[..head.len()], head.as_slice());
+            assert_eq!(&rebuilt[head.len()..], bytes.as_slice(), "{size} bytes");
+            assert_eq!(freed, size, "{size} bytes");
+        }
+    }
+
+    #[test]
+    fn noncanonical_base64_is_not_made_binary() {
+        assert!(BinaryPeerReply::new(vec![0; 8], "AB==").is_none());
+    }
+}

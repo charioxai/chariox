@@ -205,6 +205,48 @@ mod tests {
         }
     }
 
+    // Row 207: a receiver that negotiated binary peer messages gets the reply as bytes, not as
+    // Base64 inside JSON, and nothing about the ciphertext changes.
+    #[test]
+    fn a_binary_receiver_gets_a_large_peer_reply_as_one_binary_message() {
+        let mib = 1024 * 1024;
+        for size in [13_000, 100_000, mib, 4 * mib + 1] {
+            let bytes: Vec<u8> = (0..size).map(|index| (index * 7) as u8).collect();
+            let payload = OpaquePayload {
+                sender_public_key: Cow::Borrowed("public-key"),
+                nonce: Cow::Borrowed("abcdefghijklmnop"),
+                ciphertext: Cow::Owned(STANDARD.encode(&bytes)),
+            };
+            let reply = routed(&payload);
+            let (sender, mut outgoing) = RelaySender::detached_channel(1);
+            sender.allow_binary_peer();
+            assert!(matches!(deliver_reply(&sender, &reply), Delivery::Sent));
+            let Message::Binary(wire) = outgoing.try_recv().unwrap() else {
+                panic!("a binary reply for {size} bytes");
+            };
+            let (header, ciphertext) = crate::binary_response::decode(&wire).unwrap();
+            assert!(matches!(
+                header,
+                crate::binary_response::ResponseHeader::DaemonPeerResponse { .. }
+            ));
+            assert_eq!(ciphertext, bytes.as_slice(), "{size} bytes");
+            assert!(wire.len() < size + 4096, "{size}: {} on the wire", wire.len());
+            assert_eq!(
+                crate::binary_response::into_envelope(&wire).unwrap(),
+                RelayEnvelope::DaemonPeerResponse {
+                    request_id: reply.request_id.into(),
+                    from_daemon_id: "peer".into(),
+                    encrypted_response: Some(EncryptedRelayPayload {
+                        sender_public_key: "public-key".into(),
+                        nonce: "abcdefghijklmnop".into(),
+                        ciphertext: STANDARD.encode(&bytes),
+                    }),
+                    error: None,
+                }
+            );
+        }
+    }
+
     #[test]
     fn noncanonical_ciphertext_is_forwarded_unchanged_as_text() {
         let prefix = "Zm9v".repeat(CHUNK_BYTES / 4 + 1);

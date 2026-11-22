@@ -44,3 +44,47 @@ pub(super) fn payload(
         None => (Some(INVALID_FRAME.into()), receipt),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    use chariox_relay::protocol::{EncryptedRelayPayload, RelayEnvelope};
+
+    fn peer_reply_frame() -> (Vec<u8>, RelayEnvelope) {
+        let envelope = RelayEnvelope::DaemonPeerResponse {
+            request_id: "daemon-peer-1".into(),
+            from_daemon_id: "kernel-2".into(),
+            encrypted_response: Some(EncryptedRelayPayload {
+                sender_public_key: "opaque-key".into(),
+                nonce: "abcdefghijklmnop".into(),
+                ciphertext: STANDARD.encode(vec![0xfe; 4096]),
+            }),
+            error: None,
+        };
+        let wire = chariox_relay::binary_response::from_envelope(&envelope)
+            .unwrap()
+            .unwrap();
+        (
+            chariox_relay::frame_transport::binary_chunk(1, 0, wire.len(), &wire),
+            envelope,
+        )
+    }
+
+    // Row 207: a peer reply is a `CXR2` message, read only on a connection that negotiated
+    // binary peer messages.
+    #[test]
+    fn a_peer_reply_frame_is_read_only_when_binary_peer_messages_were_negotiated() {
+        let (chunk, envelope) = peer_reply_frame();
+        let mut frames = FrameReceiver::default();
+        let (text, receipt) = payload(&mut frames, Message::Binary(chunk.clone().into()), true, true);
+        assert!(receipt.is_some());
+        assert_eq!(
+            serde_json::from_str::<RelayEnvelope>(&text.unwrap()).unwrap(),
+            envelope
+        );
+        let mut frames = FrameReceiver::default();
+        let (text, _) = payload(&mut frames, Message::Binary(chunk.into()), true, false);
+        assert_eq!(text.as_deref(), Some(INVALID_FRAME));
+    }
+}

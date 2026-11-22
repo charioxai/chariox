@@ -301,4 +301,40 @@ mod tests {
         .concat();
         assert!(decode(&forged).is_err());
     }
+    #[test]
+    fn peer_replies_travel_as_ciphertext_bytes_and_come_back_unchanged() {
+        let payload = || {
+            Some(EncryptedRelayPayload {
+                sender_public_key: "opaque-key".into(),
+                nonce: "abcdefghijklmnop".into(),
+                ciphertext: STANDARD.encode(vec![0xfe; 100 * 1024]),
+            })
+        };
+        for envelope in [
+            RelayEnvelope::DaemonIncomingPeerResponse {
+                relay_request_id: "relay-peer".into(),
+                encrypted_response: payload(),
+                error: None,
+            },
+            RelayEnvelope::DaemonPeerResponse {
+                request_id: "peer".into(),
+                from_daemon_id: "kernel-2".into(),
+                encrypted_response: payload(),
+                error: None,
+            },
+        ] {
+            let wire = from_envelope(&envelope).unwrap().unwrap();
+            assert!(wire.len() < 101 * 1024);
+            assert_eq!(into_envelope(&wire).unwrap(), envelope);
+        }
+        // An error is never a binary frame.
+        assert!(from_envelope(&RelayEnvelope::DaemonPeerResponse {
+            request_id: "peer".into(),
+            from_daemon_id: "kernel-2".into(),
+            encrypted_response: None,
+            error: None,
+        })
+        .unwrap()
+        .is_none());
+    }
 }
