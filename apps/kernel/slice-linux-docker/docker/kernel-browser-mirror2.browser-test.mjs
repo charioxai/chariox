@@ -867,6 +867,23 @@ test("Y3-C1a: the header says whether the page's own script takes the wheel, on 
     assert.equal((await next(0, true)).page_wheel, true, "Y3-C1a: a snapshot carries it");
   }));
 
+// Y3-C1a review: adding or removing a wheel listener changes no DOM; a page that sets its handler up later (a timer, no
+// mutation) or drops it is asked again on its own schedule, so the header follows within a few seconds.
+test("Y3-C1a: a wheel listener added or removed without any DOM change still reaches the header", () => mirrored(
+  '<div id="a" style="height:3000px">a</div><script>window.take = e => e.preventDefault()</script>', async ({ next, evaluate }) => {
+    await new Promise(resolve => setTimeout(resolve, 800));
+    let wheel = (await next()).page_wheel;
+    assert.equal(wheel, false);
+    const after = async (script, want) => {
+      await evaluate(script);
+      const end = Date.now() + 6000;
+      while (wheel !== want && Date.now() < end) { const packet = await next(1000); if (Object.hasOwn(packet, "page_wheel")) wheel = packet.page_wheel; }
+      return wheel;
+    };
+    assert.equal(await after("addEventListener('wheel', take, { passive: false })", true), true, "a listener added with no mutation takes the wheel");
+    assert.equal(await after("removeEventListener('wheel', take, { passive: false })", false), false, "removing it with no mutation gives the wheel back");
+  }));
+
 test("MP-10: review #941-4 a CDP-read cross-origin sheet keeps its already-loaded imports (own base, media condition, images and fonts)", () => mirrored(
   '<link rel="stylesheet" href="http://localhost:PORT/cdn/main.css"><div class="x" style="width:20px;height:20px">a</div>', async ({ next }) => {
     await new Promise(resolve => setTimeout(resolve, 800));

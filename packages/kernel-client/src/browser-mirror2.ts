@@ -51,6 +51,8 @@ const DELETIONS: Record<string, string[]> = {
 // as named mirror keys from protocol 530 (before: the document-bound display_input key with 517 modifiers).
 type Chord = { kind: 'key'; key: string; modifiers: number }
 type Mirror2Input = Mirror2Action | Chord
+// The most one forwarded wheel step may move per axis (kernel-browser-input.mjs refuses larger steps).
+const WHEEL_STEP_MAX = 10000
 // B3: the pointer's own actions (a hover move, a leave): the newest replaces a queued one, and nothing waits for them.
 const pointerOnly = (action: Mirror2Input): boolean => action.kind === 'move' || action.kind === 'leave'
 const HISTORY: Record<string, Chord> = { historyUndo: { kind: 'key', key: 'z', modifiers: 2 }, historyRedo: { kind: 'key', key: 'z', modifiers: 10 } }
@@ -194,8 +196,12 @@ export class BrowserMirror2Renderer {
     // Only the newest pointer position matters: a queued move is replaced, so moves never pile up behind a slow reply.
     if (pointerOnly(action) && last && pointerOnly(last.action)) { last.action = action; last.epoch = epoch; last.resetSerial = this.resetSerial; return }
     if (action.kind === 'scroll_to' && last?.action.kind === 'scroll_to' && last.action.node_id === action.node_id) { last.action = action; last.epoch = epoch; last.resetSerial = this.resetSerial; return }
-    // Wheel steps for the kernel's page waiting behind a reply add up into one step at the newest point.
-    if (action.kind === 'scroll' && last?.action.kind === 'scroll' && last.action.node_id === action.node_id) { last.action = { ...action, delta_x: last.action.delta_x + action.delta_x, delta_y: last.action.delta_y + action.delta_y }; last.epoch = epoch; last.resetSerial = this.resetSerial; return }
+    // Wheel steps for the kernel's page waiting behind a reply add up into one step at the newest point, up to the most the
+    // kernel takes in one step; past that the new step queues as the next one.
+    if (action.kind === 'scroll' && last?.action.kind === 'scroll' && last.action.node_id === action.node_id) {
+      const delta_x = last.action.delta_x + action.delta_x, delta_y = last.action.delta_y + action.delta_y
+      if (Math.abs(delta_x) <= WHEEL_STEP_MAX && Math.abs(delta_y) <= WHEEL_STEP_MAX) { last.action = { ...action, delta_x, delta_y }; last.epoch = epoch; last.resetSerial = this.resetSerial; return }
+    }
     if (action.kind === 'selection' && this.records.get(action.anchor_id)?.kind === 'text') { this.selectionSent = JSON.stringify(action); this.selectionHold = { key: this.selectionSent, until: Infinity, epoch: epoch.sequence }; this.selectionFailure = false }
     this.queue.push({ action, epoch, resetSerial: this.resetSerial }); if (!pointerOnly(action)) this.pendingInputs++
     this.queueWake?.(); void this.pump()

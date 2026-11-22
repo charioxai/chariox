@@ -35,6 +35,8 @@ const FIRST_PAINT_SHEET = 32 * 1024;
 const FONT_REFRESH_MS = 1000;
 // Y3-C1a: how often, at most, a page whose script changed its DOM is asked again whether it takes the wheel.
 const WHEEL_REFRESH_MS = 1000;
+// Adding or removing a listener changes no DOM: an unchanged page is asked again this often (also while the viewer waits).
+const WHEEL_RECHECK_MS = 2000;
 // Y3-C1a: whether the page's own script takes the wheel: a non-passive wheel/mousewheel listener on window, document,
 // html or body (a smooth-scroll or full-page library). DevTools lists only listeners of the object's own world, so the
 // objects come from the page's main world (two reads of its global and document, no page script runs). Depth 3 lists the
@@ -614,6 +616,7 @@ export class Mirror2 {
         if (more.resync) { reset = true; source = await read(); this.register(stream, source); break; }
         this.register(stream, more); source = this.merge(source, more);
         if (this.empty(stream, source)) { await this.refreshFonts(stream, world); resources = await this.materialize(world, stream, null, more.loaded); }
+        if (this.empty(stream, source)) await this.askWheel(stream, world, false);
       }
     } catch (error) {
       assertNotCancelled(signal);
@@ -630,14 +633,8 @@ export class Mirror2 {
     if (fallback) resources = [];
     mark('observe_resources');
     assertDocument();
-    // Y3-C1a: asked on a snapshot, and after the page's script changed its DOM (a library sets itself up), at most once a second.
     if (source?.ops?.length) stream.wheelDirty = true;
-    if (!fallback && (reset || stream.wheelDirty && Date.now() - (stream.wheelAt ?? 0) >= WHEEL_REFRESH_MS)) {
-      stream.wheelAt = Date.now(); stream.wheelDirty = false;
-      // A busy renderer that does not answer keeps the last answer (a snapshot: the viewer scrolls).
-      stream.pageWheel = await pageTakesWheel(world).catch(() => !reset && stream.pageWheel === true);
-      mark('wheel'); assertDocument();
-    }
+    if (!fallback && await this.askWheel(stream, world, reset)) { mark('wheel'); assertDocument(); }
     let sheets = [];
     try { sheets = await this.sheetOps(world, source?.sheets); } catch (error) {
       if (error?.mirrorReason !== 'css_incomplete') throw error;
@@ -748,6 +745,16 @@ export class Mirror2 {
     return { wire: 2, sequence: packet.sequence, ...(packet.reset ? { reset: true } : {}), encoding: 'deflate', packet_bytes: text.length, packet_base64: compressed.toString('base64'), ...(resources ? { resources } : {}), ...(tiles ? { tiles } : {}) };
   }
   // The viewer's own scroll position coming back is not news to that viewer.
+  // Y3-C1a: whether the page takes the wheel is asked on a snapshot, after the page's script changed its DOM (a library sets
+  // itself up) at most once a second, and otherwise every WHEEL_RECHECK_MS (a listener added or removed by a timer).
+  async askWheel(stream, world, reset) {
+    const since = Date.now() - (stream.wheelAt ?? 0);
+    if (!reset && !(stream.wheelDirty && since >= WHEEL_REFRESH_MS) && since < WHEEL_RECHECK_MS) return false;
+    stream.wheelAt = Date.now(); stream.wheelDirty = false;
+    // A busy renderer that does not answer keeps the last answer (a snapshot: the viewer scrolls).
+    stream.pageWheel = await pageTakesWheel(world).catch(() => !reset && stream.pageWheel === true);
+    return true;
+  }
   empty(stream, source) { return this.emptyDom(stream, source) && !this.tilesDue(stream); }
   emptyDom(stream, source) {
     const scroll = JSON.stringify(source.scroll) === stream.ownScrolls.get(null) ? stream.sentScroll : source.scroll;
