@@ -518,3 +518,25 @@ test('R1: a screencast region\'s exact still is its crop at the lease density',a
   await assert.rejects(stream.regionSource.options.exact(),/protected/,'a protected region in the clip refuses');
  }finally{await stream.close();}
 });
+
+// R1 review 3 (P2): a viewport that moves (or is pinch-zoomed) during an exact capture is a retryable refusal: the region's
+// NativeRefiner drops that capture and refines on a later request instead of latching a failure for the subscription.
+test('R1: a screencast region refines again after an exact capture the viewport moved under',async()=>{
+ const {NativeRefiner}=await import('./kernel-browser-refiner.mjs'),{encodePng}=await import('./kernel-browser-pixels.mjs');
+ const f=fixture();f.lease.device_scale_factor=1;f.host.scales=new Map([['t',1]]);const Screencast=headless(f);
+ f.host.screenshot=async(tab,clip)=>({data_base64:encodePng(clip.width,clip.height,Buffer.alloc(clip.width*clip.height*4,255)),protected_regions:[]});
+ await subscribeRegion(f.host,f.command,'terminal:a',undefined,{Screencast});
+ const stream=[...f.host.displays.values()][0],source=stream.regionSource;
+ let origins=[{pageX:0,pageY:0,scale:1},{pageX:0,pageY:40,scale:1}];source.sessionId='s';
+ source.connection={send:async()=>({cssVisualViewport:origins.length>1?origins.shift():origins[0]})};
+ let clock=1000;const pixels={run:async()=>({width:100,height:50,pixels:Buffer.alloc(4)}),close:async()=>{}};
+ const refiner=new NativeRefiner(()=>source.options.exact(),{now:()=>clock,pixels,quietMs:0,verifyMs:0});
+ const binding={source:{},document:'doc',policy:f.host.protection,epoch:0,serial:1,native:false,scale:1};
+ try{
+  assert.equal(refiner.request(binding,0,()=>true),null);await refiner.active;
+  clock+=10;assert.doesNotThrow(()=>refiner.request(binding,0,()=>true),'a moved viewport is not a failure of the subscription');await refiner.active;
+  const exact=refiner.request(binding,0,()=>true);
+  assert(exact?.settled_verified,'the next capture refines the region');
+  assert.deepEqual([exact.width,exact.height],[100,50]);
+ }finally{await refiner.close();await stream.close();}
+});
