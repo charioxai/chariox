@@ -761,10 +761,10 @@ async fn sudo_operations_app_validation_stays_with_the_owner_decision() {
     assert_eq!(status.state, ValidationState::Pending);
 }
 
-/// A remote job of an agent whose /sudo task is live is already owner-authorized work: the
-/// acquisition raises no second owner decision, with the global automatic setting off.
+/// Row 405 (PA7): Chariox-managed rentals follow only the rentals toggle. With it off, even an
+/// agent with a live /sudo task gets exactly one owner card; /sudo is no shortcut around it.
 #[tokio::test]
-async fn sudo_task_job_acquisition_asks_no_second_owner_decision() {
+async fn the_rentals_toggle_alone_decides_even_for_a_sudo_task() {
     use crate::local::{
         ControlPlaneRequest, JobMachineOffer, JobMachineRate, JobNeeds, KernelConnectionClass,
         LocalDaemonRequest, MachineAllocationCapability,
@@ -816,20 +816,33 @@ async fn sudo_task_job_acquisition_asks_no_second_owner_decision() {
             },
         }],
     };
-    tokio::time::timeout(
-        Duration::from_secs(5),
+    let state = f.state.clone();
+    let waiting = tokio::spawn(async move {
+        state
+            .approve_machine_acquisition(&command, &request, Some(&capability))
+            .await
+    });
+    let cards = || {
         f.state
-            .approve_machine_acquisition(&command, &request, Some(&capability)),
-    )
+            .owned
+            .session_store
+            .get_session(&turn.session_id)
+            .unwrap()
+            .active_interactions()
+            .len()
+    };
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while cards() == 0 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
     .await
-    .expect("a sudo task's job waited for an owner decision")
-    .unwrap();
-    assert!(f
-        .state
-        .owned
-        .session_store
-        .get_session(&turn.session_id)
-        .unwrap()
-        .active_interactions()
-        .is_empty());
+    .expect("the toggle is off, so the owner gets one card");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(cards(), 1, "exactly one card, nothing on top");
+    assert!(
+        !waiting.is_finished(),
+        "the acquisition waits for the owner's card"
+    );
+    waiting.abort();
 }

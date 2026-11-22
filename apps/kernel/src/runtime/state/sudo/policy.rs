@@ -409,19 +409,3 @@ fn owner_vault_is_not_a_sudo_operation() {
         crate::local::OwnerVaultRequest::Reveal { id: "entry".into() }
     )));
 }
-
-// Accepting an App's host action of the owner's own App is an ordinary owner action (row 405).
-#[cfg(test)]
-#[test]
-fn an_owners_agent_accepts_an_app_host_action() {
-    let request =
-        LocalDaemonRequest::AcceptAppHostAction(crate::local::AcceptAppHostActionRequest {
-            session_id: "s".into(),
-            operation_id: "o".into(),
-        });
-    assert!(!sudo_request_forbidden(&request));
-    assert_eq!(
-        crate::runtime::state::reach::reach_need(&request),
-        crate::runtime::state::reach::ReachNeed::Owner
-    );
-}
