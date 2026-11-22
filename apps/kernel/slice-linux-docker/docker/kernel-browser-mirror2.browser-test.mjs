@@ -2139,6 +2139,33 @@ test("R1a: a browser with no display of its own streams a region as a crop of th
     assert(encoded.includes(true), `the encoder produced video for the crop (${JSON.stringify(encoded)})`);
     await host.request({ op: "display_unsubscribe", subscription_id: reply.subscription_id }).catch(() => {});
   }, {}, {}, { ...process.env, CHARIOX_KERNEL_BROWSER_HEADLESS: "1" }));
+// R1 review 1 (P1): once a screencast region stops moving, its lossless exact still is the region's own crop at the viewer's
+// density (the presenter accepts only css size x DPR), never the whole viewport.
+for (const dpr of [1, 2]) test(`R1: a screencast region at rest gets its exact still at the region's size (viewer DPR${dpr})`, () => mirrored(
+  '<style>body{margin:0}canvas{position:absolute;left:30px;top:40px;width:200px;height:100px}</style><canvas id="c" width="200" height="100"></canvas><script>const g=document.getElementById("c").getContext("2d");let n=0,run=true;function stop(){run=false}(function f(){g.fillStyle=`hsl(${(n++*7)%360},80%,50%)`;g.fillRect(0,0,200,100);if(run)requestAnimationFrame(f)})()</script>',
+  async ({ host, next, subscription_id, generation, tab_id, evaluate }) => {
+    const packet = await next(), stream = host.mirror.streams.get(subscription_id);
+    const region_id = [...stream.regionRecords].find(([, r]) => r.kind === "tile")?.[0];
+    const target = { kind: "region", mirror_subscription_id: subscription_id, document_id: stream.document_id, sequence: packet.sequence, region_id };
+    const reply = await host.request({ op: "display_subscribe", tab_id, generation, target, codecs: ["png", "avc1.420033"], bitrate: 2_000_000, device_scale_factor: dpr });
+    assert.equal(reply.source_kind, "region", JSON.stringify(reply));
+    const display = host.displays.get(reply.subscription_id), captures = [], frames = [];
+    const screenshot = host.displayScreenshot.bind(host);
+    host.displayScreenshot = async (...args) => { const shot = await screenshot(...args); captures.push([shot.width, shot.height]); return shot; };
+    const source = display.regionSource, own = source.exactCapture?.bind(source);
+    if (own) source.exactCapture = async () => { const shot = await own(); captures.push([shot.width, shot.height]); return shot; };
+    const credit = async () => { const r = await host.request({ op: "screenshot", generation, display_subscription_id: reply.subscription_id, after_sequence: display.sequence }).catch(() => null); if (r?.display_frame) frames.push(r.display_frame); };
+    for (let i = 0; i < 6; i++) { await credit(); await settle(80); }
+    await evaluate("stop()"); await settle(300);
+    for (let i = 0; i < 30 && !captures.length; i++) { await credit(); await settle(120); }
+    assert(captures.length, "an exact still is captured once the region rests");
+    // The display's density is the page's own (observation never changes it): the presenter accepts css size x reply DPR.
+    const k = reply.device_scale_factor;
+    assert(captures.every(([w, h]) => w === 200 * k && h === 100 * k), `every exact capture is the region's crop at the display's DPR ${k} (${JSON.stringify(captures)})`);
+    const exact = frames.filter(f => f.payload?.kind === "png" || f.kind === "png");
+    for (const f of exact) { const png = Buffer.from(f.payload?.data_base64 ?? f.data_base64, "base64"); assert.deepEqual([png.readUInt32BE(16), png.readUInt32BE(20)], [200 * k, 100 * k], "the exact frame is the region's size"); }
+    await host.request({ op: "display_unsubscribe", subscription_id: reply.subscription_id }).catch(() => {});
+  }, {}, { device_scale_factor: dpr }, { ...process.env, CHARIOX_KERNEL_BROWSER_HEADLESS: "1" }));
 // R1 S4/S1 (orch14 decision 11-22 under AGENTS.md "Secrets and agents"): a Vault fill on a page whose region streams raw screencast
 // pixels fences before the value is written (the kernel registers the target, host.protect, then fills): no frame captured at or
 // after that moment reaches the lease, and the region stops. The same when the target is in a child frame.

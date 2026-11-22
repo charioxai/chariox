@@ -5,6 +5,7 @@ import {randomUUID} from 'node:crypto';
 import {UserDomainRefusal} from './kernel-browser-refusal.mjs';
 import {assertNotCancelled} from './browser-controller-actions.mjs';
 import {DisplayStream,PortableEncoder} from './kernel-browser-display.mjs';
+import {displayMaskRegions,displayFullMaskRegions} from './kernel-browser-pixels.mjs';
 const refuse=()=>{throw new UserDomainRefusal('stale_reference');};
 export async function subscribeScreencastRegion(host,command,scope,signal,{Screencast}){
  const target=command.target,tab=await host.displayTarget(command),policy=host.protection,generation=host.generation;
@@ -32,7 +33,17 @@ export async function subscribeScreencastRegion(host,command,scope,signal,{Scree
   assertNotCancelled(signal);
   source=new Screencast({shared,tab,scale:motion,policy,rect:{left,top,width,height},
    // As the whole-tab screencast: no pixels while Vault-protected values or targets are on the page (R1c).
-   allowed:p=>host.protection===p&&!p.unknown&&!p.values?.length&&!p.targets?.length&&host.generation===generation,validateCurrent:()=>lease.isCurrent(),timing:host.timing});
+   allowed:p=>host.protection===p&&!p.unknown&&!p.values?.length&&!p.targets?.length&&host.generation===generation,validateCurrent:()=>lease.isCurrent(),timing:host.timing,
+   // The lossless still at rest: the protected capture cropped to this region (CSS pixels), never the whole viewport.
+   // At the viewer's density (the presenter accepts css size x DPR), re-rasterized by Chrome through the clip scale when the page
+   // itself runs at a lower one (headless). A protected region inside the clip refuses: this source never shows one.
+   exact:async()=>{
+    const factor=scale/(host.scales.get(tab.tab_id)??1);
+    const {protected_regions=[],...shot}=await host.screenshot(tab,{x:left/motion,y:top/motion,width:width/motion,height:height/motion,scale:factor},true,'png',false,true);
+    if(protected_regions.length)throw Error('MP-11: protected pixels in a screencast region');
+    const png=Buffer.from(shot.data_base64,'base64');
+    return {...shot,width:png.readUInt32BE(16),height:png.readUInt32BE(20),[displayMaskRegions]:[],[displayFullMaskRegions]:[]};
+   }});
   await source.start();
   assertNotCancelled(signal);
   if(host.protection!==policy||!await lease.isCurrent())refuse();
@@ -63,8 +74,8 @@ export async function subscribeScreencastRegion(host,command,scope,signal,{Scree
 // rectangle (device pixels) for the encoder; validity, protection fences and wakes are the shared source's. Closing a
 // region only lets go of the shared source: it stops with its last user (host.screencastFor).
 export class ScreencastRegionCapture {
- constructor({shared,tab,scale,policy,rect,allowed,validateCurrent,timing=()=>{}}){
-  Object.assign(this,{shared,tab,scale,policy,rect,allowed,validateCurrent,timing});
+ constructor({shared,tab,scale,policy,rect,allowed,validateCurrent,timing=()=>{},exact=null}){
+  Object.assign(this,{shared,tab,scale,policy,rect,allowed,validateCurrent,timing,exactCapture:exact});
   this.region={css_width:rect.width/scale,css_height:rect.height/scale};this.listeners=new Set();this.closed=false;
  }
  get source(){return this.shared.source;}

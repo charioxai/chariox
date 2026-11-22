@@ -493,3 +493,20 @@ for(const value of [undefined,{x:-1,y:0},{x:0,y:NaN}])test(`R1: a screencast reg
  await assert.rejects(subscribeRegion(f.host,f.command,'terminal:a',undefined,{Screencast}));
  assert.equal(f.host.displays.size,0);
 });
+
+// R1 review 1 (P1): the lossless still at rest is the region's crop at the display's density: a DPR2 lease on a page that runs
+// at scale 1 (headless) is captured through the clip scale (Chrome re-rasterizes), protected, and is css size x DPR.
+test('R1: a screencast region\'s exact still is its crop at the lease density',async()=>{
+ const f=fixture();f.lease.device_scale_factor=2;f.host.scales=new Map([['t',1]]);const Screencast=headless(f);
+ const {encodePng}=await import('./kernel-browser-pixels.mjs'),shots=[];
+ f.host.screenshot=async(tab,clip,protectedCapture)=>{shots.push({clip,protectedCapture});return {data_base64:encodePng(clip.width*clip.scale,clip.height*clip.scale,Buffer.alloc(clip.width*clip.scale*clip.height*clip.scale*4,255)),protected_regions:[]};};
+ await subscribeRegion(f.host,f.command,'terminal:a',undefined,{Screencast});
+ const stream=[...f.host.displays.values()][0];
+ try{
+  const shot=await stream.regionSource.options.exact();
+  assert.deepEqual(shots,[{clip:{x:10,y:20,width:100,height:50,scale:2},protectedCapture:true}]);
+  assert.deepEqual([shot.width,shot.height],[200,100],'css size x DPR');
+  f.host.screenshot=async()=>({data_base64:encodePng(1,1,Buffer.alloc(4)),protected_regions:[{x:0,y:0,width:1,height:1}]});
+  await assert.rejects(stream.regionSource.options.exact(),/protected/,'a protected region in the clip refuses');
+ }finally{await stream.close();}
+});

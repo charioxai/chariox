@@ -112,7 +112,7 @@ export async function displayCredit(host, stream, command, signal) {
     // packet. A lost canvas base also reoffers any skipped patchable source.
     // Once retired, empty credits must let the pending recovery key finish.
     if(stream.previous&&(stream.document_id!==tab.document_id||!stream.acceptsCredit(command.after_sequence)))stream.invalidate(true,stream.document_id!==tab.document_id?'document':'credit_lag');
-    if(!stream.refiner||stream.refinerDocument!==tab.document_id){await stream.refiner?.close();stream.refiner=new NativeRefiner(binding=>binding.native?binding.sample:host.displayScreenshot(tab,null,false),{now:()=>performance.now(),prepareTiles:true,timing:host.timing});stream.refinerDocument=tab.document_id;}
+    if(!stream.refiner||stream.refinerDocument!==tab.document_id){await stream.refiner?.close();stream.refiner=new NativeRefiner(binding=>binding.native?binding.sample:region&&stream.regionSource.exactCapture?stream.regionSource.exactCapture():host.displayScreenshot(tab,null,false),{now:()=>performance.now(),prepareTiles:true,timing:host.timing});stream.refinerDocument=tab.document_id;}
     const policy=host.protection;
     const binding={source:compositor,document:tab.document_id,policy,epoch,serial:sample.serial,scale:stream.device_scale_factor,native:compositor.attested===true&&Boolean(sample.raw),sample,repairLimit:exactPatchLimit(stream.bitrate),encoder:stream.encoder.nativeSession,nativeDelivered:stream.encoder.nativeDeliveredRevision};
     // Always run the deadline/epoch-aware verifier before unchanged reuse.
