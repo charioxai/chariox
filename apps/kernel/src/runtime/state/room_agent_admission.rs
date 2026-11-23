@@ -273,6 +273,9 @@ impl KernelRuntimeState {
         }
         if !own_settings && !self.owned.agent_store.is_ancestor(actor.id(), &target) {
             self.authorize_peer_control(&actor, &target, super::peer_rooms::PeerControl::Cancel)?;
+            if let LocalDaemonRequest::UpdateAgentConfig(r) = request {
+                self.keep_peer_config_within_own(&actor, &target, r)?;
+            }
         }
         if let LocalDaemonRequest::UpdateAgentConfig(r) = request {
             self.keep_configured_folders_inside_parent(&target, r)?;
@@ -371,6 +374,41 @@ impl KernelRuntimeState {
     }
 
     /// A5: moving a sub-agent keeps it inside the folders of its own parent.
+    /// A peer sets another agent's mode and permission only within its own; clearing them
+    /// returns the agent to the Room's default, judged the same way.
+    fn keep_peer_config_within_own(
+        &self,
+        actor: &crate::agent::AgentInstance,
+        target: &crate::agent::AgentInstance,
+        request: &crate::local::UpdateAgentConfigRequest,
+    ) -> Result<(), DaemonError> {
+        let actor_room = self.owned.session_store.get_session(actor.session_id())?;
+        let mine = self.owned.agent_store.effective_execution_config(
+            &actor_room,
+            actor,
+            &self.owned.session_store,
+        );
+        let target_room = self.owned.session_store.get_session(target.session_id())?;
+        let room_default = crate::session::effective_agent_execution_config(&target_room, None);
+        let level = request.permission_level.or(request
+            .clear_permission_level
+            .then_some(room_default.permission_level));
+        let mode = request
+            .execution_mode
+            .or(request.clear_execution_mode.then_some(room_default.mode));
+        if level.is_some_and(|level| !mine.permission_level.permits(level))
+            || mode.is_some_and(|mode| !mine.mode.permits(mode))
+        {
+            return Err(denied(format!(
+                "you run {:?} in {} mode, so you cannot set {} above that; ask the person or an agent above it",
+                mine.permission_level,
+                mine.mode,
+                target.alias().unwrap_or(target.agent_ref()),
+            )));
+        }
+        Ok(())
+    }
+
     fn keep_configured_folders_inside_parent(
         &self,
         target: &crate::agent::AgentInstance,

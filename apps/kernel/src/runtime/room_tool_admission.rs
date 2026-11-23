@@ -65,19 +65,6 @@ pub(crate) fn in_subtree(
     ))
 }
 
-/// The actor itself, or an agent below it.
-pub(crate) fn self_or_below(
-    actor: &AgentInstance,
-    target: &AgentInstance,
-    agents: &[AgentInstance],
-) -> Result<(), DaemonError> {
-    if target.id() == actor.id() && target.session_id() == actor.session_id() {
-        Ok(())
-    } else {
-        in_subtree(actor, target, agents)
-    }
-}
-
 /// Workflow execution can reset provider context, so peers are not bindings.
 pub(crate) fn workflow_node(
     actor: &AgentInstance,

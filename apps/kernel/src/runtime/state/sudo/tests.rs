@@ -2377,6 +2377,19 @@ async fn an_owners_agent_needs_no_sudo_for_kernel_requests() {
             || skills.is_ok(),
         "the skills catalog asked for /sudo: {skills:?}"
     );
+    // It discovers the owner's kernels, to name them in cross-kernel requests.
+    let kernels = call(serde_json::json!({"ListGatewayKernels": {}})).await;
+    // (This fixture has no relay, so only admission is asserted when the directory is down.)
+    match &kernels {
+        Ok(result) => assert!(
+            result.payload.get("GatewayKernelsListed").is_some(),
+            "{kernels:?}"
+        ),
+        Err(error) => assert!(
+            !error.to_string().contains("can list kernels"),
+            "the owner's agent was refused the owner's kernels: {kernels:?}"
+        ),
+    }
     let vault = call(serde_json::json!({"OwnerVault": {"action": "reveal", "id": "entry"}})).await;
     assert!(vault.is_err(), "an agent revealed a Vault entry: {vault:?}");
     assert!(f.state.list_sudo_turns("local").is_empty());

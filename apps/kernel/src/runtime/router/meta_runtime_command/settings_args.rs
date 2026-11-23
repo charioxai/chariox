@@ -75,7 +75,8 @@ pub(super) fn meta_agent_settings_request(
         )?
         .clone(),
     };
-    crate::runtime::room_tool_admission::self_or_below(actor, &target, agents)?;
+    // Row 405 (PA11): who may change the target's settings is decided by room admission
+    // (self, an agent above it, or a same-owner peer within its own authority).
     let profile = provider.is_some()
         || account_profile.is_some()
         || model.is_some()

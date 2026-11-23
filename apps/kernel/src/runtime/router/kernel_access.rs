@@ -101,12 +101,24 @@ impl CommandRouter {
         &self,
         command: &KernelCommand,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        if !matches!(
-            command.caller.connection_class,
-            Some(KernelConnectionClass::Terminal | KernelConnectionClass::ExternalAgent)
-        ) {
+        // Row 405: the owner's live agent (`dispatch_as_owner_agent`) lists the owner's kernels
+        // too, so it can name them in cross-kernel requests.
+        let owner_agent = command.caller.connection_class
+            == Some(KernelConnectionClass::KernelAgent)
+            && self
+                .runtime_state
+                .reach_for_id(&command.caller.caller_id)
+                .is_some_and(|reach| {
+                    command.provider_run_id.as_deref() == Some(reach.run_id.as_str())
+                });
+        if !owner_agent
+            && !matches!(
+                command.caller.connection_class,
+                Some(KernelConnectionClass::Terminal | KernelConnectionClass::ExternalAgent)
+            )
+        {
             return Err(error(
-                "only a Chariox terminal or local grant holder can list kernels",
+                "only a Chariox terminal, a local grant holder or the owner's agent can list kernels",
             ));
         }
         let kernels = self
