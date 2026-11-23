@@ -7,7 +7,7 @@ impl KernelRuntimeState {
         &self,
         task: &AgentTaskExecution,
         failure: Option<&crate::provider::TurnOutcome>,
-        mut public_answer: Option<serde_json::Value>,
+        public_answer: Option<serde_json::Value>,
     ) -> Result<(), DaemonError> {
         let recovered = if failure.is_none() {
             self.owned.recover_background_answer_outcome(task)?
@@ -15,32 +15,6 @@ impl KernelRuntimeState {
             None
         };
         let failure = failure.or(recovered.as_ref());
-        let interrupted = if failure.is_none()
-            && task.state == ExecutionState::Done
-            && self
-                .owned
-                .agent_store
-                .get_agent(&task.agent_id)
-                .is_ok_and(|agent| agent.parent_agent_id().is_some())
-            && self
-                .owned
-                .operational_history_store
-                .foreground_command_interrupted_by_restart(
-                    &task.room_id,
-                    &task.agent_id,
-                    &task.prompt_id,
-                )? {
-            let outcome = crate::provider::TurnOutcome::interrupted_by_restart(
-                crate::app::FOREGROUND_COMMAND_RESTART_REASON,
-            );
-            if let Some(answer) = public_answer.as_mut() {
-                answer["outcome"] = serde_json::json!(&outcome);
-            }
-            Some(outcome)
-        } else {
-            None
-        };
-        let failure = failure.or(interrupted.as_ref());
         let outcome = self.owned.finished_task_outcome(task, failure);
         let success = matches!(
             outcome.kind,

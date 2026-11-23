@@ -198,6 +198,14 @@ impl DaemonConfig {
             .join(format!("{port}.token"))
     }
 
+    /// The file where the kernel listening on `port` names its own process,
+    /// so anything that supervises it reads the running kernel's PID from it.
+    pub fn default_kernel_pid_path(port: u16) -> PathBuf {
+        default_state_dir()
+            .join("kernel-pid")
+            .join(format!("{port}.pid"))
+    }
+
     pub fn default_daemon_config_path() -> PathBuf {
         persisted_daemon::default_daemon_config_path()
     }

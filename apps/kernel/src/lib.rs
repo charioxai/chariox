@@ -34,6 +34,7 @@ pub mod history_archive;
 #[cfg(unix)]
 pub mod hot_reload;
 pub mod io;
+pub mod kernel_pid_file;
 pub(crate) mod jobs;
 mod lease_worker_enrollment;
 pub mod local;
