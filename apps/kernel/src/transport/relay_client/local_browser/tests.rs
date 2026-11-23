@@ -2214,3 +2214,69 @@ fn a_hot_reload_delivers_its_close_frame_over_webrtc_before_stopping_udp() {
         }
     });
 }
+
+// Row 441: revoking a direct session stops the mutations it queued but that have not begun.
+async fn relay_session_count(kernel: &Kernel, browser: &Browser) -> usize {
+    let request = relay_crypto::encrypt_payload_for_peer(
+        &browser.private_key,
+        &kernel.daemon_public_key,
+        serde_json::to_vec(&LocalDaemonRequest::ListSessions(ListSessionsRequest)).unwrap().as_slice(),
+    )
+    .unwrap();
+    let outcome = handle_daemon_request(
+        &kernel.direct.router,
+        &kernel.direct.command_sequence,
+        Some(browser.identity()),
+        request,
+        &kernel.direct.command_result_cache,
+        &Default::default(),
+        None,
+    )
+    .await;
+    assert!(outcome.error.is_none(), "{:?}", outcome.error);
+    let plaintext = relay_crypto::decrypt_payload_for_private_key(
+        &browser.private_key,
+        &outcome.encrypted_response.unwrap(),
+    )
+    .unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&plaintext.plaintext).unwrap();
+    value["SessionsListed"]["sessions"].as_array().expect("sessions").len()
+}
+
+fn create_session_frame(kernel: &Kernel, browser: &Browser, id: &str, workspace: &str) -> serde_json::Value {
+    let request = LocalDaemonRequest::CreateSession(crate::session::CreateSessionRequest::new(workspace, workspace));
+    serde_json::json!({
+        "kind": "client_request", "request_id": id,
+        "target": {"daemon_id": kernel.daemon_id},
+        "encrypted_request": proof(browser, kernel, serde_json::json!({"command_id": id, "request": request})),
+    })
+}
+
+#[test]
+fn mp11_revoked_direct_session_does_not_start_a_mutation_that_had_not_begun() {
+    large_stack(async {
+        let kernel = Kernel::new();
+        let browser = Browser::new();
+        let grant = kernel.mint(&browser, browser.identity()).await.unwrap();
+        let (mut socket, verdict) = connect(&kernel, &browser, &grant).await;
+        assert_eq!(verdict["kind"], "local_connected");
+        let workspace = std::env::current_dir().unwrap().to_string_lossy().into_owned();
+        let before = relay_session_count(&kernel, &browser).await;
+        // The command is accepted and reserved but held before it dispatches: it has not begun.
+        let (reserved, release) = kernel.direct.command_result_cache.pause_next_dispatch_for_test().await;
+        send_json(&mut socket, create_session_frame(&kernel, &browser, "queued-441", &workspace)).await;
+        timeout(Duration::from_secs(5), reserved).await.expect("the command was not reserved").unwrap();
+        let mut unpaired = kernel.projection.snapshot();
+        unpaired.cloud_relay = None;
+        kernel.projection.update(unpaired);
+        let closed = timeout(Duration::from_secs(5), next_json(&mut socket)).await.expect("the session closes");
+        assert_eq!(closed, serde_json::json!({"kind": "close", "reason": "local browser authority revoked"}));
+        let _ = release.send(());
+        sleep(Duration::from_millis(1000)).await;
+        assert_eq!(
+            relay_session_count(&kernel, &browser).await,
+            before,
+            "a mutation the revoked session had queued began after the revoke"
+        );
+    });
+}
