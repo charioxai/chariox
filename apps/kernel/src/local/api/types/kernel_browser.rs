@@ -71,6 +71,11 @@ pub enum KernelBrowserCommand {
         /// `href`, which the viewer draws `:visited` (needs `wire: 2`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         visited_links: Option<bool>,
+        /// MP-08/MP-10: protocol 1015: the viewer re-lays out its copy at a new page size itself, so a complete
+        /// snapshot follows the size by an ordinary delta whose header carries `css_width`/`css_height` instead of a
+        /// layout reset (needs `wire: 2`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        layout_delta: Option<bool>,
         /// Protocol 560/168: the person's display in CSS px; the Tab lays out at this size.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         layout_width: Option<u32>,

@@ -948,6 +948,55 @@ test('F-5 a page resize during an observation re-snapshots the stream without re
  assert.equal(next.reset,true,'the stream still re-snapshots at the new size');
 });
 
+test('Row 487 protocol 1015: a layout_delta stream follows a page resize by a delta that carries the new size, never a reset', async () => {
+ const policy={targets:[],values:[]},tab={tab_id:'t',target_id:'T',document_id:'D1'};
+ const connection={isOpen:()=>true,send:async()=>({})};
+ const world={connection,sessionId:'S',frame:{loaderId:'D1'},ref:'m'};
+ const make=(extra)=>({id:'s',wire:2,chain:Promise.resolve(),tab_id:'t',world,issued:0,document_id:null,policy:null,fallback:null,header:{},resources:new Map(),attrSequence:new Map(),ownScrolls:new Map(),frames:new Map(),frameSlots:new Map(),frameSlot:0,tileKeys:'',...extra});
+ const run=async(extra,{complete=true}={})=>{
+  let size={width:1032,height:527},revision=0,snapshots=0,stills=0,mutate=null;
+  const stream=make(extra);
+  const host={protection:policy,generation:1,pageSize:()=>({...size}),layoutRevision:()=>revision,scales:new Map(),tabs:new Map([['t',tab]]),displayTarget:async()=>tab,mirrorTarget:async()=>tab,browser:{connection,documentIdsByTarget:new Map([['T','D1']]),sessionsByTarget:new Map([['T','S']])}};
+  const service={host,streams:new Map([['s',stream]]),require:()=>stream};
+  const mirror=new Mirror2(service);
+  const empty={ops:[],changed:[],resources:[],sheets:[],scroll:[0,0],focused:null,selection:null,snapshot_complete:complete};
+  mirror.evaluate=async(_,expression)=>{
+   if(expression==='m.snapshot()'){snapshots++;return {root:'n1',nodes:[{id:'n1',parent:null,kind:'element',tag:'div',attrs:{}}],sheets:[],resources:[],scroll:[0,0],focused:null,selection:null,fragment:null,snapshot_complete:complete};}
+   // The page's own resize handler changes its DOM once the page is laid out at the new size.
+   if(/waitDrain/.test(expression)){await new Promise(resolve=>setTimeout(resolve,20));if(mutate){const ops=mutate;mutate=null;return {...empty,ops};}return empty;}
+   return empty;
+  };
+  mirror.frames={attach:async()=>({records:[],ops:[],opaque:[]}),drain:async()=>({ops:[],resources:[],changed:[]}),project:(_,source)=>source,opaqueBoxes:async()=>[]};mirror.materialize=async()=>[];mirror.sheetOps=async()=>[];mirror.markClosedHosts=async()=>{};
+  mirror.tiles=async(_w,_t,_s,refresh)=>{if(refresh)stills++;return [];};
+  const credit=(command_id,after,wait_ms=0)=>mirror.next(stream,{subscription_id:'s',generation:1,command_id,after_sequence:after,wait_ms},'scope');
+  const first=await credit('c1',0);stills=0;
+  // A credit waiting for the page when the viewer's resize lays the page out at another size.
+  const waiting=credit('c2',first.sequence,1500),started=Date.now();
+  await new Promise(resolve=>setTimeout(resolve,60));
+  size={width:1672,height:847};revision++;mirror.layoutChanged?.('t');
+  const second=await waiting,answered=Date.now()-started;
+  mutate=[{op:'attr',id:'n1',name:'class',value:'wide'}];
+  const third=await credit('c3',second.sequence,1500);
+  return {first,second,third,answered,snapshots,stills};
+ };
+ const opted=await run({layoutDelta:true});
+ assert.equal(opted.first.reset,true);assert.equal(opted.first.css_width,1032);
+ assert.notEqual(opted.second.reset,true,'the resize is followed by a delta, not a reset');
+ assert.deepEqual([opted.second.css_width,opted.second.css_height],[1672,847],'the delta names the new page size');
+ assert(opted.answered<600,`a credit waiting for the page answers at the resize (${opted.answered} ms)`);
+ assert.equal(opted.stills,1,'region stills are taken again at the new size');
+ assert.equal(opted.snapshots,1,'no second snapshot');
+ assert.notEqual(opted.third.reset,true);assert.deepEqual(opted.third.ops,[{op:'attr',id:'n1',name:'class',value:'wide'}],'the page\'s own reaction follows as ordinary ops');
+ assert.equal(opted.third.css_width,undefined,'an unchanged size is implied by the base');
+ // A viewer that did not ask, or a snapshot that still holds deferred boxes at the old geometry, re-snapshots as before.
+ for(const [extra,options] of [[{},{}],[{layoutDelta:true},{complete:false}]]){
+  const old=await run(extra,options);
+  const resized=[old.second,old.third].find(packet=>packet.css_width===1672);
+  assert.equal(resized?.reset,true,'the new size arrives with a reset');
+  assert.equal(old.snapshots,2);
+ }
+});
+
 test('MP-11 #1016 @3a955d73c review 1: a packet still encoding when protection changes is retired, never returned or remembered', async () => {
  const policy={targets:[],values:[]},tab={tab_id:'t',target_id:'T',document_id:'D1'};
  const connection={isOpen:()=>true,send:async()=>({})};

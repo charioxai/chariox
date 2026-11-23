@@ -466,7 +466,7 @@ export class KernelBrowserHost {
   // Protocol 560/168: a viewer narrower than the canonical desktop gets the Tab laid out at its own size.
   // The newest subscription owns the layout until an explicit shared-window resize takes precedence; null restores the canonical page.
   pageSize(tabId) { const l = this.layouts.get(tabId); return l ? { width: l.width, height: l.height } : { width: geometry.width, height: geometry.height }; }
-  noteLayout(tabId, before) { const now = this.pageSize(tabId); if (now.width !== before.width || now.height !== before.height) { this.layoutRevisions.set(tabId, this.layoutRevision(tabId) + 1); this.timing?.event?.('page_layout_changed', { width_delta: now.width - before.width, height_delta: now.height - before.height }); } }
+  noteLayout(tabId, before) { const now = this.pageSize(tabId); if (now.width !== before.width || now.height !== before.height) { this.layoutRevisions.set(tabId, this.layoutRevision(tabId) + 1); this.timing?.event?.('page_layout_changed', { width_delta: now.width - before.width, height_delta: now.height - before.height }); this.mirror?.v2?.layoutChanged?.(tabId); } }
   layoutRevision(tabId) { return this.layoutRevisions.get(tabId) ?? 0; }
   async setLayout(tab, subscriptionId, layout) {
     if(subscriptionId!=='resize'&&this.layouts.get(tab.tab_id)?.subscriptionId==='resize')return;

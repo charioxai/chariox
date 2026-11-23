@@ -517,7 +517,9 @@ export class Mirror2 {
     // A viewer whose base predates the newest reset has that reset on its way (a large one crossing a slow link
     // while small credits are answered): a second reset only queues behind it (r47: a 420 KB reset storm).
     const layoutKey = this.layoutKey(tab.tab_id);
-    const resetReason = after === 0 ? 'client' : after > stream.issued ? 'ahead' : after < stream.issued - 8 && after >= stream.resetAt ? 'behind' : stream.document_id !== tab.document_id ? 'document' : stream.policy !== policy ? 'policy' : (stream.layoutKey ?? layoutKey) !== layoutKey ? 'layout' : stream.resetAt > stream.issued ? 'snapshot' : stream.fallback !== null ? 'fallback' : null;
+    // Protocol 1015 (`layout_delta`): the viewer re-lays out its own copy at the new size at once, so a complete snapshot
+    // follows a new page size by an ordinary delta (the size in its header, the page's own reaction as ops), not a reset.
+    const resetReason = after === 0 ? 'client' : after > stream.issued ? 'ahead' : after < stream.issued - 8 && after >= stream.resetAt ? 'behind' : stream.document_id !== tab.document_id ? 'document' : stream.policy !== policy ? 'policy' : (stream.layoutKey ?? layoutKey) !== layoutKey && !this.followsLayout(stream) ? 'layout' : stream.resetAt > stream.issued ? 'snapshot' : stream.fallback !== null ? 'fallback' : null;
     let reset = resetReason !== null;
     // A snapshot waits for a busy renderer in every call it makes (the viewer's reset has 30 s). Any other credit waits
     // somewhat longer than the default, but answers before the viewer's own 8 s request timeout.
@@ -673,10 +675,13 @@ export class Mirror2 {
       sheets = this.sheetsWithinBudget(stream, sheets);
     }
     let tiles = [];
+    // Protocol 1015: a page size the viewer has not been told yet travels in this delta; region stills were taken at the
+    // old size, so they are taken again now.
+    const follows = !reset && !fallback && this.followsLayout(stream), sized = follows && this.sizeDue(stream);
     // Stills, like image bytes, never ride on a DOM change or follow viewer input
     // within QUIET_MS: an echo must not queue behind a lossless region.
-    const still = reset || (this.emptyDom(stream, source) && !this.recentInput(stream));
-    if (!fallback) tiles = await this.tiles(world, tab, stream, reset, still, source?.opaque === false);
+    const still = reset || sized || (this.emptyDom(stream, source) && !this.recentInput(stream));
+    if (!fallback) tiles = await this.tiles(world, tab, stream, reset || sized, still, source?.opaque === false);
     mark('tiles');
     if (await this.host.browser.appTabs?.flushDrafts(tab.target_id)) await this.host.sampleLane(tab).run('sample', () => this.host.save());
     // The page session's navigation events arrive in order with the replies above: a cached document equal to the
@@ -688,14 +693,16 @@ export class Mirror2 {
     if (this.host.protection !== policy || this.host.generation !== command.generation || this.service.streams.get(command.subscription_id) !== stream) {
       stream.policy = null; throw new Error('MP-11: stale mirror protection policy or subscription');
     }
-    // Another viewer's layout change during the observation: this packet describes the old page size.
-    this.layoutMoved(stream, tab, layoutKey);
+    // Another viewer's layout change during the observation: this packet describes the old page size. A delta that
+    // follows the layout (protocol 1015) names the size it was built at instead; a later change goes in the next one.
+    if (!follows) this.layoutMoved(stream, tab, layoutKey);
+    const packetKey = follows ? this.layoutKey(tab.tab_id) : layoutKey, size = this.host.pageSize(tab.tab_id);
     const sequence = stream.issued + 1;
     // Protocol 489 compact delta: the binding, base (sequence - 1) and every
     // header field equal to the base packet's are implied; empty lists omitted.
-    const header = { snapshot_complete: source?.snapshot_complete === true, ...(stream.viewportFirst ? { snapshot_viewport_complete: source?.snapshot_viewport_complete === true } : {}), font_failures: source?.font_failures ?? [], scroll: source?.scroll ?? [0, 0], focused: source?.focused ?? null, focus_visible: source?.focus_visible === true, selection: source?.selection ?? null, fragment: source?.fragment ?? null, page_wheel: stream.pageWheel === true }, sent = Object.fromEntries(Object.entries(header).map(([name, value]) => [name, JSON.stringify(value)]));
+    const header = { snapshot_complete: source?.snapshot_complete === true, ...(stream.viewportFirst ? { snapshot_viewport_complete: source?.snapshot_viewport_complete === true } : {}), font_failures: source?.font_failures ?? [], scroll: source?.scroll ?? [0, 0], focused: source?.focused ?? null, focus_visible: source?.focus_visible === true, selection: source?.selection ?? null, fragment: source?.fragment ?? null, page_wheel: stream.pageWheel === true, ...(stream.layoutDelta ? { css_width: size.width, css_height: size.height } : {}) }, sent = Object.fromEntries(Object.entries(header).map(([name, value]) => [name, JSON.stringify(value)]));
     const packet = reset ? { wire: 2, subscription_id: command.subscription_id, tab_id: tab.tab_id, generation: command.generation, document_id: tab.document_id,
-      sequence, base_sequence: null, reset, css_width: this.host.pageSize(tab.tab_id).width, css_height: this.host.pageSize(tab.tab_id).height, device_scale_factor: this.host.scales.get(tab.tab_id) ?? 1, ...header }
+      sequence, base_sequence: null, reset, css_width: size.width, css_height: size.height, device_scale_factor: this.host.scales.get(tab.tab_id) ?? 1, ...header }
       : { wire: 2, sequence, ...Object.fromEntries(Object.entries(header).filter(([name]) => sent[name] !== stream.header?.[name])) };
     if (resources.length) packet.resources = resources;
     this.host.timing?.event?.('mirror2_resource_batch', { reset: Number(reset), font_base64_bytes: resources.filter(r => r.mime_type.startsWith('font/')).reduce((n, r) => n + r.data_base64.length, 0), other_base64_bytes: resources.filter(r => !r.mime_type.startsWith('font/')).reduce((n, r) => n + r.data_base64.length, 0) });
@@ -715,7 +722,7 @@ export class Mirror2 {
     dedupeMirrorSheets(packet, stream.sheetRefs ??= new Set());
     if (packet.nodes) packet.nodes = encodeMirrorRecords(packet.nodes, null);
     if (packet.ops) packet.ops = packet.ops.map(op => op.op === 'children' ? { ...op, nodes: encodeMirrorRecords(op.nodes, op.id) } : op);
-    stream.issued = sequence; stream.document_id = tab.document_id; stream.policy = policy; stream.layoutKey = layoutKey; stream.fallback = fallback;
+    stream.issued = sequence; stream.document_id = tab.document_id; stream.policy = policy; stream.layoutKey = packetKey; stream.fallback = fallback;
     if (reset) { stream.resetAt = sequence; stream.attrSequence.clear(); }
     stream.header = sent; stream.sentScroll = header.scroll;
     // A position the viewer did not set has reached it: echoes count again.
@@ -726,7 +733,7 @@ export class Mirror2 {
     if (this.host.protection !== policy || stream.policy !== policy || this.service.streams.get(command.subscription_id) !== stream) {
       stream.policy = null; throw new Error('MP-11: stale mirror protection policy or subscription');
     }
-    this.layoutMoved(stream, tab, layoutKey);
+    if (!follows) this.layoutMoved(stream, tab, layoutKey);
     this.remember(stream, sequence, wire, reset);
     mark('serialize'); this.host.timing?.('mirror2_total', started);
     return wire;
@@ -779,7 +786,13 @@ export class Mirror2 {
     stream.pageWheel = await pageTakesWheel(world).catch(() => !reset && stream.pageWheel === true);
     return true;
   }
-  empty(stream, source) { return this.emptyDom(stream, source) && !this.tilesDue(stream); }
+  empty(stream, source) { return this.emptyDom(stream, source) && !this.tilesDue(stream) && !(this.followsLayout(stream) && this.sizeDue(stream)); }
+  // Protocol 1015: a stream whose viewer asked for `layout_delta` and holds the whole document (no deferred boxes, which
+  // keep the old layout's geometry) follows page size changes by delta. A packet's size and layout key are read together.
+  followsLayout(stream) { return stream.layoutDelta === true && stream.header?.snapshot_complete === 'true'; }
+  sizeDue(stream) { return stream.layoutKey !== undefined && stream.layoutKey !== this.layoutKey(stream.tab_id); }
+  // The page was laid out at another size: a credit waiting for the page sends that size now.
+  layoutChanged(tabId) { for (const stream of this.service.streams.values()) if (stream.wire === 2 && stream.tab_id === tabId && this.followsLayout(stream)) this.hurry(stream); }
   emptyDom(stream, source) {
     const scroll = JSON.stringify(source.scroll) === stream.ownScrolls.get(null) ? stream.sentScroll : source.scroll;
     return !source.ops?.length && !source.sheets?.length && JSON.stringify(source.snapshot_complete === true) === stream.header?.snapshot_complete && (!stream.viewportFirst || JSON.stringify(source.snapshot_viewport_complete === true) === stream.header?.snapshot_viewport_complete) && JSON.stringify(source.font_failures ?? []) === stream.header?.font_failures && JSON.stringify(scroll) === stream.header?.scroll && JSON.stringify(source.focused) === stream.header.focused && JSON.stringify(source.focus_visible === true) === stream.header.focus_visible && JSON.stringify(source.selection) === stream.header.selection && JSON.stringify(source.fragment ?? null) === stream.header.fragment && JSON.stringify(stream.pageWheel === true) === stream.header.page_wheel;
