@@ -643,4 +643,6 @@ pub use workspace::*;
 /// longer carry `kernel_id`, `kernel_name`, `focused_agent_kernel_id` or `reachable_by_focused_agent`; the loader tools
 /// take no arguments and `chariox.kernel_browser_share` is removed.
 /// 1014 adds revision-based latest Room history outline reads.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1014;
+/// Local 1015 (relay peer 452): a Room decision's choices and reply carry an optional `description`; Dismiss on a task
+/// card hides it from the Room while the task keeps waiting, and Stop ends the task.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1015;
