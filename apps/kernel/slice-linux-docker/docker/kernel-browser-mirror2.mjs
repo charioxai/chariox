@@ -791,8 +791,9 @@ export class Mirror2 {
   // keep the old layout's geometry) follows page size changes by delta. A packet's size and layout key are read together.
   followsLayout(stream) { return stream.layoutDelta === true && stream.header?.snapshot_complete === 'true'; }
   sizeDue(stream) { return stream.layoutKey !== undefined && stream.layoutKey !== this.layoutKey(stream.tab_id); }
-  // The page was laid out at another size: a credit waiting for the page sends that size now.
-  layoutChanged(tabId) { for (const stream of this.service.streams.values()) if (stream.wire === 2 && stream.tab_id === tabId && this.followsLayout(stream)) this.hurry(stream); }
+  // The page was laid out at another size: the credit waiting for the page wakes and sends that size (its wait loop
+  // sees sizeDue). Credits queued behind it keep their own wait: `hurry` would answer each of them with an empty packet.
+  layoutChanged(tabId) { for (const stream of this.service.streams.values()) if (stream.wire === 2 && stream.tab_id === tabId && this.followsLayout(stream) && stream.world) this.evaluate(stream.world, `${stream.world.ref}.wake()`).catch(() => {}); }
   emptyDom(stream, source) {
     const scroll = JSON.stringify(source.scroll) === stream.ownScrolls.get(null) ? stream.sentScroll : source.scroll;
     return !source.ops?.length && !source.sheets?.length && JSON.stringify(source.snapshot_complete === true) === stream.header?.snapshot_complete && (!stream.viewportFirst || JSON.stringify(source.snapshot_viewport_complete === true) === stream.header?.snapshot_viewport_complete) && JSON.stringify(source.font_failures ?? []) === stream.header?.font_failures && JSON.stringify(scroll) === stream.header?.scroll && JSON.stringify(source.focused) === stream.header.focused && JSON.stringify(source.focus_visible === true) === stream.header.focus_visible && JSON.stringify(source.selection) === stream.header.selection && JSON.stringify(source.fragment ?? null) === stream.header.fragment && JSON.stringify(stream.pageWheel === true) === stream.header.page_wheel;

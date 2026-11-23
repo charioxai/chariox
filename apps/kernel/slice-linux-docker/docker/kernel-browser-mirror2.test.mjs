@@ -972,12 +972,16 @@ test('Row 487 protocol 1015: a layout_delta stream follows a page resize by a de
   const first=await credit('c1',0);stills=0;
   // A credit waiting for the page when the viewer's resize lays the page out at another size.
   const waiting=credit('c2',first.sequence,1500),started=Date.now();
+  // A second credit already queued behind it (the viewer keeps several in flight) still waits for the page.
+  const queued=credit('c3',first.sequence+1,1500);let early=null;queued.then(()=>{early??=Date.now()-started;});
   await new Promise(resolve=>setTimeout(resolve,60));
   size={width:1672,height:847};revision++;mirror.layoutChanged?.('t');
   const second=await waiting,answered=Date.now()-started;
+  await new Promise(resolve=>setTimeout(resolve,150));
+  const quiet=early===null;
   mutate=[{op:'attr',id:'n1',name:'class',value:'wide'}];
-  const third=await credit('c3',second.sequence,1500);
-  return {first,second,third,answered,snapshots,stills};
+  const third=await queued;
+  return {first,second,third,answered,snapshots,stills,quiet};
  };
  const opted=await run({layoutDelta:true});
  assert.equal(opted.first.reset,true);assert.equal(opted.first.css_width,1032);
@@ -988,6 +992,7 @@ test('Row 487 protocol 1015: a layout_delta stream follows a page resize by a de
  assert.equal(opted.snapshots,1,'no second snapshot');
  assert.notEqual(opted.third.reset,true);assert.deepEqual(opted.third.ops,[{op:'attr',id:'n1',name:'class',value:'wide'}],'the page\'s own reaction follows as ordinary ops');
  assert.equal(opted.third.css_width,undefined,'an unchanged size is implied by the base');
+ assert.equal(opted.quiet,true,'a credit queued behind the resized one is not answered with an empty packet');
  // A viewer that did not ask, or a snapshot that still holds deferred boxes at the old geometry, re-snapshots as before.
  for(const [extra,options] of [[{},{}],[{layoutDelta:true},{complete:false}]]){
   const old=await run(extra,options);
