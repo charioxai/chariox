@@ -575,6 +575,20 @@ impl KernelBrowserHost {
                             | "mirror_close"
                     )
                 );
+            // A person card's recovery start brings back a browser a kernel restart ended, never
+            // one the person stopped on purpose.
+            if method == "host.browser"
+                && params["op"] == "start"
+                && params["card_recovery"] == true
+                && self
+                    .inner
+                    .lock()
+                    .map_err(|_| "MD-2: browser host lock poisoned")?
+                    .stopped_by_request
+                    .contains(user)
+            {
+                return Err("MP-11: browser_unavailable: the browser was stopped on request and stays stopped".into());
+            }
             let agent_read = read
                 && admission.is_some_and(|admission| admission.agent.is_some())
                 && matches!(
@@ -601,6 +615,9 @@ impl KernelBrowserHost {
                 .remove(user);
         }
         let mut params = params;
+        if let Some(fields) = params.as_object_mut() {
+            fields.remove("card_recovery");
+        }
         if input {
             params["_person_idle_checked"] = agent_tab.is_some().into();
         }

@@ -130,7 +130,7 @@ impl KernelRuntimeState {
             &user,
             Some(agent_id),
             "host.browser",
-            serde_json::json!({"op":"start"}),
+            serde_json::json!({"op":"start","card_recovery":true}),
         )
         .await?;
         Ok(())
@@ -354,10 +354,13 @@ impl KernelRuntimeState {
                 Err(error) => {
                     tracing::debug!(interaction_id=%id, error=%crate::secret_redaction::redact_secrets(&error.to_string()), "browser card observation will retry");
                     // The controller is stopped after a restart: start it, then observe again.
-                    if !app_confirmation && error.to_string().contains("browser_unavailable") {
-                        if self.start_card_browser(agent).await.is_ok() {
-                            failures.observed();
-                        }
+                    // A browser the person stopped on purpose stays stopped: the start is refused,
+                    // and the card ends with the failure budget like any other unreachable page.
+                    if !app_confirmation
+                        && error.to_string().contains("browser_unavailable")
+                        && self.start_card_browser(agent).await.is_ok()
+                    {
+                        failures.observed();
                         tokio::time::sleep(Duration::from_millis(500)).await;
                         continue;
                     }
