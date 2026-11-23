@@ -25,10 +25,7 @@ impl KernelPidFile {
     }
 
     fn write_at(path: PathBuf) -> std::io::Result<Self> {
-        crate::config::write_private_file(
-            &path,
-            format!("{}\n", std::process::id()).as_bytes(),
-        )?;
+        crate::config::write_private_file(&path, format!("{}\n", std::process::id()).as_bytes())?;
         #[cfg(unix)]
         let identity = {
             use std::os::unix::fs::MetadataExt;

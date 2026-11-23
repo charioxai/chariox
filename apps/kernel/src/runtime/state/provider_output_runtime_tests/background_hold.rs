@@ -1561,9 +1561,8 @@ async fn a_held_child_whose_hold_a_restart_dropped_is_reported_interrupted_by_re
     team.runtime.owned.background_holds = Default::default();
     // The new program's wake monitor starts after the task's last progress.
     tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    team.runtime.owned.agent_wakes = std::sync::Arc::new(
-        crate::runtime::state::agent_wake_scheduler::AgentWakeMonitor::new(),
-    );
+    team.runtime.owned.agent_wakes =
+        std::sync::Arc::new(crate::runtime::state::agent_wake_scheduler::AgentWakeMonitor::new());
     team.runtime.recover_durable_runtime_after_restart().await;
     team.runtime
         .sweep_agent_lifecycle_at_for_test(crate::session::unix_epoch_ms() + 2 * MINUTE_MS)
@@ -1574,7 +1573,10 @@ async fn a_held_child_whose_hold_a_restart_dropped_is_reported_interrupted_by_re
         .sweep_agent_lifecycle_at_for_test(crate::session::unix_epoch_ms() + 4 * MINUTE_MS)
         .await
         .unwrap();
-    assert!(!working(&team), "the lost hold must not leave the task Working");
+    assert!(
+        !working(&team),
+        "the lost hold must not leave the task Working"
+    );
     let events = child_finished(&team);
     assert_eq!(
         events.len(),
