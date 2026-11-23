@@ -116,7 +116,7 @@ fn an_opencode_login_exports_as_the_one_credential_string() {
 fn an_opencode_login_over_the_copy_limit_is_refused_by_name() {
     let root = crate::test_support::TestWorktree::new("opencode-copy-too-large");
     let mut login = br#"{"openai":{"type":"api","key":""#.to_vec();
-    login.extend(std::iter::repeat(b'k').take(MAX_COPY_CREDENTIAL_BYTES));
+    login.extend(std::iter::repeat_n(b'k', MAX_COPY_CREDENTIAL_BYTES));
     login.extend_from_slice(br#""}}"#);
     let (registry, id) = opencode_profile(&root, &login);
     let config = crate::config::DaemonConfig::for_tests();
