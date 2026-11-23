@@ -7,7 +7,7 @@ const REGISTRATION_TIMEOUT: Duration = Duration::from_secs(10);
 /// A refused kernel retries soon, then every 30 s: the relay it dials can be replaced
 /// at any moment, and the kernel must register within a minute of that however long
 /// it was refused. That is still no faster than twice the once-a-minute retry the
-/// relay's own refusal record expects (docs/PROTOCOL.md).
+/// relay's own refusal record expects (docs/PROTOCOL.md). Miguel decision 11-23.
 const REGISTRATION_RETRY_SECONDS: [u64; 2] = [15, 30];
 
 pub(super) async fn await_registration(
