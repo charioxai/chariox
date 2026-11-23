@@ -640,6 +640,7 @@ async fn a_message_to_a_near_miss_alias_names_the_close_aliases_and_their_rooms(
             .unwrap();
         rooms.push((session.id().to_owned(), agent.id().to_owned()));
     }
+    crate::test_support::admit_room_test_turn(&mut app, &rooms[1].0, &rooms[1].1);
     let mut spawn = |room: &str, alias: &str, parent: Option<&str>| {
         let mut request =
             crate::agent::CreateAgentRequest::new(room, "dev-stub").with_alias(alias.to_owned());

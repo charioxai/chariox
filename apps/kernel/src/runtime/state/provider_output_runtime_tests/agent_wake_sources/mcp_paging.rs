@@ -107,10 +107,12 @@ async fn mcp_paging_keeps_room_agents_and_task_history_reachable() {
                 fields,
                 [
                     "alias",
+                    "execution_mode",
                     "has_active_prompt",
                     "id",
                     "model",
                     "parent_agent_id",
+                    "permission_level",
                     "queued_prompt_count",
                     "state",
                     "waiting_on"
