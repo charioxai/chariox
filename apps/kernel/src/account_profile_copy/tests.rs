@@ -125,3 +125,23 @@ fn an_opencode_login_over_the_copy_limit_is_refused_by_name() {
         .unwrap_err();
     assert_eq!(code_of(error), "provider_account_copy_credential_too_large");
 }
+
+#[test]
+fn a_vault_that_will_not_take_the_login_is_locked_only_when_it_is() {
+    let locked = DaemonError::LocalTransport {
+        operation: "credential_vault_locked",
+        message: "locked".into(),
+    };
+    assert_eq!(
+        code_of(vault_store_failure(&locked)),
+        "provider_account_copy_vault_locked"
+    );
+    let damaged = DaemonError::LocalTransport {
+        operation: "write credential",
+        message: "vault file is damaged".into(),
+    };
+    assert_eq!(
+        code_of(vault_store_failure(&damaged)),
+        "provider_account_copy_vault_unreadable"
+    );
+}

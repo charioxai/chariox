@@ -70,6 +70,8 @@ pub(super) async fn check_opencode_copy(
     let canary = "synthetic-opencode-copy";
     let login = format!(r#"{{"openai":{{"type":"api","key":"{canary}"}}}}"#);
     let (source, source_auth) = source_login(source_profiles, "Native source", login.as_bytes());
+    // The target already holds its own default OpenCode profile; count what a copy adds.
+    let baseline = target_logins(target_profiles);
 
     // A1: the login arrives as an independent, authenticated profile.
     let request = copy_request(&source, "opencode-copy", target);
@@ -132,7 +134,7 @@ pub(super) async fn check_opencode_copy(
         "provider_account_copy_conflict",
         canary,
     );
-    assert_eq!(target_logins(target_profiles), 1);
+    assert_eq!(target_logins(target_profiles), baseline + 1);
 
     // A4: a login over the copy limit is refused at the source, before it is sent.
     let big = format!(
@@ -179,7 +181,7 @@ pub(super) async fn check_opencode_copy(
         "provider_account_copy_rejected",
         "synthetic-go-login",
     );
-    assert_eq!(target_logins(target_profiles), 1);
+    assert_eq!(target_logins(target_profiles), baseline + 1);
     std::env::set_var("CHARIOX_TEST_OPENCODE_GO_USAGE_STATUS", "200");
     let verified = source_request(
         source_router,
@@ -188,7 +190,7 @@ pub(super) async fn check_opencode_copy(
     .await
     .unwrap();
     assert!(!verified.to_string().contains("synthetic-go-login"));
-    assert_eq!(target_logins(target_profiles), 2);
+    assert_eq!(target_logins(target_profiles), baseline + 2);
     std::env::remove_var("CHARIOX_TEST_OPENCODE_GO_USAGE_STATUS");
 
     // B4: a receiver without the OpenCode CLI says so, whoever the provider is.
@@ -199,7 +201,7 @@ pub(super) async fn check_opencode_copy(
         "provider_account_copy_cli_missing",
         canary,
     );
-    assert_eq!(target_logins(target_profiles), 2);
+    assert_eq!(target_logins(target_profiles), baseline + 2);
 
     // Failed copies leave no staging profile behind.
     let providers = target_auth

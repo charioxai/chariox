@@ -220,7 +220,7 @@ impl ProviderAccountProfileRegistry {
                 &profile_id,
                 credential.value(),
             )
-            .map_err(map_storage)?;
+            .map_err(|error| vault_store_failure(&error))?;
         }
         if let Some(auth) = native_auth {
             create_private_roots(&locator).map_err(map_storage)?;
@@ -382,6 +382,16 @@ impl ProviderAccountProfileRegistry {
                 )))?;
         }
         Ok(source.public.profile_id.clone())
+    }
+}
+
+/// The receiving Vault would not take the login: a locked Vault is the owner's to
+/// unlock, anything else (an unreadable or damaged Vault file) is not.
+fn vault_store_failure(error: &DaemonError) -> DaemonError {
+    if crate::secret::is_chariox_vault_locked_error(error) {
+        failure("provider_account_copy_vault_locked")
+    } else {
+        failure("provider_account_copy_vault_unreadable")
     }
 }
 

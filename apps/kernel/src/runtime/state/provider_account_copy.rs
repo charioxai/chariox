@@ -389,26 +389,6 @@ mod tests {
         assert!(!status().unlocked);
         assert!(!admission());
     }
-
-    /// A Vault file that cannot be read is not a locked Vault: the owner has
-    /// nothing to unlock, so the refusal must say the file is the problem.
-    #[test]
-    fn an_unreadable_vault_is_not_reported_as_locked() {
-        let root = crate::test_support::TestWorktree::new("copy-admission-vault-unreadable");
-        let vault = root.path().join("vault.json");
-        std::fs::write(&vault, b"not a vault").unwrap();
-        let mut config = crate::config::DaemonConfig::for_tests();
-        config.user_config.credential_vault.backend =
-            crate::config::CredentialVaultBackend::CharioxEncrypted;
-        config.user_config.credential_vault.path = vault.to_string_lossy().into_owned();
-        assert!(matches!(
-            unlocked(&config),
-            Err(DaemonError::ProviderAccountCopy {
-                code: "provider_account_copy_vault_unreadable",
-                ..
-            })
-        ));
-    }
 }
 
 #[cfg(test)]
