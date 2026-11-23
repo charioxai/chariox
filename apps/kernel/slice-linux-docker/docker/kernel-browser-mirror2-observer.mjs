@@ -1285,7 +1285,9 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       const node = live(id), kind = kindOf.get(id);
       if (kind !== 'tile' && !(kind === 'frame' && foreign.has(id))) throw new Error('mirror2 region required');
       const intersect = (a,b) => { const x=Math.max(a[0],b[0]),y=Math.max(a[1],b[1]);return [x,y,Math.max(0,Math.min(a[0]+a[2],b[0]+b[2])-x),Math.max(0,Math.min(a[1]+a[3],b[1]+b[3])-y)]; };
-      let bounds=box(node),clip=intersect(bounds,[0,0,node.ownerDocument.defaultView.innerWidth,node.ownerDocument.defaultView.innerHeight]);
+      // Row 489: a closed root's content can paint outside its host's box (Chromium's PDF body is 0 high, its viewer
+      // iframe absolute in the root): the region covers that ink, as opaqueBoxes reports it.
+      let bounds=box(node);bounds=closedInk(node,bounds)??bounds;let clip=intersect(bounds,[0,0,node.ownerDocument.defaultView.innerWidth,node.ownerDocument.defaultView.innerHeight]);
       for(let view=node.ownerDocument.defaultView;view !== window;view=view.parent){
         const owner=view.frameElement;if(!owner)throw new Error('mirror2 frame unavailable');
         // The owner's origin maps the child by translation only: a rotated/scaled owner (or ancestor of it) would misplace the crop.

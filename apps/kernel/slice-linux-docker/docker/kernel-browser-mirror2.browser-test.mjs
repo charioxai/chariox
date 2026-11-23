@@ -2350,10 +2350,13 @@ test('MP-10: review r19 a newly inserted closed host becomes a tile without rese
 // Row 489: Chromium's PDF document is a body whose light DOM is one whitespace text node and whose closed root holds the
 // viewer's iframe. That body is a closed host like an empty one: the viewer gets a region, not an empty page.
 test('Row 489: a body with only whitespace light DOM and a closed root is an opaque region',()=>mirrored(
- '<head><script>addEventListener("DOMContentLoaded",()=>{document.body.attachShadow({mode:"closed"}).innerHTML="<iframe src=/viewer style=display:block;width:600px;height:400px;border:0></iframe><slot></slot>"})</script></head><body>\n    \n  </body>',
- async({next})=>{
-  let found=false;for(let i=0;i<6&&!found;i++){const p=await next(i?600:0);found=[...p.nodes??[],...p.ops.flatMap(op=>op.op==='children'?op.nodes:[])].some(n=>n[4]?.reason==='closed_shadow');}
+ '<head><script>addEventListener("DOMContentLoaded",()=>{document.body.attachShadow({mode:"closed"}).innerHTML="<style>iframe{position:absolute;left:0;top:0;width:600px;height:400px;border:0}</style><iframe src=/viewer></iframe><slot></slot>"})</script><style>body{height:100%;margin:0}</style></head><body>\n    \n  </body>',
+ async ctx=>{
+  let found=null;for(let i=0;i<6&&!found;i++){const p=await ctx.next(i?600:0);if([...p.nodes??[],...p.ops.flatMap(op=>op.op==='children'?op.nodes:[])].some(n=>n[4]?.reason==='closed_shadow'))found=p;}
   assert(found,'the PDF-shaped body is a closed_shadow tile');
+  // The body's own box is 0 high (the viewer iframe is absolute in the closed root): its region covers what the root paints.
+  const lease=await regionLease(ctx,found.sequence);
+  assert(lease.rect.width>=590&&lease.rect.height>=390,`the body's region covers the viewer iframe: ${JSON.stringify(lease.rect)}`);
  },{'/viewer':{type:'text/html',body:'<!doctype html><body style="margin:0;background:rgb(82,86,89)"><p style="color:white">page 1 of 15</p></body>'}}
 ));
 
