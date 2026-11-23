@@ -220,3 +220,19 @@ test('Row 487: a new media element keeps the overlay (the frozen previous pictur
  await sink2.commit({image:image(),decodedAt:0,writtenAt:1},{sequence:1});assert.equal(canvas2.style.opacity,'');
  await new Promise(resolve=>setTimeout(resolve,300));assert.equal(canvas2.style.opacity,'0');sink2.close();
 });
+test('Row 487 #1722 review: a repair drawn after the pending first frame stays; the fallback is armed once',async()=>{
+ const make=()=>{const canvas={width:1280,height:800,style:{opacity:''},dataset:{},getContext:()=>({clearRect(){},drawImage(){}})};
+  const sink=new VideoSink(canvas,()=>{});let presented;sink.track={stop(){}};sink.video={requestVideoFrameCallback:cb=>{presented=cb;return 1},cancelVideoFrameCallback(){},remove(){},style:{}};sink.awaitingFirst=true;sink.canvasOpacity='';
+  sink.observePresentation(sink.video);return {canvas,sink,present:()=>presented(0,{mediaTime:0.000001,presentationTime:1,expectedDisplayTime:2,presentedFrames:1})};};
+ const image=()=>({timestamp:1,close(){},clone(){return {close(){}}}});
+ // video N written, then a repair for N+1 drawn onto the overlay, then N presents: the repair is newer and stays.
+ {const {canvas,sink,present}=make();await sink.commit({image:image(),decodedAt:0,writtenAt:1},{sequence:1});sink.overlay({width:1280,height:800});
+  present();assert.equal(sink.overlayActive,true,'the newer repair stays');assert.notEqual(canvas.style.opacity,'0');sink.close();}
+ // the same through the fallback timer
+ {const {canvas,sink}=make();await sink.commit({image:image(),decodedAt:0,writtenAt:1},{sequence:1});sink.overlay({width:1280,height:800});
+  await new Promise(resolve=>setTimeout(resolve,300));assert.equal(sink.overlayActive,true);assert.notEqual(canvas.style.opacity,'0');sink.close();}
+ // writes every 100 ms with no presentation callback: the fallback still fires 250 ms after the first write
+ {const {canvas,sink}=make();const started=Date.now();await sink.commit({image:image(),decodedAt:0,writtenAt:1},{sequence:1});
+  for(let i=0;i<4&&canvas.style.opacity!=='0';i++){await new Promise(resolve=>setTimeout(resolve,100));await sink.commit({image:image(),decodedAt:0,writtenAt:1},{sequence:2+i});}
+  assert.equal(canvas.style.opacity,'0',`retired ${Date.now()-started} ms after the first write`);assert(Date.now()-started<400);sink.close();}
+});

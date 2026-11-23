@@ -4,7 +4,7 @@
 const SUSTAINED_FRAMES=8,SUSTAINED_MS=250,SUSTAINED_WAITING=3,FIRST_PRESENT_MS=250;
 export class VideoSink {
  constructor(canvas,onTiming,{direct=false,paced=false}={}){
-  this.canvas=canvas;this.onTiming=onTiming;this.direct=direct;this.paced=paced&&direct;this.frameDrawn=false;this.pending=[];this.closed=false;this.overlayActive=false;this.presentationJobs=new Map();this.presentationMarks=new Map();this.lastPresentedTimestamp=-Infinity;
+  this.canvas=canvas;this.onTiming=onTiming;this.overlayRevision=0;this.direct=direct;this.paced=paced&&direct;this.frameDrawn=false;this.pending=[];this.closed=false;this.overlayActive=false;this.presentationJobs=new Map();this.presentationMarks=new Map();this.lastPresentedTimestamp=-Infinity;
   this.visibility=()=>{if(canvas.ownerDocument?.hidden){if(this.raf!==undefined)this.cancelRaf?.(this.raf);this.endFrame();this.commitPending(false);}};
   canvas.ownerDocument?.addEventListener?.('visibilitychange',this.visibility);
  }
@@ -41,7 +41,7 @@ export class VideoSink {
   if(globalThis.MutationObserver){this.mutation=new MutationObserver(sync);this.mutation.observe(this.canvas,{attributes:true,attributeFilter:['style','hidden','class']});}
   // Row 487: a new media element shows nothing until it presents its first frame. The overlay keeps the picture it holds
   // (the frozen last frame of the stream this one replaces) until then, so a reconnect never shows an empty pane.
-  this.awaitingFirst=Boolean(track);clearTimeout(this.firstTimer);
+  this.awaitingFirst=Boolean(track);clearTimeout(this.firstTimer);this.firstTimer=undefined;this.firstRevision=undefined;
   if(track){this.observePresentation(video);video.play().catch(()=>{});}
   return Boolean(track);
  }
@@ -69,7 +69,7 @@ export class VideoSink {
    this.observePresentation(video);
   });
  }
- firstPresented(){if(!this.awaitingFirst)return;this.awaitingFirst=false;clearTimeout(this.firstTimer);this.firstTimer=undefined;if(!this.closed)this.retireOverlay();}
+ firstPresented(){if(!this.awaitingFirst)return;this.awaitingFirst=false;clearTimeout(this.firstTimer);this.firstTimer=undefined;if(!this.closed&&this.firstRevision!==undefined&&this.overlayRevision===this.firstRevision)this.retireOverlay();this.firstRevision=undefined;}
  publishPresentation(timestamp){
   const job=this.presentationJobs.get(timestamp),mark=this.presentationMarks.get(timestamp);
   if(!job||!mark)return;
@@ -88,8 +88,10 @@ export class VideoSink {
   if(result.writtenAt!==undefined){
    this.remember(image);
    if(this.awaitingFirst&&this.video?.requestVideoFrameCallback){
-    // The first frame of a new element: retire the overlay when it is on screen (or after FIRST_PRESENT_MS at most).
-    clearTimeout(this.firstTimer);this.firstTimer=setTimeout(()=>this.firstPresented(),FIRST_PRESENT_MS);
+    // The first frame of a new element: retire the overlay when it is on screen, or FIRST_PRESENT_MS after the first write at
+    // most (armed once). Only what the overlay held at this write retires: a repair drawn after it is newer than this frame.
+    this.firstRevision=this.overlayRevision;
+    this.firstTimer??=setTimeout(()=>this.firstPresented(),FIRST_PRESENT_MS);
    }else this.retireOverlay();
    const outcome={decodedAt,writtenAt:result.writtenAt,drawn:true};
    if(Number.isSafeInteger(image.timestamp)&&this.video?.requestVideoFrameCallback){
@@ -176,6 +178,7 @@ export class VideoSink {
  }
  overlay(frame){
   if(!this.video&&!this.track)return;
+  this.overlayRevision=(this.overlayRevision??0)+1;
   if(this.canvas.width!==frame.width)this.canvas.width=frame.width;
   if(this.canvas.height!==frame.height)this.canvas.height=frame.height;
   if(!this.overlayActive){
@@ -196,7 +199,7 @@ export class VideoSink {
  }
  close({preserveFrame=false}={}){
   if(preserveFrame)this.freeze();
-  this.closed=true;clearTimeout(this.firstTimer);this.awaitingFirst=false;this.canvas.ownerDocument?.removeEventListener?.('visibilitychange',this.visibility);if(this.raf!==undefined)this.cancelRaf?.(this.raf);this.raf=undefined;this.endFrame();commitHidden(this.pending);
+  this.closed=true;clearTimeout(this.firstTimer);this.firstTimer=undefined;this.awaitingFirst=false;this.canvas.ownerDocument?.removeEventListener?.('visibilitychange',this.visibility);if(this.raf!==undefined)this.cancelRaf?.(this.raf);this.raf=undefined;this.endFrame();commitHidden(this.pending);
   this.last?.close();this.last=null;this.stopTrack();
  }
 }
