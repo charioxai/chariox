@@ -240,7 +240,9 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// 450 carries the lean Room state and independently read Room history and machine samples.
 /// Peer 450 carries native background notification receipts on leased completions.
 /// Peer 450 carries the local 1013 mirror v2 header `focus_visible`.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 451;
+/// Peer 452 (provisional): the Project Environment read names the source's `linked` Secrets, so a copy
+/// follows them at each Update.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 452;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
 pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = RELAY_PEER_PROTOCOL_VERSION;
@@ -1572,6 +1574,9 @@ pub enum RelayPeerResponse {
         record: Option<crate::project_environment::ProjectEnvironmentRecord>,
         /// Secret names the source's Vault holds a value for.
         secrets: Vec<String>,
+        /// Of those, the names linked on the source (filled from a Vault entry or copied from a linked
+        /// Secret): a copy of one follows the source's value at each Update. Names only, never a value.
+        linked: Vec<String>,
         /// Listed Files that exist in the source's checkout.
         files: Vec<String>,
         /// Listed MCP registrations and skills this source holds.

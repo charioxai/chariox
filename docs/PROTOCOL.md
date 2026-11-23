@@ -7444,7 +7444,12 @@ its own Vault under the Project scope, so presence differs per machine and is co
   Project's Secret inside the kernel (no value crosses the wire), through the entry's ordinary use check and
   audit. The entry must have been made for the environment variable of the same name
   (`command_environment` use). The kernel keeps the link, invisible to clients: a later Replace of the entry
-  re-fills the Secret, a removed entry leaves the copy as a normal Secret, and a typed value ends the link.
+  re-fills the Secret (so does a raw write of the entry's Vault key with `SetCredentialSecret`), a removed entry
+  leaves the copy as a normal Secret, and a typed value ends the link. Another machine that copied a linked
+  Secret by Update follows it: the source's peer `ProjectEnvironmentRead` names its `linked` Secrets (names
+  only; relay peer 452), and each later Update from that source brings their current value. A value typed on
+  the other machine ends its link there and is never replaced; a Secret the source no longer links stays as a
+  normal Secret.
   Agents do the same with the Room tool `chariox.environment.use_vault_entry { name, credential_id }`.
 - `RunProjectEnvironmentSetup { projectId, operationId, checkoutPath? }` runs the script in the checkout with
   Variables and the present Secrets in its environment. `GetEnvironmentOperation` returns the state and the
