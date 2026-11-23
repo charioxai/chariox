@@ -101,6 +101,27 @@ pub(super) fn render_tool_transcript_update(
     })
 }
 
+/// The row of a command OpenCode never finished because its process ended.
+pub(super) fn render_stopped_command_update(part_id: &str, input: serde_json::Value) -> String {
+    let input = (!is_empty_json_value(&input)).then_some(input);
+    serde_json::to_string(&ToolTranscriptUpdate {
+        id: part_id.to_string(),
+        tool: "bash".to_string(),
+        status: "error".to_string(),
+        title: None,
+        description: None,
+        text: None,
+        input,
+        output: None,
+        error: Some(super::stuck_tool::STOPPED_COMMAND.to_string()),
+        raw: None,
+        placement: None,
+        authority: None,
+        execution_location: None,
+    })
+    .expect("a tool row serializes")
+}
+
 pub(super) fn render_session_error_transcript_update(message: &str) -> String {
     let message = non_empty(message).unwrap_or("OpenCode reported an unknown session error.");
     format!("**OpenCode error**\n\n{message}")

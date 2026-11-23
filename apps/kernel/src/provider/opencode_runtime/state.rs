@@ -62,6 +62,7 @@ pub(crate) struct OpenCodeRuntimeState {
     pub(super) session_errors_require_prompt_match: bool,
     unmatched_session_error: Option<String>,
     unmatched_session_error_idle_since: Option<Instant>,
+    pub(super) running_tools: super::stuck_tool::RunningTools,
 }
 
 impl OpenCodeRuntimeState {
@@ -97,6 +98,7 @@ impl OpenCodeRuntimeState {
             unmatched_session_error: None,
             unmatched_session_error_idle_since: None,
             native_approval_origin: None,
+            running_tools: super::stuck_tool::RunningTools::new(),
         }
     }
 
@@ -106,6 +108,13 @@ impl OpenCodeRuntimeState {
         signal: crate::provider::output_ready::ProviderOutputReadySignal,
     ) {
         self.event_subscription.output_notifier.bind(run_id, signal);
+    }
+
+    /// Follows a tool part: a command OpenCode shows as running is watched
+    /// until its part says otherwise.
+    pub(super) fn note_tool_part(&mut self, part: &crate::provider::opencode_client::OpenCodePart) {
+        self.running_tools
+            .note(part, Instant::now(), crate::session::unix_epoch_ms());
     }
 
     pub(in crate::provider) fn base_url(&self) -> &str {
@@ -216,6 +225,7 @@ impl OpenCodeRuntimeState {
         self.active_prompt_submitted_at = None;
         self.unmatched_session_error = None;
         self.unmatched_session_error_idle_since = None;
+        self.running_tools.clear();
         self.last_status = Some("idle".into());
         self.baseline_existing_messages(messages);
     }

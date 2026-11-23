@@ -14,8 +14,10 @@ use super::snapshot::{
     render_snapshot_output_chunks,
 };
 use super::state::OpenCodeEventDrainResult;
+use super::stuck_tool::server_port;
 use super::transcript::{
-    format_session_status, render_session_error_transcript_update, session_status_merge_key,
+    format_session_status, render_session_error_transcript_update, render_stopped_command_update,
+    session_status_merge_key,
 };
 use super::{OpenCodeAssistantCompletion, OpenCodeOutputChunk, OpenCodeRuntimeState};
 use crate::provider::{OpenCodeClient, OpenCodeEvent, RuntimeProviderRun};
@@ -454,6 +456,9 @@ pub(in crate::provider) fn drain_opencode_events(
                     bytes: format_session_status(&status).into_bytes(),
                 });
             }
+            if end_turn_of_stopped_commands(run, state, &mut chunks) {
+                prompt_completed = true;
+            }
         } else {
             let mut completion_confirmed = state.active_terminal_assistant_message_id.is_some();
             let mut empty_active_assistant = false;
@@ -645,4 +650,47 @@ fn record_terminal_failure(
     *prompt_completed = true;
     state.active_terminal_assistant_message_id = None;
     state.active_user_message_id = None;
+}
+
+/// OpenCode keeps showing a command as running after its process ended by a
+/// signal (see `stuck_tool`). Once the process has been gone for a while the
+/// session is aborted through OpenCode's own API, each such command's row says
+/// it was stopped, and the turn ends.
+fn end_turn_of_stopped_commands(
+    run: &RuntimeProviderRun,
+    state: &mut OpenCodeRuntimeState,
+    chunks: &mut Vec<OpenCodeOutputChunk>,
+) -> bool {
+    if state.running_tools.is_empty() {
+        return false;
+    }
+    let Some(port) = server_port(&state.base_url) else {
+        return false;
+    };
+    let stopped = state.running_tools.stopped(port, std::time::Instant::now());
+    if stopped.is_empty() {
+        return false;
+    }
+    // A failed abort leaves the tools watched: the next poll asks again.
+    if let Err(error) = crate::provider::opencode_binding::abort_opencode_session(run, state) {
+        crate::logging::warn_with_fields(
+            "provider.opencode.stopped_command",
+            "could not abort the session of a stopped command",
+            serde_json::json!({"provider_run_id": run.id(), "error": error.to_string()}),
+        );
+        return false;
+    }
+    crate::logging::info_with_fields(
+        "provider.opencode.stopped_command",
+        "ended the turn of a command whose process is gone",
+        serde_json::json!({"provider_run_id": run.id(), "commands": stopped.len()}),
+    );
+    for tool in stopped {
+        chunks.push(OpenCodeOutputChunk {
+            kind: TerminalOutputKind::ProviderTool,
+            merge_key: Some(tool.part_id.clone()),
+            bytes: render_stopped_command_update(&tool.part_id, tool.input).into_bytes(),
+        });
+    }
+    true
 }
