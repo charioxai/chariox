@@ -1028,8 +1028,10 @@ export class Mirror2 {
       if (sheets.length >= 64) return false;
       // CDP names a request without its fragment; a sheet's `href` keeps it (Amazon's end in `#<revision>`).
       const requested = href.split('#')[0];
-      const body = await this.resourceBody(world, requested, 16 * 1024 * 1024);
-      let text = body?.toString('utf8');
+      // Row 487: a layout reset snapshots the same document again; its sheets' bytes are read once per document (its world).
+      const reads = world.sheetSources ??= new Map();
+      let text = reads.get(requested);
+      if (text === undefined) text = (await this.resourceBody(world, requested, 16 * 1024 * 1024))?.toString('utf8');
       // The network buffer had let go of it: the HTTP cache holds the exact bytes. The frame's own text decodes a response
       // without a charset as Latin-1, on most navigations, so the same sheet differed from page to page and the viewer's
       // retained copy never matched.
@@ -1041,6 +1043,7 @@ export class Mirror2 {
         text = reply.base64Encoded ? Buffer.from(reply.content, 'base64').toString('utf8') : reply.content;
       }
       if (typeof text !== 'string' || (bytes += text.length) > 16 * 1024 * 1024) return false;
+      if (!reads.has(requested) && reads.size < 64) reads.set(requested, text);
       const { layers, imports } = cssImports(text);
       // In source order: the sheet's leading layer statements, its imports, then its own rules.
       if (layers) sheets.push({ text: layers, url: href, open, close });
