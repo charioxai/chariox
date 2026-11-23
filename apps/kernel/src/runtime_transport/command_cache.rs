@@ -16,6 +16,7 @@ use crate::runtime::command::KernelCommand;
 use crate::transport::kernel_protocol::{KernelOutgoingFrame, KernelTransportError};
 
 mod at_most_once;
+pub(crate) use at_most_once::ReceiptStatus;
 mod receipt_retention;
 pub(crate) use at_most_once::{is_receipt_capacity_error, is_receipt_expired_error};
 use receipt_retention::ReceiptRetention;
@@ -118,6 +119,9 @@ pub(crate) struct CommandFingerprint {
     browser_caller: Option<crate::runtime::command::KernelCaller>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     browser_protection_revision: Option<u64>,
+    // Receipt reads have no request bytes to prove who originally sent this command.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    gateway_grant: Option<String>,
 }
 
 impl CommandFingerprint {
@@ -145,6 +149,7 @@ impl CommandFingerprint {
             )
             .then(|| command.caller.clone()),
             browser_protection_revision: None,
+            gateway_grant: None,
         }
     }
 }
@@ -839,6 +844,7 @@ impl CommandResultCache {
             request_hash: stable_hash64(bytes),
             browser_caller: None,
             browser_protection_revision: None,
+            gateway_grant: None,
         }
     }
 

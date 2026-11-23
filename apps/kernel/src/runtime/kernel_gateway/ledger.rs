@@ -9,6 +9,7 @@ use serde_json::{json, Value};
 
 use crate::runtime_transport::command_cache::{
     is_receipt_capacity_error, CommandFingerprint, CommandReservation, CommandResultCache,
+    ReceiptStatus,
 };
 
 /// A refusal or failure the request itself ended with.
@@ -41,7 +42,56 @@ fn interrupted() -> Value {
     json!({"gateway": "outcome_unknown"})
 }
 
+/// Keep the gateway's existing command namespace so an earlier reservation still fences a retry.
+pub(crate) fn key(gateway_public_key: &str, command_id: &str) -> String {
+    json!([gateway_public_key, command_id]).to_string()
+}
+
 impl GatewayLedger {
+    pub(crate) async fn status(
+        &self,
+        key: &str,
+        grant_id: &str,
+    ) -> Result<crate::local::GatewayCommandStatus, Failure> {
+        use crate::local::{GatewayCommandResult, GatewayCommandStatus};
+        let cache = self.0.as_ref().ok_or_else(|| Failure {
+            code: "ledger_unavailable".into(),
+            message:
+                "The kernel could not open the command receipts. Try reading the status again."
+                    .into(),
+            retryable: true,
+        })?;
+        Ok(match cache.receipt_status(key, grant_id).await {
+            ReceiptStatus::Missing => GatewayCommandStatus::NotRun,
+            ReceiptStatus::Pending => GatewayCommandStatus::Running,
+            ReceiptStatus::Inaccessible => {
+                return Err(Failure {
+                    code: "command_receipt_unavailable".into(),
+                    message: "The original receipt is unavailable to this gateway grant. Check the target Room before submitting a new command.".into(),
+                    retryable: false,
+                });
+            }
+            ReceiptStatus::Expired => GatewayCommandStatus::Expired {
+                next_step: "Check the target Room before submitting a new command.".into(),
+            },
+            ReceiptStatus::Recorded(stored) => match decode(stored) {
+                Settled::Done(Ok(value)) => GatewayCommandStatus::Ran {
+                    result: GatewayCommandResult::Response(value),
+                },
+                Settled::Done(Err(error)) => GatewayCommandStatus::Ran {
+                    result: GatewayCommandResult::Error {
+                        code: error.code,
+                        message: error.message,
+                        retryable: error.retryable,
+                    },
+                },
+                _ => GatewayCommandStatus::Interrupted {
+                    next_step: "The effect is unknown. Check the target Room before submitting a new command.".into(),
+                },
+            },
+        })
+    }
+
     pub(crate) fn open(path: PathBuf) -> Self {
         Self::open_expiring(path, RECEIPT_WINDOW_MS, LEDGER_ENTRIES)
     }
@@ -369,6 +419,67 @@ mod tests {
         dir.join("ledger.jsonl")
     }
 
+    #[tokio::test]
+    async fn a_command_status_reads_pending_and_recovers_its_original_receipt() {
+        use crate::local::{GatewayCommandResult, GatewayCommandStatus};
+        let path = journal();
+        let ledger = Arc::new(GatewayLedger::open(path.clone()));
+        let id = key("paired-key", "spawn");
+        assert_eq!(
+            ledger.status(&id, "grant-a").await.unwrap(),
+            GatewayCommandStatus::NotRun
+        );
+        let (entered, running) = tokio::sync::oneshot::channel();
+        let (release, waiting) = tokio::sync::oneshot::channel();
+        let work = tokio::spawn({
+            let ledger = Arc::clone(&ledger);
+            let id = id.clone();
+            async move {
+                ledger
+                    .run(
+                        &id,
+                        fingerprint(&create()).with_gateway_grant("grant-a"),
+                        async {
+                            entered.send(()).unwrap();
+                            waiting.await.unwrap();
+                            Ok(json!({"AgentSpawned": {"id": "original"}}))
+                        },
+                    )
+                    .await
+            }
+        });
+        running.await.unwrap();
+        assert_eq!(
+            ledger.status(&id, "grant-a").await.unwrap(),
+            GatewayCommandStatus::Running
+        );
+        assert_eq!(
+            ledger.status(&id, "grant-b").await.unwrap_err().code,
+            "command_receipt_unavailable"
+        );
+        release.send(()).unwrap();
+        assert!(matches!(work.await.unwrap(), Settled::Done(Ok(_))));
+        drop(ledger);
+
+        let ledger = GatewayLedger::open(path.clone());
+        let expected = json!({"AgentSpawned": {"id": "original"}});
+        assert_eq!(
+            ledger.status(&id, "grant-a").await.unwrap(),
+            GatewayCommandStatus::Ran {
+                result: GatewayCommandResult::Response(expected.clone()),
+            }
+        );
+        let replay = ledger
+            .run(
+                &id,
+                fingerprint(&create()).with_gateway_grant("grant-a"),
+                async { panic!("reading a receipt must not redispatch the command") },
+            )
+            .await;
+        assert!(matches!(replay, Settled::Done(Ok(value)) if value == expected));
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
     // EA2-09(e): the side effect ran, the kernel went away before its receipt, and the
     // retry of the same command id after the restart is NOT run again.
     #[tokio::test]
@@ -378,21 +489,33 @@ mod tests {
         let ledger = GatewayLedger::open(path.clone());
         let attempt = tokio::time::timeout(
             Duration::from_millis(50),
-            ledger.run("k1", fingerprint(&create()), async {
-                runs.fetch_add(1, Ordering::SeqCst);
-                std::future::pending::<()>().await;
-                Ok(json!({}))
-            }),
+            ledger.run(
+                "k1",
+                fingerprint(&create()).with_gateway_grant("grant-a"),
+                async {
+                    runs.fetch_add(1, Ordering::SeqCst);
+                    std::future::pending::<()>().await;
+                    Ok(json!({}))
+                },
+            ),
         )
         .await;
         assert!(attempt.is_err(), "the request never settled");
         drop(ledger);
         let ledger = GatewayLedger::open(path.clone());
+        assert!(matches!(
+            ledger.status("k1", "grant-a").await.unwrap(),
+            crate::local::GatewayCommandStatus::Interrupted { .. }
+        ));
         let retry = ledger
-            .run("k1", fingerprint(&create()), async {
-                runs.fetch_add(1, Ordering::SeqCst);
-                Ok(json!({}))
-            })
+            .run(
+                "k1",
+                fingerprint(&create()).with_gateway_grant("grant-a"),
+                async {
+                    runs.fetch_add(1, Ordering::SeqCst);
+                    Ok(json!({}))
+                },
+            )
             .await;
         assert!(matches!(retry, Settled::OutcomeUnknown));
         assert_eq!(
@@ -400,6 +523,35 @@ mod tests {
             1,
             "the effect ran exactly once"
         );
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_reservation_keeps_its_duplicate_fence_when_its_receipt_has_no_grant() {
+        let path = journal();
+        let ledger = GatewayLedger::open(path.clone());
+        let id = key("paired-key", "older-command");
+        let request = create();
+        assert!(matches!(
+            ledger
+                .run(&id, fingerprint(&request), async { Ok(json!({})) })
+                .await,
+            Settled::Done(Ok(_))
+        ));
+        drop(ledger);
+        let ledger = GatewayLedger::open(path.clone());
+        assert_eq!(
+            ledger.status(&id, "grant-a").await.unwrap_err().code,
+            "command_receipt_unavailable"
+        );
+        let retry = ledger
+            .run(
+                &id,
+                fingerprint(&request).with_gateway_grant("grant-a"),
+                async { panic!("an older reservation must fence this retry") },
+            )
+            .await;
+        assert!(matches!(retry, Settled::Conflict));
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 

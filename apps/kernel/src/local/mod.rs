@@ -329,7 +329,7 @@ pub use api::{
 pub use api::{
     CoverKernelAccessProcessRequest, CoveredProcess, ExtendKernelSudoRequest, FileTransferConflict,
     FileTransferEndpoint, FileTransferJob, FileTransferRef, FileTransferState,
-    ForgetGatewayKernelRequest, GatewayAttachmentRef, GatewayKernel, GatewayKernelStatus,
+    ForgetGatewayKernelRequest, GatewayCommandResult, GatewayCommandStatus, GetGatewayCommandStatusRequest, GatewayAttachmentRef, GatewayKernel, GatewayKernelStatus,
     GatewayKernelVia, GetKernelAccessStatusRequest, GetVaultSecretStatusRequest,
     HeartbeatAttachmentsRequest, JoinKernelLinkRequest, KernelAccessGrant, KernelAccessHolderState,
     KernelAccessStatus, KernelAccessStatusReason, KernelDirectoryEntry, KernelFileFailure,

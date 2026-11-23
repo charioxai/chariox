@@ -1651,6 +1651,7 @@ pub enum RelayPeerResponse {
         protocol_version: u32,
         duplicate: bool,
         target: PeerAgentStamp,
+        delivery: Option<crate::transport::relay_peer_agents::AgentMessageDelivery>,
     },
     PeerAgentSubscribed {
         protocol_version: u32,

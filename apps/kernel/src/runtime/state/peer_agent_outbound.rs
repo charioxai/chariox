@@ -239,7 +239,14 @@ impl KernelRuntimeState {
         agent: &str,
         call: PeerAgentCall,
         request_id: String,
-    ) -> Result<(PeerAgentStamp, bool), DaemonError> {
+    ) -> Result<
+        (
+            PeerAgentStamp,
+            bool,
+            Option<crate::transport::relay_peer_agents::AgentMessageDelivery>,
+        ),
+        DaemonError,
+    > {
         // Nothing on the other kernel answers a reply request yet; accepting one would drop it.
         if let PeerAgentCall::Message {
             reply_requested: true,
@@ -280,8 +287,11 @@ impl KernelRuntimeState {
         };
         match self.peer_agent_link(&caller.owner, kernel, request).await? {
             RelayPeerResponse::PeerAgentAccepted {
-                target, duplicate, ..
-            } => Ok((target, duplicate)),
+                target,
+                duplicate,
+                delivery,
+                ..
+            } => Ok((target, duplicate, delivery)),
             RelayPeerResponse::PeerAgentRefused { refusal, .. } => Err(refused(kernel, refusal)),
             _ => Err(kernel_unreachable(kernel)),
         }

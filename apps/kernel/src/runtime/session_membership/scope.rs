@@ -759,6 +759,7 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::WaitEvents(_)
         | LocalDaemonRequest::AckEvents(_)
         | LocalDaemonRequest::ListGatewayKernels(_)
+        | LocalDaemonRequest::GetGatewayCommandStatus(_)
         | LocalDaemonRequest::HeartbeatAttachments(_)
         | LocalDaemonRequest::JoinKernelLink(_)
         | LocalDaemonRequest::ForgetGatewayKernel(_)

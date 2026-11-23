@@ -23,6 +23,11 @@ pub(crate) fn is_receipt_expired_error(error: &io::Error) -> bool {
 }
 
 impl CommandFingerprint {
+    pub(crate) fn with_gateway_grant(mut self, grant_id: &str) -> Self {
+        self.gateway_grant = Some(grant_id.to_owned());
+        self
+    }
+
     pub(crate) fn for_app_control(command: &KernelCommand, request: &LocalDaemonRequest) -> Self {
         use sha2::{Digest, Sha256};
         let mut fingerprint = Self::from_command_and_request(command, request);
@@ -37,7 +42,37 @@ impl CommandFingerprint {
     }
 }
 
+pub(crate) enum ReceiptStatus {
+    Missing,
+    Pending,
+    Recorded(Option<Value>),
+    Expired,
+    Inaccessible,
+}
+
 impl CommandResultCache {
+    /// A status read doesn't add a waiter or renew the receipt's retention.
+    pub(crate) async fn receipt_status(&self, command_id: &str, grant_id: &str) -> ReceiptStatus {
+        let retention = self.receipt_retention.lock().await;
+        if retention.contains(command_id) {
+            return ReceiptStatus::Expired;
+        }
+        match self.results.lock().await.get(command_id) {
+            None => ReceiptStatus::Missing,
+            Some(CommandResultEntry::Pending { fingerprint, .. })
+                if fingerprint.gateway_grant.as_deref() == Some(grant_id) =>
+            {
+                ReceiptStatus::Pending
+            }
+            Some(CommandResultEntry::Completed(cached))
+                if cached.fingerprint.gateway_grant.as_deref() == Some(grant_id) =>
+            {
+                ReceiptStatus::Recorded(*cached.response_value())
+            }
+            Some(_) => ReceiptStatus::Inaccessible,
+        }
+    }
+
     pub(crate) async fn has_reserved(&self, command_id: &str) -> bool {
         let retention = self.receipt_retention.lock().await;
         retention.contains(command_id) || self.results.lock().await.contains_key(command_id)

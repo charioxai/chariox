@@ -175,6 +175,12 @@ impl CommandRouter {
             )?;
             return self.account_kernels(&command, account).await;
         }
+        if let LocalDaemonRequest::GetGatewayCommandStatus(_) = &request {
+            return Err(DaemonError::LocalTransport {
+                operation: "read command status",
+                message: "Choose the kernel the request was sent to through the gateway.".into(),
+            });
+        }
         if let LocalDaemonRequest::ListGatewayKernels(_) = &request {
             return self.list_gateway_machines(&command).await;
         }

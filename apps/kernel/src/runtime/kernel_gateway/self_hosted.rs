@@ -33,6 +33,7 @@ impl TargetStatus {
     /// Takes the name the kernel gives itself: the pairing link only carried its ids.
     pub(super) fn apply_to(self, presence: &mut RelayKernelPresence) {
         presence.capabilities = self.capabilities;
+        presence.local_protocol = self.protocol;
         presence.machine_alias = self.machine_alias.or(presence.machine_alias.take());
     }
 }
@@ -261,10 +262,11 @@ mod tests {
 
     // A pairing link carries ids only; the kernel's own status gives the names `--kernel` accepts.
     #[test]
-    fn the_names_a_kernel_gives_itself_replace_the_ids_the_link_carried() {
+    fn paired_presence_keeps_the_targets_name_capabilities_and_protocol() {
         let mut presence = paired("k-x", None, None).presence;
+        let protocol = crate::local::LOCAL_DAEMON_PROTOCOL_VERSION;
         TargetStatus {
-            protocol: None,
+            protocol: Some(protocol),
             capabilities: vec!["kernel_gateway_v1".into()],
             machine_alias: Some("b3".into()),
         }
@@ -272,6 +274,7 @@ mod tests {
         assert_eq!(presence.kernel_alias, None);
         assert_eq!(presence.machine_alias.as_deref(), Some("b3"));
         assert_eq!(presence.capabilities, ["kernel_gateway_v1"]);
+        assert_eq!(presence.local_protocol, Some(protocol));
         // A status that names nothing keeps what was learned before.
         TargetStatus {
             protocol: None,
@@ -281,5 +284,6 @@ mod tests {
         .apply_to(&mut presence);
         assert_eq!(presence.machine_alias.as_deref(), Some("b3"));
         assert!(presence.capabilities.is_empty());
+        assert_eq!(presence.local_protocol, None);
     }
 }

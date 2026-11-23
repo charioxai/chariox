@@ -230,8 +230,62 @@ impl KernelRuntimeState {
         Ok(Promotion::Promoted)
     }
 
-    /// A message sent again with the key it first had is the same message: the answer is the first send's,
-    /// unless the repeat is urgent and the message is still queued, which promotes it.
+    pub(super) fn urgent_agent_message_delivery(
+        &self,
+        submitted: &InboxEvent,
+    ) -> Result<
+        (
+            crate::transport::relay_peer_agents::AgentMessageDelivery,
+            Option<String>,
+        ),
+        DaemonError,
+    > {
+        use crate::transport::relay_peer_agents::AgentMessageDelivery::{
+            Queued, Started, Steered, Undelivered,
+        };
+        let current = self
+            .owned
+            .durable_state_store
+            .agent_inbox_event(submitted.sequence)?;
+        let event = current.as_ref().map_or(submitted, |(event, _)| event);
+        Ok(match event.state.as_str() {
+            "accepted" | "acknowledged" | "handled" => {
+                if let Some(target) = &event.target_prompt_id {
+                    (Steered, Some(target.clone()))
+                } else if let Some(prompt) = &event.prompt_id {
+                    (Started, Some(prompt.clone()))
+                } else {
+                    (Queued, None)
+                }
+            }
+            "failed" | "expired" => (Undelivered, None),
+            _ => (Queued, None),
+        })
+    }
+
+    pub(super) fn urgent_agent_message_receipt(
+        &self,
+        event: &InboxEvent,
+    ) -> Result<serde_json::Value, DaemonError> {
+        use crate::transport::relay_peer_agents::AgentMessageDelivery;
+        let (delivery, prompt_id) = self.urgent_agent_message_delivery(event)?;
+        let mut receipt = serde_json::json!({
+            "status": delivery,
+            "message_id": event.sequence.to_string(),
+            "sequence": event.sequence,
+            "urgent": true,
+            "reply_requested": event.reply_requested,
+        });
+        if let Some(prompt_id) = prompt_id {
+            receipt["prompt_id"] = prompt_id.into();
+        } else if delivery == AgentMessageDelivery::Queued {
+            receipt["note"] = "The message is saved. Delivery has not been confirmed.".into();
+        }
+        Ok(receipt)
+    }
+
+    /// A message sent again with the key it first had uses the same inbox row.
+    /// An urgent repeat can promote the original queued message.
     pub(super) async fn answer_resent_agent_message(
         &self,
         first: &InboxEvent,
@@ -239,11 +293,10 @@ impl KernelRuntimeState {
         target_name: &str,
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
         if urgent && !first.urgent {
-            let promotion = self.promote_queued_message(first).await?;
-            return Ok(promotion_result(first.sequence, &promotion));
+            self.promote_queued_message(first).await?;
         }
-        let payload = if first.urgent {
-            serde_json::json!({"status":"steering","message_id":first.sequence.to_string(),"sequence":first.sequence,"urgent":true,"reply_requested":first.reply_requested})
+        let payload = if first.urgent || urgent {
+            self.urgent_agent_message_receipt(first)?
         } else {
             serde_json::json!({"status":"queued","message_id":first.sequence.to_string(),"sequence":first.sequence,"urgent":false,"reply_requested":first.reply_requested,"note":queued_note(target_name)})
         };
@@ -288,7 +341,7 @@ impl KernelRuntimeState {
         else {
             return Err(ledger::error("no queued message of yours has this id"));
         };
-        let (target, _) = self
+        let (target, _, _) = self
             .relay_peer_agent(
                 sender,
                 kernel,

@@ -5819,10 +5819,16 @@ authority for its own sessions, agents, terminals and files.
   requests only. `KernelAccessGrant.holder_harness` (`codex`, `claude`, `opencode`; absent when unknown) names the
   provider harness the kernel recognised, for display.
 - At most once: every non-read request (repeatable means a variant that starts with List, Get, Search, Stat or Heartbeat)
-  is reserved in the target's durable gateway ledger (`gateway-ledger.jsonl`, at-most-once receipts, 512 entries)
+  is reserved in the target's durable gateway ledger (`gateway-ledger.jsonl`, at-most-once receipts, 4096 entries)
   before it runs and settled after. A retry with the same `command_id` returns the original result; a retry of an
   interrupted reservation returns `kernel_outcome_unknown` and never runs again; a different request under the same
   id is `duplicate_command_conflict`; a full or unreadable ledger is `ledger_unavailable` and nothing ran.
+  Local protocol **1013** adds `GetGatewayCommandStatus { command_id }` on the same gateway route and access grant.
+  Run `chariox request --kernel NAME` with that request on stdin. It reads the target's receipt without resending the
+  command. `GatewayCommandStatus { command_id, status }` reports `not_run` for an unreserved ID, `running` for a live
+  reservation, or `ran` with its original `result.response` or `result.error`. After the target restarts, a reservation
+  without a result reports `interrupted`. An evicted one reports `expired`. Both give a next step and fence the original ID.
+  A different gateway or access grant cannot read the receipt.
 - Errors (code, one sentence, next step): `kernel_unknown`, `kernel_ambiguous`, `kernel_offline`,
   `kernel_unreachable`, `kernel_unpaired`, `kernel_incompatible`, `kernel_update_needed` (the target runs protocol N and needs M), `kernel_request_timeout` (30 s),
   `kernel_connection_lost`, `kernel_outcome_unknown`, `kernel_not_available`. Nothing falls back to local or to

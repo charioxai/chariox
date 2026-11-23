@@ -195,6 +195,12 @@ pub(super) fn incompatibility(
 ) -> Option<String> {
     use crate::local::LocalDaemonRequest;
     match request {
+        LocalDaemonRequest::GetGatewayCommandStatus(_)
+            if !is_gateway_ready(kernel)
+                || kernel.local_protocol.is_none_or(|version| version < 1013) =>
+        {
+            Some("it predates command status lookup".into())
+        }
         LocalDaemonRequest::RespondToInteraction(_) if !is_gateway_ready(kernel) => Some(format!(
             "it predates the {GATEWAY_CAPABILITY} contract that classifies approvals itself"
         )),

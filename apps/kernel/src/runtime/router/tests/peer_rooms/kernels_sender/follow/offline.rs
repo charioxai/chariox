@@ -287,7 +287,11 @@ fn a_steer_command_whose_answer_was_lost_is_one_delivery_when_made_again() {
             .command(command)
             .await
             .expect("the retry is answered by the kernel that took the first");
-        assert_eq!(retry["response"]["status"], "duplicate", "{retry}");
+        assert_eq!(retry["response"]["duplicate"], true, "{retry}");
+        assert!(matches!(
+            retry["response"]["status"].as_str(),
+            Some("started" | "steered" | "queued")
+        ));
         assert_eq!(
             b.messages(b.agent.id()).await.len(),
             1,

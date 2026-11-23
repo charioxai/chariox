@@ -31,6 +31,7 @@ pub enum LocalDaemonRequest {
     ListOwnerInteractions(ListOwnerInteractionsRequest),
     RevokeKernelAccessGrant(RevokeKernelAccessGrantRequest),
     ListGatewayKernels(ListGatewayKernelsRequest),
+    GetGatewayCommandStatus(GetGatewayCommandStatusRequest),
     HeartbeatAttachments(HeartbeatAttachmentsRequest),
     JoinKernelLink(JoinKernelLinkRequest),
     ForgetGatewayKernel(ForgetGatewayKernelRequest),

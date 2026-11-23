@@ -20,6 +20,34 @@ pub struct OnBehalfOf {
 #[serde(deny_unknown_fields)]
 pub struct ListGatewayKernelsRequest {}
 
+/// Read the outcome recorded for one command sent through the same gateway grant.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GetGatewayCommandStatusRequest {
+    pub command_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum GatewayCommandStatus {
+    NotRun,
+    Running,
+    Ran { result: GatewayCommandResult },
+    Interrupted { next_step: String },
+    Expired { next_step: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GatewayCommandResult {
+    Response(serde_json::Value),
+    Error {
+        code: String,
+        message: String,
+        retryable: bool,
+    },
+}
+
 /// Protocol 568, human-only: pair this kernel's gateway with a self-hosted kernel
 /// through the terminal pairing link that kernel made. A scoped relay needs the
 /// operator's CLIENT transport token as well; it is stored privately and never returned.

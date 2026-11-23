@@ -1008,7 +1008,11 @@ fn a_message_to_a_peer_on_another_kernel_queues_there_and_its_sender_promotes_it
             }))
             .await
             .expect("the resend is answered");
-        assert_eq!(again["status"], "duplicate");
+        assert_eq!(again["duplicate"], true);
+        assert!(matches!(
+            again["status"].as_str(),
+            Some("started" | "steered")
+        ));
         assert_eq!(b.messages(b.agent.id()).await.len(), 1);
 
         // A promotion of what the other kernel never held is refused there, not sent as a message.

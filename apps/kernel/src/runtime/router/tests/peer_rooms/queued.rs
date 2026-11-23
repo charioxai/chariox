@@ -145,7 +145,8 @@ fn an_urgent_message_to_an_idle_agent_starts_its_turn() {
         let rooms = Rooms::new(AgentPermissionLevel::Yolo, AgentPermissionLevel::Yolo);
         let idle = spawn_idle(&rooms).await;
         let sent = send_to(&rooms, "idle", serde_json::json!({"urgent": true})).await;
-        assert_eq!(sent["status"], "steering");
+        assert_eq!(sent["status"], "started");
+        assert!(sent["prompt_id"].as_str().is_some());
         assert!(
             rooms
                 .wait_for_message_delivery(&rooms.peer_room, idle.id())
@@ -254,7 +255,7 @@ fn sending_the_same_key_again_as_urgent_promotes_the_queued_message() {
             serde_json::json!({"idempotency_key": "notes-1", "urgent": true}),
         )
         .await;
-        assert_eq!(promoted["status"], "promoted");
+        assert_eq!(promoted["status"], "started");
         assert_eq!(promoted["sequence"], queued["sequence"]);
         assert!(
             rooms
