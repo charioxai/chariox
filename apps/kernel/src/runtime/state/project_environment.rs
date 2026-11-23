@@ -262,9 +262,12 @@ impl KernelRuntimeState {
         match &request.source {
             ProjectEnvironmentSecretSource::Value(value) => {
                 self.require_unlocked_vault()?;
-                self.store_environment_secret(project.id(), &request.name, value.expose_secret())?;
-                // A typed value replaces the copy, so the entry no longer stands behind it.
-                links.remove(project.id(), &request.name)?;
+                // A typed value replaces the copy, so nothing stands behind it any more; under the
+                // link lock, so a re-fill that is underway cannot overwrite it.
+                links.write_linked(project.id(), &request.name, None, || {
+                    self.store_environment_secret(project.id(), &request.name, value.expose_secret())
+                        .map(|()| true)
+                })?;
             }
             ProjectEnvironmentSecretSource::VaultEntry(credential_id) => {
                 self.require_unlocked_vault()?;
@@ -339,8 +342,18 @@ impl KernelRuntimeState {
         let value = self
             .read_vault_value_for_use(actor, ask, credential_id, &target, still_current)
             .await?;
-        self.store_environment_secret(project_id, name, &value)?;
-        self.secret_links().set(project_id, name, credential_id)
+        self.secret_links().write_linked(
+            project_id,
+            name,
+            Some(crate::project_environment::SecretLink::Entry(
+                credential_id.to_owned(),
+            )),
+            || {
+                self.store_environment_secret(project_id, name, &value)
+                    .map(|()| true)
+            },
+        )?;
+        Ok(())
     }
 
     pub(super) fn secret_links(&self) -> crate::project_environment::SecretLinks {
@@ -392,7 +405,39 @@ impl KernelRuntimeState {
             "Used at {} by {actor}",
             super::vault_use::vault_use_destination(&target)
         ))?;
-        self.store_environment_secret(project_id, name, &value)
+        // A value typed meanwhile ended the link and is kept.
+        self.secret_links().write_if_linked(
+            project_id,
+            name,
+            &crate::project_environment::SecretLink::Entry(entry_id.to_owned()),
+            || self.store_environment_secret(project_id, name, &value),
+        )?;
+        Ok(())
+    }
+
+    /// A raw write of the Vault value at `key`: every entry whose value lives there re-fills its Secrets,
+    /// the same as the owner's Replace.
+    pub(crate) fn refill_environment_secrets_at_vault_key(&self, key: &str) {
+        let entries = crate::credential::CharioxCredentialRegistry::user()
+            .and_then(|registry| registry.list());
+        match entries {
+            Ok(entries) => {
+                for entry in entries {
+                    if matches!(&entry.source, crate::config::UserCredentialSourceConfig::Vault { key: at } if at == key)
+                    {
+                        self.refill_linked_environment_secrets(&entry.id);
+                    }
+                }
+            }
+            Err(error) => tracing::warn!(%error, "the Vault entries could not be read"),
+        }
+    }
+
+    /// The owner deleted the entry: Secrets filled from it keep their value as normal Secrets.
+    pub(crate) fn unlink_deleted_vault_entry(&self, entry_id: &str) {
+        if let Err(error) = self.secret_links().unlink_entry(entry_id) {
+            tracing::warn!(%error, "the Environment secret links could not be saved");
+        }
     }
 
     /// The use the entry was made for, when that is a command's environment variable of this name.
