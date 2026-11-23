@@ -2280,3 +2280,110 @@ fn mp11_revoked_direct_session_does_not_start_a_mutation_that_had_not_begun() {
         );
     });
 }
+
+/// A relay request for `request` under `command_id`, answered through the same dispatch the direct session uses.
+async fn dispatch_as_session(
+    kernel: &Kernel,
+    browser: &Browser,
+    gate: Option<crate::runtime::start_gate::StartGate>,
+    command_id: &str,
+    request: &LocalDaemonRequest,
+) -> RelayRequestOutcome {
+    let encrypted = relay_crypto::encrypt_payload_for_peer(
+        &browser.private_key,
+        &kernel.daemon_public_key,
+        serde_json::json!({"command_id": command_id, "request": request}).to_string().as_bytes(),
+    )
+    .unwrap();
+    crate::runtime::start_gate::scope(
+        gate,
+        handle_daemon_request(
+            &kernel.direct.router,
+            &kernel.direct.command_sequence,
+            Some(browser.identity()),
+            encrypted,
+            &kernel.direct.command_result_cache,
+            &Default::default(),
+            None,
+        ),
+    )
+    .await
+}
+
+fn new_room_request() -> LocalDaemonRequest {
+    let workspace = std::env::current_dir().unwrap().to_string_lossy().into_owned();
+    LocalDaemonRequest::CreateSession(crate::session::CreateSessionRequest::new(&workspace, &workspace))
+}
+
+#[test]
+fn mp11_cancelled_mutation_does_not_run_and_a_retry_runs_it_afresh() {
+    large_stack(async {
+        let kernel = Kernel::new();
+        let browser = Browser::new();
+        let before = relay_session_count(&kernel, &browser).await;
+        let gate = crate::runtime::start_gate::StartGate::default();
+        gate.cancel();
+        let outcome = dispatch_as_session(&kernel, &browser, Some(gate), "cancelled-441", &new_room_request()).await;
+        assert_eq!(outcome.error.as_ref().map(|error| error.code.as_str()), Some("request_cancelled"));
+        assert_eq!(relay_session_count(&kernel, &browser).await, before, "a cancelled mutation must not run");
+        // The reservation was released, not cached: the same command id runs when its client asks again.
+        let retry = dispatch_as_session(&kernel, &browser, None, "cancelled-441", &new_room_request()).await;
+        assert!(retry.error.is_none(), "{:?}", retry.error);
+        assert_eq!(relay_session_count(&kernel, &browser).await, before + 1);
+    });
+}
+
+#[test]
+fn mp11_cancel_leaves_reads_alone_and_a_begun_mutation_keeps_its_result_for_retries() {
+    large_stack(async {
+        let kernel = Kernel::new();
+        let browser = Browser::new();
+        let before = relay_session_count(&kernel, &browser).await;
+        let gate = crate::runtime::start_gate::StartGate::default();
+        gate.cancel();
+        let read = dispatch_as_session(
+            &kernel,
+            &browser,
+            Some(gate),
+            "read-441",
+            &LocalDaemonRequest::ListSessions(ListSessionsRequest),
+        )
+        .await;
+        assert!(read.error.is_none(), "a read is never cancelled: {:?}", read.error);
+
+        let begun = crate::runtime::start_gate::StartGate::default();
+        let first = dispatch_as_session(&kernel, &browser, Some(begun.clone()), "begun-441", &new_room_request()).await;
+        assert!(first.error.is_none(), "{:?}", first.error);
+        begun.cancel();
+        assert!(!begun.is_cancelled(), "a begun request is not cancelled");
+        let retry = dispatch_as_session(&kernel, &browser, None, "begun-441", &new_room_request()).await;
+        assert_eq!(
+            relay_crypto::decrypt_payload_for_private_key(&browser.private_key, &retry.encrypted_response.unwrap())
+                .unwrap()
+                .plaintext,
+            relay_crypto::decrypt_payload_for_private_key(&browser.private_key, &first.encrypted_response.unwrap())
+                .unwrap()
+                .plaintext,
+            "a relay retry sees the original result"
+        );
+        assert_eq!(relay_session_count(&kernel, &browser).await, before + 1, "the retry did not run it again");
+    });
+}
+
+#[test]
+fn mp11_revoking_cancels_unbegun_requests_before_the_revoking_call_returns() {
+    large_stack(async {
+        let kernel = Kernel::new();
+        let waiting = crate::runtime::start_gate::StartGate::default();
+        let begun = crate::runtime::start_gate::StartGate::default();
+        assert!(begun.begin());
+        kernel.direct.register_start_gate(waiting.clone());
+        kernel.direct.register_start_gate(begun.clone());
+        let mut unpaired = kernel.projection.snapshot();
+        unpaired.cloud_relay = None;
+        kernel.projection.update(unpaired);
+        // No await since the update: the cut is part of it, not a poll that follows.
+        assert!(waiting.is_cancelled());
+        assert!(!begun.is_cancelled());
+    });
+}

@@ -6,6 +6,7 @@ use futures_util::{Sink, Stream};
 
 use super::leases::LocalBrowserLeaseState;
 use super::*;
+use crate::runtime::start_gate::{self, StartGate};
 use crate::runtime_transport::CONNECTION_INBOUND_REQUEST_LIMIT;
 
 const SESSION_QUEUE_LIMIT: usize = 1024;
@@ -114,6 +115,10 @@ where
         }
     };
     direct.retire_lease(&lease_id);
+    // Revoked authority: a mutation still waiting in its command lane never begins. A begun one settles below.
+    if close_reason == "local browser authority revoked" {
+        direct.cancel_unbegun_requests();
+    }
     // Accepted commands own their dispatch and cache settlement independently
     // of this socket. A relay retry must observe the original result.
     requests.detach_all();
@@ -217,7 +222,12 @@ async fn handle_client_frame(
                 None => (None, false),
             };
             let outgoing_tx = outgoing_tx.clone();
-            requests.spawn(async move {
+            let gate = StartGate::default();
+            direct.register_start_gate(gate.clone());
+            requests.spawn(start_gate::scope(Some(gate.clone()), async move {
+                if gate.is_cancelled() {
+                    return;
+                }
                 let turn = match turn {
                     Some(turn) => turn.enter(read).await,
                     None => None,
@@ -254,7 +264,7 @@ async fn handle_client_frame(
                         error: outcome.error,
                     },
                 );
-            });
+            }));
             Ok(())
         }
         RelayEnvelope::ClientSubscribe {

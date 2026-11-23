@@ -41,6 +41,8 @@ struct SessionCommandEnvelope {
     /// The caller's retry key: one effect however often the command repeats.
     idempotency_key: Option<String>,
     request: LocalDaemonRequest,
+    /// A revocable transport's mark that this command has not begun: a cancelled one is skipped.
+    start_gate: Option<crate::runtime::start_gate::StartGate>,
     result_tx: oneshot::Sender<Result<LocalDaemonResponse, DaemonError>>,
 }
 
@@ -103,6 +105,10 @@ impl SessionRuntime {
         let lane_id = session_command_lane_id(&request, &session_id);
         let lane = self.session_lane(&lane_id, &session_id).await;
         let (result_tx, result_rx) = oneshot::channel();
+        let start_gate = crate::runtime::start_gate::current();
+        if start_gate.as_ref().is_some_and(|gate| gate.is_cancelled()) {
+            return Err(crate::runtime::start_gate::cancelled());
+        }
         let caller_user_id = command_session_actor_user_id(&command);
         let telemetry = LaneCommandTrace::new(
             crate::runtime::command_latency::CommandTrace::from_command(&command),
@@ -133,6 +139,7 @@ impl SessionRuntime {
             sudo_binding,
             idempotency_key,
             request,
+            start_gate,
             result_tx,
         })) {
             Ok(()) => {
@@ -280,6 +287,7 @@ impl SessionRuntime {
             sudo_binding: None,
             idempotency_key: None,
             request,
+            start_gate: None,
             result_tx,
         }))
         .map_err(|error| DaemonError::LocalTransport {
@@ -314,6 +322,12 @@ async fn run_session_command_lane(
     );
     while let Some(envelope) = rx.recv().await {
         let envelope = *envelope;
+        if envelope.start_gate.as_ref().is_some_and(|gate| !gate.begin()) {
+            let _ = envelope
+                .result_tx
+                .send(Err(crate::runtime::start_gate::cancelled()));
+            continue;
+        }
         let dispatch_started_at_ms = crate::runtime::command_latency::now_ms();
         log_lane_dispatched(
             &envelope.telemetry,

@@ -82,6 +82,8 @@ pub(crate) struct LocalBrowserDirect {
     leases: std::sync::Mutex<BTreeMap<String, leases::LocalBrowserLease>>,
     authority: watch::Sender<Option<LocalBrowserAuthority>>,
     authority_watch: std::sync::Once,
+    /// Start gates of the requests every session has running; revocation cancels the ones that have not begun.
+    start_gates: std::sync::Mutex<Vec<crate::runtime::start_gate::StartGate>>,
     rtc: rtc::RtcEndpoint,
 }
 
@@ -135,7 +137,15 @@ impl LocalBrowserDirect {
             leases: std::sync::Mutex::new(BTreeMap::new()),
             authority: watch::channel(authority).0,
             authority_watch: std::sync::Once::new(),
+            start_gates: std::sync::Mutex::new(Vec::new()),
             rtc,
+        });
+        // A logout, re-pairing or key change cuts the queue before its own call returns; the poll below only backstops.
+        let weak = Arc::downgrade(&direct);
+        direct.router.observe_relay_config_updates(move |_| {
+            if let Some(direct) = weak.upgrade() {
+                direct.refresh_authority();
+            }
         });
         // Spawned here rather than on bind: the accept loop dispatches requests
         // that can issue grants, so it must not be part of `ensure_endpoint`.
@@ -364,16 +374,35 @@ impl LocalBrowserDirect {
         }
     }
 
+    /// A session's request is waiting for its command lane; revocation can cancel it until the lane takes it.
+    fn register_start_gate(&self, gate: crate::runtime::start_gate::StartGate) {
+        let mut gates = self.start_gates.lock().expect("start gates poisoned");
+        if gates.len() >= 64 {
+            gates.retain(crate::runtime::start_gate::StartGate::is_waiting);
+        }
+        gates.push(gate);
+    }
+
+    /// Revoked authority: every mutation that has not begun never will; a begun one settles and keeps its result.
+    fn cancel_unbegun_requests(&self) {
+        for gate in self.start_gates.lock().expect("start gates poisoned").drain(..) {
+            gate.cancel();
+        }
+    }
+
     /// Publishes the current pairing authority; a change retires every session.
     fn refresh_authority(&self) -> Option<LocalBrowserAuthority> {
         let next = current_authority(&self.router.relay_config_snapshot());
-        self.authority.send_if_modified(|current| {
+        let changed = self.authority.send_if_modified(|current| {
             if *current == next {
                 return false;
             }
             *current = next.clone();
             true
         });
+        if changed {
+            self.cancel_unbegun_requests();
+        }
         next
     }
 }
