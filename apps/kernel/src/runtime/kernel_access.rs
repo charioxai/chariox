@@ -311,7 +311,7 @@ impl Refusal {
 
     pub(crate) fn message(self) -> &'static str {
         match self {
-            Self::HumanOnly => "Only you can do this, in a Chariox terminal. An external agent can't.",
+            Self::HumanOnly => "Only the person can do this, in a Chariox terminal: payments and secrets stay with them. Ask them.",
             Self::NotCovered => "This process has no access. Only the agent you approved, and the programs it starts, are covered. To cover a background process you started, run `chariox access cover --pid <its pid>` right after starting it; to get access for a new agent, run `chariox access request --until-exit`.",
             Self::Ended => "Access ended. Ask for new access if you still need it.",
             Self::EndedExpired => "Access ended because its time ran out. Ask for new access to continue.",
