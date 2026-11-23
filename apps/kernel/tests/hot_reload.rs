@@ -123,6 +123,7 @@ impl Drop for Kernel {
         }
         let _ = self.child.kill();
         let _ = self.child.wait();
+        let _ = std::fs::remove_file(short_socket_path(self.port));
         if std::env::var_os("CHARIOX_HOT_RELOAD_KEEP").is_none() {
             let _ = std::fs::remove_dir_all(&self.scratch);
         }
@@ -155,6 +156,12 @@ fn start_kernel_inheriting(scratch: &Path, env: &[(&str, PathBuf)], inherited: &
 /// as terminals, which may focus agents (as the browser does).
 fn start_laptop_kernel(scratch: &Path, env: &[(&str, PathBuf)]) -> Kernel {
     launch_kernel(scratch, env, &[], false)
+}
+
+/// A Unix socket path holds at most 107 bytes, and a build host's temp directory can be long
+/// (the farm's is): the kernel's socket lives at a short path named by its port.
+fn short_socket_path(port: u16) -> PathBuf {
+    PathBuf::from(format!("/tmp/hrk-{}-{port}.sock", std::process::id()))
 }
 
 fn launch_kernel(
@@ -227,7 +234,7 @@ fn launch_kernel(
         .env("CHARIOX_KERNEL_HOST", "127.0.0.1")
         .env("CHARIOX_KERNEL_PORT", port.to_string())
         .env("CHARIOX_MCP_PORT", free_port().to_string())
-        .env("CHARIOX_DAEMON_SOCKET", scratch.join("k.sock"))
+        .env("CHARIOX_DAEMON_SOCKET", short_socket_path(port))
         .envs(env.iter().map(|(name, value)| (*name, value)))
         .stdin(Stdio::null())
         .stdout(log.try_clone().unwrap())
