@@ -7586,8 +7586,9 @@ only passes them on and never adds, ranks or rates an option. `Acquire` takes an
 exactly that option is acquired, or the call fails with a plain reason (not offered, region needed,
 not available right now) and nothing is acquired in its place. The capability revision covers the
 list, so a change of stock or rate needs a fresh decision. Agents use the same list through
-`chariox.machines.options` and `chariox.machines.acquire {class_id, region}`; the owner's approval
-card names the chosen option. The shape is pinned by the `machine_options_1011_shapes_and_hash` protocol test.
+`chariox.machines.options` and `chariox.machines.acquire {class_id, region, purpose}`; the owner's approval
+card names the chosen option, and its title names the requesting agent and the one-line purpose it gave
+(a kernel-local tool argument: no wire shape changes). The shape is pinned by the `machine_options_1011_shapes_and_hash` protocol test.
 
 Protocol 993 (peer 432) adds optional task `owner_action: "browser_access"` and a kernel decision `related_agent_id`. Browser approval stays attached to the blocked task revision and grants access only after an owner answer. Task owner decisions have no automatic expiry; ordinary interaction deadlines are unchanged. Clients place these decisions with the referenced agent and remove them when the authoritative task leaves Blocked.
 
