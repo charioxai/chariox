@@ -145,10 +145,23 @@ impl KernelRuntimeState {
                 ))
             }
         };
+        // The owner tells the Room's agents apart by name, and decides on what the machine is for (row 257).
+        let title = machine_request_title(
+            agent.map(|agent| {
+                self.owned
+                    .agent_store
+                    .get_agent(agent)
+                    .ok()
+                    .map(|known| known.alias().unwrap_or(known.agent_ref()).to_owned())
+                    .or_else(|| session.agent_display_name(agent))
+                    .unwrap_or_else(|| agent.to_owned())
+            }),
+            self.owned.acquire_purposes.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).get(request_id).cloned(),
+        );
         let mut interaction = RuntimeInteraction::for_kernel_operation(
             &id,
             &id,
-            "",
+            title,
             description,
             vec![
                 RuntimeInteractionChoice::new(
@@ -193,6 +206,43 @@ impl KernelRuntimeState {
         Ok(())
     }
 }
+/// The card's title: who asks, and the purpose it gave, as one sentence the card's message follows.
+fn machine_request_title(agent: Option<String>, purpose: Option<String>) -> String {
+    let who = agent.unwrap_or_else(|| "An agent".into());
+    match purpose {
+        Some(purpose) => {
+            let end = if purpose.ends_with(['.', '?', '!']) { "" } else { "." };
+            format!("{who} asks for a machine. Purpose: {purpose}{end}")
+        }
+        None => format!("{who} asks for a machine and gave no purpose."),
+    }
+}
+
+/// The purpose an agent gave with one acquire, readable by the owner's card while the request is in flight.
+struct AcquirePurpose(Option<(KernelRuntimeState, String)>);
+impl AcquirePurpose {
+    /// One line of at most 200 characters; an empty purpose is none.
+    fn hold(state: &KernelRuntimeState, request_id: &str, purpose: Option<&str>) -> Self {
+        let purpose = purpose
+            .map(|text| text.split_whitespace().collect::<Vec<_>>().join(" "))
+            .filter(|text| !text.is_empty())
+            .map(|text| match text.char_indices().nth(200) {
+                Some((end, _)) => format!("{}…", &text[..end]),
+                None => text,
+            });
+        let Some(purpose) = purpose else { return Self(None) };
+        state.owned.acquire_purposes.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).insert(request_id.to_owned(), purpose);
+        Self(Some((state.clone(), request_id.to_owned())))
+    }
+}
+impl Drop for AcquirePurpose {
+    fn drop(&mut self) {
+        if let Some((state, request_id)) = self.0.take() {
+            state.owned.acquire_purposes.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).remove(&request_id);
+        }
+    }
+}
+
 /// Dropping a waiting job withdraws its decision before an agent can leave a stale stripe.
 struct PendingAcquisition(Option<(KernelRuntimeState, String, String)>);
 impl Drop for PendingAcquisition {
@@ -224,7 +274,7 @@ pub(crate) fn machine_tool_specs() -> Vec<crate::transport::runtime_tools::Runti
     let schema = |properties, required| serde_json::json!({"type":"object","properties":properties,"required":required,"additionalProperties":false});
     [
         ("chariox.machines.options", "List the machines you can acquire now, as the connected service offers them: class_id, region, size, rate per minute in the account's currency and whether it is in stock. Pick one for chariox.machines.acquire. An option that is not available cannot be acquired.", schema(serde_json::json!({}),serde_json::json!([]))),
-        ("chariox.machines.acquire", "Acquire a machine through Chariox for work you need to run elsewhere. Pass class_id (and region when the class is offered in several) from chariox.machines.options to acquire exactly that option; without class_id the first option in stock is acquired. A named option that is out of stock is refused with the options in stock, never replaced. The kernel asks the person first unless they enabled automatic offload and allocation. Service limits and the daily spend cap always apply. Returns allocation_ref, the machine type and service terms; poll status until access is available, then reach the returned kernel with Room commands. Release it when finished. Reuse request_id for a retry, after a lost response, a timeout or a refusal: it is safe, keeps the option the first try chose and returns the allocation the service accepted. Use a new request_id only when a refusal says the service closed the old one: nothing was allocated under it then, and nothing ever will be.", schema(serde_json::json!({"request_id":{"type":"string"},"class_id":{"type":"string"},"region":{"type":"string"}}),serde_json::json!([]))),
+        ("chariox.machines.acquire", "Acquire a machine through Chariox for work you need to run elsewhere. Pass class_id (and region when the class is offered in several) from chariox.machines.options to acquire exactly that option; without class_id the first option in stock is acquired. A named option that is out of stock is refused with the options in stock, never replaced. The kernel asks the person first unless they enabled automatic offload and allocation. Service limits and the daily spend cap always apply. Returns allocation_ref, the machine type and service terms; poll status until access is available, then reach the returned kernel with Room commands. Release it when finished. Reuse request_id for a retry, after a lost response, a timeout or a refusal: it is safe, keeps the option the first try chose and returns the allocation the service accepted. Use a new request_id only when a refusal says the service closed the old one: nothing was allocated under it then, and nothing ever will be. Say in purpose, in one line, what the machine is for: the person's card names you and shows it.", schema(serde_json::json!({"request_id":{"type":"string"},"class_id":{"type":"string"},"region":{"type":"string"},"purpose":{"type":"string"}}),serde_json::json!([]))),
         ("chariox.machines.status", "Read an allocation's state, its verified target kernel and the installed build toolchain version when the target answers. Use the allocation_ref returned by acquire. The machine remains charged until deletion is confirmed.", schema(serde_json::json!({"allocation_ref":{"type":"string"}}),serde_json::json!(["allocation_ref"]))),
         ("chariox.machines.release", "Delete an acquired machine when its work is finished. Returns the allocation state; poll status until deleted to confirm the allocation has ended.", schema(serde_json::json!({"allocation_ref":{"type":"string"}}),serde_json::json!(["allocation_ref"]))),
     ].into_iter().map(|(name,description,input_schema)|RuntimeToolSpec{name:name.into(),description:description.into(),input_schema}).collect()
@@ -243,11 +293,12 @@ impl KernelRuntimeState {
             allocation_ref: Option<String>,
             class_id: Option<String>,
             region: Option<String>,
+            purpose: Option<String>,
         }
         let args: Args = serde_json::from_value(args).map_err(|_| {
             acquisition_error(
                 "invalid_request",
-                "Use request_id, class_id and region for acquire, allocation_ref for status and release, and no arguments for options",
+                "Use request_id, class_id, region and purpose for acquire, allocation_ref for status and release, and no arguments for options",
             )
         })?;
         let runs = self
@@ -306,6 +357,7 @@ impl KernelRuntimeState {
                     &reach.agent_id,
                     &request_id,
                 );
+                let _purpose = AcquirePurpose::hold(self, &service_request_id, args.purpose.as_deref());
                 let result = match self
                     .job_control_plane(
                         &origin,
