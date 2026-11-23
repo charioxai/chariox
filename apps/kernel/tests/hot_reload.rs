@@ -123,7 +123,7 @@ impl Drop for Kernel {
         }
         let _ = self.child.kill();
         let _ = self.child.wait();
-        let _ = std::fs::remove_file(short_socket_path(self.port));
+        let _ = std::fs::remove_dir_all(short_socket_path(self.port).parent().unwrap());
         if std::env::var_os("CHARIOX_HOT_RELOAD_KEEP").is_none() {
             let _ = std::fs::remove_dir_all(&self.scratch);
         }
@@ -159,9 +159,10 @@ fn start_laptop_kernel(scratch: &Path, env: &[(&str, PathBuf)]) -> Kernel {
 }
 
 /// A Unix socket path holds at most 107 bytes, and a build host's temp directory can be long
-/// (the farm's is): the kernel's socket lives at a short path named by its port.
+/// (the farm's is): the kernel's socket lives in a short directory named by its port.
 fn short_socket_path(port: u16) -> PathBuf {
-    PathBuf::from(format!("/tmp/hrk-{}-{port}.sock", std::process::id()))
+    // The kernel owns its socket's directory (it sets it to 0700), so it is a directory of its own.
+    PathBuf::from(format!("/tmp/hrk-{}-{port}/k.sock", std::process::id()))
 }
 
 fn launch_kernel(
