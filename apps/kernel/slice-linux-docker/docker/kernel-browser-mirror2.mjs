@@ -1095,8 +1095,11 @@ export class Mirror2 {
     // lossless stills would be megabytes ahead of the page copy's handover. Media area never retires the page copy.
     // A lease captures the browser's native window: a headless browser (always on macOS) has none, so the still stays.
     const viewport = this.host.pageSize(tab.tab_id);
-    if (!boxes.length || this.host.chromium?.display && regionOverBudget(boxes, viewport) || !still || !reset && Date.now() - stream.tilesAt < TILE_REFRESH_MS) return [];
+    if (!boxes.length || !still || !reset && Date.now() - stream.tilesAt < TILE_REFRESH_MS) return [];
     stream.tilesAt = Date.now();
+    // Row 448: the refresh is done even when its leases carry the pixels. Left due, it ended every long poll at once:
+    // a static full-page canvas answered each credit with an empty packet (~1300 a second) and its leases churned.
+    if (this.host.chromium?.display && regionOverBudget(boxes, viewport)) return [];
     // The viewer keeps a still until replaced: unchanged pixels are not sent again.
     if (reset || !stream.tileHashes) stream.tileHashes = new Map();
     // T3: the regions whose last sent still was proven opaque from its own pixels (elementPixels' `opaque`), never shown.
