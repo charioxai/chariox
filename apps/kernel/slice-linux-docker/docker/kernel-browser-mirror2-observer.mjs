@@ -753,7 +753,8 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       remember(record, node);
       if (tag.includes('-') && !node.shadowRoot) { pendingHosts.set(id, node); closedTodo.add(node); }
       // A built-in host's closed root leaves its light DOM empty (a consent manager's banner, for one): the kernel checks those once.
-      else if (ns === HTML && SHADOW_HOSTS.has(tag) && !node.firstChild && !node.shadowRoot) closedTodo.add(node);
+      // Row 489: empty includes whitespace text only (Chromium's PDF document is such a body, its viewer iframe in the closed root).
+      else if (ns === HTML && SHADOW_HOSTS.has(tag) && !node.shadowRoot && !node.firstElementChild && !/\S/.test(node.textContent)) closedTodo.add(node);
       if (walk.defer && ns === HTML && node.firstChild && !formControl(node)) { const box = deferredBox(node, walk.defer); if (box) record.deferred = box; }
       walk.then = { node, id, kind: record.kind, depth, root: false, later: !!record.deferred }; return record;
     };

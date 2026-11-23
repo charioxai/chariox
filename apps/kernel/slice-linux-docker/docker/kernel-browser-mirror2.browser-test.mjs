@@ -2347,6 +2347,16 @@ test('MP-10: review r19 a newly inserted closed host becomes a tile without rese
  }
 ));
 
+// Row 489: Chromium's PDF document is a body whose light DOM is one whitespace text node and whose closed root holds the
+// viewer's iframe. That body is a closed host like an empty one: the viewer gets a region, not an empty page.
+test('Row 489: a body with only whitespace light DOM and a closed root is an opaque region',()=>mirrored(
+ '<head><script>addEventListener("DOMContentLoaded",()=>{document.body.attachShadow({mode:"closed"}).innerHTML="<iframe src=/viewer style=display:block;width:600px;height:400px;border:0></iframe><slot></slot>"})</script></head><body>\n    \n  </body>',
+ async({next})=>{
+  let found=false;for(let i=0;i<6&&!found;i++){const p=await next(i?600:0);found=[...p.nodes??[],...p.ops.flatMap(op=>op.op==='children'?op.nodes:[])].some(n=>n[4]?.reason==='closed_shadow');}
+  assert(found,'the PDF-shaped body is a closed_shadow tile');
+ },{'/viewer':{type:'text/html',body:'<!doctype html><body style="margin:0;background:rgb(82,86,89)"><p style="color:white">page 1 of 15</p></body>'}}
+));
+
 // MP-08/MP-10/MP-11: #941 c956f84c7 review F1/F2. No reset may hide a lost descriptor.
 for (const child of [false, true]) test(`MP-10: closed-host discovery retains a simultaneously loaded image in ${child ? 'an attached child' : 'the parent'}`,()=>mirrored(
  child ? '<iframe src="http://localhost:PORT/child" style="width:300px;height:160px"></iframe>' : '<p>stable</p>',
