@@ -6086,7 +6086,8 @@ soon as the program holds it open; a named file is read as it is and left. `stdi
 limit, bad base64 and a missing file are refused naming the limit or the file and the other way to pass it. An
 argument over 4096 bytes is refused naming stdin and the stdin file. `chariox exec` sends its own stdin inline when it
 is a file or a pipe that has data at once (an idle open stdin is closed after a short probe, never waited on, and a terminal
-is not read; `--stdin` waits for a slow pipe to end); over 64 KiB it is refused before sending, naming `files put` and
+is not read; `--stdin` waits for a slow pipe to end; data that arrives on an idle stdin while the command runs is not sent, and one stderr line after
+the command's output says so); over 64 KiB it is refused before sending, naming `files put` and
 `--stdin-file KERNEL_PATH`; `--stdin-file` sends the file reference. Clients need kernel protocol ≥1014 for `stdin`
 (`programStdinMinimumProtocolVersion`, provisional number; an older kernel would ignore the field).
 

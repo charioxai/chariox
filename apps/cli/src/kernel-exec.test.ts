@@ -3,7 +3,7 @@ import test from "node:test"
 import { Writable } from "node:stream"
 import { CommandFailure } from "./agent-command-table.js"
 import { Readable } from "node:stream"
-import { MAX_INLINE_STDIN_BYTES, readExecInput, runKernelExec } from "./kernel-exec.js"
+import { MAX_INLINE_STDIN_BYTES, lateStdin, readExecInput, runKernelExec } from "./kernel-exec.js"
 
 const ended = (code: number) => ({ state: "ended", outcome: { reason: "program_exited", exit_code: code, signal: null } })
 const terminal = (status: unknown, offset: number) => ({ terminal_id: "t1", scope: "kernel", output_offset: offset, status })
@@ -142,10 +142,34 @@ test("an open stdin that stays idle is not waited on: no input, and it is closed
   assert.equal(never.destroyed, true)
 })
 
-test("a producer slower than the probe is not waited for unless --stdin asks for it", async () => {
+test("a producer slower than the probe is not waited for unless --stdin asks for it, and the late data is reported", async () => {
   const slow = () => { const stream = idle(); setTimeout(() => { stream.push(Buffer.from("late\n")); stream.push(null) }, 120); return stream }
-  assert.equal(await readExecInput(slow(), { timeoutSeconds: 5, probeMs: 20 }), undefined)
+  const late = lateStdin()
+  assert.equal(await readExecInput(slow(), { timeoutSeconds: 5, probeMs: 20, late }), undefined)
+  assert.equal(late.arrived, false, "nothing has arrived yet")
+  await new Promise(done => setTimeout(done, 250))
+  assert.equal(late.arrived, true, "data that arrived while the command ran is reported")
   assert.equal(decoded(await readExecInput(slow(), { timeoutSeconds: 5, wait: true }))?.toString(), "late\n")
+})
+
+test("an idle stdin that stays open reports nothing, and stopping the watch closes it", async () => {
+  const never = idle()
+  const late = lateStdin()
+  assert.equal(await readExecInput(never, { timeoutSeconds: 5, probeMs: 20, late }), undefined)
+  await new Promise(done => setTimeout(done, 80))
+  assert.equal(late.arrived, false)
+  late.stop()
+  assert.equal(never.destroyed, true)
+})
+
+test("a stdin that ends without data after the probe reports nothing", async () => {
+  const quiet = idle()
+  const late = lateStdin()
+  await readExecInput(quiet, { timeoutSeconds: 5, probeMs: 20, late })
+  quiet.push(null)
+  await new Promise(done => setTimeout(done, 50))
+  assert.equal(late.arrived, false)
+  late.stop()
 })
 
 test("a regular file on stdin is read whole with no probe", async () => {

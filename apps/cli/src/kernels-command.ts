@@ -5,7 +5,7 @@ import { FILES_VERBS, runFilesVerb, type SendRequest } from "./kernel-files.js"
 import { runTerminalVerb, TERMINAL_ATTACH_USAGE, TERMINAL_VERBS, waitMsOf, type TerminalFlags, type TerminalVerb } from "./terminal-verbs.js"
 
 import { runExec } from "./exec-command.js"
-import { readExecInput, runKernelExec, stdinIsRegularFile } from "./kernel-exec.js"
+import { LATE_STDIN_NOTICE, lateStdin, readExecInput, runKernelExec, stdinIsRegularFile } from "./kernel-exec.js"
 import { runExecPlace } from "./exec-place-command.js"
 
 import { EVENT_VERBS, eventTimeoutSeconds, runEventsVerb } from "./events-command.js"
@@ -210,9 +210,15 @@ export async function runKernelsCommand(argv: string[]): Promise<boolean> {
       kernel = (flags.get("--kernel") as string | undefined) ?? null
       if (!inRoom) {
         const timeoutSeconds = parseTimeout(flags.get("--timeout"))
-        const stdin = await readExecInput(process.stdin, { file: flags.get("--stdin-file") as string | undefined, wait: flags.has("--stdin"), regularFile: stdinIsRegularFile(), timeoutSeconds })
-        process.exitCode = await withKernel({ socket, timeoutSeconds, kernel: kernel ?? undefined }, send =>
-          runKernelExec({ command: program, directory: flags.get("--directory") as string | undefined, timeoutSeconds, stdin, signals: process }, send, process.stdout))
+        const late = lateStdin()
+        const stdin = await readExecInput(process.stdin, { file: flags.get("--stdin-file") as string | undefined, wait: flags.has("--stdin"), regularFile: stdinIsRegularFile(), timeoutSeconds, late })
+        try {
+          process.exitCode = await withKernel({ socket, timeoutSeconds, kernel: kernel ?? undefined }, send =>
+            runKernelExec({ command: program, directory: flags.get("--directory") as string | undefined, timeoutSeconds, stdin, signals: process }, send, process.stdout))
+        } finally {
+          late.stop()
+          if (late.arrived) process.stderr.write(`${LATE_STDIN_NOTICE}\n`)
+        }
         return true
       }
       if (flags.has("--stdin-file") || flags.has("--stdin")) throw new CommandFailure("usage", "--stdin and --stdin-file are for a command on the kernel itself; with --session or --workspace the command's stdin is yours")

@@ -29,7 +29,16 @@ export type ExecInputOptions = {
   regularFile?: boolean
   timeoutSeconds: number
   probeMs?: number
+  /** Watches an idle stdin while the command runs, so data that arrives too late to be sent is reported, not lost silently. */
+  late?: LateStdin
 }
+
+/** Whether data arrived on an idle stdin after the command had started; `stop` ends the watch. */
+export type LateStdin = { arrived: boolean; stop: () => void }
+export const lateStdin = (): LateStdin => ({ arrived: false, stop: () => {} })
+
+/** What to tell the caller when input showed up after the command had started: one line, after the command's own output. */
+export const LATE_STDIN_NOTICE = "stdin data arrived after the command started and was not sent; pass --stdin to wait for it"
 
 /**
  * The input of the program: a file already on the kernel when `--stdin-file` names one, else what this
@@ -40,7 +49,13 @@ export type ExecInputOptions = {
 export async function readExecInput(input: Readable & { isTTY?: boolean }, options: ExecInputOptions): Promise<ProgramInput | undefined> {
   if (options.file !== undefined) return { kind: "file", path: options.file }
   if (input.isTTY && !options.wait) return undefined
-  if (!options.wait && !options.regularFile && !(await showsDataOrEnd(input, options.probeMs ?? STDIN_PROBE_MS))) return undefined
+  if (!options.wait && !options.regularFile && !(await showsDataOrEnd(input, options.probeMs ?? STDIN_PROBE_MS))) {
+    // An idle stdin is not waited on, but it is watched without keeping this process alive: a producer that
+    // writes while the command runs is told it was not heard.
+    if (options.late) watchLate(input, options.late)
+    else input.destroy()
+    return undefined
+  }
   const chunks: Buffer[] = []
   let size = 0
   const timer = setTimeout(() => input.destroy(new CommandFailure("exec_stdin_not_ended", `stdin did not end within ${options.timeoutSeconds} s; end it (for example </dev/null) or pipe the input in`)), options.timeoutSeconds * 1000)
@@ -64,14 +79,20 @@ export function stdinIsRegularFile(): boolean {
   try { return fstatSync(0).isFile() } catch { return false }
 }
 
-/** Whether the stream has data or has ended within `ms`; an idle one is closed so it never holds the process open. */
+/** Watch an idle stdin for data while the command runs; the handle is unreferenced so the watch never holds the process open. */
+function watchLate(input: Readable, late: LateStdin): void {
+  const onData = () => { late.arrived = true; late.stop() }
+  late.stop = () => { input.off("data", onData); input.destroy() }
+  input.on("data", onData)
+  ;(input as Readable & { unref?: () => void }).unref?.()
+}
+
+/** Whether the stream has data or has ended within `ms`; an idle one is left to the caller, which watches or closes it. */
 function showsDataOrEnd(input: Readable, ms: number): Promise<boolean> {
   return new Promise(resolve => {
     const settle = (shows: boolean) => {
       clearTimeout(timer)
       input.off("readable", onReadable)
-      // An idle stdin is closed, not just paused: a paused pipe handle keeps this process alive until its writer ends.
-      if (!shows) input.destroy()
       resolve(shows)
     }
     const onReadable = () => settle(true)
