@@ -15,6 +15,7 @@ const currentSnapshots = [
   "apps/kernel/src/local/api/tests/protocol_shapes/local-browser-expires-in-1014.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/folded-answer-1013.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/browser-mirror2-page-wheel-1014.json",
+  "apps/kernel/src/local/api/tests/protocol_shapes/browser-mirror2-media-playing-1015.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/agent-release-notes.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/program-stdin-1014.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/files-watch-1011.json",

@@ -643,4 +643,6 @@ pub use workspace::*;
 /// longer carry `kernel_id`, `kernel_name`, `focused_agent_kernel_id` or `reachable_by_focused_agent`; the loader tools
 /// take no arguments and `chariox.kernel_browser_share` is removed.
 /// 1014 adds revision-based latest Room history outline reads.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1014;
+/// Local 1015: the mirror v2 header carries `media_playing`, whether a mirrored video or audio element plays (muted or
+/// not), so the viewer never evicts that Tab (row 486); absent means nothing plays.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1015;
