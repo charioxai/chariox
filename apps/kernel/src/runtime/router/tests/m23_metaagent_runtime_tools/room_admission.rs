@@ -1994,10 +1994,12 @@ async fn predecessor_sub_agent_in_another_room() {
     let (orchestrator_room, orchestrator) = room("orchestrator");
     let (predecessor_room, predecessor) = room("predecessor");
     let lane = crate::app::KernelSessionService::new(&mut app)
-        .spawn_agent(
-            CreateAgentRequest::new(predecessor_room.id(), "dev-stub")
-                .with_alias("lane")
-                .with_parent_agent_id(predecessor.id()),
+        .spawn_agent(CreateAgentRequest::new(predecessor_room.id(), "dev-stub").with_alias("lane"))
+        .unwrap();
+    app.agents()
+        .set_parent_agent(
+            lane.id(),
+            Some(crate::agent::AgentRef::local(predecessor.id())),
         )
         .unwrap();
     crate::app::KernelSessionService::new(&mut app)

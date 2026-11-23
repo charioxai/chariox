@@ -178,10 +178,11 @@ fn other_owners_rooms_and_unknown_agents_are_unavailable() {
             .send(serde_json::json!({"agent": rooms.peer.id(), "message": "hi"}))
             .await
             .is_err());
-        assert!(rooms
-            .inbox(&rooms.peer_room, rooms.hidden.id())
-            .await
-            .is_empty());
+        // Only the PA12 message above reached the sub-agent.
+        assert_eq!(
+            rooms.inbox(&rooms.peer_room, rooms.hidden.id()).await.len(),
+            1
+        );
         assert!(rooms
             .inbox(&rooms.foreign_room, rooms.foreign.id())
             .await
