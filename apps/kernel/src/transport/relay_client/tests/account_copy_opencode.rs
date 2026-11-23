@@ -241,12 +241,29 @@ pub(super) async fn check_machine_enrolled_receiver_pulls(
     let canary = "synthetic-machine-pull";
     let login = format!(r#"{{"openai":{{"type":"api","key":"{canary}"}}}}"#);
     let (profile, _) = source_login(source_profiles, "Pulled", login.as_bytes());
-    let offers = source_request(
-        target_router,
-        serde_json::json!({"ListProviderAccountCopyOffers":{}}),
-    )
-    .await
-    .expect("a machine enrolled with its machine credential lists the offers");
+    // The source publishes its new login to the relay in the background.
+    let mut offers = serde_json::Value::Null;
+    for _ in 0..200 {
+        offers = source_request(
+            target_router,
+            serde_json::json!({"ListProviderAccountCopyOffers":{}}),
+        )
+        .await
+        .expect("a machine enrolled with its machine credential lists the offers");
+        if offers["ProviderAccountCopyOffers"]["offers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|offer| {
+                offer["provider"] == "opencode"
+                    && offer["account_profile"] == profile
+                    && offer["source_kernel_id"] == source.daemon_id
+            })
+        {
+            break;
+        }
+        sleep(Duration::from_millis(25)).await;
+    }
     assert!(
         offers["ProviderAccountCopyOffers"]["offers"]
             .as_array()
