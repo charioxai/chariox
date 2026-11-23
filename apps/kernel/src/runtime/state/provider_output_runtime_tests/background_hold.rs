@@ -1569,6 +1569,11 @@ async fn a_held_child_whose_hold_a_restart_dropped_is_reported_interrupted_by_re
         .sweep_agent_lifecycle_at_for_test(crate::session::unix_epoch_ms() + 2 * MINUTE_MS)
         .await
         .unwrap();
+    // The parent may learn of the end on a later sweep (its delegate obligation resolves then).
+    team.runtime
+        .sweep_agent_lifecycle_at_for_test(crate::session::unix_epoch_ms() + 4 * MINUTE_MS)
+        .await
+        .unwrap();
     assert!(!working(&team), "the lost hold must not leave the task Working");
     let events = child_finished(&team);
     assert_eq!(
