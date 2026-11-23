@@ -297,7 +297,7 @@ async fn a_leased_agent_on_a_machine_without_a_custom_root_keeps_the_home_folder
 }
 
 // Queue row 315: a recorded root that is not usable refuses the spawn with the reason; it never
-// falls back to the home folder.
+// falls back to the home folder, and the refusal leaves the lease's authorization for a retry.
 #[tokio::test]
 async fn a_leased_agent_refuses_when_the_recorded_root_is_not_a_valid_root() {
     crate::test_support::isolated_env_test!();
@@ -306,16 +306,59 @@ async fn a_leased_agent_refuses_when_the_recorded_root_is_not_a_valid_root() {
         crate::managed_bootstrap::MANAGED_REPOSITORY_ROOT_ENV,
         "/var/lib/chariox/x",
     );
-    let (_app, runtime) = worker_runtime(&root, "{root}").await;
+    let (app, runtime) = worker_runtime(&root, "{root}").await;
+    // A bound, authorized lease: the refusal below can only come from the root, never from the
+    // caller check.
     let lease = runtime
-        .create_relay_execution_lease("home", "room", "agent-home-1", false, "owner")
+        .create_bound_relay_execution_lease(
+            "home",
+            "room",
+            "agent-home-1",
+            false,
+            "owner",
+            caller(),
+        )
+        .await
+        .unwrap();
+    runtime
+        .authorize_relay_execution_lease_caller(&lease.id, caller())
         .await
         .unwrap();
     let refused = runtime
         .create_relay_leased_agent(
             &lease.id, "dev-stub", "default", None, None, None, None, None, None, None,
         )
-        .await;
-    assert!(refused.is_err(), "{refused:?}");
+        .await
+        .expect_err("a root that is not valid refuses the spawn");
+    assert!(
+        refused.to_string().contains("managed repository root"),
+        "the refusal is not about the root: {refused}"
+    );
     assert!(!root.path().join("user").join("chariox-workspaces").exists());
+
+    // The refusal did not use up the authorization: with a valid root the same lease spawns.
+    let managed_root = root.path().join("srv").join("retry");
+    std::fs::create_dir_all(&managed_root).unwrap();
+    std::env::set_var(
+        crate::managed_bootstrap::MANAGED_REPOSITORY_ROOT_ENV,
+        &managed_root,
+    );
+    let leased = runtime
+        .create_relay_leased_agent(
+            &lease.id, "dev-stub", "default", None, None, None, None, None, None, None,
+        )
+        .await
+        .expect("the retry on the same lease spawns under the valid root");
+    let folder = app
+        .lock()
+        .await
+        .sessions()
+        .get_session(&leased.backing_session_id)
+        .unwrap()
+        .worktree_id()
+        .to_string();
+    assert_eq!(
+        std::path::Path::new(&folder),
+        managed_root.join("chariox-workspaces").join("agent-home-1")
+    );
 }
