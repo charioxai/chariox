@@ -27,7 +27,7 @@ if (options.help || options.h) {
 for (const key of ['scenario', 'provider', 'binary', 'root', 'workspace', 'evidence']) {
   assert.equal(typeof options[key], 'string', `--${key}=... is required`)
 }
-assert.ok(['claude', 'opencode'].includes(options.provider), '--provider must be claude or opencode')
+assert.equal(options.provider, 'claude', 'this drill exercises Claude only: --provider must be claude')
 const scratchParent = path.resolve(options.root)
 const workspace = path.resolve(options.workspace)
 const evidenceDir = path.resolve(options.evidence)
@@ -39,8 +39,7 @@ for (const candidate of [scratchParent, workspace, evidenceDir]) {
 assert.ok(!overlaps(scratchParent, workspace), 'state and workspace must use separate paths')
 assert.ok(!overlaps(evidenceDir, scratchParent) && !overlaps(evidenceDir, workspace), 'evidence must be outside state and workspace')
 await access(binary).catch(() => { throw Error('--binary must name an existing kernel executable') })
-if (options.provider === 'claude') assert.equal(typeof options['token-file'], 'string', 'Claude requires --token-file=PATH')
-if (options.provider === 'opencode') assert.equal(typeof options['opencode-home'], 'string', 'OpenCode requires --opencode-home=PATH')
+assert.equal(typeof options['token-file'], 'string', 'Claude requires --token-file=PATH')
 const sourceHead = (await readFile(`${binary}.head`, 'utf8')).trim()
 assert.match(sourceHead, /^[0-9a-f]{40}$/i, 'kernel binary .head must contain a full git commit hash')
 const binarySha256 = createHash('sha256').update(await readFile(binary)).digest('hex')
@@ -94,10 +93,10 @@ const baseEnv = {
   CHARIOX_MCP_PORT: String(mcpPort),
   CHARIOX_DAEMON_ID: `resumefix-cross-${nonce}`,
   CHARIOX_MACHINE_ID: `resumefix-cross-machine-${nonce}`,
-  XDG_DATA_HOME: options.provider === 'opencode' ? path.join(options['opencode-home'], '.local/share') : path.join(stateHome, 'xdg-data'),
-  XDG_CONFIG_HOME: options.provider === 'opencode' ? path.join(options['opencode-home'], '.config') : path.join(stateHome, 'xdg-config'),
-  XDG_STATE_HOME: options.provider === 'opencode' ? path.join(options['opencode-home'], '.local/state') : path.join(stateHome, 'xdg-state'),
-  XDG_CACHE_HOME: options.provider === 'opencode' ? path.join(options['opencode-home'], '.cache') : path.join(stateHome, 'xdg-cache'),
+  XDG_DATA_HOME: path.join(stateHome, 'xdg-data'),
+  XDG_CONFIG_HOME: path.join(stateHome, 'xdg-config'),
+  XDG_STATE_HOME: path.join(stateHome, 'xdg-state'),
+  XDG_CACHE_HOME: path.join(stateHome, 'xdg-cache'),
 }
 const endpoint = `ws://127.0.0.1:${kernelPort}/kernel`
 const unwrap = (reply, name) => {
