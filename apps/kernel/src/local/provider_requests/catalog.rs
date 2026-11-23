@@ -34,17 +34,44 @@ pub(crate) fn provider_command_catalogs_response() -> Result<LocalDaemonResponse
     })
 }
 
+/// Who is asking for the catalog. A kernel's own startup warm-up must never start
+/// a provider server for a provider nobody asked about; a client read may.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CatalogLoad {
+    /// A client (or an explicit account request) reads the catalog.
+    Requested,
+    /// The kernel warms its own copy before any client asks.
+    Warmup,
+}
+
 pub(crate) fn load_provider_catalog(
     config: DaemonConfig,
     registry: crate::account_profile::ProviderAccountProfileRegistry,
     owner_user_id: String,
     request: GetProviderCatalogRequest,
 ) -> Result<OpenCodeProviderCatalog, DaemonError> {
+    load_provider_catalog_for(
+        config,
+        registry,
+        owner_user_id,
+        request,
+        CatalogLoad::Requested,
+    )
+}
+
+pub(crate) fn load_provider_catalog_for(
+    config: DaemonConfig,
+    registry: crate::account_profile::ProviderAccountProfileRegistry,
+    owner_user_id: String,
+    request: GetProviderCatalogRequest,
+    load: CatalogLoad,
+) -> Result<OpenCodeProviderCatalog, DaemonError> {
     if config.provider_catalog_read_delay_ms > 0 {
         thread::sleep(Duration::from_millis(config.provider_catalog_read_delay_ms));
     }
 
-    let selected_profiles = resolve_catalog_profiles(&config, &registry, &owner_user_id, &request)?;
+    let selected_profiles =
+        resolve_catalog_profiles_for(&config, &registry, &owner_user_id, &request, load)?;
     let claude_catalog = if let Some(profile) = selected_profiles.get("claude") {
         let environment =
             registry.resolve_environment(&profile.owner_user_id, "claude", &profile.profile_id)?;
@@ -181,11 +208,28 @@ fn append_catalog_source(
     Ok(())
 }
 
+#[cfg(test)]
 fn resolve_catalog_profiles(
     config: &DaemonConfig,
     registry: &crate::account_profile::ProviderAccountProfileRegistry,
     owner_user_id: &str,
     request: &GetProviderCatalogRequest,
+) -> Result<BTreeMap<String, crate::account_profile::ProviderAccountProfile>, DaemonError> {
+    resolve_catalog_profiles_for(
+        config,
+        registry,
+        owner_user_id,
+        request,
+        CatalogLoad::Requested,
+    )
+}
+
+fn resolve_catalog_profiles_for(
+    config: &DaemonConfig,
+    registry: &crate::account_profile::ProviderAccountProfileRegistry,
+    owner_user_id: &str,
+    request: &GetProviderCatalogRequest,
+    load: CatalogLoad,
 ) -> Result<BTreeMap<String, crate::account_profile::ProviderAccountProfile>, DaemonError> {
     let focus_provider = request
         .provider
@@ -259,11 +303,16 @@ fn resolve_catalog_profiles(
         // An explicit provider/account request still starts it on demand.
         // OpenCode is the exception once installed: its free models need no
         // account, so a signed-out default profile still has models to offer.
+        // Offering them takes its server, so only a client read does that; the
+        // startup warm-up leaves it out and its copy is revalidated by the
+        // first client read (see `ProviderCatalogProjectionStore`).
         if profile.origin == crate::account_profile::ProviderAccountProfileOrigin::Default
             && profile.auth_state != crate::account_profile::ProviderAccountAuthState::Authenticated
             && focus_provider != Some(provider)
             && !overrides.contains_key(provider)
-            && !(provider == "opencode" && resolve_opencode_executable().is_ok())
+            && !(provider == "opencode"
+                && load == CatalogLoad::Requested
+                && resolve_opencode_executable().is_ok())
         {
             continue;
         }
@@ -1802,6 +1851,13 @@ mod tests {
         std::env::set_var("CHARIOX_OPENCODE_BIN", &executable);
         let installed =
             resolve_catalog_profiles(&DaemonConfig::for_tests(), &registry, "local", &request);
+        let warming = resolve_catalog_profiles_for(
+            &DaemonConfig::for_tests(),
+            &registry,
+            "local",
+            &request,
+            CatalogLoad::Warmup,
+        );
         std::env::set_var("CHARIOX_OPENCODE_BIN", root.join("missing"));
         let missing =
             resolve_catalog_profiles(&DaemonConfig::for_tests(), &registry, "local", &request);
@@ -1818,6 +1874,9 @@ mod tests {
         assert!(missing
             .expect("missing OpenCode should not fail the broad read")
             .is_empty());
+        // The kernel's own startup warm-up never takes the account-free
+        // exception: nobody asked for OpenCode yet, so no server starts for it.
+        assert!(warming.expect("warm-up should not fail").is_empty());
     }
 
     #[test]
