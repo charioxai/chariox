@@ -35,20 +35,6 @@ pub(super) fn page_with_budget<K>(
     Ok((result, None))
 }
 
-/// On an oversized row keep the fields that locate and identify it.
-pub(super) fn bounded_row(row: Value, fields: &[&str]) -> Value {
-    if row.to_string().len() + 3 <= LIST_BYTES {
-        return row;
-    }
-    let mut summary = serde_json::Map::from_iter(
-        fields
-            .iter()
-            .map(|key| (key.to_string(), row[*key].clone())),
-    );
-    summary.insert("details_omitted".into(), true.into());
-    summary.into()
-}
-
 pub(super) fn cursor_number(args: &Value, field: &str) -> Result<Option<i64>, DaemonError> {
     args.get(field)
         .map(|value| {

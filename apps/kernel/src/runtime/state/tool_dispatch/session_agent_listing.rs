@@ -1,8 +1,15 @@
-use super::list_page::{self, CreationKey, LIST_BYTES, LIST_ROWS};
+use super::list_page::{self, CreationKey, LIST_ROWS};
 use super::*;
 use crate::durable_state::agent_lifecycle::{self as ledger, AgentTaskExecution};
 use crate::transport::runtime_tools::RuntimeToolResult;
 use serde_json::{json, Value};
+
+/// A page holds at most two parts (agents, tasks) and stays under 16 KiB in the agent's context.
+const PART_BYTES: usize = 7 * 1024;
+/// A task's obligations come alone in their page.
+const OBLIGATIONS_BYTES: usize = 14 * 1024;
+/// The longest waiting-on detail a listing row carries.
+const WAITING_ON_CHARS: usize = 80;
 
 impl KernelRuntimeState {
     pub(super) fn handle_list_session_agents_runtime_tool(
@@ -31,14 +38,17 @@ impl KernelRuntimeState {
                 .filter(|task| task.room_id == session.id())
                 .ok_or_else(|| ledger::error("task_id must identify a task in this Room"))?;
             let (obligations, next_obligations_cursor) =
-                list_page::page(task.obligations.into_iter().enumerate().rev().filter_map(
-                    |(index, obligation)| {
-                        let position = index + 1;
-                        (obligations_cursor.is_none_or(|before| position < before as usize)
-                            && (include_history || obligation.requires_resolution()))
-                        .then(|| (position, json!(obligation)))
-                    },
-                ))?;
+                list_page::page_with_budget(
+                    task.obligations.into_iter().enumerate().rev().filter_map(
+                        |(index, obligation)| {
+                            let position = index + 1;
+                            (obligations_cursor.is_none_or(|before| position < before as usize)
+                                && (include_history || obligation.requires_resolution()))
+                            .then(|| (position, json!(obligation)))
+                        },
+                    ),
+                    OBLIGATIONS_BYTES,
+                )?;
             return Ok(RuntimeToolResult {
                 ok: true,
                 payload: json!({"task_id": task_id, "obligations": obligations,
@@ -56,37 +66,27 @@ impl KernelRuntimeState {
             });
             let activity = self.agent_activity_for_session(session);
             let mut failure = None;
-            let page = list_page::page(agents.iter().filter_map(|agent| {
-                let key = CreationKey(agent.created_at_ms(), agent.id().into());
-                if agent_cursor.as_ref().is_some_and(|before| &key >= before) {
-                    return None;
-                }
-                match self.session_agent_description(
-                    session,
-                    requester,
-                    agent,
-                    activity.get(agent.id()),
-                ) {
-                    Ok(description) => Some((
-                        key,
-                        list_page::bounded_row(
-                            description,
-                            &[
-                                "id",
-                                "agent_ref",
-                                "alias",
-                                "address",
-                                "state",
-                                "queued_prompt_count",
-                            ],
-                        ),
-                    )),
-                    Err(error) => {
-                        failure.get_or_insert(error);
-                        None
+            let page = list_page::page_with_budget(
+                agents.iter().filter_map(|agent| {
+                    let key = CreationKey(agent.created_at_ms(), agent.id().into());
+                    if agent_cursor.as_ref().is_some_and(|before| &key >= before) {
+                        return None;
                     }
-                }
-            }));
+                    match self.session_agent_description(
+                        session,
+                        requester,
+                        agent,
+                        activity.get(agent.id()),
+                    ) {
+                        Ok(description) => Some((key, agent_listing_row(&description))),
+                        Err(error) => {
+                            failure.get_or_insert(error);
+                            None
+                        }
+                    }
+                }),
+                PART_BYTES,
+            );
             if let Some(error) = failure {
                 return Err(error);
             }
@@ -101,10 +101,11 @@ impl KernelRuntimeState {
                 include_history,
                 LIST_ROWS + 1,
             )?;
-            list_page::page(
+            list_page::page_with_budget(
                 tasks
                     .into_iter()
-                    .map(|(key, task)| (key, task_listing_row(task, include_history, LIST_BYTES))),
+                    .map(|(key, task)| (key, task_listing_row(task, include_history, PART_BYTES))),
+                PART_BYTES,
             )?
         } else {
             (Vec::new(), None)
@@ -118,6 +119,32 @@ impl KernelRuntimeState {
             }),
         })
     }
+}
+
+/// What an orchestrator needs to pick and watch an agent; `chariox.get_session_agent` has the rest.
+fn agent_listing_row(description: &Value) -> Value {
+    let waiting_on = description["liveness"]["waiting_on"]
+        .as_object()
+        .map(|waiting| {
+            let kind = waiting["kind"].as_str().unwrap_or_default();
+            match waiting.get("detail").and_then(Value::as_str) {
+                Some(detail) if !detail.is_empty() => {
+                    let detail: String = detail.chars().take(WAITING_ON_CHARS).collect();
+                    format!("{kind}: {detail}")
+                }
+                _ => kind.to_owned(),
+            }
+        });
+    json!({
+        "id": description["id"],
+        "alias": description["alias"],
+        "state": description["state"],
+        "model": description["model"],
+        "parent_agent_id": description["parent_agent_id"],
+        "has_active_prompt": description["has_active_prompt"],
+        "queued_prompt_count": description["queued_prompt_count"],
+        "waiting_on": waiting_on,
+    })
 }
 
 pub(super) fn task_listing_row(

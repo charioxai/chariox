@@ -19,6 +19,76 @@ impl KernelRuntimeState {
         room: Option<&str>,
         reference: &str,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        self.resolve_exact_message_target(session, sender, room, reference)
+            .map_err(|error| match error {
+                DaemonError::MachineRequest { code, message }
+                    if message.starts_with("agent is unavailable in ") =>
+                {
+                    let close = self.close_aliases(session, sender, reference);
+                    DaemonError::MachineRequest {
+                        message: if close.is_empty() {
+                            message
+                        } else {
+                            format!("{message}; close aliases: {}", close.join(", "))
+                        },
+                        code,
+                    }
+                }
+                error => error,
+            })
+    }
+
+    /// The agents `sender` can address whose alias contains the unknown name or is contained in
+    /// it, each with its Room: the near misses of a typed alias (`codexaccount`, `codexaccount-r2`).
+    fn close_aliases(
+        &self,
+        session: &crate::session::RuntimeSession,
+        sender: &crate::agent::AgentInstance,
+        reference: &str,
+    ) -> Vec<String> {
+        const MIN_CHARS: usize = 3;
+        const MAX_LISTED: usize = 5;
+        let wanted = reference.trim().trim_start_matches('@').to_lowercase();
+        if wanted.chars().count() < MIN_CHARS {
+            return Vec::new();
+        }
+        let mut close = Vec::new();
+        for room in self.reachable_rooms(session, sender) {
+            let Some(room_id) = room["id"].as_str() else {
+                continue;
+            };
+            let current = room_id == session.id();
+            for agent in self.session_agents(room_id) {
+                let Some(alias) = agent.alias().map(str::to_lowercase) else {
+                    continue;
+                };
+                if (!current && (agent.is_sub_agent() || agent.archived()))
+                    || alias.chars().count() < MIN_CHARS
+                    || !(alias.contains(&wanted) || wanted.contains(&alias))
+                {
+                    continue;
+                }
+                close.push(format!(
+                    "@{} (room `{room_id}`{})",
+                    agent.alias().unwrap_or_default(),
+                    room["name"]
+                        .as_str()
+                        .map_or_else(String::new, |name| format!(" \"{name}\""))
+                ));
+            }
+        }
+        close.sort();
+        close.truncate(MAX_LISTED);
+        close
+    }
+
+    fn resolve_exact_message_target(
+        &self,
+        session: &crate::session::RuntimeSession,
+        sender: &crate::agent::AgentInstance,
+        room: Option<&str>,
+        reference: &str,
+    ) -> Result<crate::agent::AgentInstance, DaemonError> {
         let reference = reference.trim_start_matches('@');
         let room = room
             .map(str::trim)
