@@ -5,6 +5,11 @@ use crate::provider::ProviderPromptSignalBatch;
 use crate::terminal::TerminalOutputRecord;
 
 pub(crate) const STRUCTURED_OUTPUT_EMPTY_POLL_BACKOFF_MS: u64 = 500;
+/// PROPOSED: a run holding no prompt and no background work is read again this long after an
+/// empty poll. Its provider tells the pump the moment it writes anything (the output
+/// notifier), so the poll is only a safety net; at the busy rate a Room of idle agents
+/// polls twice a second each, forever.
+pub(crate) const STRUCTURED_OUTPUT_IDLE_POLL_BACKOFF_MS: u64 = 5_000;
 pub(crate) const STRUCTURED_OUTPUT_POLL_FAILURE_RETRY_LIMIT: u8 = 3;
 
 #[derive(Debug, Clone)]
@@ -216,6 +221,19 @@ impl StructuredOutputRecordStore {
             .expect("structured output poll schedule poisoned")
             .remove(provider_run_id);
         self.clear_poll_failures(provider_run_id);
+    }
+
+    /// Moves a run's next poll up to `due_at_ms` when it is scheduled later: a run that
+    /// took a prompt leaves the idle rate at once.
+    pub(crate) fn cap_next_poll(&self, provider_run_id: &str, due_at_ms: u64) {
+        if let Some(due) = self
+            .next_poll_due_at_ms
+            .lock()
+            .expect("structured output poll schedule poisoned")
+            .get_mut(provider_run_id)
+        {
+            *due = (*due).min(due_at_ms);
+        }
     }
 
     pub(crate) fn schedule_after_empty_poll(
