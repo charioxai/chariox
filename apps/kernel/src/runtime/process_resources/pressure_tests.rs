@@ -1284,3 +1284,57 @@ fn resset_memory_off_disables_an_explicit_owner_cap() {
     assert!(work.alive("big"));
     assert_eq!(work.domain.memory_limit_bytes(), None);
 }
+
+/// Read syscalls the calling thread has made so far (Linux task I/O accounting).
+#[cfg(target_os = "linux")]
+fn reads_by_this_thread() -> Option<u64> {
+    std::fs::read_to_string("/proc/thread-self/io")
+        .ok()?
+        .lines()
+        .find_map(|line| line.strip_prefix("syscr:"))?
+        .trim()
+        .parse()
+        .ok()
+}
+
+/// Every watch asks the pool about every unit on each tick, so a room of N
+/// idle agents read N units' counters N times per tick (about 90 000 file reads
+/// a second with 148 watches). The counters of a unit are read once per
+/// interval for all of them.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_units_counters_are_read_once_per_interval_however_many_watches_ask() {
+    let scratch = std::env::temp_dir().join(format!("chariox-counters-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    let pool = Pool::new(64 * 1024 * MIB, false);
+    let mut members = Vec::new();
+    for unit in 0..40 {
+        let leaf = scratch.join(format!("unit-{unit}")).join("leaf");
+        std::fs::create_dir_all(&leaf).unwrap();
+        let unit_dir = leaf.parent().unwrap();
+        std::fs::write(unit_dir.join("memory.current"), "1048576\n").unwrap();
+        std::fs::write(unit_dir.join("memory.stat"), "anon 1048576\nfile 0\nshmem 0\n").unwrap();
+        members.push(Arc::new(Mutex::new(Observation {
+            unit: format!("unit-{unit}"),
+            in_cgroup: true,
+            cgroup: Some(leaf),
+            ..Observation::default()
+        })));
+    }
+    let Some(before) = reads_by_this_thread() else {
+        eprintln!("task I/O accounting is off here; the read count cannot be taken");
+        return;
+    };
+    // 40 watches' ticks inside one interval: 40 asks about each of 40 units.
+    for _ in 0..40 {
+        pool.room(&members);
+    }
+    let reads = reads_by_this_thread().unwrap() - before;
+    let _ = std::fs::remove_dir_all(&scratch);
+    // One round of reads for the 40 units is a few hundred read calls; asking
+    // every unit on every one of the 40 ticks is thousands.
+    assert!(
+        reads < 1_000,
+        "40 asks about 40 units made {reads} read calls; they are meant to share one round"
+    );
+}
