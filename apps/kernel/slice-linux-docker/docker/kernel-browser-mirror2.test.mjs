@@ -1002,6 +1002,29 @@ test('Row 487 protocol 1015: a layout_delta stream follows a page resize by a de
  }
 });
 
+test('Row 487 #1718 review P2: a resize during the region still capture stays due, so the next delta takes the stills again', async () => {
+ const policy={targets:[],values:[]},tab={tab_id:'t',target_id:'T',document_id:'D1'};
+ const connection={isOpen:()=>true,send:async()=>({})};
+ const world={connection,sessionId:'S',frame:{loaderId:'D1'},ref:'m'};
+ const stream={id:'s',wire:2,chain:Promise.resolve(),tab_id:'t',world,issued:0,document_id:null,policy:null,fallback:null,header:{},resources:new Map(),attrSequence:new Map(),ownScrolls:new Map(),frames:new Map(),frameSlots:new Map(),frameSlot:0,tileKeys:'',layoutDelta:true};
+ let size={width:1032,height:527},revision=0;const captured=[];let during=null;
+ const host={protection:policy,generation:1,pageSize:()=>({...size}),layoutRevision:()=>revision,scales:new Map(),tabs:new Map([['t',tab]]),displayTarget:async()=>tab,mirrorTarget:async()=>tab,browser:{connection,documentIdsByTarget:new Map([['T','D1']]),sessionsByTarget:new Map([['T','S']])}};
+ const mirror=new Mirror2({host,streams:new Map([['s',stream]]),require:()=>stream});
+ const empty={ops:[],changed:[],resources:[],sheets:[],scroll:[0,0],focused:null,selection:null,snapshot_complete:true};
+ mirror.evaluate=async(_,expression)=>expression==='m.snapshot()'?{root:'n1',nodes:[{id:'n1',parent:null,kind:'element',tag:'div',attrs:{}}],sheets:[],resources:[],scroll:[0,0],focused:null,selection:null,fragment:null,snapshot_complete:true}:empty;
+ mirror.frames={attach:async()=>({records:[],ops:[],opaque:[]}),drain:async()=>({ops:[],resources:[],changed:[]}),project:(_,source)=>source,opaqueBoxes:async()=>[]};mirror.materialize=async()=>[];mirror.sheetOps=async()=>[];mirror.markClosedHosts=async()=>{};
+ // The stills are taken at the size the page had when the capture started; a second resize lands while they are taken.
+ mirror.tiles=async(_w,_t,_s,refresh)=>{if(refresh)captured.push(size.width);if(during){const next=during;during=null;size=next;revision++;}return [];};
+ const credit=(command_id,after)=>mirror.next(stream,{subscription_id:'s',generation:1,command_id,after_sequence:after,wait_ms:0},'scope');
+ const first=await credit('c1',0);captured.length=0;
+ size={width:1672,height:847};revision++;during={width:1920,height:1000};
+ const second=await credit('c2',first.sequence);
+ assert.deepEqual([second.css_width,second.css_height],[1672,847],'the delta names the size its stills were taken at');
+ const third=await credit('c3',second.sequence);
+ assert.deepEqual([third.css_width,third.css_height],[1920,1000],'the later resize is still due and follows in the next delta');
+ assert.deepEqual(captured,[1672,1920],'the stills are taken again at the later size');
+});
+
 test('MP-11 #1016 @3a955d73c review 1: a packet still encoding when protection changes is retired, never returned or remembered', async () => {
  const policy={targets:[],values:[]},tab={tab_id:'t',target_id:'T',document_id:'D1'};
  const connection={isOpen:()=>true,send:async()=>({})};

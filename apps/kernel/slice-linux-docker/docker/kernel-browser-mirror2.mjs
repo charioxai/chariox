@@ -676,8 +676,11 @@ export class Mirror2 {
     }
     let tiles = [];
     // Protocol 1015: a page size the viewer has not been told yet travels in this delta; region stills were taken at the
-    // old size, so they are taken again now.
-    const follows = !reset && !fallback && this.followsLayout(stream), sized = follows && this.sizeDue(stream);
+    // old size, so they are taken again now. The delta names the size (and layout key) the stills are taken at: a resize
+    // during the capture stays due for the next delta, which takes them again.
+    const follows = !reset && !fallback && this.followsLayout(stream);
+    const capturedKey = follows ? this.layoutKey(tab.tab_id) : layoutKey, capturedSize = follows ? this.host.pageSize(tab.tab_id) : null;
+    const sized = follows && stream.layoutKey !== undefined && stream.layoutKey !== capturedKey;
     // Stills, like image bytes, never ride on a DOM change or follow viewer input
     // within QUIET_MS: an echo must not queue behind a lossless region.
     const still = reset || sized || (this.emptyDom(stream, source) && !this.recentInput(stream));
@@ -694,9 +697,9 @@ export class Mirror2 {
       stream.policy = null; throw new Error('MP-11: stale mirror protection policy or subscription');
     }
     // Another viewer's layout change during the observation: this packet describes the old page size. A delta that
-    // follows the layout (protocol 1015) names the size it was built at instead; a later change goes in the next one.
+    // follows the layout (protocol 1015) names the size its stills were taken at instead; a later change goes in the next one.
     if (!follows) this.layoutMoved(stream, tab, layoutKey);
-    const packetKey = follows ? this.layoutKey(tab.tab_id) : layoutKey, size = this.host.pageSize(tab.tab_id);
+    const packetKey = capturedKey, size = capturedSize ?? this.host.pageSize(tab.tab_id);
     const sequence = stream.issued + 1;
     // Protocol 489 compact delta: the binding, base (sequence - 1) and every
     // header field equal to the base packet's are implied; empty lists omitted.
