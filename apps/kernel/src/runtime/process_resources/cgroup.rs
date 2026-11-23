@@ -1,16 +1,22 @@
 //! Linux memory controller domains. Only newly created directories are changed.
 use std::collections::BTreeMap;
+use std::fs::File;
 use std::path::{Path, PathBuf};
 #[cfg(test)]
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
+use fs2::FileExt;
+
 use super::OomKill;
 
 /// Accounting and ownership for every workload of a pool.
 pub(super) struct Budget {
     path: PathBuf,
+    /// Held for the budget's life: a neighbour kernel in any PID namespace finds
+    /// the directory locked and leaves it. The OS drops it when this process ends.
+    _owner_lock: File,
     units: Mutex<BTreeMap<String, Weak<Unit>>>,
 }
 impl Drop for Budget {
@@ -44,6 +50,10 @@ impl Budget {
     }
 
     fn create_under(parent: &Path) -> Option<Arc<Self>> {
+        // Creating and locking a budget is one step to a neighbour's cleanup, so it
+        // never sees a fresh budget that is not locked yet.
+        let creating = File::open(parent).ok()?;
+        creating.lock_exclusive().ok()?;
         remove_leftovers(parent);
         let path = parent.join(format!(
             "chariox-{}-{}",
@@ -51,8 +61,13 @@ impl Budget {
             rand::random::<u128>()
         ));
         std::fs::create_dir(&path).ok()?;
+        let Some(owner_lock) = hold(&path) else {
+            let _ = std::fs::remove_dir(&path);
+            return None;
+        };
         let budget = Arc::new(Self {
             path,
+            _owner_lock: owner_lock,
             units: Mutex::default(),
         });
         (|| -> std::io::Result<()> {
@@ -378,8 +393,17 @@ pub(super) fn unreclaimable(path: &Path) -> Option<u64> {
     Some(current.saturating_sub(value("file ").saturating_sub(value("shmem "))))
 }
 
-/// Budgets of kernels that ended without removing them (a crash, a kill):
-/// only those whose process is gone, and only directories already empty.
+/// Takes the exclusive lock on a budget directory; `None` when another process
+/// holds it (its owner is alive, in whatever PID namespace) or it cannot be locked.
+fn hold(path: &Path) -> Option<File> {
+    let file = File::open(path).ok()?;
+    file.try_lock_exclusive().ok()?;
+    Some(file)
+}
+
+/// Budgets of kernels that ended without removing them (a crash, a kill): only
+/// those nobody holds the lock of, and only directories already empty. A PID
+/// says nothing here: a kernel in another PID namespace is alive and invisible.
 fn remove_leftovers(parent: &Path) {
     let Ok(entries) = std::fs::read_dir(parent) else {
         return;
@@ -394,7 +418,12 @@ fn remove_leftovers(parent: &Path) {
         else {
             continue;
         };
-        if pid != std::process::id() && !Path::new(&format!("/proc/{pid}")).exists() {
+        // A hot reload keeps its PID and closes the lock on exec: that previous
+        // program's budget is taken over, not swept.
+        if pid == std::process::id() {
+            continue;
+        }
+        if let Some(_unowned) = hold(&entry.path()) {
             remove_empty(&entry.path());
         }
     }
