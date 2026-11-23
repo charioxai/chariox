@@ -21,7 +21,10 @@ use super::watchdog::ClaudeStartState;
 use crate::pty::ReaderGate;
 
 const HOLD_TIMEOUT: Duration = Duration::from_secs(2);
-const POLL_MS: libc::c_int = 100;
+/// A reader waits for its pipe or for a hold request, whichever comes first,
+/// so this is only a backstop: at 100 ms every Claude pipe of a Room of idle
+/// agents woke ten times a second for nothing.
+const POLL_MS: libc::c_int = 5_000;
 
 /// A pipe read line by line on its own thread. A hot reload stops it between
 /// two reads; bytes read but not yet passed on stay in `unread`.
@@ -30,6 +33,9 @@ pub(super) struct LineReader {
     fd: RawFd,
     unread: Arc<Mutex<Vec<u8>>>,
     ended: Arc<AtomicBool>,
+    /// Written to when a hold is requested, so a reader waiting on its pipe
+    /// stops at once.
+    wake: Arc<OwnedFd>,
 }
 
 impl LineReader {
@@ -45,6 +51,7 @@ impl LineReader {
             fd: fd.as_raw_fd(),
             unread: Arc::new(Mutex::new(unread)),
             ended: Arc::default(),
+            wake: Arc::new(wake_fd()),
         };
         if held {
             reader.gate.hold(Duration::ZERO);
@@ -52,6 +59,7 @@ impl LineReader {
         let gate = Arc::clone(&reader.gate);
         let unread = Arc::clone(&reader.unread);
         let ended = Arc::clone(&reader.ended);
+        let wake = Arc::clone(&reader.wake);
         std::thread::spawn(move || {
             let mut chunk = [0_u8; 8192];
             loop {
@@ -59,7 +67,7 @@ impl LineReader {
                 while let Some(line) = next_line(&unread) {
                     on_line(line);
                 }
-                match read_ready(&fd, &mut chunk) {
+                match read_ready(&fd, &wake, &mut chunk) {
                     Ok(0) => break,
                     Ok(read) => lock(&unread).extend_from_slice(&chunk[..read]),
                     Err(error) if is_transient(&error) => {}
@@ -78,6 +86,9 @@ impl LineReader {
 
     /// Stops the reader between two reads; `None` when it ended or did not stop.
     fn hold(&self) -> Option<(RawFd, Vec<u8>)> {
+        let one = 1_u64.to_ne_bytes();
+        // Best effort: without the wake the reader still stops within POLL_MS.
+        unsafe { libc::write(self.wake.as_raw_fd(), one.as_ptr().cast(), one.len()) };
         if !self.gate.hold(HOLD_TIMEOUT) || self.ended.load(Ordering::SeqCst) {
             return None;
         }
@@ -102,17 +113,38 @@ fn next_line(unread: &Mutex<Vec<u8>>) -> Option<String> {
     Some(String::from_utf8_lossy(&line[..end]).into_owned())
 }
 
-/// Waits up to one poll interval for the pipe; `Ok(0)` only at end of file.
-fn read_ready(fd: &OwnedFd, chunk: &mut [u8]) -> std::io::Result<usize> {
-    let mut poll = libc::pollfd {
-        fd: fd.as_raw_fd(),
-        events: libc::POLLIN,
-        revents: 0,
-    };
-    match unsafe { libc::poll(&mut poll, 1, POLL_MS) } {
+/// A counter that becomes readable when a hold is requested.
+fn wake_fd() -> OwnedFd {
+    let fd = unsafe { libc::eventfd(0, libc::EFD_NONBLOCK | libc::EFD_CLOEXEC) };
+    assert!(fd >= 0, "eventfd: {}", std::io::Error::last_os_error());
+    unsafe { OwnedFd::from_raw_fd(fd) }
+}
+
+/// Waits for the pipe or a hold request, at most one poll interval;
+/// `Ok(0)` only at end of file.
+fn read_ready(fd: &OwnedFd, wake: &OwnedFd, chunk: &mut [u8]) -> std::io::Result<usize> {
+    let mut polls = [
+        libc::pollfd {
+            fd: fd.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        },
+        libc::pollfd {
+            fd: wake.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        },
+    ];
+    match unsafe { libc::poll(polls.as_mut_ptr(), 2, POLL_MS) } {
         0 => Err(std::io::ErrorKind::WouldBlock.into()),
         ready if ready < 0 => Err(std::io::Error::last_os_error()),
         _ => {
+            if polls[1].revents != 0 {
+                let mut count = [0_u8; 8];
+                unsafe { libc::read(wake.as_raw_fd(), count.as_mut_ptr().cast(), count.len()) };
+                // Pipe data that arrived with the request is read on the next pass.
+                return Err(std::io::ErrorKind::WouldBlock.into());
+            }
             let read =
                 unsafe { libc::read(fd.as_raw_fd(), chunk.as_mut_ptr().cast(), chunk.len()) };
             if read < 0 {
@@ -395,4 +427,58 @@ pub(super) struct AdoptedTurn {
     pub(super) turn_id: Option<String>,
     pub(super) prompt_message: Option<Value>,
     pub(super) start: ClaudeStartState,
+}
+
+#[cfg(test)]
+mod line_reader_tests {
+    use super::*;
+    use std::time::Instant;
+
+    fn pipe() -> (OwnedFd, OwnedFd) {
+        let mut fds = [0 as RawFd; 2];
+        assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+        unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) }
+    }
+
+    /// A reader of an idle pipe stops for a hot reload when asked, not when
+    /// its poll interval runs out; the interval is long so that an idle Room
+    /// does not wake every reader ten times a second.
+    #[test]
+    fn an_idle_reader_stops_for_a_hold_at_once() {
+        let (read_end, _write_end) = pipe();
+        let reader = LineReader::start(read_end, Vec::new(), false, |_| {});
+        std::thread::sleep(Duration::from_millis(200));
+        let mut took = Vec::new();
+        for _ in 0..15 {
+            let started = Instant::now();
+            assert!(reader.hold().is_some(), "the reader did not stop");
+            took.push(started.elapsed());
+            reader.release();
+            std::thread::sleep(Duration::from_millis(37));
+        }
+        took.sort();
+        let median = took[took.len() / 2];
+        assert!(
+            median < Duration::from_millis(20),
+            "an idle reader took {median:?} (median) to stop; it waited out its poll interval"
+        );
+    }
+
+    #[test]
+    fn a_line_written_while_idle_is_still_delivered_after_a_hold() {
+        let (read_end, write_end) = pipe();
+        let (lines, received) = std::sync::mpsc::channel();
+        let reader = LineReader::start(read_end, Vec::new(), false, move |line| {
+            let _ = lines.send(line);
+        });
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(reader.hold().is_some());
+        reader.release();
+        let bytes = b"hello\n";
+        unsafe { libc::write(write_end.as_raw_fd(), bytes.as_ptr().cast(), bytes.len()) };
+        assert_eq!(
+            received.recv_timeout(Duration::from_secs(2)).as_deref(),
+            Ok("hello")
+        );
+    }
 }
