@@ -162,16 +162,14 @@ pub(crate) fn cloud_directory_key(profile: &crate::config::PersistedCloudRelayPr
     )
 }
 
+/// The online and the linked kernels of one answer.
+type LastAnswer = (
+    std::collections::BTreeSet<String>,
+    std::collections::BTreeSet<String>,
+);
 /// Cloud's last answer to "which kernels are visible", by account and realm.
-static LAST_VISIBLE_TARGETS: std::sync::Mutex<
-    std::collections::BTreeMap<
-        String,
-        (
-            std::collections::BTreeSet<String>,
-            std::collections::BTreeSet<String>,
-        ),
-    >,
-> = std::sync::Mutex::new(std::collections::BTreeMap::new());
+static LAST_VISIBLE_TARGETS: std::sync::Mutex<std::collections::BTreeMap<String, LastAnswer>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
 
 /// Every kernel the account still links, whatever its status: an offline kernel stays; only a
 /// kernel that was removed (absent) or revoked is gone for good.
