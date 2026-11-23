@@ -232,6 +232,21 @@ test("MP-10: a child frame's unreadable cross-origin stylesheet reaches the view
     "/frame.css": { type: "text/css", body: ".mark { color: rgb(1, 2, 3); }" },
   }));
 
+// Row 486 review P1 (#1717): a cross-origin child frame's drains carry media_playing too. They must keep the child attached:
+// its changes arrive as ordinary ops on the same ids, never as a re-mounted document on every credit.
+test("Row 486: a cross-origin child frame stays attached across drains (no re-mount per credit)", () => mirrored(
+  '<p>top</p><iframe src="http://localhost:PORT/ticker" style="width:300px;height:100px"></iframe>', async ({ next }) => {
+    await new Promise(resolve => setTimeout(resolve, 800));
+    const first = await next();
+    assert.equal(first.reset, true);
+    let texts = 0, remounts = 0;
+    for (let i = 0; i < 6; i++) { const p = await next(400); for (const op of p.ops) { if (op.op === "text") texts++; if (op.op === "children") remounts++; } }
+    assert(texts >= 3, `the child's text changes arrive as text ops (${texts})`);
+    assert.equal(remounts, 0, "no child document is re-mounted");
+  }, {
+    "/ticker": { type: "text/html", body: '<!doctype html><p id="t">0</p><script>let i=0;setInterval(()=>{document.getElementById("t").textContent=String(++i)},200)</script>' },
+  }));
+
 // A cross-site navigation moves the page to a new renderer, where execution context ids start over: the new document's
 // mirror world can carry the old one's number. A call the old document's credit made late (its long poll, issued as the
 // page moved) must not reach the new document's observer, or it takes a change (here the main sheet loading) that no

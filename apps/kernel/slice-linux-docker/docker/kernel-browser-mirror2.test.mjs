@@ -1383,6 +1383,31 @@ test('MP-10: a child frame whose delta keeps failing is re-mounted once per cred
   assert.equal(mounts, 2, 'the next credit tries the re-mounted child again');
 });
 
+// Row 486 review P1 (#1717): every observer drain carries media_playing, a child frame's too. The strict child delta
+// schema must never see it (a refused delta re-mounts the frame with fresh ids on every credit); the frame's playing joins the page.
+test('Row 486: a child frame\'s media_playing is taken before the rebase: no re-mount, and its playing counts for the page', async () => {
+  const { MirrorFrames } = await import('./kernel-browser-mirror2-frames.mjs');
+  const stream = { frames: new Map(), frameSlots: new Map() };
+  let playing = true;
+  const drained = () => ({ ops: [], changed: [], resources: [], sheets: [], scroll: [0, 0], focused: null, selection: null, fragment: null, opaque: false, pressed: 0, loaded: 0, media_playing: playing });
+  const frames = new MirrorFrames({ parentWorld: () => ({ ref: 'top' }), evaluate: async () => drained(), sheetOps: async () => [] });
+  frames.sheetOps = async () => [];
+  const entry = { owner: 'n5', slot: 1, hostSlot: 0, depth: 1, child: { ref: 'child' }, loaderId: 'L', scroll: '[0,0]', fragment: null };
+  stream.frames.set('n5', entry); stream.frameSlots.set(1, entry);
+  let mounts = 0;
+  frames.loaderId = async () => 'L';
+  frames.owners = async () => new Map([['n5', { id: 'f' }]]);
+  frames.mount = async () => { mounts++; return { records: [], ops: [], resources: [] }; };
+  await frames.drain(stream, null, null); await frames.drain(stream, null, null);
+  assert.equal(mounts, 0, 'consecutive drains keep the child (its ids, focus and inputs)');
+  assert.equal(stream.frames.get('n5'), entry);
+  assert.equal(entry.playing, true);
+  const mirror = new Mirror2({ host: {} });
+  assert.equal(mirror.mediaPlaying(stream, { media_playing: false }), true, 'a playing child frame plays for its page');
+  playing = false; await frames.drain(stream, null, null);
+  assert.equal(mirror.mediaPlaying(stream, { media_playing: false }), false);
+});
+
 // A native region measures live geometry repeatedly during admission. Its known
 // document owner must not wait behind a busy renderer's frame-tree response.
 for(const change of [null,'navigation','detach','connection'])test(`region bounds retain the known document owner through ${change??'a busy renderer'}`,async()=>{
