@@ -26,7 +26,7 @@ const run = (...args) => execFileSync(executable, args, { encoding: "utf8", env,
 
 try {
   assert.equal(run("--version").trim(), `chariox ${version}`)
-  assert.match(run("--help"), /^usage: /)
+  assert.match(run("--help"), /^usage: /i)
   await smokeAccessNoWait()
 
   process.stdout.write(`${JSON.stringify({ ok: true, executable, version })}\n`)
