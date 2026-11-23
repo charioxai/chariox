@@ -998,10 +998,10 @@ impl KernelRuntimeState {
 
 mod cover;
 mod delegate;
-mod policy;
-pub(crate) mod reach;
 #[cfg(test)]
 mod owner_authority_tests;
+mod policy;
+pub(crate) mod reach;
 #[cfg(test)]
 pub(in crate::runtime) mod test_support;
 

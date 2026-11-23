@@ -415,7 +415,7 @@ async fn room_boundaries() {
     assert!(renamed.ok, "{renamed:?}");
     assert!(!room_command(&router, &auth_a, "agent focus peer").await.ok);
     assert!(
-        room_command(&router, &auth_b, "agent alias d direct-child")
+        room_command(&router, &auth_b, "agent alias by-grandparent direct-child")
             .await
             .ok
     );
