@@ -239,8 +239,7 @@ pub(in crate::provider) fn drain_opencode_events(
                 if session_id == state.session_id {
                     let kind = &status.kind;
                     if status.is_free_tier_limit() {
-                        if let Some(message) =
-                            end_free_limit_retry(state, provider_run_id, &status)
+                        if let Some(message) = end_free_limit_retry(state, provider_run_id, &status)
                         {
                             record_terminal_failure(
                                 state,
@@ -641,8 +640,7 @@ fn event_needs_blocking_work(state: &OpenCodeRuntimeState, event: &OpenCodeEvent
 
 /// What the person reads when the free model's usage limit ends a turn; the technical
 /// reason (OpenCode's own status, HTTP 429 `FreeUsageLimitError`) goes to the log.
-const FREE_USAGE_LIMIT_MESSAGE: &str =
-    "Free usage limit reached; sign in to OpenCode Go for more.";
+const FREE_USAGE_LIMIT_MESSAGE: &str = "Free usage limit reached; sign in to OpenCode Go for more.";
 
 /// OpenCode keeps retrying a free-usage refusal for hours and reports no error, so the
 /// turn would stay open with nothing to show. Stop the session's retry loop and return

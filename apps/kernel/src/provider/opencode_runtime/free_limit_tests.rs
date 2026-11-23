@@ -74,9 +74,15 @@ fn assert_free_limit_ended_the_turn(
         .expect("the free-limit refusal is a terminal failure");
     let outcome = TurnOutcome::classify("opencode", failure);
     assert_eq!(outcome.kind, TurnOutcomeKind::UsageLimit);
-    assert!(!outcome.retryable, "the free limit does not clear by waiting a minute");
     assert!(
-        outcome.reason.to_lowercase().contains("free usage limit reached"),
+        !outcome.retryable,
+        "the free limit does not clear by waiting a minute"
+    );
+    assert!(
+        outcome
+            .reason
+            .to_lowercase()
+            .contains("free usage limit reached"),
         "plain state, got {:?}",
         outcome.reason
     );
