@@ -43,6 +43,7 @@ where
         "local browser session admitted",
         serde_json::json!({"subject": identity.subject}),
     );
+    let gate_session = direct.next_gate_session();
     let close_reason = loop {
         tokio::select! {
             _ = shutdown.changed() => break "daemon shutting down",
@@ -104,6 +105,7 @@ where
                     &subscription_tasks,
                     &input_order,
                     &mut requests,
+                    (gate_session, &grant.authority),
                     &payload,
                 )).await
                 {
@@ -189,6 +191,7 @@ async fn handle_client_frame(
     subscription_tasks: &RelaySubscriptionTasks,
     input_order: &super::super::browser_input_order::BrowserInputOrder,
     requests: &mut JoinSet<()>,
+    (gate_session, admitted): (u64, &LocalBrowserAuthority),
     payload: &str,
 ) -> Result<(), &'static str> {
     let envelope = serde_json::from_str::<RelayEnvelope>(payload)
@@ -222,8 +225,10 @@ async fn handle_client_frame(
                 None => (None, false),
             };
             let outgoing_tx = outgoing_tx.clone();
+            #[cfg(test)]
+            direct.await_frame_for_test().await;
             let gate = StartGate::default();
-            direct.register_start_gate(gate.clone());
+            direct.register_start_gate(gate_session, admitted, gate.clone());
             requests.spawn(start_gate::scope(Some(gate.clone()), async move {
                 if gate.is_cancelled() {
                     return;

@@ -2377,13 +2377,74 @@ fn mp11_revoking_cancels_unbegun_requests_before_the_revoking_call_returns() {
         let waiting = crate::runtime::start_gate::StartGate::default();
         let begun = crate::runtime::start_gate::StartGate::default();
         assert!(begun.begin());
-        kernel.direct.register_start_gate(waiting.clone());
-        kernel.direct.register_start_gate(begun.clone());
+        let admitted = kernel.direct.authority.borrow().clone().expect("paired");
+        kernel.direct.register_start_gate(1, &admitted, waiting.clone());
+        kernel.direct.register_start_gate(1, &admitted, begun.clone());
         let mut unpaired = kernel.projection.snapshot();
         unpaired.cloud_relay = None;
         kernel.projection.update(unpaired);
         // No await since the update: the cut is part of it, not a poll that follows.
         assert!(waiting.is_cancelled());
         assert!(!begun.is_cancelled());
+    });
+}
+
+#[test]
+fn mp11_a_request_admitted_before_a_logout_cannot_register_a_waiting_gate_after_it() {
+    large_stack(async {
+        let kernel = Kernel::new();
+        // A frame passed the session's admission check under this authority and is about to register its gate.
+        let admitted = kernel.direct.authority.borrow().clone().expect("paired");
+        let mut unpaired = kernel.projection.snapshot();
+        unpaired.cloud_relay = None;
+        kernel.projection.update(unpaired);
+        // The logout published the new authority and drained the gates; only now does the frame register.
+        let late = crate::runtime::start_gate::StartGate::default();
+        kernel.direct.register_start_gate(1, &admitted, late.clone());
+        assert!(late.is_cancelled(), "a gate registered under a retired authority was left able to begin");
+    });
+}
+
+#[test]
+fn mp11_one_sessions_ending_does_not_cancel_the_mutations_another_session_queued() {
+    large_stack(async {
+        let kernel = Kernel::new();
+        let (a, b) = (Browser::new(), Browser::new());
+        let grant_a = kernel.mint(&a, a.identity()).await.unwrap();
+        let (mut socket_a, verdict) = connect(&kernel, &a, &grant_a).await;
+        assert_eq!(verdict["kind"], "local_connected");
+        let lease_a = kernel.direct.leases.lock().unwrap().keys().next().cloned().expect("the lease of A");
+        let grant_b = kernel.mint(&b, b.identity()).await.unwrap();
+        let (mut socket_b, verdict) = connect(&kernel, &b, &grant_b).await;
+        assert_eq!(verdict["kind"], "local_connected");
+        let workspace = std::env::current_dir().unwrap().to_string_lossy().into_owned();
+        let before = relay_session_count(&kernel, &b).await;
+        // A's next frame is held after admission: A is inside its guarded I/O when its own lease runs out.
+        let (frame_reached, _frame_release) = kernel.direct.pause_next_frame_for_test().await;
+        send_json(&mut socket_a, create_session_frame(&kernel, &a, "a-held-441", &workspace)).await;
+        timeout(Duration::from_secs(5), frame_reached).await.expect("A's frame was not held").unwrap();
+        // B's mutation is accepted and reserved but held before it dispatches: it has not begun.
+        let (reserved, release) = kernel.direct.command_result_cache.pause_next_dispatch_for_test().await;
+        send_json(&mut socket_b, create_session_frame(&kernel, &b, "b-queued-441", &workspace)).await;
+        timeout(Duration::from_secs(5), reserved).await.expect("B's command was not reserved").unwrap();
+        // Only A's lease expires. The pairing authority does not change.
+        kernel
+            .direct
+            .leases
+            .lock()
+            .unwrap()
+            .get(&lease_a)
+            .expect("A's lease")
+            .expiry
+            .send_modify(|lease| lease.expires_at_ms = crate::session::unix_epoch_ms() + 100);
+        let closed = timeout(Duration::from_secs(5), next_json(&mut socket_a)).await.expect("A's session ends");
+        assert_eq!(closed["kind"], "close");
+        let _ = release.send(());
+        sleep(Duration::from_millis(1000)).await;
+        assert_eq!(
+            relay_session_count(&kernel, &b).await,
+            before + 1,
+            "B's queued mutation was cancelled by A's session ending ({closed})"
+        );
     });
 }

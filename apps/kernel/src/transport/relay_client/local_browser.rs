@@ -84,6 +84,9 @@ pub(crate) struct LocalBrowserDirect {
     authority_watch: std::sync::Once,
     /// Start gates of the requests every session has running; revocation cancels the ones that have not begun.
     start_gates: std::sync::Mutex<Vec<crate::runtime::start_gate::StartGate>>,
+    next_gate_session: std::sync::atomic::AtomicU64,
+    #[cfg(test)]
+    frame_pause: tokio::sync::Mutex<Option<(tokio::sync::oneshot::Sender<()>, tokio::sync::oneshot::Receiver<()>)>>,
     rtc: rtc::RtcEndpoint,
 }
 
@@ -138,6 +141,9 @@ impl LocalBrowserDirect {
             authority: watch::channel(authority).0,
             authority_watch: std::sync::Once::new(),
             start_gates: std::sync::Mutex::new(Vec::new()),
+            next_gate_session: std::sync::atomic::AtomicU64::new(1),
+            #[cfg(test)]
+            frame_pause: tokio::sync::Mutex::new(None),
             rtc,
         });
         // A logout, re-pairing or key change cuts the queue before its own call returns; the poll below only backstops.
@@ -375,7 +381,33 @@ impl LocalBrowserDirect {
     }
 
     /// A session's request is waiting for its command lane; revocation can cancel it until the lane takes it.
-    fn register_start_gate(&self, gate: crate::runtime::start_gate::StartGate) {
+    fn next_gate_session(&self) -> u64 {
+        self.next_gate_session.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    }
+
+    #[cfg(test)]
+    async fn pause_next_frame_for_test(&self) -> (tokio::sync::oneshot::Receiver<()>, tokio::sync::oneshot::Sender<()>) {
+        let (entered, reached) = tokio::sync::oneshot::channel();
+        let (release, resume) = tokio::sync::oneshot::channel();
+        *self.frame_pause.lock().await = Some((entered, resume));
+        (reached, release)
+    }
+
+    #[cfg(test)]
+    async fn await_frame_for_test(&self) {
+        let pause = self.frame_pause.lock().await.take();
+        if let Some((entered, resume)) = pause {
+            let _ = entered.send(());
+            let _ = resume.await;
+        }
+    }
+
+    fn register_start_gate(
+        &self,
+        _session: u64,
+        _admitted: &LocalBrowserAuthority,
+        gate: crate::runtime::start_gate::StartGate,
+    ) {
         let mut gates = self.start_gates.lock().expect("start gates poisoned");
         if gates.len() >= 64 {
             gates.retain(crate::runtime::start_gate::StartGate::is_waiting);
