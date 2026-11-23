@@ -202,3 +202,21 @@ test('MP-08/MP-10 paced page crop does not hold frames in a document whose anima
   assert.equal((await jobs[1]).drawn,true);assert.deepEqual(draws,[1,2],'the timer hands the next frame over within about 50 ms');
  }finally{sink.close()}
 });
+test('Row 487: a new media element keeps the overlay (the frozen previous picture) until it presents its first frame',async()=>{
+ const canvas={width:1280,height:800,style:{opacity:''},dataset:{},getContext:()=>({clearRect(){},drawImage(){}})};
+ const sink=new VideoSink(canvas,()=>{});let presented;
+ sink.track={stop(){}};sink.video={requestVideoFrameCallback:cb=>{presented=cb;return 1},cancelVideoFrameCallback(){},remove(){},style:{}};sink.awaitingFirst=true;sink.canvasOpacity='';
+ sink.observePresentation(sink.video);
+ const image=()=>({timestamp:1,close(){},clone(){return {close(){}}}});
+ await sink.commit({image:image(),decodedAt:0,writtenAt:1},{sequence:1});
+ assert.equal(canvas.style.opacity,'','written but not yet on screen: the previous picture stays (no empty pane)');
+ presented(0,{mediaTime:0.000001,presentationTime:1,expectedDisplayTime:2,presentedFrames:1});
+ assert.equal(canvas.style.opacity,'0','on screen: the overlay retires');
+ await sink.commit({image:image(),decodedAt:0,writtenAt:1},{sequence:2});assert.equal(canvas.style.opacity,'0','later frames retire it at once');
+ sink.close();
+ // An element that never reports a presented frame lets the overlay go after a bound.
+ const canvas2={width:1280,height:800,style:{opacity:''},dataset:{},getContext:()=>({clearRect(){},drawImage(){}})};
+ const sink2=new VideoSink(canvas2,()=>{});sink2.track={stop(){}};sink2.video={requestVideoFrameCallback:()=>1,cancelVideoFrameCallback(){},remove(){},style:{}};sink2.awaitingFirst=true;
+ await sink2.commit({image:image(),decodedAt:0,writtenAt:1},{sequence:1});assert.equal(canvas2.style.opacity,'');
+ await new Promise(resolve=>setTimeout(resolve,300));assert.equal(canvas2.style.opacity,'0');sink2.close();
+});
