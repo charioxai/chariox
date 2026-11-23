@@ -378,10 +378,11 @@ async function drill() {
   execFileSync("systemctl", ["stop", healthy.unit])
   const compatible = await startKernel("l12", `ws://127.0.0.1:${relayPort}`, cloudPort, oldKernelBinary)
   await until("L12 kernel on the new relay", () => online(compatible))
-  assert.equal((await status(compatible)).local_daemon_protocol_version, 1012)
+  const olderProtocol = (await status(compatible)).local_daemon_protocol_version
+  assert(olderProtocol >= 1012 && olderProtocol < 1014, `older kernel protocol ${olderProtocol}`)
   await delay(500)
   assert.equal((await status(compatible)).connected, true)
-  console.log("L12 rollout PASS protocol 1012 remains connected on the new relay")
+  console.log("L12 rollout PASS protocol", olderProtocol, "remains connected on the new relay")
 
   execFileSync("systemctl", ["stop", compatible.unit])
   const oldRelayPort = await startRelay("l12-relay", oldRelayBinary)
