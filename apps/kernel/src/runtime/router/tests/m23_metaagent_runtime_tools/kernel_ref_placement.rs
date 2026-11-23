@@ -147,3 +147,68 @@ async fn ambiguous_machine() {
     }
     assert_eq!((outcome.sessions_created, outcome.agents_created), (0, 0));
 }
+
+// Row 316: `agent spawn --slice new --kernel <machine>` on a Cloud-hosted home is refused with plain
+// words and leaves no slice behind, so a later plain spawn on that machine is placed as before.
+#[test]
+fn a_refused_hosted_slice_spawn_leaves_no_slice_and_the_machine_stays_spawnable() {
+    run_large_stack_async_test("kernel-ref-refused-slice", refused_slice_spawn);
+}
+
+async fn refused_slice_spawn() {
+    let world = super::subtree::world_with_config("kernel-ref-refused-slice", |config| {
+        config.relay_url = Some("wss://relay.example.test".to_string());
+        config.relay_token = Some("shared-token".to_string());
+        config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+            user_id: "kernel-owner".into(),
+            realm_id: "test-realm".into(),
+            relay_url: "wss://relay.example.test".into(),
+            machine_id: Some(config.host_machine_id.clone()),
+            ..Default::default()
+        });
+    })
+    .await;
+    register("rented-kernel", "rented-machine");
+    let before = place(&world, "rented-kernel").await;
+    let slices_before = world.router.runtime_state().list_slices().len();
+    for alias in ["s0", "s1"] {
+        let refused = super::subtree::room_command(
+            &world,
+            "a",
+            &format!("agent spawn {alias} --kernel rented-kernel --slice new:headed"),
+        )
+        .await;
+        let text = super::subtree::error_text(&refused);
+        assert!(!refused.ok, "{refused:?}");
+        for internal in [
+            "slice.relay_identity",
+            "slice:",
+            "worker reference",
+            "machine-scoped",
+        ] {
+            assert!(!text.contains(internal), "{internal} leaks into: {text}");
+        }
+        assert!(
+            text.contains("without --slice"),
+            "names the next step: {text}"
+        );
+    }
+    assert_eq!(
+        world.router.runtime_state().list_slices().len(),
+        slices_before,
+        "a refused slice spawn leaves no slice record"
+    );
+    let after = place(&world, "rented-kernel").await;
+    peer_agent_link_for_tests::unregister("rented-kernel");
+    assert!(
+        !after
+            .session
+            .clone()
+            .unwrap_err()
+            .contains("ambiguous slice"),
+        "{:?}",
+        after.session
+    );
+    assert_eq!(after.session, before.session);
+    assert_eq!(after.batch, before.batch);
+}
