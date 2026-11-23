@@ -604,11 +604,12 @@ async fn room_boundaries() {
         .authorize_room_agent_request(a.id(), &takeover)
         .is_ok());
     // Neither aliases nor a stale provider-run credential can revive an actor.
+    // Row 405 (PA11): the owner's agent's rename above took effect.
     {
         let app = app.lock().await;
         assert_eq!(
             app.agents().get_agent(peer.id()).unwrap().alias(),
-            Some("peer")
+            Some("stolen")
         );
     }
     router
