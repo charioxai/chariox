@@ -1286,6 +1286,71 @@ done
         .is_ok());
 }
 
+// Row 486: a screenshot waits for the page's next frame (2-5 s on a Tab Chrome does not show). A Tab switch's
+// mirror_close and mirror_subscribe must not queue behind it, or the switch waits that long.
+#[test]
+fn row486_screenshot_in_flight_does_not_hold_tab_switch() {
+    let root = std::env::temp_dir().join(format!(
+        "chariox-row486-screenshot-unlocked-{:032x}",
+        rand::random::<u128>()
+    ));
+    std::fs::create_dir(&root).unwrap();
+    let script = root.join("controller.sh");
+    std::fs::write(&script, r#"set -eu
+root=$1
+while IFS= read -r request; do
+ id=${request#*:}; id=${id%%,*}
+ case "$request" in
+ *'"method":"health"'*) printf '{"id":%s,"ok":true,"result":{"state":"ready","process_id":%s}}\n' "$id" "$$" ;;
+ *'"method":"host.protect"'*) printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
+ *'"op":"state"'*) printf '{"id":%s,"ok":true,"result":{"generation":1,"_observation":1,"tabs":[{"tab_id":"host-tab-a","document_id":"d"},{"tab_id":"host-tab-b","document_id":"e"}]}}\n' "$id" ;;
+ *'"op":"screenshot"'*)
+   printf 'started\n' > "$root/capturing"
+   (while ! test -f "$root/release"; do sleep 0.01; done; printf '{"id":%s,"ok":true,"result":{"tab_id":"host-tab-a","generation":1,"mime_type":"image/png","data_base64":""}}\n' "$id") & ;;
+ *'"op":"mirror_close"'*) printf '{"id":%s,"ok":true,"result":{"closed":true}}\n' "$id" ;;
+ *'"op":"mirror_subscribe"'*) printf '{"id":%s,"ok":true,"result":{"subscription_id":"host-mirror-b","generation":1,"tab_id":"host-tab-b","device_scale_factor":1,"wire":2}}\n' "$id" ;;
+ *'"method":"shutdown"'*) printf '{"id":%s,"ok":true,"result":{"state":"stopped","process_id":null}}\n' "$id";exit 0 ;;
+ esac
+done
+"#).unwrap();
+    let host = KernelBrowserHost::new(root.clone());
+    host.install_fixture_backend("alice", &script, &root);
+    host.backend("alice")
+        .unwrap()
+        .lock()
+        .unwrap()
+        .start()
+        .unwrap();
+    let policy = json!({"values":[],"targets":[],"unknown":false});
+    let request = |params: Value| {
+        host.protected_request("alice", None, "host.browser", params, policy.clone())
+    };
+    request(json!({"op":"state"})).unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let early = std::thread::scope(|scope| {
+        let capture = scope.spawn(|| request(json!({"op":"screenshot","tab_id":"host-tab-a","generation":1})));
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !root.join("capturing").exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(root.join("capturing").exists());
+        let switch = scope.spawn(|| {
+            let closed = request(json!({"op":"mirror_close","subscription_id":"host-mirror-a","generation":1}));
+            let opened = request(json!({"op":"mirror_subscribe","tab_id":"host-tab-b","generation":1,"device_scale_factor":1,"wire":2}));
+            tx.send((closed, opened)).unwrap();
+        });
+        let early = rx.recv_timeout(Duration::from_millis(500));
+        std::fs::write(root.join("release"), b"release").unwrap();
+        assert!(capture.join().unwrap().is_ok());
+        switch.join().unwrap();
+        early
+    });
+    host.shutdown().unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+    let (closed, opened) = early.expect("the Tab switch waited behind the screenshot");
+    assert!(closed.is_ok() && opened.is_ok());
+}
+
 // MP-08/MP-10 (review #1009 P2): a navigation or v2 subscribe admits against its
 // own Tab; an all-tab state read slowed by a busy unrelated page must not delay it.
 #[test]

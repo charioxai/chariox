@@ -808,6 +808,10 @@ impl KernelBrowserHost {
         // Dropping a display stream releases its compositor on the controller, which can take seconds
         // (the Browser view does it right after a navigation paints): input must not queue behind it.
         let display_release = method == "host.browser" && params["op"] == "unsubscribe";
+        // Row 486: a page screenshot (the Browser window's preview after a page settles, an agent's capture) waits for
+        // the page's next frame; on a Tab Chrome does not show that took 2-5 s, and the next Tab switch's mirror_close
+        // and mirror_subscribe queued behind it (a 4.5 s switch).
+        let screenshot = method == "host.browser" && params["op"] == "screenshot";
         let mut result = if method == "browser.app.agent" {
             // The page action may enqueue a `browser.app.calls` request while
             // running. Start its CDP request under the backend lock, then let
@@ -820,6 +824,7 @@ impl KernelBrowserHost {
             || display_subscribe
             || note
             || display_release
+            || screenshot
             || save
             || method == "browser.app.calls"
             || state
