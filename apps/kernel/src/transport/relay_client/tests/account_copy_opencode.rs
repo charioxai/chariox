@@ -215,3 +215,67 @@ pub(super) async fn check_opencode_copy(
         .to_string_lossy()
         .starts_with(".account-copy-")));
 }
+
+/// A machine enrolled with its machine credential alone chooses an offer itself: the
+/// recipient-side listing and `CopyProviderAccountFromKernel` admit it like any kernel.
+pub(super) async fn check_machine_enrolled_receiver_pulls(
+    root: &Path,
+    target: &DaemonConfig,
+    source: &DaemonConfig,
+    source_router: &CommandRouter,
+    target_router: &CommandRouter,
+    source_profiles: &ProviderAccountProfileRegistry,
+    target_profiles: &ProviderAccountProfileRegistry,
+) {
+    let _ = source_router;
+    let _restore = Environment(
+        ENVIRONMENT
+            .iter()
+            .map(|name| (*name, std::env::var_os(name)))
+            .collect(),
+    );
+    let executable = root.join("opencode-pull-check");
+    std::fs::write(&executable, "#!/bin/sh\n[ \"$1\" = --version ] && { echo 1.19.0; exit 0; }\n[ \"$1 $2\" = 'auth list' ] || exit 2\n[ -s \"$XDG_DATA_HOME/opencode/auth.json\" ] || exit 1\n").unwrap();
+    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+    std::env::set_var("CHARIOX_OPENCODE_BIN", &executable);
+    let canary = "synthetic-machine-pull";
+    let login = format!(r#"{{"openai":{{"type":"api","key":"{canary}"}}}}"#);
+    let (profile, _) = source_login(source_profiles, "Pulled", login.as_bytes());
+    let offers = source_request(
+        target_router,
+        serde_json::json!({"ListProviderAccountCopyOffers":{}}),
+    )
+    .await
+    .expect("a machine enrolled with its machine credential lists the offers");
+    assert!(
+        offers["ProviderAccountCopyOffers"]["offers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|offer| offer["provider"] == "opencode"
+                && offer["account_profile"] == profile
+                && offer["source_kernel_id"] == source.daemon_id),
+        "{offers}"
+    );
+    let response = source_request(
+        target_router,
+        serde_json::json!({"CopyProviderAccountFromKernel":{
+            "provider":"opencode", "account_profile":profile, "operation_id":"machine-pull",
+            "source_kernel_id":source.daemon_id,
+            "source_key_thumbprint":crate::runtime::terminal_pairings::public_key_thumbprint(&source.relay_public_key),
+            "replace":false
+        }}),
+    )
+    .await
+    .expect("the machine-enrolled receiver pulls the login");
+    assert!(!response.to_string().contains(canary));
+    let id = response["ProviderAccountCopied"]["receipt"]["account_profile"]
+        .as_str()
+        .unwrap();
+    let environment = target_profiles
+        .resolve_environment("local", "opencode", id)
+        .unwrap();
+    let auth = Path::new(&environment["XDG_DATA_HOME"]).join("opencode/auth.json");
+    assert_eq!(std::fs::read_to_string(auth).unwrap(), login);
+    assert_eq!(target.cloud_relay.as_ref().unwrap().kernel_credential, None);
+}

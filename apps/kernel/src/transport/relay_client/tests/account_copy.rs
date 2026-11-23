@@ -399,7 +399,13 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"num_turns
                     accepted=cloud.accept()=>{
                         let (mut socket,_)=accepted.unwrap();
                         let mut buffer=[0u8;8192];let read=socket.read(&mut buffer).await.unwrap();
-                        let for_copy=String::from_utf8_lossy(&buffer[..read]).contains("purpose=provider_account_copy");
+                        let request_text=String::from_utf8_lossy(&buffer[..read]).to_ascii_lowercase();
+                        let for_copy=request_text.contains("purpose=provider_account_copy");
+                        // Cloud's directory knows a caller by a credential header only.
+                        if rented_scenario && !request_text.contains("x-chariox-kernel-credential:") && !request_text.contains("x-chariox-machine-credential: mcred_") {
+                            socket.write_all(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await.unwrap();
+                            continue;
+                        }
                         // A rented machine is listed for account copy only.
                         let peers=if omit_for_server.load(std::sync::atomic::Ordering::SeqCst) || (rented_scenario && !for_copy) { &peers[..1] } else { &peers[..] };
                         let body=serde_json::json!({"peers":peers}).to_string();
@@ -1456,6 +1462,18 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"num_turns
             codex::check_native_copy(
                 &root,
                 &target,
+                &source_router,
+                &target_router,
+                &source_profiles,
+                &target_profiles,
+            )
+            .await;
+        }
+        if scenario == CopyScenario::RentedReceiver {
+            opencode::check_machine_enrolled_receiver_pulls(
+                &root,
+                &target,
+                &source,
                 &source_router,
                 &target_router,
                 &source_profiles,

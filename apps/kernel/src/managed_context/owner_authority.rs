@@ -62,11 +62,24 @@ async fn kernel_cloud_request<T: serde::de::DeserializeOwned + Send + 'static>(
 ) -> Result<T, DaemonError> {
     let profile = profile.clone();
     tokio::task::spawn_blocking(move || {
-        let credential = profile
-            .kernel_credential
-            .as_deref()
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| admission_error("Kernel enrollment credential is required"))?;
+        // A machine enrolled with its machine credential alone has no kernel credential; for
+        // account copy it asks the directory with that credential instead.
+        let (header, credential) = match (
+            profile
+                .kernel_credential
+                .as_deref()
+                .filter(|v| !v.is_empty()),
+            profile
+                .machine_credential
+                .as_deref()
+                .filter(|v| !v.is_empty()),
+        ) {
+            (Some(kernel), _) => ("x-chariox-kernel-credential", kernel),
+            (None, Some(machine)) if path == ACCOUNT_COPY_PEERS_ENDPOINT => {
+                ("x-chariox-machine-credential", machine)
+            }
+            _ => return Err(admission_error("Kernel enrollment credential is required")),
+        };
         let agent = crate::outbound_dial::agent_builder()
             .timeout(std::time::Duration::from_secs(15))
             .redirects(0)
@@ -75,14 +88,11 @@ async fn kernel_cloud_request<T: serde::de::DeserializeOwned + Send + 'static>(
         let response = if let Some(body) = body {
             agent
                 .post(&url)
-                .set("x-chariox-kernel-credential", credential)
+                .set(header, credential)
                 .set("content-type", "application/json")
                 .send_string(&body.to_string())
         } else {
-            agent
-                .get(&url)
-                .set("x-chariox-kernel-credential", credential)
-                .call()
+            agent.get(&url).set(header, credential).call()
         }
         .map_err(|error| {
             cloud_authorization_error(match error {
