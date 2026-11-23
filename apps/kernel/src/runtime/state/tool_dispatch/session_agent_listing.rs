@@ -140,6 +140,8 @@ fn agent_listing_row(description: &Value) -> Value {
         "alias": description["alias"],
         "state": description["state"],
         "model": description["model"],
+        "execution_mode": description["execution_mode"],
+        "permission_level": description["permission_level"],
         "parent_agent_id": description["parent_agent_id"],
         "has_active_prompt": description["has_active_prompt"],
         "queued_prompt_count": description["queued_prompt_count"],
