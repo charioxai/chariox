@@ -1541,6 +1541,54 @@ async fn restart_interrupts_a_provider_started_held_notification_and_tells_its_p
     assert_eq!(child_finished(&team).len(), 1);
 }
 
+// O4 (queue row 372): a child whose turn ended with a background call running is held in
+// memory. A restart or a hot reload drops the hold and the provider process, and no prompt is
+// active for recovery to end. The sweep that then ends the task must say what happened to it:
+// the kernel's program was replaced, not "cancelled" by anyone. The parent hears one
+// retryable `interrupted_by_restart` so it re-arms the work instead of waiting for a wake.
+#[tokio::test]
+async fn a_held_child_whose_hold_a_restart_dropped_is_reported_interrupted_by_restart() {
+    let mut team = child_with_a_call_running("background-hold-restart-idle").await;
+    assert!(working(&team));
+    let ended = team
+        .runtime
+        .owned
+        .provider_store
+        .terminate_run_provider_only(&team.room, &team.child_run)
+        .unwrap()
+        .into_run();
+    team.runtime.owned.provider_run_projection.update(ended);
+    team.runtime.owned.background_holds = Default::default();
+    // The new program's wake monitor starts after the task's last progress.
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    team.runtime.owned.agent_wakes = std::sync::Arc::new(
+        crate::runtime::state::agent_wake_scheduler::AgentWakeMonitor::new(),
+    );
+    team.runtime.recover_durable_runtime_after_restart().await;
+    team.runtime
+        .sweep_agent_lifecycle_at_for_test(crate::session::unix_epoch_ms() + 2 * MINUTE_MS)
+        .await
+        .unwrap();
+    assert!(!working(&team), "the lost hold must not leave the task Working");
+    let events = child_finished(&team);
+    assert_eq!(
+        events.len(),
+        1,
+        "the parent must receive one terminal result: {events:?}"
+    );
+    assert_eq!(
+        events[0].payload["outcome"]["kind"], "interrupted_by_restart",
+        "nobody cancelled this task: {events:?}"
+    );
+    assert_eq!(events[0].payload["outcome"]["retryable"], true);
+    assert!(!events[0].payload["outcome"]["reason"]
+        .as_str()
+        .unwrap()
+        .is_empty());
+    sweep(&team).await;
+    assert_eq!(child_finished(&team).len(), 1);
+}
+
 async fn wait_for_prompt_delivery(team: &Team, message_prompt: &str) {
     tokio::time::timeout(std::time::Duration::from_secs(10), async {
         loop {
