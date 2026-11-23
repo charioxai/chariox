@@ -53,6 +53,33 @@ pub(super) fn worker_claude_login(
     }
 }
 
+/// The account the spawn runs under. A spawn that names none keeps `None`, and the agent then
+/// runs under its provider's default (`AgentInstance::provider_account_profile`), which is what
+/// the worker is provisioned with. The Room's agent defaults are applied where a client builds
+/// the request, never here, so the check must not read them.
+fn spawned_account_reference(request: &crate::agent::CreateAgentRequest) -> &str {
+    request
+        .account_profile
+        .as_deref()
+        .map(str::trim)
+        .filter(|reference| !reference.is_empty())
+        .unwrap_or("default")
+}
+
+fn worker_login_for_spawn(
+    config: &crate::config::DaemonConfig,
+    profiles: &crate::account_profile::ProviderAccountProfileRegistry,
+    request: &crate::agent::CreateAgentRequest,
+) -> Result<WorkerClaudeLogin, DaemonError> {
+    worker_claude_login(
+        config,
+        profiles,
+        &request.owner_user_id,
+        &request.provider,
+        spawned_account_reference(request),
+    )
+}
+
 /// The refusal names the one step and where it happens.
 pub(super) fn setup_token_refusal(label: &str, profile_id: &str, card_raised: bool) -> DaemonError {
     let step = if card_raised {
@@ -70,6 +97,19 @@ pub(super) fn setup_token_refusal(label: &str, profile_id: &str, card_raised: bo
 }
 
 impl KernelRuntimeState {
+    /// The outcome of the sign-in a card started, as a notice to the requesting agent and its Room.
+    fn notify_claude_login_outcome(&self, session_id: &str, agent_id: &str, message: String) {
+        self.owned.record_notice_for_agent(
+            session_id,
+            None,
+            Some(agent_id),
+            self.owned
+                .attachment_store
+                .list_session_attachment_ids(session_id),
+            message,
+        );
+    }
+
     /// Runs before a spawn on another machine. Errors refuse the spawn; nothing exists yet.
     pub(super) async fn prepare_claude_login_for_worker(
         &self,
@@ -84,23 +124,7 @@ impl KernelRuntimeState {
             return Ok(());
         };
         let config = self.config_snapshot().await;
-        let reference = match request.account_profile.as_deref().map(str::trim) {
-            Some(reference) if !reference.is_empty() => reference.to_string(),
-            _ => self
-                .owned
-                .session_store
-                .get_session(&request.session_id)
-                .ok()
-                .and_then(|session| session.agent_defaults().account_profile.clone())
-                .unwrap_or_else(|| "default".to_string()),
-        };
-        match worker_claude_login(
-            &config,
-            &self.owned.provider_account_profiles,
-            &request.owner_user_id,
-            &request.provider,
-            &reference,
-        )? {
+        match worker_login_for_spawn(&config, &self.owned.provider_account_profiles, request)? {
             WorkerClaudeLogin::Proceed => Ok(()),
             WorkerClaudeLogin::NeedsSetupToken { profile_id, label } => {
                 let card_raised = self
@@ -147,7 +171,9 @@ impl KernelRuntimeState {
                     RuntimeInteractionKind::Choice,
                     RuntimeInteractionLevel::Warning,
                     Some("Create a Claude login your other machines can use".to_string()),
-                    format!("Sign in to Claude once here to make {name} usable on your other machines."),
+                    format!(
+                        "Sign in to Claude once here to make {name} usable on your other machines."
+                    ),
                     vec![
                         RuntimeInteractionChoice::new(
                             "create",
@@ -193,13 +219,27 @@ impl KernelRuntimeState {
                 },
             )
             .await;
-            let Ok(crate::local::LocalDaemonResponse::ProviderLoginStarted { login }) = started
-            else {
-                return;
+            let login = match started {
+                Ok(crate::local::LocalDaemonResponse::ProviderLoginStarted { login })
+                    if login.login_id.is_some() =>
+                {
+                    login
+                }
+                other => {
+                    // The card is gone, so the agent and the Room hear it here. The cause goes to the log.
+                    crate::logging::warn_with_fields(
+                        "daemon.claude_login_for_machines",
+                        "Claude sign-in could not start",
+                        serde_json::json!({"profile_id": profile_id, "error": other.err().map(|error| error.to_string())}),
+                    );
+                    state.notify_claude_login_outcome(
+                        &session_id,
+                        &agent_id,
+                        format!("Claude sign-in could not start for {profile_id}. Check that Claude is installed on this computer, then spawn the agent again to get the card back."),
+                    );
+                    return;
+                }
             };
-            if login.login_id.is_none() {
-                return;
-            }
             let outcome = state
                 .wait_for_account_login_state(
                     &session_id,
@@ -216,16 +256,7 @@ impl KernelRuntimeState {
             } else {
                 format!("Claude login for {profile_id} was not created; spawn the agent again to get the card back.")
             };
-            state.owned.record_notice_for_agent(
-                &session_id,
-                None,
-                Some(&agent_id),
-                state
-                    .owned
-                    .attachment_store
-                    .list_session_attachment_ids(&session_id),
-                message,
-            );
+            state.notify_claude_login_outcome(&session_id, &agent_id, message);
         });
         true
     }
@@ -277,8 +308,14 @@ mod tests {
         )
         .unwrap();
         let decide = |provider: &str, reference: &str| {
-            worker_claude_login(&config, &profiles, DEFAULT_LOCAL_USER_ID, provider, reference)
-                .unwrap()
+            worker_claude_login(
+                &config,
+                &profiles,
+                DEFAULT_LOCAL_USER_ID,
+                provider,
+                reference,
+            )
+            .unwrap()
         };
         assert_eq!(
             decide("claude", &profile.profile_id),
@@ -299,7 +336,76 @@ mod tests {
         )
         .unwrap();
         // A login held as a Vault setup token is what the launch carries: no card, no refusal.
-        assert_eq!(decide("claude", &profile.profile_id), WorkerClaudeLogin::Proceed);
+        assert_eq!(
+            decide("claude", &profile.profile_id),
+            WorkerClaudeLogin::Proceed
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_spawn_without_an_account_is_judged_by_the_account_it_will_run_under() {
+        let _env = crate::env_lock::lock();
+        let (root, config) = fixture("omitted-account");
+        let profiles = crate::account_profile::ProviderAccountProfileRegistry::open(
+            root.join("profiles.json"),
+        )
+        .unwrap();
+        let make = |label: &str| {
+            let profile = profiles
+                .create_managed(DEFAULT_LOCAL_USER_ID, "claude", label)
+                .unwrap();
+            crate::test_support::authenticate_provider_account(
+                &profiles,
+                DEFAULT_LOCAL_USER_ID,
+                "claude",
+                &profile.profile_id,
+            )
+            .unwrap();
+            profile
+        };
+        let native_only = make("Work");
+        let with_token = make("Token");
+        crate::provider::store_provider_account_credential(
+            &config,
+            DEFAULT_LOCAL_USER_ID,
+            "claude",
+            &with_token.profile_id,
+            "omitted-account-token-canary",
+            false,
+        )
+        .unwrap();
+        // A Room's agent defaults may name another account; they reach a spawn only through the
+        // request a client builds, so an omitted account is the provider default.
+        let request = crate::agent::CreateAgentRequest::new("room", "claude");
+        assert!(request.account_profile.is_none());
+        profiles
+            .set_default(DEFAULT_LOCAL_USER_ID, "claude", &with_token.profile_id)
+            .unwrap();
+        assert_eq!(
+            worker_login_for_spawn(&config, &profiles, &request).unwrap(),
+            WorkerClaudeLogin::Proceed,
+            "the worker is provisioned with the provider default, which carries its token"
+        );
+        profiles
+            .set_default(DEFAULT_LOCAL_USER_ID, "claude", &native_only.profile_id)
+            .unwrap();
+        assert_eq!(
+            worker_login_for_spawn(&config, &profiles, &request).unwrap(),
+            WorkerClaudeLogin::NeedsSetupToken {
+                profile_id: native_only.profile_id.clone(),
+                label: "Work".into()
+            },
+            "a native-only default is the one that needs the card"
+        );
+        // An explicit account is the one that counts.
+        let explicit = request
+            .clone()
+            .with_account_profile(with_token.profile_id.clone());
+        assert_eq!(
+            worker_login_for_spawn(&config, &profiles, &explicit).unwrap(),
+            WorkerClaudeLogin::Proceed
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 
