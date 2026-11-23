@@ -365,9 +365,10 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     const hostBox = node => viewportHost(node) ? [0, 0, 0, 0] : box(node);
     // Layout size (untransformed: the mirrored DOM applies the same transforms); SVG/text boxes use the rendered box.
     const layoutSize = node => node.nodeType === 1 && node.offsetWidth !== undefined ? [node.offsetWidth, node.offsetHeight] : (node.nodeType === 1 ? box(node) : textBox(node)).slice(2);
-    // Row 489: a closed host with no box of its own whose root paints (Chromium's PDF body, 0 high, its viewer iframe
-    // absolute in the root) is laid out in the viewer at what it paints: a 0-high tile never gets a region there.
-    const tileSize = node => { const size = layoutSize(node); if (size[0] > 0 && size[1] > 0 || !closedRoots.has(node)) return size; const own = box(node), ink = closedInk(node, own); return ink && ink[0] === own[0] && ink[1] === own[1] ? [Math.round(ink[2]), Math.round(ink[3])] : size; };
+    // Row 489: a document's body with no box of its own whose closed root paints (Chromium's PDF document: a 0-high body, its
+    // viewer iframe absolute in the root) is laid out in the viewer at what it paints: a 0-high tile never gets a region there.
+    // Only the body: any other host keeps its layout size (its painted overflow must not push the content after it).
+    const tileSize = node => { const size = layoutSize(node); if (size[0] > 0 && size[1] > 0 || !closedRoots.has(node) || node !== node.ownerDocument.body) return size; const own = box(node), ink = closedInk(node, own); return ink && ink[0] === own[0] && ink[1] === own[1] ? [Math.round(ink[2]), Math.round(ink[3])] : size; };
     const textBox = node => { const range = node.ownerDocument.createRange(); range.selectNodeContents(node); const r = range.getBoundingClientRect(); return [r.x, r.y, r.width, r.height]; };
     // Every non-password input counts, as on the pixel path (a filled month/date shows its value too).
     const plainText = node => node.localName === 'input' ? node.type !== 'password' : node.localName === 'textarea' || node.isContentEditable;
@@ -1290,7 +1291,8 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       const intersect = (a,b) => { const x=Math.max(a[0],b[0]),y=Math.max(a[1],b[1]);return [x,y,Math.max(0,Math.min(a[0]+a[2],b[0]+b[2])-x),Math.max(0,Math.min(a[1]+a[3],b[1]+b[3])-y)]; };
       // Row 489: a closed root's content can paint outside its host's box (Chromium's PDF body is 0 high, its viewer
       // iframe absolute in the root): the region covers that ink, as opaqueBoxes reports it.
-      let bounds=box(node);bounds=closedInk(node,bounds)??bounds;let clip=intersect(bounds,[0,0,node.ownerDocument.defaultView.innerWidth,node.ownerDocument.defaultView.innerHeight]);
+      // The host's own box stays the origin (element offset, input); only the captured area grows to the root's ink.
+      let bounds=box(node),clip=intersect(closedInk(node,bounds)??bounds,[0,0,node.ownerDocument.defaultView.innerWidth,node.ownerDocument.defaultView.innerHeight]);
       for(let view=node.ownerDocument.defaultView;view !== window;view=view.parent){
         const owner=view.frameElement;if(!owner)throw new Error('mirror2 frame unavailable');
         // The owner's origin maps the child by translation only: a rotated/scaled owner (or ancestor of it) would misplace the crop.

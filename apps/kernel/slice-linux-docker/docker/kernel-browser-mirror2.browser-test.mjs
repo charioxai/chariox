@@ -2360,6 +2360,22 @@ test('Row 489: a body with only whitespace light DOM and a closed root is an opa
  },{'/viewer':{type:'text/html',body:'<!doctype html><body style="margin:0;background:rgb(82,86,89)"><p style="color:white">page 1 of 15</p></body>'}}
 ));
 
+// Row 489 review (#1716): a closed root painting away from its host keeps the host as the region's origin (placement, clicks),
+// and a closed host in normal flow keeps its own layout size (its painted overflow never pushes the content after it).
+test('Row 489: a closed host painting outside its box keeps its origin, and an in-flow 0-high host keeps its height',()=>mirrored(
+ '<head><script>addEventListener("DOMContentLoaded",()=>{for(const id of ["away","flow"])document.getElementById(id).attachShadow({mode:"closed"}).innerHTML=id==="away"?"<div style=position:absolute;left:-50px;top:-50px;width:200px;height:200px;background:rgb(0,90,200)></div>":"<div style=position:absolute;left:0;top:0;width:300px;height:100px;background:rgb(200,90,0)></div>"})</script></head><body style="margin:0"><div id=away style="position:absolute;left:100px;top:100px;width:100px;height:100px"></div><div id=flow style="position:relative;height:0;margin-top:400px"></div><p>after</p></body>',
+ async ctx=>{
+  let packet=null,rows=[];for(let i=0;i<6;i++){const p=await ctx.next(i?600:0);rows.push(...p.nodes??[],...p.ops.flatMap(op=>op.op==='children'?op.nodes:[]));packet=p;if(rows.filter(n=>n[4]?.reason==='closed_shadow').length>=2)break;}
+  const tiles=rows.filter(n=>n[4]?.reason==='closed_shadow');
+  assert.equal(tiles.length,2,'both hosts are closed_shadow tiles');
+  assert(tiles.some(n=>n[4].size?.[1]===0),`the in-flow 0-high host keeps height 0: ${JSON.stringify(tiles.map(n=>n[4].size))}`);
+  const stream=ctx.host.mirror.streams.get(ctx.subscription_id),leases=[];
+  for(const [region_id,r] of stream.regionRecords)if(r.kind==='tile')try{leases.push(await ctx.host.mirror.v2.regions.resolve({mirror_subscription_id:ctx.subscription_id,generation:ctx.generation,document_id:stream.document_id,sequence:packet.sequence,region_id},stream.scope))}catch{}
+  const away=leases.find(l=>l.rect.x===50&&l.rect.y===50);
+  assert(away,`the away host's capture covers its painted ink from (50,50): ${JSON.stringify(leases.map(l=>l.rect))}`);
+  assert.deepEqual({...away.element_offset},{x:-50,y:-50},'placed relative to the host at (100,100)');
+ }));
+
 // Row 489: a real PDF (Chromium's own viewer) reaches the viewer as a region with pixels.
 const minimalPdf = () => {
   const objects = ['<< /Type /Catalog /Pages 2 0 R >>', '<< /Type /Pages /Kids [3 0 R] /Count 1 >>', '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>', null, '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>'];
