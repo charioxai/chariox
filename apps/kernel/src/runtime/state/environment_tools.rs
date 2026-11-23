@@ -48,7 +48,7 @@ pub(crate) fn environment_tool_specs() -> Vec<RuntimeToolSpec> {
             object(serde_json::json!({}))),
         (ENVIRONMENT_PROPOSE, "Propose changes to the saved Environment for the owner to accept or dismiss: add or remove a line of Setup or Variables, a Secret name or a File path, each with the project file and line that show why. Nothing changes until the owner accepts a proposal. Returns how many were stored.",
             object(serde_json::json!({"proposals":{"type":"array","items":proposal}}))),
-        (ENVIRONMENT_SAVE, "Save the Environment fields as the next revision: Setup script, Variables (KEY=value lines, no values of Secrets), Secret names and File paths. `revision` is the revision you read; a stale one writes nothing. MCPs and Skills stay as they are. Values of Secrets go through the Vault capture tools, never through this tool.",
+        (ENVIRONMENT_SAVE, "Save the Environment fields as the next revision (revision 0 writes the first Environment of a Project that has none, `exists` false in the read result): Setup script, Variables (KEY=value lines, no values of Secrets), Secret names and File paths. `revision` is the revision you read; a stale one writes nothing. MCPs and Skills stay as they are. Values of Secrets go through the Vault capture tools, never through this tool.",
             object(serde_json::json!({"revision":{"type":"integer"},"setup":{"type":"string"},"variables":{"type":"string"},"secrets":names,"files":names}))),
     ]
     .into_iter()
@@ -196,9 +196,8 @@ impl KernelRuntimeState {
                 serde_json::json!({ "stored": stored })
             }
             _ => {
-                let record = record.ok_or_else(|| {
-                    environment_error("this Project has no Environment yet; Draft one first")
-                })?;
+                // A Project with no Environment takes its first one here: revision 0 is the owner's own first Save.
+                let record = record.unwrap_or_default();
                 let text = |key: &str| {
                     arguments
                         .get(key)

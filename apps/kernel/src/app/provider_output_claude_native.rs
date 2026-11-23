@@ -19,7 +19,6 @@ use crate::terminal::TerminalOutputKind;
 
 mod attachments;
 mod context_delivery;
-mod first_run_notice;
 mod hidden_context;
 mod local_denial;
 mod permission;
@@ -30,17 +29,21 @@ mod startup_exit;
 #[cfg(test)]
 pub(crate) mod tests;
 mod transcript;
+mod trust_dialog;
 mod typed_prompt;
 mod workspace_trust;
 
 pub(crate) use context_delivery::clear_claude_context_delivery_for_settled_prompt;
-pub(crate) use first_run_notice::claude_native_first_run_notice;
 pub(crate) use permission::{claude_permission_title, format_claude_permission_message};
 pub(crate) use start_screen::{
     claude_headless_owner_decision_pending, claude_headless_prompt_written,
     claude_headless_stuck_screen_line,
 };
 pub(super) use startup_exit::claude_native_startup_exit;
+pub(crate) use trust_dialog::{
+    claude_native_trust_dialog_update, claude_native_trust_interaction_id,
+    claude_native_trust_keys, ClaudeTrustDialog, ClaudeTrustKeys,
+};
 
 use attachments::{
     extract_claude_native_prompt_attachments, format_claude_attachment_context,
@@ -167,6 +170,10 @@ pub(crate) struct ClaudeNativeProcessOutcome {
 /// Kernel-owned conversation policy for native-origin turns. The bridge only
 /// wires its hidden hook context and acknowledgement into that shared policy.
 pub(crate) trait NativePromptHandoffPolicy: Send + Sync {
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Bind the protected hook replay to the turn and the dispatch's handoff room"
+    )]
     fn prepare_context(
         &self,
         session_id: &str,
@@ -175,6 +182,7 @@ pub(crate) trait NativePromptHandoffPolicy: Send + Sync {
         prompt_id: &str,
         steering: bool,
         base: String,
+        handoff_room: Option<usize>,
     ) -> Result<String, DaemonError>;
     fn protect_inputs(
         &self,
@@ -694,6 +702,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                                 dispatch_prompt_id,
                                 inputs.prompt_id != inputs.origin_prompt_id,
                                 base,
+                                inputs.handoff_room,
                             )?
                         } else {
                             fs::read_to_string(context_file).map_err(|error| {
@@ -782,6 +791,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                             "",
                             false,
                             base,
+                            None,
                         )?,
                         None => base,
                     };
@@ -2189,11 +2199,24 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         {
             return Ok(());
         }
-        let hidden_context =
-            self.managed_base_context(session_id, context_file, provider_run, prompt)?;
-        let handoff_room = crate::provider::claude_native_hidden_context_room(&hidden_context);
-        let hidden_context =
-            join_claude_context([hidden_context, (prompt.context_handoff)(handoff_room)]);
+        let hidden_context = self
+            .managed_base_context(session_id, context_file, provider_run, prompt)
+            .map_err(|error| {
+                if matches!(
+                    &error,
+                    DaemonError::ProviderProtocol {
+                        operation: "claude_hidden_context_size",
+                        ..
+                    }
+                ) && !(prompt.context_handoff)(usize::MAX).is_empty()
+                {
+                    crate::provider::switch_turn::too_large(
+                        "the required instructions and attachments together with the handoff brief",
+                    )
+                } else {
+                    error
+                }
+            })?;
         // MP-08 / MP-10 / MP-11: native PTY runs use the same validated
         // skill adapter as structured runs. Only its visible /name enters the
         // PTY; instruction bodies remain in UserPromptSubmit additionalContext.
@@ -2204,13 +2227,13 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             crate::prompt_assembly::PromptManifest::default(),
         )
         .with_steering(prompt.id != prompt.origin_prompt_id);
-        let envelope = self.app.providers.prepare_skill_prompt(
-            session_id,
-            agent_id,
+        let (envelope, handoff) = self.app.providers.prepare_switch_skill_prompt(
+            provider_run,
             prompt.id,
             prompt.origin_prompt_id,
-            provider_run,
             envelope,
+            true,
+            &|room| Ok((prompt.context_handoff)(room)),
         )?;
         let visible = envelope.visible_user_prompt;
         let skill_context = envelope
@@ -2218,9 +2241,12 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             .as_ref()
             .map(|delivery| delivery.hidden_context.clone())
             .unwrap_or_default();
+        let (handoff_text, handoff_room) = handoff.map_or((String::new(), None), |handoff| {
+            (handoff.text, Some(handoff.room))
+        });
         let hidden_context = crate::provider::fit_claude_native_hidden_context(
             provider_run_id,
-            envelope.hidden_system_context,
+            join_claude_context([envelope.hidden_system_context, handoff_text]),
         )?;
         if provider_run
             .pty_env()
@@ -2229,7 +2255,12 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         {
             // Preserve full scheduled inputs before rendering, and before any PTY submission.
             // The hook re-protects these inputs under the current Room barrier.
-            hidden_context::stage_managed_inputs(context_file, prompt, &skill_context)?;
+            hidden_context::stage_managed_inputs(
+                context_file,
+                prompt,
+                &skill_context,
+                handoff_room,
+            )?;
         }
         fs::write(context_file, hidden_context).map_err(|error| DaemonError::ProviderProtocol {
             provider_run_id: provider_run_id.to_string(),

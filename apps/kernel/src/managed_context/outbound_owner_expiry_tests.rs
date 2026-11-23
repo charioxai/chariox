@@ -97,7 +97,9 @@ async fn assert_owner_authorization_recovery(consumed: bool, legacy: bool) {
                 .remove("consumptionAttempted");
             crate::config::write_private_file(&path, &serde_json::to_vec(&saved).unwrap()).unwrap();
         }
-        let (_, permit) = store.start(&plan.context_id, &plan.plan_digest).unwrap();
+        let (_, permit) = store
+            .start(&plan.context_id, &plan.plan_digest, false)
+            .unwrap();
         store.update(&plan.context_id, |status| {
             status.phase = ManagedContextOutboundOperationPhase::Failed;
             status.retryable = true;

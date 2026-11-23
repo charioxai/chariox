@@ -633,10 +633,9 @@ impl AgentRuntimeStore {
         session_id: &str,
         agent_id: &str,
         caller_user_id: &str,
-        terminal_caller: bool,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
         self.state
-            .focus_agent(session_id, agent_id, caller_user_id, terminal_caller)
+            .focus_agent(session_id, agent_id, caller_user_id)
             .await
     }
 

@@ -23,16 +23,31 @@ use crate::room_terminal::{RoomTerminalService, TerminalHandover};
 use crate::runtime::state::LocalJobHandover;
 
 mod job_state_file;
+mod read;
 
-/// The handover this program writes and reads. A new program must print the
-/// same number for `--handover-format` before this one hands over to it.
+use read::{end_unreadable, read_handover, ReadHandover};
+
+/// The handover this program writes and reads. A new program must print this
+/// number, or the next one, for `--handover-format` before this one hands
+/// over to it.
 /// This includes the persisted terminal records used to restore the handed-over PTYs;
 /// TerminalScope records cannot restore the earlier session-only records.
+///
+/// A change an older program cannot read bumps this number by one, and the
+/// program that bumps it keeps reading the documents of the release before
+/// (`PREVIOUS_HANDOVER_FORMAT`). A field added to a handover shape needs no
+/// bump when it has a serde default. `handover_compatibility` in the tests
+/// reads the previous release's documents and fails on either slip.
 pub const HANDOVER_FORMAT: u32 = 17;
+/// The format of the documents the previous release writes, which this one still reads.
+pub const PREVIOUS_HANDOVER_FORMAT: u32 = 17;
 const HANDOVER_ENV: &str = "CHARIOX_HANDOVER";
 const VERIFY_TIMEOUT: Duration = Duration::from_secs(10);
 
+// A part a release did not write is the part's default: the handover of the previous release
+// is read whole (the lists and the user-domain access are read separately, part by part).
 #[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
 struct Handover {
     format: u32,
     terminals: Vec<TerminalHandover>,
@@ -50,7 +65,7 @@ struct Handover {
     admission: Vec<crate::runtime::process_resources::HeldCommand>,
     // Focus and grants list agents' user-domain tools: a provider that listed
     // them must not see its tools change.
-    user_domain: crate::runtime::user_domain_access::AccessHandover,
+    user_domain: crate::runtime::kernel_browser_host::LoadedHandover,
     // Provider runs the owner cut off from the gateway: a handed-over run keeps its
     // id and tool token, so the revocation has to survive the swap with it.
     revoked_reach_runs: Vec<String>,
@@ -237,7 +252,7 @@ static RECEIVED_PROVIDERS: Mutex<Vec<ProviderHandover>> = Mutex::new(Vec::new())
 static RETAINED_GOAL_APPROVALS: Mutex<BTreeMap<String, crate::provider::NativeApprovalGoal>> =
     Mutex::new(BTreeMap::new());
 static RECEIVED_ATTACHMENTS: Mutex<Vec<AttachmentHandover>> = Mutex::new(Vec::new());
-static RECEIVED_USER_DOMAIN: Mutex<Option<crate::runtime::user_domain_access::AccessHandover>> =
+static RECEIVED_USER_DOMAIN: Mutex<Option<crate::runtime::kernel_browser_host::LoadedHandover>> =
     Mutex::new(None);
 static RECEIVED_REVOKED_REACH_RUNS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 // The handed-over runs' tool identities, from the handover until a recovered prompt claims the run:
@@ -279,25 +294,31 @@ pub fn receive() {
     std::env::remove_var(HANDOVER_ENV);
     let body = std::fs::read(&path);
     let _ = std::fs::remove_file(&path);
-    let handover = body
-        .map_err(|error| error.to_string())
-        .and_then(|body| serde_json::from_slice::<Handover>(&body).map_err(|e| e.to_string()))
-        .and_then(|handover| {
-            (handover.format == HANDOVER_FORMAT)
-                .then_some(handover)
-                .ok_or_else(|| "a handover of another format".to_string())
-        });
-    let handover = match handover {
-        Ok(handover) => handover,
+    let body = body.map_err(|error| error.to_string());
+    let read = body
+        .as_deref()
+        .map_err(Clone::clone)
+        .and_then(read_handover);
+    let ReadHandover {
+        handover,
+        unreadable,
+    } = match read {
+        Ok(read) => read,
         Err(error) => {
-            crate::logging::error_with_fields(
-                "hot_reload.receive",
+            // The old program's listening sockets are open in this one whatever the
+            // document says: keep serving on them, or the ports stay taken.
+            if let Ok(body) = &body {
+                keep_inherited_listeners(body);
+            }
+            note_for_log(
+                true,
                 "the handover could not be read; running terminals end as after a restart",
                 serde_json::json!({ "error": error }),
             );
             return;
         }
     };
+    end_unreadable(unreadable, &handover);
     // Children started from here on must not inherit them.
     for terminal in &handover.terminals {
         set_close_on_exec(terminal.master_fd(), true);
@@ -332,8 +353,8 @@ pub fn receive() {
     *lock(&RECEIVED_JOBS) = std::mem::take(&mut handover.released_jobs);
     *lock(&RECEIVED_WATCHED) = std::mem::take(&mut handover.watched);
     *lock(&RECEIVED_LOCAL_JOBS) = std::mem::take(&mut handover.local_jobs);
-    crate::logging::info_with_fields(
-        "hot_reload.receive",
+    note_for_log(
+        false,
         "kernel program replaced in place",
         serde_json::json!({
             "terminals": handover.terminals.len(),
@@ -370,8 +391,42 @@ pub fn receive() {
     *lock(&RECEIVED_REVOKED_REACH_RUNS) = handover.revoked_reach_runs;
 }
 
+// What `receive` has to say: the logger starts after it, so it is written once the logger is up.
+static RECEIVE_NOTES: Mutex<Vec<(bool, &'static str, serde_json::Value)>> = Mutex::new(Vec::new());
+
+pub(crate) fn note_for_log(error: bool, message: &'static str, fields: serde_json::Value) {
+    lock(&RECEIVE_NOTES).push((error, message, fields));
+}
+
+fn write_received_notes() {
+    for (error, message, fields) in std::mem::take(&mut *lock(&RECEIVE_NOTES)) {
+        if error {
+            crate::logging::error_with_fields("hot_reload.receive", message, fields);
+        } else {
+            crate::logging::info_with_fields("hot_reload.receive", message, fields);
+        }
+    }
+}
+
+/// The listening sockets a document that could not be read still names, as far as it can be
+/// parsed at all.
+fn keep_inherited_listeners(body: &[u8]) {
+    let listeners = serde_json::from_slice::<serde_json::Value>(body)
+        .ok()
+        .and_then(|document| document.get("listeners").cloned())
+        .and_then(|listeners| serde_json::from_value::<BTreeMap<String, i32>>(listeners).ok());
+    let Some(listeners) = listeners else {
+        return;
+    };
+    for fd in listeners.values() {
+        set_close_on_exec(*fd, true);
+    }
+    *lock(&INHERITED_LISTENERS) = listeners;
+}
+
 /// Start inherited watches after environment bootstrap, inside the runtime.
 pub fn adopt_received_processes() {
+    write_received_notes();
     let held = std::mem::take(&mut *lock(&RECEIVED_ADMISSION));
     let jobs = std::mem::take(&mut *lock(&RECEIVED_JOBS));
     // Admission must precede the first watch sample.
@@ -403,7 +458,11 @@ pub(crate) fn take_attachments() -> Vec<crate::attachment::RuntimeAttachment> {
         .collect()
 }
 
-pub(crate) fn take_user_domain() -> Option<crate::runtime::user_domain_access::AccessHandover> {
+pub(crate) fn has_received_handover() -> bool {
+    lock(&RECEIVED_USER_DOMAIN).is_some()
+}
+
+pub(crate) fn take_user_domain() -> Option<crate::runtime::kernel_browser_host::LoadedHandover> {
     lock(&RECEIVED_USER_DOMAIN).take()
 }
 
@@ -705,8 +764,8 @@ pub(crate) fn hold_unclaimed_run_for_tests(run: crate::provider::RuntimeProvider
 }
 
 #[cfg(test)]
-pub(crate) fn forget_unclaimed_runs_for_tests() {
-    lock(&UNCLAIMED_RUNS).clear();
+pub(crate) fn forget_unclaimed_run_for_test(run_id: &str) {
+    lock(&UNCLAIMED_RUNS).remove(run_id);
 }
 
 /// A new run of the agent takes the handed-over run's id and tool token, and
@@ -797,6 +856,17 @@ pub(crate) fn end_unclaimed_providers() {
         for fd in provider.fds() {
             unsafe { libc::close(fd) };
         }
+    }
+}
+
+/// Ends and reaps one child tree of this process, if `pid` is one of its
+/// children: a number from a document that could not be read names nothing else.
+fn end_own_child(pid: u32) {
+    // SAFETY: a non-blocking wait on a pid only reports on, or reaps, a child.
+    let mut status = 0;
+    let waited = unsafe { libc::waitpid(pid as libc::pid_t, &mut status, libc::WNOHANG) };
+    if waited == 0 {
+        end_child(pid);
     }
 }
 
@@ -952,7 +1022,7 @@ pub(crate) fn read_local_job_state(fd: i32) -> std::io::Result<zeroize::Zeroizin
 }
 
 /// Keeps the users' focus and grants for the next program.
-pub(crate) fn hand_over_user_domain(access: crate::runtime::user_domain_access::AccessHandover) {
+pub(crate) fn hand_over_user_domain(access: crate::runtime::kernel_browser_host::LoadedHandover) {
     if let Some(prepared) = lock(&PREPARED).as_mut() {
         prepared.handover.user_domain = access;
     }
@@ -1286,7 +1356,11 @@ async fn verify(start: &Start) -> Result<(), String> {
     .map_err(|_| "the new kernel program did not answer in time".to_string())?
     .map_err(|error| format!("the new kernel program does not run: {error}"))?;
     let format = String::from_utf8_lossy(&output.stdout);
-    if !output.status.success() || format.trim() != HANDOVER_FORMAT.to_string() {
+    let takes = format
+        .trim()
+        .parse::<u32>()
+        .is_ok_and(|format| format == HANDOVER_FORMAT || format == HANDOVER_FORMAT + 1);
+    if !output.status.success() || !takes {
         return Err(format!(
             "the new kernel program takes no handover of format {HANDOVER_FORMAT}"
         ));

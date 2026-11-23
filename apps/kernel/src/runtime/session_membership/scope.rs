@@ -814,6 +814,7 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::ListMetaagentEvents(_)
         | LocalDaemonRequest::ReadMetaagentEvent(_)
         | LocalDaemonRequest::AckMetaagentEvents(_)
+        | LocalDaemonRequest::GetAgentReleaseNotes { .. }
         | LocalDaemonRequest::GetTerminalCommandCatalog(_)
         | LocalDaemonRequest::GetDaemonHealth(_)
         | LocalDaemonRequest::GetKernelResourceTelemetry(_)
@@ -917,6 +918,7 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::ListRemoteMachines(_)
         | LocalDaemonRequest::ListRemoteMachineKernels(_)
         | LocalDaemonRequest::GetRoomListSnapshot(_)
+        | LocalDaemonRequest::OwnerView(_)
         | LocalDaemonRequest::GetPersonInbox(_)
         | LocalDaemonRequest::SetInboxCardState(_)
         | LocalDaemonRequest::SetInboxMute(_)

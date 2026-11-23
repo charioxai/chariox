@@ -219,6 +219,7 @@ impl KernelRuntimeState {
     ) -> Result<crate::app::ProviderProcessReapSummary, DaemonError> {
         let config = self.owned.config_projection.snapshot();
         let idle_ttl_ms = config.provider_process_idle_ttl_ms;
+        self.owned.end_runs_whose_idle_process_exited(None);
         let summary = self
             .with_app_side_effect(move |app| app.reap_idle_provider_processes(now_ms, idle_ttl_ms))
             .await?;
@@ -457,7 +458,7 @@ impl KernelRuntimeState {
         #[cfg(unix)]
         {
             crate::hot_reload::hand_over_user_domain(
-                self.owned.kernel_browser_host.hand_over_access(),
+                self.owned.kernel_browser_host.hand_over_loaded(),
             );
             self.hand_over_reach_revocations();
         }

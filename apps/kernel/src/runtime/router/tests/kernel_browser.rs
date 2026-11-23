@@ -6,7 +6,6 @@ mod access;
 mod agent_reads;
 mod capability_grants;
 mod computer;
-mod focus_authority;
 mod implicit_start;
 mod screenshot;
 mod state_wait;
@@ -42,10 +41,9 @@ async fn focus(router: &CommandRouter, session: &str, agent: &str) {
     dispatch.await.unwrap();
 }
 
-// MP-08: the loader advertises lifetime_hours; an agent that already has
-// browser access must get its tools, not a refusal that ends its turn.
+// Loading only lists the browser tools: it takes no lifetime and grants nothing.
 #[test]
-fn mp08_granted_agent_loads_browser_tools_with_lifetime_hours() {
+fn an_agent_loads_the_browser_tools_with_no_arguments() {
     run_test(|| Box::pin(granted_lifetime_check()));
 }
 async fn granted_lifetime_check() {
@@ -66,17 +64,21 @@ async fn granted_lifetime_check() {
     let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
     focus(&router, session.id(), agent.id()).await;
     router
-        .dispatch_authenticated_runtime_tool_call(
-            token,
-            "chariox.load_kernel_browser",
-            json!({"lifetime_hours": 2}),
-        )
+        .dispatch_authenticated_runtime_tool_call(token, "chariox.load_kernel_browser", json!({}))
         .await
         .unwrap();
     assert!(router
         .runtime_tool_specs_for_auth_token(token)
         .iter()
         .any(|tool| tool.name == "chariox.kernel_browser"));
+    assert!(router
+        .dispatch_authenticated_runtime_tool_call(
+            token,
+            "chariox.load_kernel_browser",
+            json!({"lifetime_hours": 2}),
+        )
+        .await
+        .is_err());
 }
 
 /// An input sent without the top-level `document_id` is told which parameter
@@ -128,7 +130,7 @@ async fn missing_document_check() {
 }
 
 #[test]
-fn kernel_browser_mcp_focus_load_and_revocation() {
+fn kernel_browser_mcp_load_and_foreign_caller() {
     run_test(|| Box::pin(focus_check()));
 }
 async fn focus_check() {
@@ -211,14 +213,6 @@ async fn focus_check() {
         )
         .await
         .is_err());
-    assert!(router
-        .dispatch_authenticated_runtime_tool_call(
-            second_token,
-            "chariox.kernel_browser",
-            json!({"command":{"op":"stop"}})
-        )
-        .await
-        .is_err());
     router
         .dispatch_authenticated_runtime_tool_call(
             second_token,
@@ -274,7 +268,7 @@ fn kernel_browser_linux_integration_drill() {
 fn drill_config(home: &std::path::Path) -> DaemonConfig {
     // MD-4/MD-5: normal product identity persistence, never a handcrafted key.
     // The replay's clean environment binds this loader to disposable CHARIOX_HOME.
-    let mut config = DaemonConfig::load_from_env();
+    let mut config = DaemonConfig::load_from_env().unwrap();
     config.provider_process_orphan_ttl_ms = u64::MAX;
     config.user_config.state.path = Some(home.join("state.db").display().to_string());
     config.user_config_path = home.join("config.toml");

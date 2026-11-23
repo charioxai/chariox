@@ -1,5 +1,12 @@
+x-drill-labels: &drill-labels
+  io.chariox.drill.run: ${CHARIOX_DRILL_RUN:-}
+  io.chariox.drill.started: ${CHARIOX_DRILL_STARTED:-}
+  io.chariox.drill.harness: ${CHARIOX_DRILL_HARNESS:-}
+  io.chariox.drill.process: ${CHARIOX_DRILL_PROCESS:-}
+
 services:
   relay:
+    labels: *drill-labels
     build:
       context: ../..
       dockerfile: docker/lab/Dockerfile
@@ -14,6 +21,7 @@ services:
       - "43150:43150"
 
   worker-a:
+    labels: *drill-labels
     image: chariox-lab:latest
     build:
       context: ../..
@@ -37,6 +45,7 @@ services:
       - relay
 
   worker-b:
+    labels: *drill-labels
     image: chariox-lab:latest
     build:
       context: ../..
@@ -61,4 +70,10 @@ services:
 
 volumes:
   worker-a-home:
+    labels: *drill-labels
   worker-b-home:
+    labels: *drill-labels
+
+networks:
+  default:
+    labels: *drill-labels

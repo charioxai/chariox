@@ -156,11 +156,31 @@ pub struct RelayStatus {
     pub capabilities: Vec<String>,
     pub configured: bool,
     pub connected: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registration_refused: Option<RelayRegistrationRefusal>,
     pub relay_url: Option<String>,
     pub relay_token_configured: bool,
     pub daemon_id: String,
     pub machine_id: String,
     pub machine_alias: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelayRegistrationRefusal {
+    pub reason: String,
+    pub next_step: String,
+    pub since_ms: u64,
+    /// No retry is scheduled while the kernel waits for replacement credentials.
+    pub next_retry_at_ms: Option<u64>,
+}
+
+impl RelayRegistrationRefusal {
+    pub(crate) fn owner_message(&self) -> String {
+        format!(
+            "Relay not registered: {}. Next step: {}.",
+            self.reason, self.next_step
+        )
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

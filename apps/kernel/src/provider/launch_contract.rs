@@ -16,8 +16,9 @@ use super::types::{
 /// Launch override Claude turns into `CLAUDE_CODE_AUTO_COMPACT_WINDOW`.
 pub(crate) const MAX_CONTEXT_TOKENS_OVERRIDE: &str = "chariox.max_context_tokens";
 
-/// Marks a Claude run whose agent was started by another agent. It starts with
-/// the context of a worker: the inbox tools and a short runtime note.
+/// Marks a run whose agent was started by another agent. It starts with the
+/// context of a worker: the inbox tools and a short runtime note. The key is
+/// Chariox-owned: no provider is handed it as configuration.
 const SUB_AGENT_OVERRIDE: &str = "chariox.sub_agent";
 
 pub(crate) fn overrides_mark_sub_agent(overrides: &BTreeMap<String, Value>) -> bool {
@@ -543,6 +544,8 @@ pub struct LaunchProviderRequest {
     /// Execution-bound skill cache a managed provider may read; never serialized.
     #[serde(skip)]
     pub(crate) skill_cache_roots: Vec<PathBuf>,
+    #[serde(skip)]
+    pub(crate) agent_cli_endpoint: Option<String>,
     pub runtime_mcp_binding: Option<RuntimeMcpBinding>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mcp_servers: Vec<CharioxMcpServerConfig>,
@@ -769,6 +772,7 @@ impl LaunchProviderRequest {
             working_directory: None,
             workspace_live_sync_roots: Vec::new(),
             skill_cache_roots: Vec::new(),
+            agent_cli_endpoint: None,
             runtime_mcp_binding: None,
             mcp_servers: Vec::new(),
             remote_extension_manifest: crate::extension::RemoteExtensionManifest::default(),
@@ -890,11 +894,9 @@ impl LaunchProviderRequest {
             .with_sub_agent(agent.is_sub_agent())
     }
 
-    /// Only Claude runs read the mark; other providers take no unknown override.
+    /// Every provider's worker starts with the short worker note.
     pub(crate) fn with_sub_agent(self, is_sub_agent: bool) -> Self {
-        if !is_sub_agent
-            || crate::provider::canonical_provider_family(&self.provider) != Some("claude")
-        {
+        if !is_sub_agent {
             return self;
         }
         self.with_provider_config_override(SUB_AGENT_OVERRIDE, serde_json::json!(true))
@@ -1090,10 +1092,9 @@ mod tests {
         };
         assert!(marked("claude", &agent(Some("agent-1"))));
         assert!(!marked("claude", &agent(None)));
-        assert!(
-            !marked("codex", &agent(Some("agent-1"))),
-            "other providers take no unknown override"
-        );
+        assert!(marked("codex", &agent(Some("agent-1"))));
+        assert!(marked("opencode", &agent(Some("agent-1"))));
+        assert!(!marked("codex", &agent(None)));
     }
 
     #[test]

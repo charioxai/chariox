@@ -818,6 +818,7 @@ fn slice_record(
         session_id: Some("session-1".to_string()),
         session_ids: vec!["session-1".to_string()],
         agent_ids: vec!["agent-1".to_string()],
+        delete_when_unused: false,
         backend: crate::slice::SliceBackendKind::LocalDocker,
         os: "linux".to_string(),
         display_mode: crate::slice::SliceDisplayMode::Headless,

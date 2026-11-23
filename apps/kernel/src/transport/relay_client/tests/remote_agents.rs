@@ -78,7 +78,9 @@ async fn public_remote_completion_preserves_worker_termination_async(already_set
                         accepting_remote_leases: true,
                         leased_agent_count: 1,
                         local_session_count: 0,
-                        local_protocol: None,
+                        local_protocol: Some(
+                            chariox_relay::protocol::MINIMUM_KERNEL_REGISTRATION_PROTOCOL,
+                        ),
                     },
                     &worker_private_key,
                 )
@@ -1047,6 +1049,7 @@ async fn assert_worker_provider_tools_act_as_the_home_agent(
         rows: 24,
         title: None,
         command: None,
+        stdin: None,
     })
     .await
     else {
@@ -1361,6 +1364,7 @@ async fn assert_worker_provider_tools_act_as_the_home_agent(
         rows: 24,
         title: None,
         command: None,
+        stdin: None,
     })
     .await
     else {
@@ -1455,6 +1459,7 @@ async fn assert_ending_the_room_stops_worker_terminals(
             rows: 24,
             title: None,
             command: Some(vec!["sleep".to_string(), "300".to_string()]),
+            stdin: None,
         },
     });
     let command = KernelCommand::from_local_request("room-terminal", None, None, &request);
@@ -1531,6 +1536,7 @@ async fn assert_remote_room_terminal(
             rows: 24,
             title: None,
             command: None,
+            stdin: None,
         },
     )
     .await
@@ -1696,6 +1702,7 @@ fn remote_agent_message_steers_live_worker_without_a_user_queue() {
 
 #[test]
 fn remote_agent_message_steer_keeps_home_app_lock_available_while_worker_reply_waits() {
+    crate::test_support::isolated_env_test!();
     run_async_with_large_test_stack("remote-agent-message-home-lock", || {
         remote_machine_agents_execute_prompts_through_the_home_session_async(
             true, true, false, false, false, false, false,
@@ -1705,6 +1712,7 @@ fn remote_agent_message_steer_keeps_home_app_lock_available_while_worker_reply_w
 
 #[test]
 fn remote_agent_message_reply_after_target_completion_does_not_commit_stale_steer() {
+    crate::test_support::isolated_env_test!();
     run_async_with_large_test_stack("remote-agent-message-stale-reply", || {
         remote_machine_agents_execute_prompts_through_the_home_session_async(
             true, true, false, true, false, false, false,
@@ -1715,6 +1723,7 @@ fn remote_agent_message_reply_after_target_completion_does_not_commit_stale_stee
 #[test]
 fn remote_queued_prompt_steer_reserves_queue_head_and_keeps_home_lock_available_while_worker_reply_waits(
 ) {
+    crate::test_support::isolated_env_test!();
     run_async_with_large_test_stack("remote-queued-steer-home-lock", || {
         remote_machine_agents_execute_prompts_through_the_home_session_async(
             false, false, true, false, false, false, false,
@@ -1724,6 +1733,7 @@ fn remote_queued_prompt_steer_reserves_queue_head_and_keeps_home_lock_available_
 
 #[test]
 fn failed_remote_queued_prompt_steer_advances_after_concurrent_completion() {
+    crate::test_support::isolated_env_test!();
     run_async_with_large_test_stack("remote-queued-steer-failed-advance", || {
         remote_machine_agents_execute_prompts_through_the_home_session_async(
             false, false, true, false, true, false, false,
@@ -1733,6 +1743,7 @@ fn failed_remote_queued_prompt_steer_advances_after_concurrent_completion() {
 
 #[test]
 fn ambiguous_remote_queued_steer_reply_reconciles_exact_receipt_without_replay() {
+    crate::test_support::isolated_env_test!();
     run_async_with_large_test_stack("remote-queued-steer-uncertain", || {
         remote_machine_agents_execute_prompts_through_the_home_session_async(
             false, false, true, false, false, true, false,

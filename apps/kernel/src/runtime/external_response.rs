@@ -134,6 +134,7 @@ response_policies! {
     ],
     Withhold => [
         MachineRoomResources,
+        OwnerViewStatus,
         OwnerVault,
         CredentialVaultKeySealed,
         SessionViewAttached,
@@ -449,6 +450,7 @@ response_policies! {
         RecallEvents,
         SemanticRecallEvents,
         RuntimeNotices,
+        AgentReleaseNotes,
         KernelAccessDecisionResponded,
         InteractionResponded,
         DeploymentCredentialEnrollmentArmed,

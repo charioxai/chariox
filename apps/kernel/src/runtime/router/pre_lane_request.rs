@@ -81,6 +81,12 @@ impl CommandRouter {
                     Ok(Some(response))
                 }))
             }
+            LocalDaemonRequest::GetAgentReleaseNotes { .. } => Some(Box::pin(async move {
+                Ok(Some(LocalDaemonResponse::AgentReleaseNotes {
+                    landing: crate::agent_release_notes::LANDING,
+                    text: crate::agent_release_notes::NOTE.into(),
+                }))
+            })),
             LocalDaemonRequest::GetTerminalCommandCatalog(_) => Some(Box::pin(async move {
                 terminal_command_catalog_response().map(Some)
             })),

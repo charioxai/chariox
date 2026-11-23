@@ -28,7 +28,7 @@ mod inbox_lookup_tests;
 mod unread_steer_tests;
 mod unread_steers;
 mod worker_stops;
-pub use leased_processes::{LeasedProcessBinding, LeasedProcessReceipt};
+pub use leased_processes::{LeasedJobStatus, LeasedProcessBinding, LeasedProcessReceipt};
 pub(crate) use worker_stops::{UnstoppedWorkerRun, WorkerStopMutation};
 mod audit;
 #[cfg(test)]
@@ -115,6 +115,11 @@ pub(crate) fn error(message: impl Into<String>) -> DaemonError {
         operation: "agent.lifecycle",
         message: message.into(),
     }
+}
+pub(crate) fn accepted_wait_error(reason: &str) -> DaemonError {
+    error(format!(
+        "This turn already accepted the wait `{reason}`. End the turn so the kernel can deliver its wake."
+    ))
 }
 fn sql(e: rusqlite::Error) -> DaemonError {
     super::storage_full::observe(&e);
@@ -241,6 +246,42 @@ impl DurableKernelStateStore {
             [room],
         )
     }
+    pub(crate) fn room_agent_task_page(
+        &self,
+        room: &str,
+        before: Option<i64>,
+        include_history: bool,
+        limit: u32,
+    ) -> Result<Vec<(i64, AgentTaskExecution)>, DaemonError> {
+        let db = self.lock_connection("agent.lifecycle.room_task_page")?;
+        let mut query = db
+            .prepare_cached(
+                "SELECT rowid,task_id,agent_id,prompt_id,payload FROM agent_tasks
+             WHERE room_id=?1 AND rowid < coalesce(?2, 9223372036854775807)
+             AND (?3 OR state IS NULL OR state NOT IN ('done','cancelled'))
+             ORDER BY rowid DESC LIMIT ?4",
+            )
+            .map_err(sql)?;
+        let rows = query
+            .query_map(params![room, before, include_history, limit], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, String>(4)?,
+                ))
+            })
+            .map_err(sql)?;
+        rows.map(|row| {
+            let (cursor, id, agent, prompt, payload) = row.map_err(sql)?;
+            let task = decode_task(&id, room, &agent, &prompt, &payload)
+                .unwrap_or_else(|_| quarantine::task(id, room.into(), agent, prompt));
+            Ok((cursor, task))
+        })
+        .collect()
+    }
+
     /// One task by its immutable identity, without reading its agent's history.
     pub(crate) fn agent_task(&self, task: &str) -> Result<Option<AgentTaskExecution>, DaemonError> {
         Ok(self
@@ -596,22 +637,53 @@ impl DurableKernelStateStore {
         let db = self.lock_connection("agent.lifecycle.subscriptions")?;
         registrations(&db, task)
     }
-    /// The live registrations an agent holds in its tasks other than `task`: a follow or a
-    /// delegate's completion outlives the turn that made it.
+    pub(crate) fn agent_registration_page(
+        &self,
+        recipient: (&str, &str),
+        task: &str,
+        before: Option<i64>,
+        other_tasks: bool,
+        include_history: bool,
+        limit: u32,
+    ) -> Result<Vec<(i64, Registration)>, DaemonError> {
+        let db = self.lock_connection("agent.lifecycle.registration_page")?;
+        let mut query = db.prepare_cached(
+            "SELECT r.rowid,r.payload FROM agent_tasks t JOIN agent_registrations r ON r.task_id=t.task_id
+             WHERE t.room_id=?1 AND t.agent_id=?2 AND (t.task_id<>?3)=?5
+             AND r.rowid < coalesce(?4, 9223372036854775807)
+             AND ((?6 AND NOT ?5) OR (json_valid(r.payload) AND json_extract(r.payload,'$.live')=1))
+             ORDER BY r.rowid DESC LIMIT ?7",
+        ).map_err(sql)?;
+        let rows = query
+            .query_map(
+                params![
+                    recipient.0,
+                    recipient.1,
+                    task,
+                    before,
+                    other_tasks,
+                    include_history,
+                    limit
+                ],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+            )
+            .map_err(sql)?;
+        rows.map(|row| {
+            let (cursor, payload) = row.map_err(sql)?;
+            Ok((cursor, decode(&payload)?))
+        })
+        .collect()
+    }
+
+    #[cfg(test)]
     pub(crate) fn agent_registrations_of_other_tasks(
         &self,
         room: &str,
         agent: &str,
         task: &str,
     ) -> Result<Vec<Registration>, DaemonError> {
-        let db = self.lock_connection("agent.lifecycle.subscriptions")?;
-        let mut q = db
-            .prepare("SELECT r.payload FROM agent_registrations r JOIN agent_tasks t ON t.task_id=r.task_id WHERE t.room_id=?1 AND t.agent_id=?2 AND t.task_id<>?3 AND json_valid(r.payload) AND COALESCE(json_extract(r.payload,'$.live'),0)=1 ORDER BY r.rowid")
-            .map_err(sql)?;
-        let rows = q
-            .query_map(params![room, agent, task], |r| r.get::<_, String>(0))
-            .map_err(sql)?;
-        rows.map(|row| decode(&row.map_err(sql)?)).collect()
+        self.agent_registration_page((room, agent), task, None, true, false, 64)
+            .map(|rows| rows.into_iter().rev().map(|(_, row)| row).collect())
     }
     pub(crate) fn agent_delivery_front(
         &self,

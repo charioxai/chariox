@@ -90,6 +90,9 @@ export function kernelFeatureMinimum(request: unknown): FeatureMinimum | undefin
     feature = { feature: "Local-kernel access", minimum: payload?.choice_id === "refuse" ? 451 : 470 }
   } else if (name === "RequestNativeProviderTurnInteraction" && payload?.origin != null) {
     feature = { feature: "Native provider approval origin", minimum: requests.nativeProviderInteractionMinimumProtocolVersion }
+  } else if ((name === "KernelTerminal" || name === "RoomTerminal") && record(payload?.operation)?.operation === "open" && record(payload?.operation)?.stdin != null) {
+    // An older kernel ignores the field and would run the program with no input.
+    feature = { feature: "Program stdin", minimum: requests.programStdinMinimumProtocolVersion }
   } else if ((name === "JoinTerminalPairingLink") && payload?.public_key_thumbprint != null) {
     feature = { feature: "Key-bound terminal connection", minimum: requests.relayClientKeyBindingMinimumProtocolVersion }
   }
@@ -100,7 +103,7 @@ export function kernelFeatureMinimum(request: unknown): FeatureMinimum | undefin
 export function requireKernelFeatureProtocol(request: unknown, protocolVersion: number | undefined): void {
   const feature = kernelFeatureMinimum(request)
   if (protocolVersion === undefined || !Number.isInteger(protocolVersion) || protocolVersion < 1) {
-    if (feature?.feature === "Exact prompt cancellation" || feature?.feature === "App automation injection" || feature?.feature === "Display resumption" || feature?.feature === "Move cancellation") {
+    if (feature?.feature === "Exact prompt cancellation" || feature?.feature === "App automation injection" || feature?.feature === "Display resumption" || feature?.feature === "Move cancellation" || feature?.feature === "Program stdin") {
       throw new KernelProtocolMinimumError(`kernel support unknown: ${feature.feature} needs protocol ≥${feature.minimum}; reconnect to an updated kernel`)
     }
     return

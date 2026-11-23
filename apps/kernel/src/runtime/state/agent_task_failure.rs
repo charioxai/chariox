@@ -122,14 +122,19 @@ impl KernelRuntimeOwnedState {
                 }
             }
             let diagnostic = crate::provider::sanitize_provider_diagnostic(diagnostic);
+            let reason = if crate::provider::switch_turn::needs_fresh_agent(&diagnostic) {
+                diagnostic
+            } else {
+                format!(
+                    "{}. Check the result before using Resume to retry, or Cancel.",
+                    diagnostic.trim_end_matches('.')
+                )
+            };
             self.durable_state_store
                 .agent_lifecycle(Operation::BlockInterrupted {
                     task: task.task_id,
                     prompt: task.prompt_id,
-                    reason: format!(
-                        "{}. Check the result before using Resume to retry, or Cancel.",
-                        diagnostic.trim_end_matches('.')
-                    ),
+                    reason,
                 })?;
         }
         Ok(())

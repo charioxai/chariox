@@ -9,6 +9,10 @@ pub struct GetSessionHistoryOutlineRequest {
     pub latest_prompt_count: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cursor: Option<SessionHistoryOutlineCursor>,
+    /// One cursor per agent. An empty map requests the first delta basis.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after_sequence:
+        Option<std::collections::BTreeMap<String, SessionHistoryOutlineDeltaCursor>>,
     /// Protocol 508: include the bounded initial content for every requested agent.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub include_prefetched_content: bool,
@@ -41,6 +45,10 @@ pub struct SessionHistoryOutlineAgent {
     pub agent_id: String,
     pub turns: Vec<SessionHistoryOutlineTurn>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delta_cursor: Option<SessionHistoryOutlineDeltaCursor>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_deltas: Option<Vec<SessionHistoryOutlineTurnDelta>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<SessionHistoryOutlineCursor>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prefetched_blobs: Option<Vec<SessionHistoryBlobContentPage>>,
@@ -49,6 +57,39 @@ pub struct SessionHistoryOutlineAgent {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionHistoryOutlineCursor {
     pub before_sequence: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionHistoryOutlineDeltaCursor {
+    pub after_sequence: u64,
+    pub revision: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionHistoryOutlineTurnDelta {
+    /// The ordinary turn with its entries, summary and blobs split out.
+    pub header: SessionHistoryOutlineDeltaItem<SessionHistoryOutlineTurn>,
+    pub summary: Option<SessionHistoryOutlineSummaryDelta>,
+    pub entries: Vec<SessionHistoryOutlineDeltaItem<SessionHistoryPageEntry>>,
+    pub blobs: Vec<SessionHistoryOutlineDeltaItem<SessionHistoryOutlineBlob>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum SessionHistoryOutlineDeltaItem<T> {
+    /// Zero-based position in the previous page's flattened parts.
+    Retained(usize),
+    Changed(T),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum SessionHistoryOutlineSummaryDelta {
+    Appended {
+        append_to: usize,
+        suffix: SessionHistoryPageEntry,
+    },
+    Row(SessionHistoryOutlineDeltaItem<SessionHistoryPageEntry>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -93,6 +134,7 @@ pub enum SessionHistoryOutlineTurnLifecycle {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionHistoryOutlineBlob {
     pub blob_id: String,
+    pub revision: String,
     pub kind: SessionHistoryEntryKind,
     pub title: String,
     pub summary: String,

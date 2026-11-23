@@ -448,18 +448,9 @@ impl KernelRuntimeState {
     pub(crate) async fn attach(
         &self,
         request: crate::attachment::AttachRequest,
-        terminal_caller: bool,
     ) -> Result<crate::attachment::RuntimeAttachment, DaemonError> {
         let attachment = self.owned.attach(request)?;
         self.refresh_kernel_browser_audience(&attachment).await?;
-        if terminal_caller {
-            if let Ok(session) = self.owned.session_snapshot(attachment.session_id()) {
-                self.owned.kernel_browser_host.set_focus(
-                    &self.provider_account_authority_owner_user_id(attachment.owner_user_id()),
-                    session.focused_agent_id(),
-                );
-            }
-        }
         let runtime_state = self.clone();
         let app = Arc::clone(&self.app);
         let session_id = attachment.session_id().to_string();
@@ -505,19 +496,10 @@ impl KernelRuntimeState {
         session_id: &str,
         agent_id: &str,
         caller_user_id: &str,
-        terminal_caller: bool,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
         let agent = self
             .owned
             .focus_agent(session_id, agent_id, caller_user_id)?;
-        // MP-11: session orchestration focus carries no human authorization.
-        // Only admission-authenticated terminals may create/refresh user-domain focus.
-        if terminal_caller {
-            self.owned.kernel_browser_host.set_focus(
-                &self.provider_account_authority_owner_user_id(caller_user_id),
-                Some(agent.id()),
-            );
-        }
         // The focus agent gets the App of the Room's focused App Tab.
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
         self.bind_foreground_app(session_id).await;
@@ -585,17 +567,8 @@ impl KernelRuntimeState {
         &self,
         session_id: &str,
         caller_user_id: &str,
-        terminal_caller: bool,
     ) -> Result<Option<crate::agent::AgentInstance>, DaemonError> {
         let agent = self.owned.cycle_agent_focus(session_id, caller_user_id)?;
-        // MP-11: session orchestration focus carries no human authorization.
-        // Only admission-authenticated terminals may create/refresh user-domain focus.
-        if terminal_caller {
-            self.owned.kernel_browser_host.set_focus(
-                &self.provider_account_authority_owner_user_id(caller_user_id),
-                agent.as_ref().map(|agent| agent.id()),
-            );
-        }
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
         self.bind_foreground_app(session_id).await;
         Ok(agent)
@@ -947,6 +920,7 @@ impl KernelRuntimeState {
         } else {
             self.owned.destroy_agent(agent_id, caller_user_id)?
         };
+        let mut detached_slices = Vec::new();
         for slice_ref in slice_refs {
             let slice = self.owned.slice_store.detach_agent(
                 &slice_ref,
@@ -958,11 +932,17 @@ impl KernelRuntimeState {
                 Some(slice.id.clone()),
                 serde_json::json!({ "slice": &slice }),
             )?;
+            detached_slices.push(slice);
         }
+        self.owned.owner_view.detach(destroyed.id());
         self.remove_destroyed_agent_provider_processes(local_provider_run_ids);
         end_agent_processes(destroyed.session_id(), agent_id).await?;
+        crate::agent_temp::clear_agent(destroyed.session_id(), agent_id);
         self.append_agent_durable_event("agent.deleted", &destroyed, None)
             .await?;
+        for slice in detached_slices {
+            self.cleanup_unused_agent_slice(&slice).await;
+        }
         // The workflows it answered for are the person's again.
         self.fall_back_for_deleted_agent(&destroyed).await;
         // Its blocked tasks no longer need the owner: their Resume/Cancel cards go with it.
@@ -1291,6 +1271,7 @@ impl KernelRuntimeState {
                 Some(detached.id.clone()),
                 serde_json::json!({ "slice": &detached }),
             )?;
+            self.cleanup_unused_agent_slice(&detached).await;
         }
         Ok(())
     }
@@ -2452,6 +2433,7 @@ mod tests {
             session_id: None,
             session_ids: Vec::new(),
             agent_ids: Vec::new(),
+            delete_when_unused: false,
             backend: crate::slice::SliceBackendKind::LocalDocker,
             os: os.to_string(),
             display_mode: crate::slice::SliceDisplayMode::Headed,

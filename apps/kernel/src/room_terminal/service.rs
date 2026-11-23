@@ -76,6 +76,8 @@ pub struct OpenRoomTerminal {
     pub opened_by: TerminalActor,
     /// Run this program (argv, no shell) instead of a login shell.
     pub command: Option<Vec<String>>,
+    /// What `command` reads on standard input; the terminal when absent.
+    pub stdin: Option<super::ProgramInput>,
     /// The Project's Variables and Secret values, as environment variables of this terminal.
     pub project_environment: BTreeMap<String, String>,
 }
@@ -223,7 +225,8 @@ impl RoomTerminalService {
                 if !valid {
                     return Err(refused(
                         "command must contain 1-64 arguments, each at most 4096 bytes and \
-                         without NUL; pass a longer script on stdin or in a file"
+                         without NUL. For a longer script, send it as stdin (up to 64 KiB, for \
+                         example `bash -s`) or upload it to the kernel and pass it as a stdin file"
                             .to_string(),
                     ));
                 }
@@ -279,22 +282,54 @@ impl RoomTerminalService {
             reports_first_prompt = !marks.is_empty();
             env.extend(marks);
         }
+        let input = match (&spec.stdin, &spec.command) {
+            (Some(input), Some(_)) => Some(super::program_input::prepare(
+                input,
+                &spec.working_directory,
+                &terminal_id,
+            )?),
+            (Some(_), None) => {
+                return Err(refused(
+                    "stdin goes to a program: pass the command too".to_string(),
+                ))
+            }
+            (None, _) => None,
+        };
+        let spooled = input
+            .as_ref()
+            .filter(|input| input.spooled)
+            .map(|input| input.path.clone());
+        let discard_spool = || {
+            if let Some(path) = &spooled {
+                let _ = std::fs::remove_file(path);
+            }
+        };
         // A command runs like `nohup`: when it exits, Linux hangs up the
         // terminal's foreground group, which would kill a job that is still
         // detaching (`setsid job &`). What stays in the session ends with the sweep.
         let (spawn_program, args) = match &spec.command {
-            Some(argv) => (
-                "/bin/sh".to_string(),
-                [
-                    vec![
-                        "-c".to_string(),
-                        "trap '' HUP; exec \"$@\"".to_string(),
-                        "chariox-command".to_string(),
-                    ],
-                    argv.clone(),
-                ]
-                .concat(),
-            ),
+            Some(argv) => {
+                let (script, handed) = match &input {
+                    Some(input) => (
+                        input.wrapper_script(),
+                        vec![input.path.display().to_string()],
+                    ),
+                    None => (super::program_input::NO_INPUT_WRAPPER, Vec::new()),
+                };
+                (
+                    "/bin/sh".to_string(),
+                    [
+                        vec![
+                            "-c".to_string(),
+                            script.to_string(),
+                            "chariox-command".to_string(),
+                        ],
+                        handed,
+                        argv.clone(),
+                    ]
+                    .concat(),
+                )
+            }
             None => (program.clone(), args),
         };
         // What an agent runs never reaches the kernel's secrets; a person's own
@@ -303,7 +338,19 @@ impl RoomTerminalService {
             TerminalActor::Agent(_) => {
                 let mut own = self.inner.shell_integration.files();
                 own.push(spec.working_directory.clone());
-                crate::provider::state_confinement::confine_command(spawn_program, args, &env, own)?
+                own.extend(input.as_ref().map(|input| input.path.clone()));
+                match crate::provider::state_confinement::confine_command(
+                    spawn_program,
+                    args,
+                    &env,
+                    own,
+                ) {
+                    Ok(confined) => confined,
+                    Err(error) => {
+                        discard_spool();
+                        return Err(error);
+                    }
+                }
             }
             TerminalActor::User => (spawn_program, args),
         };
@@ -321,7 +368,8 @@ impl RoomTerminalService {
             working_directory: Some(spec.working_directory.clone()),
             cols: spec.cols,
             rows: spec.rows,
-        })?;
+        })
+        .inspect_err(|_| discard_spool())?;
         // A person's own command is counted but never waits for room; what an
         // agent submits may (each submitted Enter sets it for the command it
         // starts, below).

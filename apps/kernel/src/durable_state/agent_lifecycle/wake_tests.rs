@@ -1554,6 +1554,7 @@ fn leased_process_receipts_pin_birth_lease_and_terminal_outcome() {
     let f = Fixture::new();
     let wake = f.create("leased-source", "process", None, None);
     let intent = LeasedProcessReceipt {
+        job: None,
         binding: LeasedProcessBinding {
             worker_kernel_id: "worker".into(),
             worker_machine_id: "machine".into(),

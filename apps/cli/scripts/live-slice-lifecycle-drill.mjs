@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { drillEnvironment, drillOwner } from "../../../scripts/lib/drill-docker-owner.mjs"
 import { spawn } from 'node:child_process'
 import { mkdir, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
@@ -373,6 +374,7 @@ async function main() {
     const dockerHost = await currentDockerHost()
     const env = {
       ...process.env,
+      ...drillEnvironment(drillOwner(import.meta.url)),
       HOME: home,
       XDG_CONFIG_HOME: configHome,
       XDG_STATE_HOME: stateHome,

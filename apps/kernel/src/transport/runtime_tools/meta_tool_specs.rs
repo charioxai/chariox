@@ -25,7 +25,7 @@ pub fn meta_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: META_SEARCH_COMMANDS_TOOL.to_string(),
-            description: "Search Chariox commands available to this agent in Meta mode by natural-language goal, name, usage, intent, tag, scope, mutation behavior, or Meta mode policy.".to_string(),
+            description: "Find up to five matching Chariox commands by name or natural-language goal. Read the syntax and examples with commands.docs.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -34,7 +34,7 @@ pub fn meta_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                     "scope": {"type": "string", "enum": ["session", "global", "external"]},
                     "mutates": {"type": "boolean"},
                     "policy": {"type": "string", "enum": ["allow", "approval", "deny"]},
-                    "limit": {"type": "integer", "minimum": 1, "maximum": 100}
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 5}
                 },
                 "additionalProperties": false
             }),
@@ -332,7 +332,7 @@ pub fn meta_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: META_WORKFLOW_CODE_CREATE_TOOL.to_string(),
-            description: "Create a saved workflow-code artifact in this session from JS/TS source after kernel compilation and validation. The kernel selects the isolated compiler runtime; caller node_path values are ignored.".to_string(),
+            description: "Create a saved workflow-code artifact in this session from JS/TS source after kernel compilation and validation. Returns the artifact name, source SHA-256, and validation status. Use workflow_code.read for the full saved source. The kernel selects the isolated compiler runtime and ignores caller node_path values.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["name", "source"],
@@ -473,7 +473,7 @@ pub fn meta_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: META_WORKFLOW_CODE_RUN_TOOL.to_string(),
-            description: "Apply saved or inline workflow-code into the current session and invoke one endpoint. endpoint may be a script endpoint handle or a kernel endpoint ref; when omitted, the script must define exactly one endpoint.".to_string(),
+            description: "Apply saved or inline workflow-code into the current session and invoke one endpoint. endpoint may be a script endpoint handle or a kernel endpoint ref; when omitted, the script must define exactly one endpoint. Returns the source SHA-256, workflow ID, and invocation IDs.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {

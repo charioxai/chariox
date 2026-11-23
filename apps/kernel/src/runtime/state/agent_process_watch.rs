@@ -434,20 +434,30 @@ fn supervise(
     });
 }
 
-/// argv of a kernel-launched command: no shell, bounded, no control characters.
-pub(super) fn command_argv(value: &serde_json::Value) -> Result<Vec<String>, DaemonError> {
+/// Bounded argv passed directly to the executable.
+pub(super) fn command_argv(
+    value: &serde_json::Value,
+    multiline_arguments: bool,
+) -> Result<Vec<String>, DaemonError> {
     serde_json::from_value(value.clone())
         .ok()
         .filter(|a: &Vec<String>| {
             !a.is_empty()
                 && a.len() <= 64
                 && !a[0].is_empty()
-                && a.iter()
-                    .all(|s| s.len() <= 4_096 && !s.chars().any(char::is_control))
+                && a.iter().enumerate().all(|(index, arg)| {
+                    arg.len() <= 4_096
+                        && !arg.chars().any(|ch| {
+                            ch.is_control()
+                                && !(multiline_arguments
+                                    && index != 0
+                                    && matches!(ch, '\n' | '\r' | '\t'))
+                        })
+                })
         })
         .ok_or_else(|| {
             crate::durable_state::agent_lifecycle::error(
-                "argv of 1-64 arguments required (no shell; control characters are refused)",
+                "provide 1–64 argv strings, each at most 4096 bytes, with a nonempty executable and no unsupported control characters",
             )
         })
 }
@@ -1403,6 +1413,7 @@ mod tests {
             })).unwrap();
             if rig.leased {
                 let receipt = crate::durable_state::agent_lifecycle::LeasedProcessReceipt {
+                    job: None,
                     binding: crate::durable_state::agent_lifecycle::LeasedProcessBinding {
                         worker_kernel_id: "worker".into(),
                         worker_machine_id: "machine".into(),

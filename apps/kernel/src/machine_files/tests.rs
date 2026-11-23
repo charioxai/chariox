@@ -1178,6 +1178,7 @@ async fn replacing_a_folder_that_holds_the_kernels_state_is_refused_before_anyth
 
 #[tokio::test]
 async fn a_private_folder_keeps_its_mode_and_its_children_stay_private_while_they_are_copied() {
+    crate::test_support::isolated_env_test!();
     use std::os::unix::fs::PermissionsExt;
     let (source_side, here) = (scratch("private-source"), scratch("private-here"));
     let tree = source_side.join("private");
@@ -1186,11 +1187,15 @@ async fn a_private_folder_keeps_its_mode_and_its_children_stay_private_while_the
     let mode_of = |path: &Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o7777;
     std::fs::set_permissions(&tree, std::fs::Permissions::from_mode(0o700)).unwrap();
     std::fs::set_permissions(tree.join("inner"), std::fs::Permissions::from_mode(0o750)).unwrap();
-    // SAFETY: umask only changes this process's creation mask; the test restores it.
-    let previous = unsafe { libc::umask(0o022) };
+    std::fs::set_permissions(
+        tree.join("readable.txt"),
+        std::fs::Permissions::from_mode(0o644),
+    )
+    .unwrap();
+    // Exercise the copy under a mask that allows public bits. Only this test runs in the child.
+    unsafe { libc::umask(0o022) };
     let jobs = Arc::new(TransferJobs::default());
     let job = run(&jobs, Link::new(machine()).source(), request(&tree, &here)).await;
-    unsafe { libc::umask(previous) };
     assert_eq!(job.state, FileTransferState::Done, "{job:?}");
     assert_eq!(mode_of(&here.join("private")), 0o700);
     assert_eq!(mode_of(&here.join("private/inner")), 0o750);

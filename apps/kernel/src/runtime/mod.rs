@@ -174,7 +174,6 @@ pub mod terminal_output_executor;
 pub(crate) mod terminal_pairings;
 pub(crate) mod user_config_executor;
 pub(crate) mod user_config_policy;
-pub(crate) mod user_domain_access;
 pub mod workflow_actor;
 pub(crate) mod workflow_projection;
 pub(crate) mod workspace_command_executor;

@@ -90,6 +90,7 @@ impl Fixture {
                 rows: 24,
                 title: None,
                 command,
+                stdin: None,
             })
             .await?
         {
@@ -308,6 +309,7 @@ async fn a_terminal_opened_while_the_room_is_deleted_does_not_survive_it() {
                                 rows: 24,
                                 title: None,
                                 command: sleep_command(),
+                                stdin: None,
                             },
                         )
                         .await;
@@ -403,6 +405,7 @@ async fn a_worker_lease_closes_the_room_to_terminals_before_sweeping_them() {
                 rows: 24,
                 title: None,
                 command: sleep_command(),
+                stdin: None,
             },
         )
     };
@@ -586,6 +589,7 @@ mod kernel_terminal_access {
                 rows: 24,
                 title: None,
                 command: None,
+                stdin: None,
             },
         };
         let opened = fixture
@@ -668,6 +672,7 @@ mod kernel_terminal_access {
                 rows: 24,
                 title: None,
                 command: Some(vec!["sleep".into(), "300".into()]),
+                stdin: None,
             },
         };
         runtime
@@ -713,6 +718,7 @@ mod kernel_terminal_access {
             rows: 50,
             title: None,
             command: Some(vec!["/bin/sh".into(), "-c".into(), script]),
+            stdin: None,
         })
         .await
         .expect("the command opens");

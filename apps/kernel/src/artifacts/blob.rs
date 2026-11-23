@@ -13,6 +13,14 @@ pub(super) fn store(root: &Path, source: &Path) -> Result<(String, u64, PathBuf)
         .map_err(|error| artifact_error("canonicalize source artifact", error))?;
     let mut input =
         open_regular(&source).map_err(|error| artifact_error("open artifact source", error))?;
+    store_open(root, &mut input, u64::MAX)
+}
+
+pub(super) fn store_open(
+    root: &Path,
+    input: &mut File,
+    max_bytes: u64,
+) -> Result<(String, u64, PathBuf), DaemonError> {
     let temporary = root
         .join("blobs")
         .join(format!(".pending-{:032x}", rand::random::<u128>()));
@@ -27,7 +35,7 @@ pub(super) fn store(root: &Path, source: &Path) -> Result<(String, u64, PathBuf)
         .open(&temporary)
         .map_err(|error| artifact_error("create private artifact blob", error))?;
     let _cleanup = TemporaryBlob(temporary.clone());
-    let (sha256, size) = copy_and_hash(&mut input, &mut output)
+    let (sha256, size) = copy_and_hash(input, &mut output, max_bytes)
         .map_err(|error| artifact_error("copy artifact blob", error))?;
     output
         .sync_all()
@@ -89,8 +97,17 @@ pub(super) fn open_regular(path: &Path) -> io::Result<File> {
     Ok(file)
 }
 
-fn copy_and_hash(input: &mut File, output: &mut impl Write) -> io::Result<(String, u64)> {
+fn copy_and_hash(
+    input: &mut File,
+    output: &mut impl Write,
+    max_bytes: u64,
+) -> io::Result<(String, u64)> {
     let before = input.metadata()?;
+    if !before.is_file() || before.len() > max_bytes {
+        return Err(invalid(
+            "artifact source must be a regular file within the size limit",
+        ));
+    }
     let (digest, copied) = copy_bounded_and_hash(input, output, before.len())?;
     let after = input.metadata()?;
     if copied != before.len()
@@ -210,7 +227,7 @@ mod tests {
             source,
             modified: before.modified().unwrap(),
         };
-        assert!(copy_and_hash(&mut opened, &mut output).is_err());
+        assert!(copy_and_hash(&mut opened, &mut output, u64::MAX).is_err());
         let after = opened.metadata().unwrap();
         assert_eq!(before.len(), after.len());
         assert_eq!(before.modified().unwrap(), after.modified().unwrap());
@@ -225,7 +242,7 @@ mod tests {
         fs::rename(&source, root.0.join("old")).unwrap();
         fs::write(&source, b"replacement").unwrap();
         let mut copied = Vec::new();
-        let (digest, size) = copy_and_hash(&mut opened, &mut copied).unwrap();
+        let (digest, size) = copy_and_hash(&mut opened, &mut copied, u64::MAX).unwrap();
         assert_eq!(copied, b"approved original");
         assert_eq!(size, copied.len() as u64);
         assert_eq!(digest, hex_lower(&Sha256::digest(&copied)));
@@ -265,7 +282,7 @@ mod tests {
                 copied: 0,
                 grow,
             };
-            assert!(copy_and_hash(&mut opened, &mut output).is_err());
+            assert!(copy_and_hash(&mut opened, &mut output, u64::MAX).is_err());
             assert!(output.copied <= 128 * 1024 + 1);
         }
     }

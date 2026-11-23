@@ -686,14 +686,11 @@ async fn login_room_with_controller(f: Fixture, site: &str, controller: &str) ->
     )
     .unwrap();
     let agent = f.request.target_agent_id.clone().unwrap();
-    host.grant_agent(
+    host.load_for(
         "local",
         &agent,
-        std::time::Duration::from_secs(3600),
-        &f.request.session_id,
-    )
-    .unwrap();
-    host.load("local", &agent).unwrap();
+        crate::runtime::kernel_browser_host::KernelBrowserCapability::Browser,
+    );
     call(
         &f,
         "chariox.kernel_browser",

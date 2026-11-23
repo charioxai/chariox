@@ -106,6 +106,24 @@ pub fn prepare_skill_delivery(
     inventory: &NativeSkillInventory,
     explicit_selections: &[SkillSelection],
 ) -> Result<ProviderSkillDelivery, DaemonError> {
+    prepare_skill_delivery_with_references(
+        provider,
+        prompt,
+        context,
+        inventory,
+        explicit_selections,
+        false,
+    )
+}
+
+pub(crate) fn prepare_skill_delivery_with_references(
+    provider: &str,
+    prompt: &str,
+    context: &SkillTurnContext,
+    inventory: &NativeSkillInventory,
+    explicit_selections: &[SkillSelection],
+    by_reference: bool,
+) -> Result<ProviderSkillDelivery, DaemonError> {
     if !matches!(provider, "codex" | "claude" | "opencode") {
         return Err(failure("unsupported native skill provider"));
     }
@@ -157,11 +175,18 @@ pub fn prepare_skill_delivery(
                 "selected Chariox skill instructions are missing; reinstall and retry",
             ));
         }
-        // Match the core selector's body-budget accounting exactly.
-        hidden_context.push_str(&format!(
-            "\nSkill {} ({}) at {}:\n{}\n",
-            skill.name, skill.digest, skill.root, skill.body
-        ));
+        if by_reference {
+            hidden_context.push_str(&format!(
+                "\nSkill {}: load on demand with chariox.load_skill (skill_id {}). The instructions are also at {}/SKILL.md.\n",
+                skill.name, skill.skill_id, skill.root,
+            ));
+        } else {
+            // Match the core selector's body-budget accounting exactly.
+            hidden_context.push_str(&format!(
+                "\nSkill {} ({}) at {}:\n{}\n",
+                skill.name, skill.digest, skill.root, skill.body
+            ));
+        }
         hidden_context.extend(crate::skill::resolver::conflict_notice(skill));
     }
     let selected_names: Vec<_> = explicit_selections

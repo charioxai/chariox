@@ -23,8 +23,10 @@ impl KernelRuntimeState {
         if current_run.id() != run.id() {
             return Err(ledger::error("stale provider tool authority"));
         }
-        self.dispatch_agent_event_tool_for(run.session_id(), actor, Some(run), name, args)
-            .await
+        let reply = self
+            .dispatch_agent_event_tool_for(run.session_id(), actor, Some(run), name, args)
+            .await;
+        super::super::jobs::refusal::tool_reply(name, reply)
     }
     /// A10: a leased agent's event tools reach the home ledger, which owns
     /// its waiting state and wake ordering. The forwarded context must name
@@ -39,13 +41,18 @@ impl KernelRuntimeState {
             return Err(ledger::error("room event tools are disabled"));
         }
         if context.home_prompt_id.is_none() {
-            return Err(ledger::error(
-                "leased event tools need the running home prompt",
-            ));
+            let error = if super::super::jobs::refusal::is_job_tool(name) {
+                super::super::jobs::refusal::BUILD_TURN_REQUIRED
+            } else {
+                "leased event tools need the running home prompt"
+            };
+            return super::super::jobs::refusal::tool_reply(name, Err(ledger::error(error)));
         }
         let agent = self.authorize_forwarded_workspace_context(context)?;
-        self.dispatch_agent_event_tool_for(&context.home_session_id, agent.id(), None, name, args)
-            .await
+        let reply = self
+            .dispatch_agent_event_tool_for(&context.home_session_id, agent.id(), None, name, args)
+            .await;
+        super::super::jobs::refusal::tool_reply(name, reply)
     }
     /// A10-S02: a message turn that interrupted a waiting task tends to reuse
     /// that task's ids to wait again. Name this turn's own ids, and say that
@@ -179,23 +186,15 @@ impl KernelRuntimeState {
                     None => "task unavailable in this room and turn".to_owned(),
                 })
             })?;
-        // MP-08/MP-09/MP-10/MP-11 F03: polling cannot keep an accepted wait
-        // inside a native turn or mutate its sources/deadline before settlement.
-        if task.wait.is_some() {
-            return Err(ledger::error(
-                "Wait already accepted. End this provider turn immediately without further tools, including inbox, wakes or subscriptions. The kernel will deliver a new turn for the source or deadline.",
-            ));
+        // The accepted wait owns the turn boundary. Inbox handling can still
+        // settle racing outcomes, without admitting new work or replacing the wait.
+        if task.wait.is_some() && !matches!(name, "chariox.events.inbox" | "chariox.events.ack") {
+            return Err(ledger::accepted_wait_error(&task.reason));
         }
         let now = crate::session::unix_epoch_ms();
         let payload = match name {
             "chariox.events.inbox" => self.read_agent_inbox(room, actor, &args)?,
-            "chariox.events.subscriptions" => {
-                serde_json::json!({
-                    "task":task,
-                    "registrations":self.owned.durable_state_store.agent_registrations(task_id)?,
-                    "other_tasks":self.owned.durable_state_store.agent_registrations_of_other_tasks(room, actor, task_id)?,
-                })
-            }
+            "chariox.events.subscriptions" => self.agent_subscription_listing(task, &args)?,
             "chariox.events.unsubscribe" => {
                 let id = args["registration_id"]
                     .as_str()
@@ -372,7 +371,7 @@ impl KernelRuntimeState {
                 else {
                     unreachable!()
                 };
-                let mut result = serde_json::json!({"yield_requested":true,"waiting_commits_at_native_settlement":true,"next_action":"End this provider turn immediately without further tools. Do not check inbox, wakes or subscriptions: the kernel delivers a new turn for the source or deadline."});
+                let mut result = serde_json::json!({"yield_requested":true,"waiting_commits_at_native_settlement":true,"next_action":"End this turn so the kernel can deliver the wake. You may read and acknowledge an inbox event if you already have one to handle."});
                 let registrations = self
                     .owned
                     .durable_state_store

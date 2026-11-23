@@ -620,9 +620,15 @@ impl KernelRuntimeOwnedState {
                 started_next.prompt(),
                 false,
             )?;
-            let mut hidden_system_context = self.hidden_context_with_failed_requests(
+            let mut hidden_system_context = self.context_with_agent_release_note(
                 agent_id,
-                started_next.hidden_system_context(),
+                started_next.id(),
+                started_next.prompt_origin(),
+                false,
+                self.hidden_context_with_failed_requests(
+                    agent_id,
+                    started_next.hidden_system_context(),
+                ),
             );
             if self.config_projection.snapshot().room_agent_tools
                 && !self
@@ -676,6 +682,7 @@ impl KernelRuntimeOwnedState {
                     false,
                 ),
                 false,
+                None,
             ) {
                 let _ = self.cancel_active_prompt_only(session_id, agent_id);
                 let _ = self.clear_prompt_activity(&provider_run_id);

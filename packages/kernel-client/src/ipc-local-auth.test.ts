@@ -12,6 +12,7 @@ import { localKernelAuthTokenPath } from "./local-kernel-auth-token.js"
 
 const ipcModuleUrl = new URL("./ipc.js", import.meta.url).href
 const localAuthEnvironmentNames = [
+  "CHARIOX_AGENT_CLI_TOKEN",
   "CHARIOX_HOME",
   "CHARIOX_KERNEL_HOST",
   "CHARIOX_KERNEL_LOCAL_AUTH_TOKEN",
@@ -25,6 +26,34 @@ const localAuthEnvironmentNames = [
   "CHARIOX_PUBLICATION_CLOUD_RUNNER_KEY",
   "XDG_STATE_HOME",
 ] as const
+
+test("LocalIpcClient sends an agent credential to its configured kernel only", async (t) => {
+  const kernel = await startKernelServer()
+  const otherKernel = await startKernelServer()
+  t.after(async () => {
+    await closeKernelServer(kernel.server)
+    await closeKernelServer(otherKernel.server)
+  })
+  const environment = { CHARIOX_AGENT_CLI_TOKEN: "agent-cli-fixture", CHARIOX_KERNEL_URL: kernel.endpoint }
+  const accepted = await runClientScript(`
+    const client = new LocalIpcClient(${JSON.stringify(kernel.endpoint)})
+    try {
+      await client.send({ ListSessions: null })
+      if (process.env.CHARIOX_AGENT_CLI_TOKEN !== undefined) throw new Error("credential was not consumed")
+    } finally {
+      client.destroy()
+    }
+  `, environment)
+  assert.equal(accepted.code, 0, accepted.stderr)
+  assert.deepEqual(kernel.authorizations, ["Bearer agent-cli-fixture"])
+
+  const refused = await runClientScript(`
+    new LocalIpcClient(${JSON.stringify(otherKernel.endpoint)})
+  `, environment)
+  assert.notEqual(refused.code, 0)
+  assert.match(refused.stderr, /agent CLI credential is bound to kernel endpoint/)
+  assert.deepEqual(otherKernel.authorizations, [])
+})
 
 test("LocalIpcClient reports the kernel's 401 diagnostic without replaying a request", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "chariox-auth-enforcement-"))

@@ -57,28 +57,9 @@ export type KernelBrowserFrame = {
   generation: number; tab_id: string; mime_type: "image/png" | "image/jpeg";
   data_base64: string; width: number; height: number; sequence?: number
 }
-export type UserDomainWindowAccess = {
-  kernel_id: string; kernel_name: string; focused_agent_kernel_id: string | null;
-  reachable_by_focused_agent: boolean
-}
-export type UserDomainResource =
-  | { kind: "desktop"; surface_id: string }
-  | { kind: "browser_tab"; tab_id: string }
-  | { kind: "app_view"; view_id: string }
-  | { kind: "capture"; capture_id: string }
-export type UserDomainGrant = {
-  agent_id: string; session_id: string; kernel_id: string; resources: UserDomainResource[];
-  since_ms: number; focused: boolean; idle_since_ms: number | null;
-  idle_timeout_seconds: number; expiry_rule: string
-  delegated_by_agent_id?: string | null; expires_at_ms?: number | null
-}
 export type UserDomainGrantEvent = {
+  event: "user_domain_grants_changed"; cursor: number
   room_computer?: { agent_id: string; session_id: string; allowed: boolean }[]
-  event: "user_domain_grants_changed"; cursor: number; grants: UserDomainGrant[];
-  notice: { agent_id: string; resource: UserDomainResource; at_ms: number } | null
-}
-export function userDomainWindowBadge(access: UserDomainWindowAccess): string | null {
-  return access.reachable_by_focused_agent ? null : `Your focused agent can't control this window — focus an agent on kernel ${access.kernel_name}`
 }
 export type KernelBrowserTabActor = { actor_id: string; kind: "agent" | "human"; display_label: string }
 export type KernelBrowserAgentActivity = { sequence: number; tab_id: string; actor: KernelBrowserTabActor }
@@ -98,8 +79,6 @@ export type KernelBrowserResult = {
   generation?: number; state?: "ready" | "stopped"; tabs?: KernelBrowserTab[]; agent_activity?: KernelBrowserAgentActivity | null;
   tab_id?: string; subscription_id?: string; frame?: KernelBrowserFrame | null;
   snapshot?: unknown; unsubscribed?: boolean;
-  kernel_id?: string; kernel_name?: string; focused_agent_kernel_id?: string | null;
-  reachable_by_focused_agent?: boolean;
   // Protocol 556: a `state_wait` reply's opaque revision, echoed back as the next `after`.
   revision?: string
   // Protocol 1008: a `state_wait` that ended without a change answers only `revision` and

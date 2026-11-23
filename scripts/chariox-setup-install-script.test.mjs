@@ -1,7 +1,7 @@
 // MP-07 / MP-11: bootstrap must verify Setup before executing it, without ticket argv.
 import assert from "node:assert/strict"
 import { execFile } from "node:child_process"
-import { generateKeyPairSync, sign } from "node:crypto"
+import { createHash, generateKeyPairSync, sign } from "node:crypto"
 import { mkdir, mkdtemp, readFile, realpath, readdir, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -9,14 +9,15 @@ import { promisify } from "node:util"
 import test from "node:test"
 import { renderInstallScript } from "./build-chariox-setup.mjs"
 const execute = promisify(execFile), source = await readFile(new URL("../deploy/setup/install.sh", import.meta.url), "utf8")
-async function harness(t, { platform = "Linux", stockLibreSSL = false, openssl4 = false } = {}) {
+async function harness(t, { platform = "Linux", stockLibreSSL = false, openssl4 = false, linuxOnly = false } = {}) {
   const root = await mkdtemp(join(await realpath(tmpdir()), "chariox-setup-script-")); t.after(() => rm(root, { recursive: true, force: true }))
   const bin = join(root, "bin"), payload = join(root, "payload"), sig = join(root, "sig"), script = join(root, "install.sh"), log = join(root, "executed"), downloads = join(root, "downloads"), verifier = join(root, "verifier")
   await mkdir(bin)
   const keys = generateKeyPairSync("ed25519"), publicKeyHex = keys.publicKey.export({ format: "der", type: "spki" }).subarray(-32).toString("hex")
-  const bytes = Buffer.from('#!/bin/sh\nprintf "%s\\n" "$*" > "$SETUP_FIXTURE_LOG"\nif [ "${3:-}" = "--enroll" ]; then IFS= read -r code; unset code; fi\n')
-  await writeFile(payload, bytes); await writeFile(sig, sign(null, bytes, keys.privateKey).toString("hex"))
-  await writeFile(script, renderInstallScript(source, { version: "0.3.0", publicKeyHex, releaseBase: "https://releases.example.test" }))
+  const bytes = Buffer.from('#!/bin/sh\nprintf "%s\\n" "$*" > "$SETUP_FIXTURE_LOG"\nif [ "${1:-}" = "--enroll" ]; then IFS= read -r code; unset code; fi\n')
+  const signedBytes = linuxOnly ? Buffer.from("chariox-linux-setup-sha256:" + createHash("sha256").update(bytes).digest("hex")) : bytes
+  await writeFile(payload, bytes); await writeFile(sig, sign(null, signedBytes, keys.privateKey).toString("hex"))
+  await writeFile(script, renderInstallScript(source, { version: "0.3.0", publicKeyHex, releaseBase: "https://releases.example.test", linuxOnly }))
   await writeFile(join(bin, "curl"), `#!/bin/sh\nprintf '%s\\n' "$@" >> "$SETUP_FIXTURE_DOWNLOAD_LOG"\noutput=\nsource="$SETUP_FIXTURE_PAYLOAD"\nfor arg do\n  if [ "$previous" = -o ]; then output=$arg; fi\n  case "$arg" in *.sig) source="$SETUP_FIXTURE_SIG" ;; esac\n  previous=$arg\ndone\nif [ -z "$output" ]; then cat "$SETUP_FIXTURE_SCRIPT"; else cp "$source" "$output"; fi\n`, { mode: 0o755 })
   await writeFile(join(bin, "uname"), `#!/bin/sh\ncase "$1" in -s) echo ${platform};; -m) echo ${platform === "Darwin" ? "arm64" : "x86_64"};; *) exit 1;; esac\n`, { mode: 0o755 })
   if (stockLibreSSL) {
@@ -52,7 +53,7 @@ for (const valid of [true, false]) {
     if (!valid) await writeFile(h.sig, "b".repeat(128))
     const result = await execute("sh", [h.script], { env: h.env, timeout: 15_000 }).catch(error => error)
     assert.equal(result.code ?? 0, valid ? 0 : 1)
-    if (valid) assert.equal(await readFile(h.log, "utf8"), "--install-only --login\n")
+    if (valid) assert.equal(await readFile(h.log, "utf8"), "\n")
     else assert.match(result.stderr, /Setup signature refused/)
   })
 }
@@ -81,7 +82,7 @@ for (const valid of [true, false]) {
     const result = await execute("sh", [h.script], { env: h.env, timeout: 15_000 }).catch(error => error)
     assert.equal(result.code ?? 0, valid ? 0 : 1)
     assert.match(await readFile(h.downloads, "utf8"), /chariox-setup-0\.3\.0-darwin-arm64/)
-    if (valid) assert.equal(await readFile(h.log, "utf8"), "--install-only --login\n")
+    if (valid) assert.equal(await readFile(h.log, "utf8"), "\n")
     else {
       assert.match(result.stderr, /Setup signature refused/)
       await assert.rejects(readFile(h.log))
@@ -89,16 +90,16 @@ for (const valid of [true, false]) {
     assert.equal((await readdir(h.root)).some(name => name.startsWith("chariox-setup.")), false)
   })
 }
-test("MP-07 script verifies public pin then runs CLI login, and removes its scratch", async t => {
+test("MP-07 script verifies public pin then starts device enrollment by default, and removes its scratch", async t => {
   const h = await harness(t)
   assert.equal(await h.run(), 0)
-  assert.equal(await readFile(h.log, "utf8"), "--install-only --login\n")
+  assert.equal(await readFile(h.log, "utf8"), "\n")
   assert.equal((await readdir(h.root)).some(name => name.startsWith("chariox-setup.")), false)
 })
 test("MP-11 code stays on stdin; argv codes are refused before downloads/execution", async t => {
   const h = await harness(t)
   assert.equal(await h.run(["--enroll"], "synthetic-one-use-code\n"), 0)
-  assert.equal(await readFile(h.log, "utf8"), "--install-only --login --enroll\n")
+  assert.equal(await readFile(h.log, "utf8"), "--enroll\n")
   await rm(h.log)
   assert.equal(await h.run(["--enroll", "must-not-be-an-argument"]), 1)
   await assert.rejects(readFile(h.log))
@@ -123,5 +124,15 @@ test("unaltered Cloud command enrolls in one paste with code on stdin and public
   child.stdin.on("error", () => {}); child.stdin.end(copied + "\n")
   const code = await new Promise((yes, no) => { child.once("error", no); child.once("close", yes) })
   assert.equal(code, 0)
-  assert.equal(await readFile(h.log, "utf8"), "--install-only --login --enroll --api-url https://cloud.example.test\n")
+  assert.equal(await readFile(h.log, "utf8"), "--enroll --api-url https://cloud.example.test\n")
+})
+
+
+test("Linux sign-only bootstrap verifies the executable digest and rejects changed bytes", async t => {
+  const h = await harness(t, { linuxOnly: true })
+  assert.equal(await h.run(), 0)
+  await rm(h.log)
+  await writeFile(h.payload, "#!/bin/sh\nexit 0\n")
+  assert.equal(await h.run(), 1)
+  await assert.rejects(readFile(h.log))
 })

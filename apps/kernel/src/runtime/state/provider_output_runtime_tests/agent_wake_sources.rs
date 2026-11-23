@@ -11,9 +11,11 @@ use crate::runtime::state::wake_driver::{
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex as StdMutex;
 
+mod accepted_yield;
 mod assessment_inbox;
 #[cfg(unix)]
 mod handed_over_run;
+mod mcp_paging;
 mod watch_open;
 
 const KIND: &str = "test-source";
@@ -1387,6 +1389,74 @@ async fn a_fresh_kernel_with_a_scheduled_timer_raises_no_false_stall_alert() {
 }
 
 #[tokio::test]
+async fn committed_timer_delivers_when_its_writer_ack_is_lost() {
+    committed_wake_delivers_after_lost_ack("wake_intent").await;
+}
+
+#[tokio::test]
+async fn committed_driver_wake_delivers_when_its_writer_ack_is_lost() {
+    committed_wake_delivers_after_lost_ack("wake_occurrence").await;
+}
+
+async fn committed_wake_delivers_after_lost_ack(operation: &str) {
+    use crate::durable_state::agent_lifecycle::faults::TestFaultDir;
+    let faults = crate::test_support::TestTempDir::new("wake-ack");
+    let f = {
+        let _faults = TestFaultDir::set(faults.path());
+        fixture("wake-ack-delivery", false).await
+    };
+    let task = f.begin("waiting-turn");
+    let scheduler = if operation == "wake_intent" {
+        let mut timer = f.wake(&task, "wake-ack");
+        timer.kind = "timer".into();
+        timer.next_due_ms = Some(crate::session::unix_epoch_ms() + 1_000);
+        let registration = timer.registration_id.clone();
+        f.store()
+            .agent_lifecycle(Operation::CreateWake {
+                task: task.task_id.clone(),
+                prompt: task.prompt_id.clone(),
+                wake: timer,
+            })
+            .unwrap();
+        f.wait_on(&task, &registration);
+        std::fs::write(faults.path().join("drop-ack"), operation).unwrap();
+        let runtime = f.runtime.clone();
+        Some(tokio::spawn(async move {
+            runtime.run_agent_wake_scheduler().await
+        }))
+    } else {
+        let wake = f.arm(&task, "wake-ack").unwrap();
+        f.wait_on(&task, &wake.registration_id);
+        std::fs::write(faults.path().join("drop-ack"), operation).unwrap();
+        f.runtime
+            .wake_sink(KIND)
+            .occurred(f.occurrence(&wake.id, "exit", Some(WakeEnd::Succeeded)))
+            .unwrap_err();
+        None
+    };
+    let received = tokio::time::timeout(Duration::from_secs(4), async {
+        loop {
+            let wake = f.store().agent_wake("wake-ack").unwrap().unwrap();
+            if wake.last_delivered_at_ms.is_some() {
+                break wake;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    if let Some(scheduler) = scheduler {
+        scheduler.abort();
+    }
+    assert!(faults.path().join("drop-ack.log").exists(), "{operation}");
+    assert_eq!(
+        received
+            .expect("a committed wake delivers without a sweep")
+            .fire_count,
+        1
+    );
+}
+
+#[tokio::test]
 async fn ev13_lost_source_raises_a_visible_alert_and_one_event() {
     let f = fixture("ev13-lost-source", false).await;
     let task = f.begin("turn-1");
@@ -1491,6 +1561,99 @@ async fn an_event_tool_call_missing_a_required_argument_is_refused_naming_it() {
     .unwrap_err()
     .to_string();
     assert!(refused.contains("`delay_ms`"), "{refused}");
+}
+
+#[tokio::test]
+async fn wake_listing_filters_armed_sources_and_pages_retained_receipts() {
+    let f = fixture("wake-listing-page", true).await;
+    let task = f.begin(&f.prompt_id);
+    let token = {
+        let app = f.app.lock().await;
+        app.providers
+            .get_run(&f.run)
+            .unwrap()
+            .runtime_mcp_auth_token()
+            .unwrap()
+            .to_string()
+    };
+    for index in 0..200 {
+        let id = format!("settled-{index}");
+        f.arm(&task, &id).unwrap();
+        f.driver
+            .sink
+            .occurred(f.occurrence(&id, "exit", Some(WakeEnd::Succeeded)))
+            .unwrap();
+        let wake = f.store().agent_wake(&id).unwrap().unwrap();
+        f.store()
+            .agent_lifecycle(Operation::Ack {
+                room: f.room.clone(),
+                agent: f.agent.clone(),
+                sequence: wake.last_sequence.unwrap(),
+                handled: true,
+                now: crate::session::unix_epoch_ms(),
+            })
+            .unwrap();
+    }
+    let mut large_wake = f.wake(&task, "armed-first");
+    large_wake.command = vec!["x".repeat(4_096); 5];
+    f.runtime.arm_wake_source(&task, &large_wake).unwrap();
+    f.arm(&task, "armed-second").unwrap();
+
+    let armed = call(
+        &f,
+        &token,
+        "chariox.events.wakes",
+        &task,
+        serde_json::json!({"armed_only": true}),
+    )
+    .await
+    .unwrap()
+    .payload;
+    let armed_ids: Vec<_> = armed["wakes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|wake| wake["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(armed_ids, ["armed-first", "armed-second"]);
+    assert_eq!(armed["wakes"][0]["details_omitted"], true);
+    assert_eq!(armed["receipts"], serde_json::json!([]));
+    assert!(armed["next_after"].is_null());
+    assert!(armed.to_string().len() < 4_096);
+
+    let mut after = serde_json::Value::Null;
+    let mut wakes = std::collections::BTreeSet::new();
+    let mut receipts = std::collections::BTreeSet::new();
+    for _ in 0..100 {
+        let page = call(
+            &f,
+            &token,
+            "chariox.events.wakes",
+            &task,
+            serde_json::json!({"after": after, "limit": 7}),
+        )
+        .await
+        .unwrap()
+        .payload;
+        let page_wakes = page["wakes"].as_array().unwrap();
+        let page_receipts = page["receipts"].as_array().unwrap();
+        assert!(page_wakes.len() + page_receipts.len() <= 7);
+        assert!(page.to_string().len() < 20_480);
+        for wake in page_wakes {
+            assert!(wakes.insert(wake["id"].as_str().unwrap().to_string()));
+        }
+        for receipt in page_receipts {
+            assert!(receipts.insert(receipt["sequence"].as_u64().unwrap()));
+        }
+        after = page["next_after"].clone();
+        if after.is_null() {
+            break;
+        }
+    }
+    assert!(after.is_null(), "all retained pages were read");
+    assert_eq!(wakes.len(), 66);
+    // The completed wakes and their receipts are pruned together.
+    assert_eq!(receipts.len(), 64);
 }
 
 #[tokio::test]
@@ -2260,6 +2423,7 @@ fn open_terminal(f: &Fixture, command: &str) -> String {
         .owned
         .room_terminals
         .open(crate::room_terminal::OpenRoomTerminal {
+            stdin: None,
             project_environment: Default::default(),
             scope: crate::room_terminal::TerminalScope::room(f.room.clone()),
             working_directory: f.runtime.room_project_directory(&f.room).unwrap(),
@@ -2278,6 +2442,9 @@ fn open_terminal(f: &Fixture, command: &str) -> String {
 /// Delivering the wake turn is the ledger's and is covered by the driver tests above.
 #[tokio::test]
 async fn terminal_finish_reports_once_to_the_waiting_agent_with_exit_code_and_screen() {
+    if !crate::test_support::has_user_namespaces() {
+        return;
+    }
     let f = fixture("terminal-wake-finish", true).await;
     let task = f.begin(&f.prompt_id);
     let token = runtime_token(&f).await;
@@ -2324,6 +2491,9 @@ async fn terminal_finish_reports_once_to_the_waiting_agent_with_exit_code_and_sc
 /// write must not discard the occurrence: it is retried until it commits.
 #[tokio::test]
 async fn a_rejected_terminal_occurrence_is_retried_until_the_ledger_commits() {
+    if !crate::test_support::has_user_namespaces() {
+        return;
+    }
     let f = fixture("terminal-wake-retry", true).await;
     let received = f._worktree.path().join("provider-input");
     {
@@ -2702,7 +2872,7 @@ async fn a_wake_turn_loads_the_kernel_browser_without_a_card() {
         .runtime
         .owned
         .kernel_browser_host
-        .has_grant("local", &f.agent));
+        .is_loaded("local", &f.agent));
     let session = f.runtime.owned.session_store.get_session(&f.room).unwrap();
     assert!(session.active_interactions().is_empty());
 }
@@ -2803,6 +2973,113 @@ async fn a_yield_writes_one_wait_row_and_the_wake_updates_it_in_place() {
     assert_eq!(row["woken_by"]["kind"], "output_matched", "{row}");
     let started = row["started_at_ms"].as_u64().unwrap();
     assert!(row["finished_at_ms"].as_u64().unwrap() >= started, "{row}");
+}
+
+#[tokio::test]
+async fn sweep_commits_the_yield_of_a_completed_turn_that_did_not_answer() {
+    let f = fixture("sweep-completed-yield", true).await;
+    let Outcome::Task(task) = f
+        .store()
+        .agent_lifecycle(Operation::Begin {
+            owner: "local".into(),
+            room: f.room.clone(),
+            agent: f.agent.clone(),
+            prompt: f.prompt_id.clone(),
+            run: Some(f.run.clone()),
+            now: 1,
+        })
+        .unwrap()
+    else {
+        panic!("begin returns the task");
+    };
+    let wake = f.arm(&task, "sweep-yield-source").unwrap();
+    f.store()
+        .agent_lifecycle(Operation::Yield {
+            task: task.task_id.clone(),
+            prompt: task.prompt_id.clone(),
+            registrations: vec![wake.registration_id],
+            cursor: 0,
+            deadline: None,
+            reason: "Wait for the test source".into(),
+            now: crate::session::unix_epoch_ms(),
+        })
+        .unwrap();
+    // The provider can end without an answer after accepting a yield. The sweep
+    // may see this prompt completion before the task ledger commits the wait.
+    f.runtime
+        .owned
+        .complete_local_prompt_without_advance(&f.room, &f.agent, Some(&f.run))
+        .unwrap();
+    f.runtime.sweep_agent_lifecycle().await.unwrap();
+
+    let waiting = f.task(&task.task_id);
+    assert_eq!(waiting.state, ExecutionState::Waiting, "{}", waiting.reason);
+    assert_eq!(f.wake_state(&wake.id), "running");
+}
+
+#[tokio::test]
+async fn sweep_keeps_a_yield_while_its_provider_turn_is_still_settling() {
+    let f = fixture("sweep-yield-settling", true).await;
+    let Outcome::Task(task) = f
+        .store()
+        .agent_lifecycle(Operation::Begin {
+            owner: "local".into(),
+            room: f.room.clone(),
+            agent: f.agent.clone(),
+            prompt: f.prompt_id.clone(),
+            run: Some(f.run.clone()),
+            now: 1,
+        })
+        .unwrap()
+    else {
+        panic!("begin returns the task");
+    };
+    let wake = f.arm(&task, "settling-yield-source").unwrap();
+    f.store()
+        .agent_lifecycle(Operation::Yield {
+            task: task.task_id.clone(),
+            prompt: task.prompt_id.clone(),
+            registrations: vec![wake.registration_id],
+            cursor: 0,
+            deadline: None,
+            reason: "Wait for the test source".into(),
+            now: crate::session::unix_epoch_ms(),
+        })
+        .unwrap();
+    f.runtime.start_active_turn_with_trace_id(
+        &f.room,
+        &f.agent,
+        &f.prompt_id,
+        &f.run,
+        &f.prompt_id,
+    );
+    let session = f.runtime.owned.session_store.get_session(&f.room).unwrap();
+    // Pause the ordinary completion path between removing its prompt and
+    // recording the completed outcome. The provider turn still owns settlement.
+    let completed = f
+        .runtime
+        .owned
+        .prompt_state_owner
+        .complete_active_prompt_if_matches(&session, &f.agent, Some(&f.prompt_id))
+        .unwrap();
+    f.runtime.sweep_agent_lifecycle().await.unwrap();
+    let settling = f.task(&task.task_id);
+    assert_eq!(
+        settling.state,
+        ExecutionState::Working,
+        "{}",
+        settling.reason
+    );
+    assert!(settling.wait.is_some());
+
+    let settled = f
+        .runtime
+        .owned
+        .settle_agent_task(&f.room, &f.agent, &completed, &f.run, false)
+        .unwrap();
+    f.runtime.owned.clear_prompt_activity(&f.run);
+    assert_eq!(settled.unwrap().0.state, ExecutionState::Waiting);
+    assert_eq!(f.wake_state(&wake.id), "running");
 }
 
 // A wait the owner stops does not stay a running row in the transcript: the same row says it was cancelled.

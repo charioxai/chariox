@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { drillEnvironment, drillOwner } from "../../../scripts/lib/drill-docker-owner.mjs"
 import assert from "node:assert/strict"
 import { spawnOwned, signalOwnedProcess } from "../../kernel/slice-linux-docker/owned-process-signals.mjs"
 import { createHash, randomUUID } from "node:crypto"
@@ -171,6 +172,7 @@ async function run() {
   start("kernel", kernel, [], {
     env: {
       ...process.env,
+      ...drillEnvironment(drillOwner(import.meta.url, { run: runId })),
       CHARIOX_HOME: path.join(tempRoot, "home"),
       XDG_CONFIG_HOME: path.join(tempRoot, "config"),
       CHARIOX_ALLOW_VOLATILE_PROCESS_MEMORY_VAULT: "1",

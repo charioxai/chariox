@@ -335,7 +335,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                             continue;
                         }
                     };
-                    if super::settled_waits::finish(tx, &mut t)? {
+                    if super::settled_waits::finish(tx, &mut t, now)? {
                         t.revision += 1;
                         save(tx, &t)?;
                         changed.push(t);
@@ -548,7 +548,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                             DelegateGoneReason::FailedStart,
                             now,
                         )?;
-                        settle_refused_wake(tx, &e, &mut changed)?;
+                        settle_refused_wake(tx, &e, &mut changed, now)?;
                         continue;
                     }
                     let reason = format!(
@@ -973,6 +973,7 @@ fn settle_refused_wake(
     tx: &Transaction<'_>,
     event: &InboxEvent,
     changed: &mut Vec<AgentTaskExecution>,
+    now: u64,
 ) -> Result<(), DaemonError> {
     if !event.is_source_outcome() {
         return Ok(());
@@ -992,7 +993,7 @@ fn settle_refused_wake(
                 released = true;
             }
         }
-        let finished = super::settled_waits::finish(tx, &mut task)?;
+        let finished = super::settled_waits::finish(tx, &mut task, now)?;
         if finished {
             task.state = ExecutionState::Cancelled;
             task.reason = "Wake delivery failed: the agent could not start.".into();

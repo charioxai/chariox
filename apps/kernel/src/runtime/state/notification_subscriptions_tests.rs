@@ -47,8 +47,11 @@ impl Rig {
 
     /// The flag cards of the person's Inbox: subscription and health.
     fn flags(&self) -> Vec<(String, NotificationSubscriptionHealth)> {
-        match crate::runtime::person_inbox::execute_person_inbox_request(&self.runtime, "local")
-            .unwrap()
+        match crate::runtime::person_inbox::execute_person_inbox_request(
+            &self.runtime,
+            &crate::runtime::command::KernelCaller::default(),
+        )
+        .unwrap()
         {
             LocalDaemonResponse::PersonInbox { cards, .. } => cards
                 .into_iter()
@@ -261,7 +264,7 @@ async fn an_orphan_says_its_source_is_gone_and_is_removed_with_its_trigger() {
             card_ids: vec![format!("flag:{id}")],
             change: crate::local::InboxCardChange::Read { read: true },
         },
-        "local",
+        &crate::runtime::command::KernelCaller::default(),
     )
     .unwrap_err()
     .to_string();

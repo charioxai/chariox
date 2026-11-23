@@ -127,15 +127,17 @@ const hostedPublicationEnvironmentNames = [
 let kernelLocalAuthCredentialFromEnvironment: BoundKernelLocalAuthCredential | undefined
 
 export function consumeKernelLocalAuthTokenFromEnv(endpoint = configuredLocalKernelEndpoint()): string | undefined {
+  const rawAgentToken = process.env.CHARIOX_AGENT_CLI_TOKEN
   const rawEnvironmentToken = process.env.CHARIOX_KERNEL_LOCAL_AUTH_TOKEN
   const rawTokenFile = process.env.CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE
+  delete process.env.CHARIOX_AGENT_CLI_TOKEN
   delete process.env.CHARIOX_KERNEL_LOCAL_AUTH_TOKEN
   delete process.env.CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE
   if (rawEnvironmentToken !== undefined && rawTokenFile !== undefined) {
     throw new Error("kernel local auth token and token file cannot both be configured")
   }
   if (kernelLocalAuthCredentialFromEnvironment) {
-    if (rawEnvironmentToken !== undefined || rawTokenFile !== undefined) {
+    if (rawAgentToken !== undefined || rawEnvironmentToken !== undefined || rawTokenFile !== undefined) {
       throw new Error("kernel local auth credential cannot be reconfigured after consumption")
     }
     const canonicalEndpoint = requireCanonicalLoopbackKernelEndpoint(endpoint)
@@ -145,6 +147,19 @@ export function consumeKernelLocalAuthTokenFromEnv(endpoint = configuredLocalKer
       )
     }
     return kernelLocalAuthCredentialFromEnvironment.token
+  }
+  if (rawAgentToken !== undefined) {
+    if (rawEnvironmentToken !== undefined || rawTokenFile !== undefined) {
+      throw new Error("agent and kernel local auth credentials cannot both be configured")
+    }
+    const agentEndpoint = requireCanonicalLoopbackKernelEndpoint(configuredLocalKernelEndpoint())
+    if (requireCanonicalLoopbackKernelEndpoint(endpoint) !== agentEndpoint) {
+      throw new Error(`agent CLI credential is bound to kernel endpoint ${agentEndpoint}`)
+    }
+    const token = rawAgentToken.trim()
+    if (!token) throw new Error("agent CLI credential must not be empty")
+    kernelLocalAuthCredentialFromEnvironment = { endpoint: agentEndpoint, token }
+    return token
   }
   if (rawEnvironmentToken === undefined && rawTokenFile === undefined) return undefined
 
@@ -405,7 +420,8 @@ export class LocalIpcClient {
       throw new Error("kernel local auth token must not be empty")
     }
     if (explicitLocalAuthToken && (
-      process.env.CHARIOX_KERNEL_LOCAL_AUTH_TOKEN !== undefined
+      process.env.CHARIOX_AGENT_CLI_TOKEN !== undefined
+      || process.env.CHARIOX_KERNEL_LOCAL_AUTH_TOKEN !== undefined
       || process.env.CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE !== undefined
     )) {
       throw new Error("explicit and environment kernel local auth credentials cannot both be configured")

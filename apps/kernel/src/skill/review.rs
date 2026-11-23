@@ -163,6 +163,7 @@ impl SkillCatalogService {
             expected_revision: current.revision,
             affected: review_affected(&current, &planned, mutation),
             collisions: vec![],
+            file_changes: recorded_folder_changes(&current, &planned, mutation),
             review_receipt: receipt,
         })
     }
@@ -260,6 +261,43 @@ impl SkillCatalogService {
         Ok(stored)
     }
 }
+fn recorded_folder_changes(
+    before: &SkillCatalogSet,
+    after: &SkillCatalogSet,
+    mutation: &SkillCatalogMutation,
+) -> Vec<SkillFileChange> {
+    let mut changes = Vec::new();
+    for action in &mutation.actions {
+        let SkillCatalogAction::Update {
+            skill_id,
+            source: SkillInstallSource::RecordedFolder {},
+            ..
+        } = action
+        else {
+            continue;
+        };
+        let (Some(old), Some(new)) = (before.record(skill_id), after.record(skill_id)) else {
+            continue;
+        };
+        let old_files: BTreeMap<_, _> = old.files.iter().map(|file| (&file.path, file)).collect();
+        let new_files: BTreeMap<_, _> = new.files.iter().map(|file| (&file.path, file)).collect();
+        let paths: BTreeSet<_> = old_files.keys().chain(new_files.keys()).copied().collect();
+        for path in paths {
+            let before = old_files.get(path).copied();
+            let after = new_files.get(path).copied();
+            if before != after {
+                changes.push(SkillFileChange {
+                    skill_id: skill_id.clone(),
+                    path: path.clone(),
+                    before: before.cloned(),
+                    after: after.cloned(),
+                });
+            }
+        }
+    }
+    changes
+}
+
 fn review_affected(
     before: &SkillCatalogSet,
     after: &SkillCatalogSet,

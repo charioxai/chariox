@@ -2,7 +2,7 @@
 use super::*;
 
 /// Whether `task` waits on nothing more: every source it waited on ended and every outcome was
-/// handled. It still ends only when the agent holds nothing else (`finish`).
+/// handled.
 pub(super) fn is_settled(
     tx: &Transaction<'_>,
     task: &AgentTaskExecution,
@@ -29,10 +29,9 @@ pub(super) fn sources_settled(
     wait: &AgentWait,
 ) -> Result<bool, DaemonError> {
     let regs = registrations(tx, &task.task_id)?;
-    if !wait
-        .registration_ids
+    if regs
         .iter()
-        .all(|id| regs.iter().any(|reg| &reg.id == id && !reg.live))
+        .any(|reg| reg.live && wait.registration_ids.contains(&reg.id))
     {
         return Ok(false);
     }
@@ -42,16 +41,23 @@ pub(super) fn sources_settled(
 pub(super) fn finish(
     tx: &Transaction<'_>,
     task: &mut AgentTaskExecution,
+    now: u64,
 ) -> Result<bool, DaemonError> {
     if !is_settled(tx, task)? {
         return Ok(false);
     }
-    // The agent's parent hears the end when the agent stops working, not while it still does: a
-    // turn or a message turn runs beside this task, another task still waits on a source or
-    // owes its owner an answer. A task that is itself settled holds nothing back.
-    for other in live_tasks(tx, &task.room_id, &task.agent_id)? {
-        if other.task_id != task.task_id && !is_settled(tx, &other)? {
-            return Ok(false);
+    // A declared wait window can let a receipt turn finish before the parent
+    // hears the outcome. Once the window ends, sibling work cannot hold it open.
+    if task
+        .wait
+        .as_ref()
+        .and_then(|wait| wait.deadline_ms)
+        .is_some_and(|deadline| now < deadline)
+    {
+        for other in live_tasks(tx, &task.room_id, &task.agent_id)? {
+            if other.task_id != task.task_id && !is_settled(tx, &other)? {
+                return Ok(false);
+            }
         }
     }
     close(tx, task, RESOLVED_WAIT_REASON.into())?;
@@ -102,11 +108,12 @@ pub(super) fn finish_agent_waits(
     tx: &Transaction<'_>,
     room: &str,
     agent: &str,
+    now: u64,
 ) -> Result<(), DaemonError> {
     loop {
         let mut finished = false;
         for mut task in live_tasks(tx, room, agent)? {
-            if finish(tx, &mut task)? {
+            if finish(tx, &mut task, now)? {
                 task.revision += 1;
                 save(tx, &task)?;
                 finished = true;
@@ -127,6 +134,20 @@ pub(super) fn unread_outcome(
     task: &AgentTaskExecution,
     wait: &AgentWait,
 ) -> Result<bool, DaemonError> {
+    let regs = registrations(tx, &task.task_id)?;
+    // An obligation still identifies its outcome if its registration disappeared.
+    let orphaned_sources = if wait
+        .registration_ids
+        .iter()
+        .any(|id| !regs.iter().any(|reg| &reg.id == id))
+    {
+        task.obligations
+            .iter()
+            .filter_map(AgentObligation::completion_source)
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
     tx.query_row(
         "SELECT EXISTS(SELECT 1 FROM agent_inbox i
          WHERE i.room_id=?1 AND i.agent_id=?2
@@ -134,10 +155,12 @@ pub(super) fn unread_outcome(
          AND json_extract(i.payload,'$.state') NOT IN ('handled','expired','failed')
          AND (json_extract(i.payload,'$.payload.task_id')=?3
               OR EXISTS(SELECT 1 FROM json_each(json_extract(i.payload,'$.payload.task_ids')) WHERE value=?3)
+              OR EXISTS(SELECT 1 FROM json_each(?5) WHERE value=i.source_id
+                  OR value=json_extract(i.payload,'$.payload.child_task_id'))
               OR EXISTS(SELECT 1 FROM agent_registrations r WHERE r.task_id=?3
                   AND r.id IN (SELECT value FROM json_each(?4))
                   AND (r.source_id=i.source_id OR r.source_id=json_extract(i.payload,'$.payload.child_task_id')))))",
-        params![task.room_id, task.agent_id, task.task_id, encode(&wait.registration_ids)?],
+        params![task.room_id, task.agent_id, task.task_id, encode(&wait.registration_ids)?, encode(&orphaned_sources)?],
         |row| row.get(0),
     )
     .map_err(sql)

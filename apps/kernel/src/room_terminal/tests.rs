@@ -82,6 +82,7 @@ fn owner(wake_id: &str, agent_id: &str) -> WatchOwner {
 fn open(service: &RoomTerminalService, directory: &Path) -> RoomTerminalSummary {
     service
         .open(OpenRoomTerminal {
+            stdin: None,
             project_environment: Default::default(),
             scope: TerminalScope::room("room-1"),
             working_directory: directory.to_path_buf(),
@@ -1075,6 +1076,7 @@ async fn a_typed_key_is_echoed_without_waiting_for_a_slow_tick() {
     let service = service(root.path());
     let id = service
         .open(OpenRoomTerminal {
+            stdin: None,
             project_environment: Default::default(),
             scope: TerminalScope::room("room-1"),
             working_directory: root.path().to_path_buf(),
@@ -1494,6 +1496,7 @@ async fn once_the_user_used_a_tab_only_the_user_can_close_it() {
     let root = TempDir::new();
     let service = service(root.path());
     let spec = |opened_by| OpenRoomTerminal {
+        stdin: None,
         project_environment: Default::default(),
         scope: TerminalScope::room("room-1"),
         working_directory: root.path().to_path_buf(),
@@ -1534,6 +1537,7 @@ async fn a_terminal_opened_with_a_command_belongs_to_its_opener() {
     let service = service(root.path());
     let id = service
         .open(OpenRoomTerminal {
+            stdin: None,
             project_environment: Default::default(),
             scope: TerminalScope::room("room-1"),
             working_directory: root.path().to_path_buf(),
@@ -1732,6 +1736,7 @@ async fn a_job_that_left_the_session_outlives_its_command() {
     );
     let id = service
         .open(OpenRoomTerminal {
+            stdin: None,
             project_environment: Default::default(),
             scope: TerminalScope::room("room-1"),
             working_directory: root.path().to_path_buf(),
@@ -1783,6 +1788,7 @@ async fn a_command_ends_while_its_background_child_holds_the_terminal_output() {
     );
     let id = service
         .open(OpenRoomTerminal {
+            stdin: None,
             project_environment: Default::default(),
             scope: TerminalScope::room("room-1"),
             working_directory: root.path().to_path_buf(),
@@ -1827,6 +1833,7 @@ async fn a_job_detaching_as_its_command_returns_keeps_running() {
     );
     let id = service
         .open(OpenRoomTerminal {
+            stdin: None,
             project_environment: Default::default(),
             scope: TerminalScope::room("room-1"),
             working_directory: root.path().to_path_buf(),
@@ -1874,6 +1881,7 @@ async fn a_detached_job_stays_listed_counted_and_stoppable_under_its_terminal() 
     );
     let id = service
         .open(OpenRoomTerminal {
+            stdin: None,
             project_environment: Default::default(),
             scope: TerminalScope::room("room-1"),
             working_directory: root.path().to_path_buf(),
@@ -1951,6 +1959,7 @@ async fn a_detached_job_ends_with_its_room() {
     );
     service
         .open(OpenRoomTerminal {
+            stdin: None,
             project_environment: Default::default(),
             scope: TerminalScope::room("room-2"),
             working_directory: root.path().to_path_buf(),
@@ -2000,6 +2009,7 @@ async fn open_ended_terminal_with_detached_job(
     );
     let id = service
         .open(OpenRoomTerminal {
+            stdin: None,
             project_environment: Default::default(),
             scope: scope.clone(),
             working_directory: root.to_path_buf(),
@@ -2090,6 +2100,7 @@ fn a_command_argument_over_the_limit_is_refused_with_that_limit() {
     let service = service(root.path());
     let error = service
         .open(OpenRoomTerminal {
+            stdin: None,
             project_environment: Default::default(),
             scope: TerminalScope::room("room-1"),
             working_directory: root.path().to_path_buf(),
@@ -2100,10 +2111,134 @@ fn a_command_argument_over_the_limit_is_refused_with_that_limit() {
             command: Some(vec!["/bin/sh".into(), "-c".into(), "x".repeat(4097)]),
         })
         .expect_err("a 4097-byte argument is refused");
+    let message = error.to_string();
+    assert!(message.contains("each at most 4096 bytes"), "{message}");
     assert!(
-        error.to_string().contains("each at most 4096 bytes"),
-        "{error}"
+        message.contains("stdin") && message.contains("64 KiB") && message.contains("stdin file"),
+        "the refusal names both ways to pass a long script: {message}"
     );
+}
+
+fn open_with_stdin(
+    service: &RoomTerminalService,
+    directory: &Path,
+    command: &[&str],
+    stdin: Option<ProgramInput>,
+) -> Result<RoomTerminalSummary, crate::error::DaemonError> {
+    service.open(OpenRoomTerminal {
+        stdin,
+        project_environment: Default::default(),
+        scope: TerminalScope::room("room-1"),
+        working_directory: directory.to_path_buf(),
+        cols: 200,
+        rows: 50,
+        title: None,
+        opened_by: TerminalActor::User,
+        command: Some(command.iter().map(|part| part.to_string()).collect()),
+    })
+}
+
+fn inline(bytes: &[u8]) -> Option<ProgramInput> {
+    use base64::Engine as _;
+    Some(ProgramInput::Inline {
+        data_base64: base64::engine::general_purpose::STANDARD.encode(bytes),
+    })
+}
+
+async fn ended_with_code(service: &RoomTerminalService, code: u32) {
+    until("the command to end", || async {
+        service.pump_once();
+        matches!(
+            &service.list("room-1")[0].status,
+            RoomTerminalStatus::Ended { outcome: RoomTerminalOutcome::ProgramExited { exit_code: Some(found), .. }, .. } if *found == code
+        )
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_program_reads_a_64_kib_script_from_its_stdin_and_the_copy_is_removed() {
+    let root = TempDir::new();
+    let service = service(root.path());
+    let tail = b"echo script-ran-$((6*7)); exit 7\n";
+    let line = b"# padding that keeps this script long enough to exceed an argument\n";
+    let mut script = Vec::new();
+    while script.len() + line.len() + tail.len() <= 64 * 1024 {
+        script.extend_from_slice(line);
+    }
+    script.extend_from_slice(tail);
+    assert!(script.len() > 64 * 1024 - line.len() - tail.len());
+    assert!(script.len() <= 64 * 1024);
+    let opened = open_with_stdin(&service, root.path(), &["sh", "-s"], inline(&script)).unwrap();
+    ended_with_code(&service, 7).await;
+    assert!(
+        screen_has(&service, &opened.terminal_id, "script-ran-42").await,
+        "the script did not run"
+    );
+    assert!(
+        !Path::new(&format!("/tmp/chariox-stdin-{}", opened.terminal_id)).exists(),
+        "the staged copy of the input stayed behind"
+    );
+}
+
+#[tokio::test]
+async fn a_program_reads_a_file_on_the_kernel_as_its_stdin_and_the_file_stays() {
+    let root = TempDir::new();
+    let service = service(root.path());
+    std::fs::write(root.path().join("input.txt"), b"from-a-file\n").unwrap();
+    let file = ProgramInput::File {
+        path: "input.txt".to_string(),
+    };
+    let opened = open_with_stdin(&service, root.path(), &["cat"], Some(file)).unwrap();
+    ended_with_code(&service, 0).await;
+    assert!(screen_has(&service, &opened.terminal_id, "from-a-file").await);
+    assert!(root.path().join("input.txt").exists());
+}
+
+#[test]
+fn stdin_over_64_kib_or_without_a_program_or_a_missing_file_is_refused_with_the_way_on() {
+    let root = TempDir::new();
+    let service = service(root.path());
+    let too_big = open_with_stdin(
+        &service,
+        root.path(),
+        &["sh", "-s"],
+        inline(&vec![b'x'; 64 * 1024 + 1]),
+    )
+    .expect_err("over the limit");
+    let message = too_big.to_string();
+    assert!(
+        message.contains("64 KiB") && message.contains("files put"),
+        "{message}"
+    );
+    let missing = open_with_stdin(
+        &service,
+        root.path(),
+        &["sh", "-s"],
+        Some(ProgramInput::File {
+            path: "nope.sh".into(),
+        }),
+    )
+    .expect_err("a file that is not there");
+    assert!(missing.to_string().contains("nope.sh"), "{missing}");
+    let shell_with_input = service
+        .open(OpenRoomTerminal {
+            stdin: inline(b"x"),
+            project_environment: Default::default(),
+            scope: TerminalScope::room("room-1"),
+            working_directory: root.path().to_path_buf(),
+            cols: 100,
+            rows: 30,
+            title: None,
+            opened_by: TerminalActor::User,
+            command: None,
+        })
+        .expect_err("input needs a program");
+    assert!(
+        shell_with_input.to_string().contains("command"),
+        "{shell_with_input}"
+    );
+    assert!(service.list("room-1").is_empty());
 }
 
 #[test]
@@ -2742,6 +2877,7 @@ async fn a_terminal_that_stops_reading_does_not_lock_the_others() {
     let service = service(root.path());
     let blocked = service
         .open(OpenRoomTerminal {
+            stdin: None,
             project_environment: Default::default(),
             scope: TerminalScope::room("room-1"),
             working_directory: root.path().to_path_buf(),
@@ -2816,6 +2952,7 @@ async fn ctrl_c_discards_the_paste_it_overtakes() {
     let service = service(root.path());
     let id = service
         .open(OpenRoomTerminal {
+            stdin: None,
             project_environment: Default::default(),
             scope: TerminalScope::room("room-1"),
             working_directory: root.path().to_path_buf(),
@@ -2898,6 +3035,7 @@ async fn a_needle_split_across_the_wait_registration_still_matches() {
     let service = service(root.path());
     let id = service
         .open(OpenRoomTerminal {
+            stdin: None,
             project_environment: Default::default(),
             scope: TerminalScope::room("room-1"),
             working_directory: root.path().to_path_buf(),
@@ -2941,6 +3079,7 @@ async fn ctrl_c_stops_the_program_behind_a_blocked_paste() {
     let service = service(root.path());
     let id = service
         .open(OpenRoomTerminal {
+            stdin: None,
             project_environment: Default::default(),
             scope: TerminalScope::room("room-1"),
             working_directory: root.path().to_path_buf(),
@@ -3038,6 +3177,7 @@ async fn a_large_output_flood_preserves_its_tail_and_leaves_other_terminals_resp
     let root = TempDir::new();
     let service = service(root.path());
     let open = |command| OpenRoomTerminal {
+        stdin: None,
         project_environment: Default::default(),
         scope: TerminalScope::room("room-1"),
         working_directory: root.path().to_path_buf(),
@@ -3092,6 +3232,7 @@ async fn an_open_waits_for_its_commit_without_holding_the_terminal_registry() {
     let service = service(root.path());
     let existing = service
         .open(OpenRoomTerminal {
+            stdin: None,
             project_environment: Default::default(),
             scope: TerminalScope::room("room-1"),
             working_directory: root.path().into(),
@@ -3121,6 +3262,7 @@ async fn an_open_waits_for_its_commit_without_holding_the_terminal_registry() {
     let (done, completion) = std::sync::mpsc::channel();
     let thread = std::thread::spawn(move || {
         let result = opener.open(OpenRoomTerminal {
+            stdin: None,
             project_environment: Default::default(),
             scope: TerminalScope::room("room-1"),
             working_directory: directory,
@@ -3183,6 +3325,7 @@ async fn unrelated_echo_while_screen_paused(rendering: bool) {
     let cat = || {
         service
             .open(OpenRoomTerminal {
+                stdin: None,
                 project_environment: Default::default(),
                 scope: TerminalScope::room("room-1"),
                 working_directory: root.path().into(),
@@ -3260,6 +3403,7 @@ async fn exited_terminal_does_not_become_work_when_its_state_is_locked() {
     let service = service(root.path());
     let terminal = service
         .open(OpenRoomTerminal {
+            stdin: None,
             project_environment: Default::default(),
             scope: TerminalScope::room("room-1"),
             working_directory: root.path().into(),
@@ -3293,6 +3437,7 @@ async fn live_terminal_state_contention_remains_managed_work() {
     let service = service(root.path());
     let terminal = service
         .open(OpenRoomTerminal {
+            stdin: None,
             project_environment: Default::default(),
             scope: TerminalScope::room("room-1"),
             working_directory: root.path().into(),
@@ -3320,6 +3465,7 @@ async fn small_live_writes_share_one_terminal_reply() {
     let root = TempDir::new();
     let service = Arc::new(service(root.path()));
     let terminal = service.open(OpenRoomTerminal {
+        stdin: None,
         project_environment: Default::default(), scope: TerminalScope::room("room-1"), working_directory: root.path().into(), cols: 100, rows: 30, title: None, opened_by: TerminalActor::User,
         command: Some(vec!["python3".into(), "-c".into(), "import os,time; time.sleep(.15); os.write(1,b'one'); time.sleep(.005); os.write(1,b'two'); time.sleep(1)".into()]),
     }).unwrap();
@@ -3354,6 +3500,7 @@ async fn a_burst_shares_one_reply_for_up_to_four_frames() {
     let service = Arc::new(service(root.path()));
     // Twenty parts, one every 8 ms: one frame of gathering takes two or three of them.
     let terminal = service.open(OpenRoomTerminal {
+        stdin: None,
         project_environment: Default::default(), scope: TerminalScope::room("room-1"), working_directory: root.path().into(), cols: 100, rows: 30, title: None, opened_by: TerminalActor::User,
         command: Some(vec!["python3".into(), "-c".into(), "import os,time\ntime.sleep(.15)\nfor n in range(20):\n os.write(1,b'p%02d' % n); time.sleep(.008)\ntime.sleep(1)".into()]),
     }).unwrap();
@@ -3391,6 +3538,7 @@ async fn a_terminal_an_agent_opens_cannot_read_the_kernels_secrets() {
     let service = service(root.path());
     let summary = service
         .open(OpenRoomTerminal {
+            stdin: None,
             project_environment: kernel.agent_environment(),
             scope: TerminalScope::room("room-1"),
             working_directory: kernel.workspace.clone(),
@@ -3422,6 +3570,7 @@ mod kernel_scope {
     fn open_kernel(service: &RoomTerminalService, directory: &Path) -> RoomTerminalSummary {
         service
             .open(OpenRoomTerminal {
+                stdin: None,
                 project_environment: Default::default(),
                 scope: TerminalScope::Kernel,
                 working_directory: directory.to_path_buf(),
@@ -3528,6 +3677,7 @@ mod kernel_scope {
         let service = service(root.path());
         let id = service
             .open(OpenRoomTerminal {
+                stdin: None,
                 project_environment: Default::default(),
                 scope: TerminalScope::Kernel,
                 working_directory: root.path().to_path_buf(),

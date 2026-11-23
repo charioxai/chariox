@@ -9,7 +9,38 @@ type WorkflowAdmission<T> = (
     Option<crate::durable_state::workflow_invocation_provenance::WorkflowUserInvocation>,
 );
 
+fn workflow_dispatch_after_admission_error(
+    obligation: Option<&str>,
+    code: Option<&crate::workflow_code::WorkflowCodeCompileAndApplyResult>,
+    queue_item: Option<&str>,
+    error: DaemonError,
+) -> DaemonError {
+    if let Some(code) = code {
+        return DaemonError::LocalTransport {
+            operation: "workflow_code.run",
+            message: format!(
+                "Could not confirm dispatch for workflow `{}`: {error}. Check the workflow and its runs before retrying.",
+                code.apply.workflow_id,
+            ),
+        };
+    }
+    crate::runtime::room_dispatch_registration::dispatch_error(
+        obligation,
+        Some(true),
+        queue_item,
+        error,
+    )
+}
+
 impl KernelRuntimeOwnedState {
+    fn workflow_runtime_instances_root(&self, session_id: &str) -> std::path::PathBuf {
+        self.config_projection
+            .snapshot()
+            .workflow_runtime_artifact_root()
+            .join("instances")
+            .join(session_id)
+    }
+
     fn workflow_ensure_dispatchable_runtime_instance(
         &self,
         session_id: &str,
@@ -47,71 +78,45 @@ impl KernelRuntimeOwnedState {
             return Ok(true);
         }
 
-        let instance_id = format!("workflow-instance-{:032x}", rand::random::<u128>());
-        let mut node_agent_ids = std::collections::BTreeMap::new();
+        let (instance_id, worktree_id) =
+            crate::git_worktree_placement::prepare_workflow_runtime_workspace(
+                std::path::Path::new(&candidate.source_worktree_id),
+                &self.workflow_runtime_instances_root(session_id),
+                "provision workflow runtime instance",
+            )?;
+        let mut node_agent_ids = BTreeMap::new();
         let mut materialized_agents = Vec::new();
-        let worktree_id = {
-            let worktree_root = self
-                .config_projection
-                .snapshot()
-                .workflow_runtime_artifact_root()
-                .join("instances")
-                .join(session_id);
-            std::fs::create_dir_all(&worktree_root).map_err(|error| {
-                DaemonError::LocalTransport {
-                    operation: "provision workflow runtime instance",
-                    message: format!(
-                        "failed to create workflow instance directory `{}`: {error}",
-                        worktree_root.display()
-                    ),
-                }
-            })?;
-            let target = worktree_root.join(&instance_id);
-            let placement = crate::agent::GitWorktreePlacement {
-                target_directory: Some(target.display().to_string()),
-                branch: None,
-                from_ref: Some("HEAD".to_string()),
-            };
-            let worktree_id =
-                crate::git_worktree_placement::prepare_workflow_runtime_worktree_or_reuse_directory(
-                    &placement,
-                    std::path::Path::new(&candidate.source_worktree_id),
-                    None,
-                    "provision workflow runtime instance",
-                )?;
-            let mut agent_id_map: BTreeMap<String, String> = BTreeMap::new();
-            for node in candidate.workflow.nodes() {
-                let runtime_agent_id = if let Some(agent_id) = agent_id_map.get(node.agent_id()) {
-                    agent_id.clone()
-                } else {
-                    let source_agent = match self.agent_store.get_agent(node.agent_id()) {
-                        Ok(source_agent) => source_agent,
-                        Err(error) => {
-                            self.workflow_rollback_runtime_instance_provision(
-                                &candidate.source_worktree_id,
-                                &worktree_id,
-                                false,
-                                &materialized_agents,
-                            );
-                            return Err(error);
-                        }
-                    };
-                    let materialized = self
-                        .agent_store
-                        .materialize_workflow_runtime_agent_by_agent(
-                            source_agent,
+        let mut agent_id_map: BTreeMap<String, String> = BTreeMap::new();
+        for node in candidate.workflow.nodes() {
+            let runtime_agent_id = if let Some(agent_id) = agent_id_map.get(node.agent_id()) {
+                agent_id.clone()
+            } else {
+                let source_agent = match self.agent_store.get_agent(node.agent_id()) {
+                    Ok(source_agent) => source_agent,
+                    Err(error) => {
+                        self.workflow_rollback_runtime_instance_provision(
                             session_id,
+                            &candidate.source_worktree_id,
                             &worktree_id,
-                            candidate.creating_agent_id.as_deref(),
+                            &materialized_agents,
                         );
-                    materialized_agents.push(materialized.clone());
-                    agent_id_map.insert(node.agent_id().to_string(), materialized.id().to_string());
-                    materialized.id().to_string()
+                        return Err(error);
+                    }
                 };
-                node_agent_ids.insert(node.id().to_string(), runtime_agent_id);
-            }
-            worktree_id
-        };
+                let materialized = self
+                    .agent_store
+                    .materialize_workflow_runtime_agent_by_agent(
+                        source_agent,
+                        session_id,
+                        &worktree_id,
+                        candidate.creating_agent_id.as_deref(),
+                    );
+                materialized_agents.push(materialized.clone());
+                agent_id_map.insert(node.agent_id().to_string(), materialized.id().to_string());
+                materialized.id().to_string()
+            };
+            node_agent_ids.insert(node.id().to_string(), runtime_agent_id);
+        }
 
         let instance = crate::session::WorkflowEndpointRuntimeInstance::new(
             instance_id.clone(),
@@ -129,9 +134,9 @@ impl KernelRuntimeOwnedState {
             .register_workflow_runtime_instance(session_id, instance)
         {
             self.workflow_rollback_runtime_instance_provision(
+                session_id,
                 &candidate.source_worktree_id,
                 &worktree_id,
-                false,
                 &materialized_agents,
             );
             return Err(error);
@@ -144,9 +149,9 @@ impl KernelRuntimeOwnedState {
                 .write()
                 .remove_workflow_runtime_instance(session_id, &instance_id);
             self.workflow_rollback_runtime_instance_provision(
+                session_id,
                 &candidate.source_worktree_id,
                 &worktree_id,
-                false,
                 &materialized_agents,
             );
             return Err(error);
@@ -169,9 +174,9 @@ impl KernelRuntimeOwnedState {
                     "workflow_instance_provision_rollback",
                 );
                 self.workflow_rollback_runtime_instance_provision(
+                    session_id,
                     &candidate.source_worktree_id,
                     &worktree_id,
-                    false,
                     &materialized_agents,
                 );
                 return Err(error);
@@ -276,6 +281,7 @@ impl KernelRuntimeOwnedState {
                 crate::git_worktree_placement::remove_workflow_runtime_worktree(
                     &source_worktree_id,
                     instance.worktree_id(),
+                    &self.workflow_runtime_instances_root(session_id),
                     "cleanup workflow runtime instance",
                 )?;
             }
@@ -284,12 +290,7 @@ impl KernelRuntimeOwnedState {
                 .remove_workflow_runtime_instance(session_id, instance.id())?;
         }
         self.persist_workflow_runtime_session(session_id, "workflow_instances_cleaned")?;
-        let instance_root = self
-            .config_projection
-            .snapshot()
-            .workflow_runtime_artifact_root()
-            .join("instances")
-            .join(session_id);
+        let instance_root = self.workflow_runtime_instances_root(session_id);
         let _ = std::fs::remove_dir(&instance_root);
         Ok(())
     }
@@ -299,12 +300,7 @@ impl KernelRuntimeOwnedState {
         session_id: &str,
         referenced_instance_worktrees: &std::collections::BTreeSet<std::path::PathBuf>,
     ) -> Result<usize, DaemonError> {
-        let instance_root = self
-            .config_projection
-            .snapshot()
-            .workflow_runtime_artifact_root()
-            .join("instances")
-            .join(session_id);
+        let instance_root = self.workflow_runtime_instances_root(session_id);
         let orphaned_agent_ids = self
             .agent_store
             .get_session_agents(session_id)
@@ -402,17 +398,13 @@ impl KernelRuntimeOwnedState {
             crate::git_worktree_placement::remove_workflow_runtime_worktree(
                 session.worktree_id(),
                 instance.worktree_id(),
+                &self.workflow_runtime_instances_root(session.id()),
                 "delete session workflow runtime instance",
             )?;
         }
 
         self.workflow_cleanup_orphaned_runtime_worktrees(session.id(), session.worktree_id());
-        let instance_root = self
-            .config_projection
-            .snapshot()
-            .workflow_runtime_artifact_root()
-            .join("instances")
-            .join(session.id());
+        let instance_root = self.workflow_runtime_instances_root(session.id());
         if instance_root.exists() {
             std::fs::remove_dir_all(&instance_root).map_err(|error| {
                 DaemonError::LocalTransport {
@@ -432,12 +424,7 @@ impl KernelRuntimeOwnedState {
         session_id: &str,
         source_worktree_id: &str,
     ) {
-        let instance_root = self
-            .config_projection
-            .snapshot()
-            .workflow_runtime_artifact_root()
-            .join("instances")
-            .join(session_id);
+        let instance_root = self.workflow_runtime_instances_root(session_id);
         let referenced_worktrees = self
             .session_store
             .read()
@@ -495,21 +482,20 @@ impl KernelRuntimeOwnedState {
 
     fn workflow_rollback_runtime_instance_provision(
         &self,
+        session_id: &str,
         source_worktree_id: &str,
         worktree_id: &str,
-        primary: bool,
         materialized_agents: &[crate::agent::AgentInstance],
     ) {
         for agent in materialized_agents.iter().rev() {
             let _ = self.agent_store.remove_workflow_runtime_agent(agent.id());
         }
-        if !primary {
-            let _ = crate::git_worktree_placement::remove_workflow_runtime_worktree(
-                source_worktree_id,
-                worktree_id,
-                "rollback workflow runtime instance",
-            );
-        }
+        let _ = crate::git_worktree_placement::remove_workflow_runtime_worktree(
+            source_worktree_id,
+            worktree_id,
+            &self.workflow_runtime_instances_root(session_id),
+            "rollback workflow runtime instance",
+        );
     }
 
     fn workflow_reconcile_live_orphans(&self, session_id: &str) {
@@ -578,20 +564,16 @@ impl KernelRuntimeOwnedState {
         if !self.publication_activation.is_active() {
             return WorkflowPromptDispatches::default();
         }
-        let collection = if self
-            .config_projection
-            .snapshot()
-            .publication_control_state_root
-            .is_some()
-        {
-            self.session_store
-                .write()
-                .collect_due_workflow_watchdogs_after_publication_activation(now_ms)
-        } else {
-            self.session_store
-                .write()
-                .collect_due_workflow_watchdog_invocations_with_changes(now_ms)
-        };
+        let config = self.config_projection.snapshot();
+        let collection = self.session_store.write().collect_due_workflow_watchdogs(
+            now_ms,
+            config.publication_control_state_root.is_some(),
+            config
+                .cloud_relay
+                .as_ref()
+                .filter(|profile| profile.kernel_removal().is_some())
+                .map(|profile| profile.user_id.as_str()),
+        );
         let collection = match collection {
             Ok(collection) => collection,
             Err(error) => {
@@ -922,6 +904,7 @@ impl KernelRuntimeOwnedState {
             None,
             Some(crate::session::DEFAULT_LOCAL_USER_ID),
             None,
+            None,
         )
     }
 
@@ -938,6 +921,7 @@ impl KernelRuntimeOwnedState {
         creator: Option<&str>,
         invoking_user: Option<&str>,
         obligation: Option<&str>,
+        new_workflow_code: Option<&crate::workflow_code::WorkflowCodeCompileAndApplyResult>,
     ) -> Result<
         (
             crate::app::workflow_runtime::WorkflowLaunchOutcome,
@@ -945,11 +929,11 @@ impl KernelRuntimeOwnedState {
         ),
         DaemonError,
     > {
-        let publication_invocation = self.inherit_agent_notification_ancestry(
-            creator,
-            endpoint_ref,
-            publication_invocation,
-        )?;
+        let rollback_before_admission =
+            |error| self.workflow_code_dispatch_refusal(session_id, new_workflow_code, error);
+        let publication_invocation = self
+            .inherit_agent_notification_ancestry(creator, endpoint_ref, publication_invocation)
+            .map_err(rollback_before_admission)?;
         self.workflow_reconcile_live_orphans(session_id);
         let prepared: Result<_, DaemonError> = (|| {
             let workflow = self
@@ -973,7 +957,7 @@ impl KernelRuntimeOwnedState {
                     false,
                     None,
                 )?;
-                return Err(error);
+                return Err(rollback_before_admission(error));
             }
         };
         if workflow.gate().is_some() {
@@ -1033,7 +1017,8 @@ impl KernelRuntimeOwnedState {
                             creator,
                         )?;
                     self.accept_gate_prompt(admission)
-                })?;
+                })
+                .map_err(rollback_before_admission)?;
             return Ok((
                 crate::app::workflow_runtime::WorkflowLaunchOutcome::Entry {
                     entry,
@@ -1076,32 +1061,71 @@ impl KernelRuntimeOwnedState {
             Err(error) => {
                 // Later persistence/projection errors can have committed: retain their intent.
                 if !committed {
+                    let error = rollback_before_admission(error);
                     crate::runtime::room_dispatch_registration::receipt(
                         &self.durable_state_store,
                         obligation,
                         false,
                         None,
                     )?;
+                    if new_workflow_code.is_some() {
+                        return Err(error);
+                    }
+                    return Err(crate::runtime::room_dispatch_registration::dispatch_error(
+                        obligation,
+                        Some(false),
+                        resource_id.as_deref(),
+                        error,
+                    ));
                 }
-                return Err(crate::runtime::room_dispatch_registration::dispatch_error(
+                return Err(workflow_dispatch_after_admission_error(
                     obligation,
-                    Some(committed),
+                    new_workflow_code,
                     resource_id.as_deref(),
                     error,
                 ));
             }
         }
         .expect("manual workflow prompt admission must mutate the session");
-        let (claimed, dispatches) = self
-            .workflow_start_next_queued_prompt_for_response(session_id)
-            .map_err(|error| {
-                crate::runtime::room_dispatch_registration::dispatch_error(
-                    obligation,
-                    Some(true),
-                    Some(queued_prompt.id()),
-                    error,
-                )
-            })?;
+        let (claimed, dispatches) =
+            match self.workflow_start_next_queued_prompt_for_response(session_id) {
+                Ok(started) => started,
+                Err(error) => {
+                    if let Some(code) = new_workflow_code {
+                        match self.rollback_workflow_code_run(
+                            session_id,
+                            code,
+                            Some(queued_prompt.id()),
+                        ) {
+                            Ok(true) => {
+                                crate::runtime::room_dispatch_registration::receipt(
+                                    &self.durable_state_store,
+                                    obligation,
+                                    false,
+                                    None,
+                                )?;
+                                return Err(
+                                    super::workflow_code_request_support::workflow_code_refusal(
+                                        error,
+                                    ),
+                                );
+                            }
+                            Ok(false) => {}
+                            Err(rollback) => return Err(
+                                super::workflow_code_request_support::workflow_code_rollback_failed(
+                                    error, rollback,
+                                ),
+                            ),
+                        }
+                    }
+                    return Err(workflow_dispatch_after_admission_error(
+                        obligation,
+                        new_workflow_code,
+                        Some(queued_prompt.id()),
+                        error,
+                    ));
+                }
+            };
         let Some(claimed_outcome) = claimed else {
             // This invocation dispatched nothing itself, but a concurrent
             // invocation may have already admitted our prompt into the primary
@@ -1348,6 +1372,7 @@ impl KernelRuntimeOwnedState {
         ),
         DaemonError,
     > {
+        self.require_linked_workflow_owner(session_id)?;
         if !self.publication_activation.is_active() {
             return Ok((None, WorkflowPromptDispatches::default()));
         }
@@ -1414,6 +1439,9 @@ impl KernelRuntimeOwnedState {
         &self,
         session_id: &str,
     ) -> WorkflowPromptDispatches {
+        if self.require_linked_workflow_owner(session_id).is_err() {
+            return WorkflowPromptDispatches::default();
+        }
         if !self.publication_activation.is_active() {
             return WorkflowPromptDispatches::default();
         }

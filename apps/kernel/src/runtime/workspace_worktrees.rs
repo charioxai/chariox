@@ -5,11 +5,39 @@ use std::path::{Path, PathBuf};
 use crate::error::DaemonError;
 use crate::local::WorkspaceWorktreeRecord;
 use crate::runtime::workspace_git_common::{
-    detect_git_branch, find_repo_root, git_ref_exists, resolve_repo_root, run_git, same_fs_path,
-    worktree_display_label,
+    detect_git_branch, find_repo_root, git_common_directory, git_query, git_ref_exists,
+    resolve_repo_root, run_git, same_fs_path, worktree_display_label,
 };
 use crate::runtime::workspace_search::expand_workspace_query_path;
 use crate::session::{RuntimeSession, SessionStatus};
+
+const LIST_WORKTREES: &[&str] = &["worktree", "list", "--porcelain", "-z"];
+
+pub(crate) fn registered_workspace_worktree(
+    workspace_id: &str,
+    worktree_id: &str,
+) -> Result<Option<PathBuf>, DaemonError> {
+    // A stale Git registration can point to a directory that now holds another repository.
+    let worktree = Path::new(worktree_id);
+    if !worktree.is_absolute() || !worktree.is_dir() {
+        return Ok(None);
+    }
+    let common_directory = git_common_directory(Path::new(workspace_id));
+    if common_directory.is_none()
+        || common_directory != git_common_directory(worktree)
+        || !find_repo_root(worktree_id)?
+            .is_some_and(|root| same_fs_path(&root.to_string_lossy(), worktree_id))
+    {
+        return Ok(None);
+    }
+    // Git tracks linked checkouts independently of the Workspace checkout's HEAD.
+    let stdout = git_query(workspace_id, LIST_WORKTREES, "list Workspace worktrees")?;
+    Ok(parse_git_worktree_list(&stdout)
+        .into_iter()
+        .map(|(path, _)| path)
+        .find(|path| same_fs_path(path, worktree_id))
+        .map(PathBuf::from))
+}
 
 pub(crate) fn list_workspace_worktrees(
     workspace_id: &str,
@@ -22,7 +50,7 @@ pub(crate) fn list_workspace_worktrees(
     }
     let workspace_path = PathBuf::from(workspace_id);
     let output = crate::process_spawn::command("git")
-        .args(["worktree", "list", "--porcelain"])
+        .args(LIST_WORKTREES)
         .current_dir(&workspace_path)
         .bounded_output();
     let Ok(output) = output else {
@@ -33,7 +61,7 @@ pub(crate) fn list_workspace_worktrees(
         return Ok(vec![fallback_worktree_record(workspace_id, branch)]);
     }
     let current_worktree_path = current_worktree.unwrap_or(workspace_id);
-    let mut worktrees = parse_git_worktree_list(String::from_utf8_lossy(&output.stdout).as_ref())
+    let mut worktrees = parse_git_worktree_list(&output.stdout)
         .into_iter()
         .map(|(path, branch)| WorkspaceWorktreeRecord {
             current: same_fs_path(&path, current_worktree_path),
@@ -169,12 +197,14 @@ fn fallback_worktree_record(workspace_id: &str, branch: Option<String>) -> Works
     }
 }
 
-pub(crate) fn parse_git_worktree_list(stdout: &str) -> Vec<(String, Option<String>)> {
+fn parse_git_worktree_list(stdout: &[u8]) -> Vec<(String, Option<String>)> {
     let mut entries = Vec::new();
     let mut current_path: Option<String> = None;
     let mut current_branch: Option<String> = None;
-    for raw_line in stdout.lines() {
-        let line = raw_line.trim();
+    for line in stdout
+        .split(|byte| *byte == 0)
+        .filter_map(|field| std::str::from_utf8(field).ok())
+    {
         if line.is_empty() {
             if let Some(path) = current_path.take() {
                 entries.push((path, current_branch.take()));
@@ -182,13 +212,13 @@ pub(crate) fn parse_git_worktree_list(stdout: &str) -> Vec<(String, Option<Strin
             continue;
         }
         if let Some(rest) = line.strip_prefix("worktree ") {
-            if let Some(path) = current_path.replace(rest.trim().to_string()) {
+            if let Some(path) = current_path.replace(rest.to_string()) {
                 entries.push((path, current_branch.take()));
             }
             continue;
         }
         if let Some(rest) = line.strip_prefix("branch ") {
-            current_branch = Some(rest.trim().trim_start_matches("refs/heads/").to_string());
+            current_branch = Some(rest.trim_start_matches("refs/heads/").to_string());
         }
     }
     if let Some(path) = current_path.take() {
@@ -210,7 +240,7 @@ fn resolve_deletable_git_worktree(
     }
     let repo_root = resolve_repo_root(workspace_id)?;
     let output = crate::process_spawn::command("git")
-        .args(["worktree", "list", "--porcelain"])
+        .args(LIST_WORKTREES)
         .current_dir(&repo_root)
         .bounded_output()
         .map_err(|error| DaemonError::LocalTransport {
@@ -223,7 +253,7 @@ fn resolve_deletable_git_worktree(
             message: String::from_utf8_lossy(&output.stderr).trim().to_string(),
         });
     }
-    let worktree_path = parse_git_worktree_list(String::from_utf8_lossy(&output.stdout).as_ref())
+    let worktree_path = parse_git_worktree_list(&output.stdout)
         .into_iter()
         .map(|(path, _branch)| path)
         .find(|path| same_fs_path(path, target))
@@ -408,7 +438,7 @@ mod tests {
     #[test]
     fn parse_git_worktree_list_reads_porcelain_entries() {
         let entries = parse_git_worktree_list(
-            "worktree /repo/main\nHEAD abc\nbranch refs/heads/main\n\nworktree /repo/feature\nHEAD def\nbranch refs/heads/feature\n\n",
+            b"worktree /repo/main\0HEAD abc\0branch refs/heads/main\0\0worktree /repo/feature\0HEAD def\0branch refs/heads/feature\0\0",
         );
         assert_eq!(
             entries,
@@ -421,21 +451,21 @@ mod tests {
 
     #[test]
     fn parse_git_worktree_list_keeps_detached_entries() {
-        let entries = parse_git_worktree_list("worktree /repo/detached\nHEAD abc\n\n");
+        let entries = parse_git_worktree_list(b"worktree /repo/detached\0HEAD abc\0\0");
         assert_eq!(entries, vec![("/repo/detached".to_string(), None)]);
     }
 
     #[test]
-    fn parse_git_worktree_list_handles_missing_blank_separator() {
+    fn parse_git_worktree_list_preserves_whitespace_in_paths() {
         let entries = parse_git_worktree_list(
-            "worktree /repo/main\nbranch refs/heads/main\nworktree /repo/feature\nbranch refs/heads/feature\n",
+            b"worktree /repo/lane\ncheckout \0HEAD abc\0branch refs/heads/lane\0\0",
         );
         assert_eq!(
             entries,
-            vec![
-                ("/repo/main".to_string(), Some("main".to_string())),
-                ("/repo/feature".to_string(), Some("feature".to_string())),
-            ]
+            vec![(
+                "/repo/lane\ncheckout ".to_string(),
+                Some("lane".to_string())
+            )]
         );
     }
 

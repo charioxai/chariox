@@ -413,6 +413,8 @@ const chromium = {
       case "Page.enable":
       case "Page.setLifecycleEventsEnabled":
       case "Runtime.enable":
+      case "Runtime.addBinding":
+      case "Page.addScriptToEvaluateOnNewDocument":
       case "Network.enable":
       case "Inspector.enable":
       case "Emulation.setDeviceMetricsOverride":

@@ -247,12 +247,10 @@ impl KernelRuntimeState {
                 expires_at_ms: parent_cause
                     .map(|cause| cause.expires_at_ms)
                     .unwrap_or_else(|| {
-                        let lifetime =
-                            crate::runtime::kernel_browser_host::KernelBrowserHost::grant_lifetime(
-                                None,
-                            )
-                            .expect("default lifetime is valid");
-                        crate::session::unix_epoch_ms().saturating_add(lifetime.as_millis() as u64)
+                        crate::session::unix_epoch_ms().saturating_add(
+                            super::super::capability_grant_runtime::DEFAULT_APP_GRANT_LIFETIME
+                                .as_millis() as u64,
+                        )
                     }),
                 delegated_by_agent_id: parent_cause
                     .and_then(|_| binding_permit.as_ref().map(|p| p.actor.id().to_string())),

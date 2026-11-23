@@ -26,6 +26,35 @@ impl KernelRuntimeState {
 }
 
 impl KernelRuntimeOwnedState {
+    pub(super) fn workflow_record_blocked_claim(
+        &self,
+        session_id: &str,
+        workflow_run_id: &str,
+        workflow_node_run_id: &str,
+        error: &DaemonError,
+    ) -> Result<(), DaemonError> {
+        let holding_run_id = error.workspace_claim_holding_run_id();
+        let activity_mutation = self.begin_managed_activity_mutation();
+        let before = self
+            .session_store
+            .write()
+            .block_workflow_node_on_workspace_claim(
+                session_id,
+                workflow_run_id,
+                workflow_node_run_id,
+                holding_run_id,
+            )?;
+        if let Some(before) = before {
+            self.persist_workflow_runtime_session_with_activity_mutation_and_rollback(
+                session_id,
+                "workflow_workspace_claim_blocked",
+                activity_mutation,
+                || self.restore_workflow_run_after_failed_transition(session_id, before),
+            )?;
+        }
+        Ok(())
+    }
+
     pub(super) fn workflow_retry_blocked_claims(&self) -> WorkflowPromptDispatches {
         self.reconcile_completed_workflow_write_claims();
         let mut dispatches = WorkflowPromptDispatches::default();
@@ -170,7 +199,17 @@ impl KernelRuntimeOwnedState {
                         &retry.workflow_node_run_id,
                     );
             }
-            Err(DaemonError::WorkspaceClaimConflict { .. }) => return None,
+            Err(error @ DaemonError::WorkspaceClaimConflict { .. }) => {
+                if let Err(error) = self.workflow_record_blocked_claim(
+                    &retry.session_id,
+                    &retry.workflow_run_id,
+                    &retry.workflow_node_run_id,
+                    &error,
+                ) {
+                    self.record_blocked_workflow_claim_retry_error(&retry, error);
+                }
+                return None;
+            }
             Err(error) => {
                 self.record_blocked_workflow_claim_retry_error(&retry, error);
                 return None;

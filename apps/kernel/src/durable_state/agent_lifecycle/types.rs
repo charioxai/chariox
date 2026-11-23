@@ -275,6 +275,10 @@ pub(crate) enum WakeEnd {
     Lost,
 }
 #[derive(Clone)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "operations are short-lived requests to the lifecycle writer; boxing the large ones buys nothing"
+)]
 pub(crate) enum Operation {
     Outside(super::outside::Mutation),
     SetDeadline {

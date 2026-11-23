@@ -32,6 +32,8 @@ fn missing_relay_config_with_cloud_profile_is_cloud_unavailable() {
         machine_credential: Some("machine-credential".to_string()),
         cloud_session_token: None,
         cloud_session_expires_at_ms: None,
+        kernel_unlinked: false,
+        kernel_removal_pending: false,
         token_expires_at_ms: None,
     });
 
@@ -846,6 +848,8 @@ fn retained_cloud_private_relay_does_not_hydrate_cloud_transport() {
         machine_credential: Some("machine-credential".to_string()),
         cloud_session_token: None,
         cloud_session_expires_at_ms: None,
+        kernel_unlinked: false,
+        kernel_removal_pending: false,
         token_expires_at_ms: None,
     });
 
@@ -932,7 +936,8 @@ async fn silent_relay_socket_is_dropped_and_reconnected_after_read_deadline() {
                     let (stream, _) = incoming.unwrap();
                     let accepted = accepted.clone();
                     readers.spawn(async move {
-                        let Ok(socket) = crate::transport::relay_socket_connect::accept_as_relay(stream).await else { return; };
+                        let Ok(mut socket) = crate::transport::relay_socket_connect::accept_as_relay(stream).await else { return; };
+                        crate::transport::relay_socket_connect::acknowledge_test_registration(&mut socket).await;
                         let (_, mut read) = socket.split();
                         let mut frames = chariox_relay::frame_transport::FrameReceiver::default();
                         let mut announced = false;
@@ -1043,9 +1048,11 @@ async fn relay_pings_are_answered_while_the_kernel_runtime_is_blocked() {
                 let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
                 address_tx.send(listener.local_addr().unwrap()).unwrap();
                 let (stream, _) = listener.accept().await.unwrap();
-                let socket = crate::transport::relay_socket_connect::accept_as_relay(stream)
+                let mut socket = crate::transport::relay_socket_connect::accept_as_relay(stream)
                     .await
                     .unwrap();
+                crate::transport::relay_socket_connect::acknowledge_test_registration(&mut socket)
+                    .await;
                 let (mut write, mut read) = socket.split();
                 let mut frames = chariox_relay::frame_transport::FrameReceiver::default();
                 while let Some(Ok(message)) = read.next().await {

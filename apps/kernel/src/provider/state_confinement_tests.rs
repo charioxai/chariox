@@ -95,8 +95,7 @@ impl DummyKernelHome {
              echo written > '{profile}/settings.json' && echo profile-writable\n\
              echo written > '{workspace}/file' && echo workspace-writable\n\
              echo written > \"$TMPDIR/file\" && echo scratch-writable\n\
-             cat '{home}/state/kernel-local-auth/7000.token' && echo\n\
-             echo x 2>/dev/null > '{home}/state/kernel-local-auth/7000.token' || echo local-auth-read-only\n\
+             test ! -r '{home}/state/kernel-local-auth/7000.token' && echo local-auth-hidden\n\
              cat '{home}/config.toml' && echo\n",
             state = self.home.join("state").display(),
             profile = self.profile.display(),
@@ -119,13 +118,12 @@ impl DummyKernelHome {
             "a secret reached the agent:\n{output}"
         );
         for reachable in [
-            "state: kernel-local-auth provider-accounts",
+            "state: provider-accounts",
             "own-login",
             "profile-writable",
             "workspace-writable",
             "scratch-writable",
-            "local-token",
-            "local-auth-read-only",
+            "local-auth-hidden",
             "# settings",
         ] {
             assert!(
@@ -214,7 +212,7 @@ fn a_local_provider_can_read_packages_under_a_confined_state_directory() {
     let kernel = DummyKernelHome::new();
     let packages = kernel.home.join("state/skills/packages");
     let reference = packages.join("skill-id/digest/references/phrase.txt");
-    let scratch = kernel.home.join("t/session/provider");
+    let scratch = crate::agent_temp::dir("session", "provider-test").unwrap();
     write(&reference, "bundled reference");
     let launch = crate::provider::ProviderLaunchResult {
         endpoint_mode: crate::provider::AgentEndpointMode::Managed,
@@ -387,6 +385,53 @@ fn a_confined_agent_rereads_its_workflow_node_instructions() {
     assert!(file.starts_with(&kernel.home.display().to_string()));
     let output = run_confined(&kernel, &format!("cat '{file}'"));
     assert_eq!(output, "Write the plan.", "{file}");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_managed_agent_rereads_its_workflow_node_instructions() {
+    crate::test_support::isolated_env_test!();
+    let kernel = DummyKernelHome::new();
+    let home = kernel.home.join(".chariox");
+    let provider_home = kernel.home.join("provider-home");
+    std::fs::create_dir_all(&provider_home).unwrap();
+    std::env::set_var("CHARIOX_HOME", &home);
+    std::env::set_var(super::super::MANAGED_PROVIDER_ISOLATION_ENV, "1");
+    std::env::set_var(
+        super::super::managed_isolation::MANAGED_PROVIDER_HOME_ENV,
+        &provider_home,
+    );
+    let private = home.join("state/witness");
+    write(&private, SECRET);
+    let config = crate::config::DaemonConfig::for_tests();
+    let file = crate::workflow_node_instructions::node_instruction_file(
+        &config,
+        "room-1",
+        "run-1",
+        "plan",
+        Some("Write the plan."),
+    )
+    .unwrap();
+    let mut command = super::super::managed_isolated_utility_command(
+        "/bin/sh",
+        vec![
+            "-ec".into(),
+            "test \"$(cat \"$1\")\" = 'Write the plan.'; ! test -r \"$2\"; ! (echo changed > \"$1\")".into(),
+            "managed-workflow-instructions".into(),
+            file,
+            private.display().to_string(),
+        ],
+        BTreeMap::new(),
+        Some(kernel.workspace.clone()),
+        "managed workflow instruction probe",
+    )
+    .unwrap();
+    let output = command.output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 /// Runs `script` as an agent command; every listed path keeps the agent's
@@ -609,9 +654,9 @@ fn a_provider_run_writes_its_scratch_when_the_kernel_home_holds_the_state() {
         .get("TMPDIR")
         .expect("the run has its scratch folder")
         .clone();
-    assert!(
-        scratch.starts_with(&kernel.home.join("t").display().to_string()),
-        "{scratch}"
+    assert_eq!(
+        Path::new(&scratch),
+        crate::agent_temp::dir("room1", "agent-scratch1").unwrap()
     );
     let output = std::process::Command::new(run.pty_program().expect("the run starts a process"))
         .args(run.pty_args())

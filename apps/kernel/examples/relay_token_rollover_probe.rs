@@ -19,7 +19,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if bytes == 0 || bytes > 4 * 1024 * 1024 || args.next().is_some() {
         return Err("payload size must be 1..4194304 and no extra arguments".into());
     }
-    let config = DaemonConfig::load_from_env();
+    let config = DaemonConfig::load_from_env()?;
     // Self-target only: never probe another lane's identity or running kernel.
     if target != config.daemon_id {
         return Err("target must match the owned kernel's product identity".into());

@@ -48,7 +48,17 @@ impl KernelRuntimeState {
                     .collect()
             })
             .unwrap_or_default();
+        let live_output = if record.result.is_none() {
+            // Status stays available while the log cannot be read (not yet written, or
+            // being recovered after a restart); the tail is simply absent until it can.
+            super::execute::Output::read_tail(self, &record).ok()
+        } else {
+            None
+        };
         let mut value = public_record(record)?;
+        if let Some(tail) = live_output {
+            value["output_tail"] = tail.into();
+        }
         if let Some(wait) = wait {
             value["waiting"] = serde_json::to_value(wait).expect("launch wait");
             value["running_job_ids"] = serde_json::json!(running);

@@ -1,6 +1,7 @@
 use thiserror::Error;
 mod actionable_refusals;
 mod provider_profile_refusal;
+pub(crate) mod runtime_tool;
 mod user_domain_refusal;
 pub(crate) use actionable_refusals::{
     message as actionable_refusal_message, PROVIDER_DEV_STUB_DISABLED_CODE,
@@ -312,6 +313,7 @@ pub enum DaemonError {
         worktree_id: String,
         existing_session_id: String,
         existing_operation: Box<String>,
+        existing_workflow_run_id: Option<Box<String>>,
         requested_session_id: String,
         requested_operation: Box<String>,
     },
@@ -380,6 +382,11 @@ pub enum DaemonError {
         owner_user_id: String,
         resource: String,
         operation: &'static str,
+    },
+    #[error("{source}. {action}")]
+    WorkflowStartRefused {
+        source: Box<DaemonError>,
+        action: &'static str,
     },
     #[error("session-scoped request `{operation}` requires authenticated user identity")]
     MissingSessionCallerIdentity { operation: String },
@@ -564,6 +571,16 @@ pub enum DaemonError {
 }
 
 impl DaemonError {
+    pub(crate) fn workspace_claim_holding_run_id(&self) -> Option<&str> {
+        match self {
+            Self::WorkspaceClaimConflict {
+                existing_workflow_run_id,
+                ..
+            } => existing_workflow_run_id.as_deref().map(String::as_str),
+            _ => None,
+        }
+    }
+
     pub(crate) fn steer_not_submitted(self, steering: bool) -> Self {
         if steering {
             Self::ProviderPromptSteerRejected {

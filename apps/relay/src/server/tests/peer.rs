@@ -135,7 +135,7 @@ async fn hosted_kernel_temporary_peer_keeps_machine_binding_and_rejects_alias_fo
                         accepting_remote_leases: true,
                         leased_agent_count: 0,
                         local_session_count: 0,
-                        local_protocol: None,
+                        local_protocol: Some(crate::protocol::MINIMUM_KERNEL_REGISTRATION_PROTOCOL),
                     },
                 ))
                 .expect("registration serializes")
@@ -268,7 +268,7 @@ async fn daemon_peer_requests_are_routed_between_registered_kernels() {
                 accepting_remote_leases: true,
                 leased_agent_count: 0,
                 local_session_count: 0,
-                local_protocol: None,
+                local_protocol: Some(crate::protocol::MINIMUM_KERNEL_REGISTRATION_PROTOCOL),
             },
         );
         socket

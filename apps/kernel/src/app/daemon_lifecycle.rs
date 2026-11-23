@@ -90,7 +90,7 @@ impl DaemonApp {
             }
         }
         if let Some(access) = crate::hot_reload::take_user_domain() {
-            self.kernel_browser_host.adopt_access(access);
+            self.kernel_browser_host.adopt_loaded(access);
         }
     }
 
@@ -180,6 +180,9 @@ impl DaemonApp {
     }
 
     async fn run_with_listener(self, listener: Option<TcpListener>) -> Result<(), DaemonError> {
+        let startup_probe = self
+            .managed_kernel_registration()
+            .map(|registration| (self.config().clone(), registration));
         let empty_context_completion =
             crate::managed_context::empty::EmptyManagedContextCompletion::prepare(
                 self.config(),
@@ -242,6 +245,14 @@ impl DaemonApp {
         );
         let empty_context_completion_task = empty_context_completion.map(|completion| {
             tokio::spawn(completion.run(relay_state.clone(), shutdown_rx.clone()))
+        });
+        let startup_probe_task = startup_probe.map(|(config, registration)| {
+            tokio::spawn(crate::managed_context::startup_health::verify_and_report(
+                config,
+                registration,
+                relay_state.clone(),
+                shutdown_rx.clone(),
+            ))
         });
         let event_delivery_config = {
             let app = app.lock().await;
@@ -332,6 +343,9 @@ impl DaemonApp {
         let _ = relay_task.await;
         crate::shutdown::stage("managed context completion");
         if let Some(task) = empty_context_completion_task {
+            let _ = task.await;
+        }
+        if let Some(task) = startup_probe_task {
             let _ = task.await;
         }
         crate::shutdown::stage("event delivery");

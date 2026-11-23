@@ -31,6 +31,7 @@ use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
 use chariox_relay::protocol::ClientTarget;
 
 mod agent_auth;
+mod agent_result;
 mod workspace_live_sync;
 use workspace_live_sync::*;
 mod workspace_live_sync_workspace_context;
@@ -120,6 +121,8 @@ mod environment_tools;
 mod file_copy_tool;
 mod file_watch_runtime;
 mod job_compute;
+#[cfg(test)]
+pub(super) use job_compute::stand_in_kernel;
 mod jobs;
 mod leased_agent_file_serve;
 mod machine_acquisition;
@@ -164,6 +167,7 @@ mod legacy_room_owner;
 mod metadata_utility_scratch;
 mod native_catalog_refresh;
 mod owner_context_review;
+mod owner_view;
 mod project_environment;
 mod project_environment_check;
 mod project_environment_draft;
@@ -446,6 +450,7 @@ struct KernelRuntimeOwnedState {
     skill_inventories: Arc<skills_native_inventory::SkillInventories>,
     installed_skill_inventories: Arc<skills_installed_inventory::InstalledSkillInventories>,
     settled_worker_runs: Arc<skills_settled_worker_runs::SettledWorkerRuns>,
+    owner_view: Arc<owner_view::OwnerView>,
     person_inbox_changes: Arc<RuntimeChangeSignal>,
     workflow_design_events: WorkflowDesignEventStore,
     workspace_coordinator: crate::runtime::workspace_coordinator::WorkspaceCoordinator,
@@ -589,6 +594,7 @@ mod agent_notification_app;
 mod agent_notification_expiry;
 mod agent_profile_compaction;
 mod agent_profile_owned_state;
+mod agent_release_notes;
 mod agent_settings_change;
 mod agent_settings_swap_runtime;
 mod agent_trigger_gateway;
@@ -632,6 +638,7 @@ pub(crate) use decision_holder::ChildDecisionStatus;
 use decision_holder::DecisionHolder;
 pub(in crate::runtime) use pending_runtime_state::PendingInteractionResolution;
 use pending_runtime_state::*;
+mod idle_provider_exit;
 mod local_prompt_dispatch_runtime;
 mod local_prompt_submission_owned_state;
 mod managed_activity_persistence;
@@ -683,6 +690,7 @@ pub(in crate::runtime) use provider_login_state::{
 mod provider_history_runtime;
 mod provider_mcp_continuation_runtime;
 pub(crate) use provider_mcp_continuation_runtime::arms_catalog_reload;
+mod claude_trust_card;
 mod provider_mcp_task_continuation_runtime;
 mod provider_output_pump_runtime;
 mod provider_output_runtime;
@@ -848,6 +856,7 @@ mod workflow_request_runtime_state;
 mod workflow_resume_owned_state;
 mod workflow_run_request_runtime_state;
 mod workflow_scheduling_owned_state;
+mod workflow_start_alert;
 mod workflow_tool;
 mod workflow_turn_admin_owned_state;
 mod workflow_turn_prompt_owned_state;
@@ -1375,6 +1384,7 @@ impl KernelRuntimeState {
                 skill_inventories: Arc::default(),
                 installed_skill_inventories: Arc::default(),
                 settled_worker_runs: Arc::default(),
+                owner_view: Arc::new(owner_view::OwnerView::default()),
                 person_inbox_changes: Arc::new(RuntimeChangeSignal::default()),
                 workflow_design_events,
                 workspace_coordinator,

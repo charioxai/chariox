@@ -95,6 +95,16 @@ pub(crate) enum LifecycleError {
     #[error("app_lifecycle_supervisor")]
     Supervisor,
 }
+impl LifecycleError {
+    /// The stored failure of a start that ended with this error. An expired
+    /// budget names the step it ran out in; every other error is its own code.
+    fn failure_code(self, step: Step) -> String {
+        match self {
+            Self::Deadline => format!("app_lifecycle_deadline_{}", step.code()),
+            other => other.to_string(),
+        }
+    }
+}
 impl From<AppOperationStopped> for LifecycleError {
     fn from(stopped: AppOperationStopped) -> Self {
         match stopped {
@@ -191,7 +201,28 @@ struct Entry {
     control: Arc<Control>,
     thread: Mutex<Option<JoinHandle<()>>>,
 }
+/// The kernel-side step a start is in. Only these are bounded by the start's
+/// budget; compiling, spawning and readiness have their own bounds and failures.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Step {
+    /// Waiting for the durable start claim.
+    Claim,
+    /// Verifying the release and reserving its resources, before the worker.
+    Prepare,
+    /// Committing the healthy worker's generation and activating it.
+    Commit,
+}
+impl Step {
+    fn code(self) -> &'static str {
+        match self {
+            Self::Claim => "claim",
+            Self::Prepare => "prepare",
+            Self::Commit => "commit",
+        }
+    }
+}
 struct Control {
+    step: Mutex<Step>,
     first_request: Option<String>,
     restore_data: Mutex<Option<chariox_app_runtime::worker_process::PrivateData>>,
     stop: AtomicBool,

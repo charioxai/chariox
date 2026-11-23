@@ -36,13 +36,20 @@ pub(super) fn manage() -> Value {
         variant("kind","url",&["url"],json!({"url":text,"pinned_revision":{"type":["string","null"]}})),
         variant("kind","native",&["selection"],json!({"selection":selection})),
         variant("kind","repository",&["url","revision","path"],json!({"url":text,"revision":text,"path":{"type":"string","description":"skill directory from resolve_repository; empty for a root skill"}}))]});
+    let mut update_source = source.clone();
+    update_source["oneOf"].as_array_mut().unwrap().push(variant(
+        "kind",
+        "recorded_folder",
+        &[],
+        json!({}),
+    ));
     let collision = json!({"oneOf":[variant("action","reject",&[],json!({})),
         variant("action","rename",&["name"],json!({"name":name})),
         variant("action","replace",&["skill_id"],json!({"skill_id":id}))]});
     let state = json!({"type":["string","null"],"enum":["auto","manual","off",null],"description":"null resets to inherited state"});
     let actions = json!({"oneOf":[
         variant("action","install",&["source","collision"],json!({"source":source,"collision":collision,"package_id":optional_id})),
-        variant("action","update",&["skill_id","source","expected_digest"],json!({"skill_id":id,"source":source,"expected_digest":text})),
+        variant("action","update",&["skill_id","source","expected_digest"],json!({"skill_id":id,"source":update_source,"expected_digest":text})),
         variant("action","remove",&["skill_id"],json!({"skill_id":id})),
         variant("action","set_state",&["skill_id","state"],json!({"skill_id":id,"state":state})),
         variant("action","create_package",&["package_id","name"],json!({"package_id":id,"name":name})),

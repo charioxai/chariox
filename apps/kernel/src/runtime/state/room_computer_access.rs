@@ -79,7 +79,7 @@ impl KernelRuntimeState {
     pub(super) fn room_computer_grant_snapshot(
         &self,
         user: &str,
-        kernel: &str,
+        _kernel: &str,
     ) -> Result<serde_json::Value, DaemonError> {
         let aliases = self.user_domain_owner_aliases(user);
         let agents = self.owned.agent_store.list_agents();
@@ -88,7 +88,7 @@ impl KernelRuntimeState {
             .room_computer_revoked
             .lock()
             .map_err(|_| access_error())?;
-        let mut snapshot = self.owned.kernel_browser_host.grant_snapshot(user, kernel);
+        let mut snapshot = serde_json::json!({"event":"user_domain_grants_changed","cursor":self.owned.kernel_browser_host.access_cursor(user)});
         snapshot["room_computer"] = serde_json::json!(agents.iter().filter(|agent| aliases.iter().any(|owner| owner == agent.owner_user_id())).map(|agent| serde_json::json!({"agent_id":agent.id(),"session_id":agent.session_id(),"allowed":!revoked.contains(agent.id())})).collect::<Vec<_>>());
         Ok(snapshot)
     }
@@ -137,6 +137,8 @@ impl crate::app::DaemonApp {
     }
 }
 fn access_error() -> DaemonError {
-    crate::error::HostFailure::Refused(crate::error::UserDomainRefusalReason::NotGranted)
-        .into_daemon("room_computer")
+    DaemonError::LocalTransport {
+        operation: "room_computer",
+        message: "The person switched this agent's Room Computer off.".into(),
+    }
 }

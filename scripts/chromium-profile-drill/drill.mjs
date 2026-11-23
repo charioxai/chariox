@@ -1,3 +1,4 @@
+import { dockerLabels, drillOwner } from "../lib/drill-docker-owner.mjs"
 import assert from "node:assert/strict";
 import { appendFileSync, chmodSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -11,15 +12,17 @@ const owner = loadOwner(scratch);
 if (mode === "cleanup") { cleanup(scratch); process.exit(0); }
 assert.equal(mode, "run");
 const label = `io.chariox.chromium-drill=${owner.id}`;
+const ownership = drillOwner(import.meta.url, { run: owner.id });
+const labels = dockerLabels(ownership);
 const evidence = join(scratch, "evidence");
 const policy = join(scratch, "chromium-seccomp.json");
 const results = [];
 const containers = [];
 const record = (name, value) => { results.push({ name, ...value }); writeFileSync(join(evidence, "results.json"), JSON.stringify(results, null, 2)); };
 const execute = (id, args, seconds = 60, user = "slice") => docker(["exec", "-u", user, id, "timeout", "--kill-after=2s", `${seconds}s`, ...args], { timeout: (seconds + 10) * 1000 });
-const volume = role => docker(["volume", "create", "--label", label, `chariox-chromium-${owner.id}-${role}`]);
+const volume = role => docker(["volume", "create", ...labels, "--label", label, `chariox-chromium-${owner.id}-${role}`]);
 function create(role, home, extra = []) {
-  const id = docker(["create", "--name", `chariox-chromium-${owner.id}-${role}`, "--label", label,
+  const id = docker(["create", "--name", `chariox-chromium-${owner.id}-${role}`, ...labels, "--label", label,
     "--network", "none", "--cpus", "2", "--memory", "2g", "--memory-swap", "2g", "--pids-limit", "512",
     "--shm-size", "128m", "--ulimit", "core=0:0", "--security-opt", `seccomp=${policy}`,
     ...(home ? ["-v", `${home}:/home/slice`] : []), ...extra, owner.image]);
@@ -91,7 +94,7 @@ try {
   // Invoke the production initial-home functions through a test-only adapter.
   // Production creates the fresh volume and verifies its archive/token labels.
   // The shim only disables extra swap and adds our cleanup ownership label.
-  writeFileSync(join(scratch, "bin/docker"), restoreDockerShim(label));
+  writeFileSync(join(scratch, "bin/docker"), restoreDockerShim(label, ownership));
   chmodSync(join(scratch, "bin/docker"), 0o700);
   const provisioner = readFileSync(join(source, "provision-linux-docker-slice.sh"));
   assert.equal(createHash("sha256").update(restoreScript(provisioner.toString("utf8"))).digest("hex"), owner.inputs["restore-script"]);
