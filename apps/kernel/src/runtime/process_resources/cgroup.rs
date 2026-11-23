@@ -415,6 +415,7 @@ fn remove_empty(path: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs::File;
 
     /// root/service.slice/kernel.service, the slice delegating memory and the
     /// kernel's own cgroup limited to 1 GiB.
@@ -464,6 +465,96 @@ mod tests {
         let bounds = bounding_for(&root, &own, |_| true);
         assert_eq!(bounds.first(), own.parent().map(Path::to_path_buf).as_ref());
         assert!(!bounds.contains(&own), "{bounds:?}");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// A kernel in another PID namespace owns this budget: its PID is not in this
+    /// namespace's /proc, but it holds the budget's lock.
+    fn foreign_budget(parent: &Path, pid: u32) -> PathBuf {
+        let path = parent.join(format!("chariox-{pid}-{}", rand::random::<u128>()));
+        std::fs::create_dir(&path).unwrap();
+        path
+    }
+
+    // Restart-stall drill, 2026-11-22: a copy of the kernel in a private PID
+    // namespace removed the live kernel's empty budgets because it could not see
+    // the live PID.
+    #[test]
+    fn b1_a_live_owner_in_another_pid_namespace_keeps_its_budgets() {
+        use fs2::FileExt;
+        let (root, own) = service();
+        let parent = own.parent().unwrap();
+        let live = foreign_budget(parent, 4_000_000_001);
+        std::fs::create_dir(live.join("unit-a")).unwrap();
+        let owner = File::open(&live).unwrap();
+        owner.try_lock_exclusive().unwrap();
+        let neighbour = Budget::create_under(parent).expect("budget");
+        assert!(live.join("unit-a").is_dir(), "live owner's unit removed");
+        assert!(live.is_dir(), "live owner's budget removed");
+        drop((neighbour, owner));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn b2_a_budget_nobody_holds_is_a_leftover_and_a_populated_one_stays() {
+        let (root, own) = service();
+        let parent = own.parent().unwrap();
+        let dead = foreign_budget(parent, 4_000_000_002);
+        std::fs::create_dir(dead.join("unit-a")).unwrap();
+        let populated = foreign_budget(parent, 4_000_000_003);
+        std::fs::create_dir(populated.join("unit-a")).unwrap();
+        // A populated cgroup cannot be removed: stands in with a file the
+        // directory removal refuses.
+        std::fs::write(populated.join("unit-a/cgroup.procs"), "1\n").unwrap();
+        let neighbour = Budget::create_under(parent).expect("budget");
+        assert!(!dead.exists(), "leftover kept");
+        assert!(populated.join("unit-a").is_dir(), "populated unit removed");
+        drop(neighbour);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Runs as the owner process of b3: makes a budget and ends without cleanup.
+    #[test]
+    fn b3_owner_process_helper() {
+        let Ok(parent) = std::env::var("CGROUP_TEST_OWNER_PARENT") else {
+            return;
+        };
+        let budget = Budget::create_under(Path::new(&parent)).expect("budget");
+        std::fs::create_dir(budget.path.join("unit-a")).unwrap();
+        println!("BUDGET {}", budget.path.display());
+        std::mem::forget(budget);
+        std::process::exit(0);
+    }
+
+    // Kernel restart: the previous instance ended (kill -9) and the next one in
+    // the same slice cleans what it left.
+    #[test]
+    fn b3_a_restarted_kernel_cleans_its_previous_instances_budgets() {
+        let (root, own) = service();
+        let parent = own.parent().unwrap();
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "--nocapture", "--test-threads=1"])
+            .arg("runtime::process_resources::cgroup::tests::b3_owner_process_helper")
+            .env("CGROUP_TEST_OWNER_PARENT", parent)
+            .output()
+            .unwrap();
+        let text = String::from_utf8_lossy(&out.stdout);
+        let left = text
+            .lines()
+            .find_map(|line| line.split_once("BUDGET ").map(|(_, path)| path.trim()))
+            .map(PathBuf::from)
+            .unwrap_or_else(|| panic!("owner made no budget: {text}"));
+        assert!(left.join("unit-a").is_dir(), "owner left nothing behind");
+        // On cgroupfs the control files (cgroup.subtree_control) are virtual and
+        // vanish with the directory; on this temporary fixture they are plain files.
+        for entry in std::fs::read_dir(&left).unwrap().flatten() {
+            if entry.file_type().unwrap().is_file() {
+                std::fs::remove_file(entry.path()).unwrap();
+            }
+        }
+        let restarted = Budget::create_under(parent).expect("budget");
+        assert!(!left.exists(), "previous instance's budget kept");
+        drop(restarted);
         let _ = std::fs::remove_dir_all(root);
     }
 }
