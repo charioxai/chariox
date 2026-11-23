@@ -91,6 +91,24 @@ async fn a_refused_hosted_slice_with_another_machine_as_worker_leaves_no_record(
     );
 }
 
+// S2: two refused spawns (the incident made two records) leave nothing that blocks a later
+// plain spawn on that machine, which resolves no slice record at all.
+#[tokio::test]
+async fn refused_hosted_slice_spawns_do_not_block_a_plain_spawn_on_that_machine() {
+    let app = Arc::new(Mutex::new(DaemonApp::bootstrap(hosted_config()).unwrap()));
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+    for name in ["s0-slice-aaaaa", "s0-slice-bbbbb"] {
+        let _ = create(&router, name, Some("kernel-05ac923c384c5ea3")).await;
+    }
+    let resolved = app
+        .lock()
+        .await
+        .slices()
+        .resolve_execution_worker_kernel_ref("kernel-05ac923c384c5ea3", "agent.spawn")
+        .expect("the machine is not claimed by any slice");
+    assert!(resolved.is_none(), "{resolved:?}");
+}
+
 // S4: a hosted slice without a named worker is created as before.
 #[tokio::test]
 async fn a_hosted_slice_without_a_named_worker_is_still_created() {

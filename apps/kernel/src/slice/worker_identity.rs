@@ -77,7 +77,7 @@ pub(crate) fn require_hosted_slice_worker_ref(
     );
     Err(DaemonError::MachineRequest {
         code: "slice_needs_new_worker".to_string(),
-        message: "This slice was made before slices were tied to their machine, so it cannot start here. Create a new slice with `agent spawn --slice new` and move over anything you still need.".to_string(),
+        message: "This slice was made before slices were tied to their machine, so it cannot start here; create a new slice with `agent spawn --slice new` and move over anything you still need.".to_string(),
     })
 }
 
