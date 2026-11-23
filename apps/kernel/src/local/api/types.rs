@@ -643,4 +643,6 @@ pub use workspace::*;
 /// longer carry `kernel_id`, `kernel_name`, `focused_agent_kernel_id` or `reachable_by_focused_agent`; the loader tools
 /// take no arguments and `chariox.kernel_browser_share` is removed.
 /// 1014 adds revision-based latest Room history outline reads.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1014;
+/// 1015 adds `origin` (`agent` or `kernel`) to an Inbox notice: only an agent's `chariox.notify_person` is a requested
+/// notification (a pane card and a badge count); the kernel's own notices are person actions that stay in the center.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1015;

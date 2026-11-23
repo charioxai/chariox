@@ -123,6 +123,11 @@ async fn an_agent_notifies_the_owner_and_the_card_reaches_the_inbox_unread() {
     assert_eq!(cards.len(), 1);
     assert_eq!(cards[0].card_id, card_id);
     assert_eq!(cards[0].session_id, room.session_id);
+    assert_eq!(
+        notice(&cards[0]).origin,
+        crate::local::PersonInboxNoticeOrigin::Agent,
+        "what an agent sends with notify_person is a requested notification"
+    );
     let sent = notice(&cards[0]);
     assert_eq!(
         (

@@ -37,7 +37,7 @@ Subscribe yourself with `chariox.notification_subscribe { source, prompt?, mode?
 
 Use `chariox.notification_unsubscribe {trigger_id}` to delete your own trigger and detach its subscription. Subscriptions also end when the agent leaves the Room, is archived or destroyed, or the Room ends. `/trigger notification <source> [prompt]` and `/trigger remove <trigger-id>` through `chariox.room.run_command` use the same self-only path. A source may be named by display name, kernel/display name, source id, or `app:<installation>/<event>`.
 
-To tell the Room's owner something, such as "the work you asked about is done", call `chariox.notify_person { title, body?, link?, priority? }`. It puts a for-your-information card in their Inbox and returns its `card_id`; you do not wait and are not woken by it. `title` is one line; `priority` is `normal` or `high`. A guest's agent cannot use it. To ask for an answer use `chariox.request_popup`.
+When the person asked to be told something ("tell me when the build is done"), and only then, call `chariox.notify_person { title, body?, link?, priority? }`. It shows a card the person dismisses and an entry in their notification center, and returns its `card_id`. Progress, results nobody asked to hear about and errors go in your reply, not here; you do not wait and are not woken by it. `title` is one line; `priority` is `normal` or `high`. A guest's agent cannot use it. To ask for an answer use `chariox.request_popup`.
 
 Workflow notification sources are per exit. A run that fails before an exit emits nothing. Every undelivered occurrence has the same fixed seven-day retention. Workflows invoked during a notification prompt inherit its lineage, including the agent; a causal cycle is dropped.
 

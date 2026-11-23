@@ -93,7 +93,7 @@ Such cards are kept for 7 days, the existing retention constant, and at most 1,0
 
 Each kernel keeps the cards of its own Rooms and answers two things to its owner's clients: the current list with a revision (`GetPersonInbox`), and its changes (`PersonInboxChanged`) on the kernel-level connection the Web terminal already keeps for the Room list. The client holds one list per connected kernel and shows them merged. No kernel knows another kernel's cards, and Cloud knows none: it only tells the client which kernels the person owns, as it does today.
 
-The sidebar badge is the number of needs-you cards that are not snoozed, counted by the client from those lists. *(P1: the number means "things waiting for me", never "unread".)*
+The sidebar badge is the number of needs-you cards that are not snoozed, plus the unread notices an agent sent because the person asked to be told (`origin: agent`), counted by the client from those lists. A notice is also a dismissible card in its agent's pane; dismissing it marks the one kernel item read, so the pane card and the center entry are one thing. The kernel's own notices (`origin: kernel`) are not requested notifications: one that carries an action (sign in to an account) is a person action and counts as needs-you; one without (a workflow that could not start) is status, in the center only. *(P1: the number means "things waiting for me"; no other informative event raises it.)*
 
 ### 4.3 Acting from the center
 

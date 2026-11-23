@@ -19,7 +19,7 @@ pub use api::{
 pub use api::{CreatedResource, CreatedResourceState, ResourceRevokeMethod};
 pub use api::{
     GetPersonInboxRequest, InboxCardChange, PersonInboxCard, PersonInboxCardBody,
-    PersonInboxNotice, PersonInboxNoticeAction, PersonInboxOrigin, PersonInboxPriority,
+    PersonInboxNotice, PersonInboxNoticeAction, PersonInboxNoticeOrigin, PersonInboxOrigin, PersonInboxPriority,
     SetInboxCardStateRequest, SetInboxMuteRequest,
 };
 pub use api::{
