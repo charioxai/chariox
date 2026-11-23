@@ -17,6 +17,177 @@ pub(super) struct AppGrantEpochs {
     changed: Notify,
 }
 
+pub(crate) struct AppBindingPermit {
+    pub(super) actor: crate::agent::AgentInstance,
+    pub(super) target_id: String,
+    pub(super) target_binding: Option<crate::agent::RemoteAgentBinding>,
+    pub(super) installation: String,
+    pub(super) target_revision: u64,
+    pub(super) parent: Option<crate::extension::ExtensionGrant>,
+    pub(super) provider_run_id: Option<String>,
+}
+
+impl KernelRuntimeState {
+    pub(super) fn app_binding_epoch(
+        &self,
+        agent: &str,
+        installation: &str,
+    ) -> Arc<std::sync::atomic::AtomicU64> {
+        self.owned
+            .app_grant_epochs
+            .revisions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry((agent.into(), installation.into()))
+            .or_default()
+            .clone()
+    }
+
+    pub(super) fn app_binding_revision(&self, agent: &str, installation: &str) -> u64 {
+        self.app_binding_epoch(agent, installation)
+            .load(Ordering::Acquire)
+    }
+
+    pub(super) async fn revoke_agent_app_capability_grants(
+        &self,
+        agent: &crate::agent::AgentInstance,
+    ) -> Result<(), DaemonError> {
+        if self.room_agent_tools_enabled() {
+            for grant in agent.extension_grants() {
+                if let Some(cause) = &grant.app_grant {
+                    self.revoke_expired_agent_app(agent.id(), &grant.name, &cause.grant_id)
+                        .await?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn require_app_grant_wake(&self) -> Result<(), DaemonError> {
+        if self.owned.app_grant_epochs.stopped.load(Ordering::Acquire)
+            || tokio::runtime::Handle::try_current().is_err()
+        {
+            return Err(denied("App grant expiry requires a live executor"));
+        }
+        Ok(())
+    }
+
+    pub(super) fn stop_app_grant_wakes(&self) {
+        self.owned
+            .app_grant_epochs
+            .stopped
+            .store(true, Ordering::Release);
+        self.owned.app_grant_epochs.changed.notify_waiters();
+    }
+
+    pub(super) fn recover_app_grant_expiries(&self) {
+        for agent in self.owned.agent_store.list_agents() {
+            for grant in agent.extension_grants() {
+                if self.room_agent_tools_enabled()
+                    && grant.kind == crate::extension::ExtensionKind::App
+                    && grant.app_grant.is_none()
+                {
+                    // MP-11: legacy untimed bindings need fresh owner approval
+                    // before they can become A05 authority.
+                    self.revoke_recovered_app_binding(agent.id(), &grant.name);
+                    continue;
+                }
+                if let Some(cause) = &grant.app_grant {
+                    if tokio::runtime::Handle::try_current().is_ok() {
+                        self.arm_app_grant_expiry(agent.id(), &grant.name, cause);
+                    } else {
+                        // MP-11: recovery without a live executor must not retain
+                        // authority whose mandatory expiry wake cannot be armed.
+                        self.revoke_recovered_app_binding(agent.id(), &grant.name);
+                        tracing::warn!("App grant recovery refused without a live expiry executor");
+                    }
+                }
+            }
+        }
+    }
+
+    /// MP-11: recovery removes the binding at once and records the normal
+    /// revoke; the async follow-up runs when an executor exists.
+    fn revoke_recovered_app_binding(&self, agent: &str, name: &str) {
+        let Ok(agent) = self.owned.agent_store.revoke_extension(
+            agent,
+            crate::extension::ExtensionKind::App,
+            name,
+        ) else {
+            return;
+        };
+        let owner = agent.owner_user_id().to_string();
+        if let Err(error) = self.record_revoked_app_binding(&agent, name, &owner) {
+            tracing::warn!(%error, "App grant recovery revoke was not recorded");
+        }
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            let state = self.clone();
+            handle.spawn(async move {
+                let _ = state.propagate_revoked_app_binding(agent, &owner).await;
+            });
+        }
+    }
+
+    /// MP-08/MP-11: absolute expiry always has a real wake, including after
+    /// recovery. Mutation uses the captured grant ID so a replacement survives.
+    pub(super) fn arm_app_grant_expiry(
+        &self,
+        agent: &str,
+        installation: &str,
+        cause: &crate::extension::AppCapabilityGrant,
+    ) {
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let state = self.clone();
+        let agent = agent.to_string();
+        let installation = installation.to_string();
+        let id = cause.grant_id.clone();
+        let deadline = tokio::time::Instant::now()
+            + Duration::from_millis(
+                cause
+                    .expires_at_ms
+                    .saturating_sub(crate::session::unix_epoch_ms()),
+            )
+            .min(MAX_APP_GRANT_LIFETIME);
+        handle.spawn(async move {
+            loop {
+                let changed = state.owned.app_grant_epochs.changed.notified();
+                tokio::pin!(changed);
+                changed.as_mut().enable();
+                if state.owned.app_grant_epochs.stopped.load(Ordering::Acquire)
+                    || !state
+                        .owned
+                        .agent_store
+                        .get_agent(&agent)
+                        .is_ok_and(|agent| {
+                            agent.extension_grants().iter().any(|grant| {
+                                grant.name == installation
+                                    && grant
+                                        .app_grant
+                                        .as_ref()
+                                        .is_some_and(|cause| cause.grant_id == id)
+                            })
+                        })
+                {
+                    return;
+                }
+                tokio::select! {
+                    _ = tokio::time::sleep_until(deadline) => {
+                        let _ = state.revoke_expired_agent_app(&agent, &installation, &id).await;
+                        return;
+                    }
+                    _ = &mut changed => {}
+                }
+            }
+        });
+    }
+
+    pub(super) fn notify_app_grant_change(&self) {
+        self.owned.app_grant_epochs.changed.notify_waiters();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -323,176 +494,5 @@ mod tests {
                 && event.payload.pointer("/grant/name") == Some(&"installed".into())
         }));
         state.shutdown_cleanup().await.unwrap();
-    }
-}
-
-pub(crate) struct AppBindingPermit {
-    pub(super) actor: crate::agent::AgentInstance,
-    pub(super) target_id: String,
-    pub(super) target_binding: Option<crate::agent::RemoteAgentBinding>,
-    pub(super) installation: String,
-    pub(super) target_revision: u64,
-    pub(super) parent: Option<crate::extension::ExtensionGrant>,
-    pub(super) provider_run_id: Option<String>,
-}
-
-impl KernelRuntimeState {
-    pub(super) fn app_binding_epoch(
-        &self,
-        agent: &str,
-        installation: &str,
-    ) -> Arc<std::sync::atomic::AtomicU64> {
-        self.owned
-            .app_grant_epochs
-            .revisions
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .entry((agent.into(), installation.into()))
-            .or_default()
-            .clone()
-    }
-
-    pub(super) fn app_binding_revision(&self, agent: &str, installation: &str) -> u64 {
-        self.app_binding_epoch(agent, installation)
-            .load(Ordering::Acquire)
-    }
-
-    pub(super) async fn revoke_agent_app_capability_grants(
-        &self,
-        agent: &crate::agent::AgentInstance,
-    ) -> Result<(), DaemonError> {
-        if self.room_agent_tools_enabled() {
-            for grant in agent.extension_grants() {
-                if let Some(cause) = &grant.app_grant {
-                    self.revoke_expired_agent_app(agent.id(), &grant.name, &cause.grant_id)
-                        .await?;
-                }
-            }
-        }
-        Ok(())
-    }
-
-    pub(super) fn require_app_grant_wake(&self) -> Result<(), DaemonError> {
-        if self.owned.app_grant_epochs.stopped.load(Ordering::Acquire)
-            || tokio::runtime::Handle::try_current().is_err()
-        {
-            return Err(denied("App grant expiry requires a live executor"));
-        }
-        Ok(())
-    }
-
-    pub(super) fn stop_app_grant_wakes(&self) {
-        self.owned
-            .app_grant_epochs
-            .stopped
-            .store(true, Ordering::Release);
-        self.owned.app_grant_epochs.changed.notify_waiters();
-    }
-
-    pub(super) fn recover_app_grant_expiries(&self) {
-        for agent in self.owned.agent_store.list_agents() {
-            for grant in agent.extension_grants() {
-                if self.room_agent_tools_enabled()
-                    && grant.kind == crate::extension::ExtensionKind::App
-                    && grant.app_grant.is_none()
-                {
-                    // MP-11: legacy untimed bindings need fresh owner approval
-                    // before they can become A05 authority.
-                    self.revoke_recovered_app_binding(agent.id(), &grant.name);
-                    continue;
-                }
-                if let Some(cause) = &grant.app_grant {
-                    if tokio::runtime::Handle::try_current().is_ok() {
-                        self.arm_app_grant_expiry(agent.id(), &grant.name, cause);
-                    } else {
-                        // MP-11: recovery without a live executor must not retain
-                        // authority whose mandatory expiry wake cannot be armed.
-                        self.revoke_recovered_app_binding(agent.id(), &grant.name);
-                        tracing::warn!("App grant recovery refused without a live expiry executor");
-                    }
-                }
-            }
-        }
-    }
-
-    /// MP-11: recovery removes the binding at once and records the normal
-    /// revoke; the async follow-up runs when an executor exists.
-    fn revoke_recovered_app_binding(&self, agent: &str, name: &str) {
-        let Ok(agent) = self.owned.agent_store.revoke_extension(
-            agent,
-            crate::extension::ExtensionKind::App,
-            name,
-        ) else {
-            return;
-        };
-        let owner = agent.owner_user_id().to_string();
-        if let Err(error) = self.record_revoked_app_binding(&agent, name, &owner) {
-            tracing::warn!(%error, "App grant recovery revoke was not recorded");
-        }
-        if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            let state = self.clone();
-            handle.spawn(async move {
-                let _ = state.propagate_revoked_app_binding(agent, &owner).await;
-            });
-        }
-    }
-
-    /// MP-08/MP-11: absolute expiry always has a real wake, including after
-    /// recovery. Mutation uses the captured grant ID so a replacement survives.
-    pub(super) fn arm_app_grant_expiry(
-        &self,
-        agent: &str,
-        installation: &str,
-        cause: &crate::extension::AppCapabilityGrant,
-    ) {
-        let Ok(handle) = tokio::runtime::Handle::try_current() else {
-            return;
-        };
-        let state = self.clone();
-        let agent = agent.to_string();
-        let installation = installation.to_string();
-        let id = cause.grant_id.clone();
-        let deadline = tokio::time::Instant::now()
-            + Duration::from_millis(
-                cause
-                    .expires_at_ms
-                    .saturating_sub(crate::session::unix_epoch_ms()),
-            )
-            .min(MAX_APP_GRANT_LIFETIME);
-        handle.spawn(async move {
-            loop {
-                let changed = state.owned.app_grant_epochs.changed.notified();
-                tokio::pin!(changed);
-                changed.as_mut().enable();
-                if state.owned.app_grant_epochs.stopped.load(Ordering::Acquire)
-                    || !state
-                        .owned
-                        .agent_store
-                        .get_agent(&agent)
-                        .is_ok_and(|agent| {
-                            agent.extension_grants().iter().any(|grant| {
-                                grant.name == installation
-                                    && grant
-                                        .app_grant
-                                        .as_ref()
-                                        .is_some_and(|cause| cause.grant_id == id)
-                            })
-                        })
-                {
-                    return;
-                }
-                tokio::select! {
-                    _ = tokio::time::sleep_until(deadline) => {
-                        let _ = state.revoke_expired_agent_app(&agent, &installation, &id).await;
-                        return;
-                    }
-                    _ = &mut changed => {}
-                }
-            }
-        });
-    }
-
-    pub(super) fn notify_app_grant_change(&self) {
-        self.owned.app_grant_epochs.changed.notify_waiters();
     }
 }

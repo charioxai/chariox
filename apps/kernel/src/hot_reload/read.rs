@@ -83,12 +83,15 @@ pub(super) fn read_handover(body: &[u8]) -> Result<ReadHandover, String> {
     })
 }
 
+/// Names what an unreadable part left running: its name, pids and fds.
+type Salvage = fn(&Value) -> (String, Vec<u32>, Vec<i32>);
+
 /// The parts of one list, each read on its own.
 fn parts<T: DeserializeOwned>(
     document: &mut Value,
     list: &'static str,
     unreadable: &mut Vec<Unreadable>,
-    salvage: fn(&Value) -> (String, Vec<u32>, Vec<i32>),
+    salvage: Salvage,
 ) -> Vec<T> {
     let raw = document
         .as_object_mut()
@@ -290,11 +293,13 @@ mod tests {
 
     #[test]
     fn the_format_numbers_follow_the_rule() {
-        assert!(PREVIOUS_HANDOVER_FORMAT <= HANDOVER_FORMAT);
-        assert!(
-            HANDOVER_FORMAT <= PREVIOUS_HANDOVER_FORMAT + 1,
-            "a release reads its own handover format and the one before it"
-        );
+        const {
+            assert!(PREVIOUS_HANDOVER_FORMAT <= HANDOVER_FORMAT);
+            assert!(
+                HANDOVER_FORMAT <= PREVIOUS_HANDOVER_FORMAT + 1,
+                "a release reads its own handover format and the one before it"
+            );
+        }
     }
 
     /// The guard: a field added to a handover shape without a serde default, or a shape

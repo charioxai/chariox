@@ -69,7 +69,7 @@ fn outline_blob_from_event(event: &HistoryEvent) -> Option<SessionHistoryOutline
     let total_chars = entry.text.chars().count();
     Some(SessionHistoryOutlineBlob {
         blob_id: blob_id(event.sequence, event.sequence),
-        revision: super::delta::blob_revision(&[&event]),
+        revision: super::delta::blob_revision(&[event]),
         steering: is_steering_prompt_event(event),
         kind: entry.kind,
         title: blob_title(entry.kind),

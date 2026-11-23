@@ -264,6 +264,24 @@ impl Scratch {
     }
 }
 
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let directory = self.0.clone();
+        drop(crate::shutdown::spawn_blocking(
+            "remove managed startup probe",
+            move || {
+                if let Err(error) = std::fs::remove_dir_all(directory) {
+                    crate::logging::warn_with_fields(
+                        "managed_startup.probe_cleanup",
+                        "could not remove the managed startup check files",
+                        serde_json::json!({"error": error.to_string()}),
+                    );
+                }
+            },
+        ));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -310,23 +328,5 @@ mod tests {
             wait_for_stable_relay(&relay).await,
             Err(StartupProbeFailure::RelayInterrupted)
         );
-    }
-}
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let directory = self.0.clone();
-        drop(crate::shutdown::spawn_blocking(
-            "remove managed startup probe",
-            move || {
-                if let Err(error) = std::fs::remove_dir_all(directory) {
-                    crate::logging::warn_with_fields(
-                        "managed_startup.probe_cleanup",
-                        "could not remove the managed startup check files",
-                        serde_json::json!({"error": error.to_string()}),
-                    );
-                }
-            },
-        ));
     }
 }

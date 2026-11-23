@@ -39,7 +39,7 @@ fn canonical_decoded_len(encoded: &[u8]) -> Option<usize> {
     if encoded.is_empty() {
         return Some(0);
     }
-    if encoded.len() % 4 != 0 {
+    if !encoded.len().is_multiple_of(4) {
         return None;
     }
     let padding = if encoded.ends_with(b"==") {

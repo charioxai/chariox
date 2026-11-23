@@ -49,12 +49,9 @@ impl KernelRuntimeState {
             })
             .unwrap_or_default();
         let live_output = if record.result.is_none() {
-            match super::execute::Output::read_tail(self, &record) {
-                Ok(tail) => Some(tail),
-                // Status stays available while the log cannot be read (not yet written, or
-                // being recovered after a restart); the tail is simply absent until it can.
-                Err(_) => None,
-            }
+            // Status stays available while the log cannot be read (not yet written, or
+            // being recovered after a restart); the tail is simply absent until it can.
+            super::execute::Output::read_tail(self, &record).ok()
         } else {
             None
         };
