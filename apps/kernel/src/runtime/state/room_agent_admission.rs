@@ -268,6 +268,9 @@ impl KernelRuntimeState {
             };
         // Row 405: an agent above it, or another of the owner's agents the peer check admits
         // (its permission comparison keeps the owner's per-agent settings).
+        if !own_settings && target.id() == actor.id() {
+            return Err(denied("only the agents above an agent can control it"));
+        }
         if !own_settings && !self.owned.agent_store.is_ancestor(actor.id(), &target) {
             self.authorize_peer_control(&actor, &target, super::peer_rooms::PeerControl::Cancel)?;
         }

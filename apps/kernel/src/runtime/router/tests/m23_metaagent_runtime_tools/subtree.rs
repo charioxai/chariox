@@ -166,10 +166,9 @@ async fn command_table() {
         ("b", "s"),
         ("a", "peer"),
         ("peer", "b"),
-        ("q", "b"),
     ];
-    // Upward stays refused by the peer check.
-    let refused = [("b", "a")];
+    // Upward stays refused by the peer check; another room's agent names b only with --room.
+    let refused = [("b", "a"), ("q", "b")];
     for verb in verbs {
         for (caller, target) in allowed {
             let result = room_command(&world, caller, &verb.replace("{}", target)).await;
@@ -223,8 +222,8 @@ fn the_owners_agents_prompt_each_other_but_not_upward() {
 // the refusal runs first, then every caller prompts before anyone prompts it.
 async fn prompt_table() {
     let world = world("subtree-prompt").await;
-    // Upward stays refused by the peer check.
-    for (caller, target) in [("b", "a")] {
+    // Upward stays refused by the peer check; another room's agent names b only with --room.
+    for (caller, target) in [("b", "a"), ("q", "b")] {
         let result = room_command(&world, caller, &format!("prompt {target} say hello")).await;
         assert!(
             refused_by_policy(&result),
@@ -236,7 +235,6 @@ async fn prompt_table() {
         ("b", "d"),
         ("b", "s"),
         ("peer", "b"),
-        ("q", "b"),
         ("a", "s"),
         ("a", "peer"),
         ("a", "b"),

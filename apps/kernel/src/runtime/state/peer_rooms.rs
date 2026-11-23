@@ -149,6 +149,9 @@ impl KernelRuntimeState {
         actor: &crate::agent::AgentInstance,
         target: &crate::agent::AgentInstance,
     ) -> Result<(), DaemonError> {
+        if actor.id() == target.id() {
+            return Err(denied("only the agents above an agent can control it"));
+        }
         if self.owned.agent_store.is_ancestor(actor.id(), target) {
             return Ok(());
         }

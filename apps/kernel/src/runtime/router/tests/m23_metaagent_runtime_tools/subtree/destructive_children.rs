@@ -1,24 +1,16 @@
 use super::*;
 
+// Row 405 (PA11): an agent above, not only the direct parent, renames and deletes a live child.
 #[test]
-fn only_a_direct_parent_can_rename_or_delete_a_live_child() {
+fn an_ancestor_renames_and_deletes_a_live_descendant() {
     run_large_stack_async_test("subtree-direct-destructive-child", direct_destructive_child);
 }
 
 async fn direct_destructive_child() {
     let world = world("subtree-direct-destructive-child").await;
-    for command in ["agent alias d renamed-by-grandparent", "agent delete d"] {
-        let refused = room_command(&world, "a", command).await;
-        assert!(!refused.ok, "grandparent admitted {command}: {refused:?}");
-        assert!(error_text(&refused).contains("direct child"), "{refused:?}");
-        let app = world.app.lock().await;
-        let child = app.agents().get_agent(&world.ids["d"]).unwrap();
-        assert_eq!(child.parent_agent_id(), Some(world.ids["b"].as_str()));
-        assert_eq!(child.alias(), Some("d"));
-    }
-    let renamed = room_command(&world, "b", "agent alias d renamed-by-parent").await;
+    let renamed = room_command(&world, "a", "agent alias d renamed-by-grandparent").await;
     assert!(renamed.ok, "{renamed:?}");
-    let deleted = room_command(&world, "b", &format!("agent delete {}", world.ids["d"])).await;
+    let deleted = room_command(&world, "a", &format!("agent delete {}", world.ids["d"])).await;
     assert!(deleted.ok, "{deleted:?}");
     let app = world.app.lock().await;
     assert!(app.agents().get_agent(&world.ids["d"]).is_err());
