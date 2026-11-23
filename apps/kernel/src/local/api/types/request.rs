@@ -268,6 +268,7 @@ pub enum LocalDaemonRequest {
     PreflightProviderAccountPortability(PreflightProviderAccountPortabilityRequest),
     CloudAccountKernels(AccountKernelsRequest),
     ControlPlane(ControlPlaneRequest),
+    MachineAcquisition(MachineAcquisitionRequest),
     ObserveKernelRuntimeIdentity(ObserveKernelRuntimeIdentityRequest),
     StartManagedContextTransfer(Box<StartManagedContextTransferRequest>),
     GetManagedContextTransferStatus(GetManagedContextTransferStatusRequest),

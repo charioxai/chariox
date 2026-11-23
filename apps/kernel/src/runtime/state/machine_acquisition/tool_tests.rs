@@ -6,7 +6,7 @@ use crate::provider::*;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 /// How the stand-in service answers the next acquire.
-enum Answer {
+pub(super) enum Answer {
     /// Commits the allocation, then fails with this status and Cloud code (none for a bare 5xx).
     FailAfterCommit(&'static str, Option<&'static str>),
     /// Commits the allocation, then closes the connection: the response is lost.
@@ -23,20 +23,20 @@ enum Answer {
     },
 }
 
-struct Service {
-    api_url: String,
-    acquires: Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
+pub(super) struct Service {
+    pub(super) api_url: String,
+    pub(super) acquires: Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
     /// The options the service lists; a test changes them to change the stock.
-    offers: Arc<std::sync::Mutex<Vec<MachineOption>>>,
+    pub(super) offers: Arc<std::sync::Mutex<Vec<MachineOption>>>,
     /// Answers for the next acquires, before the service's own judgement.
-    answers: Arc<std::sync::Mutex<std::collections::VecDeque<Answer>>>,
-    capability_failures: Arc<std::sync::Mutex<CapabilityFailures>>,
+    pub(super) answers: Arc<std::sync::Mutex<std::collections::VecDeque<Answer>>>,
+    pub(super) capability_failures: Arc<std::sync::Mutex<CapabilityFailures>>,
     ready_target: Arc<std::sync::Mutex<Option<ControlPlaneMachineTarget>>>,
 }
 
 /// How the stand-in service answers the next capability calls, in order; it answers at once when
 /// none is queued.
-enum CapabilityAnswer {
+pub(super) enum CapabilityAnswer {
     Answer,
     Fail(&'static str, &'static str),
     /// Notifies `arrived` when the call comes in, and answers only when `release` is notified.
@@ -46,12 +46,15 @@ enum CapabilityAnswer {
     },
 }
 
-type CapabilityFailures = std::collections::VecDeque<CapabilityAnswer>;
+pub(super) type CapabilityFailures = std::collections::VecDeque<CapabilityAnswer>;
 
 /// A connected service that lists `offers` and, like Cloud, binds each accepted request id to its
 /// class and region and replays it, whatever the stock says now. A new request for a class named
 /// in `sold_out` is refused and, like Cloud, closed: every later try of it is refused as closed.
-async fn service(offers: Vec<MachineOption>, sold_out: &'static [&'static str]) -> Service {
+pub(super) async fn service(
+    offers: Vec<MachineOption>,
+    sold_out: &'static [&'static str],
+) -> Service {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let api_url = format!("http://{}", listener.local_addr().unwrap());
     let acquires = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -226,6 +229,9 @@ async fn service(offers: Vec<MachineOption>, sold_out: &'static [&'static str]) 
                             )
                         }
                     }
+                }
+                "get" | "release" if request["allocation_ref"] == "unknown-machine" => {
+                    ("404 Not Found", error("not_found"))
                 }
                 // The kernel reconciles the machines it recorded against the service's whole list.
                 "list" => (
@@ -666,21 +672,23 @@ fn now() -> u64 {
 }
 
 fn choose_big(state: &KernelRuntimeState, agent: &str, request_id: &str, at_ms: u64) {
-    assert!(state
-        .owned
-        .durable_state_store
-        .write_acquire_choice(
-            agent,
-            request_id,
-            crate::durable_state::acquire_choices::AcquireChoiceWrite::Choose {
-                option: AcquireOption::Named {
-                    class_id: "big".into(),
-                    region: Some("south".into()),
+    assert!(
+        state
+            .owned
+            .durable_state_store
+            .write_acquire_choice(
+                agent,
+                request_id,
+                crate::durable_state::acquire_choices::AcquireChoiceWrite::Choose {
+                    option: AcquireOption::Named {
+                        class_id: "big".into(),
+                        region: Some("south".into()),
+                    },
                 },
-            },
-            at_ms,
-        )
-        .unwrap());
+                at_ms,
+            )
+            .unwrap()
+    );
 }
 
 fn acquire_args(request_id: &str) -> serde_json::Value {
@@ -948,9 +956,11 @@ async fn a_refusal_while_another_try_waits_to_be_sent_sends_the_caller_back_to_t
     );
     let acquires = service.acquires.lock().unwrap();
     assert_eq!(acquires.len(), 3);
-    assert!(acquires
-        .iter()
-        .all(|sent| sent["request_id"] == acquires[0]["request_id"]));
+    assert!(
+        acquires
+            .iter()
+            .all(|sent| sent["request_id"] == acquires[0]["request_id"])
+    );
 }
 
 /// The same interleaving when the service closes the refused request: the caller follows the
@@ -1045,21 +1055,23 @@ async fn a_try_that_loses_the_choice_sends_the_winners_option() {
     let service = service(two_in_stock(), &[]).await;
     let (state, token, _workspace) = agent_kernel(service.api_url.clone()).await;
     // A concurrent try of r1 chose "big" while "small" was out of stock.
-    assert!(state
-        .owned
-        .durable_state_store
-        .write_acquire_choice(
-            &agent_of(&state, &token),
-            "r1",
-            crate::durable_state::acquire_choices::AcquireChoiceWrite::Choose {
-                option: AcquireOption::Named {
-                    class_id: "big".into(),
-                    region: Some("south".into()),
+    assert!(
+        state
+            .owned
+            .durable_state_store
+            .write_acquire_choice(
+                &agent_of(&state, &token),
+                "r1",
+                crate::durable_state::acquire_choices::AcquireChoiceWrite::Choose {
+                    option: AcquireOption::Named {
+                        class_id: "big".into(),
+                        region: Some("south".into()),
+                    },
                 },
-            },
-            now(),
-        )
-        .unwrap());
+                now(),
+            )
+            .unwrap()
+    );
     let result = state
         .machine_tool(&token, "chariox.machines.acquire", acquire_args("r1"))
         .await
@@ -1080,10 +1092,12 @@ async fn a_named_option_that_differs_from_the_one_a_request_took_is_refused_loca
             "500 Internal Server Error",
             Some("internal_error"),
         ));
-    assert!(state
-        .machine_tool(&token, "chariox.machines.acquire", acquire_args("r1"))
-        .await
-        .is_err());
+    assert!(
+        state
+            .machine_tool(&token, "chariox.machines.acquire", acquire_args("r1"))
+            .await
+            .is_err()
+    );
     let error = state
         .machine_tool(
             &token,
@@ -1218,9 +1232,11 @@ async fn an_accepted_default_request_replays_the_default_after_options_appear() 
     );
     let acquires = service.acquires.lock().unwrap();
     assert_eq!(acquires.len(), 3);
-    assert!(acquires
-        .iter()
-        .all(|acquire| acquire["class_id"].is_null() && acquire["region"].is_null()));
+    assert!(
+        acquires
+            .iter()
+            .all(|acquire| acquire["class_id"].is_null() && acquire["region"].is_null())
+    );
 }
 
 const WINDOW_MS: u64 = crate::durable_state::FINISHED_RETENTION_MS;
@@ -1278,12 +1294,14 @@ async fn a_closed_refusal_keeps_the_request_for_a_new_window() {
         .to_string();
     assert_closed(&error, "r1");
     // Two minutes on, the first write's window has ended; the closed refusal's has not.
-    assert!(state
-        .owned
-        .durable_state_store
-        .acquire_choice(&agent, "r1", now() + 120_000)
-        .unwrap()
-        .is_some());
+    assert!(
+        state
+            .owned
+            .durable_state_store
+            .acquire_choice(&agent, "r1", now() + 120_000)
+            .unwrap()
+            .is_some()
+    );
 }
 
 /// The service accepts a try, and before its success is recorded another write sweeps the row,

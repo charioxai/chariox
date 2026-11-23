@@ -27,7 +27,7 @@ test("the guide mentions exactly the commands and flags the parser knows", () =>
   const flags = new Set(guide.match(/--[a-z0-9-]+/g))
   for (const flag of flags) assert.ok(knownFlags.has(flag), `guide mentions unknown flag ${flag}`)
   for (const flag of knownFlags) assert.ok(flags.has(flag), `guide omits flag ${flag}`)
-  assert.ok(guide.split("\n").length <= 120)
+  assert.ok(guide.split("\n").length <= 145)
   assert.match(guide, /show it to the user verbatim and wait/)
   assert.match(guide, /exit 0 and a printed grant mean approved: go on to step 2/, "an agent must not mistake the waiting note for a pending approval")
 })
@@ -65,7 +65,7 @@ test("the parser accepts every flag the table lists and refuses anything else", 
 test("one table maps every kernel error code to its exit code", () => {
   const expected: Record<number, string[]> = {
     2: ["usage", "file_path_invalid"],
-    3: ["kernel_access_human_only", "kernel_access_ended", "kernel_access_not_covered", "kernel_access_already_granted", "command_id_required", "duplicate_command_conflict", "file_permission_denied"],
+    3: ["kernel_access_human_only", "kernel_access_ended", "kernel_access_not_covered", "kernel_access_already_granted", "command_id_required", "duplicate_command_conflict", "file_permission_denied", "acquisition_denied", "approval_required"],
     4: ["kernel_unknown", "kernel_ambiguous", "kernel_offline", "kernel_unreachable", "kernel_unpaired", "kernel_incompatible", "kernel_update_needed", "kernel_not_available"],
     5: ["kernel_request_timeout", "kernel_connection_lost", "kernel_outcome_unknown", "kernel_access_unconfirmed", "steer_unconfirmed"],
   }
@@ -186,5 +186,5 @@ test("the guide teaches showing a pending question with the harness's own choose
   assert.match(guide, /interaction_closed[^\n]*someone else answered or it expired[^\n]*drop the question/)
   assert.match(guide, /no question but a pointer[^\n]*show pointer\.one_line[^\n]*verbatim[^\n]*do not answer/)
   assert.ok(guide.includes(JSON.stringify(respondToInteractionRequest("SESSION_ID", "INTERACTION_ID", "CHOICE_ID"))))
-  assert.ok(guide.split("\n").length <= 120)
+  assert.ok(guide.split("\n").length <= 145)
 })

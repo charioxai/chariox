@@ -1,0 +1,19 @@
+{
+  "protocol_version": 1015,
+  "relay_peer_protocol_version": 452,
+  "requests": [
+    { "MachineAcquisition": { "action": "options" } },
+    { "MachineAcquisition": { "action": "acquire" } },
+    { "MachineAcquisition": { "action": "acquire", "request_id": "try-1", "class_id": "small", "region": "north" } },
+    { "MachineAcquisition": { "action": "status", "allocation_ref": "resource" } },
+    { "MachineAcquisition": { "action": "release", "allocation_ref": "resource" } }
+  ],
+  "responses": [
+    { "MachineAcquisition": { "result": { "options": [ { "class_id": "small", "region": "north", "vcpu": 2, "ram_gb": 4.0, "disk_gb": 51, "rate_per_minute": { "amount_micros": 284, "currency": "EUR" }, "available": true } ], "default": null } } },
+    { "MachineAcquisition": { "result": { "allocation": { "kind": "machine", "revision": 1, "available_actions": [], "allocation_ref": "resource", "state": "creating", "kernel_target": null, "access_state": "pending", "access_reason": null }, "option": { "class_id": "small", "region": "north", "vcpu": 2, "ram_gb": 4.0, "disk_gb": 51, "rate_per_minute": { "amount_micros": 284, "currency": "EUR" }, "available": true }, "estimate": { "kind": "unknown", "reason": "No duration was specified; the total depends on when the machine is deleted" } } } },
+    { "MachineAcquisition": { "result": { "allocation": { "kind": "machine", "revision": 1, "available_actions": [], "allocation_ref": "resource", "state": "creating", "kernel_target": null, "access_state": "pending", "access_reason": null }, "offer": { "machine_type": "Standard", "vcpu": 2, "ram_gb": 4.0, "disk_gb": 40, "location": "Europe", "terms": { "amount": "0.01", "currency": "EUR", "period": "hour" } }, "estimate": { "kind": "unknown", "reason": "No duration was specified; the total depends on when the machine is deleted" } } } },
+    { "MachineAcquisition": { "result": { "allocation": { "kind": "machine", "revision": 1, "available_actions": [], "allocation_ref": "resource", "state": "creating", "kernel_target": null, "access_state": "pending", "access_reason": null }, "offer": null, "estimate": { "kind": "unknown", "reason": "No duration was specified; the total depends on when the machine is deleted" } } } },
+    { "MachineAcquisition": { "result": { "allocation": { "kind": "machine", "revision": 1, "available_actions": [], "allocation_ref": "resource", "state": "creating", "kernel_target": null, "access_state": "pending", "access_reason": null }, "option": null, "estimate": { "kind": "unknown", "reason": "No duration was specified; the total depends on when the machine is deleted" } } } },
+    { "MachineAcquisition": { "result": { "kind": "machine", "revision": 2, "available_actions": [], "allocation_ref": "resource", "state": "deleting", "kernel_target": null, "access_state": "pending", "access_reason": null } } }
+  ]
+}
