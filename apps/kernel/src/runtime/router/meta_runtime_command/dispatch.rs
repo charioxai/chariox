@@ -538,11 +538,10 @@ impl CommandRouter {
             Ok(target) => target,
             Err(error) => return Ok(meta_command_failure_result(command, error)),
         };
-        if let Err(error) = crate::runtime::room_tool_admission::in_subtree(
-            metaagent,
-            &target,
-            &self.runtime_state.session_agents(session.id()),
-        ) {
+        if let Err(error) = self
+            .runtime_state
+            .authorize_agent_control(metaagent, &target)
+        {
             return Ok(meta_command_failure_result(command, error));
         }
         if let Some(flag) = args[1..]

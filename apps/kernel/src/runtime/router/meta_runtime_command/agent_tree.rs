@@ -466,7 +466,7 @@ impl CommandRouter {
                 caller.session_id(),
                 reference,
             )?;
-            crate::runtime::room_tool_admission::in_subtree(caller, agent, &agents)?;
+            self.runtime_state.authorize_agent_control(caller, agent)?;
             let was_held = self.runtime_state.revoke_watched_process_grant(agent.id());
             Ok(RuntimeToolResult {
                 ok: true,
@@ -506,7 +506,7 @@ impl CommandRouter {
                     Ok(root) if root.id() == caller.id() => root,
                     Ok(root) => {
                         if let Err(error) =
-                            crate::runtime::room_tool_admission::in_subtree(caller, &root, &agents)
+                            self.runtime_state.authorize_agent_control(caller, &root)
                         {
                             return meta_command_failure_result(command, error);
                         }

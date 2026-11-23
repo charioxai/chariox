@@ -154,8 +154,17 @@ impl KernelRuntimeState {
                 );
             }
         }
-        let cross_room_delete = matches!(request, LocalDaemonRequest::DestroyAgent(r) if r.session_id != actor.session_id());
-        if !cross_room_delete
+        // Row 405: a request aimed at one of the owner's agents in another room is judged by
+        // the peer check below, like one in the caller's room.
+        let cross_room_target = match request {
+            LocalDaemonRequest::DestroyAgent(r) => r.session_id != actor.session_id(),
+            LocalDaemonRequest::AliasAgent(r) => r.session_id != actor.session_id(),
+            LocalDaemonRequest::UpdateAgentConfig(r) => r.session_id != actor.session_id(),
+            LocalDaemonRequest::UpdateAgentProfile(r) => r.session_id != actor.session_id(),
+            LocalDaemonRequest::UpdateAgentSubstitutes(r) => r.session_id != actor.session_id(),
+            _ => false,
+        };
+        if !cross_room_target
             && rooms_named(request)
                 .iter()
                 .any(|room| room != actor.session_id())
@@ -243,8 +252,7 @@ impl KernelRuntimeState {
         if room != actor.session_id() {
             let source = self.owned.session_store.get_session(actor.session_id())?;
             let destination = self.owned.session_store.get_session(room)?;
-            if !deleting
-                || self.drives_as_room_guest(&source, &actor)
+            if self.drives_as_room_guest(&source, &actor)
                 || !self.same_owner(source.owner_user_id(), destination.owner_user_id())
             {
                 return Err(denied("target is outside the caller room"));
@@ -258,8 +266,10 @@ impl KernelRuntimeState {
                 LocalDaemonRequest::UpdateAgentConfig(r) => r.usage_limit.is_none(),
                 _ => false,
             };
+        // Row 405: an agent above it, or another of the owner's agents the peer check admits
+        // (its permission comparison keeps the owner's per-agent settings).
         if !own_settings && !self.owned.agent_store.is_ancestor(actor.id(), &target) {
-            return Err(denied("only the agents above an agent can control it"));
+            self.authorize_peer_control(&actor, &target, super::peer_rooms::PeerControl::Cancel)?;
         }
         if let LocalDaemonRequest::UpdateAgentConfig(r) = request {
             self.keep_configured_folders_inside_parent(&target, r)?;

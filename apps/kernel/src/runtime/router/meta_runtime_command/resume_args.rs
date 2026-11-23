@@ -19,7 +19,7 @@ pub(super) fn meta_agent_resume_request(
     };
     let target =
         crate::runtime::room_tool_admission::resolve_agent(agents, actor.session_id(), reference)?;
-    crate::runtime::room_tool_admission::in_subtree(actor, target, agents)?;
+    // Admission judges it: an agent above it, or another of the owner's agents (row 405).
     Ok(usage_limit_request(session.id(), target.id(), action))
 }
 

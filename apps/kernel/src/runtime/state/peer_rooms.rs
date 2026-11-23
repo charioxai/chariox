@@ -142,6 +142,19 @@ impl KernelRuntimeState {
     /// Inside one tree the tree decides: the agents above an agent control it, and an agent
     /// only messages the agents above it. Any other agent of the same owner is a peer and may
     /// steer or cancel when its authority is at least the target's.
+    /// Row 405: the owner's agents control any of the owner's agents: one above it, or a peer
+    /// the peer check admits (same owner; the owner's per-agent permission comparison stays).
+    pub(crate) fn authorize_agent_control(
+        &self,
+        actor: &crate::agent::AgentInstance,
+        target: &crate::agent::AgentInstance,
+    ) -> Result<(), DaemonError> {
+        if self.owned.agent_store.is_ancestor(actor.id(), target) {
+            return Ok(());
+        }
+        self.authorize_peer_control(actor, target, PeerControl::Cancel)
+    }
+
     pub(crate) fn authorize_peer_control(
         &self,
         actor: &crate::agent::AgentInstance,
@@ -168,9 +181,8 @@ impl KernelRuntimeState {
             .session_store
             .get_session(target.session_id())
             .map_err(|_| unavailable())?;
-        if !self.same_owner(target_session.owner_user_id(), actor.owner_user_id())
-            || (target.session_id() != actor.session_id() && target.parent_agent_id().is_some())
-        {
+        // Row 405: any of the owner's agents, in any room.
+        if !self.same_owner(target_session.owner_user_id(), actor.owner_user_id()) {
             return Err(unavailable());
         }
         let actor_session = self.owned.session_store.get_session(actor.session_id())?;

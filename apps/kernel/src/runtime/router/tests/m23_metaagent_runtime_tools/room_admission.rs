@@ -605,10 +605,11 @@ async fn room_boundaries() {
         {"UpdateAgentProfile":{"session_id":session.id(),"agent_id":peer.id(),"model":"takeover"}}
     ))
     .unwrap();
+    // Row 405: a peer of the same owner, at the same permission, controls it too.
     assert!(router
         .runtime_state
         .authorize_room_agent_request(a.id(), &takeover)
-        .is_err());
+        .is_ok());
     // Neither aliases nor a stale provider-run credential can revive an actor.
     {
         let app = app.lock().await;
@@ -1890,4 +1891,51 @@ async fn resume_in_other_room() {
         .runtime_state
         .authorize_room_agent_request(orchestrator.id(), &settings)
         .is_err());
+}
+
+// PA11 (row 363): after a handover, an orchestrator controls a predecessor's agents in the same
+// room (re-parents, renames, deletes) with no card: owner authority, not tree position.
+#[test]
+fn room_admission_an_owners_agent_controls_a_predecessors_agents() {
+    run_large_stack_async_test("room-predecessor-lanes", predecessor_lanes);
+}
+
+async fn predecessor_lanes() {
+    let env = TestMetaRuntimeEnv::new("room-predecessor-lanes");
+    let workspace = env.root.join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let mut config = DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let mut app = DaemonApp::bootstrap(config).unwrap();
+    let (session, predecessor) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            workspace.to_string_lossy(),
+            workspace.to_string_lossy(),
+        ))
+        .unwrap();
+    let successor = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("successor"))
+        .unwrap();
+    let lane = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("lane"))
+        .unwrap();
+    app.agents()
+        .set_parent_agent(
+            lane.id(),
+            Some(crate::agent::AgentRef::local(predecessor.id())),
+        )
+        .unwrap();
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
+    for value in [
+        serde_json::json!({"SetAgentParent":{"session_id":session.id(),"agent_id":lane.id(),
+            "parent_agent_id":successor.id()}}),
+        serde_json::json!({"AliasAgent":{"session_id":session.id(),"agent_id":lane.id(),"alias":"adopted"}}),
+        serde_json::json!({"DestroyAgent":{"session_id":session.id(),"agent_id":lane.id()}}),
+    ] {
+        let request: LocalDaemonRequest = serde_json::from_value(value.clone()).unwrap();
+        let admitted = router
+            .runtime_state
+            .authorize_room_agent_request(successor.id(), &request);
+        assert!(admitted.is_ok(), "{value}: {admitted:?}");
+    }
 }
