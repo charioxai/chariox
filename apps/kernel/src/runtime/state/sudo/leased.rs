@@ -14,8 +14,6 @@ const LEASED_SUDO_LOST: &str = "worker no longer holds this sudo window";
 /// Worker memory only, so a worker restart drops every fence (fail closed).
 #[derive(Debug, Clone)]
 pub(crate) struct WorkerSudoGrant {
-    leased_agent_id: String,
-    home_prompt_id: String,
     entry_id: String,
     revision: u64,
     deadline: Instant,
@@ -33,7 +31,8 @@ impl KernelRuntimeState {
     pub(crate) async fn update_relay_leased_sudo(
         &self,
         leased_agent_id: &str,
-        home_prompt_id: &str,
+        // The home judges every forwarded call (row 405); the worker fence no longer binds it.
+        _home_prompt_id: &str,
         grant: LeasedSudoGrant,
     ) -> Result<(), DaemonError> {
         let _operation = self.leased_agent_operations.lock(leased_agent_id).await;
@@ -79,8 +78,6 @@ impl KernelRuntimeState {
                 grants.insert(
                     agent.clone(),
                     WorkerSudoGrant {
-                        leased_agent_id: leased_agent_id.into(),
-                        home_prompt_id: home_prompt_id.into(),
                         entry_id: grant.entry_id,
                         revision: grant.revision,
                         deadline: Instant::now() + Duration::from_millis(grant.remaining_ms),

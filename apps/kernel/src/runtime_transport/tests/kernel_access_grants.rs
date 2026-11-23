@@ -1713,7 +1713,8 @@ async fn a_heartbeat_reports_the_lapsed_attachments_and_a_machine_subscription_n
         );
     }
     // Pairing carries an admission secret: the person's act at a terminal, locally or on a kernel.
-    for request in [serde_json::json!({"JoinKernelLink":{"link":"chariox-terminal-pair-v1.x"}})] {
+    {
+        let request = serde_json::json!({"JoinKernelLink":{"link":"chariox-terminal-pair-v1.x"}});
         let refused = holder.request(request.clone());
         assert_eq!(
             refused["error"]["code"], "kernel_access_human_only",
