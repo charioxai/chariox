@@ -20,10 +20,10 @@ fn unlocked(config: &crate::config::DaemonConfig) -> Result<(), DaemonError> {
     Ok(())
 }
 
-/// An owner-enrolled kernel holds a kernel credential and its pinned identity. A rented
-/// Chariox machine holds only the machine credential its rental bootstrap issued, and the
-/// identity Cloud pinned for the machine is the relay key this kernel runs with; the install
-/// path below verifies that key against the binding.
+/// A kernel enrolled by its owner holds a kernel credential and its pinned identity. A kernel
+/// that enrolled with its machine credential alone holds no kernel credential, and the identity
+/// Cloud pinned for its machine is the relay key it runs with; the install path below verifies
+/// that key against the binding.
 fn receiver_enrolled(
     profile: &crate::config::PersistedCloudRelayProfile,
     daemon_id: &str,
@@ -33,11 +33,11 @@ fn receiver_enrolled(
     let kernel = has(&profile.kernel_credential)
         && profile.kernel_id.as_deref() == Some(daemon_id)
         && profile.kernel_public_key_thumbprint.as_deref() == Some(target_key_thumbprint);
-    let rented = profile.kernel_credential.is_none()
+    let machine_enrolled = profile.kernel_credential.is_none()
         && profile.kernel_id.is_none()
         && profile.kernel_public_key_thumbprint.is_none()
         && has(&profile.machine_credential);
-    kernel || rented
+    kernel || machine_enrolled
 }
 
 impl KernelRuntimeState {

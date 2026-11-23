@@ -12,7 +12,7 @@ use zeroize::Zeroize;
 
 pub(crate) const TICKET_ENDPOINT: &str = "/v1/kernels/context/ticket";
 const PEERS_ENDPOINT: &str = "/v1/owner-managed-context-tickets/peers";
-/// Account copy also reaches the owner's rented machines, which hold no kernel grant.
+/// Account copy also reaches the owner's machines enrolled without a kernel grant.
 const ACCOUNT_COPY_PEERS_ENDPOINT: &str =
     "/v1/owner-managed-context-tickets/peers?purpose=provider_account_copy";
 #[derive(Deserialize)]
