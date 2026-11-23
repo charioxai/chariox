@@ -59,6 +59,15 @@ entry, and never routes to or probes them. Cloud has such a kernel offline, so t
 machine-list grant names every kernel the account links; kernel queries are still
 granted the online ones.
 
+### Mirror v2 header `media_playing` (local 1015)
+
+A DOM mirror v2 packet's header may carry `media_playing: boolean`: whether a mirrored `<video>` or `<audio>` element
+of the page is playing (not paused or ended, with data to play), muted or not. A reset packet carries it; a delta carries
+it only when it changed (compact wire, 489). Absent means nothing plays. The kernel sends a change at once, without
+waiting for other page changes. A viewer keeps a Tab whose page plays media warm (row 486: never evicted under its
+memory budget), and keeps the last value after its hidden view releases the stream. Media the page plays outside the
+mirrored tree (an element never attached, Web Audio, a cross-origin frame's own player) is not counted.
+
 ### Relay registration result (local 1014, relay peer 451)
 
 Deploy the acknowledging relay before upgrading kernels to this version. A

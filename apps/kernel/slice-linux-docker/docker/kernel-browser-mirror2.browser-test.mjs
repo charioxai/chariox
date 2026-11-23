@@ -2347,6 +2347,24 @@ test('MP-10: review r19 a newly inserted closed host becomes a tile without rese
  }
 ));
 
+// Row 486: the viewer never evicts a Tab that plays video or audio (muted too); the page's mirror header says so.
+test('Row 486: media_playing follows a muted video and an audio-only element as they play and pause',()=>mirrored(
+ '<canvas id=c width=64 height=36></canvas><video id=v muted playsinline style="width:64px;height:36px"></video><audio id=a muted></audio><script>const c=document.getElementById("c"),x=c.getContext("2d");let i=0;setInterval(()=>{x.fillStyle=`hsl(${(i+=7)%360} 80% 50%)`;x.fillRect(0,0,64,36)},30);window.stream=()=>c.captureStream(30)</script>',
+ async({next,evaluate,host,tab_id})=>{
+  // A person's click allows sound: play() runs as a user gesture.
+  const gesture=async expression=>{const {connection,sessionId}=await host.browser.resolvePageTarget(host.tabs.get(tab_id).target_id);const r=await connection.send('Runtime.evaluate',{expression,awaitPromise:true,returnByValue:true,userGesture:true},sessionId);assert(!r.exceptionDetails,r.exceptionDetails?.exception?.description);return r.result.value};
+  const playing=async(want,label)=>{let last;for(let i=0;i<12;i++){const p=await next(400);if(p.media_playing!==undefined)last=p.media_playing;if(last===want)return;}assert.equal(last,want,label)};
+  await playing(false,'nothing plays at first');
+  await gesture('(async()=>{const v=document.getElementById("v");v.srcObject=stream();await v.play();return true})()');
+  await playing(true,'a muted video that plays');
+  await evaluate('document.getElementById("v").pause();true');
+  await playing(false,'paused');
+  await gesture('(async()=>{const a=document.getElementById("a");a.srcObject=stream();await a.play();return true})()');
+  await playing(true,'an audio-only element that plays');
+  await evaluate('document.getElementById("a").pause();true');
+  await playing(false,'paused again');
+ }));
+
 // MP-08/MP-10/MP-11: #941 c956f84c7 review F1/F2. No reset may hide a lost descriptor.
 for (const child of [false, true]) test(`MP-10: closed-host discovery retains a simultaneously loaded image in ${child ? 'an attached child' : 'the parent'}`,()=>mirrored(
  child ? '<iframe src="http://localhost:PORT/child" style="width:300px;height:160px"></iframe>' : '<p>stable</p>',
