@@ -137,7 +137,7 @@ pub(super) async fn world_with_config(
 }
 
 #[test]
-fn a_parent_controls_its_subtree_and_nobody_else() {
+fn the_owners_agents_control_each_other_but_not_upward() {
     run_large_stack_async_test("subtree-command-table", command_table);
 }
 
@@ -157,35 +157,28 @@ async fn command_table() {
         "agent deadline get {}",
         "agent children {}",
     ];
-    // (caller, target): a child and a grandchild are controlled by their ancestors.
-    let allowed = [("a", "b"), ("a", "d"), ("b", "d")];
-    // sibling, peer, upward, peer to a child, another room.
-    let refused = [
+    // Row 405 (PA11): the owner's agents control any of the owner's agents: ancestors, and
+    // peers of equal authority (sibling, peer, peer to a child, another room).
+    let allowed = [
+        ("a", "b"),
+        ("a", "d"),
+        ("b", "d"),
         ("b", "s"),
         ("a", "peer"),
-        ("b", "a"),
         ("peer", "b"),
         ("q", "b"),
     ];
-    // A peer of equal authority may stop a turn or edit a deadline.
-    let peers = [("b", "s"), ("a", "peer"), ("peer", "b")];
+    // Upward stays refused by the peer check.
+    let refused = [("b", "a")];
     for verb in verbs {
-        let cancel = verb.starts_with("agent cancel")
-            || (verb.starts_with("agent deadline") && !verb.starts_with("agent deadline get"));
-        for (caller, target) in allowed
-            .into_iter()
-            .chain(peers.into_iter().filter(|_| cancel))
-        {
+        for (caller, target) in allowed {
             let result = room_command(&world, caller, &verb.replace("{}", target)).await;
             assert!(
                 !refused_by_policy(&result),
                 "{caller} -> {target}: {verb}: {result:?}"
             );
         }
-        for (caller, target) in refused
-            .into_iter()
-            .filter(|pair| !(cancel && peers.contains(pair)))
-        {
+        for (caller, target) in refused {
             let result = room_command(&world, caller, &verb.replace("{}", target)).await;
             assert!(
                 refused_by_policy(&result),
@@ -222,30 +215,32 @@ async fn command_table() {
 }
 
 #[test]
-fn only_an_agent_above_may_prompt_an_agent() {
+fn the_owners_agents_prompt_each_other_but_not_upward() {
     run_large_stack_async_test("subtree-prompt", prompt_table);
 }
 
 // A prompt starts the target's turn, which ends the target's own tool calls for this test:
-// the refusals run first, then the allowed prompts from the deepest caller up.
+// the refusal runs first, then every caller prompts before anyone prompts it.
 async fn prompt_table() {
     let world = world("subtree-prompt").await;
-    // sibling, peer, upward, peer to a child, another room.
-    for (caller, target) in [
-        ("b", "s"),
-        ("a", "peer"),
-        ("b", "a"),
-        ("peer", "b"),
-        ("q", "b"),
-    ] {
+    // Upward stays refused by the peer check.
+    for (caller, target) in [("b", "a")] {
         let result = room_command(&world, caller, &format!("prompt {target} say hello")).await;
         assert!(
             refused_by_policy(&result),
             "{caller} -> {target}: prompt: {result:?}"
         );
     }
-    // a child and a grandchild are prompted by their ancestors.
-    for (caller, target) in [("b", "d"), ("a", "s"), ("a", "b")] {
+    // Row 405 (PA11): ancestors and the owner's other agents of equal authority.
+    for (caller, target) in [
+        ("b", "d"),
+        ("b", "s"),
+        ("peer", "b"),
+        ("q", "b"),
+        ("a", "s"),
+        ("a", "peer"),
+        ("a", "b"),
+    ] {
         let result = room_command(&world, caller, &format!("prompt {target} say hello")).await;
         assert!(
             !refused_by_policy(&result),
@@ -293,9 +288,10 @@ async fn set_parent() {
         response,
         LocalDaemonResponse::AgentParentChanged { .. }
     ));
+    // Row 405: a keeps the owner's authority over d after the move.
     assert!(
-        refused_by_policy(&room_command(&world, "a", "agent children d").await),
-        "d left a's subtree"
+        !refused_by_policy(&room_command(&world, "a", "agent children d").await),
+        "a lost control of d"
     );
     assert!(!refused_by_policy(
         &room_command(&world, "peer", "agent children d").await

@@ -565,9 +565,10 @@ async fn room_boundaries() {
         ),
         "MP-08 / MP-10 / MP-11 A01-S04: public peer graph passes admission: {resumed:?}"
     );
+    // Row 405 (PA11): the owner's agent renames another of the owner's agents.
     let peer_alias = room_command(&router, &auth_a, "agent alias peer stolen").await;
-    assert!(!peer_alias.ok);
-    // The raw/native typed request path sees the same mutation fence.
+    assert!(peer_alias.ok, "{peer_alias:?}");
+    // The raw/native typed request path agrees.
     assert!(router
         .runtime_state
         .authorize_room_agent_request(
@@ -578,7 +579,7 @@ async fn room_boundaries() {
                 alias: "stolen".into()
             })
         )
-        .is_err());
+        .is_ok());
     // MP-11: raw/native host-shaped requests cannot broaden descendant rights.
     let project_id = app
         .lock()
@@ -1886,11 +1887,12 @@ async fn resume_in_other_room() {
             .authorize_room_agent_request(orchestrator.id(), &request);
         assert!(admitted.is_ok(), "{action:?}: {admitted:?}");
     }
+    // PA11: other settings too, as another of the owner's agents whose permission covers it.
     let settings = change(None, Some(crate::provider::AgentPermissionLevel::Required));
     assert!(router
         .runtime_state
         .authorize_room_agent_request(orchestrator.id(), &settings)
-        .is_err());
+        .is_ok());
 }
 
 // PA11 (row 363): after a handover, an orchestrator controls a predecessor's agents in the same
