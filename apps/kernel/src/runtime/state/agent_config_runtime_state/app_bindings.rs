@@ -114,7 +114,7 @@ impl KernelRuntimeState {
     pub(in crate::runtime::state) async fn copy_agent_app_grant(
         &self,
         agent_id: &str,
-        mut grant: ExtensionGrant,
+        grant: ExtensionGrant,
         caller_user_id: &str,
     ) -> Result<Option<crate::agent::AgentInstance>, DaemonError> {
         if self.room_agent_tools_enabled() && self.agent_app_binding_origin() {
