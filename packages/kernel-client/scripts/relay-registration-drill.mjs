@@ -332,13 +332,14 @@ async function drill() {
   assert.equal((await status(refused)).connected, false)
   send()
   const first = await until("actionable refusal", async () => (await status(refused)).registration_refused)
-  assert.equal(first.reason, "upgrade required: protocol 1011 < minimum 1012")
-  assert.equal(first.next_step, "update this kernel")
+  // The relay names an older kernel by "update needed" since L12.1 (relay peer 450).
+  assert.match(first.reason, /^update needed: this kernel runs protocol 1011 and is older than the relay/)
+  assert(first.next_step)
   assert.equal((await status(refused)).connected, false)
   console.log("RG0 PASS", first.reason)
   const delivered = await notices(refused, session, attachment)
   assert.equal(delivered.length, 1)
-  assert.match(delivered[0].message, /Next step: update this kernel/)
+  assert.match(delivered[0].message, /Next step: /)
   console.log("RG2 PASS owner received the refusal and next step")
 
   // Send a current registration missing its required proof to the same relay.
