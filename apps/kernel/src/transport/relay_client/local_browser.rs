@@ -83,7 +83,7 @@ pub(crate) struct LocalBrowserDirect {
     authority: watch::Sender<Option<LocalBrowserAuthority>>,
     authority_watch: std::sync::Once,
     /// Start gates of the requests every session has running; revocation cancels the ones that have not begun.
-    start_gates: std::sync::Mutex<Vec<crate::runtime::start_gate::StartGate>>,
+    start_gates: std::sync::Mutex<StartGateRegistry>,
     next_gate_session: std::sync::atomic::AtomicU64,
     #[cfg(test)]
     frame_pause: tokio::sync::Mutex<Option<(tokio::sync::oneshot::Sender<()>, tokio::sync::oneshot::Receiver<()>)>>,
@@ -138,9 +138,12 @@ impl LocalBrowserDirect {
             bound,
             grants: std::sync::Mutex::new(BTreeMap::new()),
             leases: std::sync::Mutex::new(BTreeMap::new()),
-            authority: watch::channel(authority).0,
+            authority: watch::channel(authority.clone()).0,
             authority_watch: std::sync::Once::new(),
-            start_gates: std::sync::Mutex::new(Vec::new()),
+            start_gates: std::sync::Mutex::new(StartGateRegistry {
+                authority,
+                gates: Vec::new(),
+            }),
             next_gate_session: std::sync::atomic::AtomicU64::new(1),
             #[cfg(test)]
             frame_pause: tokio::sync::Mutex::new(None),
@@ -402,41 +405,69 @@ impl LocalBrowserDirect {
         }
     }
 
+    /// A session's request is waiting for its command lane; revocation can cancel it until the lane takes it.
+    /// `admitted` is the authority the session was admitted under. Registration and revocation share one lock and one
+    /// authority, so a request that was admitted before a logout but registers after it is cancelled here, not left
+    /// able to begin.
     fn register_start_gate(
         &self,
-        _session: u64,
-        _admitted: &LocalBrowserAuthority,
+        session: u64,
+        admitted: &LocalBrowserAuthority,
         gate: crate::runtime::start_gate::StartGate,
     ) {
-        let mut gates = self.start_gates.lock().expect("start gates poisoned");
-        if gates.len() >= 64 {
-            gates.retain(crate::runtime::start_gate::StartGate::is_waiting);
-        }
-        gates.push(gate);
-    }
-
-    /// Revoked authority: every mutation that has not begun never will; a begun one settles and keeps its result.
-    fn cancel_unbegun_requests(&self) {
-        for gate in self.start_gates.lock().expect("start gates poisoned").drain(..) {
+        let mut registry = self.start_gates.lock().expect("start gates poisoned");
+        if registry.authority.as_ref() != Some(admitted) {
             gate.cancel();
+            return;
         }
+        if registry.gates.len() >= 64 {
+            registry
+                .gates
+                .retain(|(_, gate)| crate::runtime::start_gate::StartGate::is_waiting(gate));
+        }
+        registry.gates.push((session, gate));
     }
 
-    /// Publishes the current pairing authority; a change retires every session.
+    /// One session ended on its own (its lease ran out): the mutations it queued that have not begun never will.
+    /// Other sessions, whose authority did not change, keep theirs.
+    fn cancel_session_start_gates(&self, session: u64) {
+        let mut registry = self.start_gates.lock().expect("start gates poisoned");
+        registry.gates.retain(|(owner, gate)| {
+            if *owner == session {
+                gate.cancel();
+                false
+            } else {
+                true
+            }
+        });
+    }
+
+    /// Publishes the current pairing authority; a change retires every session and cancels every request that has not
+    /// begun, before this returns. Held under the registry lock, so no registration slips in between the two.
     fn refresh_authority(&self) -> Option<LocalBrowserAuthority> {
+        let mut registry = self.start_gates.lock().expect("start gates poisoned");
         let next = current_authority(&self.router.relay_config_snapshot());
-        let changed = self.authority.send_if_modified(|current| {
+        if registry.authority != next {
+            registry.authority = next.clone();
+            for (_, gate) in registry.gates.drain(..) {
+                gate.cancel();
+            }
+        }
+        self.authority.send_if_modified(|current| {
             if *current == next {
                 return false;
             }
             *current = next.clone();
             true
         });
-        if changed {
-            self.cancel_unbegun_requests();
-        }
         next
     }
+}
+
+/// The start gates of the requests the direct sessions have running, under the authority they were admitted under.
+struct StartGateRegistry {
+    authority: Option<LocalBrowserAuthority>,
+    gates: Vec<(u64, crate::runtime::start_gate::StartGate)>,
 }
 
 fn current_authority(config: &crate::config::DaemonConfig) -> Option<LocalBrowserAuthority> {

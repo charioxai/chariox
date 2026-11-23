@@ -117,9 +117,10 @@ where
         }
     };
     direct.retire_lease(&lease_id);
-    // Revoked authority: a mutation still waiting in its command lane never begins. A begun one settles below.
+    // This session lost its authority: a mutation of its own still waiting in a command lane never begins. A begun one
+    // settles below. A pairing change already cancelled every session's waiting mutations when it was published.
     if close_reason == "local browser authority revoked" {
-        direct.cancel_unbegun_requests();
+        direct.cancel_session_start_gates(gate_session);
     }
     // Accepted commands own their dispatch and cache settlement independently
     // of this socket. A relay retry must observe the original result.

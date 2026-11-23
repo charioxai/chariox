@@ -62,6 +62,15 @@ pub(crate) fn current() -> Option<StartGate> {
     REQUEST_START.try_with(Clone::clone).ok().flatten()
 }
 
+/// The request on this task leaves a queue and starts: `Err` when its client lost authority while it waited.
+/// A request without a gate (a local client, a read) always starts. Idempotent once the request has begun.
+pub(crate) fn begin_current() -> Result<(), DaemonError> {
+    match current() {
+        Some(gate) if !gate.begin() => Err(cancelled()),
+        _ => Ok(()),
+    }
+}
+
 pub(crate) fn cancelled() -> DaemonError {
     DaemonError::LocalTransport {
         operation: CANCELLED_OPERATION,
