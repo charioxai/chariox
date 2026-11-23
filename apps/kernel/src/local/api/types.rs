@@ -392,6 +392,8 @@ pub use workspace::*;
 /// Protocol 641 adds `CoverKernelAccessProcess`: a grant covers a named background process by identity.
 /// Recipient account offers and kernel-owned copy consent.
 /// MP-08 / MP-09 / MP-10 / MP-11: 780 persists semantic session activity; public snapshot schema 14.
+/// MP-08/MP-11: allocated 1015 adds display_subscribe `viewer_density_stills` (row 341: the whole-page video at rest is
+/// sharp for a viewer above the page's density).
 /// MP-08/MP-10/MP-11: 720 adds the Tab display (display_subscribe tab_display, display_park; P1 of
 /// docs/BROWSER_LATENCY_GAP_PLAN.md).
 /// MP-08/MP-09/MP-10/MP-11: allocated 811 adds structured provider login retry feedback.
@@ -643,4 +645,4 @@ pub use workspace::*;
 /// longer carry `kernel_id`, `kernel_name`, `focused_agent_kernel_id` or `reachable_by_focused_agent`; the loader tools
 /// take no arguments and `chariox.kernel_browser_share` is removed.
 /// 1014 adds revision-based latest Room history outline reads.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1014;
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1015;

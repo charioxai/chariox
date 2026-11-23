@@ -92,6 +92,7 @@ mod slice_display;
 mod slice_logs;
 mod tab_display;
 mod user_app_views;
+mod viewer_density;
 mod user_domain_access;
 mod web_bot_auth;
 mod workflow_code;
