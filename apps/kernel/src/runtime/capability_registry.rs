@@ -621,6 +621,7 @@ mod tests {
 
     #[test]
     fn registry_roots_use_global_user_roots() {
+        crate::test_support::isolated_env_test!();
         let workspace = PathBuf::from("/tmp/chariox-capability-registry-workspace");
         let workspace_id = workspace.to_string_lossy();
 

@@ -19,6 +19,8 @@ pub(super) struct Record {
     pub(super) allocation_ref: Option<String>,
     pub(super) capability_revision: Option<String>,
     pub(super) machine_label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) held_kernel_id: Option<String>,
     pub(super) address: Option<String>,
     pub(super) result: Option<JobResult>,
     #[serde(default)]
@@ -45,6 +47,52 @@ pub(super) struct Record {
 }
 
 impl Record {
+    pub(super) fn new(
+        wake: &AgentWake,
+        request: RunJobRequest,
+        workspace: PathBuf,
+        cwd: PathBuf,
+    ) -> Self {
+        Self {
+            job_id: wake.detail["job_id"]
+                .as_str()
+                .expect("job wake has an ID")
+                .into(),
+            wake_id: wake.id.clone(),
+            registration_id: wake.registration_id.clone(),
+            room_id: wake.room_id.clone(),
+            agent_id: wake.agent_id.clone(),
+            request,
+            workspace,
+            cwd,
+            placement: JobPlacement::Local,
+            started_at_ms: wake.created_at_ms,
+            running_at_ms: None,
+            state: "starting".into(),
+            allocation_ref: None,
+            capability_revision: None,
+            machine_label: None,
+            held_kernel_id: None,
+            address: None,
+            result: None,
+            exec_id: None,
+            class_id: None,
+            rate_per_minute: None,
+            estimate_micros: None,
+            deleted: false,
+            remote_available: false,
+            remote_refusal: None,
+            estimated_minutes: None,
+            memory_mib: None,
+            remote: RemoteStage::Idle,
+        }
+    }
+
+    pub(super) fn runs_for_lease(&self, wake: &AgentWake) -> bool {
+        // A worker executes in its backing room. The wake belongs to the home room.
+        self.room_id != wake.room_id
+    }
+
     /// The job asked for, holds or may still hold something on a remote machine.
     pub(super) fn has_remote_trace(&self) -> bool {
         self.placement == JobPlacement::Remote
@@ -80,6 +128,17 @@ impl JobDriver {
     pub(super) fn save(&self, record: &Record) -> Result<(), DaemonError> {
         save_record(&self.state, record)
     }
+    pub(super) fn remove(&self, record: &Record) -> Result<(), DaemonError> {
+        summary::remove(&self.state, record)?;
+        std::fs::remove_file(self.path(&record.job_id)?)
+            .map_err(|error| ledger::error(error.to_string()))?;
+        self.state
+            .owned
+            .session_projection
+            .record_session_change(&record.room_id);
+        Ok(())
+    }
+
     pub(super) fn own(&self, id: &str, task: &AgentTaskExecution) -> Result<Record, DaemonError> {
         self.path(id)?;
         let record = self.read(id).inspect_err(|error| {

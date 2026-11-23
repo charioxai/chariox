@@ -12,9 +12,14 @@ update("fixtures/protocol-versions.json", JSON.stringify({ local: localProtocolV
 // These snapshots compare their allocation with the current runtime pair.
 // Their shape hashes remain explicit in the focused protocol tests.
 const currentSnapshots = [
+  "apps/kernel/src/local/api/tests/protocol_shapes/local-browser-expires-in-1014.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/folded-answer-1013.json",
+  "apps/kernel/src/local/api/tests/protocol_shapes/browser-mirror2-page-wheel-1014.json",
+  "apps/kernel/src/local/api/tests/protocol_shapes/agent-release-notes.json",
+  "apps/kernel/src/local/api/tests/protocol_shapes/program-stdin-1014.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/files-watch-1011.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/watcher-1012.json",
+  "apps/kernel/src/local/api/tests/protocol_shapes/runtime-mcp-paging-1014.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/event-follow-1012.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/provider-catalog-aliases-1012.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/kernel-trash-1012.json",
@@ -59,6 +64,7 @@ const currentSnapshots = [
   "apps/kernel/src/local/api/tests/protocol_shapes/remote-agent-binding-worktree-1000.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/room-pin-588.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/session-feed-596.json",
+  "apps/kernel/src/local/api/tests/protocol_shapes/session-outline-delta-1014.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/session-outline-tool-image-count-1000.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/session-processes-954.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/lean-room-state-1013.json",

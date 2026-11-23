@@ -12,7 +12,7 @@ struct Surviving {
 
 impl Drop for Surviving {
     fn drop(&mut self) {
-        crate::hot_reload::forget_unclaimed_runs_for_tests();
+        crate::hot_reload::forget_unclaimed_run_for_test(&self.run_id);
     }
 }
 
@@ -24,11 +24,16 @@ async fn surviving_run(f: &Fixture) -> Surviving {
         .providers
         .mark_run_ended_provider_only(&f.room, &f.run)
         .unwrap();
-    run.adopt_handed_over_identity(f.run.clone(), Some("handed-over-token".into()), None);
+    // Each fixture kernel starts its own run ID counter, but handover is process-wide.
     let surviving = Surviving {
-        token: "handed-over-token".into(),
-        run_id: run.id().into(),
+        token: format!("handed-over-token-{}", f.room),
+        run_id: format!("handed-over-{}-{}", f.room, f.run),
     };
+    run.adopt_handed_over_identity(
+        surviving.run_id.clone(),
+        Some(surviving.token.clone()),
+        None,
+    );
     assert!(f
         .runtime
         .owned

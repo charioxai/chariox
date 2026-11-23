@@ -37,6 +37,10 @@ fn model_visible_bytes(tool: &Value) -> usize {
 }
 
 async fn claude_catalog(sub_agent: bool) -> (Value, Vec<Value>) {
+    provider_catalog("claude", "sonnet", sub_agent).await
+}
+
+async fn provider_catalog(provider: &str, model: &str, sub_agent: bool) -> (Value, Vec<Value>) {
     let root = std::env::temp_dir().join(format!(
         "chariox-tool-loading-{}-{}",
         std::process::id(),
@@ -58,10 +62,10 @@ async fn claude_catalog(sub_agent: bool) -> (Value, Vec<Value>) {
         .expect("session should be created");
     let request = crate::provider::LaunchProviderRequest::new(
         session.id(),
-        "claude",
-        "claude",
+        provider,
+        provider,
         "default",
-        "sonnet",
+        model,
     )
     .with_agent_id(agent.id())
     .with_client_interface(crate::provider::ProviderClientInterface::Chariox)
@@ -201,4 +205,55 @@ async fn claude_runtime_catalog_matches_the_committed_context_budget() {
         measured, budget,
         "set apps/kernel/agent_context_budget.json to the measured values; before cutting text to fit, drill the tools it describes"
     );
+}
+
+/// Every provider is told each tool once, by its canonical name: a Codex or OpenCode run lists
+/// the tools a Claude run does (Claude alone adds its permission prompt), with no bare twin.
+/// The startup size per provider is printed for the record.
+#[tokio::test]
+async fn every_provider_lists_each_runtime_tool_once_by_its_canonical_name() {
+    let names = |tools: &[Value]| -> std::collections::BTreeSet<String> {
+        tools
+            .iter()
+            .filter_map(|tool| tool["name"].as_str().map(str::to_owned))
+            .collect()
+    };
+    let (_, claude) = provider_catalog("claude", "sonnet", false).await;
+    let mut expected = names(&claude);
+    expected.remove("chariox.permission_prompt");
+    for (provider, model) in [
+        ("codex", "gpt-6.2-sol"),
+        ("opencode", "opencode-go/deepseek-v4.1-flash"),
+    ] {
+        for sub_agent in [false, true] {
+            let (initialize, tools) = provider_catalog(provider, model, sub_agent).await;
+            eprintln!(
+                "STARTUP {provider} sub_agent={sub_agent} tools={} json_bytes={} instructions_bytes={}",
+                tools.len(),
+                tools.iter().map(model_visible_bytes).sum::<usize>(),
+                initialize["result"]["instructions"].as_str().map_or(0, str::len),
+            );
+            let listed = names(&tools);
+            assert_eq!(
+                listed.len(),
+                tools.len(),
+                "{provider}: a tool is listed twice"
+            );
+            let twins: Vec<&String> = listed
+                .iter()
+                .filter(|name| {
+                    !name.starts_with("chariox.") && listed.contains(&format!("chariox.{name}"))
+                })
+                .collect();
+            assert!(
+                twins.is_empty(),
+                "{provider} sub_agent={sub_agent}: {twins:?}"
+            );
+            assert_eq!(listed, expected, "{provider} sub_agent={sub_agent}");
+            assert!(
+                tools.iter().all(|tool| !always_load(tool)),
+                "{provider} has no deferred loading, so it marks nothing"
+            );
+        }
+    }
 }

@@ -172,10 +172,11 @@ impl KernelRuntimeState {
                 .iter()
                 .map(|chunk| String::from_utf8_lossy(&chunk.bytes))
                 .collect::<String>();
-            if let Some(notice) =
-                crate::app::claude_native_first_run_notice(&provider_run, &rendered)
+            if let Some(update) =
+                crate::app::claude_native_trust_dialog_update(&provider_run, &rendered)
             {
-                owned.record_notice(session_id, Some(provider_run_id), Vec::new(), notice);
+                self.follow_claude_trust_dialog(session_id, &provider_run, update)
+                    .await;
             }
             if !rendered.is_empty() {
                 let provider_run = provider_run.clone();
@@ -473,7 +474,12 @@ fn provider_run_uses_transient_native_terminal(
 pub(super) fn provider_run_allows_quiet_pty_settlement(
     provider_run: &crate::provider::RuntimeProviderRun,
 ) -> bool {
-    !provider_run_uses_structured_output_pump(provider_run)
+    // The private MCP fixture writes a terminal answer for each request in
+    // the same turn. Silence between those answers cannot end the turn.
+    let private_mcp_fixture =
+        provider_run.adapter_key() == "dev-stub" && provider_run.model() == "runtime-mcp-fixture";
+    !private_mcp_fixture
+        && !provider_run_uses_structured_output_pump(provider_run)
         && !crate::provider::provider_run_uses_claude_native_bridge(provider_run)
 }
 

@@ -79,7 +79,9 @@ export class Fixture {
       const root = path.join(this.home, name)
       for (const directory of ['home', 'chariox', 'tmp', 'work', 'logs']) await mkdir(path.join(root, directory), { recursive: true, mode: 0o700 })
       const home = path.join(root, 'chariox')
-      await writeFile(path.join(home, 'config.toml'), `[credential_vault]\nbackend = "chariox_encrypted"\npath = "${path.join(home, 'vault.json')}"\nunlock_policy = "kernel_init"\n`, { mode: 0o600 })
+      // The kernel refuses a Vault file that shares its folder with other state.
+      await mkdir(path.join(home, 'chariox-secret'), { recursive: true, mode: 0o700 })
+      await writeFile(path.join(home, 'config.toml'), `[credential_vault]\nbackend = "chariox_encrypted"\npath = "${path.join(home, 'chariox-secret', 'vault.json')}"\nunlock_policy = "kernel_init"\n`, { mode: 0o600 })
       this.ports[name] = await port()
       this.envs[name] = {
         PATH: process.env.PATH, HOME: path.join(root, 'home'), SHELL: '/bin/bash',
@@ -124,17 +126,9 @@ export class Fixture {
   }
 
   async unlock() {
-    const work = path.join(this.home, 'A/work')
-    const made = (await this.A.send({ CreateSession: { workspace_id: work, worktree_id: work, alias: null, no_subscribe: true } })).SessionCreated
-    const pending = this.A.send({ ManageCredentialVault: { session_id: made.session.id, agent_id: made.agent.id } })
-    pending.catch(() => undefined)
-    const prompt = await until(async () => {
-      const state = await this.A.send({ GetSessionState: { session_id: made.session.id } })
-      return state.SessionState.session.active_interactions?.find(item => item.id.startsWith('vault-unlock-'))
-    }, 'disposable Vault setup')
-    await this.A.send({ RespondToInteraction: { session_id: made.session.id, interaction_id: prompt.id, choice_id: 'passphrase', custom_reply: this.passphrase } })
-    await pending
-    await this.A.send({ EndSession: { session_id: made.session.id } })
+    // The owner creates the Vault and opens it with the drill's passphrase.
+    await this.A.send({ CreateCredentialVault: { origin: { kind: 'passphrase', passphrase: this.passphrase } } })
+    await this.A.send({ UnlockCredentialVault: { passphrase: this.passphrase, duration: { kind: 'until_kernel_stops' }, surface: 'terminal' } })
   }
 
   async grant() {

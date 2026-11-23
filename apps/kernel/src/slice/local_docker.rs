@@ -1180,6 +1180,16 @@ fn configure_local_docker_slice_command(
     if !provision {
         return Ok(());
     }
+    for (source, target) in [
+        ("CHARIOX_DRILL_RUN", "CHARIOX_SLICE_DRILL_RUN"),
+        ("CHARIOX_DRILL_STARTED", "CHARIOX_SLICE_DRILL_STARTED"),
+        ("CHARIOX_DRILL_HARNESS", "CHARIOX_SLICE_DRILL_HARNESS"),
+        ("CHARIOX_DRILL_PROCESS", "CHARIOX_SLICE_DRILL_PROCESS"),
+    ] {
+        if let Some(value) = std::env::var_os(source) {
+            command.env(target, value);
+        }
+    }
     tuning::project(command)?;
     command
         .env("CHARIOX_SLICE_HOSTNAME", local_docker_hostname(record))

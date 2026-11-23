@@ -144,7 +144,7 @@ test('MP-08/MP-10/MP-11 Notes observer causes and bounded code positions survive
 // MP-08/MP-10/MP-11: observed generic native-band/region errors on the live BBC path.
 test('MP-08/MP-10/MP-11 host replies retain closed user-domain and display-region refusals',async()=>{
  const {UserDomainRefusal}=await import('./kernel-browser-refusal.mjs');
- for(const reason of ['not_focused_agent','foreign_owner','stale_epoch','stale_reference','not_granted','sensitive_requires_focus']){
+ for(const reason of ['foreign_owner','stale_epoch','stale_reference','not_granted','sensitive_requires_focus']){
   const error=new UserDomainRefusal(reason);assert(hostFailureMessage(error).includes(error.code));
  }
  assert.match(hostFailureMessage(Error('MP-11: region lease retired')),/native_region_lease_retired/);

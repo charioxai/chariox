@@ -47,6 +47,12 @@ impl Drop for Fixture {
 
 fn git(path: &Path, args: &[&str]) {
     let output = Command::new("git")
+        .args([
+            "-c",
+            "user.email=tests@chariox.local",
+            "-c",
+            "user.name=Chariox Tests",
+        ])
         .args(args)
         .current_dir(path)
         .output()
@@ -72,8 +78,6 @@ fn git_text(path: &Path, args: &[&str]) -> String {
 fn init_repository(path: &Path, contents: &str) {
     std::fs::create_dir_all(path).unwrap();
     git(path, &["init", "-b", "main"]);
-    git(path, &["config", "user.email", "tests@chariox.local"]);
-    git(path, &["config", "user.name", "Chariox Tests"]);
     std::fs::write(path.join("README.md"), contents).unwrap();
     git(path, &["add", "README.md"]);
     git(path, &["commit", "-m", "initial"]);

@@ -681,6 +681,66 @@ fn skills_v2_folder_install_keeps_harmless_secret_like_examples() {
         assert!(root.join(name).is_file(), "{name} must be installed");
     }
 }
+fn fresh_claude_run(model: &str) -> crate::provider::RuntimeProviderRun {
+    crate::provider::RuntimeProviderRun::new(
+        "fresh-run",
+        &crate::provider::LaunchProviderRequest::new("s", "claude", "claude", "default", model),
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+            process_label: "claude".into(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: vec![],
+            pty_env: Default::default(),
+            pty_env_remove: vec![],
+            working_directory: None,
+            structured_endpoint: None,
+        },
+    )
+}
+
+/// After a restart a fresh run carries the agent's rebuilt handoff (up to
+/// 256,000 bytes) and reloads the skills it used before. Its model's window,
+/// counted in tokens, leaves room for them; a 128K guess counted in bytes left none.
+#[test]
+fn a_fresh_run_reloads_a_skill_beside_a_full_handoff() {
+    let f = StorageFixture::new();
+    let body = "x".repeat(20_000);
+    let (service, _) = service_install(
+        &f,
+        &format!("---\nname: big\ndescription: |\n  Large reference skill.\n---\n{body}\n"),
+    );
+    let run = fresh_claude_run("opus");
+    assert_eq!(
+        run.usage().context_window,
+        None,
+        "a fresh run reported no window yet"
+    );
+    let window = crate::provider::run_context_window_tokens(&run);
+    assert_eq!(window, 1_000_000);
+    let remaining = super::resolver::remaining_turn_budget(Some(window), None, 255_629);
+    let turn = service
+        .pinned_turn(
+            None,
+            "agent1",
+            "session1",
+            "Use $big",
+            &[],
+            &[],
+            Some(window),
+            1.0,
+            remaining,
+            "g1",
+        )
+        .unwrap();
+    assert!(turn.loaded[0].body.len() >= 20_000);
+    // A 200K model still fits its own (smaller) handoff and the skill.
+    let window = crate::provider::run_context_window_tokens(&fresh_claude_run("claude-sonnet-4-5"));
+    assert_eq!(window, 200_000);
+    let remaining = super::resolver::remaining_turn_budget(Some(window), None, 90_000);
+    assert!(remaining > 150_000);
+}
+
 #[test]
 fn skills_v2_cold_start_explicit_body_fits_the_supported_context_floor() {
     let f = StorageFixture::new();

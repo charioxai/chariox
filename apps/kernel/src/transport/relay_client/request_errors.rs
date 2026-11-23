@@ -211,6 +211,7 @@ pub(super) fn relay_request_kind(request: &LocalDaemonRequest) -> &'static str {
     match request {
         LocalDaemonRequest::ListRoomListSessions(_) => "room_list.sessions.list",
         LocalDaemonRequest::GetRoomListSnapshot(_) => "room_list.public_snapshot.get",
+        LocalDaemonRequest::GetAgentReleaseNotes { .. } => "agent_release_notes.read",
         LocalDaemonRequest::GetTerminalCommandCatalog(_) => "terminal.command_catalog.get",
         LocalDaemonRequest::GetProviderUsageSnapshot(_) => "provider_account.usage_snapshot.get",
         LocalDaemonRequest::GetAgentUsageSnapshot(_) => "agent.usage_snapshot.get",
@@ -220,6 +221,7 @@ pub(super) fn relay_request_kind(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::ListSessions(_) => "session.list",
         LocalDaemonRequest::CreateSession(_) => "session.create",
         LocalDaemonRequest::AttachToSession(_) => "session.attach",
+        LocalDaemonRequest::OwnerView(_) => "owner_view",
         LocalDaemonRequest::GetSessionState(_) => "session.state.get",
         LocalDaemonRequest::ListFinishedRoomTasks(_) => "session.tasks.finished.list",
         LocalDaemonRequest::GetMachineRoomResources(_) => "machine.room_resources.get",
@@ -667,7 +669,6 @@ mod tests {
     fn mp08_room_computer_policy_refusals_retain_codes_across_relay() {
         use crate::error::UserDomainRefusalReason;
         for reason in [
-            UserDomainRefusalReason::NotFocusedAgent,
             UserDomainRefusalReason::ForeignOwner,
             UserDomainRefusalReason::StaleEpoch,
             UserDomainRefusalReason::StaleReference,

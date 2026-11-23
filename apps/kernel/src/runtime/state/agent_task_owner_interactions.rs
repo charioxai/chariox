@@ -234,8 +234,13 @@ impl KernelRuntimeState {
             None,
         )];
         if !question {
+            let (id, label) = if crate::provider::switch_turn::needs_fresh_agent(&task.reason) {
+                ("start_fresh_agent", "Start a fresh agent")
+            } else {
+                ("resume", "Resume")
+            };
             choices.push(crate::session::RuntimeInteractionChoice::new(
-                "resume", "Resume", "resume", None,
+                id, label, id, None,
             ));
         }
         let mut interaction = crate::session::RuntimeInteraction::for_kernel_operation(
@@ -282,6 +287,7 @@ impl KernelRuntimeState {
                 use super::agent_task_owner_resolution::OwnerTaskAction;
                 let action = match answer.choice_id.as_deref() {
                     Some("resume") => OwnerTaskAction::Resume,
+                    Some("start_fresh_agent") => OwnerTaskAction::StartFreshAgent,
                     Some("reply") => OwnerTaskAction::Reply(answer.reply.unwrap_or_default()),
                     _ => OwnerTaskAction::Cancel,
                 };

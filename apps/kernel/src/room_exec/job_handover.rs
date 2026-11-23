@@ -53,28 +53,6 @@ impl JobExecHandover {
 }
 
 impl RoomExecService {
-    pub(crate) async fn settle_job_for_restart(&self, room: &str, exec: &str) {
-        let Ok(record) = self.record(room, exec) else {
-            return;
-        };
-        record.cancel.send_replace(Some(CancelReason::Canceled));
-        loop {
-            let changed = record.changed.notified();
-            tokio::pin!(changed);
-            changed.as_mut().enable();
-            if record
-                .output
-                .lock()
-                .expect("exec output poisoned")
-                .outcome
-                .is_some()
-            {
-                return;
-            }
-            changed.await;
-        }
-    }
-
     pub(crate) async fn freeze_job(
         &self,
         room: &str,

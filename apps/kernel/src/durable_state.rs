@@ -59,9 +59,12 @@ mod apps_tests;
 pub(crate) mod browser_import;
 mod created_resources;
 mod decision_holders;
+mod owner_view;
 mod person_inbox;
 pub(crate) use decision_holders::StoredDecisionHolder;
-pub(crate) use person_inbox::{PersonInboxState, StoredNotice};
+pub(crate) use person_inbox::{
+    PersonInboxState, StoredNotice, WORKFLOW_RELINK_ORIGIN, WORKFLOW_START_NOTICE_PREFIX,
+};
 mod event_connection_imports;
 pub(crate) use event_connection_imports::{
     EventConnectionImportChange, EventConnectionImportClaims, IMPORTED_BY_TRANSFER_ID,
@@ -107,6 +110,8 @@ pub struct DurableKernelStateStore {
     workflow_history_authority: workflow_invocation_provenance::WorkflowHistoryAuthority,
     outside_followed: Arc<agent_lifecycle::outside::Followed>,
     skill_catalog_owner: bool,
+    agent_release_delivery: Option<Arc<crate::agent_release_notes::Delivery>>,
+    workflow_instruction_root: Option<Arc<Path>>,
 }
 
 /// How long a finished record stays readable before the next write or the next start drops it.
@@ -276,6 +281,10 @@ enum DurableWriteOperation {
     AcquireChoice(acquire_choices::AcquireChoiceTransition),
     RoomEnvironment(room_environment::RoomEnvironmentWrite),
     RoomSetup(room_setup::RoomSetupWrite),
+    RoomSetupStorageFailure {
+        owner_id: String,
+        session_id: String,
+    },
     BrowserImport(browser_import::ImportStateWrite),
     RetiredSessionBackfill {
         owner_id: String,
@@ -433,8 +442,18 @@ impl DurableKernelStateStore {
                 message: "cannot open the owned startup connection".into(),
             })?;
         store.skill_catalog_owner = skill_reset_startup::run(&mut connection, &store, config)?;
+        if config.kernel_runtime_role != crate::config::KernelRuntimeRole::RemoteLeaseWorker {
+            store.agent_release_delivery = Some(Arc::new(
+                crate::agent_release_notes::Delivery::open(&store)?,
+            ));
+        }
+        store.workflow_instruction_root = Some(Arc::from(config.workflow_instruction_root()));
         Ok(store)
     }
+    pub(crate) fn agent_release_delivery(&self) -> Option<&crate::agent_release_notes::Delivery> {
+        self.agent_release_delivery.as_deref()
+    }
+
     pub(crate) fn owns_skill_catalog(&self) -> bool {
         self.skill_catalog_owner
     }
@@ -542,6 +561,10 @@ impl DurableKernelStateStore {
             operation: "durable_state.decision_holders",
             message: error.to_string(),
         })?;
+        owner_view::initialize(&connection).map_err(|error| DaemonError::LocalTransport {
+            operation: "durable_state.owner_view",
+            message: error.to_string(),
+        })?;
         person_inbox::initialize(&connection).map_err(|error| DaemonError::LocalTransport {
             operation: "durable_state.person_inbox",
             message: error.to_string(),
@@ -619,6 +642,8 @@ impl DurableKernelStateStore {
             workflow_history_authority: Default::default(),
             outside_followed,
             skill_catalog_owner: false,
+            agent_release_delivery: None,
+            workflow_instruction_root: None,
         })
     }
 
@@ -2037,6 +2062,10 @@ fn commit_durable_write_batch(
                 acquire_choices::apply(&transaction, transition)
             }
             DurableWriteOperation::RoomSetup(write) => room_setup::apply(&transaction, write),
+            DurableWriteOperation::RoomSetupStorageFailure {
+                owner_id,
+                session_id,
+            } => room_setup::mark_storage_failure(&transaction, owner_id, session_id),
             DurableWriteOperation::RoomEnvironment(write) => {
                 room_environment::apply(&transaction, write)
             }
@@ -2068,6 +2097,7 @@ fn commit_durable_write_batch(
                     created_resources::apply_event(&transaction, kind, payload_json)?;
                     event_connection_imports::apply_event(&transaction, kind, payload_json)?;
                     decision_holders::apply_event(&transaction, kind, payload_json)?;
+                    owner_view::apply_event(&transaction, kind, payload_json)?;
                     person_inbox::apply_event(&transaction, kind, payload_json)?;
                     if kind == crate::durable_prompt_state::DURABLE_PROMPT_STATE_EVENT_KIND {
                         let prompt_state =
@@ -2390,6 +2420,11 @@ CREATE TABLE IF NOT EXISTS durable_room_setups (
     session_id TEXT NOT NULL,
     agent_id TEXT NOT NULL,
     state_json TEXT NOT NULL,
+    PRIMARY KEY (owner_id, session_id)
+);
+CREATE TABLE IF NOT EXISTS durable_room_setup_storage_failures (
+    owner_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
     PRIMARY KEY (owner_id, session_id)
 );
 CREATE TABLE IF NOT EXISTS durable_room_environments (

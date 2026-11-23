@@ -1394,7 +1394,9 @@ mod relay_rtt_tests {
                             leased_agent_count: 0,
                             local_session_count: 0,
                             public_key: metadata_public_key,
-                            local_protocol: None,
+                            local_protocol: Some(
+                                chariox_relay::protocol::MINIMUM_KERNEL_REGISTRATION_PROTOCOL,
+                            ),
                         }),
                         error: None,
                     })

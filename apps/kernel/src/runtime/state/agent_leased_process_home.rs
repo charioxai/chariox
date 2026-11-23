@@ -156,6 +156,7 @@ impl KernelRuntimeState {
                 || receipt.wake.task_id != launch_task.as_deref().unwrap_or(&wake.task_id)
                 || receipt.wake.room_id != wake.room_id
                 || receipt.wake.agent_id != wake.agent_id
+                || receipt.wake.kind != wake.kind
                 || receipt.wake.command != wake.command
                 || receipt.wake.match_text != wake.match_text
                 || receipt.wake.registration_id != wake.registration_id
@@ -172,6 +173,7 @@ impl KernelRuntimeState {
         &self,
         wake: AgentWake,
         cwd: Option<String>,
+        job: Option<Box<crate::local::RunJobRequest>>,
         task: &str,
         prompt: &str,
     ) -> Result<AgentWake, DaemonError> {
@@ -193,10 +195,15 @@ impl KernelRuntimeState {
             execution_lease_id: remote.execution_lease_id.clone(),
             leased_agent_id: remote.leased_agent_id.clone(),
             home_prompt_id: prompt.into(),
-            worker_provider_run_id: remote
-                .active_worker_provider_run_id
-                .clone()
-                .ok_or_else(|| ledger::error("leased process needs an active worker run"))?,
+            worker_provider_run_id: remote.active_worker_provider_run_id.clone().ok_or_else(
+                || {
+                    ledger::error(if job.is_some() {
+                        super::jobs::refusal::BUILD_TURN_REQUIRED
+                    } else {
+                        "leased process needs an active worker run"
+                    })
+                },
+            )?,
         };
         self.authorize_current_external_command()?;
         let admission = LeasedProcessPoll::reserve(&self.owned.agent_wakes, &wake.id)
@@ -217,6 +224,7 @@ impl KernelRuntimeState {
                     wake: wake.clone(),
                     binding: binding.clone(),
                     cwd,
+                    job,
                 },
                 START_WAIT,
             )
@@ -238,18 +246,25 @@ impl KernelRuntimeState {
                     )
                 })
                 .await;
-                if matches!(receipt, Ok(None)) {
-                    drop(admission);
-                    self.settle_failed_process_launch(
-                        &wake,
-                        format!(
-                            "launch failed: {}",
-                            crate::secret_redaction::redact_secrets(&failure.to_string())
-                        ),
-                    );
-                    return Err(failure);
+                match receipt {
+                    Ok(Some(receipt)) => Ok(Some(receipt)),
+                    Ok(None) => {
+                        drop(admission);
+                        if wake.kind == super::jobs::KIND {
+                            self.refuse_placed_job(&wake, task, prompt)?;
+                        } else {
+                            self.settle_failed_process_launch(
+                                &wake,
+                                format!(
+                                    "launch failed: {}",
+                                    crate::secret_redaction::redact_secrets(&failure.to_string())
+                                ),
+                            );
+                        }
+                        return Err(failure);
+                    }
+                    Err(_) => Err(failure),
                 }
-                Err(failure)
             }
             other => other,
         };
@@ -280,6 +295,9 @@ impl KernelRuntimeState {
             .find(|current| current.id == wake.id)
             .ok_or_else(|| ledger::error("leased process source disappeared"))?;
         let wake = &current;
+        if wake.kind == super::jobs::KIND {
+            return self.project_placed_job(wake, receipt);
+        }
         if matches!(wake.state.as_str(), "exited" | "lost" | "cancelled") {
             return Ok(());
         }
@@ -420,6 +438,9 @@ impl KernelRuntimeState {
     }
 
     fn lost_leased_process(&self, wake: &AgentWake, reason: &str) -> Result<(), DaemonError> {
+        if wake.kind == super::jobs::KIND {
+            return self.lose_placed_job(wake, reason);
+        }
         self.owned.durable_state_store.agent_lifecycle(Operation::ProcessExited{id:wake.id.clone(),exit_code:None,tail:format!("process_lost: {reason}; original launch is not replayed; physical cleanup may require the worker"),now:crate::session::unix_epoch_ms()})?;
         self.wake_notice(
             wake,

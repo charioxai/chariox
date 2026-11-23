@@ -45,7 +45,7 @@ enum Flow {
 pub(super) fn spec() -> RuntimeToolSpec {
     RuntimeToolSpec {
         name: REGISTER.into(),
-        description: "Register at an auth.md service using Anonymous or Service Auth, without a trusted identity issuer. Discovers OAuth resource/server metadata and the service's auth.md. Service Auth (email) or claim:true opens one owner claim popup while the kernel polls. Credentials go directly into the owner's Vault; returns only credential_id and label. Use the handle with http_request_with_credential. Reuse request_id after a lost reply. Identity assertions from an agent provider are not supported.".into(),
+        description: "Register at an auth.md service using Anonymous or Service Auth, without a trusted identity issuer. Discovers OAuth resource/server metadata and the service's auth.md. Service Auth (email) or claim:true opens one owner claim popup while the kernel polls. Credentials go directly into the owner's Vault; returns only credential_id and label. Do not call the service's sign-up endpoints yourself or write its credentials to a file. Use the handle with http_request_with_credential. Reuse request_id after a lost reply. Identity assertions from an agent provider are not supported.".into(),
         input_schema: json!({"type":"object","required":["request_id","resource_url"],"properties":{
             "request_id":{"type":"string","minLength":1,"maxLength":128},
             "resource_url":{"type":"string","description":"Canonical resource URL from the service's OAuth protected-resource metadata"},
@@ -201,5 +201,16 @@ impl KernelRuntimeState {
         authority.check()?;
         self.store_agent_auth_credential(&authority, &registry, &handle, &label, issued)
             .await
+    }
+}
+
+#[cfg(test)]
+mod description_tests {
+    /// The runtime note only names the tool, so what must not be done by hand is told here.
+    #[test]
+    fn registration_tool_forbids_hand_calls_to_the_sign_up_endpoints() {
+        let description = super::spec().description;
+        assert!(description.contains("Do not call the service's sign-up endpoints yourself"));
+        assert!(description.contains("write its credentials to a file"));
     }
 }

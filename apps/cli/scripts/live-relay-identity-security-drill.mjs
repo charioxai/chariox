@@ -203,6 +203,7 @@ export function daemonRegistration({ token, daemonId, machineId }) {
       accepting_remote_leases: false,
       leased_agent_count: 0,
       local_session_count: 0,
+      local_protocol: 1012,
     },
   }
 }

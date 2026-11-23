@@ -110,7 +110,10 @@ jobs:
         run: unsigned/bin/chariox-app-wasm-worker identity | grep -q worker_build
       - name: Check Linux kernel startup without display libraries
         if: matrix.platform == 'linux-x64'
-        run: docker run --rm -v "$PWD/unsigned/bin:/bundle:ro" ubuntu:22.04 /bundle/chariox-kernel --help
+        run: |
+          label_lines="$(node scripts/lib/drill-docker-owner.mjs labels release-bundle "$$")"
+          mapfile -t labels <<< "$label_lines"
+          docker run --rm "${labels[@]}" -v "$PWD/unsigned/bin:/bundle:ro" ubuntu:22.04 /bundle/chariox-kernel --help
       - name: Compile the CLI/TUI into one executable
         run: |
           pnpm install --frozen-lockfile

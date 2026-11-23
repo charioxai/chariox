@@ -563,6 +563,7 @@ impl KernelRuntimeState {
                     request,
                     &caller_user_id,
                     caller_metaagent_id.as_deref(),
+                    None,
                 )
                 .await
             }

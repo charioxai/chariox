@@ -97,6 +97,13 @@ pub trait CredentialVaultStore: Send + Sync + std::fmt::Debug {
     fn find_secret(&self, service: &str, key: &str) -> Result<Option<String>, DaemonError> {
         self.get_secret(service, key).map(Some)
     }
+    /// Which of `keys` exist under `service`, in order, without handing out a value. A store that has to
+    /// decrypt its whole file to answer overrides this to do it once for all the names.
+    fn secrets_present(&self, service: &str, keys: &[String]) -> Result<Vec<bool>, DaemonError> {
+        keys.iter()
+            .map(|key| self.find_secret(service, key).map(|found| found.is_some()))
+            .collect()
+    }
     fn set_secret(&self, service: &str, key: &str, value: &str) -> Result<(), DaemonError>;
     /// Stores `value` unless an entry exists; returns whether it was stored. The check and the write are one
     /// step against other writers of the same store, so a value saved meanwhile is never replaced. Stores that
@@ -210,6 +217,17 @@ impl CredentialVaultStore for CharioxEncryptedCredentialVaultStore {
             .get(service)
             .and_then(|service_secrets| service_secrets.get(key))
             .cloned())
+    }
+
+    fn secrets_present(&self, service: &str, keys: &[String]) -> Result<Vec<bool>, DaemonError> {
+        let _read = vault_read_lock()?;
+        let vault_key = unlocked_vault_key(&self.path)?;
+        let plaintext = read_vault_plaintext(&self.path, vault_key.as_ref())?;
+        let service_secrets = plaintext.secrets.get(service);
+        Ok(keys
+            .iter()
+            .map(|key| service_secrets.is_some_and(|secrets| secrets.contains_key(key)))
+            .collect())
     }
 
     fn set_secret(&self, service: &str, key: &str, value: &str) -> Result<(), DaemonError> {
@@ -2326,6 +2344,55 @@ mod tests {
         let status = result.unwrap();
         assert!(status.unlocked);
         assert!(status.expires_at_ms.unwrap() > crate::session::unix_epoch_ms());
+    }
+
+    #[test]
+    fn secrets_present_answers_every_name_from_one_read_and_never_returns_a_value() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-secrets-present-test-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let path = root.join("vault.json");
+        let store = test_store(path.clone());
+        unlock_chariox_encrypted_vault(
+            &path,
+            "correct horse battery staple",
+            VaultUnlockLease::KernelShutdown,
+        )
+        .expect("vault should unlock");
+        for index in (0..60).step_by(2) {
+            store
+                .set_secret("project-a", &format!("NAME_{index:02}"), "value")
+                .expect("secret should store");
+        }
+        store
+            .set_secret("project-b", "NAME_01", "value")
+            .expect("other service should store");
+        let names: Vec<String> = (0..60).map(|index| format!("NAME_{index:02}")).collect();
+        let found = store
+            .secrets_present("project-a", &names)
+            .expect("presence should read");
+        let single: Vec<bool> = names
+            .iter()
+            .map(|name| store.find_secret("project-a", name).unwrap().is_some())
+            .collect();
+        assert_eq!(
+            found, single,
+            "one read must answer exactly as one read per name"
+        );
+        assert_eq!(found.iter().filter(|present| **present).count(), 30);
+        assert_eq!(
+            store.secrets_present("no-such-service", &names).unwrap(),
+            vec![false; 60]
+        );
+        assert!(store.secrets_present("project-a", &[]).unwrap().is_empty());
+        lock_chariox_encrypted_vault(&path).expect("vault should lock");
+        let locked = store
+            .secrets_present("project-a", &names)
+            .expect_err("a locked vault cannot answer");
+        assert!(is_chariox_vault_locked_error(&locked));
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

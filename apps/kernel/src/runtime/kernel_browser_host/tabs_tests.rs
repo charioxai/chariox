@@ -37,8 +37,11 @@ fn mp08_delayed_popup_inventory_preserves_completed_agent_action_attribution() {
         .unwrap()
         .start()
         .unwrap();
-    host.set_focus("alice", Some("mara"));
-    host.load("alice", "mara").unwrap();
+    host.load_for(
+        "alice",
+        "mara",
+        crate::runtime::kernel_browser_host::KernelBrowserCapability::Browser,
+    );
     let policy = json!({"values":[],"targets":[],"unknown":false});
     let action = host.protected_request("alice", Some("mara"), "host.browser", json!({"op":"input","tab_id":"source","generation":1,"document_id":"doc","input":{"kind":"click","x":10,"y":10},"_action_id":"caller-forged"}), policy.clone()).unwrap();
     assert_eq!(action["tabs"].as_array().unwrap().len(), 2);
@@ -93,11 +96,13 @@ fn mp10_agent_lists_and_reaches_the_popup_its_click_opened_while_another_agent_i
         .unwrap()
         .start()
         .unwrap();
-    host.set_focus("alice", Some("mara"));
-    host.load("alice", "mara").unwrap();
+    host.load_for(
+        "alice",
+        "mara",
+        crate::runtime::kernel_browser_host::KernelBrowserCapability::Browser,
+    );
     let policy = json!({"values":[],"targets":[],"unknown":false});
     host.protected_request("alice", Some("mara"), "host.browser", json!({"op":"input","tab_id":"source","generation":1,"document_id":"doc","input":{"kind":"click","x":10,"y":10}}), policy.clone()).unwrap();
-    host.set_focus("alice", Some("someone-else"));
     let listed = host
         .protected_request(
             "alice",
@@ -161,8 +166,11 @@ done
         .unwrap()
         .start()
         .unwrap();
-    host.set_focus("alice", Some("mara"));
-    host.load("alice", "mara").unwrap();
+    host.load_for(
+        "alice",
+        "mara",
+        crate::runtime::kernel_browser_host::KernelBrowserCapability::Browser,
+    );
     let policy = json!({"values":[],"targets":[],"unknown":false});
     host.protected_request(
         "alice",
@@ -230,8 +238,11 @@ done
         .unwrap()
         .start()
         .unwrap();
-    host.set_focus("alice", Some("mara"));
-    host.load("alice", "mara").unwrap();
+    host.load_for(
+        "alice",
+        "mara",
+        crate::runtime::kernel_browser_host::KernelBrowserCapability::Browser,
+    );
     let policy = json!({"values":[],"targets":[],"unknown":false});
     host.protected_request(
         "alice",
@@ -241,7 +252,6 @@ done
         policy.clone(),
     )
     .unwrap();
-    host.set_focus("alice", Some("otto"));
     let state = host
         .protected_request(
             "alice",
@@ -295,8 +305,11 @@ async fn an_unfocused_agent_lists_every_tab_without_prior_leases() {
         .unwrap()
         .start()
         .unwrap();
-    host.set_focus("alice", Some("mara"));
-    host.load("alice", "mara").unwrap();
+    host.load_for(
+        "alice",
+        "mara",
+        crate::runtime::kernel_browser_host::KernelBrowserCapability::Browser,
+    );
     let policy = json!({"values":[],"targets":[],"unknown":false});
     let before = host
         .protected_request(
@@ -308,11 +321,12 @@ async fn an_unfocused_agent_lists_every_tab_without_prior_leases() {
         )
         .unwrap();
     assert_eq!(before["tabs"].as_array().unwrap().len(), 2);
-    host.revoke_grants("alice", Some("mara"));
-    host.grant_agent("alice", "ben", Duration::from_secs(3600), "another-room")
-        .unwrap();
-    host.load("alice", "ben").unwrap();
-    assert!(host.inner.lock().unwrap().access.focused("alice").is_none());
+    host.revoke_agent("mara");
+    host.load_for(
+        "alice",
+        "ben",
+        crate::runtime::kernel_browser_host::KernelBrowserCapability::Browser,
+    );
     let unfocused = host
         .protected_request(
             "alice",

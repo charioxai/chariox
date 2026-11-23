@@ -9,6 +9,12 @@ export type RelayStatus = {
   capabilities?: string[]
   configured: boolean
   connected: boolean
+  registration_refused?: {
+    reason: string
+    next_step: string
+    since_ms: number
+    next_retry_at_ms: number | null
+  }
   relay_url?: string | null
   relay_token_configured: boolean
   daemon_id: string

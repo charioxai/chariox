@@ -62,7 +62,7 @@ fn run() -> Result<(), chariox_kernel::DaemonError> {
         }
     }
 
-    let config = DaemonConfig::load_from_env();
+    let config = DaemonConfig::load_from_env()?;
     let artifact_outcome =
         if config.user_config.artifacts.archive.mode == HistoryArchiveMode::External {
             let artifact_store = OperationalArtifactStore::open(

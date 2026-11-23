@@ -51,7 +51,7 @@ async fn metadata_queries_return_live_machines_and_kernels() {
             accepting_remote_leases: true,
             leased_agent_count: 2,
             local_session_count: 3,
-            local_protocol: None,
+            local_protocol: Some(crate::protocol::MINIMUM_KERNEL_REGISTRATION_PROTOCOL),
         },
     );
     daemon_socket

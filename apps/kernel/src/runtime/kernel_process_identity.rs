@@ -1,15 +1,21 @@
 //! Public process metadata for authenticated MP-10 product-route observation.
 
 pub(crate) fn current() -> Option<crate::local::KernelRuntimeProcessIdentity> {
+    for_pid(std::process::id())
+}
+
+pub(crate) fn for_pid(pid: u32) -> Option<crate::local::KernelRuntimeProcessIdentity> {
     #[cfg(target_os = "linux")]
     {
-        let pid = std::process::id();
         let boot_id = std::fs::read_to_string("/proc/sys/kernel/random/boot_id").ok()?;
-        let stat = std::fs::read_to_string("/proc/self/stat").ok()?;
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
         parse(pid, &boot_id, &stat)
     }
     #[cfg(not(target_os = "linux"))]
-    None
+    {
+        let _ = pid;
+        None
+    }
 }
 
 #[cfg(any(target_os = "linux", test))]

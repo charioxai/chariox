@@ -207,11 +207,14 @@ pub(crate) async fn projected_relay_status(
 ) -> RelayStatus {
     let config = config_projection.snapshot();
     // A configuration switch does not move the existing socket to the new relay.
-    let connected = {
+    let (connected, registration_refused) = {
         let state = relay_state.read().await;
-        state.connected()
-            && config.relay_url.is_some()
-            && state.connected_relay_url() == config.relay_url
+        (
+            state.connected()
+                && config.relay_url.is_some()
+                && state.connected_relay_url() == config.relay_url,
+            state.registration_refusal(config.relay_url.as_deref()),
+        )
     };
     let machine_alias = config.machine_name();
     RelayStatus {
@@ -220,6 +223,7 @@ pub(crate) async fn projected_relay_status(
         capabilities,
         configured: config.relay_url.is_some() && config.relay_token.is_some(),
         connected,
+        registration_refused,
         relay_url: config.relay_url,
         relay_token_configured: config.relay_token.is_some(),
         daemon_id: config.daemon_id,

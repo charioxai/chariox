@@ -71,14 +71,12 @@ impl Place for Machine {
                 Ok(real)
             }
             Access::Write => {
-                let folder = absolute.parent().unwrap_or(Path::new("/"));
-                std::fs::create_dir_all(folder)
-                    .map_err(|error| format!("`{path}` could not be reached: {error}"))?;
-                let real_folder = folder
-                    .canonicalize()
-                    .map_err(|_| format!("`{path}` could not be reached"))?;
-                let target = real_folder.join(name);
-                self.guard.check(&target)?;
+                let target =
+                    crate::runtime::kernel_files::prepare_write_target(&absolute, &self.guard)
+                        .map_err(|error| match error {
+                            crate::error::DaemonError::MachineRequest { message, .. } => message,
+                            error => error.to_string(),
+                        })?;
                 if target.is_dir() {
                     return Err(format!("`{path}` is a folder"));
                 }

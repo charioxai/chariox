@@ -1,9 +1,71 @@
 use super::{
-    persisted_daemon::update_persisted_daemon_config, DaemonConfig, PersistedCloudRelayProfile,
+    persisted_daemon::update_persisted_daemon_config, CloudKernelRemoval, DaemonConfig,
+    PersistedCloudRelayProfile,
 };
 use crate::error::DaemonError;
 
 impl DaemonConfig {
+    pub(crate) fn enrolled_cloud_kernel_id(&self) -> Option<&str> {
+        self.cloud_relay
+            .as_ref()
+            .and_then(PersistedCloudRelayProfile::enrolled_kernel_id)
+            .or(self.persisted_cloud_kernel_id.as_deref())
+    }
+
+    pub(crate) fn persist_cloud_relay_token(
+        &mut self,
+        profile: PersistedCloudRelayProfile,
+        token: String,
+    ) -> Result<(), DaemonError> {
+        let mut updated = self.clone();
+        updated.relay_url = Some(profile.relay_url.clone());
+        updated.relay_token = Some(token);
+        updated.cloud_relay = Some(profile);
+        updated.validate()?;
+        updated.persist_kernel_cloud_state()?;
+        *self = updated;
+        Ok(())
+    }
+
+    pub(crate) fn persist_cloud_kernel_removal(
+        &mut self,
+        expected: &PersistedCloudRelayProfile,
+        removal: CloudKernelRemoval,
+    ) -> Result<bool, DaemonError> {
+        let Some(profile) = self.cloud_relay.as_ref() else {
+            return Ok(false);
+        };
+        if profile.kernel_unlinked
+            || profile.kernel_removal() == Some(removal)
+            || expected.kernel_credential.is_none()
+            || profile.kernel_credential != expected.kernel_credential
+            || profile.account_id != expected.account_id
+            || profile.realm_id != expected.realm_id
+            || profile.kernel_id != expected.kernel_id
+        {
+            return Ok(false);
+        }
+        let mut updated = self.clone();
+        if crate::runtime::cloud_relay_control::cloud_relay_transport_selected(self) {
+            updated.relay_url = None;
+            updated.relay_token = None;
+        }
+        let mut profile = profile.clone();
+        profile.token_expires_at_ms = None;
+        profile.kernel_removal_pending = removal == CloudKernelRemoval::Pending;
+        profile.kernel_unlinked = removal == CloudKernelRemoval::Permanent;
+        if profile.kernel_unlinked {
+            profile.kernel_credential = None;
+            profile.machine_credential = None;
+            profile.cloud_session_token = None;
+            profile.cloud_session_expires_at_ms = None;
+        }
+        updated.cloud_relay = Some(profile);
+        updated.persist_kernel_cloud_state()?;
+        *self = updated;
+        Ok(true)
+    }
+
     pub fn persist_relay_config(&self) -> Result<(), DaemonError> {
         if self.cloud_relay.is_some() {
             return self.persist_kernel_cloud_state();
@@ -12,7 +74,7 @@ impl DaemonConfig {
             // An explicit relay override suppresses the in-memory Cloud profile.
             // Transport configuration is not an enrollment unlink operation.
             let mut retained = self.clone();
-            retained.try_load_kernel_cloud_state()?;
+            retained.try_load_kernel_cloud_state(false)?;
             retained.relay_url = self.relay_url.clone();
             retained.relay_token = self.relay_token.clone();
             return retained.persist_kernel_cloud_state();
@@ -32,8 +94,18 @@ impl DaemonConfig {
         &mut self,
         profile: Option<PersistedCloudRelayProfile>,
     ) -> Result<(), DaemonError> {
+        if profile.is_none() {
+            if let Some(kernel_id) = self.enrolled_cloud_kernel_id() {
+                self.former_cloud_kernel_id = Some(kernel_id.to_owned());
+            }
+        }
         self.cloud_relay = profile.map(PersistedCloudRelayProfile::canonicalized);
         self.persist_kernel_cloud_state()?;
+        self.persisted_cloud_kernel_id = self
+            .cloud_relay
+            .as_ref()
+            .and_then(PersistedCloudRelayProfile::enrolled_kernel_id)
+            .map(str::to_owned);
         // Keep a predecessor machine credential only as a pinned migration source
         // for existing sibling kernels; never retain the human Cloud session.
         update_persisted_daemon_config("retire shared Cloud session", |persisted| {

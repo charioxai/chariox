@@ -3,7 +3,9 @@ import { readFileSync, writeFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import assert from 'node:assert/strict'
 const base = Number(process.env.FA_PORT_BASE ?? 18100)
-const state = process.env.FA_STATE_DIR ?? `${process.env.HOME}/.chariox/dev/amunblock/fa`
+const project = process.env.COMPOSE_PROJECT_NAME || 'amunblock-fa'
+assert.match(project, /^[a-z0-9][a-z0-9_-]*$/)
+const state = process.env.FA_STATE_DIR ?? `${process.env.HOME}/.chariox/dev/amunblock/${project === 'amunblock-fa' ? 'fa' : project}`
 const sec = Object.fromEntries(readFileSync(`${state}/secrets.env`, 'utf8').trim().split('\n').map(l => [l.slice(0, l.indexOf('=')), l.slice(l.indexOf('=') + 1)]))
 const issuer = process.env.FA_OIDC_ISSUER ?? `http://127.0.0.1:${base + 2}/dex`
 const redirect = (process.env.FA_REDIRECT_URIS ?? 'http://127.0.0.1:18200/callback').split(',')[0]
@@ -38,7 +40,7 @@ async function login(user, password) {
 }
 // Postgres through the container's psql
 {
-  const q = sql => execFileSync('docker', ['exec', '-e', `PGPASSWORD=${sec.FA_DB_PASSWORD}`, 'amunblock-fa-postgres', 'psql', '-h', '127.0.0.1', '-U', 'app', '-d', 'app', '-tAc', sql], { encoding: 'utf8' }).trim()
+  const q = sql => execFileSync('docker', ['exec', '-e', `PGPASSWORD=${sec.FA_DB_PASSWORD}`, `${project}-postgres`, 'psql', '-h', '127.0.0.1', '-U', 'app', '-d', 'app', '-tAc', sql], { encoding: 'utf8' }).trim()
   q('create table if not exists fa_verify(id serial primary key, v text)'); q("insert into fa_verify(v) values ('x')")
   assert.ok(Number(q('select count(*) from fa_verify')) >= 1); q('drop table fa_verify'); receipt.postgres = { ok: true }
 }

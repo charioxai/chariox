@@ -284,16 +284,15 @@ impl KernelRuntimeState {
                 }
                 Err(error) => {
                     tracing::debug!(interaction_id=%id, error=%crate::secret_redaction::redact_secrets(&error.to_string()), "browser card observation will retry");
-                    let access_revoked = matches!(
+                    // A different owner is the only refusal: the agent's own access needs no grant,
+                    // so a restart or a reload never closes a card that shows a live page.
+                    let foreign = matches!(
                         error,
                         DaemonError::UserDomainRefused {
-                            reason: crate::error::UserDomainRefusalReason::NotGranted
-                                | crate::error::UserDomainRefusalReason::ForeignOwner
-                                | crate::error::UserDomainRefusalReason::NotFocusedAgent
-                                | crate::error::UserDomainRefusalReason::StaleEpoch
+                            reason: crate::error::UserDomainRefusalReason::ForeignOwner
                         }
                     );
-                    if (access_revoked || failures.exhausted()) && self.close_unavailable_browser_region_card(room, id, if access_revoked { "Browser access was revoked" } else { "Browser region observation remained unavailable for 15 seconds; take a fresh snapshot and ask again" }.into()).is_ok() {
+                    if (foreign || failures.exhausted()) && self.close_unavailable_browser_region_card(room, id, if foreign { "Browser is no longer available to this agent" } else { "Browser region observation remained unavailable for 15 seconds; take a fresh snapshot and ask again" }.into()).is_ok() {
                         return;
                     }
                     tokio::time::sleep(Duration::from_secs(1)).await;
@@ -356,8 +355,8 @@ impl KernelRuntimeState {
             return;
         };
         let user = self.provider_account_authority_owner_user_id(agent_record.owner_user_id());
-        // Revocation can prevent cleanup admission. The bounded controller
-        // lease then expires without another watcher renewal.
+        // A failed cleanup is not retried: the bounded controller lease then
+        // expires without another watcher renewal.
         let admitted = (!app_confirmation).then_some(agent);
         let _ = self.kernel_browser_operation(&user, admitted, "host.browser", serde_json::json!({"op":"popup_region", "card_id":card, "tab_id":tab, "release":true})).await;
     }

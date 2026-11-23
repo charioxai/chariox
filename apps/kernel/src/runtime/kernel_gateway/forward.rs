@@ -44,6 +44,35 @@ pub(crate) async fn forward_audited(
     } else {
         forwarded.await
     };
+    if matches!(request, LocalDaemonRequest::SteerActivePrompt(_))
+        && matches!(answered, Err(GatewayError::RequestTimeout { .. }))
+    {
+        // The target reserves the forwarded command ID before delivering the steer.
+        answered = Err(GatewayError::SteerUnconfirmed {
+            command_id: command_id.to_owned(),
+        });
+    }
+    if matches!(
+        answered,
+        Err(GatewayError::Offline { .. } | GatewayError::Unknown { .. })
+    ) {
+        let kernel_id = gateway
+            .directory
+            .known_kernel_id(kernel)
+            .or_else(|| kernel.starts_with("kernel-").then(|| kernel.to_owned()));
+        if let Some(kernel_id) = kernel_id {
+            if crate::runtime::control_plane::kernel_was_released(
+                &router.relay_config_snapshot(),
+                &kernel_id,
+            )
+            .await
+            {
+                answered = Err(GatewayError::Released {
+                    name: kernel.into(),
+                });
+            }
+        }
+    }
     // Authorization and audit keep the sudo identity; reach events belong to its live run.
     if let Ok(response) = &mut answered {
         gateway.note_forwarded(kernel, origin, request, response);

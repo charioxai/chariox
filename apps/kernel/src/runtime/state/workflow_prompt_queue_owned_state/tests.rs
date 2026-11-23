@@ -65,6 +65,7 @@ async fn invoke_append_failure_rolls_back_before_snapshot_and_retries_once() {
             request.clone(),
             crate::session::DEFAULT_LOCAL_USER_ID,
             None,
+            None,
         )
         .await;
     assert!(failed
@@ -98,6 +99,7 @@ async fn invoke_append_failure_rolls_back_before_snapshot_and_retries_once() {
         .execute_workflow_invoke_endpoint_request(
             request,
             crate::session::DEFAULT_LOCAL_USER_ID,
+            None,
             None,
         )
         .await;
@@ -1506,14 +1508,13 @@ fn deleting_session_removes_registered_workflow_runtime_worktrees() {
         branch: None,
         from_ref: Some("HEAD".to_string()),
     };
-    let registered_worktree =
-        crate::git_worktree_placement::prepare_workflow_runtime_worktree_or_reuse_directory(
-            &placement,
-            &test_root.0,
-            None,
-            "prepare session deletion test worktree",
-        )
-        .expect("runtime worktree should be created");
+    let registered_worktree = crate::git_worktree_placement::prepare_git_worktree(
+        &placement,
+        &test_root.0,
+        None,
+        "prepare session deletion test worktree",
+    )
+    .expect("runtime worktree should be created");
     let workflow = runtime
         .owned
         .session_store
@@ -2138,6 +2139,7 @@ fn room_admission_concurrent_workflow_nodes_record_invoking_creator() {
                 Some(actor.id()),
                 None,
                 None,
+                None,
             )
             .unwrap();
     }
@@ -2260,6 +2262,7 @@ async fn gated_manual_entry_waits_for_worker_decision(room_owner: &str) {
                 publication_invocation: None,
             },
             crate::session::DEFAULT_LOCAL_USER_ID,
+            None,
             None,
         )
         .await;

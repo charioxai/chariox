@@ -50,8 +50,8 @@ const WORKFLOW_TURN_UPFRONT_TOOLS: [&str; 8] = [
 const CLAUDE_SERVER_INSTRUCTIONS: &str = "Chariox runtime tools: chariox.agents.run (delegate to sub-agents and get their answers in one call), chariox.events.inbox and .ack are loaded. Load any other (for example chariox.events.yield, chariox.vault.use_env, chariox.send_agent_message) with ToolSearch before use, by purpose or `select:mcp__chariox__chariox_<name with dots as underscores>`, several per call.";
 
 /// A tool listed under both `chariox.<name>` and a bare `<name>` is one tool
-/// with two names. Claude Code is told only the canonical one: every extra name
-/// costs the deferred tool list about 16 tokens.
+/// with two names. Every provider is told only the canonical one: an extra name
+/// costs a deferred tool list about 16 tokens and an eager one its whole schema.
 pub(super) fn without_alias_twins(tools: Vec<RuntimeToolSpec>) -> Vec<RuntimeToolSpec> {
     let names: std::collections::HashSet<String> =
         tools.iter().map(|tool| tool.name.clone()).collect();

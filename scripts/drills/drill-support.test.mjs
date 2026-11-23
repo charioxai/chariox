@@ -1,7 +1,7 @@
 // Run: node --test scripts/drills/drill-support.test.mjs (needs `pnpm build:kernel-client`; the stand-in kernel lives under /root/.chariox/dev/, the drills' state-root rule).
 import assert from "node:assert/strict"
 import { spawnSync } from "node:child_process"
-import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { chmodSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { test } from "node:test"
 import { DEFAULT_KINDS, wakeTurns, wokeReply } from "./ack-drop-support.mjs"
@@ -59,4 +59,5 @@ test("a kernel that never becomes ready is stopped by its exact pid", { timeout:
   const alive = spawnSync("kill", ["-0", String(pid)]).status === 0
   if (alive) process.kill(pid, "SIGKILL")
   assert.equal(alive, false, "the spawned kernel is gone after the failed start")
+  assert.deepEqual(readdirSync(root).sort(), ["evidence", "kernel.pid", "stand-in-kernel"])
 })

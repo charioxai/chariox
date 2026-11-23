@@ -6,6 +6,7 @@ official dockerd-rootless.sh, uidmap, slirp4netns, and static /bin/busybox.
 Pass cgroupfs to reproduce the unsupported managed configuration; systemd
 tests the supported user-service configuration. No existing daemon is used.
 """
+from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
@@ -66,7 +67,10 @@ def main():
             with tarfile.open(archive, "w") as tar:
                 tar.add("/bin/busybox", arcname="bin/busybox", recursive=False)
             cli("import", str(archive), image)
-            values = cli("run", "--rm", "--network=none", "--memory=64m", "--cpus=0.2", "--pids-limit=32",
+            values = cli("run", "--rm",
+                         "--label", f"io.chariox.drill.run={unit}",
+                         "--label", f"io.chariox.drill.started={datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}",
+                         "--label", "io.chariox.drill.harness=managed-rootless-resource-drill.py", "--network=none", "--memory=64m", "--cpus=0.2", "--pids-limit=32",
                          image, "/bin/busybox", "sh", "-c",
                          "/bin/busybox cat /sys/fs/cgroup/memory.max /sys/fs/cgroup/cpu.max /sys/fs/cgroup/pids.max")
             assert values.splitlines() == ["67108864", "20000 100000", "32"], values

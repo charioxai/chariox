@@ -28,7 +28,11 @@ impl super::super::KernelRuntimeOwnedState {
                 .map(|brief| protection.scrub(session_id, brief))
                 .transpose()?
         };
-        if handoff.derived {
+        if handoff.derived && !policy_changed && handoff.conversation.source_events.is_some() {
+            // Read for this dispatch under this revision (a stored handoff keeps
+            // no events and reads again): only the session facts can have changed.
+            self.add_session_facts(session_id, agent_id, prompt_id, &mut handoff.conversation);
+        } else if handoff.derived {
             handoff.conversation = load_agent_conversation(
                 &self.operational_history_store,
                 session_id,

@@ -1,18 +1,21 @@
+import { dockerLabels, validOwner } from "../lib/drill-docker-owner.mjs"
 import assert from "node:assert/strict";
 
 // Keep production helper options intact; the fixture adds its cleanup label
 // and disables extra swap. Production already sets network, CPU, memory/PIDs.
-export function restoreDockerShim(label) {
+export function restoreDockerShim(label, owner) {
   assert.match(label, /^io\.chariox\.chromium-drill=[a-f0-9]{24}$/);
+  assert.ok(validOwner(owner));
+  const labels = dockerLabels(owner).map(argument => "'" + argument + "'").join(" ");
   return `#!/usr/bin/env bash
 set -euo pipefail
 if [[ "$1" == create ]]; then
   shift
-  exec /usr/bin/docker create --memory-swap 512m --label '${label}' "$@"
+  exec /usr/bin/docker create --memory-swap 512m --label '${label}' ${labels} "$@"
 fi
 if [[ "$1" == volume && "$2" == create ]]; then
   shift 2
-  exec /usr/bin/docker volume create --label '${label}' "$@"
+  exec /usr/bin/docker volume create --label '${label}' ${labels} "$@"
 fi
 exec /usr/bin/docker "$@"
 `;
@@ -46,6 +49,7 @@ export function restoreScript(provisioner) {
     'SLICE_OWNER_MACHINE_ID="chromium-drill"',
     'SLICE_DISK_LAYER_MB=""',
     'SLICE_DISK_HOME_MB=""',
+    'DRILL_LABELS=()',
     'log() { printf "[fixture-restore] %s\\n" "$*" >&2; }',
     'fail() { log "$*"; exit 1; }',
     section(provisioner, "hash_stdin() {", "runtime_source_revision() {"),

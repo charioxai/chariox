@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { drillDockerLabels } from "../../../scripts/lib/drill-docker-owner.mjs"
 
 import assert from "node:assert/strict"
 import { spawn } from "node:child_process"
@@ -340,6 +341,7 @@ async function main() {
     report.imageId = imageInspect.stdout.trim()
     await docker([
       "create",
+      ...drillDockerLabels(import.meta.url, { run: runId }),
       "--name",
       containerName,
       "--memory",

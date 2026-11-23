@@ -89,6 +89,11 @@ export type ExecOutput = { chunks: readonly { cursor: number; stream: "stdout" |
 export type ExecState = { kind: "queued"; wait: { reason: "memory" | "disk"; need_bytes: number; free_bytes: number } } | { kind: "starting" | "running" | "finished" }
 export type ExecSummary = { exec_id: string; state: ExecState; age_ms: number; buffered_bytes: number; command_line: string; command: readonly string[]; owner: { kind: "agent" | "terminal"; id: string }; /** Kernels a held launch could run on instead, for the caller that may place it. */ placeable_on?: readonly string[] }
 
+/** Input for a program: its bytes (up to 64 KiB) or a file already on the kernel. */
+export type ProgramInput =
+  | { readonly kind: "inline"; readonly data_base64: string }
+  | { readonly kind: "file"; readonly path: string }
+
 export type RoomTerminalOperation =
   | { readonly operation: "exec_list" }
   | { readonly operation: "exec_open"; readonly command: readonly string[] }
@@ -104,6 +109,8 @@ export type RoomTerminalOperation =
       readonly rows: number
       readonly title?: string
       readonly command?: readonly string[]
+      /** What `command` reads on standard input; the program reads the terminal when absent. */
+      readonly stdin?: ProgramInput
     }
   | { readonly operation: "list" }
   | { readonly operation: "snapshot"; readonly terminal_id: string }

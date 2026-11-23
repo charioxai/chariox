@@ -248,7 +248,8 @@ impl SessionService {
         session_id: &str,
         workflow_run_id: &str,
         workflow_node_run_id: &str,
-    ) -> Result<WorkflowRun, DaemonError> {
+        holding_run_id: Option<&str>,
+    ) -> Result<Option<WorkflowRun>, DaemonError> {
         let session =
             self.store
                 .get_mut(session_id)
@@ -262,20 +263,28 @@ impl SessionService {
             }
         })?;
         let workflow_id = workflow_run.workflow_id().to_string();
-        let node_run = workflow_run
-            .node_runs_mut()
-            .iter_mut()
-            .find(|node_run| node_run.id() == workflow_node_run_id)
+        let node_index = workflow_run
+            .node_runs()
+            .iter()
+            .position(|node_run| node_run.id() == workflow_node_run_id)
             .ok_or_else(|| DaemonError::InvalidWorkflowGraphReference {
                 session_id: session_id.to_string(),
                 workflow_id,
                 reference: workflow_node_run_id.to_string(),
                 message: "workflow node run was not found",
             })?;
-        node_run.set_status(WorkflowNodeRunStatus::BlockedOnWorkspaceClaim);
+        let node_run = &workflow_run.node_runs()[node_index];
+        match node_run.status() {
+            WorkflowNodeRunStatus::Ready => {}
+            WorkflowNodeRunStatus::BlockedOnWorkspaceClaim
+                if node_run.workspace_claim_holding_run_id() != holding_run_id => {}
+            _ => return Ok(None),
+        }
+        let before = workflow_run.clone();
+        workflow_run.node_runs_mut()[node_index].block_on_workspace_claim(holding_run_id);
         workflow_run.clear_active_node_run();
         workflow_run.set_status(WorkflowRunStatus::Waiting);
-        Ok(workflow_run.clone())
+        Ok(Some(before))
     }
 
     pub fn ready_workflow_node_after_workspace_claim(

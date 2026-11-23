@@ -204,6 +204,7 @@ impl ProviderOutputClaudeNativeBridge<'_> {
                 context_handoff: &|_| String::new(),
             },
             &retry.context,
+            None,
         )?;
         fs::write(
             format!("{context_file}.typed-native-loads"),

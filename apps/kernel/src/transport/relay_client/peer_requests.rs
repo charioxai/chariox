@@ -6343,6 +6343,8 @@ mod tests {
             machine_credential: Some(test_machine_credential()),
             cloud_session_token: None,
             cloud_session_expires_at_ms: None,
+            kernel_unlinked: false,
+            kernel_removal_pending: false,
             token_expires_at_ms: None,
         }
     }

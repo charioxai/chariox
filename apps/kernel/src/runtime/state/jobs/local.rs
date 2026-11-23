@@ -131,8 +131,8 @@ impl KernelRuntimeState {
                         if let Err(error) = self.freeze_local_job(record, output, progress, exec_id).await {
                             tracing::warn!(%error, "local job ownership could not be transferred");
                         }
-                    } else {
-                        execs.settle_job_for_restart(&record.room_id, exec_id).await;
+                    } else if let Err(error) = owned.drain_for_restart(self, output, progress.cursor).await {
+                        tracing::warn!(%error, "some local job output could not be saved before shutdown");
                     }
                     drop(owned);
                     drop(active);
@@ -147,10 +147,10 @@ impl KernelRuntimeState {
                 execs.close(&record.room_id, exec_id)?;
                 if self.job_wake_driver.as_ref().is_some_and(|driver| {
                     driver
-                        .remote_requested
+                        .remote_moves
                         .lock()
-                        .expect("job move")
-                        .remove(&record.job_id)
+                        .expect("job moves")
+                        .contains_key(&record.job_id)
                 }) {
                     record.exec_id = None;
                     return Err(DaemonError::MachineRequest {
@@ -231,10 +231,61 @@ struct LocalExec {
     room: String,
     id: String,
 }
+impl LocalExec {
+    async fn drain_for_restart(
+        &self,
+        state: &KernelRuntimeState,
+        output: &mut Output,
+        mut cursor: u64,
+    ) -> Result<(), DaemonError> {
+        self.service.cancel(&self.room, &self.id)?;
+        loop {
+            let page = self
+                .service
+                .read(&self.room, &self.id, cursor, Duration::from_millis(250))
+                .await?;
+            output.page(state, &self.room, &page)?;
+            if page.outcome.is_some() {
+                return Ok(());
+            }
+            cursor = page.next_cursor;
+        }
+    }
+}
+
 impl Drop for LocalExec {
     fn drop(&mut self) {
         let _ = self.service.close(&self.room, &self.id);
     }
+}
+
+pub(super) const RESTART_REASON: &str = "The kernel restart interrupted this local job. No command exit status is available. Check the recorded output and any side effects. Rerun only after confirming the previous command has stopped and repeating its work is safe. Otherwise, continue from the last verified step after reconciling partial work.";
+
+pub(super) fn restart_output(state: &KernelRuntimeState, record: &Record) -> (String, String) {
+    const HEADING: &str = "\n\nSaved output tail (step completions are reported by the command):\n";
+    let path = Output::path(state, record);
+    let mut text = RESTART_REASON.to_owned();
+    let log = match Output::saved_tail(&path, TAIL_BYTES - RESTART_REASON.len() - HEADING.len()) {
+        Ok(tail) => {
+            if tail.is_empty() {
+                text.push_str(" The command saved no output.");
+            } else {
+                text.push_str(HEADING);
+                text.push_str(&tail);
+            }
+            path.to_string_lossy().into_owned()
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            text.push_str(" No job log was saved.");
+            String::new()
+        }
+        Err(error) => {
+            use std::fmt::Write as _;
+            let _ = write!(text, " The saved output could not be read: {error}.");
+            path.to_string_lossy().into_owned()
+        }
+    };
+    (text, log)
 }
 
 #[derive(Clone, Copy, Default)]

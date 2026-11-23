@@ -99,7 +99,6 @@ fn user_app_view_protocol_443_kernel_browser_host_selection_snapshot() {
         installation_id: "todo".into(),
         generation: "7".into(),
         origin: "https://app.a.invalid".into(),
-        access: None,
         browser: Some(UserAppViewBrowser {
             tab_id: "host-tab-t".into(),
             generation: 2,
@@ -195,6 +194,6 @@ fn client_app_view_protocol_999_snapshot_and_hash() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "3f7769b96957483d4c1bae7d6f990bb827d080d9dd706a87971530d1a410ed52"
+        "38eaa75faa0b217952d0f119d88a74ae0d86ed6e002666113fb108353dd2d020"
     );
 }

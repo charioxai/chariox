@@ -59,6 +59,27 @@ entry, and never routes to or probes them. Cloud has such a kernel offline, so t
 machine-list grant names every kernel the account links; kernel queries are still
 granted the online ones.
 
+### Relay registration result (local 1014, relay peer 451)
+
+Deploy the acknowledging relay before upgrading kernels to this version. A
+kernel waits up to ten seconds for `{"kind":"daemon_registered"}` and publishes
+connected status and online Cloud presence only after receiving it. An older
+relay that never acknowledges registration leaves an actionable refusal in
+`RelayStatus`.
+
+The relay checks `registration.local_protocol` before decoding the proof and
+refuses versions below 1012 or registrations with no version. A refused or
+malformed registration receives a `close` envelope with a reason before the
+socket closes. For a kernel that declares protocol 1014 or later, the relay
+queues the acknowledgment before the socket becomes routable. Earlier supported
+kernels keep receiving their existing wire messages during the relay rollout.
+
+While registration is refused, `RelayStatus.registration_refused` gives the
+reason, next step, first refusal time and scheduled retry time in Unix
+milliseconds. The kernel announces the refusal once to the attached owner
+and backs off consecutive identical refusals. Rejected credentials use the
+existing credential renewal path.
+
 ### MP-08 / MP-09 / MP-10 / MP-11 artifact read pages (local993 / peer432)
 
 `chariox.read_artifact` accepts optional `offset_bytes` (default 0) and
@@ -156,42 +177,22 @@ Draft protocol aligned with `docs/spec-v1.md`.
 Apps Phase 1 protocol numbers were renumbered above release F on 2026-10-03 (local
 N → N + 9 for 368–406, relay 58 → 69); see [PROTOCOL_PHASE1_RENUMBERING.md](PROTOCOL_PHASE1_RENUMBERING.md).
 
-## MP-08 / MP-11: user-domain grant contract (local 432 / relay 78)
+## MP-08 / MP-11: user-domain access (no grants)
 
-The owner-approved multidomain access contract is specified in
-[MULTIDOMAIN_USER_DOMAIN_ACCESS.md](MULTIDOMAIN_USER_DOMAIN_ACCESS.md).
-MP-11: authenticated human-terminal focus grants resource-scoped authority.
-Agent-originated focus, attach, cycle and alias-routed prompts preserve session
-orchestration without creating or refreshing browser/Notes grants. Changing
-human focus does not revoke prior
-holders. Existing kernel turn/wake state retains grants until fully idle expiry,
-session/agent end or explicit revocation. Authenticated owner terminals use
-`KernelBrowser` operations `list_grants`, `subscribe_grants` and `revoke_grants`;
-agent tools cannot invoke these owner controls. Snapshots carry the live cursor,
-holders and non-focused-use notice. Revocation cancels grant epochs and idle
-subscriptions. MP-11: retained holders have the same input and mutations as
-focused agents on granted resources, including typing, keys, Tab and clicks.
-Explicit start/open is allowed; open grants its newly created tab. Claiming an
-unrelated existing resource requires focus. Loading a capability requires focus
-or the A05 owner approval described below. Vault,
-protected regions, sensitive approvals and App/passkey validation keep their
-shared protections. Ordinary input has no retained/focused classification;
-revoke and idle lapse still cancel authority immediately. Observation reads,
-including state, never start/restart Chromium or its controller for any caller;
-stopped/unavailable reads require explicit start/open (`browser_unavailable`).
-Browser/App window projections identify the owning kernel and focused-agent
-reachability; cross-kernel control is refused. Consumers of these new fields and
-commands require local 432. Existing multidomain feature minima remain 427.
-The focused MP-10 drill and protocol snapshots cover these changes; they do not
-alone establish ordinary/managed parity or official-provider wait behavior.
-
-MP-08 / MP-11: ordinary text and text-producing key events use the same
-Vault-only protected-target check, including password/OTP fields, focused
-frames and open nested shadow fields, for both focused and retained holders.
-Successful browser results are bound to the exact admission epoch under the
-grant lock before resource/subscription registration or inventory projection;
-revocation followed by refocus cannot adopt an old call's result into a fresh
-grant. A final live cancellation/provider-run check fences returned results.
+The owner's agents use the owner's kernel browser, Computer and App views with no
+grant, focus, epoch or lifetime; see
+[MULTIDOMAIN_USER_DOMAIN_ACCESS.md](MULTIDOMAIN_USER_DOMAIN_ACCESS.md). The loader
+tools take no arguments and `chariox.kernel_browser_share` is gone. The owner
+terminal's `KernelBrowser` commands `list_grants`, `subscribe_grants` and
+`revoke_grants` now carry only the Room Computer switches: the
+`user_domain_grants_changed` snapshot holds `cursor` and `room_computer`. Browser
+and App window projections no longer carry `kernel_id`, `kernel_name`,
+`focused_agent_kernel_id` or `reachable_by_focused_agent`, and `UserAppView.access`
+is removed. Vault, protected regions, sensitive approvals and App/passkey
+validation keep their protections; ordinary text and text-producing key events use
+the same Vault-only protected-target check. Observation reads never start or
+restart Chromium for any caller; a stopped browser needs an explicit start/open
+(`browser_unavailable`).
 
 ### MP-08 / MP-09 / MP-10 / MP-11: one-use Vault capture (local 963 / peer 412)
 
@@ -213,56 +214,24 @@ See [capture and use](KERNEL_SUDO.md#vault-capture-and-use-by-command-and-file-v
 Local 469 combines A04 (460) and A05 (462); relay peer 87 combines peer 82 and
 86. A06 adds no serialized request or event shape: the MCP tool
 `chariox.vault.generate` replaces `chariox.create_generated_credential`, and
-`chariox.kernel_browser_paste_secret` accepts a live sudo window in place of
-focus for a retained grant. See [Sudo windows](KERNEL_SUDO.md).
+`chariox.kernel_browser_paste_secret` accepts a live sudo window. See [Sudo windows](KERNEL_SUDO.md).
 
 MP-08 / MP-09 / MP-10 / MP-11, local 956 / peer 405: Vault generation is an ordinary agent tool. Generated and captured entries persist `metadata.use_binding` with one exact destination and a value kind. Browser/HTTP site uses compare canonical origins (scheme, host, effective port), not host suffixes. Environment/stdin, file, TOTP and WebAuthn bindings are distinct uses. Bindings and card kind cannot be changed by overwriting or aliasing a handle. Payment-card values require one owner interaction per operation; ordinary values need no task approval or sudo. Only the encrypted Vault's actual setup/unlock still requires its key. `chariox_kernel_request` remains sudo-only.
 
-### MP-08 / MP-10 / MP-11: A05 capability acquisition (local 462)
-
-A running prompt submitted by the owner
-through a human attachment supplies acquisition causation. Agent messages,
-workflows, schedules and continuations do not. A new App binding or kernel
-browser grant also requires the owner's resource-specific `RuntimeInteraction`
-reply; a human prompt alone cannot authorize unrelated resources. Owner Deny
-and a missing owner request return the typed `user_domain_not_requested`
-refusal; a revoke reaching that agent while its decision is pending returns
-`user_domain_not_granted`. Other holders' grant changes do not affect a pending
-decision. Provider MCP errors carry the same code. Existing focus grants remain
-available through the shared browser authority path; focus is the owner's live
-act, so focus grants have no absolute lifetime (no `expires_at_ms`) and retire
-through idle, revocation or session/agent end.
-Explicit owner focus promotes an existing requested or delegated browser grant
-to that focus lifecycle without retiring its resources, subscriptions or epoch.
-
-Browser loader arguments may request `lifetime_hours` from 1 through 24; the
-default is 8 hours. A prompt grant covers newly opened tabs, while claiming an
-existing resource and Vault-sensitive actions retain the focus checks.
-`chariox.kernel_browser_share` transfers an explicit nonempty resource subset
-to a direct local child. A delegated grant cannot open additional tabs, outlive
-its source or survive source revocation. Grant projections include absolute
-`expires_at_ms` and optional prompt/delegation attribution. Absolute and idle
-expiry have live kernel wakes that cancel in-flight work and subscription scopes.
+### App bindings
 
 App bindings use the existing trusted installation, admitted publisher key and
-capability checks. Issued bindings carry an optional `app_grant` generation,
+capability checks; an agent binds a trusted installation itself, with no card. Issued bindings carry an optional `app_grant` generation,
 absolute expiry and prompt/delegation attribution; agents cannot submit this
 issued authority as grant input. App grants default to 8 hours and child
 bindings inherit the parent's deadline. Revocation removes only bindings
 actually delegated from that generation, wakes retained calls and prevents an
 old call or expiry wake from adopting a replacement binding. Recovery rearms
-absolute expiry; an untimed legacy binding needs fresh owner approval in room
-mode, and recovery without a live expiry executor fails closed. Recovery
+absolute expiry; recovery without a live expiry executor fails closed. Recovery
 removals record the normal `agent.extension_revoked` event and
-`home_extension.grant.revoked` audit. Leased, remote and slice agents cannot acquire these user-domain
-resources; they use their Room Browser/Computer route.
+`home_extension.grant.revoked` audit. Leased, remote and slice agents use their Room Browser/Computer route.
 
-Clients consuming this metadata require local 462; relay peer shapes are
-unchanged. The focused A05 drill exercises the built TUI, kernel and official
-Codex resource-approval path: owner Deny with the typed refusal code, owner
-Allow with the 462 grant projection over the real client transport, and the
-live absolute-expiry wake. Source refusal and protocol snapshot tests are
-supplementary and do not establish hosted, public-site or managed acceptance.
+
 
 ## 1. Scope
 
@@ -344,6 +313,29 @@ content budget. Other details remain available through the existing blob
 requests. The outline's `steering` flag identifies budgeted steering prompts;
 observed and recovery prompt envelopes retain their collapsed, on-demand role.
 Clients that omit the request flag retain the earlier outline and blob paths.
+
+Local protocol 1014 (provisional) adds latest-page deltas to `GetSessionHistoryOutline`.
+An `after_sequence` map keys each agent ID to the previous reply's
+`delta_cursor { after_sequence, revision }`. An empty map asks for a full page
+and a cursor. The sequence is the highest projected sequence on the page and
+the revision is an opaque witness for its rows. An expired, missing, or
+out-of-window cursor returns the ordinary full latest page and a fresh cursor.
+`AttachSessionView.history` and a latest read with both prefetch and an empty
+map also return a full page with cursors. Older-page requests use
+`cursor.before_sequence` and return the full requested page.
+
+A delta agent has an empty `turns` array, the current `next_cursor`, and
+`turn_deltas` in page order. Each turn lists its header (the ordinary turn
+with empty entries and blobs and no summary), optional summary, entries, and
+blobs. A number is an index into the previous page, flattened in this same
+order for each turn with absent summaries skipped. An object replaces the
+part in that position. A growing summary may be
+`{ append_to, suffix }`: take the previous summary's text at that index and
+append `suffix.entry.text`, using the suffix row's other fields. Missing
+parts disappear from the page. A blob's revision changes when its contents
+change even if its sequence range and display metadata are identical.
+The caller applies the result as an ordinary outline before merging it into
+the displayed transcript.
 
 MP-08 / MP-10 / MP-11: `AttachSessionView` was introduced in 508/116 and
 its first-screen behavior is updated in the allocated 518/126 bump. It
@@ -640,6 +632,7 @@ Semantics:
 - prompts from Chariox clients are forwarded through the kernel-managed provider run so the provider TUI observes the same turns
 - MP-08 / MP-10 / MP-11: a queued prompt retains its kernel-owned identity when promoted to active work; promotion clears its pending marker without replacing its ID, so native display turns, permissions and exact-prompt controls keep one binding
 - native TUI provider runs are marked with `client_interface = native_tui`
+- Claude's own folder-trust question on a native terminal (it appears when the folder is the person's home or the root, since a launch trusts the agent's chosen workspace itself) is one kernel-owned `RuntimeInteraction` per provider run, "Trust this Claude Code workspace?" with `Trust workspace` and `Don't trust`, in the session's active interactions: every client sees it, including one that attaches later. An answer from any client is typed into Claude's selector; answering in Claude's terminal withdraws the card. No serialized shape changes. Codex's and OpenCode's own first-run dialogs and the model-retirement dialog are drawn by the provider's terminal and have no card yet.
 - Chariox clients must treat model/variant controls for those runs as provider-controlled; provider-native changes may be recorded when observable, but Chariox-side parameter mutation is disabled for the active native TUI run
 - daemon health reports `duplicate_chariox_agent_bindings` when more than one active Chariox provider run is bound to one session/agent, and `multi_interface_agent_bindings` when active Chariox and native TUI provider runs are bound to the same session/agent
 - daemon health `provider_catalog` reports whether provider/model metadata is cached, expired, and how old it is; clients should surface stale catalog state near provider/session launch diagnostics
@@ -2891,6 +2884,23 @@ turn count for the caller, so a client holding another group or turn count, or n
 history (`known_revision: null`), gets the full history. Live Room events stay on
 the session subscription with `resume_from_event_id`.
 
+### Owner Web view
+
+The authenticated owner terminal watches the `owner_view` kernel resource to show
+the names of agents who are watching. The browser publishes the visible Navigator
+and Settings labels over its encrypted kernel connection after drawing the
+indicator. The kernel accepts publications for the current viewer generation
+from one tab, which the browser can resume after a reload. Its status projection
+carries watcher names and the tab identity. The presentation itself is kept in
+memory.
+
+An authenticated provider agent uses `chariox.owner_view` with `watch`, `read`,
+or `leave`. The kernel checks that the agent and its Room belong to the enrolled
+owner. The response contains the presentation and its publication time. The
+owner terminal's `end` operation revokes the agent's grant in the kernel's
+durable state. The agent's request vocabulary supports observation and detach.
+The relay carries encrypted messages as it does for other kernel resources.
+
 ## 4.2 Planned Command-Dispatch Surface
 
 The current local API baseline does not yet expose slash-command discovery/invocation, but the protocol should reserve room for it.
@@ -4724,7 +4734,10 @@ action, done, or owner-cancelled. Cancellation is never successful completion.
 
 Obligation/registration, wait intent, event admission and delivery intent commit
 through the shared SQLite writer. Native provider settlement commits the wait;
-a result racing it remains in the inbox. Done requires public output and no
+a result racing it remains in the inbox. In the same running turn after yield,
+`inbox` and `ack` still work. A second yield or a new timer is refused with the
+accepted wait's reason. If the agent handles the last outcome before the turn
+ends, settlement can finish the wait immediately. Done requires public output and no
 unresolved obligation, except open watched processes, jobs, terminal watches and
 delegates: the turn ends done and their end wakes the agent as an `after_turn`
 event. For any other unresolved obligation one persisted correction is permitted;
@@ -6065,6 +6078,17 @@ reload (the same handover as a Room terminal). Closing it, or the kernel stoppin
 `chariox terminal [--kernel K] open|list|send|read|wait|close` and `chariox exec [--kernel K] -- argv` (no `--session`,
 no `--workspace`) use it; the one-shot opens a terminal running the argv, waits for it, reads its output and closes it.
 
+`open` with `command` also takes `stdin`, the program's standard input: `{ kind: "inline", data_base64 }` (at most
+64 KiB decoded) or `{ kind: "file", path }` (a file already on that kernel, for example from `chariox files put`;
+a relative path starts at the terminal's folder). The program reads that file as fd 0 and sees end-of-file where it
+ends; without `stdin` it reads the terminal. Inline input is staged in a private file the kernel removes as
+soon as the program holds it open; a named file is read as it is and left. `stdin` without `command`, input over the
+limit, bad base64 and a missing file are refused naming the limit or the file and the other way to pass it. An
+argument over 4096 bytes is refused naming stdin and the stdin file. `chariox exec` sends its own stdin inline when it
+is not a terminal (over 64 KiB it is refused before sending, naming `files put` and `--stdin-file KERNEL_PATH`);
+`--stdin-file` sends the file reference. Clients need kernel protocol ≥1014 for `stdin`
+(`programStdinMinimumProtocolVersion`, provisional number; an older kernel would ignore the field).
+
 ### Room terminals — carried by local 570 / relay peer 178 (formerly provisional 569 / 177)
 
 Numbering: the terminal shapes below were written at 562/170 and are carried by
@@ -6774,6 +6798,22 @@ and the termination name the same cause. The managed-upgrade list is
 (including `local_daemon_protocol_session_process_memory_outcomes_are_versioned` and
 `local_daemon_protocol_received_event_shape_is_versioned`) and
 `node --test scripts/protocol-versions.test.mjs`.
+
+### Durable local jobs across a kernel restart
+
+A hot reload hands over a running local job and its output reader. After a full
+kernel restart, an interrupted local job settles under the original job ID.
+`chariox.jobs.status` returns a finished result with a null exit code, the
+restart reason, and retry guidance. The result includes a bounded tail of the
+saved output and a path to the retained log when one exists. An orderly stop
+drains already captured output before closing the reader. After an abrupt
+stop, the log contains output the previous kernel had already saved.
+
+Multi-step commands can print a line such as `Completed: validate inputs`
+after each successful step. Use those lines to identify reported completions.
+Check the affected files and systems for partial work before retrying. Only
+repeat work once the original process has stopped and its effects are safe to
+repeat.
 
 ### MP-08 / MP-09 / MP-10 / MP-11: a hot reload's relay close — local 925 / peer 376
 
@@ -7496,7 +7536,8 @@ its own Vault under the Project scope, so presence differs per machine and is co
   than that or has ended, so a state change reaches the reader within a round trip and nothing is polled.
 - Room tools `chariox.environment.read` (names and states), `chariox.environment.setup` (runs the saved Setup
   in the room's checkout; returns the operation id) and `chariox.environment.check` (the kernel's own comparison).
-  None returns a value.
+  None returns a value. `chariox.environment.save` with `revision: 0` on a Project with no Environment is the owner's
+  first `SaveProjectEnvironment` (revision 1, owner check and validation unchanged); `check` and `propose` work after it.
 - `RunRemoteProjectEnvironmentSetup { projectId, operationId, targetKernelId, checkoutPath? }` runs Setup on
   another kernel of the same authenticated owner (a leased worker included), in the checkout that kernel
   holds for the Project; `RemoteEnvironmentOperation { operationId, targetKernelId, stop? }` reads or stops
@@ -8245,6 +8286,17 @@ update. Empty repositories and updates removing every remaining member require
 explicit removal or ungrouping instead. The normal 512-action limit applies.
 The TUI exposes `/skills repo-update <package>`; the Web update entry point is
 not implemented by this addition.
+
+
+Local **1014** adds `source: { kind: "recorded_folder" }` to the reviewed
+`update` action. Use the installed skill ID, expected digest, and catalog
+revision in the ordinary preview and publish requests. The home kernel reads
+the folder already recorded for that skill and previews the added, removed,
+and changed file manifests in `file_changes`. An unchanged folder reports
+that the skill is already current and needs no publish. If the recorded
+`SKILL.md` is unavailable, restore it at the reported path and preview again.
+The same owner and approval rules apply. Publish uses the reviewed package
+and the next turn can load its new digest.
 
 `SkillProjection.delivery` distinguishes Chariox delivery, verified native
 provision, content conflict and unverified native exposure. Equal complete

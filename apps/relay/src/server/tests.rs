@@ -79,7 +79,7 @@ fn test_registration_with_token(
         accepting_remote_leases: true,
         leased_agent_count: 0,
         local_session_count: 0,
-        local_protocol: None,
+        local_protocol: Some(crate::protocol::MINIMUM_KERNEL_REGISTRATION_PROTOCOL),
     }
 }
 

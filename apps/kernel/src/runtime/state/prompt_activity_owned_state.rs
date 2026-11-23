@@ -490,6 +490,9 @@ impl KernelRuntimeOwnedState {
         else {
             return Ok(None);
         };
+        // The same step as the idle sweep: a process that ended before its
+        // first turn leaves a session the next run must not resume again.
+        self.end_runs_whose_idle_process_exited(Some(&finished.provider_run_id));
         let ended = self.provider_store.retire_run_before_prompt_write(
             &finished.session_id,
             &finished.provider_run_id,

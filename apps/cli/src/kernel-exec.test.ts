@@ -2,7 +2,8 @@ import assert from "node:assert/strict"
 import test from "node:test"
 import { Writable } from "node:stream"
 import { CommandFailure } from "./agent-command-table.js"
-import { runKernelExec } from "./kernel-exec.js"
+import { Readable } from "node:stream"
+import { MAX_INLINE_STDIN_BYTES, readExecInput, runKernelExec } from "./kernel-exec.js"
 
 const ended = (code: number) => ({ state: "ended", outcome: { reason: "program_exited", exit_code: code, signal: null } })
 const terminal = (status: unknown, offset: number) => ({ terminal_id: "t1", scope: "kernel", output_offset: offset, status })
@@ -110,4 +111,35 @@ test("a character split between two output pages is whole in the output, and a s
   const out = sink()
   await runKernelExec({ command: ["x"], timeoutSeconds: 30 }, send, out.stream)
   assert.equal(out.text(), "a\u00e9b\nc")
+})
+
+test("a program's stdin goes to the kernel with the open request", async () => {
+  const { sent, send } = kernel("ok\r\n", 0)
+  const stdin = { kind: "inline", data_base64: Buffer.from("echo hi\n").toString("base64") } as const
+  await runKernelExec({ command: ["bash", "-s"], timeoutSeconds: 30, stdin }, send, sink().stream)
+  assert.deepEqual(sent[0].KernelTerminal.operation.stdin, stdin)
+})
+
+test("input piped to exec is read to its end and sent whole; an empty or terminal input sends none", async () => {
+  const script = Buffer.alloc(MAX_INLINE_STDIN_BYTES, "a")
+  const read = await readExecInput(Readable.from([script.subarray(0, 100), script.subarray(100)]), undefined, 5)
+  assert.deepEqual(read && read.kind === "inline" && Buffer.from(read.data_base64, "base64"), script)
+  assert.equal(await readExecInput(Readable.from([]), undefined, 5), undefined)
+  assert.equal(await readExecInput(Object.assign(Readable.from([Buffer.from("typed")]), { isTTY: true }), undefined, 5), undefined)
+})
+
+test("a file on the kernel is passed by reference and the local input is not read", async () => {
+  const never = new Readable({ read() {} })
+  assert.deepEqual(await readExecInput(never, "/home/u/script.sh", 5), { kind: "file", path: "/home/u/script.sh" })
+  never.destroy()
+})
+
+test("input over 64 KiB is refused naming the limit and the file way", async () => {
+  await assert.rejects(readExecInput(Readable.from([Buffer.alloc(MAX_INLINE_STDIN_BYTES + 1)]), undefined, 5),
+    (error: unknown) => error instanceof CommandFailure && error.code === "exec_stdin_too_large" && /64 KiB/.test(error.message) && /files put/.test(error.message) && /--stdin-file/.test(error.message))
+})
+
+test("input that never ends is refused after the timeout and says how to end it", async () => {
+  await assert.rejects(readExecInput(new Readable({ read() {} }), undefined, 0.05),
+    (error: unknown) => error instanceof CommandFailure && error.code === "exec_stdin_not_ended" && /<\/dev\/null/.test(error.message))
 })

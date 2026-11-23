@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { sanitizeMirrorCss } from './kernel-browser-mirror2-observer.mjs';
 import { inflateRawSync, constants as zlib } from 'node:zlib';
 import { createHash } from 'node:crypto';
-import { Mirror2, ParsedSheets, BUSY_RENDERER_MS, KERNEL_CONTROLLER_DEADLINE_MS, mirrorResourceType, encodeMirrorRecords, dedupeMirrorSheets, regionArea, regionOverBudget, cssImports } from './kernel-browser-mirror2.mjs';
+import { Mirror2, ParsedSheets, BUSY_RENDERER_MS, KERNEL_CONTROLLER_DEADLINE_MS, mirrorResourceType, encodeMirrorRecords, dedupeMirrorSheets, regionArea, regionOverBudget, cssImports, svgTargetPinned } from './kernel-browser-mirror2.mjs';
 const pageSize=()=>({width:1280,height:800});
 
 const keys = () => { const seen = []; return { seen, resource: (url, base, kind) => { const href = new URL(url, base).href; if (!/^(https?|data):/.test(href)) return null; seen.push([href, kind]); return `r${seen.length}`; } }; };
@@ -505,7 +505,7 @@ test('MP-08/MP-10: an empty drain re-arms the long poll without a separate loade
   const calls = [], tab = { tab_id: 't', target_id: 'T', document_id: 'D1' };
   const connection = { isOpen: () => true, send: async () => ({}) };
   const world = { connection, sessionId: 'S', frame: { loaderId: 'D1' }, ref: 'm' };
-  const header = { snapshot_complete: 'false', font_failures:'[]', scroll: '[0,0]', focused: 'null', focus_visible: 'false', selection: 'null', fragment: 'null' };
+  const header = { snapshot_complete: 'false', font_failures:'[]', scroll: '[0,0]', focused: 'null', focus_visible: 'false', selection: 'null', fragment: 'null', page_wheel: 'false' };
   const stream = { tab_id: 't', world, issued: 1, document_id: 'D1', policy: 'p', fallback: null, header, sentScroll: [0, 0], resources: new Map(), attrSequence: new Map(), ownScrolls: new Map(), frames: new Map(), frameSlots: new Map(), frameSlot: 0, tileKeys: '', movedAt: 0 };
   const host = { protection: 'p', generation: 1, pageSize, scales: new Map(), tabs: new Map([['t', tab]]), displayTarget: async () => tab,
     browser: { connection, documentIdsByTarget: new Map([['T', 'D1']]), sessionsByTarget: new Map([['T', 'S']]) } };
@@ -555,7 +555,7 @@ test('MP-08/MP-10: a navigation ends a waiting long poll before its deadline', a
   const documents = new Map([['T', 'D1']]);
   const connection = { isOpen: () => true, send: async () => ({ frameTree: { frame: { loaderId: documents.get('T') } } }) };
   const world = { connection, sessionId: 'S', frame: { loaderId: 'D1' }, ref: 'm' };
-  const stream = { tab_id: 't', world, issued: 1, document_id: 'D1', policy, fallback: null, resources: new Map(), attrSequence: new Map(), ownScrolls: new Map(), frames: new Map(), frameSlots: new Map(), frameSlot: 0, tileKeys: '', hurry: 0, header: { scroll: '[0,0]', focused: 'null', focus_visible: 'false', selection: 'null', fragment: 'null' } };
+  const stream = { tab_id: 't', world, issued: 1, document_id: 'D1', policy, fallback: null, resources: new Map(), attrSequence: new Map(), ownScrolls: new Map(), frames: new Map(), frameSlots: new Map(), frameSlot: 0, tileKeys: '', hurry: 0, header: { scroll: '[0,0]', focused: 'null', focus_visible: 'false', selection: 'null', fragment: 'null', page_wheel: 'false' } };
   const host = { protection: policy, generation: 1, pageSize, scales: new Map(), tabs: new Map([['t', tab]]), displayTarget: async () => tab,
     browser: { connection, documentIdsByTarget: documents, sessionsByTarget: new Map([['T', 'S']]) } };
   const mirror = new Mirror2({ host, require: () => stream, assertWebTab: () => {}, streams: new Map([['s', stream]]) });
@@ -1377,4 +1377,44 @@ test('region bounds without a committed owner still read the document before and
  const mirror=new Mirror2({host:{browser:{connection},protection:{unknown:false,values:[],targets:[]}}}),stream={world:{connection,sessionId:'s',ref:'mirror'},frames:new Map()};
  mirror.protectTargets=async()=>{};mirror.frames.regionBoxes=async()=>[];mirror.evaluate=async()=>[];
  await mirror.regionBoxes(stream,{target_id:'T',document_id:'D'});assert.equal(reads,2);
+});
+
+// W0-T1 (tldraw): an SVG stack resource named with a fragment shows that element in a viewer that has no fragment.
+test('W0-T1: an SVG stack pins its :target rules to the fragment the resource was named with', () => {
+  const stack = '<svg xmlns="http://www.w3.org/2000/svg"><style><![CDATA[svg>[id]{display:none}svg>[id]:target{display:inline}]]></style><circle id="color" r="9"/><path id="1x" d="M0 0"/></svg>';
+  assert.equal(svgTargetPinned(stack, 'color'), stack.replace('svg>[id]:target', 'svg>[id][id="color"]'));
+  assert.equal(svgTargetPinned(stack, '1x'), stack.replace('svg>[id]:target', 'svg>[id][id="1x"]'), 'an id starting with a digit');
+  assert.equal(svgTargetPinned(stack, 'a"b'), stack, 'a fragment a selector cannot name plainly keeps the bytes');
+  assert.equal(svgTargetPinned(stack, ''), stack);
+  const plain = '<svg xmlns="http://www.w3.org/2000/svg"><circle r="9"/></svg>';
+  assert.equal(svgTargetPinned(plain, 'color'), plain, 'an SVG without :target rules keeps its bytes');
+  const outside = '<svg xmlns="http://www.w3.org/2000/svg"><text>:target</text></svg>';
+  assert.equal(svgTargetPinned(outside, 'x'), outside, 'only style elements change');
+});
+
+// T3 review 4: a cover's opacity is the opacity of the still that went out, never of an earlier read of a moving cover. A video
+// cover whose first still was proven opaque and whose next still is not (an opaque-to-transparent transition) must let the
+// region under it travel again; the proof never reaches the viewer (tile shape unchanged).
+test('T3: a cover skips the region under it only while its sent still is proven opaque', async () => {
+  const {encodePng} = await import('./kernel-browser-pixels.mjs');
+  const size = {width: 1192, height: 666}, boxes = [{id: 'n2', box: [100, 100, 200, 100]}, {id: 'n3', box: [100, 100, 200, 100]}];
+  const host = {pageSize: () => size, scales: new Map(), chromium: {display: {}}, async screenshot(tab, clip) { return {data_base64: encodePng(clip.width, clip.height, Buffer.alloc(clip.width * clip.height * 4, 255))}; }};
+  const mirror = new Mirror2({host}); mirror.opaqueBoxes = async () => boxes;
+  let packet = 0;
+  mirror.evaluate = async (world, expression) => {
+    if (expression.includes('coveredBy')) return {n3: 'n2'};
+    const id = /elementPixels\("(n\d+)"/.exec(expression)?.[1];
+    if (id === 'n2' && packet === 3) return null; // the cover read clear: it proves nothing
+    return {x: 0, y: 0, width: 200, height: 100, data_base64: `${id}-${packet}`, opaque: id === 'n2' ? packet !== 2 : false};
+  };
+  const stream = {frames: new Map()};
+  packet = 1; const first = await mirror.tiles({ref: 'world'}, {tab_id: 'tab'}, stream, true, true);
+  assert.deepEqual(first.map(t => t.node_id), ['n2'], 'an opaque cover alone travels');
+  stream.tilesAt = 0; // the next refresh is due
+  packet = 2; const second = await mirror.tiles({ref: 'world'}, {tab_id: 'tab'}, stream, false, true);
+  assert.deepEqual(second.map(t => t.node_id).sort(), ['n2', 'n3'], 'a cover whose sent still is not opaque covers nothing');
+  stream.tilesAt = 0; packet = 1; await mirror.tiles({ref: 'world'}, {tab_id: 'tab'}, stream, false, true);
+  stream.tilesAt = 0; packet = 3; const third = await mirror.tiles({ref: 'world'}, {tab_id: 'tab'}, stream, false, true);
+  assert(third.some(t => t.node_id === 'n3'), 'a cover with no still of its own this time covers nothing');
+  assert(![...first, ...second, ...third].some(t => 'opaque' in t), 'the opacity proof stays in the kernel');
 });

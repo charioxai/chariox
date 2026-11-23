@@ -116,7 +116,7 @@ impl LocalBrowserDirect {
             LocalDirectClient::Terminal => "LocalTerminalLeaseRenewed",
         };
         Ok(
-            serde_json::json!({name: {"expires_at_ms": expires_at_ms, "next_sequence": lease.sequence}}),
+            serde_json::json!({name: {"expires_at_ms": expires_at_ms, "expires_in_ms": expires_at_ms.saturating_sub(now), "next_sequence": lease.sequence}}),
         )
     }
 }

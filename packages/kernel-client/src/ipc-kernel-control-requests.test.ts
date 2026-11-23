@@ -158,6 +158,7 @@ test("getDaemonHealthRequest has typed workspace live sync health projection", (
     projection_invariants: {
       mismatch_count: 0,
       mismatch_counts_by_kind: {}, checked_sessions: 1, checked_agents: 1, mismatches: [] },
+    build_toolchain_version: null,
   } satisfies DaemonHealthProjection
 
   const response = { DaemonHealth: { projection } } satisfies DaemonHealthResponse

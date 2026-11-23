@@ -44,7 +44,8 @@ export function formatWorkflowRunList(workflowRuns: WorkflowRun[], workflowRef: 
   }
   return workflowRuns.map((run) => {
     const failures = (run.failure_events?.length ?? 0) > 0 ? ` failures=${run.failure_events?.length ?? 0}` : ""
-    return `${run.id} workflow=${run.workflow_id} endpoint=${run.endpoint_id} [${String(run.status).toLowerCase()}${failures}]`
+    const wait = run.outcome?.kind === "waiting" && run.outcome.on === "blocked_on_workspace_claim" ? run.outcome.detail : undefined
+    return `${run.id} workflow=${run.workflow_id} endpoint=${run.endpoint_id} [${String(run.status).toLowerCase()}${failures}]${wait ? ` ${wait}` : ""}`
   }).join("\n")
 }
 

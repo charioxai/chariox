@@ -225,7 +225,7 @@ pub(crate) fn machine_tool_specs() -> Vec<crate::transport::runtime_tools::Runti
     [
         ("chariox.machines.options", "List the machines you can acquire now, as the connected service offers them: class_id, region, size, rate per minute in the account's currency and whether it is in stock. Pick one for chariox.machines.acquire. An option that is not available cannot be acquired.", schema(serde_json::json!({}),serde_json::json!([]))),
         ("chariox.machines.acquire", "Acquire a machine through Chariox for work you need to run elsewhere. Pass class_id (and region when the class is offered in several) from chariox.machines.options to acquire exactly that option; without class_id the first option in stock is acquired. A named option that is out of stock is refused with the options in stock, never replaced. The kernel asks the person first unless they enabled automatic offload and allocation. Service limits and the daily spend cap always apply. Returns allocation_ref, the machine type and service terms; poll status until access is available, then reach the returned kernel with Room commands. Release it when finished. Reuse request_id for a retry, after a lost response, a timeout or a refusal: it is safe, keeps the option the first try chose and returns the allocation the service accepted. Use a new request_id only when a refusal says the service closed the old one: nothing was allocated under it then, and nothing ever will be.", schema(serde_json::json!({"request_id":{"type":"string"},"class_id":{"type":"string"},"region":{"type":"string"}}),serde_json::json!([]))),
-        ("chariox.machines.status", "Read a allocation's state and its verified target kernel. Use the allocation_ref returned by acquire. The machine remains charged until deletion is confirmed.", schema(serde_json::json!({"allocation_ref":{"type":"string"}}),serde_json::json!(["allocation_ref"]))),
+        ("chariox.machines.status", "Read an allocation's state, its verified target kernel and the installed build toolchain version when the target answers. Use the allocation_ref returned by acquire. The machine remains charged until deletion is confirmed.", schema(serde_json::json!({"allocation_ref":{"type":"string"}}),serde_json::json!(["allocation_ref"]))),
         ("chariox.machines.release", "Delete an acquired machine when its work is finished. Returns the allocation state; poll status until deleted to confirm the allocation has ended.", schema(serde_json::json!({"allocation_ref":{"type":"string"}}),serde_json::json!(["allocation_ref"]))),
     ].into_iter().map(|(name,description,input_schema)|RuntimeToolSpec{name:name.into(),description:description.into(),input_schema}).collect()
 }
@@ -358,15 +358,29 @@ impl KernelRuntimeState {
                 let allocation_ref = args.allocation_ref.ok_or_else(|| {
                     acquisition_error("invalid_request", "allocation_ref is required")
                 })?;
-                serde_json::to_value(
-                    self.job_control_plane(
+                let status = self
+                    .job_control_plane(
                         &origin,
                         &ControlPlaneRequest::Get { allocation_ref },
                         "machines:status",
                     )
-                    .await?,
-                )
-                .map_err(|e| acquisition_error("invalid_response", &e.to_string()))?
+                    .await?;
+                let mut result = serde_json::to_value(&status)
+                    .map_err(|error| acquisition_error("invalid_response", &error.to_string()))?;
+                let ready_target = match status {
+                    crate::local::ControlPlaneResponse::Machine {
+                        state,
+                        kernel_target,
+                        ..
+                    } if state == "ready" => kernel_target,
+                    _ => None,
+                };
+                if let Some(target) = ready_target {
+                    result["build_toolchain"] = self
+                        .target_build_toolchain(&target.kernel_id, &origin.harness)
+                        .await;
+                }
+                result
             }
             "chariox.machines.release" => {
                 let allocation_ref = args.allocation_ref.ok_or_else(|| {
@@ -406,7 +420,7 @@ impl KernelRuntimeState {
                 return Err(acquisition_error(
                     "invalid_request",
                     "Unknown machine action",
-                ))
+                ));
             }
         };
         Ok(crate::transport::runtime_tools::RuntimeToolResult {
@@ -416,6 +430,7 @@ impl KernelRuntimeState {
     }
 }
 
+mod build_toolchain;
 mod choice;
 #[cfg(test)]
 mod tests;

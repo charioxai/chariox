@@ -91,6 +91,7 @@ async fn room_terminal_output_is_pushed_to_one_subscription_without_read_request
             rows: 24,
             title: None,
             command: None,
+            stdin: None,
         },
     )
     .await

@@ -32,6 +32,7 @@ pub(super) fn remote_record(source: &Path, script: &str, outputs: &[&str]) -> Re
             wait_s: 0,
             outputs: outputs.iter().map(|pattern| (*pattern).into()).collect(),
             machine: None,
+            machine_only: false,
         },
         workspace: source.to_owned(),
         cwd: source.to_owned(),
@@ -42,6 +43,7 @@ pub(super) fn remote_record(source: &Path, script: &str, outputs: &[&str]) -> Re
         allocation_ref: None,
         capability_revision: None,
         machine_label: Some("offload-test".into()),
+        held_kernel_id: None,
         address: Some("2001:db8::1".into()),
         result: None,
         exec_id: None,
@@ -346,12 +348,12 @@ pub(super) struct Prepared {
 
 pub(super) fn test_machine(grant: Arc<Outage>) -> super::super::job_compute::JobMachine {
     super::super::job_compute::JobMachine {
-        allocation_ref: "cleanup-test".into(),
         machine_label: "offload-test".into(),
         address: None,
         kernel_id: "worker".into(),
         grant,
         class: Some(super::super::job_compute::JobClass {
+            allocation_ref: "cleanup-test".into(),
             capability_revision: "v1".into(),
             class_id: "test-class".into(),
             rate_per_minute: crate::local::JobMachineRate {

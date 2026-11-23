@@ -2,6 +2,7 @@ use super::*;
 
 #[test]
 fn local_request_api_applies_workflow_code_script_extensions_to_generated_agents() {
+    crate::test_support::isolated_env_test!();
     let Some(node_path) = find_node_for_workflow_code_local_api_test() else {
         eprintln!(
             "skipping workflow-code script extension local API test because node is not available"

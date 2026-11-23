@@ -121,6 +121,8 @@ pub(crate) struct PromptEnvelope {
     /// Clients/peers cannot deserialize provider skill paths into an envelope.
     #[serde(skip)]
     pub(crate) skill_delivery: Option<crate::provider::skill_delivery::ProviderSkillDelivery>,
+    #[serde(skip)]
+    pub(crate) switch_skill_budget: Option<crate::provider::switch_turn::SwitchSkillBudget>,
 }
 
 impl PromptEnvelope {
@@ -140,6 +142,7 @@ impl PromptEnvelope {
             assessment_only: false,
             private_assessment_evidence: None,
             skill_delivery: None,
+            switch_skill_budget: None,
         }
     }
 
@@ -1480,7 +1483,9 @@ mod tests {
             .unwrap();
         let guidance = "Delegate a part to a helper only when it needs about 10 or more tool calls or parallel waiting, even when told to delegate the independent parts; do small edits yourself.";
         assert_eq!(envelope.hidden_base.matches(guidance).count(), 1);
-        assert!(RUNTIME_BASE.len() <= 8_000, "{} bytes", RUNTIME_BASE.len());
+        // The base is read on every call of every agent: it stays at or under the size it had at
+        // main 5820c05f9c (orchbench3 C 0.888); L12 grew it to 6.6 KB and C cost +0.12 cold units.
+        assert!(RUNTIME_BASE.len() <= 4_866, "{} bytes", RUNTIME_BASE.len());
     }
 
     /// The run base is the same on every turn; only the turn context changes, so a
@@ -1518,14 +1523,18 @@ mod tests {
     }
 
     fn claude_run(sub_agent: bool) -> RuntimeProviderRun {
-        let request = LaunchProviderRequest::new("session", "agent", "claude", "default", "sonnet")
+        provider_run("claude", "sonnet", sub_agent)
+    }
+
+    fn provider_run(provider: &str, model: &str, sub_agent: bool) -> RuntimeProviderRun {
+        let request = LaunchProviderRequest::new("session", "agent", provider, "default", model)
             .with_sub_agent(sub_agent);
         RuntimeProviderRun::new(
             "provider-run",
             &request,
             ProviderLaunchResult {
                 endpoint_mode: AgentEndpointMode::Managed,
-                process_label: "claude".to_string(),
+                process_label: provider.to_string(),
                 pty_target: None,
                 pty_program: None,
                 pty_args: Vec::new(),
@@ -1535,6 +1544,38 @@ mod tests {
                 structured_endpoint: Some("stdio://claude".to_string()),
             },
         )
+    }
+
+    #[test]
+    fn worker_context_guides_bounded_reads_across_providers() {
+        let root = temp_prompt_root("bounded-worker-reads");
+        let registry = PromptTemplateRegistry::new(root.to_path_buf());
+        registry.materialize_bundled_defaults().unwrap();
+        let service = PromptAssemblyService::new(registry);
+        let guidance =
+            "Search narrowly and read bounded ranges. Reuse earlier reads until files change.";
+        for (provider, model) in [
+            ("claude", "sonnet"),
+            ("codex", "gpt-6.2-sol"),
+            ("opencode", "opencode-go/glm-5.3"),
+        ] {
+            for sub_agent in [false, true] {
+                let envelope = service
+                    .assemble_provider_turn(
+                        &provider_run(provider, model, sub_agent),
+                        "Verify the source",
+                        None,
+                        Vec::new(),
+                        PromptAssemblyMode::NormalProviderTurn,
+                    )
+                    .unwrap();
+                assert_eq!(
+                    envelope.hidden_base.contains(guidance),
+                    sub_agent,
+                    "{provider}"
+                );
+            }
+        }
     }
 
     /// An agent another agent started reads its task, answers and asks for help;
@@ -1711,8 +1752,6 @@ mod tests {
             "self-contained HTML page",
             "`chariox.visual.preview`",
             "`chariox.visual.show`",
-            "cdn.jsdelivr.net, cdnjs.cloudflare.com, unpkg.com or esm.sh",
-            "cannot fetch data",
         ] {
             assert!(
                 envelope.hidden_system_context.contains(expected),
@@ -1756,8 +1795,8 @@ mod tests {
             "do not ask them to do it in the chat",
             "`view.browser_region`",
             "only a Cancel choice",
-            "it closes by itself when the step is done",
-            "`done_text`",
+            "closes by itself when the step is done",
+            "or to start one if it is idle",
             "`chariox.agent_auth_register`",
         ] {
             assert!(RUNTIME_BASE.contains(expected), "missing {expected}");

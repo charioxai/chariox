@@ -319,8 +319,14 @@ impl Pool {
         drop(launches);
         // Paused and held commands do not grow: with nothing growing the
         // pool waits rather than stops.
-        if protection.memory && may_stop && growing > 0 && self.pressed(&members) {
-            self.stop_one(&members, None, Cause::Pressure);
+        if protection.memory && may_stop && growing > 0 {
+            self.stop_under_pressure(&members);
+        }
+    }
+
+    fn stop_under_pressure(&self, members: &[Arc<Mutex<Observation>>]) {
+        if self.pressed(members) {
+            self.stop_one(members, None, Cause::Pressure);
         }
     }
 
@@ -739,16 +745,86 @@ fn host_short(margin: u64) -> bool {
     let Ok(text) = std::fs::read_to_string("/proc/meminfo") else {
         return false;
     };
-    let available = text
-        .lines()
-        .find_map(|line| line.strip_prefix("MemAvailable:"))
-        .and_then(|line| line.split_whitespace().next())
-        .and_then(|value| value.parse::<u64>().ok())
-        .map(|kib| kib.saturating_mul(1024));
-    available.is_some_and(|bytes| bytes < margin)
+    meminfo_below_margin(&text, margin)
         || cgroup::bounding()
             .iter()
             .any(|limited| cgroup::headroom(limited).is_some_and(|bytes| bytes < margin))
+}
+
+#[cfg(target_os = "linux")]
+fn meminfo_below_margin(text: &str, margin: u64) -> bool {
+    text.lines()
+        .find_map(|line| line.strip_prefix("MemAvailable:"))
+        .and_then(|line| line.split_whitespace().next())
+        .and_then(|value| value.parse::<u64>().ok())
+        .is_some_and(|kib| kib.saturating_mul(1024) < margin)
+}
+
+#[cfg(all(test, target_os = "linux"))]
+#[test]
+fn sysstat_headroom_gates_the_typed_runaway_stop() {
+    let (control, stopped) = std::sync::mpsc::channel();
+    let command = |pid, resident, growth| CommandUse {
+        pid,
+        deleted_open: 0,
+        group: None,
+        resident,
+        growth,
+        measured_growth: growth,
+        steady_growth: growth,
+        writes: 0,
+        write_growth: 0,
+        effective: pid,
+        root: true,
+    };
+    let members = [
+        ("healthy", command(2, 80 * 1024 * MIB, 0)),
+        (
+            "runaway",
+            command(3, 20 * 1024 * MIB, RUNAWAY_BYTES_PER_SECOND),
+        ),
+    ]
+    .map(|(unit, command)| {
+        Arc::new(Mutex::new(Observation {
+            unit: unit.into(),
+            commands: vec![command],
+            control: Some(control.clone()),
+            ..Observation::default()
+        }))
+    });
+    let pool_for = |meminfo: &'static str| {
+        Pool::new(112 * 1024 * MIB, true)
+            .with_machine_pressure(Box::new(move || meminfo_below_margin(meminfo, 512 * MIB)))
+    };
+    // Extremes of the six b3 sysstat samples during the outage. High PSI
+    // and swap occupancy do not enter the host-headroom decision.
+    for meminfo in [
+        "MemAvailable: 1266836 kB\nSwapTotal: 17825780 kB\nSwapFree: 56 kB\n",
+        "MemAvailable: 1532584 kB\nSwapTotal: 17825780 kB\nSwapFree: 116 kB\n",
+    ] {
+        pool_for(meminfo).stop_under_pressure(&members);
+        assert!(stopped.try_recv().is_err());
+    }
+
+    // Synthetic no-swap control below the existing margin, with the same work.
+    pool_for("MemAvailable: 524287 kB\nSwapTotal: 0 kB\nSwapFree: 0 kB\n")
+        .stop_under_pressure(&members);
+    match stopped
+        .try_recv()
+        .expect("the controller should stop a command")
+    {
+        WatchCommand::MemoryStop {
+            pid,
+            limit_bytes,
+            notice,
+        } => {
+            assert_eq!(pid, 3);
+            assert_eq!(limit_bytes, 56 * 1024 * MIB);
+            assert!(notice.contains("under memory pressure"));
+        }
+        _ => panic!("expected the typed memory stop command"),
+    }
+    assert!(stopped.try_recv().is_err());
 }
 
 /// Memory the host itself has left above `margin`: the user's apps or other

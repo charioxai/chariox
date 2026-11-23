@@ -192,6 +192,10 @@ impl KernelRuntimeState {
         {
             request.capability_level = crate::attachment::ClientCapabilityLevel::AutomationOnly;
         }
-        self.attach(request, terminal_caller).await
+        let attachment = self.attach(request).await?;
+        if terminal_caller {
+            self.owned.announce_agent_release_to_client(&attachment);
+        }
+        Ok(attachment)
     }
 }

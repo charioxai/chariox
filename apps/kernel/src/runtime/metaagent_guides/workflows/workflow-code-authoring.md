@@ -58,6 +58,7 @@ Workflow-code scripts run in the kernel compiler with a single builder named `wo
 - `workflow.endpoint(entryNode, options)` defines an invocation endpoint and returns an endpoint handle:
   - `handle`
   - `alias`
+  - `maxInstances` caps concurrent invocations. Extra copies use detached Git worktrees or separate empty directories for plain-directory Rooms. The first instance uses the Room's directory.
   - `canvas`
 
 - `workflow.queue(options)` defines a prompt queue and returns a queue handle:

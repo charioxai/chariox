@@ -173,7 +173,7 @@ async fn a_job_naming_a_machine_whose_kernel_does_not_answer_is_refused() {
     .unwrap_err();
     served(service).await;
     assert!(
-        error.to_string().contains("did not answer")
+        error.to_string().contains("is reconnecting")
             && error.to_string().contains("chariox.machines.status"),
         "{error}"
     );
@@ -223,7 +223,7 @@ async fn after_a_restart_the_held_machine_is_granted_again_only_while_it_runs_th
     let home = crate::test_support::TestWorktree::new("held-machine-reattach-home");
     stand_in_kernel("held-kernel-same", home.path());
     let mut record = super::return_tests::remote_record(workspace.path(), "true", &[]);
-    record.request.machine = Some("held-1".into());
+    record.request.machine = Some(JobMachineTarget::Allocation("held-1".into()));
     let service = service(
         &state,
         vec![
@@ -251,10 +251,12 @@ enum Fault {
     None,
     /// The nth upload chunk fails as a relay outage would.
     FailUpload(usize),
+    /// Every reply from the nth upload chunk onward is lost.
+    LoseUploadReplies(usize),
     /// The nth upload chunk never gets its reply: the home kernel dies waiting for it.
     HangUpload(usize),
-    /// The nth upload chunk waits for `resume`, so the test can act while the upload is under way.
-    PauseUpload(usize),
+    /// File return fails after the command exits.
+    FailReturn,
     /// Every cleanup request fails.
     CleanupDown,
     /// The workspace removal runs on the machine but its reply never comes back.
@@ -274,7 +276,6 @@ struct Machine {
     chunks: std::sync::atomic::AtomicUsize,
     /// Told when a fault was reached.
     reached: tokio::sync::Notify,
-    resume: tokio::sync::Notify,
 }
 
 impl Machine {
@@ -289,7 +290,6 @@ impl Machine {
             fault: fault.into(),
             chunks: 0.into(),
             reached: Default::default(),
-            resume: Default::default(),
         });
         super::super::job_compute::stand_in_kernels()
             .lock()
@@ -385,16 +385,24 @@ impl crate::room_exec::gateway_placement::GrantedSend for Machine {
                 let chunk = self.chunks.fetch_add(1, SeqCst);
                 match fault {
                     Fault::FailUpload(at) if at == chunk => return Err(outage()),
+                    Fault::LoseUploadReplies(at) if chunk >= at => {
+                        return Err(
+                            crate::runtime::kernel_gateway::GatewayError::ConnectionLost {
+                                name: "held worker".into(),
+                            },
+                        );
+                    }
                     Fault::HangUpload(at) if at == chunk => {
                         self.reached.notify_one();
                         std::future::pending::<()>().await
                     }
-                    Fault::PauseUpload(at) if at == chunk => {
-                        self.reached.notify_one();
-                        self.resume.notified().await
-                    }
                     _ => {}
                 }
+            }
+            if fault == Fault::FailReturn
+                && matches!(request, LocalDaemonRequest::ListKernelDirectory(_))
+            {
+                return Err(outage());
             }
             let cleanup = id.contains(":cleanup");
             if cleanup && fault == Fault::CleanupDown {
@@ -532,7 +540,7 @@ async fn cancelling_a_held_machine_job_during_its_upload_removes_what_was_upload
     let (state, run, task, workspace) = super::tests::remote_fixture().await;
     three_files(workspace.path());
     let home = crate::test_support::TestWorktree::new("held-cancel-upload-home");
-    let machine = Machine::stand_in("held-kernel-cancel", home.path(), Fault::PauseUpload(1));
+    let machine = Machine::stand_in("held-kernel-cancel", home.path(), Fault::HangUpload(1));
     let service = service(&state, two_gets("held-kernel-cancel")).await;
     let started = run_on_held(
         &state,
@@ -553,30 +561,13 @@ async fn cancelling_a_held_machine_job_during_its_upload_removes_what_was_upload
         "where the upload goes is saved before it starts"
     );
     assert_eq!(saved(&state, &id).remote, RemoteStage::Planned);
-    let cancel = {
-        let (state, run, task, id) = (state.clone(), run.clone(), task.clone(), id.clone());
-        tokio::spawn(
-            async move { job_status(&state, &run, &task, "chariox.jobs.cancel", &id).await },
-        )
-    };
-    let wake_id = saved(&state, &id).wake_id;
-    let driver = state.job_wake_driver.as_ref().unwrap();
-    tokio::time::timeout(Duration::from_secs(10), async {
-        while !driver
-            .live
-            .lock()
-            .unwrap()
-            .get(&wake_id)
-            .is_some_and(|cancel| *cancel.borrow())
-        {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        job_status(&state, &run, &task, "chariox.jobs.cancel", &id),
+    )
     .await
-    .expect("the cancel never reached the job");
-    machine.resume.notify_one();
+    .expect("a stalled upload must respond to cancellation");
     let status = finished(&state, &run, &task, &id).await;
-    cancel.await.unwrap();
     served(service).await;
     assert_eq!(status["result"]["outcome"], "cancelled", "{status}");
     assert!(
@@ -632,6 +623,7 @@ async fn a_kernel_restart_during_a_held_machine_upload_removes_what_was_uploaded
             ("get", 200, held_machine("ready", "held-kernel-restart-up")),
             ("get", 200, held_machine("ready", "held-kernel-restart-up")),
             ("get", 200, held_machine("ready", "held-kernel-restart-up")),
+            ("get", 200, held_machine("ready", "held-kernel-restart-up")),
         ],
     )
     .await;
@@ -651,11 +643,15 @@ async fn a_kernel_restart_during_a_held_machine_upload_removes_what_was_uploaded
     restart(&state, &id, true);
     let status = finished(&state, &run, &task, &id).await;
     served(service).await;
-    assert!(
-        !uploaded_copy(home.path(), &id).exists(),
-        "recovery left the half-uploaded workspace on the held machine"
-    );
-    assert!(!plan_saved(&state, &id));
+    // The remote directory can disappear before the removal reply arrives and
+    // its return plan is cleared.
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while uploaded_copy(home.path(), &id).exists() || plan_saved(&state, &id) {
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("recovery did not settle the half-uploaded workspace");
     assert_eq!(status["deleted"], false);
     assert_eq!(saved(&state, &id).remote, RemoteStage::Settled);
 }
@@ -672,6 +668,11 @@ async fn a_kernel_restart_while_a_held_machine_cleans_up_keeps_the_finished_resu
     let service = service(
         &state,
         vec![
+            (
+                "get",
+                200,
+                held_machine("ready", "held-kernel-restart-clean"),
+            ),
             (
                 "get",
                 200,
@@ -804,6 +805,7 @@ async fn a_kernel_restart_removes_what_a_finished_held_machine_job_could_not() {
             ("get", 200, held_machine("ready", "held-kernel-startup")),
             ("get", 200, held_machine("ready", "held-kernel-startup")),
             ("get", 200, held_machine("ready", "held-kernel-startup")),
+            ("get", 200, held_machine("ready", "held-kernel-startup")),
         ],
     )
     .await;
@@ -844,4 +846,313 @@ async fn a_kernel_restart_removes_what_a_finished_held_machine_job_could_not() {
     .await
     .expect("the restart left the workspace on the held machine");
     served(service).await;
+}
+
+async fn enroll_stand_in(state: &KernelRuntimeState, kernel: &str, name: &str, home: &Path) {
+    stand_in_kernel(kernel, home);
+    super::super::peer_agent_outbound::peer_agent_link_for_tests::register(
+        kernel,
+        name,
+        Arc::new(|_, _, _| panic!("the command uses the kernel gateway")),
+    );
+    served(service(state, vec![]).await).await;
+}
+
+#[tokio::test]
+async fn a_job_runs_in_a_folder_on_an_enrolled_kernel_without_allocating() {
+    let (state, run, task, _workspace) = super::tests::fixture().await;
+    let home = crate::test_support::TestWorktree::new("enrolled-job-home");
+    let kernel = "enrolled-job-kernel";
+    enroll_stand_in(&state, kernel, "enrolled-job-machine", home.path()).await;
+    std::fs::write(home.path().join("source.txt"), "copied source").unwrap();
+    let result = run_on_held(
+        &state,
+        &run,
+        &task,
+        serde_json::json!({
+            "command":["/bin/sh","-c","cat source.txt && exit 7"],
+            "machine":{"kernel":"enrolled-job-machine","directory": home.path()},
+            "wait_s":15,
+        }),
+    )
+    .await;
+    super::super::peer_agent_outbound::peer_agent_link_for_tests::unregister(kernel);
+    let result = result.unwrap();
+    assert_eq!(result["placement"], "remote", "{result}");
+    assert_eq!(result["result"]["exit_code"], 7, "{result}");
+    assert_eq!(
+        result["result"]["output_tail"].as_str().unwrap().trim(),
+        "copied source",
+        "{result}"
+    );
+    assert!(home.path().join("source.txt").is_file());
+}
+
+#[tokio::test]
+async fn enrolled_job_status_shows_live_output_and_cancel_stops_the_command() {
+    let (state, run, task, _workspace) = super::tests::fixture().await;
+    let home = crate::test_support::TestWorktree::new("enrolled-job-cancel");
+    let kernel = "enrolled-job-cancel-kernel";
+    enroll_stand_in(&state, kernel, kernel, home.path()).await;
+    let launched = run_on_held(
+        &state,
+        &run,
+        &task,
+        serde_json::json!({
+            "command":["/bin/sh","-c","echo started; sleep 60; touch completed"],
+            "machine":{"kernel":kernel,"directory": home.path()},
+        }),
+    )
+    .await
+    .unwrap();
+    let args = serde_json::json!({"job_id": launched["job_id"]});
+    let status = || state.dispatch_job_tool(Some(&run), "chariox.jobs.status", &args, &task);
+    tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            let reply = status().await.unwrap();
+            assert!(reply["result"].is_null(), "{reply}");
+            if reply["output_tail"]
+                .as_str()
+                .is_some_and(|tail| tail.contains("started"))
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("running job did not publish output");
+    state
+        .dispatch_job_tool(Some(&run), "chariox.jobs.cancel", &args, &task)
+        .await
+        .unwrap();
+    let finished = tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            let reply = status().await.unwrap();
+            if reply["state"] == "finished" {
+                return reply;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("remote job did not stop");
+    super::super::peer_agent_outbound::peer_agent_link_for_tests::unregister(kernel);
+    assert_eq!(finished["result"]["outcome"], "cancelled", "{finished}");
+    assert!(!home.path().join("completed").exists());
+}
+
+#[tokio::test]
+async fn a_queued_job_moves_to_an_enrolled_kernel_after_its_turn_ends() {
+    let (state, run, task, workspace) = super::tests::fixture().await;
+    let home = crate::test_support::TestWorktree::new("enrolled-job-move-home");
+    let kernel = "enrolled-job-move-kernel";
+    enroll_stand_in(&state, kernel, kernel, home.path()).await;
+    std::fs::write(workspace.path().join("source.txt"), "staged source").unwrap();
+    let busy = crate::runtime::process_resources::LaunchAdmission::default()
+        .reserve_with_memory(
+            "enrolled-job-move-pressure",
+            &["cat".into()],
+            workspace.path(),
+            true,
+            u64::MAX,
+        )
+        .unwrap();
+    let launched = run_on_held(
+        &state,
+        &run,
+        &task,
+        serde_json::json!({"command":["/bin/cat","source.txt"],"needs":{"memory_gib":1}}),
+    )
+    .await
+    .unwrap();
+    let id = launched["job_id"].as_str().unwrap();
+    let driver = state.job_wake_driver.as_ref().unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while driver.read(id).unwrap().state != "queued" {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the local job was not held for memory");
+    state
+        .owned
+        .durable_state_store
+        .agent_lifecycle(ledger::Operation::Settle {
+            room: task.room_id.clone(),
+            agent: task.agent_id.clone(),
+            prompt: task.prompt_id.clone(),
+            run: run.id().into(),
+            has_answer: true,
+            cancelled: false,
+            now: crate::session::unix_epoch_ms(),
+        })
+        .unwrap();
+    assert_eq!(
+        state
+            .owned
+            .durable_state_store
+            .agent_task(&task.task_id)
+            .unwrap()
+            .unwrap()
+            .state,
+        ledger::ExecutionState::Done,
+    );
+    let rental_refusal = state.job_acquisition_subject(id).unwrap_err();
+    assert!(rental_refusal.to_string().contains("This job's task ended"));
+    let owner = crate::runtime::command::KernelCaller {
+        connection_class: Some(crate::local::KernelConnectionClass::Terminal),
+        user_id: Some(task.owner_user_id.clone()),
+        ..crate::runtime::command::KernelCaller::default()
+    };
+    let moved = state
+        .run_session_process_remotely(&task.room_id, &owner, id, Some(kernel))
+        .await
+        .unwrap();
+    assert_eq!(moved, id);
+    drop(busy);
+    let result = tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            if let Some(result) = driver.read(id).unwrap().result {
+                return result;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the remote job did not finish");
+    super::super::peer_agent_outbound::peer_agent_link_for_tests::unregister(kernel);
+    assert_eq!(result.exit_code, Some(0), "{result:?}");
+    assert_eq!(result.output_tail.trim(), "staged source");
+    assert_eq!(result.ran_on.machine, kernel);
+}
+
+async fn job_with_upload_fault(kernel_id: &str, fault: Fault) -> (serde_json::Value, usize) {
+    let (state, run, task, workspace) = super::tests::remote_fixture().await;
+    three_files(workspace.path());
+    let home = crate::test_support::TestWorktree::new("held-upload-fault");
+    let machine = Machine::stand_in(kernel_id, home.path(), fault);
+    let service = service(&state, two_gets(kernel_id)).await;
+    let job = run_on_held(
+        &state,
+        &run,
+        &task,
+        serde_json::json!({"command":["/bin/true"],"machine":"held-1","timeout_s":1,"wait_s":6}),
+    )
+    .await
+    .unwrap();
+    served(service).await;
+    let writes = machine.chunks.load(std::sync::atomic::Ordering::SeqCst);
+    (job, writes)
+}
+
+#[tokio::test]
+async fn a_stalled_held_upload_finishes_with_a_time_limit_and_a_next_step() {
+    let (job, writes) =
+        job_with_upload_fault("held-kernel-stalled-upload", Fault::HangUpload(1)).await;
+    assert_eq!(writes, 2);
+    assert_eq!(job["state"], "finished", "{job}");
+    assert_eq!(job["result"]["outcome"], "time_limit", "{job}");
+    assert!(job["result"]["exit_code"].is_null());
+    let output = job["result"]["output_tail"].as_str().unwrap();
+    assert!(
+        output.contains("uploading the workspace") && output.contains("chariox.machines.status"),
+        "{output}"
+    );
+}
+
+#[tokio::test]
+async fn a_missing_held_upload_reply_is_retried_and_reported() {
+    let (job, writes) =
+        job_with_upload_fault("held-kernel-missing-reply", Fault::LoseUploadReplies(1)).await;
+    assert_eq!(
+        writes, 3,
+        "the second chunk was retried after its reply was lost"
+    );
+    assert_eq!(job["state"], "finished", "{job}");
+    assert!(job["result"]["exit_code"].is_null());
+    let output = job["result"]["output_tail"].as_str().unwrap();
+    assert!(
+        output.contains("reply could not be recovered")
+            && output.contains("before the command started")
+            && output.contains("chariox.machines.status"),
+        "{output}"
+    );
+}
+
+#[tokio::test]
+async fn a_machine_only_held_job_runs_without_uploading_or_returning_workspace_files() {
+    let (state, run, task, workspace) = super::tests::remote_fixture().await;
+    three_files(workspace.path());
+    let home = crate::test_support::TestWorktree::new("machine-only-home");
+    let kernel = "machine-only-kernel";
+    let machine = Machine::stand_in(kernel, home.path(), Fault::FailUpload(0));
+    let mut responses = two_gets(kernel);
+    responses.push(("get", 200, held_machine("ready", kernel)));
+    let service = service(&state, responses).await;
+    let finished = run_on_held(
+        &state,
+        &run,
+        &task,
+        serde_json::json!({
+            "command": ["/bin/sh", "-c", "test ! -e a.txt && printf remote > remote.txt && printf done"],
+            "machine": "held-1",
+            "machine_only": true,
+            "wait_s": 15
+        }),
+    )
+    .await
+    .unwrap();
+    served(service).await;
+    assert_eq!(finished["result"]["exit_code"], 0, "{finished}");
+    assert_eq!(
+        finished["result"]["output_tail"]
+            .as_str()
+            .unwrap()
+            .trim_end(),
+        "done"
+    );
+    assert_eq!(finished["result"]["files_back"], serde_json::json!([]));
+    assert_eq!(machine.chunks.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert_eq!(
+        std::fs::read(home.path().join("remote.txt")).unwrap(),
+        b"remote"
+    );
+    assert!(!workspace.path().join("remote.txt").exists());
+    assert!(!plan_saved(&state, finished["job_id"].as_str().unwrap()));
+}
+
+#[tokio::test]
+async fn release_during_held_job_return_settles_the_saved_job() {
+    let (state, run, task, _workspace) = super::tests::remote_fixture().await;
+    let home = crate::test_support::TestWorktree::new("held-return-released");
+    let kernel = "held-return-released-kernel";
+    Machine::stand_in(kernel, home.path(), Fault::FailReturn);
+    let mut responses = two_gets(kernel);
+    responses.push(("get", 200, held_machine("deleted", kernel)));
+    let service = service(&state, responses).await;
+    let finished = run_on_held(
+        &state,
+        &run,
+        &task,
+        serde_json::json!({
+            "command": ["/bin/sh", "-c", "printf remote > remote.txt"],
+            "machine": "held-1",
+            "wait_s": 15
+        }),
+    )
+    .await
+    .unwrap();
+    served(service).await;
+    let job_id = finished["job_id"].as_str().unwrap();
+    let status = job_status(&state, &run, &task, "chariox.jobs.status", job_id).await;
+    assert!(!plan_saved(&state, job_id));
+    for response in [finished, status] {
+        assert_eq!(response["deleted"], true, "{response}");
+        assert_eq!(response["return_pending"], false);
+        assert_eq!(response["result"]["exit_code"], 0);
+        let output = response["result"]["output_tail"].as_str().unwrap();
+        assert!(output.contains("The machine was released."), "{output}");
+        assert!(!output.contains("stays yours"), "{output}");
+    }
 }

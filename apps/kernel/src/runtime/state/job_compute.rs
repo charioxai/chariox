@@ -10,7 +10,6 @@ use crate::runtime::command::{KernelCaller, KernelCallerKind, KernelCommand, Ker
 use crate::runtime::kernel_gateway::Origin;
 
 pub(super) struct JobMachine {
-    pub(super) allocation_ref: String,
     pub(super) machine_label: String,
     pub(super) address: Option<String>,
     pub(super) kernel_id: String,
@@ -20,9 +19,19 @@ pub(super) struct JobMachine {
 }
 
 pub(super) struct JobClass {
+    pub(super) allocation_ref: String,
     pub(super) capability_revision: String,
     pub(super) class_id: String,
     pub(super) rate_per_minute: JobMachineRate,
+}
+
+#[cfg(test)]
+pub(in crate::runtime) fn stand_in_kernel(kernel_id: &str) -> Option<Arc<dyn GrantedSend>> {
+    stand_in_kernels()
+        .lock()
+        .expect("stand-in kernels")
+        .get(kernel_id)
+        .cloned()
 }
 
 /// Tests reach a second kernel in the same process under the kernel id they name; nothing else
@@ -305,12 +314,8 @@ impl KernelRuntimeState {
         harness: &str,
     ) -> Result<Arc<dyn GrantedSend>, DaemonError> {
         #[cfg(test)]
-        if let Some(kernel) = stand_in_kernels()
-            .lock()
-            .expect("stand-in kernels")
-            .get(kernel_id)
-        {
-            return Ok(kernel.clone());
+        if let Some(kernel) = stand_in_kernel(kernel_id) {
+            return Ok(kernel);
         }
         let owner = self.owned.config_projection.local_owner_user_id();
         let retained = Origin {
@@ -412,12 +417,12 @@ impl KernelRuntimeState {
                     )
                 })?;
                 return Ok(JobMachine {
-                    allocation_ref: allocation_ref.into(),
                     machine_label: machine_label.unwrap_or_else(|| "remote job".into()),
                     address,
                     grant: self.job_machine_grant(&target.kernel_id, &origin.harness)?,
                     kernel_id: target.kernel_id,
                     class: Some(JobClass {
+                        allocation_ref: allocation_ref.into(),
                         capability_revision: capability_revision.into(),
                         class_id: class.class_id,
                         rate_per_minute: class.rate_per_minute,
@@ -572,7 +577,7 @@ impl KernelRuntimeState {
             return Ok(());
         };
         self.job_compute_cleanup_request(&ControlPlaneRequest::JobStarted {
-            allocation_ref: machine.allocation_ref.clone(),
+            allocation_ref: class.allocation_ref.clone(),
             capability_revision: class.capability_revision.clone(),
         })
         .await?;

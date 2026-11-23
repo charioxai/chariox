@@ -22,6 +22,19 @@ Agents run inside Bubblewrap, so Linux Setup also checks that `bwrap` can make a
 mount namespace: run as root it installs the `bubblewrap` package with apt-get or
 dnf, otherwise it stops with the administrator command, before consuming an
 enrollment code.
+A fresh Linux installation provisions Claude Code, Codex CLI (including its
+code-mode host, rg and bwrap), and OpenCode before starting the kernel. Setup
+uses an explicit provider executable selection first, then the first match in
+the invoking user's PATH, then standard user and system locations. It prints the
+selected path and version and records the path in the kernel's user service.
+An existing executable stays where it is. If its version is older than Chariox's
+tested version, Setup shows how to update that installation through the
+provider. Missing CLIs are installed under `~/.local/share/chariox/providers`
+from the official platform packages pinned in the toolchain lockfile. Setup
+does not sign in to providers or change their configuration or account files.
+The Codex package's bwrap is for Codex. The kernel still needs the host's
+Bubblewrap and namespace support for its own agent confinement.
+
 The Linux executable carries its JavaScript runtime (no Node/Bun install); its
 libc floor is the build target's. CI also packages an unsigned amd64 `.deb`
 for Linux (libc 2.35+); it contains only the generic executable and metadata,
@@ -101,8 +114,58 @@ executing any downloaded binary. The existing Path-1 verifier/bootstrap and root
 App-runtime installer remain unchanged. Per-user setup doesn't enroll privileged
 App helpers or configure Docker/system services.
 
-The unsigned CI artifact is **not** ready for download. On the owner's signing
-machine, codesign/notarize/staple macOS artifacts first, then:
+### Publish Linux Setup
+
+Prepare the Linux x86_64 `bin/` tree from the release commit with the standalone
+`chariox`, `chariox-kernel`, `chariox-relay`, `chariox-app-package`, and
+`chariox-app-wasm-worker` executables. Use the Linux build instructions in
+[`release-bundle.yml`](../../.github/workflows/release-bundle.yml), including the
+Ubuntu 22.04 build for the supported glibc baseline.
+
+From the release checkout, prepare the unsigned bundle with a version, approved
+release public pin, and the HTTPS release and control-plane origins. This command
+uses Bun to compile Setup and emits the small signing documents separately.
+
+```sh
+node scripts/prepare-linux-setup.mjs prepare --version "$VERSION" \
+  --public-key "$RELEASE_PUBLIC_HEX" --executables "$UNSIGNED_LINUX_DIRECTORY" \
+  --release-base "$RELEASE_BASE" --control-plane-url "$CONTROL_PLANE_URL" \
+  --output "$OUTPUT"
+```
+
+Transfer only the `signing/` documents and `scripts/sign-linux-setup-documents.mjs`
+to the signing machine. Verify the independently recorded request checksum.
+
+```sh
+node sign-linux-setup-documents.mjs signing "$REQUEST_SHA256" "$RELEASE_PEM" signed
+```
+
+Return the three signatures to the release builder. The Linux bootstrap verifies
+its detached signature over the domain-separated SHA-256 of Setup. The bundle
+manifest signature covers the original manifest bytes. Assemble and verify the
+assets before handing them to the authorized publication process.
+
+```sh
+node scripts/prepare-linux-setup.mjs assemble --version "$VERSION" \
+  --public-key "$RELEASE_PUBLIC_HEX" --output "$OUTPUT" --signed signed
+```
+
+Use a separate staging prerelease version and staging origin for rental
+validation. Use a staging artifact host for the drill. Public versions and
+production origins are signed from their final release checkout, and public
+publication is a separate operator step. The Linux installer starts the
+device-code approval flow when run with no arguments.
+
+The Add this machine command passes `--enroll` and supplies a browser-issued code
+on stdin. Both forms install and start the kernel. Use `--install-only --login`
+explicitly for the separate terminal login flow.
+
+### Publish macOS Setup
+
+macOS publication is blocked on Miguel's Developer ID Application certificate
+and Apple notary credentials. The Linux command above can publish while those
+are pending. Once available, codesign/notarize/staple the macOS executable before
+computing its detached release signature:
 
 ```sh
 node scripts/sign-chariox-setup.mjs --artifact /path/to/final/executable \
@@ -110,12 +173,8 @@ node scripts/sign-chariox-setup.mjs --artifact /path/to/final/executable \
   --signer /absolute/owner-signing-hook
 ```
 
-The hook signs exact final bytes and writes their Ed25519 signature as lowercase
-hex. It keeps all private-key handling outside builders/source. The helper checks
-against the approved public pin before reporting success. CI produces generic
-unsigned Linux/macOS artifacts and the macOS app skeleton; the release-bundle
-workflow includes Setup in the signed CLI/kernel inventory. No CI is invoked by
-this lane, and no signing/private key is provisioned here.
+The owner hook signs the final bytes and writes their Ed25519 signature as
+lowercase hex. The helper verifies it against the approved public pin.
 
 ## MP-08 / MP-11 single-use browser codes
 
@@ -145,3 +204,30 @@ interrupted-journal recovery, stdin-only codes and local kernel enrollment seams
 Real Cloud/device approval, signed published artifacts, macOS signing/launchd,
 real systemd, Mac-to-LAN and fresh-machine parity remain coordinator acceptance.
 No MP item is closed by the local mocked drills.
+
+## Linux build machines
+
+For native builds on a Linux x86-64 machine, run these commands as the user
+who will build, in the build workspace on that machine:
+
+```sh
+chariox-setup build-toolchain prepare
+chariox-setup build-toolchain run -- cargo build -p chariox-kernel --locked
+```
+
+Setup checks whether the existing C and C++ compilers can link, and whether
+pkg-config can find OpenSSL and D-Bus and the host has CMake, make, Perl and
+libclang. It uses those tools when present. Otherwise, prepare needs curl,
+tar with bzip2, and HTTPS access to conda-forge. Setup verifies the micromamba
+archive and uses the [pinned package list](build-toolchain-linux-x64.lock).
+The managed environment lives in `~/.local/share/chariox/build-toolchain`.
+The run action sets compiler, linker, library and Clang header paths for that
+command.
+Use the project's own Rust toolchain and flags for optional build features.
+
+`chariox-setup build-toolchain status` reports system, managed version, or
+missing. An agent reading a ready allocation's machine status also gets the
+target's managed toolchain version, `not_installed`, or `unavailable` if the
+target could not answer. `chariox-setup build-toolchain remove` removes the
+managed environment in one step. Existing system tools are still eligible on
+the next run.

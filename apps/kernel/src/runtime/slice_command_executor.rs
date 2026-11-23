@@ -20,6 +20,7 @@ use tokio::sync::RwLock;
 
 use display_endpoint::execute_get_slice_display_endpoint_request;
 pub(crate) use display_endpoint::register_room_selkies_display_endpoint;
+pub(crate) use lifecycle::delete_agent_slice_if_unused;
 use lifecycle::{
     execute_create_slice_backup_request, execute_create_slice_request,
     execute_delete_slice_request, execute_get_slice_logs_request, execute_get_slice_request,
@@ -70,7 +71,10 @@ pub(crate) async fn execute_slice_request(
                     request.development = Some(development);
                 }
             }
-            execute_create_slice_request(runtime_state, request).await
+            // Room agents create slices as part of `agent spawn --slice new`.
+            let delete_when_unused = caller.metaagent_id.is_some()
+                && request.display_mode == crate::slice::SliceDisplayMode::Headless;
+            execute_create_slice_request(runtime_state, request, delete_when_unused).await
         }
         LocalDaemonRequest::GetSlice(request) => {
             execute_get_slice_request(runtime_state, request).await

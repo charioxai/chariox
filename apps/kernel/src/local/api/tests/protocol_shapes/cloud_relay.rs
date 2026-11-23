@@ -57,6 +57,37 @@ fn relay_status_control_capabilities_are_versioned_and_hashed() {
 }
 
 #[test]
+fn relay_registration_refusal_is_versioned_and_hashed() {
+    let expected = serde_json::json!({
+        "RelayStatus": {
+            "status": {
+                "local_daemon_protocol_version": 1013,
+                "configured": true, "connected": false, "capabilities": [],
+                "relay_url": "ws://127.0.0.1:43210", "relay_token_configured": true,
+                "daemon_id": "kernel-1", "machine_id": "machine-1", "machine_alias": null,
+                "registration_refused": {
+                    "reason": "upgrade required: protocol 1011 < minimum 1012",
+                    "next_step": "update this kernel",
+                    "since_ms": 1000,
+                    "next_retry_at_ms": 61000
+                }
+            }
+        }
+    });
+    let allocation = expected["RelayStatus"]["status"]["local_daemon_protocol_version"]
+        .as_u64()
+        .unwrap();
+    assert!(u64::from(LOCAL_DAEMON_PROTOCOL_VERSION) >= allocation);
+    let response: LocalDaemonResponse = serde_json::from_value(expected.clone()).unwrap();
+    let encoded = serde_json::to_value(response).unwrap();
+    assert_eq!(encoded, expected);
+    assert_eq!(
+        format!("{:x}", Sha256::digest(encoded.to_string().as_bytes())),
+        "de7f9f1cbaacd943c453691f1b494777e3d14660fd82f4c46c9c101fd6275346"
+    );
+}
+
+#[test]
 fn key_bound_cli_relay_requests_and_join_response_have_exact_protocol_shapes() {
     assert_eq!(
         LOCAL_DAEMON_PROTOCOL_VERSION,

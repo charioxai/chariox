@@ -191,6 +191,7 @@ pub fn compile_workflow_code_source_with_parameters_and_schema_import_root(
             definition,
             validation,
             logs,
+            source_sha256: super::sha256_hex(source.as_bytes()),
             source_spans,
         });
     }
