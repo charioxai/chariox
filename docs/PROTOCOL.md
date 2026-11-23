@@ -77,8 +77,9 @@ kernels keep receiving their existing wire messages during the relay rollout.
 While registration is refused, `RelayStatus.registration_refused` gives the
 reason, next step, first refusal time and scheduled retry time in Unix
 milliseconds. The kernel announces the refusal once to the attached owner
-and backs off consecutive identical refusals. Rejected credentials use the
-existing credential renewal path.
+and retries consecutive identical refusals after 15 s, then every 30 s, so a
+relay replaced under a refused kernel registers it within a minute. Rejected
+credentials use the existing credential renewal path.
 
 ### MP-08 / MP-09 / MP-10 / MP-11 artifact read pages (local993 / peer432)
 

@@ -1,6 +1,8 @@
 // Usage: node packages/kernel-client/scripts/relay-registration-drill.mjs RELAY KERNEL L12_RELAY L12_KERNEL
 // For baseline evidence: append --baseline to a command using the L12 binaries.
 // For the reply-queue status case: supply RELAY KERNEL --reply-queue.
+// For a relay replaced under a refused kernel (B1, B2): RELAY KERNEL OLD_RELAY --recovery,
+// where OLD_RELAY refuses the kernel (a relay older than it) and RELAY accepts it.
 // Linux with systemd. All endpoints, credentials, state and units belong to this drill.
 import assert from "node:assert/strict"
 import { execFileSync, spawnSync } from "node:child_process"
@@ -14,9 +16,10 @@ import { WebSocket, WebSocketServer } from "ws"
 
 const baseline = process.argv.includes("--baseline")
 const replyQueue = process.argv.includes("--reply-queue")
+const recovery = process.argv.includes("--recovery")
 const [relayBinary, kernelBinary, oldRelayBinary, oldKernelBinary] =
-  process.argv.slice(2).filter(arg => arg !== "--baseline" && arg !== "--reply-queue").map(path => resolve(path))
-assert(relayBinary && kernelBinary && (baseline || replyQueue || (oldRelayBinary && oldKernelBinary)),
+  process.argv.slice(2).filter(arg => !["--baseline", "--reply-queue", "--recovery"].includes(arg)).map(path => resolve(path))
+assert(relayBinary && kernelBinary && (baseline || replyQueue || (oldRelayBinary && (recovery || oldKernelBinary))),
   "supply the relay and kernel binaries and their L12 predecessors")
 const scratch = await mkdtemp(join(tmpdir(), "chrrg-"))
 const names = `relay-registration-${process.pid}`
@@ -59,7 +62,7 @@ async function freePort() {
 function runUnit(label, program, env) {
   const unit = `${names}-${label}.service`
   execFileSync("systemd-run", [
-    "--quiet", "--collect", "--unit", unit, "--property=RuntimeMaxSec=240",
+    "--quiet", "--collect", "--unit", unit, "--property=RuntimeMaxSec=900",
     "/usr/bin/env", "-i", "PATH=/usr/bin:/bin", "SHELL=/bin/sh",
     ...Object.entries(env).map(([key, value]) => `${key}=${value}`), program,
   ])
@@ -219,8 +222,8 @@ const notices = async (kernel, session, attachment) =>
     PollRuntimeNotices: { session_id: session, attachment_id: attachment },
   })).RuntimeNotices.notices.filter(notice => notice.message.includes("Relay not registered:"))
 
-async function startRelay(label, binary) {
-  const relayPort = await freePort()
+async function startRelay(label, binary, port) {
+  const relayPort = port ?? await freePort()
   runUnit(label, binary, {
     CHARIOX_RELAY_HOST: "127.0.0.1", CHARIOX_RELAY_PORT: relayPort, CHARIOX_RELAY_STUN_ADDRESS: "off",
     CHARIOX_RELAY_SCOPED_ISSUER: "relay-registration-drill", CHARIOX_RELAY_SCOPED_HMAC_SECRET: issuerSecret,
@@ -230,7 +233,51 @@ async function startRelay(label, binary) {
   return relayPort
 }
 
+// B1, B2: a kernel refused by a relay older than itself registers within a minute of the
+// relay being replaced by one that accepts it, however long it was refused, and a relay
+// that keeps refusing is dialed at a bounded rate with one warning.
+async function recoveryDrill() {
+  const cloudPort = await listen(createServer(cloud))
+  const relayPort = await freePort()
+  const oldRelayUnit = `${names}-old-relay.service`
+  await startRelay("old-relay", oldRelayBinary, relayPort)
+  const kernel = await startKernel("recovery", `ws://127.0.0.1:${relayPort}`, cloudPort)
+  const started = Date.now()
+  const refusals = []
+  let observed
+  await until("three refusals from the old relay", async () => {
+    const current = (await status(kernel)).registration_refused
+    if (current && current.next_retry_at_ms !== observed) {
+      observed = current.next_retry_at_ms
+      refusals.push({ at: Date.now(), reason: current.reason, retry_in_ms: current.next_retry_at_ms - Date.now() })
+    }
+    return refusals.length >= 3
+  }, 240_000)
+  assert.equal(online(kernel), false)
+  const gaps = refusals.slice(1).map((refusal, index) => refusal.at - refusals[index].at)
+  console.log("refusals", JSON.stringify({ refusals, gaps }))
+  // B2: the retry waits at least the first step, so no tight loop.
+  assert(gaps.every(gap => gap >= 14_000), `refusals ${JSON.stringify(gaps)} ms apart`)
+  const logged = spawnSync("sh", ["-c", `cat ${join(kernel.home, "logs")}/* 2>/dev/null`], { encoding: "utf8", maxBuffer: 1 << 28 }).stdout
+  const scheduled = logged.split("\n").filter(line => line.includes("relay registration retry scheduled")).length
+  const warned = logged.split("\n").filter(line => line.includes("Relay not registered")).length
+  assert(scheduled >= refusals.length && scheduled <= refusals.length + 1, `${scheduled} retry lines for ${refusals.length} refusals`)
+  assert(warned <= 2, `${warned} refusal warnings`)
+  console.log("B2 PASS", JSON.stringify({ attempts: refusals.length, gaps, scheduled, warned }))
+
+  execFileSync("systemctl", ["stop", oldRelayUnit])
+  await startRelay("relay", relayBinary, relayPort)
+  const replaced = Date.now()
+  const registered = await until("kernel registered with the replacement relay", () =>
+    presence.find(event => event.kernel === kernel.kernelId && event.status === "ONLINE" && event.time >= replaced), 120_000)
+  const waited = registered.time - replaced
+  assert.equal((await status(kernel)).connected, true)
+  assert(waited < 60_000, `registered ${waited} ms after the relay was replaced`)
+  console.log("B1 PASS", JSON.stringify({ since_start_ms: replaced - started, waited_ms: waited }))
+}
+
 async function drill() {
+  if (recovery) return recoveryDrill()
   const cloudPort = await listen(createServer(cloud))
   const relayPort = await startRelay("relay", relayBinary)
   if (replyQueue) {
@@ -314,15 +361,15 @@ async function drill() {
   assert.equal(online(refused), false)
   console.log("RG4 PASS only the acknowledged kernel published online")
 
-  assert(first.next_retry_at_ms - first.since_ms >= 60_000)
+  assert(first.next_retry_at_ms - first.since_ms >= 15_000)
   const second = await until("second refusal and scheduled retry", async () => {
     const current = (await status(refused)).registration_refused
     return current?.next_retry_at_ms > first.next_retry_at_ms && current
   }, 70_000)
   assert.equal(second.since_ms, first.since_ms)
   assert.equal(attempts.length, 2)
-  assert(attempts[1] - attempts[0] >= 59_000)
-  assert(second.next_retry_at_ms - attempts[1] >= 120_000)
+  assert(attempts[1] - attempts[0] >= 14_000)
+  assert(second.next_retry_at_ms - attempts[1] >= 30_000)
   assert.equal((await notices(refused, session, attachment)).length, 0)
   assert.equal(online(refused), false)
   console.log("RG3 PASS", JSON.stringify({ first: first.next_retry_at_ms, second: second.next_retry_at_ms }))

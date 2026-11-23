@@ -4,11 +4,11 @@ use super::*;
 use crate::local::RelayRegistrationRefusal;
 
 const REGISTRATION_TIMEOUT: Duration = Duration::from_secs(10);
-/// A refused kernel retries soon, then steadily: the relay it dials may be
-/// replaced at any moment, and a refused kernel must register within a minute of
-/// that. The relay's own refusal record (docs/PROTOCOL.md) expects a retry at least
-/// once a minute.
-const REGISTRATION_RETRY_SECONDS: [u64; 4] = [60, 120, 300, 900];
+/// A refused kernel retries soon, then every 30 s: the relay it dials can be replaced
+/// at any moment, and the kernel must register within a minute of that however long
+/// it was refused. That is still no faster than twice the once-a-minute retry the
+/// relay's own refusal record expects (docs/PROTOCOL.md).
+const REGISTRATION_RETRY_SECONDS: [u64; 2] = [15, 30];
 
 pub(super) async fn await_registration(
     inbound: &mut mpsc::Receiver<Message>,
@@ -42,7 +42,10 @@ pub(super) async fn await_registration(
 fn registration_retry_delay(attempt: usize, daemon_id: &str) -> Duration {
     let step = attempt.min(REGISTRATION_RETRY_SECONDS.len() - 1);
     Duration::from_secs(REGISTRATION_RETRY_SECONDS[step])
-        + Duration::from_millis(stable_jitter_ms(daemon_id, RELAY_RECONNECT_JITTER_SPREAD_MS))
+        + Duration::from_millis(stable_jitter_ms(
+            daemon_id,
+            RELAY_RECONNECT_JITTER_SPREAD_MS,
+        ))
 }
 
 #[derive(Default)]
@@ -133,7 +136,6 @@ mod tests {
 
     #[test]
     fn a_kernel_refused_for_a_long_time_still_retries_within_a_minute_of_a_relay_replacement() {
-        // Sleep, then the dial and the acknowledgment deadline of the next attempt.
         for attempt in [0, 1, 2, 3, 10, 1_000] {
             let wait = registration_retry_delay(attempt, "kernel-a");
             assert!(
