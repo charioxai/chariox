@@ -131,6 +131,18 @@ impl KernelRuntimeState {
                 super::peer_rooms::PeerControl::Cancel,
             );
         }
+        // PA10: whoever may stop an agent's turn in another room of the owner may also take back
+        // or re-arm its usage-limit resume there (`agent resume [cancel] --room`).
+        if let LocalDaemonRequest::UpdateAgentConfig(r) = request {
+            if r.session_id != actor.session_id() && only_usage_limit(r) {
+                let target = deadline_target(&r.session_id, &r.agent_id)?;
+                return self.authorize_peer_control(
+                    &actor,
+                    &target,
+                    super::peer_rooms::PeerControl::Cancel,
+                );
+            }
+        }
         // Who may change a deadline in another room may read it there.
         if let LocalDaemonRequest::GetAgentDeadline(r) = request {
             if r.session_id != actor.session_id() {
@@ -391,3 +403,18 @@ impl KernelRuntimeState {
 #[cfg(test)]
 #[path = "room_agent_admission_tests.rs"]
 mod tests;
+
+/// A config change that only takes back or re-arms the usage-limit resume.
+fn only_usage_limit(r: &crate::local::UpdateAgentConfigRequest) -> bool {
+    r.usage_limit.is_some()
+        && r.execution_mode.is_none()
+        && !r.clear_execution_mode
+        && r.permission_level.is_none()
+        && !r.clear_permission_level
+        && r.max_context_tokens.is_none()
+        && !r.clear_max_context_tokens
+        && r.workspace_id.is_none()
+        && !r.clear_workspace_id
+        && r.worktree_id.is_none()
+        && !r.clear_worktree_id
+}

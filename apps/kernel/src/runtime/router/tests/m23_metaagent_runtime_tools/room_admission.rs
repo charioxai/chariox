@@ -1830,3 +1830,64 @@ async fn room_own_schedule() {
     assert_eq!(left.len(), 1);
     assert_eq!(left[0].id(), own[1].id());
 }
+
+// PA10 (row 419): an orchestrator in one room takes back and re-arms the usage-limit resume of the
+// owner's agent in another room with no card, as the owner can in the agent pane. Other settings
+// of an agent in another room stay out of reach.
+#[test]
+fn room_admission_takes_back_a_resume_in_another_room_of_the_owner() {
+    run_large_stack_async_test("room-resume-other-room", resume_in_other_room);
+}
+
+async fn resume_in_other_room() {
+    let env = TestMetaRuntimeEnv::new("room-resume-other-room");
+    let mut config = DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let mut app = DaemonApp::bootstrap(config).unwrap();
+    let mut room = |name: &str| {
+        let workspace = env.root.join(name);
+        std::fs::create_dir_all(&workspace).unwrap();
+        crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new(
+                workspace.to_string_lossy(),
+                workspace.to_string_lossy(),
+            ))
+            .unwrap()
+    };
+    let (_, orchestrator) = room("orchestrator");
+    let (other, stopped) = room("stopped");
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
+    let change = |usage_limit, permission_level| {
+        LocalDaemonRequest::UpdateAgentConfig(crate::local::UpdateAgentConfigRequest {
+            session_id: other.id().to_string(),
+            agent_id: stopped.id().to_string(),
+            execution_mode: None,
+            clear_execution_mode: false,
+            permission_level,
+            clear_permission_level: false,
+            max_context_tokens: None,
+            clear_max_context_tokens: false,
+            workspace_id: None,
+            clear_workspace_id: false,
+            worktree_id: None,
+            clear_worktree_id: false,
+            usage_limit,
+            reason: None,
+        })
+    };
+    for action in [
+        crate::local::UsageLimitStopAction::Cancel,
+        crate::local::UsageLimitStopAction::ResumeWhenBack,
+    ] {
+        let request = change(Some(action.clone()), None);
+        let admitted = router
+            .runtime_state
+            .authorize_room_agent_request(orchestrator.id(), &request);
+        assert!(admitted.is_ok(), "{action:?}: {admitted:?}");
+    }
+    let settings = change(None, Some(crate::provider::AgentPermissionLevel::Required));
+    assert!(router
+        .runtime_state
+        .authorize_room_agent_request(orchestrator.id(), &settings)
+        .is_err());
+}

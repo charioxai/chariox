@@ -91,6 +91,52 @@ impl CommandRouter {
                     Err(error) => meta_command_failure_result(command, error),
                 })
             }
+            // PA10: take back or re-arm the usage-limit resume of an agent in another room of the
+            // owner, routed like `agent deadline --room` and admitted like `agent cancel --room`.
+            Some("resume") if args.iter().any(|arg| arg == "--room") => {
+                let result = async {
+                    let (action, reference, room) = match args {
+                        [verb, reference, flag, room] if verb == "cancel" && flag == "--room" => {
+                            (crate::local::UsageLimitStopAction::Cancel, reference, room)
+                        }
+                        [reference, flag, room] if flag == "--room" => (
+                            crate::local::UsageLimitStopAction::ResumeWhenBack,
+                            reference,
+                            room,
+                        ),
+                        _ => return Err(meta_command_error(super::resume_args::USAGE)),
+                    };
+                    let room = self
+                        .runtime_state
+                        .resolve_session_ref_id(room, None)
+                        .await?;
+                    let target = self.runtime_state.resolve_message_target(
+                        session,
+                        caller,
+                        Some(&room),
+                        reference,
+                    )?;
+                    let request = super::resume_args::usage_limit_request(
+                        target.session_id(),
+                        target.id(),
+                        action,
+                    );
+                    Box::pin(
+                        self.dispatch(meta_kernel_command(provider_run, caller, &request), request),
+                    )
+                    .await
+                }
+                .await;
+                Some(match result {
+                    Ok(response) => super::result::meta_command_success_result(
+                        command,
+                        &response,
+                        caller,
+                        self.runtime_state.room_agent_tools_enabled(),
+                    ),
+                    Err(error) => meta_command_failure_result(command, error),
+                })
+            }
             Some("cancel") => Some(
                 self.dispatch_meta_agent_cancel_command(
                     provider_run,
