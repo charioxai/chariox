@@ -213,4 +213,5 @@ pub const RUNTIME_CONTROL_CAPABILITIES: &[&str] = &[
     "framed_plaintext_v1",
     crate::provider_account_copy::PROVIDER_ACCOUNT_COPY_CAPABILITY,
     crate::provider_account_copy::PROVIDER_ACCOUNT_COPY_PULL_CAPABILITY,
+    crate::provider_account_copy::PROVIDER_ACCOUNT_COPY_OPENCODE_CAPABILITY,
 ];

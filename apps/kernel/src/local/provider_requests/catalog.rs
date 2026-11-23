@@ -710,11 +710,11 @@ fn bounded_output(
     })
 }
 
-fn opencode_auth_status(
-    account_profile: &str,
+/// `opencode auth list` under the profile's roots: the official CLI accepts the
+/// stored login files. Returns the resolved executable.
+fn run_opencode_auth_list(
     environment: &BTreeMap<String, String>,
-    services: &[crate::account_profile::ProviderAccountService],
-) -> Result<ProviderAuthStatus, DaemonError> {
+) -> Result<std::path::PathBuf, DaemonError> {
     let executable = resolve_opencode_executable()?;
     // MP-08 / MP-10 / MP-11: auth list exits before background model refresh
     // settles, which can strand its native lock ahead of explicit provisioning.
@@ -741,6 +741,15 @@ fn opencode_auth_status(
             ),
         });
     }
+    Ok(executable)
+}
+
+fn opencode_auth_status(
+    account_profile: &str,
+    environment: &BTreeMap<String, String>,
+    services: &[crate::account_profile::ProviderAccountService],
+) -> Result<ProviderAuthStatus, DaemonError> {
+    let executable = run_opencode_auth_list(environment)?;
     let credential_inspection = inspect_opencode_credentials(environment);
     use crate::account_profile::ProviderAccountAuthState;
     let auth_state = if services
@@ -937,6 +946,42 @@ fn opencode_go_usage(
             }
         }
         Err(_) => OpenCodeGoUsage::Unavailable,
+    }
+}
+
+/// How far a copied OpenCode login could be checked before it was published.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OpenCodeCopyCheck {
+    CliMissing,
+    Rejected,
+    Inconclusive,
+}
+
+/// Checks a copied OpenCode login in a staging profile. It must hold a usable
+/// credential and the official CLI must accept it. OpenCode has no login-check
+/// command and the kernel knows one authenticated provider call, the OpenCode Go
+/// usage request; that call runs whenever the login holds a Go key.
+pub(crate) fn check_copied_opencode_login(
+    environment: &BTreeMap<String, String>,
+) -> Result<(), OpenCodeCopyCheck> {
+    if inspect_opencode_credentials(environment) != OpenCodeCredentialInspection::Valid {
+        return Err(OpenCodeCopyCheck::Rejected);
+    }
+    match run_opencode_auth_list(environment) {
+        Ok(_) => {}
+        Err(DaemonError::ProviderExecutableNotFound { .. }) => {
+            return Err(OpenCodeCopyCheck::CliMissing)
+        }
+        Err(_) => return Err(OpenCodeCopyCheck::Inconclusive),
+    }
+    match opencode_go_usage(environment, crate::session::unix_epoch_ms()) {
+        OpenCodeGoUsage::Rejected | OpenCodeGoUsage::NotEntitled => {
+            Err(OpenCodeCopyCheck::Rejected)
+        }
+        OpenCodeGoUsage::Unavailable => Err(OpenCodeCopyCheck::Inconclusive),
+        OpenCodeGoUsage::Available(_)
+        | OpenCodeGoUsage::VerifiedWithoutMeters
+        | OpenCodeGoUsage::MissingKey => Ok(()),
     }
 }
 
