@@ -6485,6 +6485,20 @@ The relay never parses mirror records, which travel inside `KernelBrowser` resul
 raised for the resize command above. The web offers the new fields only to kernels at local 629 or
 later.
 
+### MP-08 / MP-10: mirror layout deltas (local 1015)
+
+Local 1015 (relay peer unchanged) adds the opt-in `mirror_subscribe` capability `layout_delta:true` for `wire:2`; the
+subscribed reply echoes it when accepted. The viewer already re-lays out its copy of the page at a new size in the same
+frame (the live layout contract above). For such a subscription, once its snapshot is complete (`snapshot_complete`,
+so no `deferred` box still holds the old geometry), a change of the page size no longer resets the stream with
+`resetReason` `layout`: the next credit is an ordinary delta whose header carries `css_width` and `css_height`, sent at
+once to a credit that is waiting for the page. Region stills are taken again at the new size, and what the page's own
+script changes in reaction (sizes, moved nodes, classes) follows as ordinary ops. A delta without the two fields keeps
+the base's size. The viewer keeps its DOM, so no transition replays and the page is not laid out twice. A subscription
+without the capability, or with deferred boxes open, still re-snapshots as before. Older kernels refuse the unknown field,
+so the web asks only kernels at 1015 or later. `browser-mirror2-layout-delta-1015.json` pins the shape (Rust hash test
+`browser_mirror2_layout_delta_1015_shape_is_pinned`).
+
 ### OSS landing union protocol 629 / peer 232
 
 The combined landing keeps local protocol 629 and peer 232. It includes the

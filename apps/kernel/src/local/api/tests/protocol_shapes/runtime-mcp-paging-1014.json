@@ -1,5 +1,5 @@
 {
-  "local": 1014,
+  "local": 1015,
   "peer": 451,
   "properties": {
     "chariox.events.subscriptions": ["include_history", "origin_prompt_id", "other_tasks_cursor", "registrations_cursor", "task_id"],
