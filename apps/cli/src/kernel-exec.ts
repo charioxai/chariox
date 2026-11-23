@@ -2,7 +2,7 @@ import { closeRoomTerminalRequest, expectRoomTerminalResult, openRoomTerminalReq
 import type { ProgramInput } from "@chariox/kernel-client/kernel-types"
 import { fstatSync } from "node:fs"
 import { StringDecoder } from "node:string_decoder"
-import type { Readable, Writable } from "node:stream"
+import { Readable, type Writable } from "node:stream"
 import { CommandFailure } from "./agent-command-table.js"
 import type { SendRequest } from "./kernel-files.js"
 
@@ -67,11 +67,20 @@ export async function readExecInput(input: Readable & { isTTY?: boolean }, optio
     }
   } catch (error) {
     if (error instanceof CommandFailure) throw error
-    throw new CommandFailure("exec_stdin_unreadable", `stdin could not be read: ${String((error as Error)?.message ?? error)}`)
+    throw unreadable(error)
   } finally {
     clearTimeout(timer)
   }
   return size === 0 ? undefined : { kind: "inline", data_base64: Buffer.concat(chunks).toString("base64") }
+}
+
+/**
+ * This process's stdin. Some runtimes refuse to open it at all (a directory redirected into stdin throws on first
+ * access): that becomes a stream whose first read fails, so it is refused as exec_stdin_unreadable like any other
+ * unreadable input, and `--stdin-file` (which never reads it) is unaffected.
+ */
+export function ownStdin(): Readable & { isTTY?: boolean } {
+  try { return process.stdin } catch (error) { return new Readable({ read() { this.destroy(error as Error) } }) }
 }
 
 /** This process's stdin is a regular file (`< script.sh`), which is finite: no probe is needed. */
@@ -79,25 +88,43 @@ export function stdinIsRegularFile(): boolean {
   try { return fstatSync(0).isFile() } catch { return false }
 }
 
-/** Watch an idle stdin for data while the command runs; the handle is unreferenced so the watch never holds the process open. */
+const unreadable = (error: unknown) => new CommandFailure("exec_stdin_unreadable", `stdin could not be read: ${String((error as Error)?.message ?? error)}`)
+
+/**
+ * Watch an idle stdin for data while the command runs; the handle is unreferenced so the watch never holds the
+ * process open. An error on the input (it was closed, or cannot be read) ends the watch: it is not the command's
+ * failure and must not stop the CLI before the terminal is closed. Both listeners go when the watch ends.
+ */
 function watchLate(input: Readable, late: LateStdin): void {
   const onData = () => { late.arrived = true; late.stop() }
-  late.stop = () => { input.off("data", onData); input.destroy() }
-  input.on("data", onData)
-  ;(input as Readable & { unref?: () => void }).unref?.()
+  const onError = () => late.stop()
+  late.stop = () => { input.off("data", onData); input.off("error", onError); input.destroy() }
+  try {
+    input.on("error", onError)
+    input.on("data", onData)
+    ;(input as Readable & { unref?: () => void }).unref?.()
+  } catch { late.stop() }
 }
 
-/** Whether the stream has data or has ended within `ms`; an idle one is left to the caller, which watches or closes it. */
+/**
+ * Whether the stream has data or has ended within `ms`; an idle one is left to the caller, which watches or closes it.
+ * An error before either rejects with exec_stdin_unreadable (for example a directory redirected into stdin).
+ */
 function showsDataOrEnd(input: Readable, ms: number): Promise<boolean> {
-  return new Promise(resolve => {
-    const settle = (shows: boolean) => {
+  return new Promise((resolve, reject) => {
+    const done = () => {
       clearTimeout(timer)
       input.off("readable", onReadable)
-      resolve(shows)
+      input.off("error", onError)
     }
-    const onReadable = () => settle(true)
-    const timer = setTimeout(() => settle(false), ms)
-    input.on("readable", onReadable)
+    const onReadable = () => { done(); resolve(true) }
+    const onError = (error: unknown) => { done(); input.destroy(); reject(unreadable(error)) }
+    const timer = setTimeout(() => { done(); resolve(false) }, ms)
+    // Some runtimes refuse to open an unreadable stdin the moment it is listened to (bun, for a directory).
+    try {
+      input.on("error", onError)
+      input.on("readable", onReadable)
+    } catch (error) { onError(error) }
   })
 }
 

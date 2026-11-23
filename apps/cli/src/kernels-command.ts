@@ -5,7 +5,7 @@ import { FILES_VERBS, runFilesVerb, type SendRequest } from "./kernel-files.js"
 import { runTerminalVerb, TERMINAL_ATTACH_USAGE, TERMINAL_VERBS, waitMsOf, type TerminalFlags, type TerminalVerb } from "./terminal-verbs.js"
 
 import { runExec } from "./exec-command.js"
-import { LATE_STDIN_NOTICE, lateStdin, readExecInput, runKernelExec, stdinIsRegularFile } from "./kernel-exec.js"
+import { LATE_STDIN_NOTICE, lateStdin, ownStdin, readExecInput, runKernelExec, stdinIsRegularFile } from "./kernel-exec.js"
 import { runExecPlace } from "./exec-place-command.js"
 
 import { EVENT_VERBS, eventTimeoutSeconds, runEventsVerb } from "./events-command.js"
@@ -211,7 +211,7 @@ export async function runKernelsCommand(argv: string[]): Promise<boolean> {
       if (!inRoom) {
         const timeoutSeconds = parseTimeout(flags.get("--timeout"))
         const late = lateStdin()
-        const stdin = await readExecInput(process.stdin, { file: flags.get("--stdin-file") as string | undefined, wait: flags.has("--stdin"), regularFile: stdinIsRegularFile(), timeoutSeconds, late })
+        const stdin = await readExecInput(ownStdin(), { file: flags.get("--stdin-file") as string | undefined, wait: flags.has("--stdin"), regularFile: stdinIsRegularFile(), timeoutSeconds, late })
         try {
           process.exitCode = await withKernel({ socket, timeoutSeconds, kernel: kernel ?? undefined }, send =>
             runKernelExec({ command: program, directory: flags.get("--directory") as string | undefined, timeoutSeconds, stdin, signals: process }, send, process.stdout))

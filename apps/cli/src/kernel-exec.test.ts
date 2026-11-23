@@ -3,7 +3,7 @@ import test from "node:test"
 import { Writable } from "node:stream"
 import { CommandFailure } from "./agent-command-table.js"
 import { Readable } from "node:stream"
-import { MAX_INLINE_STDIN_BYTES, lateStdin, readExecInput, runKernelExec } from "./kernel-exec.js"
+import { MAX_INLINE_STDIN_BYTES, lateStdin, ownStdin, readExecInput, runKernelExec } from "./kernel-exec.js"
 
 const ended = (code: number) => ({ state: "ended", outcome: { reason: "program_exited", exit_code: code, signal: null } })
 const terminal = (status: unknown, offset: number) => ({ terminal_id: "t1", scope: "kernel", output_offset: offset, status })
@@ -170,6 +170,43 @@ test("a stdin that ends without data after the probe reports nothing", async () 
   await new Promise(done => setTimeout(done, 50))
   assert.equal(late.arrived, false)
   late.stop()
+})
+
+test("an unreadable stdin that fails before its first chunk is refused as exec_stdin_unreadable, not left unhandled", async () => {
+  const broken = new Readable({ read() { this.destroy(Object.assign(new Error("EISDIR: illegal operation on a directory, read"), { code: "EISDIR" })) } })
+  await assert.rejects(readExecInput(broken, { timeoutSeconds: 5, probeMs: 500, late: lateStdin() }),
+    (error: unknown) => error instanceof CommandFailure && error.code === "exec_stdin_unreadable" && /EISDIR/.test(error.message))
+  assert.equal(broken.listenerCount("error"), 0, "the probe removes its listeners")
+  assert.equal(broken.listenerCount("readable"), 0)
+})
+
+test("an error after an idle probe ends the late watch quietly and removes its listeners", async () => {
+  const input = idle()
+  const late = lateStdin()
+  assert.equal(await readExecInput(input, { timeoutSeconds: 5, probeMs: 20, late }), undefined)
+  assert.equal(input.listenerCount("data"), 1)
+  input.destroy(new Error("read EIO"))
+  await new Promise(done => setTimeout(done, 20))
+  assert.equal(late.arrived, false, "an input error is not data")
+  assert.equal(input.listenerCount("error"), 0)
+  assert.equal(input.listenerCount("data"), 0)
+  late.stop()
+})
+
+test("a stream that throws the moment it is listened to (bun, a directory on stdin) is refused as exec_stdin_unreadable", async () => {
+  const refusing = Object.assign(idle(), { on() { throw new Error("EISDIR: illegal operation on a directory, fstat") } })
+  await assert.rejects(readExecInput(refusing, { timeoutSeconds: 5, probeMs: 500, late: lateStdin() }),
+    (error: unknown) => error instanceof CommandFailure && error.code === "exec_stdin_unreadable" && /EISDIR/.test(error.message))
+})
+
+test("a runtime that cannot open stdin at all (a directory redirected into it) is refused as exec_stdin_unreadable", async () => {
+  const real = Object.getOwnPropertyDescriptor(process, "stdin")!
+  Object.defineProperty(process, "stdin", { configurable: true, get() { throw Object.assign(new Error("EISDIR: illegal operation on a directory, fstat"), { code: "EISDIR" }) } })
+  try {
+    const input = ownStdin()
+    await assert.rejects(readExecInput(input, { timeoutSeconds: 5, probeMs: 500 }), (error: unknown) => error instanceof CommandFailure && error.code === "exec_stdin_unreadable" && /EISDIR/.test(error.message))
+    assert.deepEqual(await readExecInput(ownStdin(), { file: "/home/u/s.sh", timeoutSeconds: 5 }), { kind: "file", path: "/home/u/s.sh" }, "--stdin-file never reads it")
+  } finally { Object.defineProperty(process, "stdin", real) }
 })
 
 test("a regular file on stdin is read whole with no probe", async () => {

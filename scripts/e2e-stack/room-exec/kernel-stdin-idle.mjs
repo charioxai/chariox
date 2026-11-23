@@ -123,6 +123,15 @@ try {
     assert.equal(result.stderr, 'stdin data arrived after the command started and was not sent; pass --stdin to wait for it\n', JSON.stringify(result))
     return result
   })
+  await cell('X7-unreadable-stdin-is-an-error-not-a-crash', async () => {
+    // A directory redirected into stdin cannot be read: one JSON error, a non-zero exit, no stack trace.
+    const result = await shell('"$CLI" "$@" < /var/tmp', [], ['true'])
+    assert.notEqual(result.code, 0, JSON.stringify(result))
+    assert.equal(JSON.parse(result.stderr).error.code, 'exec_stdin_unreadable', JSON.stringify(result))
+    assert.doesNotMatch(result.stderr, /\n\s+at |Unhandled|node:internal/, JSON.stringify(result))
+    assert.ok(result.elapsed_ms < NORMAL_MS, `took ${result.elapsed_ms} ms: ${JSON.stringify(result)}`)
+    return result
+  })
   if (results.some(row => row.status !== 'PASS')) process.exitCode = 1
 } finally {
   await fixture.cleanup()
