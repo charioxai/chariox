@@ -239,6 +239,7 @@ async fn live_pass(
     main: Option<&MainConnection>,
 ) -> Result<LivePassSeen, DaemonError> {
     let mut fresh_membership = None;
+    let mut linked_kernel_ids = None;
     let visible_kernel_ids = if let Some(profile) =
         crate::runtime::cloud_relay_control::active_cloud_profile(runtime_config)
     {
@@ -246,16 +247,14 @@ async fn live_pass(
             .await?
             .map(|visible| {
                 fresh_membership = visible.fresh_membership;
+                linked_kernel_ids = Some(visible.linked);
                 visible.online
             })
     } else {
         None
     };
     let live_machines = relay_discovery::list_live_machines_over(runtime_config, main).await?;
-    let update_needed = update_needed_kernels(
-        &live_machines,
-        directory_read.as_ref().map(|read| &read.linked),
-    );
+    let update_needed = update_needed_kernels(&live_machines, linked_kernel_ids.as_ref());
     let mut remote_machines = crate::local::provider_requests::remote_machine_records(
         live_machines,
         &runtime_config.host_machine_id,
