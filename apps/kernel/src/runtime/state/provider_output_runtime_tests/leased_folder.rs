@@ -210,7 +210,10 @@ async fn a_refused_leased_spawn_removes_the_folder_it_made() {
 }
 
 /// Spawns one folderless leased agent and returns (the session's folder, the agent record's folder).
-async fn spawn_folderless(app: &Arc<Mutex<DaemonApp>>, runtime: &KernelRuntimeState) -> (String, String) {
+async fn spawn_folderless(
+    app: &Arc<Mutex<DaemonApp>>,
+    runtime: &KernelRuntimeState,
+) -> (String, String) {
     let lease = runtime
         .create_bound_relay_execution_lease(
             "home",
@@ -266,7 +269,10 @@ async fn a_leased_agent_on_a_machine_with_a_custom_root_runs_under_that_root() {
     let expected = managed_root.join("chariox-workspaces").join("agent-home-1");
     assert_eq!(std::path::Path::new(&session_folder), expected);
     assert!(expected.is_dir(), "{expected:?}");
-    assert_eq!(agent_folder, session_folder, "the agent shows another folder");
+    assert_eq!(
+        agent_folder, session_folder,
+        "the agent shows another folder"
+    );
     assert!(
         !root.path().join("user").join("chariox-workspaces").exists(),
         "the worker's home was used"
