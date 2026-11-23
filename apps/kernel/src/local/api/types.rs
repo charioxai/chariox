@@ -643,4 +643,6 @@ pub use workspace::*;
 /// longer carry `kernel_id`, `kernel_name`, `focused_agent_kernel_id` or `reachable_by_focused_agent`; the loader tools
 /// take no arguments and `chariox.kernel_browser_share` is removed.
 /// 1014 adds revision-based latest Room history outline reads.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1014;
+/// Local 1015 (relay peer 452): file slices between kernels travel as bytes (`data_base64` lifted out of the
+/// peer plaintext), and peer requests and replies are binary relay frames between kernels that offer them.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1015;
