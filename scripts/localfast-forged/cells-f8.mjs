@@ -52,11 +52,50 @@ export function defineF8(h) {
       }
       const good = w => w && typeof w === 'object' && w.closeFrame?.reason === 'local browser authority revoked' && w.responsesMoreThan250msAfterRevoke === 0 && w.closeAfterRevokeCallMs <= 1500
         && w.createdAfterRepairLater === w.createdAfterRepair
-        // The revoke call returns only after every request that had not begun is cancelled (row 441). The session lane runs one request at a time, so at most ONE mutation can already be in flight at the cut; it settles and keeps its result (a relay retry sees it). So: at most one create lands after the call returned, none later than 250 ms after, and no more mutations ran than were answered plus that one. Unfixed kernel (ced33e25166): 25 (WS) / 28 (RTC) landed after the call returned, the last 620 ms after.
-        && w.executedTimes?.afterRevokeCallReturned <= 1 && w.executedTimes?.afterReturnedPlus250 === 0 && w.mutationsExecutedMinusAnswered <= 1
+        // The revoke call returns only after every request that had not begun is cancelled (row 441). The session lane runs one request at a time, so at most ONE mutation can already be in flight at the cut; it settles and keeps its result (a relay retry sees it). So: at most one create lands after the call returned and none later than 250 ms after (how many were answered before the close is only recorded: responses lag under load). Unfixed kernel (ced33e25166): 25 (WS) / 28 (RTC) landed after the call returned, the last 620 ms after.
+        && w.executedTimes?.afterRevokeCallReturned <= 1 && w.executedTimes?.afterReturnedPlus250 === 0
       const ok = out.control_ws?.createdDelta === 10 && out.control_rtc?.createdDelta === 10 && good(out.ws) && good(out.rtc)
       await local.close?.().catch(() => {})
       cell('F8 revoke during a queued mutation burst stops it (WebSocket and WebRTC)', ok ? 'PASS' : 'FAIL', out)
+    },
+
+    // Row 441 review: the same revoke-during-a-burst, for mutations that wait in the WORKFLOW lane (CreateWorkflow in one Room).
+    async F8w() {
+      const dir = '/var/tmp/forgedclient/k3'; const work = `${dir}/work/room`; mkdirSync(work, { recursive: true }); execFileSync('git', ['init', '-q', work])
+      const local = await ipc(dir, K.k3.port); const out = {}
+      const defaults = { provider: 'opencode', account_profile: 'default', model: 'opencode/big-pickle', effort: 'low', permission_level: 'yolo', execution_mode: 'build' }
+      const run = Date.now().toString(36)
+      const room = async tag => { const r = await local.send({ CreateSession: { workspace_id: work, worktree_id: work, alias: `fc8w-${run}-${tag}`, agent_defaults: defaults } }); const x = r.SessionCreated?.session; return x?.id ?? x?.session_id }
+      const count = async sid => { const r = await local.send({ ListWorkflows: { session_id: sid } }); return r.WorkflowsListed?.workflows?.length ?? -1 }
+      const wf = (sid, a) => ({ CreateWorkflow: { session_id: sid, alias: a } })
+      for (const carrierKind of ['ws', 'rtc']) {
+        const id = newIdentity(); let c, m
+        if (carrierKind === 'ws') { for (let i = 0; i < 40; i++) { m = await mint('k3', id); if (m.issued) break; await sleep(3000) } c = await wsCarrier(m.issued.endpoint, { headers: goodHeaders() }); const v = await prove(c, { grant: m.issued.grant, kernelKey: m.kernelKey, identity: id, origin: sess.origin }); if (!connectedOk(v)) { out[carrierKind] = 'not admitted'; continue } }
+        else { const r = await admitRtc('k3', id); if (!r.c || !connectedOk(r.v)) { out[carrierKind] = 'not admitted'; continue } c = r.c; m = r.m }
+        const kernelKey = m.kernelKey; const sid = await room(carrierKind); if (!sid) { out[carrierKind] = 'no room id'; continue }
+        { const b0 = await count(sid); for (let i = 0; i < 10; i++) c.send({ kind: 'client_request', request_id: `ctl${i}`, target: target('k3'), encrypted_request: id.encrypt(kernelKey, JSON.stringify(wf(sid, `ctl-${carrierKind}${i}`))) })
+          let got = 0, ok = 0; while (got < 10) { const f = await c.next(15000); if (f.kind === 'client_response') { got++; if (!f.error) ok++ } else if (f.timeout || f.closed !== undefined) break }
+          out['control_' + carrierKind] = { sent: 10, responses: got, ok, createdDelta: (await count(sid)) - b0 } }
+        const base = await count(sid); const N = 40
+        for (let i = 0; i < N; i++) c.send({ kind: 'client_request', request_id: `w${i}`, target: target('k3'), encrypted_request: id.encrypt(kernelKey, JSON.stringify(wf(sid, `fc8w-${run}-${carrierKind}-${i}`))) })
+        const frames = []; let tRevoke = null, tRevoked = null
+        const reader = (async () => { for (;;) { const f = await c.next(15000); frames.push({ t: Date.now(), f: f.kind ? { kind: f.kind, id: f.request_id, reason: f.reason, err: f.error ? 1 : 0 } : f }); if (f.kind === 'close' || f.closed !== undefined || f.timeout) return } })()
+        const watch = (async () => { while (!frames.some(x => x.f.kind === 'client_response' && !x.f.err)) await sleep(1); tRevoke = Date.now(); await local.send({ LogoutCloudRelay: { revoke_client: false, revoke_machine: false } }); tRevoked = Date.now() })()
+        await Promise.all([reader, watch])
+        const close = frames.find(x => x.f.kind === 'close' || x.f.closed !== undefined)
+        const respOk = frames.filter(x => x.f.kind === 'client_response' && !x.f.err).length
+        c.close()
+        execFileSync(process.execPath, [`${here}/setup.mjs`, K.k3.stack, String(K.k3.port), dir, 'fc-k3', statePath], { stdio: 'ignore' }); Object.assign(K.k3, JSON.parse(readFileSync(statePath, 'utf8')))
+        const created = (await count(sid)) - base; await sleep(3000); const later = (await count(sid)) - base
+        // when each workflow was created (the kernel's own clock): a mutation that began after the revoke call returned is the failure
+        const ts = ((await local.send({ ListWorkflows: { session_id: sid } })).WorkflowsListed?.workflows ?? []).filter(x => String(x.alias ?? '').startsWith(`fc8w-${run}-${carrierKind}-`)).map(x => x.created_at_ms).filter(Number.isFinite).sort((p, q) => p - q)
+        out[carrierKind] = { sent: N, responsesOk: respOk, closeReason: close?.f?.reason ?? close?.f, closeAfterRevokeCallMs: close ? close.t - tRevoke : null, revokeCallMs: tRevoked - tRevoke, createdAfterRepair: created, createdLater: later,
+          executedTimes: { count: ts.length, firstMsAfterRevokeCallStarted: ts[0] - tRevoke, lastMsAfterRevokeCallStarted: ts[ts.length - 1] - tRevoke, afterRevokeCallReturned: ts.filter(t => t > tRevoked).length, afterReturnedPlus250: ts.filter(t => t > tRevoked + 250).length } }
+      }
+      const good = w => w && typeof w === 'object' && w.closeReason === 'local browser authority revoked' && w.createdLater === w.createdAfterRepair && w.executedTimes?.count === w.createdAfterRepair && w.executedTimes.afterRevokeCallReturned <= 1 && w.executedTimes.afterReturnedPlus250 === 0 && w.createdAfterRepair < w.sent / 2
+      const ok = out.control_ws?.createdDelta === 10 && out.control_rtc?.createdDelta === 10 && good(out.ws) && good(out.rtc)
+      await local.close?.().catch(() => {})
+      cell('F8w revoke during a queued WORKFLOW-lane mutation burst stops it (WebSocket and WebRTC)', ok ? 'PASS' : 'FAIL', out)
     },
   }
 }

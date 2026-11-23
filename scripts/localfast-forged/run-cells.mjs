@@ -139,6 +139,6 @@ Object.assign(cells, defineF4r({ mint, sess, cell, newIdentity, wsCarrier, prove
 export { cells, admitWs, admitRtc, mint, cell, note, sess, rtc, K, target, want, denied, verdictOf, sleep, LIST, relayUrlFor, goodHeaders, wsUrl, net }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
-  try { for (const id of ['F0', 'F1', 'F2', 'F3', 'F4', 'F4r', 'F5', 'F6', 'F7', 'F8', 'F9']) { const fn = cells[id]; if (fn && want(id)) { try { await Promise.race([fn(), sleep(240000).then(() => { throw new Error('cell watchdog 240 s') })]) } catch (e) { cell(id, 'FAIL', 'harness error: ' + String(e.stack ?? e).slice(0, 500)) } } } }
+  try { for (const id of ['F0', 'F1', 'F2', 'F3', 'F4', 'F4r', 'F5', 'F6', 'F7', 'F8', 'F8w', 'F9']) { const fn = cells[id]; if (fn && want(id)) { try { await Promise.race([fn(), sleep(240000).then(() => { throw new Error('cell watchdog 240 s') })]) } catch (e) { cell(id, 'FAIL', 'harness error: ' + String(e.stack ?? e).slice(0, 500)) } } } }
   finally { await rtc.close(); await sess.close(); setTimeout(() => process.exit(0), 500).unref() }
 }
