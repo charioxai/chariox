@@ -365,6 +365,9 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     const hostBox = node => viewportHost(node) ? [0, 0, 0, 0] : box(node);
     // Layout size (untransformed: the mirrored DOM applies the same transforms); SVG/text boxes use the rendered box.
     const layoutSize = node => node.nodeType === 1 && node.offsetWidth !== undefined ? [node.offsetWidth, node.offsetHeight] : (node.nodeType === 1 ? box(node) : textBox(node)).slice(2);
+    // Row 489: a closed host with no box of its own whose root paints (Chromium's PDF body, 0 high, its viewer iframe
+    // absolute in the root) is laid out in the viewer at what it paints: a 0-high tile never gets a region there.
+    const tileSize = node => { const size = layoutSize(node); if (size[0] > 0 && size[1] > 0 || !closedRoots.has(node)) return size; const own = box(node), ink = closedInk(node, own); return ink && ink[0] === own[0] && ink[1] === own[1] ? [Math.round(ink[2]), Math.round(ink[3])] : size; };
     const textBox = node => { const range = node.ownerDocument.createRange(); range.selectNodeContents(node); const r = range.getBoundingClientRect(); return [r.x, r.y, r.width, r.height]; };
     // Every non-password input counts, as on the pixel path (a filled month/date shows its value too).
     const plainText = node => node.localName === 'input' ? node.type !== 'password' : node.localName === 'textarea' || node.isContentEditable;
@@ -565,7 +568,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     const densityOp = (id, attrs, ops) => { const value = attrs['chariox-density'] ?? null; if (value === (densityOf.get(id) ?? null)) return; if (value) densityOf.set(id, value); else densityOf.delete(id); ops.push({ op: 'attr', id, name: 'chariox-density', value }); };
     const remember = (record, node) => { if (node.nodeType === 1 && formControl(node)) formNodes.set(record.id, node); if (node.localName === 'img') imageNodes.set(record.id, node); if (node.nodeType === 1 && ['input', 'select'].includes(node.localName)) controlShapes.set(record.id, controlShape(node)); nodes.set(record.id, node); parentOf.set(record.id, record.parent); kindOf.set(record.id, record.kind); if (record.kind === 'tile' || record.foreign) opaque.add(record.id); kids.set(record.id, []); if (record.parent && kids.has(record.parent)) kids.get(record.parent).push(record.id); };
     const opaqueRecord = (node, record, reason) => {
-      const [width, height] = layoutSize(node);
+      const [width, height] = tileSize(node);
       record.kind = 'tile'; record.reason = reason; record.size = [width, height];
       record.tag = node.namespaceURI === HTML && !['object', 'embed', 'applet', 'frame', 'frameset', 'portal', 'fencedframe'].includes(node.localName) ? node.localName : 'div';
       shapes.set(record.id, { size: record.size, display: null });
@@ -1203,7 +1206,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       // records (a Vault-filled field toggling display, a canvas resized by CSS); a new display re-serializes.
       for (const id of shapes.keys()) {
         const node = nodes.get(id), kind = kindOf.get(id); if (!node?.isConnected) continue;
-        const size = layoutSize(node), display = kind === 'mask' && node.nodeType === 1 ? getComputedStyle(node).display : null, last = shapes.get(id);
+        const size = kind === 'tile' ? tileSize(node) : layoutSize(node), display = kind === 'mask' && node.nodeType === 1 ? getComputedStyle(node).display : null, last = shapes.get(id);
         if (last && display !== last.display) { const parent = nodes.get(parentOf.get(id)); replaceNode(node); if (parent) childList(parent, out, ops); continue; }
         if (last && (last.size[0] !== size[0] || last.size[1] !== size[1])) ops.push({ op: 'size', id, size });
         shapes.set(id, { size, display });

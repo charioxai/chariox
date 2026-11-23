@@ -2360,6 +2360,28 @@ test('Row 489: a body with only whitespace light DOM and a closed root is an opa
  },{'/viewer':{type:'text/html',body:'<!doctype html><body style="margin:0;background:rgb(82,86,89)"><p style="color:white">page 1 of 15</p></body>'}}
 ));
 
+// Row 489: a real PDF (Chromium's own viewer) reaches the viewer as a region with pixels.
+const minimalPdf = () => {
+  const objects = ['<< /Type /Catalog /Pages 2 0 R >>', '<< /Type /Pages /Kids [3 0 R] /Count 1 >>', '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>', null, '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>'];
+  const text = 'BT /F1 48 Tf 72 700 Td (Row 489 page one) Tj ET'; objects[3] = `<< /Length ${text.length} >>\nstream\n${text}\nendstream`;
+  let out = '%PDF-1.4\n'; const offsets = [];
+  objects.forEach((body, i) => { offsets.push(out.length); out += `${i + 1} 0 obj\n${body}\nendobj\n`; });
+  const xref = out.length; out += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n${offsets.map(o => String(o).padStart(10, '0') + ' 00000 n \n').join('')}trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+  return Buffer.from(out, 'latin1');
+};
+test('Row 489: a PDF document shows Chromium\'s viewer as a region with pixels',()=>mirrored('',async ctx=>{
+  await settle(2500);
+  const seen={closed:false,stills:[],packets:0};let last=null;
+  for(let i=0;i<10;i++){const p=await ctx.next(i?500:0);last=p;seen.packets++;const tile=[...p.nodes??[],...p.ops.flatMap(op=>op.op==='children'?op.nodes:[])].find(n=>n[4]?.reason==='closed_shadow');if(tile){seen.closed=true;seen.tile=tile;}for(const op of p.ops)if(op.op==='size')seen.sizes=(seen.sizes??[]).concat([op.size]);for(const t of p.tiles??[])seen.stills.push([t.width,t.height]);}
+  let lease=null;try{lease=(await regionLease(ctx,last.sequence)).rect}catch(error){lease=String(error.message)}
+  const kinds=[...ctx.host.mirror.streams.get(ctx.subscription_id).regionRecords.values()].map(r=>r.kind);
+  console.log('ROW489-PDF',JSON.stringify({...seen,lease,kinds,url:await ctx.evaluate('location.href'),type:await ctx.evaluate('document.contentType')}));
+  assert(seen.closed,'the PDF body is a closed_shadow tile');
+  const size=seen.tile?.[4]?.size;
+  assert(size?.[0]>=600&&size?.[1]>=400,`the viewer lays the tile out at what the viewer paints, not the body's 0-high box: ${JSON.stringify(size)}`);
+  assert(typeof lease==='object'&&lease.width>=600&&lease.height>=400,`its region covers the viewer: ${JSON.stringify(lease)}`);
+ },{'/':{type:'application/pdf',binary:minimalPdf()}}));
+
 // MP-08/MP-10/MP-11: #941 c956f84c7 review F1/F2. No reset may hide a lost descriptor.
 for (const child of [false, true]) test(`MP-10: closed-host discovery retains a simultaneously loaded image in ${child ? 'an attached child' : 'the parent'}`,()=>mirrored(
  child ? '<iframe src="http://localhost:PORT/child" style="width:300px;height:160px"></iframe>' : '<p>stable</p>',
