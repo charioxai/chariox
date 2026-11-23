@@ -4,6 +4,10 @@ use super::*;
 use crate::local::RelayRegistrationRefusal;
 
 const REGISTRATION_TIMEOUT: Duration = Duration::from_secs(10);
+/// A refused kernel retries soon, then steadily: the relay it dials may be
+/// replaced at any moment, and a refused kernel must register within a minute of
+/// that. The relay's own refusal record (docs/PROTOCOL.md) expects a retry at least
+/// once a minute.
 const REGISTRATION_RETRY_SECONDS: [u64; 4] = [60, 120, 300, 900];
 
 pub(super) async fn await_registration(
@@ -33,6 +37,12 @@ pub(super) async fn await_registration(
         _ = sleep(REGISTRATION_TIMEOUT) =>
             Some(Err("relay did not acknowledge registration".into())),
     }
+}
+
+fn registration_retry_delay(attempt: usize, daemon_id: &str) -> Duration {
+    let step = attempt.min(REGISTRATION_RETRY_SECONDS.len() - 1);
+    Duration::from_secs(REGISTRATION_RETRY_SECONDS[step])
+        + Duration::from_millis(stable_jitter_ms(daemon_id, RELAY_RECONNECT_JITTER_SPREAD_MS))
 }
 
 #[derive(Default)]
@@ -75,11 +85,7 @@ impl RefusalBackoff {
         } else {
             "check the relay and kernel configuration"
         };
-        let delay = Duration::from_secs(REGISTRATION_RETRY_SECONDS[self.attempt])
-            + Duration::from_millis(stable_jitter_ms(
-                &router.relay_daemon_id(),
-                RELAY_RECONNECT_JITTER_SPREAD_MS,
-            ));
+        let delay = registration_retry_delay(self.attempt, &router.relay_daemon_id());
         self.attempt = (self.attempt + 1).min(REGISTRATION_RETRY_SECONDS.len() - 1);
         let refusal = RelayRegistrationRefusal {
             reason,
@@ -115,5 +121,41 @@ impl RefusalBackoff {
         }
         self.current = Some((relay_url.into(), refusal));
         (delay, new_refusal)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const REPLACED_RELAY_REGISTERS_WITHIN: Duration = Duration::from_secs(60);
+    const ACK_WAIT: Duration = REGISTRATION_TIMEOUT;
+
+    #[test]
+    fn a_kernel_refused_for_a_long_time_still_retries_within_a_minute_of_a_relay_replacement() {
+        // Sleep, then the dial and the acknowledgment deadline of the next attempt.
+        for attempt in [0, 1, 2, 3, 10, 1_000] {
+            let wait = registration_retry_delay(attempt, "kernel-a");
+            assert!(
+                wait < REPLACED_RELAY_REGISTERS_WITHIN,
+                "refusal {attempt} waits {wait:?} before the next registration"
+            );
+        }
+    }
+
+    #[test]
+    fn a_relay_that_keeps_refusing_is_dialed_no_faster_than_the_first_step() {
+        let first = Duration::from_secs(REGISTRATION_RETRY_SECONDS[0]);
+        let attempts_in_ten_minutes = (0..100)
+            .scan(Duration::ZERO, |elapsed, attempt| {
+                *elapsed += registration_retry_delay(attempt, "kernel-a") + ACK_WAIT;
+                (*elapsed <= Duration::from_secs(600)).then_some(())
+            })
+            .count();
+        assert!(registration_retry_delay(0, "kernel-a") >= first);
+        assert!(
+            attempts_in_ten_minutes <= 21,
+            "{attempts_in_ten_minutes} attempts in ten minutes"
+        );
     }
 }
