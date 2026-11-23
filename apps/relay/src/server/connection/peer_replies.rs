@@ -247,6 +247,32 @@ mod tests {
         }
     }
 
+    // Row 207 C3: the 3,584,000-byte part that became a 6,372,158-byte reply (so two of them
+    // exceeded the 8 MiB receiver budget) is charged at its own size as bytes: two fit, a third
+    // is refused as ever, and the refusal is the retryable one.
+    #[test]
+    fn two_large_peer_parts_fit_the_receiver_budget_as_bytes() {
+        let part = vec![0x5a; 3_584_000];
+        let payload = OpaquePayload {
+            sender_public_key: Cow::Borrowed("public-key"),
+            nonce: Cow::Borrowed("abcdefghijklmnop"),
+            ciphertext: Cow::Owned(STANDARD.encode(&part)),
+        };
+        let reply = routed(&payload);
+        let (sender, mut outgoing) = RelaySender::detached_channel(8);
+        sender.allow_binary_peer();
+        assert!(matches!(deliver_reply(&sender, &reply), Delivery::Sent));
+        assert!(matches!(deliver_reply(&sender, &reply), Delivery::Sent));
+        assert!(matches!(
+            deliver_reply(&sender, &reply),
+            Delivery::ReceiverBacklogged
+        ));
+        let Message::Binary(first) = outgoing.try_recv().unwrap() else {
+            panic!("a binary reply");
+        };
+        assert!(first.len() < part.len() + 4096);
+    }
+
     #[test]
     fn noncanonical_ciphertext_is_forwarded_unchanged_as_text() {
         let prefix = "Zm9v".repeat(CHUNK_BYTES / 4 + 1);
