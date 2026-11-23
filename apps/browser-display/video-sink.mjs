@@ -41,7 +41,8 @@ export class VideoSink {
   if(globalThis.MutationObserver){this.mutation=new MutationObserver(sync);this.mutation.observe(this.canvas,{attributes:true,attributeFilter:['style','hidden','class']});}
   // Row 487: a new media element shows nothing until it presents its first frame. The overlay keeps the picture it holds
   // (the frozen last frame of the stream this one replaces) until then, so a reconnect never shows an empty pane.
-  this.awaitingFirst=Boolean(track);clearTimeout(this.firstTimer);this.firstTimer=undefined;this.firstRevision=undefined;
+  // A new canvas sink (direct region crops: a desynchronized context) reaches the screen on its own schedule too.
+  this.awaitingFirst=true;clearTimeout(this.firstTimer);this.firstTimer=undefined;this.firstRevision=undefined;
   if(track){this.observePresentation(video);video.play().catch(()=>{});}
   return Boolean(track);
  }
@@ -161,7 +162,13 @@ export class VideoSink {
    if(target.width!==frame.width)target.width=frame.width;
    if(target.height!==frame.height)target.height=frame.height;
    target.getContext('2d').drawImage(image,0,0,frame.width,frame.height);
-   this.retireOverlay();
+   // Row 487: the first frame of a new sink canvas is drawn now but composited on a later frame (desynchronized): the overlay
+   // (the frozen previous picture) retires two animation frames later, or FIRST_PRESENT_MS after this draw at most.
+   if(this.awaitingFirst&&target!==this.canvas){
+    this.firstRevision=this.overlayRevision;this.firstTimer??=setTimeout(()=>this.firstPresented(),FIRST_PRESENT_MS);
+    const view=this.canvas.ownerDocument?.defaultView;
+    if(view?.requestAnimationFrame)view.requestAnimationFrame(()=>view.requestAnimationFrame(()=>this.firstPresented()));
+   }else this.retireOverlay();
    this.remember(image);
   }
   const committedAt=visible?performance.timeOrigin+performance.now():undefined;

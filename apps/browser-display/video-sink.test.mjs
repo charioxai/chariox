@@ -236,3 +236,15 @@ test('Row 487 #1722 review: a repair drawn after the pending first frame stays; 
   for(let i=0;i<4&&canvas.style.opacity!=='0';i++){await new Promise(resolve=>setTimeout(resolve,100));await sink.commit({image:image(),decodedAt:0,writtenAt:1},{sequence:2+i});}
   assert.equal(canvas.style.opacity,'0',`retired ${Date.now()-started} ms after the first write`);assert(Date.now()-started<400);sink.close();}
 });
+test('Row 487 grey frame: a new canvas sink keeps the overlay until its first frame has had two animation frames to reach the screen',async()=>{
+ const rafs=[];const view={requestAnimationFrame:cb=>{rafs.push(cb);return rafs.length},cancelAnimationFrame(){}};
+ const run=()=>{const cbs=rafs.splice(0);for(const cb of cbs)cb();};
+ const make=()=>{const canvas={width:1280,height:800,style:{opacity:''},dataset:{},ownerDocument:{defaultView:view},getContext:()=>({clearRect(){},drawImage(){}})};
+  const sink=new VideoSink(canvas,()=>{});sink.video={width:0,height:0,getContext:()=>({drawImage(){}}),remove(){},style:{}};sink.awaitingFirst=true;sink.canvasOpacity='';return {canvas,sink};};
+ const image=()=>({close(){},clone(){return {close(){}}}});
+ {const {canvas,sink}=make();const job=sink.commit({image:image(),decodedAt:0},{width:1280,height:800});run();await job;
+  assert.equal(canvas.style.opacity,'','drawn into the new (desynchronized) canvas, not yet on screen: the frozen picture stays');
+  run();assert.equal(canvas.style.opacity,'');run();assert.equal(canvas.style.opacity,'0','two frames later it retires');sink.close();}
+ {const {canvas,sink}=make();const job=sink.commit({image:image(),decodedAt:0},{width:1280,height:800});run();await job;sink.overlay({width:1280,height:800});
+  run();run();assert.equal(sink.overlayActive,true,'a repair drawn meanwhile is newer and stays');assert.notEqual(canvas.style.opacity,'0');sink.close();}
+});
