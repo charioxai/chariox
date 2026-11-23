@@ -1439,7 +1439,7 @@ test('Row 497: a region lease check during a long poll runs inside it and does n
   const empty = () => ({ ops: [], changed: [], resources: [], sheets: [], scroll: [0, 0], focused: null, selection: null, fragment: null, opaque: false, pressed: 0 });
   mirror.evaluate = async (_world, expression) => {
     if (expression.endsWith('.wake()')) { waiter?.(); return true; }
-    if (expression.includes('waitDrain')) { drains++; const ms = Number(/waitDrain\((\d+)\)/.exec(expression)[1]); await new Promise(resolve => { const timer = setTimeout(resolve, ms); waiter = () => { clearTimeout(timer); resolve(); }; }); waiter = null; }
+    if (expression.includes('waitDrain(')) { drains++; const ms = Number(expression.split('waitDrain(')[1].split(')')[0]); assert(Number.isFinite(ms), `drain wait parsed from ${expression}`); await new Promise(resolve => { const timer = setTimeout(resolve, ms); waiter = () => { clearTimeout(timer); resolve(); }; }); waiter = null; }
     return empty();
   };
   mirror.frames = { drain: async () => ({ ops: [], resources: [], changed: [] }), project: (_, source) => source };
