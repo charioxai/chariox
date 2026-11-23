@@ -28,6 +28,7 @@ fn mp08_mp10_mp11_tab_display_720_snapshot_hash() {
         device_scale_factor: 1,
         initial_push: false,
         tab_display: false,
+        viewer_density_stills: false,
     };
     // An older viewer's subscribe is unchanged on the wire.
     assert!(

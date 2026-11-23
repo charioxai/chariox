@@ -145,6 +145,10 @@ pub enum KernelBrowserCommand {
         /// follow each committed document of the Tab; the viewer parks it while the DOM mirror paints.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         tab_display: bool,
+        /// MP-08/MP-11 allocated 1015 (row 341): the viewer accepts a region display's exact still at its own
+        /// `device_scale_factor` when that is above the page's; the whole-page video at rest is then sharp at DPR2.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        viewer_density_stills: bool,
     },
     DisplayNext {
         subscription_id: String,

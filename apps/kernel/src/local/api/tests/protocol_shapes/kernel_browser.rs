@@ -205,6 +205,7 @@ fn kernel_browser_display_protocol_443_shapes_and_hash() {
             device_scale_factor: 2,
             initial_push: false,
             tab_display: false,
+            viewer_density_stills: false,
         },
         Command::DisplayNext {
             subscription_id: "s".into(),

@@ -57,3 +57,16 @@ test('MP-08/MP-10/MP-11 a Tab display binding admits the Tab\'s next document, n
    assert.throws(()=>presenter.validate({...frame,document_id:'next',...change},0),/geometry\/binding/);
  }finally{presenter.close()}
 });
+// Row 341 (allocated 1015): a DPR2 viewer of a DPR1 page asked for stills at its own density; only those (PNG, same CSS
+// size) are admitted at that density, never video, and never on a binding that did not ask.
+test('row 341: a whole-page still at the viewer\'s density is admitted only as a PNG on a binding that asked for it',()=>{
+ const page={...lease,device_scale_factor:1},still={...page,sequence:1,kind:'png',device_scale_factor:2,width:640,height:360};
+ const presenter=new BrowserDisplayPresenter(canvas(),{...page,viewer_scale:2});
+ try{
+  assert.equal(presenter.validate(still,0),true);
+  assert.throws(()=>presenter.validate({...still,kind:'video'},0),/geometry\/binding/,'video stays at the page density');
+  assert.throws(()=>presenter.validate({...still,css_width:319,width:638},0),/geometry\/binding/,'same CSS size only');
+ }finally{presenter.close()}
+ const plain=new BrowserDisplayPresenter(canvas(),page);
+ try{assert.throws(()=>plain.validate(still,0),/geometry\/binding/,'a binding that did not ask keeps one density')}finally{plain.close()}
+});

@@ -8,7 +8,7 @@ export class NativeRefiner {
  // next input invalidates that work. Wait through wheel and typing gaps;
  // protected live frames keep their existing fences and continue immediately.
  constructor(capture,{pixels=new PixelWorker(),now=()=>performance.now(),quietMs=300,quietNativeMs=150,verifyMs=250,prepareTiles=false,timing=()=>{}}={}){Object.assign(this,{capture,pixels,now,quietMs,quietNativeMs,verifyMs,prepareTiles,timing});this.latest=null;this.active=null;this.closed=false;this.verifiedAt=-Infinity;this.revision=0;this.prepared=null;}
- same(a,b){return a&&b&&a.source===b.source&&a.document===b.document&&a.policy===b.policy&&a.epoch===b.epoch&&a.serial===b.serial&&a.native===b.native&&a.nativeDelivered===b.nativeDelivered;}
+ same(a,b){return a&&b&&a.source===b.source&&a.document===b.document&&a.policy===b.policy&&a.epoch===b.epoch&&(a.pixels!==undefined||b.pixels!==undefined?a.pixels===b.pixels:a.serial===b.serial)&&a.native===b.native&&a.nativeDelivered===b.nativeDelivered;}
  request(binding,changedAt,valid){
   if(this.closed)throw Error('MD-DISPLAY: refiner closed');
   if(this.failure)throw this.failure;
@@ -23,7 +23,9 @@ export class NativeRefiner {
     let source,pixels;
     try{
      source=await this.capture(binding);
-     if(raw?.nativeExact){
+     // Row 341 (A): a still at the viewer's density replaces the page-density exact; it ships whole, never as tiles.
+     if(source?.viewer_density){pixels=await this.pixels.run('decode',{data:source.data_base64,scale:source.viewer_density});source={...source,motion:false};}
+     else if(raw?.nativeExact){
       const exact=await raw.nativeExact({encoder:binding.encoder,regions:raw[displayMaskRegions]??[],patch:false,repair_only:true});
       source={...source,...exact,motion:false};pixels={width:raw.width,height:raw.height,pixels:null,signature:source.signature};
      }else if(raw){
@@ -38,7 +40,7 @@ export class NativeRefiner {
     this.timing('exact_decode',at);at=timestamp();
     if(this.closed||revision!==this.revision||!this.same(this.wanted,binding)||!valid())return;
     let repair_tiles=source.repair_tiles;
-    if(!source.native_exact&&this.prepareTiles&&source.data_base64.length+64>(binding.repairLimit??0)){
+    if(!source.native_exact&&!source.viewer_density&&this.prepareTiles&&source.data_base64.length+64>(binding.repairLimit??0)){
      // Expensive whole-raster PNG tile encoding never owns a capture credit.
      // Reuse only immutable identical verified RGB; every deadline still reads
      // a fresh protected PNG, including fine changes hidden by a lossy source.

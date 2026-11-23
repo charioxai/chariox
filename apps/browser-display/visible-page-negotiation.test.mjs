@@ -27,3 +27,14 @@ for(const version of [636,720])test(`MP-08/MP-10 a Tab display is negotiated onl
   else await assert.rejects(stream.park(true),/not a Tab display/);
  }finally{await stream.close();}
 });
+// Row 341 (allocated 1015): a DPR2 viewer's whole-page subscribe asks for stills at its own density from kernel 1015 on.
+for(const [version,dpr,expected] of [[1014,2,undefined],[1015,2,true],[1015,1,undefined]])test(`row 341: viewer-density stills are asked for at kernel ${version}, DPR${dpr}`,async()=>{
+ const commands=[],document=Object.assign(new EventTarget(),{hidden:false});
+ const canvas={ownerDocument:document,width:1,height:1,getContext:()=>({})};
+ const transport={kernelProtocolVersion:version,displayEventEncoding:'CXD1',onEvent:()=>()=>{},request:async({KernelBrowser:{command}})=>{commands.push(command);return {KernelBrowser:{result:command.op==='display_subscribe'?result:{}}}}};
+ const stream=await attachBrowserDisplay(canvas,transport,{tab_id:'t',generation:2},{codec:'avc1.420033',deviceScaleFactor:dpr});
+ try{
+  assert.equal(commands.find(c=>c.op==='display_subscribe').viewer_density_stills,expected);
+  assert.equal(stream.binding.viewer_scale,expected?2:undefined);
+ }finally{await stream.close();}
+});
