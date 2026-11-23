@@ -120,26 +120,57 @@ test("a program's stdin goes to the kernel with the open request", async () => {
   assert.deepEqual(sent[0].KernelTerminal.operation.stdin, stdin)
 })
 
-test("input piped to exec is read to its end and sent whole; an empty or terminal input sends none", async () => {
+const decoded = (input: Awaited<ReturnType<typeof readExecInput>>) => input && input.kind === "inline" ? Buffer.from(input.data_base64, "base64") : input
+const idle = () => new Readable({ read() {} })
+
+test("input piped to exec that has data at once is read to its end and sent whole", async () => {
   const script = Buffer.alloc(MAX_INLINE_STDIN_BYTES, "a")
-  const read = await readExecInput(Readable.from([script.subarray(0, 100), script.subarray(100)]), undefined, 5)
-  assert.deepEqual(read && read.kind === "inline" && Buffer.from(read.data_base64, "base64"), script)
-  assert.equal(await readExecInput(Readable.from([]), undefined, 5), undefined)
-  assert.equal(await readExecInput(Object.assign(Readable.from([Buffer.from("typed")]), { isTTY: true }), undefined, 5), undefined)
+  const read = await readExecInput(Readable.from([script.subarray(0, 100), script.subarray(100)]), { timeoutSeconds: 5 })
+  assert.deepEqual(decoded(read), script)
+})
+
+test("an input that has already ended, or a terminal, sends none", async () => {
+  assert.equal(await readExecInput(Readable.from([]), { timeoutSeconds: 5 }), undefined)
+  assert.equal(await readExecInput(Object.assign(Readable.from([Buffer.from("typed")]), { isTTY: true }), { timeoutSeconds: 5 }), undefined)
+})
+
+test("an open stdin that stays idle is not waited on: no input, and it is closed so it cannot hold the process open", async () => {
+  const never = idle()
+  const started = Date.now()
+  assert.equal(await readExecInput(never, { timeoutSeconds: 30, probeMs: 30 }), undefined)
+  assert.ok(Date.now() - started < 2000, "the run must not wait for an idle stdin")
+  assert.equal(never.destroyed, true)
+})
+
+test("a producer slower than the probe is not waited for unless --stdin asks for it", async () => {
+  const slow = () => { const stream = idle(); setTimeout(() => { stream.push(Buffer.from("late\n")); stream.push(null) }, 120); return stream }
+  assert.equal(await readExecInput(slow(), { timeoutSeconds: 5, probeMs: 20 }), undefined)
+  assert.equal(decoded(await readExecInput(slow(), { timeoutSeconds: 5, wait: true }))?.toString(), "late\n")
+})
+
+test("a regular file on stdin is read whole with no probe", async () => {
+  const late = idle()
+  setTimeout(() => { late.push(Buffer.from("from a file\n")); late.push(null) }, 80)
+  assert.equal(decoded(await readExecInput(late, { timeoutSeconds: 5, regularFile: true, probeMs: 1 }))?.toString(), "from a file\n")
 })
 
 test("a file on the kernel is passed by reference and the local input is not read", async () => {
-  const never = new Readable({ read() {} })
-  assert.deepEqual(await readExecInput(never, "/home/u/script.sh", 5), { kind: "file", path: "/home/u/script.sh" })
+  const never = idle()
+  assert.deepEqual(await readExecInput(never, { file: "/home/u/script.sh", timeoutSeconds: 5 }), { kind: "file", path: "/home/u/script.sh" })
   never.destroy()
 })
 
+test("--stdin on a terminal reads it to its end", async () => {
+  const typed = Object.assign(Readable.from([Buffer.from("typed")]), { isTTY: true })
+  assert.equal(decoded(await readExecInput(typed, { timeoutSeconds: 5, wait: true }))?.toString(), "typed")
+})
+
 test("input over 64 KiB is refused naming the limit and the file way", async () => {
-  await assert.rejects(readExecInput(Readable.from([Buffer.alloc(MAX_INLINE_STDIN_BYTES + 1)]), undefined, 5),
+  await assert.rejects(readExecInput(Readable.from([Buffer.alloc(MAX_INLINE_STDIN_BYTES + 1)]), { timeoutSeconds: 5 }),
     (error: unknown) => error instanceof CommandFailure && error.code === "exec_stdin_too_large" && /64 KiB/.test(error.message) && /files put/.test(error.message) && /--stdin-file/.test(error.message))
 })
 
-test("input that never ends is refused after the timeout and says how to end it", async () => {
-  await assert.rejects(readExecInput(new Readable({ read() {} }), undefined, 0.05),
+test("--stdin on input that never ends is refused after the timeout and says how to end it", async () => {
+  await assert.rejects(readExecInput(idle(), { timeoutSeconds: 0.05, wait: true }),
     (error: unknown) => error instanceof CommandFailure && error.code === "exec_stdin_not_ended" && /<\/dev\/null/.test(error.message))
 })

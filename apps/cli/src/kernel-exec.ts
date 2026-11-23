@@ -1,5 +1,6 @@
 import { closeRoomTerminalRequest, expectRoomTerminalResult, openRoomTerminalRequest, readRoomTerminalOutputRequest, roomTerminalRequest, type KernelTerminalTarget } from "@chariox/kernel-client/ipc-requests"
 import type { ProgramInput } from "@chariox/kernel-client/kernel-types"
+import { fstatSync } from "node:fs"
 import { StringDecoder } from "node:string_decoder"
 import type { Readable, Writable } from "node:stream"
 import { CommandFailure } from "./agent-command-table.js"
@@ -15,16 +16,34 @@ export const MAX_INLINE_STDIN_BYTES = 64 * 1024
 
 export type KernelExecOptions = { command: readonly string[]; directory?: string | undefined; timeoutSeconds: number; stdin?: ProgramInput | undefined; signals?: NodeJS.Process }
 
+// How long an idle stdin (a pipe nobody writes to, as in an agent's tool shell) is given to show data or its end.
+// A producer that has sent nothing by then is not waited for: pass --stdin to wait for it.
+const STDIN_PROBE_MS = 250
+
+export type ExecInputOptions = {
+  /** `--stdin-file`: a file already on the kernel. */
+  file?: string | undefined
+  /** `--stdin`: read this process's stdin to its end, however long it takes (up to the exec timeout). */
+  wait?: boolean
+  /** Stdin is a regular file (`< script.sh`): it is finite, so it is read whole. */
+  regularFile?: boolean
+  timeoutSeconds: number
+  probeMs?: number
+}
+
 /**
- * The input of the program: a file already on the kernel when `--stdin-file` names one, else what
- * this process's own stdin carries up to its end (nothing for a terminal or an empty input).
+ * The input of the program: a file already on the kernel when `--stdin-file` names one, else what this
+ * process's own stdin carries. Stdin is only read when it is a regular file, when `--stdin` asks for it,
+ * or when a pipe shows data or its end at once; an idle open stdin is never waited on, so a shell whose
+ * stdin stays open (an agent's tool shell, cron) runs the command at once. A terminal is not read.
  */
-export async function readExecInput(input: Readable & { isTTY?: boolean }, stdinFile: string | undefined, timeoutSeconds: number): Promise<ProgramInput | undefined> {
-  if (stdinFile !== undefined) return { kind: "file", path: stdinFile }
-  if (input.isTTY) return undefined
+export async function readExecInput(input: Readable & { isTTY?: boolean }, options: ExecInputOptions): Promise<ProgramInput | undefined> {
+  if (options.file !== undefined) return { kind: "file", path: options.file }
+  if (input.isTTY && !options.wait) return undefined
+  if (!options.wait && !options.regularFile && !(await showsDataOrEnd(input, options.probeMs ?? STDIN_PROBE_MS))) return undefined
   const chunks: Buffer[] = []
   let size = 0
-  const timer = setTimeout(() => input.destroy(new CommandFailure("exec_stdin_not_ended", `stdin did not end within ${timeoutSeconds} s; end it (for example </dev/null), pipe the input in, or pass --stdin-file`)), timeoutSeconds * 1000)
+  const timer = setTimeout(() => input.destroy(new CommandFailure("exec_stdin_not_ended", `stdin did not end within ${options.timeoutSeconds} s; end it (for example </dev/null) or pipe the input in`)), options.timeoutSeconds * 1000)
   try {
     for await (const chunk of input) {
       chunks.push(chunk as Buffer)
@@ -38,6 +57,27 @@ export async function readExecInput(input: Readable & { isTTY?: boolean }, stdin
     clearTimeout(timer)
   }
   return size === 0 ? undefined : { kind: "inline", data_base64: Buffer.concat(chunks).toString("base64") }
+}
+
+/** This process's stdin is a regular file (`< script.sh`), which is finite: no probe is needed. */
+export function stdinIsRegularFile(): boolean {
+  try { return fstatSync(0).isFile() } catch { return false }
+}
+
+/** Whether the stream has data or has ended within `ms`; an idle one is closed so it never holds the process open. */
+function showsDataOrEnd(input: Readable, ms: number): Promise<boolean> {
+  return new Promise(resolve => {
+    const settle = (shows: boolean) => {
+      clearTimeout(timer)
+      input.off("readable", onReadable)
+      // An idle stdin is closed, not just paused: a paused pipe handle keeps this process alive until its writer ends.
+      if (!shows) input.destroy()
+      resolve(shows)
+    }
+    const onReadable = () => settle(true)
+    const timer = setTimeout(() => settle(false), ms)
+    input.on("readable", onReadable)
+  })
 }
 
 /**
