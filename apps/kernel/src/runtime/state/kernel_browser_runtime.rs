@@ -112,10 +112,6 @@ fn browser_tool_params(arguments: serde_json::Value) -> Result<serde_json::Value
         KernelBrowserCommand::PasteSecret { .. }
             | KernelBrowserCommand::GrantLeasedComputer { .. }
             | KernelBrowserCommand::RevokeLeasedComputer { .. }
-            | KernelBrowserCommand::GrantRoomComputer { .. }
-            | KernelBrowserCommand::ListGrants
-            | KernelBrowserCommand::SubscribeGrants { .. }
-            | KernelBrowserCommand::RevokeGrants { .. }
             | KernelBrowserCommand::MirrorSubscribe { .. }
             | KernelBrowserCommand::MirrorNext { .. }
             | KernelBrowserCommand::MirrorClose { .. }
@@ -365,38 +361,7 @@ impl KernelRuntimeState {
                     }
                     KernelBrowserCommand::RevokeLeasedComputer { agent_id } => {
                         self.revoke_leased_computer(&user, agent_id).await?;
-                        let kernel = self.owned.config_projection.snapshot().daemon_id;
-                        return self.room_computer_grant_snapshot(&user, &kernel);
-                    }
-                    KernelBrowserCommand::GrantRoomComputer { .. }
-                    | KernelBrowserCommand::ListGrants
-                    | KernelBrowserCommand::RevokeGrants { .. }
-                    | KernelBrowserCommand::SubscribeGrants { .. } => {
-                        if let KernelBrowserCommand::GrantRoomComputer { agent_id } = &command {
-                            self.set_room_computer_access(&user, agent_id.as_deref(), true)?;
-                        }
-                        if let KernelBrowserCommand::RevokeGrants { agent_id } = &command {
-                            self.set_room_computer_access(&user, agent_id.as_deref(), false)?;
-                            self.revoke_user_leased_computer(&user, agent_id.as_deref())
-                                .await?;
-                        }
-                        if let KernelBrowserCommand::SubscribeGrants { after, wait_ms } = command {
-                            if wait_ms > 25_000 {
-                                return Err(host_error(
-                                    "MP-08: access subscription wait exceeds 25000 ms".into(),
-                                ));
-                            }
-                            let deadline = tokio::time::Instant::now()
-                                + std::time::Duration::from_millis(wait_ms.into());
-                            while self.owned.kernel_browser_host.access_cursor(&user) == after
-                                && tokio::time::Instant::now() < deadline
-                            {
-                                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                                self.kernel_browser_terminal_context(caller)?;
-                            }
-                        }
-                        let kernel = self.owned.config_projection.snapshot().daemon_id;
-                        return self.room_computer_grant_snapshot(&user, &kernel);
+                        return Ok(serde_json::json!({"agent_id": agent_id, "leased_computer": false}));
                     }
                     _ => {}
                 }

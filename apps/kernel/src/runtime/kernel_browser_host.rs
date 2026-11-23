@@ -43,8 +43,6 @@ struct HostState {
     #[cfg(test)]
     after_controller_check: Option<Arc<dyn Fn() + Send + Sync>>,
     presence: BTreeMap<(String, String), presence::AgentPresence>,
-    /// Counts changes of the owner's Room Computer switches, for their subscription.
-    access_cursors: BTreeMap<String, u64>,
     actors: BTreeMap<String, Arc<Mutex<KernelBrowserActors>>>,
     loaded: BTreeSet<(String, String, KernelBrowserCapability)>,
     download_sessions: BTreeMap<String, BTreeSet<String>>,

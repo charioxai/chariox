@@ -1084,10 +1084,6 @@ impl<'a> RemoteLeaseRuntime<'a> {
                         .agents
                         .destroy_agent(&agent.backing_agent_id, &mut sessions);
                     drop(sessions);
-                    if result.is_ok() {
-                        self.app
-                            .forget_room_computer_access(&agent.backing_agent_id);
-                    }
                     result.map(|_| ())
                 }
                 LeasedAgentCleanupPhase::BackingSessionEnd => {

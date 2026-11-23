@@ -5,7 +5,6 @@ import type { KernelBrowserCommand, KernelBrowserRequest, KernelBrowserResult } 
 export const kernelDesktopDisplayMinimumProtocolVersion = 474
 export const kernelComputerMinimumProtocolVersion = 494
 export const kernelBrowserMinimumProtocolVersion = 443
-export const userDomainAccessMinimumProtocolVersion = 443
 // MP-08 / MP-11: typed HOME -> leased desktop grants are allocated 500.
 export const leasedComputerMinimumProtocolVersion = 500
 // MP-08/MP-11: retain the integrated agent-tab provenance floor.

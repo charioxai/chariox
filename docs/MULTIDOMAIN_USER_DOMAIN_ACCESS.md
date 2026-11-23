@@ -43,15 +43,18 @@ that Tab, so the person sees the page fresh. A card that waits for page text or 
 verification keeps closing when its document changes, because its proof belongs to
 one document.
 
-## Room Computer switches
+## No per-agent switches
 
-The person can still switch a Room's Computer off per agent
-(`grant_room_computer`, `revoke_grants`, `subscribe_grants`, `list_grants`); the
-snapshot event `user_domain_grants_changed` now carries only its `cursor` and the
-`room_computer` list. Leased agents keep their Room Browser/Computer route.
+The person has no per-agent switch for the owner's kernel browser, Computer or Apps.
+The Room Computer switches (`grant_room_computer`, `revoke_grants`, `subscribe_grants`,
+`list_grants`) and the `user_domain_grants_changed` snapshot were removed in local
+1015. What stays: the explicit leased desktop grant (`grant_leased_computer`,
+`revoke_leased_computer`), foreign-owner isolation, Vault masking and the stale-page
+codes. A browser the person stops on purpose stays stopped: a person card's restart
+recovery (`card_recovery`) starts only a browser the kernel's restart ended.
 
 ## Clients
 
-The owner terminal shows the Room Computer switches only. The browser window and
+The owner terminal's `/access` lists the kernel browser's tabs and gives or takes back a leased desktop; the web client has no Access view. The browser window and
 App view projections no longer carry `kernel_id`, `kernel_name`,
 `focused_agent_kernel_id` or `reachable_by_focused_agent`.

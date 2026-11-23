@@ -643,4 +643,9 @@ pub use workspace::*;
 /// longer carry `kernel_id`, `kernel_name`, `focused_agent_kernel_id` or `reachable_by_focused_agent`; the loader tools
 /// take no arguments and `chariox.kernel_browser_share` is removed.
 /// 1014 adds revision-based latest Room history outline reads.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1014;
+/// Local 1015 (provisional; the relay peer is unchanged): the owner's agents need no per-agent Room Computer switch.
+/// `grant_room_computer`, `revoke_grants`, `list_grants` and `subscribe_grants` are gone, and so is the
+/// `user_domain_grants_changed` snapshot; `grant_leased_computer` and `revoke_leased_computer` answer
+/// `{agent_id, leased_computer}`. A person-card restart recovery starts the browser with `card_recovery`, which an
+/// explicit stop refuses.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1015;

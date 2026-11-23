@@ -210,25 +210,6 @@ impl KernelBrowserHost {
             });
         }
     }
-    /// The Room Computer switches of `user` changed.
-    pub(crate) fn access_projection_changed(&self, user: &str) {
-        *self
-            .inner
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .access_cursors
-            .entry(user.into())
-            .or_default() += 1;
-    }
-    pub(crate) fn access_cursor(&self, user: &str) -> u64 {
-        self.inner
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .access_cursors
-            .get(user)
-            .copied()
-            .unwrap_or(0)
-    }
     /// A cancelled run fence fails the call it admitted.
     pub(crate) fn check_admission(
         &self,

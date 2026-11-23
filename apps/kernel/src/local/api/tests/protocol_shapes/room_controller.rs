@@ -1142,7 +1142,6 @@ fn secret_observation_revocation_wire_protocol_411_peer_70_is_hashed() {
 // MP-08 / MP-10 / MP-11: allocated local449 / peer92, red-capable shape guard.
 #[test]
 fn mp08_room_computer_449_peer92_shapes() {
-    use crate::local::{KernelBrowserCommand, KernelBrowserRequest};
     use crate::transport::relay_peer::RemoteRoomComputerObservationCall;
     use crate::transport::room_browser_controller::RoomComputerInputAction;
     assert_eq!(
@@ -1154,12 +1153,6 @@ fn mp08_room_computer_449_peer92_shapes() {
         crate::test_support::expected_relay_peer_protocol_version()
     );
     let values = serde_json::json!([
-        serde_json::to_value(KernelBrowserRequest {
-            command: KernelBrowserCommand::GrantRoomComputer {
-                agent_id: Some("agent-a".into())
-            }
-        })
-        .unwrap(),
         serde_json::to_value(RemoteRoomComputerObservationCall::Snapshot {
             observer: "agent:agent-a".into()
         })
@@ -1171,12 +1164,12 @@ fn mp08_room_computer_449_peer92_shapes() {
         })
         .unwrap()
     ]);
-    let expected = serde_json::json!([{ "command":{"op":"grant_room_computer","agent_id":"agent-a"}},{"kind":"snapshot","observer":"agent:agent-a"},{"kind":"target_action","tree_revision":7,"target_id":"atspi-a","action":"click"}]);
+    let expected = serde_json::json!([{"kind":"snapshot","observer":"agent:agent-a"},{"kind":"target_action","tree_revision":7,"target_id":"atspi-a","action":"click"}]);
     assert_eq!(values, expected);
     use sha2::{Digest, Sha256};
     assert_eq!(
         format!("{:x}", Sha256::digest(serde_json::to_vec(&values).unwrap())),
-        "c4e8985c29cfd4a19c858e84b756de7ebe1555659f0ae042acad481858206f65"
+        "24742c4ccf697f9455cd66afd21cc06c388443669c462b2d6388473f8d5fc7fd"
     );
 }
 

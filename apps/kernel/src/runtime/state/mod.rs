@@ -382,7 +382,6 @@ struct KernelRuntimeOwnedState {
     uncertain_leased_tasks: UncertainLeasedTasks,
     /// Running provider runs whose working directory the sweep has seen as a git worktree.
     git_workspaces_seen: Arc<std::sync::Mutex<BTreeSet<String>>>,
-    room_computer_revoked: Arc<std::sync::Mutex<BTreeSet<String>>>,
     room_display_leases: room_shared_display::RoomDisplayLeases,
     room_secret_observations: room_secret_observation::RoomSecretObservations,
     kernel_browser_secret_observations: room_secret_observation::RoomSecretObservations,
@@ -1000,7 +999,6 @@ impl KernelRuntimeState {
             runtime_tool_call_activity,
             kernel_browser_host,
             dictation,
-            room_computer_revoked,
             sudo_windows,
             pending_agent_context_handoffs,
             room_terminals,
@@ -1025,7 +1023,6 @@ impl KernelRuntimeState {
                         app.runtime_tool_call_activity.clone(),
                         app.kernel_browser_host.clone(),
                         app.dictation.clone(),
-                        app.room_computer_revoked.clone(),
                         app.sudo_window_projection(),
                         app.pending_agent_context_handoff_store(),
                         app.room_terminals(),
@@ -1325,7 +1322,6 @@ impl KernelRuntimeState {
                 human_control_task_waits: Default::default(),
                 uncertain_leased_tasks: Default::default(),
                 git_workspaces_seen: Default::default(),
-                room_computer_revoked,
                 room_secret_observations,
                 room_display_leases: Default::default(),
                 kernel_browser_secret_observations: room_secret_observation::RoomSecretObservations::new(
