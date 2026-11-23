@@ -120,6 +120,7 @@ export function defineF2toF6(h) {
       const mWs2 = await mint('k1', A); const mAdm = await mint('k1', A)
       const leaseOld = await sess.lease(K.k1.daemon, A.publicKeyThumbprint)
       const admitted = await wsCarrier(mAdm.issued.endpoint, { headers: goodHeaders() }); const va = await prove(admitted, { grant: mAdm.issued.grant, kernelKey: mAdm.kernelKey, identity: A, origin: sess.origin }); out.adm_admitted = connectedOk(va)
+      { const q = await directRequest(admitted, { identity: A, kernelKey: mAdm.kernelKey, target: target('k1'), body: LIST }); out.d0_requestBeforeDeadline = q.body ? Object.keys(q.body)[0] : 'refused: ' + JSON.stringify(q.error ?? q.frame).slice(0, 100) }
       const t0 = Date.now()
       // b: the 15-minute bootstrap token cannot mint a local grant (a long-lived identity)
       { const b = await sess.bootstrap(K.k1.daemon, A.publicKeyThumbprint); const m = await mint('k1', A, { token: b.json?.relayToken })
@@ -137,20 +138,30 @@ export function defineF2toF6(h) {
       // wait until every staged credential is > 31 s old
       await sleep(Math.max(0, 33000 - (Date.now() - t0)))
       { cWs.close(); const cW = await ws('k1', A, mWs); const v = await prove(cW, { grant: mWs.issued.grant, kernelKey: mWs.kernelKey, identity: A, origin: sess.origin }); out.a_ws_grantOlderThan30s = connectedOk(v) ? 'ADMITTED' : 'denied: ' + refusedReason(v) }
-      { const opened = await cRtc.accept(mRtc.issued.answer); const v = opened ? await prove(cRtc, { grant: mRtc.issued.grant, kernelKey: mRtc.kernelKey, identity: A, origin: sess.origin }) : { frame: { closed: 'channel did not open' } }; out.a_rtc_grantOlderThan30s = connectedOk(v) ? 'ADMITTED' : 'denied: ' + refusedReason(v); out.a_rtc_channelOpened = opened }
+      // The kernel drops an RTC peer whose channel is not open after 15 s (rtc.rs OPEN_DEADLINE) and forgets its grant, and an opened channel must prove within 5 s (HANDSHAKE_DEADLINE), so a >30 s old grant can never reach the grant verifier over WebRTC. A channel that did not open proves nothing about expiry: report it as a limitation, never as a denial (expiry verifier: kernel test mp11_grant_is_single_use_and_bound_to_key_challenge_and_expiry; live proof of the same verifier: the WebSocket case above).
+      const limitations = []
+      { const opened = await cRtc.accept(mRtc.issued.answer); out.a_rtc_channelOpened = opened
+        if (opened) { const v = await prove(cRtc, { grant: mRtc.issued.grant, kernelKey: mRtc.kernelKey, identity: A, origin: sess.origin }); out.a_rtc_grantOlderThan30s = connectedOk(v) ? 'ADMITTED' : 'denied: ' + refusedReason(v) }
+        else { out.a_rtc_grantOlderThan30s = 'inconclusive: channel did not open (transport drops an unopened peer at 15 s, before the 30 s grant can age)'; limitations.push('RTC grant expiry is not reachable through the real transport deadlines (15 s open, 5 s handshake); covered by the kernel unit test, not by this cell') } }
       { const r = await relayCall({ relayUrl: relayUrlFor(), token: leaseOld.json.relayToken, target: target('k1'), identity: A, bodies: [{ local_browser_connect: {} }] })
         out.c_expiredLeaseToken = r.responses[0]?.body?.LocalBrowserConnectIssued ? 'GRANT ISSUED' : 'refused: ' + JSON.stringify(r.responses[0]?.error ?? r.error ?? r.frames).slice(0, 140) }
       // the grant that was minted but whose socket stays idle: redeem after expiry on a fresh socket
       { const c = await ws('k1', A, mWs2); const v = await prove(c, { grant: mWs2.issued.grant, kernelKey: mWs2.kernelKey, identity: A, origin: sess.origin }); out.a2_freshSocketOldGrant = connectedOk(v) ? 'ADMITTED' : 'denied: ' + refusedReason(v); c.close() }
       // d: admitted session whose lease was renewed once (e1) must still end at its deadline; observe the close
       const end = await admitted.next(20000); out.d_admittedSessionEnd = { afterMs: Date.now() - t0, frame: JSON.stringify(end).slice(0, 160) }
+      out.d_endIsExpiryClose = end?.kind === 'close' && /relay token expired|local browser lease expired/.test(end.reason ?? '')
+      out.d_requestAfterDeadline = await (async () => { try { const q = await directRequest(admitted, { identity: A, kernelKey: mAdm.kernelKey, target: target('k1'), body: LIST, wait: 3000 }); return q.body ? 'ANSWERED ' + Object.keys(q.body)[0] : 'refused: ' + JSON.stringify(q.error ?? q.frame).slice(0, 100) } catch (e) { return 'refused: ' + e.message } })()
       out.d_renewedAfterExpiry = await renew(mAdm.issued.grant, 5)
-      const mustDeny = ['a_ws_grantOlderThan30s', 'a_rtc_grantOlderThan30s', 'a2_freshSocketOldGrant']
+      const mustDeny = ['a_ws_grantOlderThan30s', 'a2_freshSocketOldGrant']
       const bad = mustDeny.filter(k => !/^denied/.test(out[k]))
       for (const k of ['b_longLivedBootstrapToken', 'c_expiredLeaseToken', 'e2_renewSeq1Again', 'e3_renewByOtherKey', 'e4_renewUnknownGrant', 'd_renewedAfterExpiry']) if (!/^refused/.test(out[k])) bad.push(k)
       if (!/^renewed/.test(out.e1_renewSeq1)) bad.push('e1_renewSeq1(control)')
+      if (out.a_rtc_grantOlderThan30s === 'ADMITTED') bad.push('a_rtc_grantOlderThan30s')
+      if (out.d0_requestBeforeDeadline !== 'SessionsListed') bad.push('d0_requestBeforeDeadline(control)')
+      if (!out.d_endIsExpiryClose) bad.push('d_endIsExpiryClose')
+      if (!/^refused/.test(out.d_requestAfterDeadline)) bad.push('d_requestAfterDeadline')
       if (/ANSWERED/.test(out.e5_renewOverDirectCarrier)) bad.push('e5')
-      cell('F6 expired credential denied (grant >30 s, expired lease token, long-lived identity, lease not renewed, renewal replay/other key/direct)', bad.length ? 'FAIL' : 'PASS', { ...out, notDenied: bad })
+      cell('F6 expired credential denied (grant >30 s, expired lease token, long-lived identity, lease not renewed, renewal replay/other key/direct)', bad.length ? 'FAIL' : 'PASS', { ...out, notDenied: bad, limitations })
     },
   }
 }

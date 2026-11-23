@@ -51,7 +51,9 @@ export function defineF8(h) {
         out[carrierKind].mutationsExecutedMinusAnswered = out[carrierKind].createdAfterRepair - respOk
       }
       const good = w => w && typeof w === 'object' && w.closeFrame?.reason === 'local browser authority revoked' && w.responsesMoreThan250msAfterRevoke === 0 && w.closeAfterRevokeCallMs <= 1500
-        && w.createdAfterRepairLater === w.createdAfterRepair && w.executedTimes?.afterRevokeCallReturned === 0
+        && w.createdAfterRepairLater === w.createdAfterRepair
+        // The revoke call returns only after every request that had not begun is cancelled (row 441). The session lane runs one request at a time, so at most ONE mutation can already be in flight at the cut; it settles and keeps its result (a relay retry sees it). So: at most one create lands after the call returned, none later than 250 ms after, and no more mutations ran than were answered plus that one. Unfixed kernel (ced33e25166): 25 (WS) / 28 (RTC) landed after the call returned, the last 620 ms after.
+        && w.executedTimes?.afterRevokeCallReturned <= 1 && w.executedTimes?.afterReturnedPlus250 === 0 && w.mutationsExecutedMinusAnswered <= 1
       const ok = out.control_ws?.createdDelta === 10 && out.control_rtc?.createdDelta === 10 && good(out.ws) && good(out.rtc)
       await local.close?.().catch(() => {})
       cell('F8 revoke during a queued mutation burst stops it (WebSocket and WebRTC)', ok ? 'PASS' : 'FAIL', out)
