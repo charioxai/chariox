@@ -1418,3 +1418,52 @@ test('T3: a cover skips the region under it only while its sent still is proven 
   assert(third.some(t => t.node_id === 'n3'), 'a cover with no still of its own this time covers nothing');
   assert(![...first, ...second, ...third].some(t => 'opaque' in t), 'the opacity proof stays in the kernel');
 });
+
+// Row 497 (YouTube in the Room Browser): a playing region checks its lease for every frame. Each check used to end the
+// viewer's long poll, so the kernel answered its credits with empty packets (~376 a second), the viewer fell a window
+// behind and the mirror reset every few seconds (the region video re-subscribed: flashes, jumps, one frame now and then).
+// A check that arrives during a long poll runs inside it; the poll keeps waiting and issues nothing for it.
+test('Row 497: a region lease check during a long poll runs inside it and does not end the poll', async () => {
+  const { Mirror2Regions } = await import('./kernel-browser-mirror2-regions.mjs');
+  const policy = { targets: [] }, tab = { tab_id: 't', target_id: 'T', document_id: 'D1' };
+  const documents = new Map([['T', 'D1']]);
+  const connection = { isOpen: () => true, send: async () => ({ frameTree: { frame: { loaderId: documents.get('T') } } }) };
+  const world = { connection, sessionId: 'S', frame: { loaderId: 'D1' }, ref: 'm' };
+  const stream = { tab_id: 't', world, issued: 1, document_id: 'D1', policy, fallback: null, resources: new Map(), attrSequence: new Map(), ownScrolls: new Map(), frames: new Map(), frameSlots: new Map(), frameSlot: 0, tilesAt: Date.now(), tileKeys: '', movedAt: 0, hurry: 0, chain: Promise.resolve(), layoutKey: undefined };
+  const host = { protection: policy, generation: 1, pageSize, scales: new Map(), tabs: new Map([['t', tab]]), displayTarget: async () => tab,
+    browser: { connection, documentIdsByTarget: documents, sessionsByTarget: new Map([['T', 'S']]) } };
+  const mirror = new Mirror2({ host, require: () => stream, assertWebTab: () => {}, streams: new Map([['s', stream]]) });
+  mirror.world = async () => world;
+  // The page's drain wait: answers after its time, or at once on a wake that finds it waiting (a wake does not latch).
+  let waiter = null, drains = 0;
+  const empty = () => ({ ops: [], changed: [], resources: [], sheets: [], scroll: [0, 0], focused: null, selection: null, fragment: null, opaque: false, pressed: 0 });
+  mirror.evaluate = async (_world, expression) => {
+    if (expression.endsWith('.wake()')) { waiter?.(); return true; }
+    if (expression.includes('waitDrain')) { drains++; const ms = Number(/waitDrain\((\d+)\)/.exec(expression)[1]); await new Promise(resolve => { const timer = setTimeout(resolve, ms); waiter = () => { clearTimeout(timer); resolve(); }; }); waiter = null; }
+    return empty();
+  };
+  mirror.frames = { drain: async () => ({ ops: [], resources: [], changed: [] }), project: (_, source) => source };
+  mirror.materialize = async () => [];
+  const regions = new Mirror2Regions(mirror);
+  // The first credit carries the page's header; the next one has nothing to send and long-polls.
+  await mirror.packet(stream, { subscription_id: 's', generation: 1, after_sequence: 1 }, 'scope', undefined, Date.now());
+  const started = Date.now();
+  let answered = null;
+  const credit = mirror.packet(stream, { subscription_id: 's', generation: 1, after_sequence: 2 }, 'scope', undefined, Date.now() + 900).then(packet => { answered = Date.now() - started; return packet; });
+  const checks = [];
+  for (let i = 0; i < 5; i++) {
+    await new Promise(resolve => setTimeout(resolve, 60));
+    const asked = Date.now();
+    await regions.locked(stream, async () => { checks.push(Date.now() - asked); return true; });
+  }
+  assert.equal(answered, null, 'the credit is still waiting after five lease checks');
+  assert.equal(stream.hurry, 0, 'no check ended the long poll');
+  assert.equal(checks.length, 5);
+  assert.ok(Math.max(...checks) < 100, `each check ran within one drain wake (${checks} ms)`);
+  await credit;
+  assert.ok(answered >= 800, `the credit answered at its own deadline (${answered} ms)`);
+  assert.ok(stream.polling === false && !stream.inline?.length, 'nothing queued after the poll');
+  // Outside a long poll a check still takes the subscription's chain (and hurries any credit queued behind it).
+  let ran = false; await regions.locked(stream, async () => { ran = true; });
+  assert.equal(ran, true);
+});

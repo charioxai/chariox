@@ -51,6 +51,7 @@ async function pageTakesWheel(world) {
   } finally { send('Runtime.releaseObjectGroup', { objectGroup }).catch(() => {}); }
 }
 const MOVED = Symbol('document moved');
+const INLINE = Symbol('region check queued');
 // An idle viewer parks one credit this long: the answer to a quiet page is one heartbeat per wait.
 const MAX_WAIT_MS = 10_000, RESOURCE_PACKET_BYTES = 256 * 1024, RESOURCE_BYTES = 4 * 1024 * 1024, TILE_REFRESH_MS = 1000;
 // Stills (base64 PNG) in one packet; with its resources and body the packet stays under one relay reply (MAX_REPLY_BYTES,
@@ -439,7 +440,13 @@ export class Mirror2 {
     return document === stored.document_id && world.frame?.loaderId === document && browser.sessionsByTarget?.get(stored.target_id) === world.sessionId ? { tab: { ...stored }, world } : null;
   }
   // Credits that arrived before this point stop waiting (their hurry count is older).
-  hurry(stream) { stream.hurry = (stream.hurry ?? 0) + 1; if (stream.world) this.evaluate(stream.world, `${stream.world.ref}.wake()`).catch(() => {}); }
+  hurry(stream) { stream.hurry = (stream.hurry ?? 0) + 1; this.wake(stream); }
+  // Ends the page's current drain wait without ending the credit (the poll looks again and keeps waiting).
+  wake(stream) { if (stream.world) this.evaluate(stream.world, `${stream.world.ref}.wake()`).catch(() => {}); }
+  // Row 497: region checks queued while this credit long-polled run here, in the subscription's order.
+  async runInline(stream) {
+    while (stream.inline?.length) { const job = stream.inline.shift(); try { job.resolve(await job.operation()); } catch (error) { job.reject(error); } }
+  }
   // The viewer keeps its native preview of a document until the DOM mirror can be built. This reset only says "still preparing".
   previewPacket(stream, command, scope, tabId, documentId, started) {
     if (this.service.require(command.subscription_id, scope, command.generation) !== stream || this.host.generation !== command.generation) throw new Error('MP-11: stale mirror subscription');
@@ -628,11 +635,19 @@ export class Mirror2 {
       if (reset) this.host.timing?.('mirror2_fonts', fontsAt);
       // Long poll: nothing to send yet -> wait for the page (or newly loaded bytes).
       // A navigation ends the wait at once (MP-08/MP-10): the next credit resets to the new document.
+      stream.polling = true;
       while (!reset && !resources.length && this.empty(stream, source) && !this.sheetsDue(stream) && Date.now() < deadline && stream.hurry === hurry && !moved()) {
+        await this.runInline(stream);
         const settle = stream.movedAt + SETTLE_MS - Date.now(), refine = settle > 0 && this.refinePending(stream) ? settle + 1 : 500;
         await this.syncScriptFonts(world, tab);
         const polled = this.evaluate(world, `${world.ref}.waitDrain(${Math.max(1, Math.min(500, refine, deadline - Date.now()))})`, true);
-        const drained = moveWatch ? await Promise.race([polled, moveWatch.promise.then(() => MOVED)]) : await polled;
+        // A queued region check wakes the drain (the page's wake does not latch: it is repeated until the drain answers);
+        // the drained records are never dropped, the check runs at the top of the next turn and the poll keeps waiting.
+        const inline = new Promise(resolve => { stream.inlineWake = resolve; if (stream.inline?.length) resolve(); });
+        const waited = Promise.race([polled, ...(moveWatch ? [moveWatch.promise.then(() => MOVED)] : []), inline.then(() => INLINE)]);
+        let drained = await waited;
+        if (drained === INLINE) { const nudge = setInterval(() => this.wake(stream), 20); this.wake(stream); try { drained = moveWatch ? await Promise.race([polled, moveWatch.promise.then(() => MOVED)]) : await polled; } finally { clearInterval(nudge); } }
+        stream.inlineWake = null;
         // The old document's poll may answer late (its page outlives the commit): the commit ends this credit now.
         if (drained === MOVED) { polled.catch(() => {}); assertDocument(); }
         const more = await processDelta(drained);
@@ -653,7 +668,7 @@ export class Mirror2 {
       fallback = error.mirrorReason ?? 'observer_unavailable';
       this.host.timing?.(`mirror2_fallback_${fallback}${error.mirrorDetail ? ' ' + error.mirrorDetail : ''}`, timestamp());
       source = null; reset = true;
-    } finally { moveWatch?.cancel(); }
+    } finally { moveWatch?.cancel(); stream.polling = false; await this.runInline(stream); }
     if (fallback) resources = [];
     mark('observe_resources');
     assertDocument();

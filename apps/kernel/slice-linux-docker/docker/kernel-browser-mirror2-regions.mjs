@@ -36,7 +36,12 @@ export class Mirror2Regions {
       add(op.nodes); if(parent)parent.children=retained;
     }
   }
+  // A lease's checks run in the subscription's order, between its packets. Row 497: a playing region checks its lease for
+  // every frame; ending the viewer's long poll for each check answered its credits with empty packets (~60 a second per
+  // credit window), the viewer fell more than a window behind and the kernel reset its mirror every few seconds. A check
+  // that arrives while a credit long-polls now runs inside that poll (woken, not ended); otherwise it takes the chain.
   locked(stream, operation) {
+    if (stream.polling) return new Promise((resolve, reject) => { (stream.inline ??= []).push({ operation, resolve, reject }); stream.inlineWake?.(); });
     this.mirror.hurry(stream);
     const run = stream.chain.then(operation); stream.chain = run.catch(() => {}); return run;
   }
