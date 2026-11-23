@@ -139,6 +139,7 @@
   "responses": [
     {
       "kind": "peer_agent_accepted",
+      "delivery": "steered",
       "protocol_version": 0,
       "duplicate": false,
       "target": {
