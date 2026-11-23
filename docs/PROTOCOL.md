@@ -7703,6 +7703,13 @@ receive instructions from its parent and reports `child_finished` to the
 parent's Room. `agent cancel`, `agent deadline` and `agent delete` accept
 `--room <room>` to reach the child.
 
+Row 405 (PA12): the owner's agents reach any of the owner's agents in another
+Room of the same kernel by name with `--room`, sub-agents included
+(`agent message`, `agent steer`, `agent cancel`, `agent deadline`,
+`agent resume`, `agent delete`), within the peer permission comparison. A
+guest of a Room reaches only that Room and is told so; another owner's Rooms
+stay unavailable.
+
 The destination Room's folders must be within the parent's permitted folder
 scope. Permission and mode use the current authority of each ancestor in its
 own Room. The parent-side `ListDescendants` tree reports children in other

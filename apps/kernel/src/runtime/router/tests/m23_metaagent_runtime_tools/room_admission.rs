@@ -1849,8 +1849,26 @@ async fn resume_in_other_room() {
             ))
             .unwrap()
     };
-    let (_, orchestrator) = room("orchestrator");
+    let (orchestrator_room, orchestrator) = room("orchestrator");
     let (other, stopped) = room("stopped");
+    crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            orchestrator_room.id(),
+            format!("metaagent:{}:commands", orchestrator.id()),
+            crate::attachment::ClientCapabilityLevel::AutomationOnly,
+        ))
+        .unwrap();
+    let auth = launch_test_provider(
+        &mut app,
+        orchestrator_room.id(),
+        orchestrator.id(),
+        "dev-stub",
+        "dev-stub",
+        "room-model",
+    )
+    .runtime_mcp_auth_token()
+    .unwrap()
+    .to_owned();
     let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
     let change = |usage_limit, permission_level| {
         LocalDaemonRequest::UpdateAgentConfig(crate::local::UpdateAgentConfigRequest {
@@ -1886,6 +1904,18 @@ async fn resume_in_other_room() {
         .runtime_state
         .authorize_room_agent_request(orchestrator.id(), &settings)
         .is_ok());
+    // The Room command end to end (the live drill found the session store refusing a caller
+    // from another room here): the target has no usage-limit stop, so the kernel answers from
+    // that state, past every authority check.
+    for command in ["agent resume cancel", "agent resume"] {
+        let command = format!("{command} {} --room {}", stopped.id(), other.id());
+        let result = room_command(&router, &auth, &command).await;
+        let error = result.payload["error"].as_str().unwrap_or_default();
+        assert!(
+            !result.ok && error.contains("not stopped by a usage limit"),
+            "{command}: {result:?}"
+        );
+    }
 }
 
 // PA11 (row 363): after a handover, an orchestrator controls a predecessor's agents in the same
@@ -1933,4 +1963,91 @@ async fn predecessor_lanes() {
             .authorize_room_agent_request(successor.id(), &request);
         assert!(admitted.is_ok(), "{value}: {admitted:?}");
     }
+}
+
+// PA12 (row 405): an orchestrator in Room A names a predecessor's sub-agent in Room B by alias
+// with `--room` and messages, resumes and deletes it, as the owner could. (The guest half, a
+// refusal that names its reason, is peer_rooms::kernels_sender::a_guest_reaches_only_the_agents_of_its_own_room.)
+#[test]
+fn room_admission_an_orchestrator_names_a_predecessors_sub_agent_in_another_room() {
+    run_large_stack_async_test(
+        "room-predecessor-sub-agent",
+        predecessor_sub_agent_in_another_room,
+    );
+}
+
+async fn predecessor_sub_agent_in_another_room() {
+    let env = TestMetaRuntimeEnv::new("room-predecessor-sub-agent");
+    let mut config = DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let mut app = DaemonApp::bootstrap(config).unwrap();
+    let mut room = |name: &str| {
+        let workspace = env.root.join(name);
+        std::fs::create_dir_all(&workspace).unwrap();
+        crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new(
+                workspace.to_string_lossy(),
+                workspace.to_string_lossy(),
+            ))
+            .unwrap()
+    };
+    let (orchestrator_room, orchestrator) = room("orchestrator");
+    let (predecessor_room, predecessor) = room("predecessor");
+    let lane = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            CreateAgentRequest::new(predecessor_room.id(), "dev-stub")
+                .with_alias("lane")
+                .with_parent_agent_id(predecessor.id()),
+        )
+        .unwrap();
+    crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            orchestrator_room.id(),
+            format!("metaagent:{}:commands", orchestrator.id()),
+            crate::attachment::ClientCapabilityLevel::AutomationOnly,
+        ))
+        .unwrap();
+    let auth = launch_test_provider(
+        &mut app,
+        orchestrator_room.id(),
+        orchestrator.id(),
+        "dev-stub",
+        "dev-stub",
+        "room-model",
+    )
+    .runtime_mcp_auth_token()
+    .unwrap()
+    .to_owned();
+    let app = Arc::new(Mutex::new(app));
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
+    let other = predecessor_room.id();
+
+    let message = room_command(
+        &router,
+        &auth,
+        &format!("agent message lane handover --room {other}"),
+    )
+    .await;
+    assert!(message.ok, "{message:?}");
+    // No usage-limit stop is armed, so the kernel answers from that state, past every authority check.
+    let resume = room_command(
+        &router,
+        &auth,
+        &format!("agent resume cancel lane --room {other}"),
+    )
+    .await;
+    assert!(
+        resume.payload["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("not stopped by a usage limit")),
+        "{resume:?}"
+    );
+    let delete = room_command(&router, &auth, &format!("agent delete lane --room {other}")).await;
+    assert!(delete.ok, "{delete:?}");
+    assert!(app
+        .lock()
+        .await
+        .agents()
+        .get_agent(lane.id())
+        .map_or(true, |agent| agent.archived()));
 }

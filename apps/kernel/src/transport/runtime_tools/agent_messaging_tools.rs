@@ -73,7 +73,7 @@ pub fn agent_messaging_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                     },
                     "room": {
                         "type": "string",
-                        "description": "Optional id of another room of the same owner on this kernel. Its ordinary agents are addressable; sub-agents are not."
+                        "description": "Optional id of another room of the same owner on this kernel. Its agents, sub-agents included, are addressable when you are the owner's agent; a guest of a room reaches only its own room."
                     },
                     "kernel": {
                         "type": "string",
