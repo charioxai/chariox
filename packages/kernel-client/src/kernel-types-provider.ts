@@ -305,7 +305,7 @@ export type TerminalOutputRecord = {
   source_attachment_id?: string | null
   kind: "provider_output" | "provider_terminal" | "prompt_echo" | "provider_reasoning" | "provider_tool" | "provider_error" | "provider_status"
   merge_key?: string
-  /** Protocol ≥1071: `bytes` take the place of the row under `merge_key` instead of being added to it. */
+  /** Protocol ≥1016: `bytes` take the place of the row under `merge_key` instead of being added to it. */
   replaces?: boolean
   /** The bytes are more of the replacement the `replaces` record of the same `merge_key` began: they join that row, wherever it is now. */
   continues_replacement?: boolean

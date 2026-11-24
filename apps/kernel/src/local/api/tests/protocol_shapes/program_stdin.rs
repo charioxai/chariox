@@ -7,7 +7,7 @@ fn program_stdin_open_snapshot_and_hash() {
     let bytes = include_bytes!("program-stdin-1014.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "2101bf1d0dd07dec581bfe0810188fc3cb8d71ce478bac78aec1eea06eb93474"
+        "906e10de39a7b7a608367a2705cfc5db5eac873b8ca414251d196ba4d0cb9263"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(fixture["protocol_version"], LOCAL_DAEMON_PROTOCOL_VERSION);

@@ -3,7 +3,7 @@
     "MP-08",
     "MP-10"
   ],
-  "local_protocol": 1014,
+  "local_protocol": 1016,
   "peer_protocol": 451,
   "allocation": "Landing 12.1 local 1013, relay peer 450: additive mirror v2 header focus_visible (the page's focused element matches :focus-visible); absent means no ring",
   "subscribe": {

@@ -620,7 +620,7 @@ import Testing
     #expect(records[0].text == "Hello")
 }
 
-// MP-08 / MP-10 (#1425, protocol 1071): a record that replaces its row says so.
+// MP-08 / MP-10 (#1425, protocol 1016): a record that replaces its row says so.
 @Test func terminalOutputRecordDecodesReplaces() throws {
     let replacing = try JSONDecoder().decode(
         TerminalOutputRecord.self,

@@ -305,7 +305,7 @@ the range at these byte boundaries before replay deduplication, preserving
 unseen rows when history hydration overlaps only part of a range. Gaps and
 unsequenced bytes never join a persisted range.
 
-MP-08 / MP-10, local protocol 1071: a terminal output record with
+MP-08 / MP-10, local protocol 1016: a terminal output record with
 `replaces: true` takes the place of the row under its `merge_key` instead of
 being added to it; the field is left out otherwise. The kernel streams a
 Claude reply from its terminal as plain text under one merge key, and once the

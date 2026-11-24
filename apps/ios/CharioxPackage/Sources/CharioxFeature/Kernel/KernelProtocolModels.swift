@@ -415,7 +415,7 @@ public struct TerminalOutputRecord: Equatable, Sendable, Decodable {
     public let kind: String
     public let mergeKey: String?
     public let bytes: [UInt8]
-    /// Protocol 1071: the bytes take the place of the row under `mergeKey`
+    /// Protocol 1016: the bytes take the place of the row under `mergeKey`
     /// instead of being added to it (a reply streamed live gets its finished text).
     public var replaces: Bool?
 
