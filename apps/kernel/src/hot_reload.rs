@@ -25,7 +25,7 @@ use crate::runtime::state::LocalJobHandover;
 mod job_state_file;
 mod read;
 
-use read::{end_unreadable, read_handover, ReadHandover};
+use read::{end_unreadable, read_handover, salvage_document, ReadHandover};
 
 /// The handover this program writes and reads. A new program must print this
 /// number, or the next one, for `--handover-format` before this one hands
@@ -309,6 +309,11 @@ pub fn receive() {
             // document says: keep serving on them, or the ports stay taken.
             if let Ok(body) = &body {
                 keep_inherited_listeners(body);
+                // Exec kept the previous program's children and descriptors whatever the
+                // document says: what it names ends as after a restart, and only the
+                // listeners stay open.
+                let listeners: Vec<i32> = lock(&INHERITED_LISTENERS).values().copied().collect();
+                end_unreadable(salvage_document(body), &listeners);
             }
             note_for_log(
                 true,
@@ -318,7 +323,7 @@ pub fn receive() {
             return;
         }
     };
-    end_unreadable(unreadable, &handover);
+    end_unreadable(unreadable, &handover.inherited_fds());
     // Children started from here on must not inherit them.
     for terminal in &handover.terminals {
         set_close_on_exec(terminal.master_fd(), true);
