@@ -343,7 +343,9 @@ fn remote_native_interaction_response_timeout(
         .timeout_sec()
         .map(Duration::from_secs)
         .map(|timeout| {
-            timeout.saturating_add(REMOTE_NATIVE_INTERACTION_RESPONSE_BUFFER)
+            timeout
+                .saturating_add(PROVIDER_TERMINAL_HOLD_LIMIT)
+                .saturating_add(REMOTE_NATIVE_INTERACTION_RESPONSE_BUFFER)
         })
         .unwrap_or_else(|| Duration::from_millis(relay_request_timeout_ms))
 }
@@ -351,7 +353,7 @@ fn remote_native_interaction_response_timeout(
 /// When the worker gives up waiting for the home: the card's own deadline, the longest the home
 /// holds it past that, and the buffer for the home's answer to come back.
 fn forwarding_deadline(expires_at: tokio::time::Instant) -> tokio::time::Instant {
-    expires_at + REMOTE_NATIVE_INTERACTION_RESPONSE_BUFFER
+    expires_at + PROVIDER_TERMINAL_HOLD_LIMIT + REMOTE_NATIVE_INTERACTION_RESPONSE_BUFFER
 }
 
 pub(crate) fn install_provider_native_interaction_bridge(
