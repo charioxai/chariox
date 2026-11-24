@@ -437,7 +437,9 @@ async fn revived_below_middle() {
             },
         )
     };
-    set("a", Some(now + 10 * 60_000)).await.unwrap();
+    // a's limit passes for real: the intent it keeps is a time in the past.
+    set("a", Some(now + 300)).await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
     for agent in ["a", "b", "d"] {
         finish(&world, agent).await;
     }
