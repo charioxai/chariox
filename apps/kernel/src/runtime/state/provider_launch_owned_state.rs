@@ -1942,6 +1942,8 @@ mod tests {
                 .filter(|entry| entry.text.contains("Vault locked: unlock to start"))
                 .count()
         };
+        // The agent was told once while it polled the locked Vault, before it joined the card.
+        let told_before_joining = joiner_notices();
         for _ in 0..3 {
             runtime.say_launch_waits_on_vault(
                 session.id(),
@@ -1952,7 +1954,7 @@ mod tests {
         }
         assert_eq!(
             joiner_notices(),
-            0,
+            told_before_joining,
             "joining the Room's open card adds no notice"
         );
         resolve_vault_passphrase_interaction(&runtime, session.id(), &interaction).await;
