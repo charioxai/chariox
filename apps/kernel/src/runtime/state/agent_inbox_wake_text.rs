@@ -263,5 +263,17 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("If this request started your turn"), "{text}");
+        // A reply-requested message that reached an already running turn does not settle that
+        // turn's final answer: the prompt must name the explicit message for those turns.
+        assert!(text.contains("Reply to message 41:"), "{text}");
+        assert!(
+            !text.contains("Answer in this turn"),
+            "a final answer is not offered unconditionally: {text}"
+        );
+        let condition = text.find("If this request started your turn").unwrap();
+        assert!(
+            text.find("final answer").unwrap() > condition,
+            "the final answer is the conditional branch: {text}"
+        );
     }
 }
