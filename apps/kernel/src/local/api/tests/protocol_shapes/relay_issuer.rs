@@ -1,19 +1,19 @@
-//! MP-11: protocol 572/180 adds the self-hosted relay issuer (kernel-signed client relay tokens).
+//! MP-11: protocol 1015/452 adds the self-hosted relay issuer (kernel-signed client relay tokens).
 use super::*;
 
 #[test]
-fn relay_issuer_572_snapshot() {
+fn relay_issuer_1015_snapshot() {
     use sha2::{Digest, Sha256};
     const {
-        assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 572);
+        assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 1015);
     };
     const {
-        assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 180);
+        assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 452);
     };
-    let bytes = include_bytes!("relay-issuer-572.json");
+    let bytes = include_bytes!("relay-issuer-1015.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "40512f932030e0cd1022c82f9f9bc731c3774382eeedc7c2dec80c4682bb248f"
+        "a390be6b3bccdecdec28dd026c2f3802b1debc61438f1324829239fcba4b03c7"
     );
     let snapshot: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     for value in snapshot["requests"].as_array().unwrap() {

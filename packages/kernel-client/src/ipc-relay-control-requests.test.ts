@@ -44,10 +44,10 @@ test("denial support is an explicit poll capability; legacy requests retain thei
   })
 })
 
-test("MP-11 relay issuer request builders match the kernel's 572 wire snapshot", async () => {
+test("MP-11 relay issuer request builders match the kernel's 1015 wire snapshot", async () => {
   const { readFileSync } = await import("node:fs")
   const { configureRelayIssuerRequest, issueRelayClientTokenRequest, relayIssuerStatusRequest } = await import("./ipc-relay-control-requests.js")
-  const snapshot = JSON.parse(readFileSync(new URL("../../../apps/kernel/src/local/api/tests/protocol_shapes/relay-issuer-572.json", import.meta.url), "utf8"))
+  const snapshot = JSON.parse(readFileSync(new URL("../../../apps/kernel/src/local/api/tests/protocol_shapes/relay-issuer-1015.json", import.meta.url), "utf8"))
   const thumbprint = "a".repeat(64)
   assert.deepEqual([
     relayIssuerStatusRequest(),

@@ -318,7 +318,7 @@ As of 2026-04-20:
 - Slice 7 is implemented for the verifier contract: the relay can verify `chariox-scoped-v1` HMAC-signed tokens against configured issuer metadata supplied by the embedding server/control plane. The open-source relay still defaults to shared-token bootstrap unless constructed with a scoped verifier.
 - Slice 8 is implemented for the relay identity surface: `live-relay-identity-security-drill.mjs` starts a real scoped-token relay and verifies paired/unpaired client and machine admission, action constraints, and cross-realm metadata/routing isolation. Full remote-provider CLI/machine drills still depend on physical remote machines.
 
-### Self-Hosted Kernel Issuer (protocol 572)
+### Self-Hosted Kernel Issuer (protocol 1015)
 
 A home kernel without Cloud signs its paired terminals' relay tokens itself:
 

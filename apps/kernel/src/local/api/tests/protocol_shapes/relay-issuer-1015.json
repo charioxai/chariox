@@ -1,7 +1,7 @@
 {
-  "local_protocol": 572,
-  "relay_peer_protocol": 180,
-  "allocation": "provisional 572/180: self-hosted relay issuer requests",
+  "local_protocol": 1015,
+  "relay_peer_protocol": 452,
+  "allocation": "provisional 1015/452: self-hosted relay issuer requests",
   "requests": [
     { "RelayIssuerStatus": null },
     { "ConfigureRelayIssuer": { "step": "enable" } },
