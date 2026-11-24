@@ -40,10 +40,16 @@ the same cause within one second. The owner keeps running.
 
 A full disk is the same last resort, for the volume a command writes to.
 A volume is short when its free space is below half its floor (1% of the
-volume, 64–512 MiB) or when the kernel's commands writing to it would fill
-it within the fill horizon at their current rate. Then the kernel stops ONE
-agent command writing there: a command writing 128 MiB/s or more (a runaway)
-first, the fastest of them; otherwise the one that wrote the most. A person's
+volume, 64–512 MiB) or when it is within the fill horizon of full at the rate
+its free space is losing room (observed from the free space itself, over the
+last two seconds, from the moment a command is known to work there). Below
+half the floor the kernel stops ONE agent command writing there: a command
+writing 128 MiB/s or more (a runaway) first, the fastest of them; otherwise
+the one that wrote the most. Within the fill horizon only a runaway is
+stopped, the fastest of them, and no slower writer is. The kernel asks for no
+proof that the runaway allocates: an agent command that rewrites a file it
+already holds at 128 MiB/s or more is stopped too when the volume is that close
+to full, an accepted cost in a real emergency (Miguel, 2026-11-24). A person's
 own terminal command is never chosen. A command's writes are what it adds to
 the files it holds open; a command whose output files (not its standard
 streams, which often go to a log) are on one volume only, shared with no other
@@ -58,13 +64,14 @@ its error stream, for example `chariox: stopped this command: the disk has
 filling it, writing 1.5 GB/s (40 GB written so far).`; its agent gets the
 same reason in its inbox (`resource_notice`, state `ended`), the Room gets
 the process `stopped` event, and the kernel logs
-`process_resources.disk_stop`. A steady writer with room for its rate is
+`process_resources.disk_stop`. A steady writer on a volume that is not losing room is
 never stopped.
 
 The fill horizon is 5 s and the runaway write rate is the memory runaway
-rate, 128 MiB/s (owner decision, 2026-11-22). A copy at about 1.9 GB/s is
-stopped with about 9 GB still free; a steady 100 MB/s writer is stopped only
-when less than 500 MB is left, and a writer with room for its rate never is.
+rate, 128 MiB/s (owner decisions, 2026-11-22 and 2026-11-24). A copy at about
+1.9 GB/s is stopped with up to 9 GB still free once the volume is seen losing
+room at that rate; a writer under 128 MiB/s is stopped only below half the
+floor, and a volume that loses no room stops nobody within the horizon.
 
 A command that admission paused (it grew toward a full pool) continues when its
 room frees. Its growth estimate is the median of samples over the last 60 s
