@@ -86,10 +86,10 @@ test("integration received-event listing and replay require protocol 911", () =>
   }
 })
 
-test("the Environment requests require protocol 982", () => {
+test("the Environment requests require protocol 1015", () => {
   for (const kind of ["GetProjectEnvironment", "SaveProjectEnvironment", "SetProjectEnvironmentSecret", "RunProjectEnvironmentSetup", "ImportProjectEnvironmentEntries", "DraftProjectEnvironment", "RunRemoteProjectEnvironmentSetup", "RemoteEnvironmentOperation", "CheckProjectEnvironment", "ResolveEnvironmentProposal", "GetEnvironmentOperation", "CancelEnvironmentOperation"]) {
-    assert.throws(() => requireKernelFeatureProtocol({ [kind]: {} }, 981), /Project Environment needs protocol ≥982/)
-    assert.doesNotThrow(() => requireKernelFeatureProtocol({ [kind]: {} }, 982))
+    assert.throws(() => requireKernelFeatureProtocol({ [kind]: {} }, 1014), /Project Environment needs protocol ≥1015/)
+    assert.doesNotThrow(() => requireKernelFeatureProtocol({ [kind]: {} }, 1015))
   }
 })
 

@@ -9,7 +9,7 @@ import type {
 } from "./kernel-types-project-environment.js"
 
 // Protocol 1014 carries the Environment requests including Import, Draft, held operation reads, MCPs and Skills, and a Secret source (typed value, Vault entry or unlink); older kernels answer an unknown-variant error.
-export const projectEnvironmentMinimumProtocolVersion = 1014
+export const projectEnvironmentMinimumProtocolVersion = 1015
 
 export type SaveProjectEnvironmentInput = {
   readonly projectId: string
