@@ -308,6 +308,8 @@ async fn agent_kernel(
         cloud_session_token: None,
         cloud_session_expires_at_ms: None,
         token_expires_at_ms: None,
+        kernel_unlinked: false,
+        kernel_removal_pending: false,
     });
     state.owned.config_projection.update(config);
     (state, token, room, worktree)

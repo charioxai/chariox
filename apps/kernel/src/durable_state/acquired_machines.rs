@@ -575,6 +575,26 @@ mod tests {
             .map(|machine| machine.state)
     }
 
+    // A daily cap equal to one machine's first minute lets one machine in. A request that was
+    // queued with an earlier or an equal captured time must still find that minute spent.
+    #[test]
+    fn the_cap_counts_a_machine_admitted_with_a_later_or_equal_captured_time() {
+        for (first_started, second_started) in [(11, 10), (10, 10)] {
+            let directory = crate::test_support::TestTempDir::new("acquired-machines-cap-order");
+            let store = DurableKernelStateStore::open(directory.path().join("kernel.db")).unwrap();
+            assert_eq!(
+                admit_within(&store, "first", None, (Some(1_000), first_started)),
+                ADMITTED
+            );
+            assert_eq!(
+                admit_within(&store, "second", None, (Some(1_000), second_started)),
+                Admitted::AtCap,
+                "captured {second_started} after {first_started} was admitted: the cap is spent"
+            );
+            assert!(state_of(&store, "second").is_none(), "no row was created");
+        }
+    }
+
     #[test]
     fn every_transition_is_a_compare_and_set_and_only_an_end_frees_a_place_after_a_restart() {
         let directory = crate::test_support::TestTempDir::new("acquired-machines");
