@@ -51,8 +51,22 @@ export async function resizeBrowserPage(host,tab,command,signal){
  for(const stream of host.displays.values())if(!stream.regionTarget){stream.css_width=width;stream.css_height=height;stream.invalidate(true,'resize');}
  host.stateSignal.notify();
  await host.rebindWindows();current();
+ // Row 487: visible pages that asked to follow a resize are admitted on the new window now; delivery waits for it.
+ void rebindResizedDisplays(host);
  host.resizeSettled=layout;
  await host.save?.();
  return {width,height};
  });
+}
+// Row 487: each stream the resize's window retire left waiting is re-admitted on the current window (rebindSource), or
+// removed as before when that admission refuses. Its credits wait on stream.rebinding and see the outcome.
+export async function rebindResizedDisplays(host){
+ for(const stream of [...host.displays.values()]){
+  const hold=stream.rebinding;if(!hold)continue;
+  try{await stream.rebindSource();hold.settle(true);}
+  catch(error){
+   host.timing?.(`region_rebind_refused ${error?.reason??error?.code??'error'}`,performance.timeOrigin+performance.now());
+   hold.settle(false);await host.removeDisplay(stream.subscription_id).catch(()=>{});
+  }
+ }
 }
