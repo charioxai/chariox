@@ -5,10 +5,12 @@
 // Plain cargo runs underneath, so wrap the whole command like any other cargo job: cargo-slot.sh pnpm protocol:rehash
 import { spawnSync } from 'node:child_process'
 import { readFileSync, writeFileSync } from 'node:fs'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { HASH_PINS_PATH, hashPinsProblem } from './lib/protocol-hash-pins.mjs'
 import { localProtocolVersion, relayPeerProtocolVersion, repositoryRoot } from './lib/protocol-versions.mjs'
 
-const root = repositoryRoot.pathname
+// A URL path is percent-encoded (My%20Projects); the working directory and the file paths below must be the decoded filesystem path.
+const root = fileURLToPath(repositoryRoot)
 const ROUNDS = 3
 const MISMATCH = /panicked at (\S+?):(\d+):\d+:\nassertion `left == right` failed(?:: [^\n]*)?\n  left: "([0-9a-f]{64})"\n right: "([0-9a-f]{64})"/g
 
@@ -78,4 +80,7 @@ function main() {
   process.exit(1)
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) main()
+// process.argv[1] is a filesystem path and import.meta.url a URL: compare them as URLs, so a checkout path with a space still matches.
+export const isEntryPoint = (metaUrl, argv1) => argv1 !== undefined && metaUrl === pathToFileURL(argv1).href
+
+if (isEntryPoint(import.meta.url, process.argv[1])) main()
