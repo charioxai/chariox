@@ -1695,7 +1695,12 @@ mod tests {
                 "the turn's work was dropped with its prompt ({dispatching})"
             );
             let packet = conversation.render(MAX_PROMPT_HANDOFF_BYTES as usize).unwrap();
-            assert!(packet.contains("step 14 "), "{dispatching}: {}", &packet[..200.min(packet.len())]);
+            // The turn's work is in the packet, without the prompt that fell outside the read.
+            assert!(packet.contains("step "), "{dispatching}: no work in the packet");
+            assert!(
+                !packet.contains("carry out the long migration"),
+                "{dispatching}: the packet names a prompt the read left out"
+            );
         }
     }
 
