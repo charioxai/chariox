@@ -39,10 +39,16 @@ export async function displayCreditViewerStill(host,tab,stream,binding){
 // when the resize lands while a credit is already under way (#1723 review): that credit, which emitted nothing, starts again
 // against the rebound source. A refused rebind ends the pump as a retired region does.
 export async function displayCredit(host, stream, command, signal) {
-  for (;;) {
+  // A credit retries only while a rebind is pending or after one replaced the lease it started with (#1723 review: a
+  // rebind can complete while the credit waits for pixels); never more than a few times for one credit.
+  for (let attempt = 0; ; attempt++) {
     if (stream.rebinding && !await stream.rebinding.done) throw new UserDomainRefusal('stale_reference', 'region_retired');
+    const lease = stream.regionLease;
     try { return await displayCreditOnce(host, stream, command, signal); }
-    catch (error) { if (!(stream.rebinding && error?.code === 'user_domain_stale_reference')) throw error; }
+    catch (error) {
+      const rebound = stream.rebinding || (lease && stream.regionLease !== lease);
+      if (!(rebound && error?.code === 'user_domain_stale_reference' && attempt < 3)) throw error;
+    }
   }
 }
 async function displayCreditOnce(host, stream, command, signal) {

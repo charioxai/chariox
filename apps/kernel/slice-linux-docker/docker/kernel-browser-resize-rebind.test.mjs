@@ -100,3 +100,16 @@ test('Row 487 #1723 review 3: a rebind whose last check ends after the hold time
  assert.equal(stream.regionSource,first,'nothing was swapped into the closed stream');
  assert.deepEqual(r.closed.sort(),[1280,1672],'the old source closed with the stream, the new one at the refusal');
 });
+
+test('Row 487 #1723 review 2b: a credit that waited through a whole completed rebind starts again on the new lease',async()=>{
+ const {displayCredit}=await import('./kernel-browser-display-credit.mjs');
+ const oldLease={isAlive:()=>true},newLease={isAlive:()=>true};let checks=0;
+ const stream={tab_id:'t',regionTarget:{kind:'visible_page'},regionLease:oldLease,regionWindow:{isCurrent:()=>true},adoptLease:()=>0,
+  regionSource:{valid:()=>{checks++;
+   // While the first attempt waited, the rebind completed: the hold is gone and the lease was replaced.
+   if(checks===1){stream.regionLease=newLease;stream.rebinding=null;return false;}
+   return false;},closed:false,allowed:()=>true}};
+ const host={generation:1,timing:Object.assign(()=>{},{event:()=>{}}),pageSize:()=>({width:1672,height:846}),inputEpochs:new Map(),inputChangedAt:new Map()};
+ await assert.rejects(displayCredit(host,stream,{generation:1,after_sequence:0},undefined),/refused|stale/);
+ assert.equal(checks,2,'it started again against the new lease (the second attempt is the one that saw it retired)');
+});
