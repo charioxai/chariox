@@ -1,4 +1,4 @@
-//! Local 1014: the pane feed (docs/PROTOCOL.md section 3.3.2.1): what one agent pane shows,
+//! Local 1015: the pane feed (docs/PROTOCOL.md section 3.3.2.1): what one agent pane shows,
 //! read by the web pane and the provider terminals alike, and the settings a provider
 //! terminal reports back.
 use crate::local::*;
@@ -6,11 +6,11 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 
 #[test]
-fn pane_feed_1031_snapshot_and_hash() {
-    let bytes = include_bytes!("pane-feed-1031.json");
+fn pane_feed_1015_snapshot_and_hash() {
+    let bytes = include_bytes!("pane-feed-1015.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "a21e74eaef29a63b762da6f99288903b40653469a28b5c4a4336fddcc2cc650e"
+        "5713736566132eb08f227c1046b500ed2c621d32c54f34a7d91f1e6a4e4455f0"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(fixture["local"], LOCAL_DAEMON_PROTOCOL_VERSION);

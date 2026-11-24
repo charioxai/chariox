@@ -7,7 +7,7 @@ fn agent_release_notes_protocol_shape() {
     let bytes = include_bytes!("agent-release-notes.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "f6d01189ac451151b2b71056f996aa4be39ac319f7c87f31c2d22bc11a6a034d"
+        "d7a700c32362ccdc9df0631d3d9e2281923790eeec0701c8eb480927f168fcef"
     );
     let fixture: Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(fixture["local"], LOCAL_DAEMON_PROTOCOL_VERSION);

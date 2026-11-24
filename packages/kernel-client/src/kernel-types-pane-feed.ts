@@ -1,4 +1,4 @@
-// Local 1014: the pane feed (docs/PROTOCOL.md section 3.3.2.1). The kernel builds every word;
+// Local 1015: the pane feed (docs/PROTOCOL.md section 3.3.2.1). The kernel builds every word;
 // a client or a provider terminal renders it and answers cards with RespondToInteraction.
 export type GetPaneFeedRequest = { readonly session_id: string; readonly agent_id: string }
 

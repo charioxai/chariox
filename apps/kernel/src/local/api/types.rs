@@ -645,4 +645,6 @@ pub use workspace::*;
 /// longer carry `kernel_id`, `kernel_name`, `focused_agent_kernel_id` or `reachable_by_focused_agent`; the loader tools
 /// take no arguments and `chariox.kernel_browser_share` is removed.
 /// 1014 adds revision-based latest Room history outline reads.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1014;
+/// Local 1015 (relay peer 452): the agent pane feed. `GetPaneFeed` answers `PaneFeed`, the one kernel read model of what an
+/// agent's pane shows; `ReportPaneSettings` carries the settings a provider terminal changed (docs/PROTOCOL.md 3.3.2.1).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1015;
