@@ -1,3 +1,4 @@
+import { acceptAppHostOffer, createAppHostTerminal } from "./app-host-action.js"
 import { answerUserDomainInteraction } from "./user-domain-interaction-api.js"
 import type { BoxRenderable, CliRenderer } from "@opentui/core"
 import { createEffect, onCleanup } from "solid-js"
@@ -107,6 +108,8 @@ export function createCliKernelApprovalComposition(deps: {
         detachedCursor = null
       }
     },
+    acceptHostOffer: (sessionId, operationId) =>
+      acceptAppHostOffer(sessionId, operationId, request => deps.client.send(request), deps.notify, createAppHostTerminal(deps.renderer)),
     delegateSudoToPasskeyPopup: true,
     getSession: deps.session,
     connected: () => detached.length ? deps.kernelConnected() : deps.connected(),
