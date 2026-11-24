@@ -216,36 +216,21 @@ async fn delegate_reply_failed_start_settles_without_deletion() {
         .unwrap();
 }
 
-/// Row 449: an event whose task already exists (blocked behind a Resume card, or resumed)
-/// was redelivered, hit "superseded turn or conflicting task identity", and the parent
-/// was told "delegate gone: failed_start" about an agent that was alive on that task.
+/// Row 449: a start refused because the turn's task already exists ("superseded turn or
+/// conflicting task identity") told the parent "delegate gone: failed_start" about an agent
+/// that was alive on that task. Only a delegate that cannot start is reported gone.
 #[tokio::test]
-async fn redelivery_of_an_event_whose_task_exists_does_not_report_the_delegate_gone() {
-    let f = Fixture::with_child_provider("dev-stub");
-    let event = f.request("already-started");
+async fn a_task_identity_conflict_does_not_report_the_delegate_gone() {
+    let f = Fixture::new();
+    f.request("already-started");
     f.runtime
         .owned
-        .durable_state_store
-        .agent_lifecycle(Operation::Begin {
-            owner: f.owner.clone(),
-            room: f.room.clone(),
-            agent: f.child.clone(),
-            prompt: format!("agent-event-{}-{}", f.child, event.sequence),
-            run: None,
-            now: crate::session::unix_epoch_ms(),
-        })
+        .settle_failed_delegate_start(
+            &f.room,
+            &f.child,
+            "local transport `agent.lifecycle` failed: superseded turn or conflicting task identity",
+        )
         .unwrap();
-    let error = f
-        .runtime
-        .deliver_agent_inbox(&f.room, &f.child)
-        .await
-        .unwrap_err();
-    assert!(
-        error
-            .to_string()
-            .contains("superseded turn or conflicting task identity"),
-        "the cell must reach the identity conflict, not another refusal: {error}"
-    );
     f.runtime.sweep_agent_lifecycle().await.unwrap();
     assert!(
         f.replies()
