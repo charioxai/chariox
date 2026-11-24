@@ -53,6 +53,13 @@ impl StoredProviderAccountProfile {
         Ok(())
     }
 
+    fn group_rank(&self) -> (bool, u8) {
+        (
+            self.public.auth_state == ProviderAccountAuthState::Authenticated,
+            self.name_priority(),
+        )
+    }
+
     fn name_priority(&self) -> u8 {
         match (self.label_source, self.public.is_default) {
             (Some(ProviderAccountLabelSource::Explicit), true) => 3,
@@ -90,6 +97,20 @@ impl RegistryDocument {
         })
     }
 
+    /// The binding a group presents: a usable sign-in beats an unusable one, then the
+    /// better-named binding. The display name is chosen separately by `claude_account`.
+    fn claude_representative(
+        &self,
+        owner: &str,
+        account_id: &str,
+    ) -> Option<&StoredProviderAccountProfile> {
+        self.claude_bindings(owner, account_id)
+            .fold(None, |preferred, candidate| match preferred {
+                Some(existing) if existing.group_rank() >= candidate.group_rank() => Some(existing),
+                _ => Some(candidate),
+            })
+    }
+
     pub(super) fn visible_profile(
         &self,
         stored: &StoredProviderAccountProfile,
@@ -98,14 +119,36 @@ impl RegistryDocument {
             return Some(project_usage_freshness(stored.public.clone()));
         };
         let owner = &stored.public.owner_user_id;
-        if !std::ptr::eq(stored, self.claude_account(owner, account_id)?) {
+        if !std::ptr::eq(stored, self.claude_representative(owner, account_id)?) {
             return None;
         }
         let mut public = stored.public.clone();
+        public.label = self.claude_account(owner, account_id)?.public.label.clone();
         public.is_default = self
             .claude_bindings(owner, account_id)
             .any(|binding| binding.public.is_default);
+        // Any binding may be the one agents resume on, so the row shows the newest reading.
+        if let Some(newest) = self
+            .claude_bindings(owner, account_id)
+            .map(|binding| &binding.public.usage)
+            .filter(|usage| usage.observed_at_ms > public.usage.observed_at_ms)
+            .max_by_key(|usage| usage.observed_at_ms)
+        {
+            public.usage = ProviderAccountUsageSnapshot {
+                profile_id: public.profile_id.clone(),
+                ..newest.clone()
+            };
+        }
         Some(project_usage_freshness(public))
+    }
+
+    /// The binding to show for a known account, for callers that return one profile.
+    pub(super) fn claude_visible_profile(
+        &self,
+        owner: &str,
+        account_id: &str,
+    ) -> Option<ProviderAccountProfile> {
+        self.visible_profile(self.claude_representative(owner, account_id)?)
     }
 
     pub(super) fn remember_claude_merges(&mut self) -> bool {

@@ -210,7 +210,7 @@ mod claude_account_identity_tests {
     }
 
     #[test]
-    fn claude_account_upgrade_keeps_the_chosen_name_and_both_execution_roots() {
+    fn claude_account_upgrade_keeps_the_chosen_name_and_both_executionroots() {
         crate::test_support::isolated_env_test!();
         let root = crate::test_support::TestWorktree::new("claude-account-group-upgrade");
         let path = root.path().join("accounts.json");
@@ -305,6 +305,138 @@ mod claude_account_identity_tests {
         let listed = registry.list("local", Some("claude")).unwrap();
         assert!(listed.iter().any(|p| p.label == "Work"));
         assert!(listed.iter().all(|p| p.label != "Personal"));
+    }
+
+    fn same_account_pair(
+        name: &str,
+    ) -> (
+        crate::test_support::TestWorktree,
+        std::path::PathBuf,
+        ProviderAccountProfile,
+        ProviderAccountProfile,
+    ) {
+        let root = crate::test_support::TestWorktree::new(name);
+        let path = root.path().join("accounts.json");
+        let registry = ProviderAccountProfileRegistry::open(&path).unwrap();
+        let first = root.path().join("first");
+        let second = root.path().join("second");
+        for dir in [&first, &second] {
+            fs::create_dir_all(dir).unwrap();
+            set_private_dir_permissions(dir).unwrap();
+        }
+        // The identity is learned after both were registered.
+        let automatic = registry
+            .link_existing("local", "claude", "", &first)
+            .unwrap();
+        let explicit = registry
+            .link_existing("local", "claude", "Work", &second)
+            .unwrap();
+        registry
+            .set_default("local", "claude", &automatic.profile_id)
+            .unwrap();
+        drop(registry);
+        let account = "879d9f26-dd4a-40f5-9aa1-e9ebc8ffc16a";
+        native_login(&first, "installation-a", account);
+        native_login(&second, "installation-b", account);
+        (root, path, automatic, explicit)
+    }
+
+    #[test]
+    fn expired_explicit_binding_keeps_its_name_but_not_the_account_row() {
+        crate::test_support::isolated_env_test!();
+        let (root, path, automatic, explicit) = same_account_pair("claude-account-mixed-auth");
+        let registry = ProviderAccountProfileRegistry::open(&path).unwrap();
+        for (profile, state) in [
+            (&automatic, ProviderAccountAuthState::Authenticated),
+            (&explicit, ProviderAccountAuthState::Expired),
+        ] {
+            registry
+                .update_observation(
+                    "local",
+                    "claude",
+                    &profile.profile_id,
+                    state,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap();
+        }
+        let listed = registry.list("local", Some("claude")).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].profile_id, automatic.profile_id);
+        assert_eq!(listed[0].label, "Work");
+        assert_eq!(
+            listed[0].auth_state,
+            ProviderAccountAuthState::Authenticated
+        );
+        assert!(listed[0].is_default);
+        let usage = registry.usage_accounts("local", "machine-a").unwrap();
+        assert_eq!(usage.len(), 1);
+        assert_eq!(usage[0].profile_id, automatic.profile_id);
+        assert_eq!(usage[0].auth_state, ProviderAccountAuthState::Authenticated);
+        // An agent already bound to the expired binding still resolves it exactly.
+        assert_eq!(
+            registry
+                .resolve_environment("local", "claude", &explicit.profile_id)
+                .unwrap()
+                .get("CLAUDE_CONFIG_DIR")
+                .unwrap(),
+            &root.path().join("second").display().to_string()
+        );
+    }
+
+    #[test]
+    fn usage_read_through_a_hidden_binding_reaches_the_account_row() {
+        crate::test_support::isolated_env_test!();
+        let (root, path, automatic, explicit) = same_account_pair("claude-account-hidden-usage");
+        let registry = ProviderAccountProfileRegistry::open(&path).unwrap();
+        for profile in [&automatic, &explicit] {
+            registry
+                .update_observation(
+                    "local",
+                    "claude",
+                    &profile.profile_id,
+                    ProviderAccountAuthState::Authenticated,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap();
+        }
+        let visible = registry.list("local", Some("claude")).unwrap()[0].clone();
+        let hidden = if visible.profile_id == automatic.profile_id {
+            &explicit
+        } else {
+            &automatic
+        };
+        let observed_at_ms = crate::session::unix_epoch_ms();
+        registry
+            .update_usage(
+                "local",
+                "claude",
+                &hidden.profile_id,
+                ProviderAccountUsageSnapshot {
+                    profile_id: hidden.profile_id.clone(),
+                    provider: "claude".into(),
+                    availability: ProviderAccountUsageAvailability::Available,
+                    meters: Vec::new(),
+                    observed_at_ms: Some(observed_at_ms),
+                    source: "event".into(),
+                    management_url: None,
+                },
+            )
+            .unwrap();
+        let listed = registry.list("local", Some("claude")).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].profile_id, visible.profile_id);
+        assert_eq!(listed[0].usage.profile_id, visible.profile_id);
+        assert_eq!(listed[0].usage.observed_at_ms, Some(observed_at_ms));
+        let usage = registry.usage_accounts("local", "machine-a").unwrap();
+        assert_eq!(usage.len(), 1);
+        assert_eq!(usage[0].usage.observed_at_ms, Some(observed_at_ms));
     }
 
     #[test]

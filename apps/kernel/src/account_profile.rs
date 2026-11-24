@@ -2076,9 +2076,9 @@ impl ProviderAccountProfileRegistry {
         let provider_account_id = locator.claude_account_id();
         if let Some(existing) = provider_account_id
             .as_deref()
-            .and_then(|id| document.claude_account(owner_user_id, id))
+            .and_then(|id| document.claude_visible_profile(owner_user_id, id))
         {
-            return Ok(project_usage_freshness(existing.public.clone()));
+            return Ok(existing);
         }
         let label = next_automatic_label(&document, owner_user_id, provider);
         let profile_id = unique_profile_id(&document, owner_user_id, provider, &label);
