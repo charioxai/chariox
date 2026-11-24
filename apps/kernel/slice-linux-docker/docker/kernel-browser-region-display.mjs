@@ -120,10 +120,14 @@ function rebindHold(host,stream){
 export async function rebindRegion(host,stream,{lease,args,window,tab,policy,generation,Capture}){
  let opened;
  try{opened=await openRegionSource({host,target:stream.regionTarget,lease,args,window,tab,policy,generation,Capture});}catch(error){await lease.close();throw error;}
- const old={source:stream.regionSource,release:stream.regionRelease,lease:stream.regionLease};
+ const hold=stream.rebinding;
  try{
-  if(host.displays.get(stream.subscription_id)!==stream||host.protection!==policy||host.generation!==generation||!window.isCurrent()||!await lease.isCurrent()||args.validateCurrent&&!await args.validateCurrent())refuse();
+  if(!await lease.isCurrent()||args.validateCurrent&&!await args.validateCurrent())refuse();
+  // After the last await, nothing in between: the stream is still this subscription's, its hold still open (not timed out,
+  // not unsubscribed), and the policy, generation and window unchanged (#1723 review).
+  if(!hold||hold.settled||stream.rebinding!==hold||host.displays.get(stream.subscription_id)!==stream||host.protection!==policy||host.generation!==generation||!window.isCurrent())refuse();
  }catch(error){try{await opened.source.close();}finally{try{await opened.releaseRender?.();}finally{await lease.close();}}throw error;}
+ const old={source:stream.regionSource,release:stream.regionRelease,lease:stream.regionLease};
  lease.binding_id=stream.binding_id;
  Object.assign(stream,{regionLease:lease,regionSource:opened.source,regionWindow:window,regionRelease:opened.releaseRender,
   css_width:opened.source.region.css_width,css_height:opened.source.region.css_height});
