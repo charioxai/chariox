@@ -100,7 +100,7 @@ impl KernelBrowserHost {
         if !params["tab_id"].is_string()
             && !matches!(
                 params["op"].as_str(),
-                Some("state" | "start" | "stop" | "open")
+                Some("state" | "start" | "stop" | "restart" | "open")
             )
         {
             return Err("MP-11: a browser request must name a tab".into());

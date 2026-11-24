@@ -369,6 +369,7 @@ impl KernelRuntimeState {
                         | "cancel_download"
                         | "wait"
                         | "stop"
+                        | "restart"
                 )
             );
         let rooms = self

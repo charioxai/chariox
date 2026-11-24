@@ -28,6 +28,9 @@ pub enum KernelBrowserCommand {
         agent_id: Option<String>,
     },
     ListGrants,
+    /// Row 548 (protocol 1015): restart the user's browser: its controller process stops and starts again, and the Tabs come
+    /// back at their URLs with their opener links. Unlike `Stop` the browser is up again when this answers.
+    Restart,
     /// Protocol 556: `State` that waits (<= 2000 ms) until the browser state differs from the one
     /// `after` names (the `revision` of the caller's last read; empty reads at once). Replaces a poll.
     StateWait {

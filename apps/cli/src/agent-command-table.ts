@@ -58,6 +58,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   { name: "notifications resume", brief: "Resume a notification subscription", flags: [KERNEL, SOCKET, { name: "--kernel-url", value: "URL" }, { name: "--command-id", value: "ID" }], args: ["SUBSCRIPTION_ID"], summary: "resume delivery for a paused notification subscription" },
   { name: "secret status", brief: "Check a pending secret request", flags: [SOCKET], args: ["INTERACTION_ID"], summary: "pending, stored, cancelled or timed_out for a secret request you made" },
   { name: "kernels", brief: "List reachable kernels", flags: [SOCKET], summary: "list the kernels this kernel can reach" },
+  { name: "kernels restart", brief: "Restart a kernel's browser", flags: [{ name: "--browser" }, KERNEL, TIMEOUT, SOCKET], summary: "restart the browser of this kernel, or of --kernel NAME: Chrome and its display start again and every Tab comes back at its URL with its opener. Answers with the browser state once it is up. Needs --browser" },
   {
     name: "request", brief: "Send a JSON request to a kernel",
     flags: [KERNEL, { name: "--command-id", value: "ID" }, { name: "--no-subscribe" }, TIMEOUT, SOCKET],
