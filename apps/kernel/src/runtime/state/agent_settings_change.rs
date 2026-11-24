@@ -517,13 +517,21 @@ impl KernelRuntimeState {
                     &context.origin,
                 );
             }
-            SettingsApplies::AtTurnEnd if waits_for_command => owned
-                .announce_settings_change_after_command(
+            SettingsApplies::AtTurnEnd if waits_for_command => {
+                owned.announce_settings_change_after_command(
                     agent.session_id(),
                     agent.id(),
                     &changes,
                     &context.origin,
-                ),
+                );
+                // The new process announces that it took the change, when the command ended.
+                owned.pending_settings_notices.add(
+                    agent.session_id(),
+                    agent.id(),
+                    changes,
+                    &context.origin,
+                );
+            }
             SettingsApplies::AtTurnEnd => owned.announce_settings_change(
                 agent.session_id(),
                 agent.id(),

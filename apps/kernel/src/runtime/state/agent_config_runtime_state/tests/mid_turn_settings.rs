@@ -553,7 +553,20 @@ async fn a_model_switch_between_turns_keeps_the_process_that_runs_a_background_c
         .expect("the turn completes");
     assert!(turn.active_prompt().is_none());
 
-    change_model(&turn, NEXT_MODEL).await;
+    let (_, applies) = turn
+        .runtime
+        .update_agent_profile_as(
+            &turn.session_id,
+            &turn.agent_id,
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            None,
+            None,
+            Some(NEXT_MODEL.into()),
+            None,
+            crate::runtime::state::agent_settings_change::SettingsContext::person(),
+        )
+        .await
+        .expect("the switch is accepted");
 
     let run = turn.live_run().expect("the agent still has its run");
     assert_eq!(run.id(), turn.failed_run_id);
@@ -563,6 +576,7 @@ async fn a_model_switch_between_turns_keeps_the_process_that_runs_a_background_c
         "the process that runs the command is not ended by the switch"
     );
     // The person is told it waits, not that it applied.
+    assert_eq!(applies, crate::local::SettingsApplies::AtTurnEnd);
     let notices = settings_notices(&turn);
     assert!(
         notices.iter().any(|notice| notice.contains(NEXT_MODEL)
@@ -575,21 +589,78 @@ async fn a_model_switch_between_turns_keeps_the_process_that_runs_a_background_c
         "{notices:?}"
     );
     // A follow-up while the command runs executes on that process, on the old model.
-    let next = turn
+    let follow_up = turn
         .runtime
         .with_app_side_effect(|app| {
             app.ensure_prompt_provider_run_for_agent(&turn.session_id, &turn.agent_id)
         })
         .await
         .expect("the follow-up launches");
-    assert_eq!(next, turn.failed_run_id);
+    assert_eq!(follow_up, turn.failed_run_id);
     assert_ne!(
         turn.runtime
             .owned
             .provider_store
-            .get_run(&next)
+            .get_run(&follow_up)
             .unwrap()
             .model(),
         NEXT_MODEL
+    );
+
+    // The command ends; the next turn starts the new process, whose first finished step says the
+    // change took effect.
+    let ended = crate::provider::ProviderPromptSignalBatch {
+        chunks: vec![crate::provider::ProviderPromptChunk {
+            kind: crate::terminal::TerminalOutputKind::ProviderTool,
+            merge_key: Some("toolu_bg".into()),
+            bytes: serde_json::to_vec(&serde_json::json!({
+                "id": "toolu_bg", "tool": "Bash", "status": "completed",
+                "started_at_ms": 1, "background": true, "finished_at_ms": 2,
+                "input": {"command": "sleep 600", "run_in_background": true}
+            }))
+            .unwrap(),
+        }],
+        ..Default::default()
+    };
+    turn.runtime
+        .apply_owned_structured_output_batch(
+            &turn.session_id,
+            &turn.failed_run_id,
+            Vec::new(),
+            ended,
+        )
+        .await
+        .expect("the command ends");
+    turn.runtime
+        .flush_provider_history(&turn.failed_run_id)
+        .await
+        .expect("its end is stored");
+    let replaced = turn
+        .runtime
+        .with_app_side_effect(|app| {
+            app.ensure_prompt_provider_run_for_agent(&turn.session_id, &turn.agent_id)
+        })
+        .await
+        .expect("the next turn launches");
+    assert_ne!(replaced, turn.failed_run_id, "the new process starts");
+    assert_eq!(
+        turn.runtime
+            .owned
+            .provider_store
+            .get_run(&replaced)
+            .unwrap()
+            .model(),
+        NEXT_MODEL
+    );
+    turn.runtime
+        .swap_turn_process_at_step_boundary(&turn.session_id, &replaced)
+        .await
+        .unwrap();
+    let notices = settings_notices(&turn);
+    assert!(
+        notices
+            .iter()
+            .any(|notice| notice.contains("changed to") && notice.contains(NEXT_MODEL)),
+        "{notices:?}"
     );
 }

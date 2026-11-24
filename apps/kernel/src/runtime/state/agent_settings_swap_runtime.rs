@@ -46,6 +46,17 @@ impl KernelRuntimeState {
         let Some(agent_id) = run.agent_instance_id().map(str::to_string) else {
             return Ok(false);
         };
+        // A process the next dispatch started on the new settings: the first finished step of
+        // its turn says that a change which waited for a background command took effect.
+        if !run.settings_stale()
+            && run.state() != crate::provider::ProviderRunState::Ended
+            && run.client_interface().is_chariox()
+        {
+            if let Some((changes, by)) = owned.pending_settings_notices.take(session_id, &agent_id)
+            {
+                owned.announce_settings_change(session_id, &agent_id, &changes, &by, false, false);
+            }
+        }
         if !run.settings_stale()
             || run.state() == crate::provider::ProviderRunState::Ended
             || !run.client_interface().is_chariox()
