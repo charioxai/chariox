@@ -527,10 +527,6 @@ impl KernelRuntimeState {
         recipient_attachment_ids: Vec<String>,
         poll_result: crate::provider::ProviderPromptSignalBatch,
     ) -> Result<Vec<crate::terminal::TerminalOutputRecord>, DaemonError> {
-        // The first output of a process the next dispatch started on new settings says that a
-        // change which waited for a background command took effect, whatever the turn does.
-        self.owned
-            .announce_settings_taken_by_run(session_id, provider_run_id);
         let poll_result =
             self.prepare_owned_structured_output_batch(session_id, provider_run_id, poll_result)?;
         self.apply_prepared_owned_structured_output_batch(
@@ -678,6 +674,10 @@ impl KernelRuntimeState {
         mut poll_result: crate::provider::ProviderPromptSignalBatch,
     ) -> Result<Vec<crate::terminal::TerminalOutputRecord>, DaemonError> {
         let owned = &self.owned;
+        // The first output of a process the next dispatch started on new settings says that a
+        // change which waited for a background command took effect, whatever the turn does.
+        // Every batch of the production pump and of the test wrapper is applied here.
+        owned.announce_settings_taken_by_run(session_id, provider_run_id);
         owned
             .provider_store
             .apply_structured_output_metadata(provider_run_id, &poll_result)?;
