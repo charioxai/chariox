@@ -683,8 +683,8 @@ async fn a_live_wake_of_a_settled_child_is_its_node_wait_reason() {
     let wake: crate::durable_state::agent_lifecycle::AgentWake = serde_json::from_value(serde_json::json!({
         "id": "wake-build", "task_id": team.task.task_id, "room_id": team.room, "agent_id": team.child,
         "registration_id": "completion-wake-build", "kind": "process", "label": "build",
-        "state": "running", "created_at_ms": now - 90_000,
-        "verified_at_ms": now, "next_due_ms": null, "interval_ms": null,
+        "state": "starting", "created_at_ms": now - 90_000,
+        "verified_at_ms": null, "next_due_ms": null, "interval_ms": null,
         "command": ["cargo", "test"], "match_text": null, "matched_at_ms": null, "pid": null, "exit_code": null,
         "fire_count": 0, "missed_fires": 0, "last_fired_at_ms": null,
         "last_sequence": null, "last_delivery": null, "last_delivered_at_ms": null,
