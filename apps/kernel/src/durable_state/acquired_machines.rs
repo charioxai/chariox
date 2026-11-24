@@ -477,9 +477,17 @@ fn register(transaction: &Transaction<'_>, attempt: &AcquisitionAttempt) -> rusq
     let today = today
         .query_map(params![*day_ms as i64], read_row)?
         .collect::<rusqlite::Result<Vec<_>>>()?;
+    // The cap is judged at this write, where the machine would be admitted, not at the time the
+    // request captured before it queued: a request that reached the writer later may have started
+    // later or at the same moment, and a machine admitted at any time owes its first minute before
+    // the next one is admitted.
+    let admitted_at = today
+        .iter()
+        .map(|row| row.started_ms.saturating_add(1))
+        .fold(machine.started_ms, u64::max);
     let spent: u64 = today
         .iter()
-        .map(|row| row.cost_micros(*day_ms, machine.started_ms))
+        .map(|row| row.cost_micros(*day_ms, admitted_at))
         .sum();
     if daily_cap_micros.is_some_and(|cap| spent >= cap) {
         return Ok(AT_CAP);
