@@ -5,7 +5,7 @@ import {CaptureRefusal,UserDomainRefusal} from './kernel-browser-refusal.mjs';
 import {displayMaskRegions} from './kernel-browser-pixels.mjs';
 import {assertNotCancelled} from './browser-controller-actions.mjs';
 import {reserveDisplay} from './kernel-browser-display-admission.mjs';
-import {createRegionDisplay} from './kernel-browser-region-display.mjs';
+import {createRegionDisplay,rebindRegion} from './kernel-browser-region-display.mjs';
 import {VisiblePageCapture,visiblePageGeometry} from './kernel-browser-visible-page.mjs';
 import {nativeRefusalReason} from './kernel-browser-native.mjs';
 import {observeLayout} from './kernel-browser-layout-observer.mjs';
@@ -36,7 +36,15 @@ export function pngFallbackCommand(error,command){
 }
 const LAYOUT_WAIT_MS=400,layouts=new WeakMap(),proofs=new WeakMap();
 export function subscribeVisiblePage(host,command,scope,signal,{Capture=VisiblePageCapture}={}){
- return reserveDisplay(host,async()=>{
+ return reserveDisplay(host,()=>visiblePageBinding(host,command,scope,signal,Capture,null));
+}
+// Row 487: re-admit a resize_rebind stream's Tab on the window a resize produced (the same admission as a subscribe: layout
+// read, geometry, native attestation, lease) and swap it into that stream. Any refusal leaves the caller to remove it.
+export function rebindVisiblePage(host,stream,signal,{Capture=VisiblePageCapture}={}){
+ return visiblePageBinding(host,{...stream.subscribeCommand,generation:host.generation},stream.observed_by,signal,Capture,stream);
+}
+async function visiblePageBinding(host,command,scope,signal,Capture,rebind){
+  {
   assertNotCancelled(signal);
   if(command.generation!==host.generation||command.target||
    !command.codecs?.includes('png')||!command.codecs.includes('avc1.420033')||command.codecs.length>8||
@@ -114,21 +122,30 @@ export function subscribeVisiblePage(host,command,scope,signal,{Capture=VisibleP
   const lease={binding_id:`host-page-region-${randomUUID()}`,document_id:document,sequence:window.window_generation,
    isAlive:alive,isCurrent:current,close:async()=>{closed=true;closeObserver();}};
   installObserver();
-  try{
-   const result=await createRegionDisplay({host,command,scope,signal,target:{kind:'visible_page'},lease,
-   args:{window,viewport,attestation,followsDocument:follows,validateCurrent:current,publishCurrent:publishable,cachedCurrent:typeof window.isPageCurrentCached==='function'?()=>alive()&&window.isPageCurrentCached(tab.target_id):undefined,occluded:async()=>{
+  const args={window,viewport,attestation,followsDocument:follows,validateCurrent:current,publishCurrent:publishable,cachedCurrent:typeof window.isPageCurrentCached==='function'?()=>alive()&&window.isPageCurrentCached(tab.target_id):undefined,occluded:async()=>{
     if(typeof host.chromeWindows.inWindowOverNow!=='function')throw Error('MP-11: visible page occlusion unavailable');
     return host.chromeWindows.inWindowOverNow({left:geometry.window_region.left,top:geometry.window_region.top,width:geometry.width,height:geometry.height});
-   }},window,tab,policy,generation,Capture});
-   if(!follows)return result;
+   }};
+  try{
+   if(rebind){
+    // A resize does not change the page: the same Tab and document, now on the new window.
+    if(rebind.tab_id!==tab.tab_id||rebind.regionLease.document_id!==document)refuse();
+    await rebindRegion(host,rebind,{lease,args,window,tab,policy,generation,Capture});
+    if(follows)rebind.regionSource.onDocument(next=>{document=next;lease.document_id=next;installObserver();rebind.park(false);});
+    return null;
+   }
+   const result=await createRegionDisplay({host,command,scope,signal,target:{kind:'visible_page'},lease,args,window,tab,policy,generation,Capture});
    const stream=host.displays.get(result.subscription_id);
+   // Row 487 (provisional local 1016): a viewer that asked keeps this subscription across a resize of the Browser window.
+   if(command.resize_rebind===true&&stream){stream.resizeRebind=true;stream.subscribeCommand={...command};stream.rebindSource=signal=>rebindVisiblePage(host,stream,signal,{Capture});}
+   const rebindable=stream?.resizeRebind===true?{resize_rebind:true}:{};
+   if(!follows)return {...result,...rebindable};
    // The commit unparks the display: the new document's first frame leaves without waiting for the viewer.
    stream.regionSource.onDocument(next=>{document=next;lease.document_id=next;installObserver();stream.park(false);});
    stream.tabDisplay=true;
-   return {...result,tab_display:true};
+   return {...result,tab_display:true,...rebindable};
   }catch(error){closeObserver();throw error;}
-
- });
+  }
 }
 // MP-08/MP-10/MP-11: a private source hint can reuse only this exact live
 // crop. It grants no input authority; ordinary admission and the final guard run.
