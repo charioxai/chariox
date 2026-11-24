@@ -1244,6 +1244,7 @@ async fn enrolled_owner_can_manage_grants_approved_before_login() {
         (42, 1, "request".into()),
         PendingGrant {
             summary: pending,
+            holder: process::inspect(std::process::id()).unwrap().0,
             deadline_ms: u64::MAX,
         },
     );

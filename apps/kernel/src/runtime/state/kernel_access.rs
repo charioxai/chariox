@@ -352,6 +352,19 @@ impl KernelRuntimeState {
             .into_iter()
             .filter_map(|key| state.pending.remove(&key))
             .collect::<Vec<_>>();
+        // A `--no-wait` request is polled through `access status`. Its waiting task finds the
+        // request gone and records nothing, so the cancellation is recorded here, under the lock
+        // that removed it: a newer request from the same holder clears it when it is submitted.
+        let ended = Refusal::ended_by(reason);
+        for grant in &pending {
+            state.remember_request_outcome(
+                &grant.holder,
+                KernelAccessStatusReason {
+                    code: ended.code().into(),
+                    message: ended.message().into(),
+                },
+            );
+        }
         // Targeted revocation invalidates only its own pending requests. The
         // generation fence is reserved for a kernel-wide reset/shutdown.
         if id.is_none() && owner.is_none() {
@@ -722,6 +735,7 @@ impl KernelRuntimeState {
             key.clone(),
             PendingGrant {
                 summary: summary.clone(),
+                holder: holder.clone(),
                 deadline_ms,
             },
         );

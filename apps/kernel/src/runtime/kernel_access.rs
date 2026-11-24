@@ -221,6 +221,8 @@ pub(crate) fn error(message: impl Into<String>) -> crate::error::DaemonError {
 
 pub(crate) struct PendingGrant {
     pub(crate) summary: KernelAccessGrant,
+    /// Who the owner's decision binds to: a revoked request records its end under this identity.
+    pub(crate) holder: ProcessIdentity,
     pub(crate) deadline_ms: u64,
 }
 
