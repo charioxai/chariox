@@ -567,6 +567,10 @@ async fn refused_wait_deadline_delivers_after_the_workspace_returns() {
         ExecutionState::Waiting
     );
     f.sweep_after_delivery_window();
+    store.agent_ledger_sql_for_test(&format!(
+        "UPDATE agent_inbox_start_failures SET retry_at_ms=1 WHERE sequence={}",
+        deadline.sequence
+    ));
     f.runtime
         .deliver_agent_inbox(&f.room, &f.child)
         .await

@@ -261,7 +261,7 @@ async fn a_reply_request_ends_once_when_the_start_attempts_are_spent() {
     f.sweep_at(crate::session::unix_epoch_ms() + 60 * 60_000);
     f.runtime.sweep_agent_lifecycle().await.unwrap();
 
-    assert_eq!(f.state_of(request.sequence), "failed");
+    assert_eq!(f.state_of(request.sequence), "expired");
     f.assert_gone(1);
 }
 
@@ -277,7 +277,22 @@ async fn a_start_waiting_on_the_vault_owner_adds_no_retry_notice() {
         retryable: true,
     };
     let said = f.notices().len();
-    for _ in 0..3 {
+    for round in 0..3 {
+        f.runtime
+            .owned
+            .durable_state_store
+            .agent_lifecycle(Operation::Attempt {
+                room: f.room.clone(),
+                agent: f.child.clone(),
+                sequence: wake.sequence,
+                prompt: format!("attempt-{round}"),
+                target: None,
+                run: None,
+                now: crate::session::unix_epoch_ms(),
+                work: None,
+                through: wake.sequence,
+            })
+            .unwrap();
         let retried = f
             .runtime
             .record_agent_start_failure(&f.room, &f.child, wake.sequence, &waiting)

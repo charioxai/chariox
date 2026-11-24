@@ -109,21 +109,14 @@ fn a_failing_start_ends_after_its_attempts_not_after_the_old_window() {
     sweep(&f, at + 1_000);
     let row = f.store.agent_inbox("room", "parent", 0).unwrap().remove(0);
     assert_eq!(row.state, "failed");
-    let cards: Vec<_> = f
-        .store
-        .agent_tasks(Some("room"), Some("parent"))
-        .unwrap()
-        .into_iter()
-        .filter(|t| t.task_id.starts_with("delivery-"))
-        .collect();
-    assert_eq!(cards.len(), 1);
+    // The delivery just ends: no owner card, and the retry notices already named the error.
     assert!(
-        cards[0].reason.contains("no such directory")
-            && cards[0]
-                .reason
-                .contains(&format!("{START_ATTEMPTS} attempts")),
-        "{}",
-        cards[0].reason
+        f.store
+            .agent_tasks(Some("room"), Some("parent"))
+            .unwrap()
+            .iter()
+            .all(|t| !t.task_id.starts_with("delivery-")),
+        "an exhausted start leaves no owner card"
     );
     assert!(
         f.store.agent_start_failure(e.sequence).unwrap().is_none(),
@@ -242,22 +235,14 @@ fn a_delivery_that_never_starts_on_a_usage_limit_ends_naming_it() {
         at += retry_pause_ms(1);
     }
     sweep(&f, at);
-    let cards: Vec<_> = f
-        .store
-        .agent_tasks(Some("room"), Some("parent"))
-        .unwrap()
-        .into_iter()
-        .filter(|t| t.task_id.starts_with("delivery-"))
-        .collect();
-    assert_eq!(cards.len(), 1);
+    let row = f.store.agent_inbox("room", "parent", 0).unwrap().remove(0);
+    assert_eq!(row.state, "failed");
     assert!(
-        cards[0].reason.contains("provider usage limit"),
-        "{}",
-        cards[0].reason
-    );
-    assert!(
-        !cards[0].reason.contains("the agent did not start."),
-        "{}",
-        cards[0].reason
+        f.store
+            .agent_tasks(Some("room"), Some("parent"))
+            .unwrap()
+            .iter()
+            .all(|t| !t.task_id.starts_with("delivery-")),
+        "an exhausted start leaves no owner card"
     );
 }
