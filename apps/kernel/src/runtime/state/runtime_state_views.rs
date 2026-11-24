@@ -175,13 +175,21 @@ impl KernelRuntimeState {
     }
 
     /// What the agent tree reads of a Room's agents. The commands a Room holds for room come from the process
-    /// registry, which the wake scheduler (it publishes tree changes) must never wait on: the tree names waits
-    /// from the durable wakes and the Room's cards only.
+    /// registry, which the wake scheduler (it publishes tree changes) must never wait on: the tree reads them
+    /// without waiting (a held registry reads nothing this pass) beside the durable wakes and the Room's cards.
     pub(crate) fn agent_activity_for_tree(
         &self,
         session: &crate::session::RuntimeSession,
     ) -> BTreeMap<String, crate::runtime::projection::AgentRuntimeActivity> {
-        self.agent_activity_projected(session, None, &Vec::new)
+        self.agent_activity_projected(session, None, &|| {
+            let mut rows = crate::runtime::process_resources::waiting_for_session_without_waiting(
+                session.id(),
+                &self.owned.provider_store,
+                &self.owned.room_terminals,
+            );
+            rows.extend(self.queued_job_processes(session.id()));
+            rows
+        })
     }
 
     fn agent_activity_projected(
