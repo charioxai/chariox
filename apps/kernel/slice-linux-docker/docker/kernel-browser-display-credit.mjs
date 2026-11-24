@@ -134,7 +134,7 @@ export async function displayCredit(host, stream, command, signal) {
     // The pixels are read only once the page is quiet (the refiner waits for that too); a moving page keys on its serial.
     const quiet=performance.now()-Math.max(compositor.changedAt,host.inputChangedAt.get(tab.tab_id)??-Infinity)>=(stream.refiner.quietNativeMs??0);
     const pixels=viewerPending?(quiet?viewerPixels(sample):`serial:${sample.serial}`):undefined;
-    const binding={source:compositor,document:tab.document_id,policy,epoch,serial:sample.serial,...(viewerPending?{pixels}:{}),scale:stream.device_scale_factor,native:compositor.attested===true&&Boolean(sample.raw),sample,repairLimit:exactPatchLimit(stream.bitrate),encoder:stream.encoder.nativeSession,nativeDelivered:stream.encoder.nativeDeliveredRevision};
+    const binding={source:compositor,document:tab.document_id,policy,epoch,serial:sample.serial,...(viewerPending?{pixels}:{}),...((stream.previousDensity??stream.device_scale_factor)!==stream.device_scale_factor?{whole:true}:{}),scale:stream.device_scale_factor,native:compositor.attested===true&&Boolean(sample.raw),sample,repairLimit:exactPatchLimit(stream.bitrate),encoder:stream.encoder.nativeSession,nativeDelivered:stream.encoder.nativeDeliveredRevision};
     // Always run the deadline/epoch-aware verifier before unchanged reuse.
     // A lossy JPEG fingerprint cannot rule out fine native RGB damage.
     // Row 341 (A): for a viewer above the page's density a page-density exact canvas is not final; the still at the

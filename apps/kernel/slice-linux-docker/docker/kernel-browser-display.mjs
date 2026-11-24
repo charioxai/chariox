@@ -338,6 +338,9 @@ export class DisplayStream {
     // MP-11: tile-only native work belongs to an existing compositor base.
     // Its serial is a scheduling hint and can never become a full PNG.
     if(source.native_repair&&(!bound||!this.previous)){this.invalidate(true,'repair_unbound');return null;}
+    // Row 341 (A): page-density repair tiles never land on a canvas at another density (a delivered viewer-density still).
+    // An independent frame restores the page density first.
+    if(source.native_repair&&(this.previousDensity??this.device_scale_factor)!==this.device_scale_factor){this.invalidate(true,'repair_density');return null;}
     if (source.native_tiles && !bound) throw Error('MD-DISPLAY: native patch base lost');
     const wasExact = this.exact;
     if (!bound) {
@@ -373,7 +376,8 @@ export class DisplayStream {
       ...(source.moves?{moves:source.moves}:{}),...(source.native_packet?{native_packet:source.native_packet}:{})};
     else if (bound && (same || source.settled_verified || safeFallback) && (!this.exact || !this.previous?.pixels || safeFallback || density!==(this.previousDensity??this.device_scale_factor)) && !source.motion) {
       const exact = source.native_repair?null:full();
-      if (exact&&density!==this.device_scale_factor) payload = exact;
+      // Row 341 (A): a frame that changes the canvas density ships whole: tiles cannot change the canvas size.
+      if (exact&&(density!==this.device_scale_factor||density!==(this.previousDensity??this.device_scale_factor))) payload = exact;
       else if (exact&&JSON.stringify(exact).length <= patchLimit&&(!source.repair_tiles||JSON.stringify(source.repair_tiles).length+128>=JSON.stringify(exact).length)) payload = exact;
       else {
         // A verified capture may supersede the immutable RGB snapshot while

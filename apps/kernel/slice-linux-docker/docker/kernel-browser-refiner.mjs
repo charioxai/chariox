@@ -8,7 +8,7 @@ export class NativeRefiner {
  // next input invalidates that work. Wait through wheel and typing gaps;
  // protected live frames keep their existing fences and continue immediately.
  constructor(capture,{pixels=new PixelWorker(),now=()=>performance.now(),quietMs=300,quietNativeMs=150,verifyMs=250,prepareTiles=false,timing=()=>{}}={}){Object.assign(this,{capture,pixels,now,quietMs,quietNativeMs,verifyMs,prepareTiles,timing});this.latest=null;this.active=null;this.closed=false;this.verifiedAt=-Infinity;this.revision=0;this.prepared=null;}
- same(a,b){return a&&b&&a.source===b.source&&a.document===b.document&&a.policy===b.policy&&a.epoch===b.epoch&&(a.pixels!==undefined||b.pixels!==undefined?a.pixels===b.pixels:a.serial===b.serial)&&a.native===b.native&&a.nativeDelivered===b.nativeDelivered;}
+ same(a,b){return a&&b&&a.source===b.source&&a.document===b.document&&a.policy===b.policy&&a.epoch===b.epoch&&(a.pixels!==undefined||b.pixels!==undefined?a.pixels===b.pixels:a.serial===b.serial)&&a.native===b.native&&a.nativeDelivered===b.nativeDelivered&&Boolean(a.whole)===Boolean(b.whole);}
  request(binding,changedAt,valid){
   if(this.closed)throw Error('MD-DISPLAY: refiner closed');
   if(this.failure)throw this.failure;
@@ -26,7 +26,8 @@ export class NativeRefiner {
      // Row 341 (A): a still at the viewer's density replaces the page-density exact; it ships whole, never as tiles.
      if(source?.viewer_density){pixels=await this.pixels.run('decode',{data:source.data_base64,scale:source.viewer_density});source={...source,motion:false};}
      else if(raw?.nativeExact){
-      const exact=await raw.nativeExact({encoder:binding.encoder,regions:raw[displayMaskRegions]??[],patch:false,repair_only:true});
+      // Row 341 (A): a canvas at another density (a viewer-density still) takes the whole exact, never repair tiles.
+      const exact=await raw.nativeExact({encoder:binding.encoder,regions:raw[displayMaskRegions]??[],patch:false,repair_only:!binding.whole});
       source={...source,...exact,motion:false};pixels={width:raw.width,height:raw.height,pixels:null,signature:source.signature};
      }else if(raw){
       if(source.raw!==raw)throw Error('MP-11: native refinement binding changed');
