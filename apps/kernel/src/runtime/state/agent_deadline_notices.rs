@@ -18,6 +18,15 @@ pub(super) struct DeadlineWork {
     pub tasks: usize,
 }
 
+/// A notice about the time limit reaches an agent in the middle of its turn: an active turn takes only
+/// urgent rows, and a limit that ends it is worth nothing after the fact.
+fn urgent(
+    mut event: crate::durable_state::agent_lifecycle::InboxEvent,
+) -> crate::durable_state::agent_lifecycle::InboxEvent {
+    event.urgent = true;
+    event
+}
+
 fn clock(deadline_ms: u64) -> String {
     i64::try_from(deadline_ms)
         .ok()
@@ -109,7 +118,7 @@ impl KernelRuntimeState {
         if let Some(task) = open_task {
             self.owned
                 .durable_state_store
-                .agent_lifecycle(Operation::Occur(occurrence(
+                .agent_lifecycle(Operation::Occur(urgent(occurrence(
                     &deadline.session_id,
                     &deadline.agent_id,
                     &format!("deadline:{}", deadline.agent_id),
@@ -120,7 +129,7 @@ impl KernelRuntimeState {
                         "deadline_ms": deadline.deadline_ms,
                         "message": text,
                     }),
-                )))?;
+                ))))?;
         }
         self.owned.record_notice_for_agent(
             &deadline.session_id,
@@ -352,7 +361,7 @@ impl KernelRuntimeState {
             if let Err(error) = self
                 .owned
                 .durable_state_store
-                .agent_lifecycle(Operation::Occur(occurrence(
+                .agent_lifecycle(Operation::Occur(urgent(occurrence(
                     child.session_id(),
                     child.id(),
                     &format!("deadline:{}", deadline.agent_id),
@@ -363,7 +372,7 @@ impl KernelRuntimeState {
                         "parent_agent_id": deadline.agent_id,
                         "message": text,
                     }),
-                )))
+                ))))
             {
                 tracing::warn!(%error, agent_id=%child.id(),
                     "a sub-agent was not told that its parent's limit ended");
