@@ -97,3 +97,30 @@ test('an outline from the kernel is read by size, and its text fragment never re
   const steps = parseTrace(traces.get('agent-1.jsonl')).turns[0]
   assert.deepEqual(steps.map(step => [step.kind, step.chars ?? step.output_bytes]), [['prompt', 4_000], ['tool', 90_000], ['text', 12_000], ['text', 33_000], ['end', undefined]])
 })
+
+// The kernel forces a long final reply into blobs and keeps a truncated summary of the same events: one reply, recorded once.
+test('an outlined final reply is counted once, not as its summary and its blob', () => {
+  const page = (kind, text, timestamp_ms, total_chars, extra = {}) => ({ entry_index: 12, fragment_start: 0, fragment_end: text.length, total_chars, entry: { kind, text, timestamp_ms }, ...extra })
+  const outline = { agents: [{ agent_id: 'agent-id-1', turns: [{
+    user_prompt: page('user_prompt', 'go', 100, 2),
+    entries: [],
+    summary: page('provider_output', 'x'.repeat(16_384), 900, 20_000, { entry_index: 12 }),
+    blobs: [{ kind: 'provider_output', sequence_start: 12, sequence_end: 13, total_chars: 20_000, timestamp_ms: 900 }],
+  }] }] }
+  const steps = parseTrace(convertHistory(rowsFromOutline(outline)).get('agent-1.jsonl')).turns[0]
+  assert.deepEqual(steps.map(step => [step.kind, step.chars]), [['prompt', 2], ['text', 20_000], ['end', undefined]])
+})
+
+// A steering prompt inside a turn is part of that turn: replay must not stop at a synthetic end and wait for another prompt.
+test('a steering prompt between two outputs keeps one turn', () => {
+  const page = (kind, text, timestamp_ms) => ({ entry_index: timestamp_ms, fragment_start: 0, fragment_end: text.length, total_chars: text.length, entry: { kind, text, timestamp_ms } })
+  const outline = { agents: [{ agent_id: 'agent-id-1', turns: [{
+    user_prompt: page('user_prompt', 'start', 100),
+    entries: [page('provider_output', 'first part', 200), page('user_prompt', 'steer now', 300), page('provider_output', 'second part', 400)],
+    summary: null,
+    blobs: [{ kind: 'user_prompt', steering: true, sequence_start: 7, sequence_end: 7, total_chars: 9, timestamp_ms: 350 }],
+  }] }] }
+  const turns = parseTrace(convertHistory(rowsFromOutline(outline)).get('agent-1.jsonl')).turns
+  assert.equal(turns.length, 1, 'the steering prompt must not open a second turn')
+  assert.deepEqual(turns[0].map(step => step.kind), ['prompt', 'text', 'text', 'end'])
+})
