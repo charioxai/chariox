@@ -458,7 +458,6 @@ type ForwardedDecisionAnswer = Option<Result<ProviderNativeInteractionResolution
 
 struct ForwardedDecision {
     answer: tokio::sync::watch::Receiver<ForwardedDecisionAnswer>,
-    opened_at: Instant,
     /// When the answer was recorded: a held card can wait for hours, so its answer is kept for the
     /// retry window from here, not from `opened_at`.
     settled_at: Option<Instant>,
@@ -468,7 +467,9 @@ struct ForwardedDecision {
 fn prune_forwarded_decisions(decisions: &mut HashMap<ForwardedDecisionKey, ForwardedDecision>) {
     decisions.retain(|_, decision| {
         if decision.answer.borrow().is_some() {
-            decision.opened_at.elapsed() < FORWARDED_DECISION_RETENTION
+            decision
+                .settled_at
+                .is_none_or(|settled| settled.elapsed() < FORWARDED_DECISION_RETENTION)
         } else {
             decision.answer.has_changed().is_ok()
         }
@@ -507,7 +508,6 @@ async fn join_forwarded_decision(
                     key.clone(),
                     ForwardedDecision {
                         answer,
-                        opened_at: Instant::now(),
                         settled_at: None,
                     },
                 );
@@ -754,7 +754,7 @@ mod tests {
             .expect("the clock has run this long")
     }
 
-    fn answered_decision(opened_ago: u64, settled_ago: u64) -> ForwardedDecision {
+    fn answered_decision(settled_ago: u64) -> ForwardedDecision {
         let (_sender, answer) =
             tokio::sync::watch::channel(Some(Ok(ProviderNativeInteractionResolution {
                 status: "answered".into(),
@@ -763,7 +763,6 @@ mod tests {
             })));
         ForwardedDecision {
             answer,
-            opened_at: ago(opened_ago),
             settled_at: Some(ago(settled_ago)),
         }
     }
@@ -774,9 +773,9 @@ mod tests {
     fn an_answer_to_a_held_card_is_kept_for_the_retry_window_from_when_it_settled() {
         let key = |name: &str| ("room".to_string(), "run".to_string(), name.to_string());
         let mut decisions = HashMap::new();
-        decisions.insert(key("held-then-answered"), answered_decision(1800, 60));
-        decisions.insert(key("answered-long-ago"), answered_decision(3000, 700));
-        decisions.insert(key("answered-just-now"), answered_decision(30, 5));
+        decisions.insert(key("held-then-answered"), answered_decision(60));
+        decisions.insert(key("answered-long-ago"), answered_decision(700));
+        decisions.insert(key("answered-just-now"), answered_decision(5));
         prune_forwarded_decisions(&mut decisions);
         let mut kept = decisions
             .keys()
