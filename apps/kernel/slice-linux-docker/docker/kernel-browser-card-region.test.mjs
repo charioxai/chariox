@@ -122,6 +122,25 @@ test('a plain card is bound again to the whole page after the browser restarted,
   }
   await assert.rejects(region({ card_id: undefined, ref: undefined, rebind: true }), { code: 'user_domain_stale_reference' });
 }));
+test('a verification card whose proof was lost with the restart settles unavailable, never as a completed card', () => withHost(async ({ host, snapshot, region }) => {
+  const verification = { challenge_id: 'challenge-one', url: 'https://example.com/verify', accepted_json_pointer: '/accepted' };
+  await snapshot();
+  const first = await region({ card_id: 'verification', verification });
+  assert.equal(first.state, 'present');
+  assert.ok(host.cardAnchors.get('agent:a\0verification').verification, 'the card is watching for its proof');
+  // The kernel restarted: a new controller generation that remembers no anchor and no snapshot reference.
+  host.generation = 2;
+  host.cardReferences.clear(); host.cardAnchors.clear();
+  // The recovered card polls with the old generation and its verification condition.
+  const lost = await region({ card_id: 'verification', verification, generation: 1, document_id: 'doc' });
+  assert.equal(lost.state, 'unavailable', 'a lost proof is reported to the waiting agent, not settled as success');
+  assert.equal(lost.reason, 'Browser restarted');
+  // The same poll for a plain card is still the restart notice the kernel rebinds from.
+  const plain = await region({ card_id: 'plain', generation: 1, document_id: 'doc' });
+  assert.equal(plain.state, 'condition_met');
+  assert.equal(plain.reason, 'Browser restarted');
+}));
+
 test('MP-08/MP-10 card geometry follows scrolling, movement and viewport resize without another snapshot', () => withHost(async ({ snapshot, region, state }) => {
   await snapshot();
   const initial = (await region({})).region;
