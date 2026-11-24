@@ -2,7 +2,7 @@ use super::*;
 use crate::runtime::app_call_errors;
 use chariox_app_runtime::app_catalog::{Actor, CallerContext};
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
     Arc,
 };
 use std::time::Duration;
@@ -121,7 +121,10 @@ impl KernelRuntimeState {
         {
             return Err(unavailable());
         }
-        // Captured at submission, before any wait for an on-demand start.
+        // Captured at submission, before any wait for an on-demand start: the binding's revision. A revoke
+        // bumps it, and so does binding the same App again, so a retained call never carries over to a new binding.
+        let binding_epoch = self.app_binding_epoch(agent.id(), &tool.name);
+        let binding_revision = binding_epoch.load(Ordering::Acquire);
         let turn_id = self.app_call_turn_id(agent, caller_run_id, remote.is_some());
         let turn_cancelled = Arc::new(self.app_call_turn_cancellation(agent));
         let observe_turn = turn_cancelled.clone();
@@ -135,7 +138,14 @@ impl KernelRuntimeState {
                     .agent_store
                     .get_agent(agent.id())
                     .is_ok_and(|current| {
-                        !current.archived() && same_binding(&current, agent, &tool.name)
+                        !current.archived()
+                            && same_binding(
+                                &current,
+                                agent,
+                                &tool.name,
+                                &binding_epoch,
+                                binding_revision,
+                            )
                     })
             {
                 tokio::time::sleep(Duration::from_millis(10)).await;
@@ -187,6 +197,7 @@ impl KernelRuntimeState {
         let owned = self.owned.clone();
         let expected = agent.clone();
         let tool = tool.clone();
+        let commit_epoch = binding_epoch.clone();
         let response = tokio::task::spawn_blocking(move || {
             // The blocking closure retains admission even if the awaiting MCP
             // connection closes. No guard is held while awaiting App execution.
@@ -196,7 +207,14 @@ impl KernelRuntimeState {
             if current.archived() {
                 return Err(unavailable());
             }
-            require_binding(&current, &expected, &tool, remote.as_ref())?;
+            require_binding(
+                &current,
+                &expected,
+                &tool,
+                remote.as_ref(),
+                &commit_epoch,
+                binding_revision,
+            )?;
             let caller = CallerContext {
                 actor: Actor::Agent(current.id().into()),
                 room_id: Some(current.session_id().into()),
@@ -231,6 +249,7 @@ impl KernelRuntimeState {
             }
         };
         let owned = self.owned.clone();
+        let reply_epoch = binding_epoch.clone();
         let payload = tokio::task::spawn_blocking(move || {
             let _permit = permit;
             if turn_cancelled() {
@@ -241,7 +260,14 @@ impl KernelRuntimeState {
             if current.archived() {
                 return Err(unavailable());
             }
-            require_binding(&current, &expected, &tool, remote.as_ref())?;
+            require_binding(
+                &current,
+                &expected,
+                &tool,
+                remote.as_ref(),
+                &reply_epoch,
+                binding_revision,
+            )?;
             let result = owned
                 .durable_state_store
                 .accept_app_tool_reply(reply)
@@ -392,11 +418,13 @@ fn require_binding(
     expected: &crate::agent::AgentInstance,
     tool: &RemoteExtensionTool,
     remote: Option<&crate::transport::relay_peer::RemoteExtensionInvocationContext>,
+    epoch: &AtomicU64,
+    revision: u64,
 ) -> Result<(), DaemonError> {
     if current.archived()
         || current.owner_user_id() != expected.owner_user_id()
         || current.session_id() != expected.session_id()
-        || !same_binding(current, expected, &tool.name)
+        || !same_binding(current, expected, &tool.name, epoch, revision)
     {
         return Err(unavailable());
     }
@@ -415,13 +443,17 @@ fn require_binding(
     Ok(())
 }
 
-// MP-11: revoke/regrant cannot revive a retained call from the old grant.
+// MP-11: revoke/regrant cannot revive a retained call from the old binding: the revision it was submitted
+// under must still be the binding's revision.
 fn same_binding(
     current: &crate::agent::AgentInstance,
     expected: &crate::agent::AgentInstance,
     name: &str,
+    epoch: &AtomicU64,
+    revision: u64,
 ) -> bool {
-    current.has_extension_grant(ExtensionKind::App, name)
+    epoch.load(Ordering::Acquire) == revision
+        && current.has_extension_grant(ExtensionKind::App, name)
         && current.remote_execution() == expected.remote_execution()
 }
 
