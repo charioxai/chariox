@@ -59,8 +59,9 @@ impl KernelRuntimeState {
         method: &str,
         params: Value,
     ) -> Result<Value, DaemonError> {
-        // Stop must remain available even when observation storage is fenced.
-        if method == "host.browser" && matches!(params["op"].as_str(), Some("stop" | "restart")) {
+        // Stop must remain available even when observation storage is fenced. A restart ends with a start, which needs the
+        // protection policy the fence guards, so it takes the ordinary path.
+        if method == "host.browser" && params["op"] == "stop" {
             return self
                 .kernel_browser_bound_operation(user, admission.as_ref(), method, params, false)
                 .await;

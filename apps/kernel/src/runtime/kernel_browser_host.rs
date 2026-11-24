@@ -1498,6 +1498,8 @@ mod tests {
 mod actor_tests;
 #[cfg(test)]
 mod dialog_tests;
+#[cfg(test)]
+mod restart_tests;
 
 #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 mod native_input_tests;

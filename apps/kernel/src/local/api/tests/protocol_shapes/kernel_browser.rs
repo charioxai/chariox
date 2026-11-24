@@ -55,6 +55,7 @@ fn kernel_browser_protocol_443_request_snapshots() {
         ),
         (Command::State, serde_json::json!({"op":"state"})),
         (Command::Stop, serde_json::json!({"op":"stop"})),
+        (Command::Restart, serde_json::json!({"op":"restart"})),
         (
             Command::Open {
                 url: "https://example.com".into(),
