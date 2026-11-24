@@ -1971,6 +1971,32 @@ fn fillers_after_one_pass(free: u64, current: &Arc<Mutex<Observation>>) -> Vec<(
     ledger.take_fillers(current)
 }
 
+/// Two passes a quarter second apart, the volume's free space `drop` lower at
+/// the second: how a monitor sees a volume being used up, or not.
+fn fillers_after_two_passes(
+    free: u64,
+    drop: u64,
+    current: &Arc<Mutex<Observation>>,
+) -> Vec<(u32, Filling)> {
+    let space = Arc::new(AtomicU64::new(free));
+    let volume = volume(&space);
+    let mut ledger = Ledger::new(None);
+    ledger.pass(
+        std::slice::from_ref(current),
+        current,
+        &room(GIB, false, &*volume),
+    );
+    assert!(ledger.take_fillers(current).is_empty(), "stopped on one sample");
+    std::thread::sleep(Duration::from_millis(250));
+    space.store(free - drop, Ordering::SeqCst);
+    ledger.pass(
+        std::slice::from_ref(current),
+        current,
+        &room(GIB, false, &*volume),
+    );
+    ledger.take_fillers(current)
+}
+
 #[test]
 fn a_many_file_copy_filling_the_disk_in_seconds_is_stopped_while_room_is_left() {
     // 2 GiB free is far above half the floor; at 1 GiB/s it is 2 s of room.
@@ -1981,21 +2007,95 @@ fn a_many_file_copy_filling_the_disk_in_seconds_is_stopped_while_room_is_left() 
         .unwrap()
         .disk_writes
         .insert(1, between_files());
-    let fillers = fillers_after_one_pass(2 * GIB, &current);
+    // The volume really loses a quarter of a GiB in the quarter second between
+    // the passes: 1 GiB/s, 2 GiB free before them.
+    let fillers = fillers_after_two_passes(2 * GIB + 256 * MIB, 256 * MIB, &current);
     assert_eq!(
         fillers.iter().map(|(pid, _)| *pid).collect::<Vec<_>>(),
         vec![1],
         "a copy that fills the disk in two seconds kept writing"
     );
     let filling = &fillers[0].1;
-    assert_eq!(
-        (filling.rate, filling.written, filling.full_in),
-        (GIB, 3 * GIB, Some(2))
-    );
-    let line = super::super::waits::filling_line(filling);
     assert!(
-        line.contains("the disk has 2 GB free, full in about 2 s at the rate it fills,"),
-        "{line}"
+        (900 * MIB..=GIB).contains(&filling.rate),
+        "the rate is what the volume lost: {}",
+        filling.rate
+    );
+    assert_eq!(filling.written, 3 * GIB);
+    assert!(matches!(filling.full_in, Some(1 | 2)), "{:?}", filling.full_in);
+    let line = super::super::waits::filling_line(filling);
+    assert!(line.contains("free, full in about "), "{line}");
+}
+
+#[test]
+fn a_writer_rewriting_blocks_it_already_holds_is_not_a_filler() {
+    // 200 MiB/s of writes, each over space the file already has: the volume
+    // loses nothing, though 900 MiB at that rate would be under five seconds.
+    let (_, rewriter, rewriter_use) = writing(1, 3 * GIB, 200 * MIB);
+    let current = owner("agent", true, vec![rewriter_use], vec![(1, rewriter)]);
+    {
+        let mut observation = current.lock().unwrap();
+        let outputs = observation.disk_writes.get_mut(&1).unwrap();
+        outputs[0].files.clear();
+        outputs[0].rate = 0;
+        outputs[0].open = [1].into();
+    }
+    assert!(
+        fillers_after_two_passes(900 * MIB, 0, &current).is_empty(),
+        "a writer that only rewrites its own blocks was stopped as a filler"
+    );
+}
+
+#[test]
+fn a_command_logging_to_another_volume_is_not_the_filler_of_its_idle_output_volume() {
+    // The scratch volume is being used up by something else; the command's
+    // 200 MiB/s of writes go to the log its standard output is redirected to.
+    let started = Instant::now();
+    let volume: Box<Volume> = Box::new(move |path: &Path| {
+        Some(if path.starts_with("/log") {
+            Space { id: 2, free: 50 * GIB, total: 100 * GIB }
+        } else {
+            // Losing 400 MiB/s to someone else's writes, 900 MiB free at the start.
+            let lost = started.elapsed().as_millis() as u64 * 400 * MIB / 1000;
+            Space { id: 1, free: (900 * MIB).saturating_sub(lost), total: 100 * GIB }
+        })
+    });
+    let (_, command, command_use) = writing(1, 3 * GIB, 200 * MIB);
+    let current = owner("agent", true, vec![command_use], vec![(1, command)]);
+    {
+        let mut observation = current.lock().unwrap();
+        let idle = disk_use::VolumeWrites {
+            id: 1,
+            path: "/scratch/output".into(),
+            written: 0,
+            rate: 0,
+            files: Default::default(),
+            open: [11].into(),
+            receiving: true,
+        };
+        let log = disk_use::VolumeWrites {
+            id: 2,
+            path: "/log/out".into(),
+            written: 0,
+            rate: 0,
+            files: Default::default(),
+            open: [12].into(),
+            receiving: false,
+        };
+        observation.disk_writes.insert(1, vec![idle, log]);
+    }
+    let mut ledger = Ledger::new(None);
+    for _ in 0..2 {
+        ledger.pass(
+            std::slice::from_ref(&current),
+            &current,
+            &room(GIB, false, &*volume),
+        );
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    assert!(
+        ledger.take_fillers(&current).is_empty(),
+        "its log traffic was charged to the idle output volume"
     );
 }
 
