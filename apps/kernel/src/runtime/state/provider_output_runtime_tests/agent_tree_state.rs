@@ -676,12 +676,28 @@ async fn a_node_reports_its_account_workspace_worktree_and_machine() {
 // the node waits on in the tree the client reads, and the wake going away takes the reason with it.
 #[tokio::test]
 async fn a_live_wake_of_a_settled_child_is_its_node_wait_reason() {
-    let team = team_with("tree-live-wake", None, true).await;
+    // The child finished its turn: idle, nothing armed.
+    let team = team("tree-live-wake", false, true).await;
     assert!(read(&team).nodes[0].liveness.is_none(), "nothing armed: no reason");
+    assert_eq!(read(&team).nodes[0].state, AgentTreeState::Idle);
     let store = &team.runtime.owned.durable_state_store;
     let now = crate::session::unix_epoch_ms();
+    // Its next turn arms a build and ends without yielding.
+    let Outcome::Task(task) = store
+        .agent_lifecycle(Operation::Begin {
+            owner: "local".into(),
+            room: team.room.clone(),
+            agent: team.child.clone(),
+            prompt: "wake-prompt".into(),
+            run: Some("wake-run".into()),
+            now,
+        })
+        .unwrap()
+    else {
+        panic!("begin returns the task")
+    };
     let wake: crate::durable_state::agent_lifecycle::AgentWake = serde_json::from_value(serde_json::json!({
-        "id": "wake-build", "task_id": team.task.task_id, "room_id": team.room, "agent_id": team.child,
+        "id": "wake-build", "task_id": task.task_id, "room_id": team.room, "agent_id": team.child,
         "registration_id": "completion-wake-build", "kind": "process", "label": "build",
         "state": "starting", "created_at_ms": now - 90_000,
         "verified_at_ms": null, "next_due_ms": null, "interval_ms": null,
@@ -693,8 +709,8 @@ async fn a_live_wake_of_a_settled_child_is_its_node_wait_reason() {
     .unwrap();
     store
         .agent_lifecycle(Operation::ArmWake {
-            task: team.task.task_id.clone(),
-            prompt: team.task.prompt_id.clone(),
+            task: task.task_id.clone(),
+            prompt: task.prompt_id.clone(),
             wake: Box::new(wake),
         })
         .unwrap();
@@ -710,8 +726,8 @@ async fn a_live_wake_of_a_settled_child_is_its_node_wait_reason() {
         .agent_lifecycle(Operation::Settle {
             room: team.room.clone(),
             agent: team.child.clone(),
-            prompt: team.child_prompt.id().into(),
-            run: team.child_run.clone(),
+            prompt: "wake-prompt".into(),
+            run: "wake-run".into(),
             has_answer: true,
             cancelled: false,
             now: now + 1,
