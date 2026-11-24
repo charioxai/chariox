@@ -216,6 +216,43 @@ async fn delegate_reply_failed_start_settles_without_deletion() {
         .unwrap();
 }
 
+/// Row 449: an event whose task already exists (blocked behind a Resume card, or resumed)
+/// was redelivered, hit "superseded turn or conflicting task identity", and the parent
+/// was told "delegate gone: failed_start" about an agent that was alive on that task.
+#[tokio::test]
+async fn redelivery_of_an_event_whose_task_exists_does_not_report_the_delegate_gone() {
+    let f = Fixture::new();
+    let event = f.request("already-started");
+    let capture = crate::logging::capture::start();
+    f.runtime
+        .owned
+        .durable_state_store
+        .agent_lifecycle(Operation::Begin {
+            owner: f.owner.clone(),
+            room: f.room.clone(),
+            agent: f.child.clone(),
+            prompt: format!("agent-event-{}-{}", f.child, event.sequence),
+            run: None,
+            now: crate::session::unix_epoch_ms(),
+        })
+        .unwrap();
+    let _ = f.runtime.deliver_agent_inbox(&f.room, &f.child).await;
+    f.runtime.sweep_agent_lifecycle().await.unwrap();
+    assert!(
+        capture.records().iter().any(|record| record
+            .contains("superseded turn or conflicting task identity"))
+            || f.replies().is_empty(),
+        "the cell must reach the identity conflict, not another refusal"
+    );
+    assert!(
+        f.replies()
+            .iter()
+            .all(|event| event.payload["public_answer"]["reason"] != "failed_start"),
+        "a delegate alive on its task was reported gone: {:?}",
+        f.replies().iter().map(|e| e.payload.to_string()).collect::<Vec<_>>()
+    );
+}
+
 #[tokio::test]
 async fn delegate_failed_start_closes_the_delegate_obligation_so_the_parent_turn_ends() {
     let f = Fixture::new();
