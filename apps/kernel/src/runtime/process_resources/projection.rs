@@ -136,66 +136,6 @@ pub(crate) fn for_session(
     rows
 }
 
-/// The commands of a session that wait for room, read without ever waiting on the registry lock: the agent tree
-/// is published by the wake scheduler, which must not wait with a stuck cleanup that holds it. A pass that finds the
-/// registry (or a workload's observation) held reads nothing of it; the next change republishes. `agent_runs` pairs
-/// each agent with its provider run, read from the non-blocking run projection: the provider store itself is held
-/// by whatever waits on the registry.
-pub(crate) fn waiting_for_session_without_waiting(
-    agent_runs: &[(String, String)],
-) -> Vec<SessionProcess> {
-    waiting_rows_without_waiting(|observed_keys| {
-        agent_runs
-            .iter()
-            .filter(|(_, run)| observed_keys.contains(run))
-            .map(|(agent, run)| (SessionProcessOwner::Agent(agent.clone()), run.clone()))
-            .collect()
-    })
-}
-
-/// `keys_of` names the workloads to read, given the keys the registry holds.
-pub(super) fn waiting_rows_without_waiting(
-    keys_of: impl FnOnce(&[String]) -> Vec<(SessionProcessOwner, String)>,
-) -> Vec<SessionProcess> {
-    use std::sync::TryLockError;
-    let observed = match super::registry().try_lock() {
-        Ok(registry) => registry.clone(),
-        Err(TryLockError::Poisoned(held)) => held.into_inner().clone(),
-        Err(TryLockError::WouldBlock) => return Vec::new(),
-    };
-    let observed_keys = observed.keys().cloned().collect::<Vec<_>>();
-    let mut rows = Vec::new();
-    for (owner, key) in keys_of(&observed_keys) {
-        let Some(state) = observed.get(&key).and_then(std::sync::Weak::upgrade) else {
-            continue;
-        };
-        let observation = match state.try_lock() {
-            Ok(observation) => observation,
-            Err(TryLockError::Poisoned(held)) => held.into_inner(),
-            Err(TryLockError::WouldBlock) => continue,
-        };
-        for process in &observation.samples {
-            let Some(entry) = observation.admission.get(&process.pid) else {
-                continue;
-            };
-            let state = state_of(entry);
-            if state == SessionProcessState::Running {
-                continue;
-            }
-            rows.push(SessionProcess {
-                remote_available: false,
-                remote_refusal: None,
-                estimate: None,
-                placement: None,
-                owner: owner.clone(),
-                state,
-                process: process.clone(),
-            });
-        }
-    }
-    rows
-}
-
 /// The row for a command: running, or waiting with everything clients show.
 pub(super) fn state_of(entry: &admission::Entry) -> SessionProcessState {
     let Some(wait) = entry.wait else {

@@ -50,7 +50,7 @@ pub(crate) use projection::released_keys_for_session;
 pub(crate) use projection::same_to_clients;
 pub(crate) use projection::SessionProcessState;
 pub(crate) use projection::Waiting;
-pub(crate) use projection::{for_session, keys_for_session, waiting_for_session_without_waiting};
+pub(crate) use projection::{for_session, keys_for_session};
 pub use projection::{SessionProcess, SessionProcessOwner};
 pub(crate) use session_sweep::SessionSweep;
 pub(crate) use submissions::Submissions;

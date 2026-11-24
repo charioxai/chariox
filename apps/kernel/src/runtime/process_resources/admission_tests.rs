@@ -775,36 +775,3 @@ fn a_held_command_whose_room_does_not_come_ends_with_the_room_and_need() {
     );
     assert!(a.root_alive(), "the other workload was stopped");
 }
-
-// Row 524: the agent tree names a held command's reason and resource, and never waits on the registry to do it.
-#[cfg(target_os = "linux")]
-#[test]
-fn the_tree_reads_a_held_command_without_waiting_on_the_registry() {
-    let (_a, b, _pool) = held();
-    assert!(b.waiting("job"), "the heavy command was not held");
-    let key = format!("admission-{:016x}", rand::random::<u64>());
-    b.domain.bind_key(&key);
-    let owner = SessionProcessOwner::Agent("worker".into());
-    let rows = projection::waiting_rows_without_waiting(|_| vec![(owner.clone(), key.clone())]);
-    assert_eq!(rows.len(), 1, "{rows:?}");
-    match &rows[0].state {
-        SessionProcessState::Held(Waiting { reason: WaitReason::Memory, command_line, .. }) => {
-            assert!(command_line.starts_with("python3 -c"), "{command_line}")
-        }
-        other => panic!("held command reads {other:?}"),
-    }
-    assert_eq!(rows[0].owner, owner);
-    // With the registry held (a stuck cleanup), the read returns at once and says nothing.
-    let held_registry = hold_registry_for_test();
-    let started = std::time::Instant::now();
-    let while_held = std::thread::spawn({
-        let (owner, key) = (owner.clone(), key.clone());
-        move || projection::waiting_rows_without_waiting(|_| vec![(owner, key)])
-    })
-    .join()
-    .unwrap();
-    assert!(while_held.is_empty(), "{while_held:?}");
-    assert!(started.elapsed() < Duration::from_secs(1), "the read waited on the registry");
-    drop(held_registry);
-    b.domain.unbind_key(&key);
-}
