@@ -260,6 +260,10 @@ impl KernelRuntimeState {
         }
         let owner = self.provider_account_authority_owner_user_id(&profile.user_id);
         let profiles = self.provider_account_profile_registry().clone();
+        // An OpenCode login lives only in its own native store: the receiving Vault is neither
+        // needed to install it nor opened by it, so a locked Vault does not refuse the copy and
+        // an "ask every time" policy has nothing to lock afterwards.
+        let uses_vault = binding.provider != "opencode";
         let unlock = vault_unlock_request_lock(&expand_vault_path(
             &config.user_config.credential_vault.path,
         ))
@@ -267,11 +271,14 @@ impl KernelRuntimeState {
         .await;
         let result = tokio::task::spawn_blocking(move || {
             let _unlock = unlock;
-            unlocked(&config)?;
+            if uses_vault {
+                unlocked(&config)?;
+            }
             let receipt = profiles.install_account_copy(&config, &owner, &binding, &credential)?;
             // "Ask every time": the owner's unlock covered this one copy.
             let vault = &config.user_config.credential_vault;
-            if vault.backend == crate::config::CredentialVaultBackend::CharioxEncrypted
+            if uses_vault
+                && vault.backend == crate::config::CredentialVaultBackend::CharioxEncrypted
                 && vault.unlock_policy == crate::config::CredentialVaultUnlockPolicy::Always
             {
                 crate::secret::lock_chariox_encrypted_vault(expand_vault_path(&vault.path))?;

@@ -9,6 +9,9 @@ pub(super) async fn check_native_copy(
     target_profiles: &ProviderAccountProfileRegistry,
 ) {
     let canary = r#"{"fixture":{"type":"api","key":"synthetic-opencode-copy"}}"#;
+    // The receiving Vault stays locked throughout: an OpenCode login never touches it.
+    let target_vault = std::path::PathBuf::from(&target.user_config.credential_vault.path);
+    crate::secret::lock_chariox_encrypted_vault(&target_vault).unwrap();
     let profile = source_profiles
         .create_managed("local", "opencode", "OpenCode source")
         .unwrap();
@@ -66,6 +69,12 @@ pub(super) async fn check_native_copy(
             .is_empty(),
         "an OpenCode login lives only in its own native store"
     );
+    assert!(
+        !crate::secret::chariox_encrypted_vault_status(&target_vault)
+            .unwrap()
+            .unlocked,
+        "an OpenCode copy does not unlock the receiving Vault"
+    );
     // The provider refreshes its login after the copy, and the acknowledgement was lost: the same
     // operation answers from its recorded receipt and leaves the refreshed login alone.
     std::fs::write(&target_auth, "receiver-refreshed-login").unwrap();
@@ -79,6 +88,12 @@ pub(super) async fn check_native_copy(
     assert_eq!(
         std::fs::read_to_string(&target_auth).unwrap(),
         "receiver-refreshed-login"
+    );
+    assert!(
+        !crate::secret::chariox_encrypted_vault_status(&target_vault)
+            .unwrap()
+            .unlocked,
+        "the replay did not unlock the receiving Vault either"
     );
     // Another operation for the same account does not overwrite the receiver's profile.
     let mut conflict = request.clone();
