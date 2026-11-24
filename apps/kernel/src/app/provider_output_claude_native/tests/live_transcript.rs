@@ -761,6 +761,44 @@ fn a_reply_streamed_before_a_kernel_restart_is_replaced_not_shown_twice() {
     assert_eq!(turn.stored_replies(), [reply]);
 }
 
+// The reader is lost while a block is still being written, and Claude draws that same block again before its transcript
+// text arrives: the new reader streams the block from its start, and it must go on in the row already streamed, not
+// open a second one that the transcript block then leaves behind as a duplicate prefix.
+#[test]
+fn an_unfinished_block_drawn_again_after_the_reader_was_lost_goes_on_in_its_row() {
+    let mut turn = running_turn("streamed-resumed");
+    turn.hook_event("UserPromptSubmit");
+    turn.pass();
+    let drawn = screen(&[
+        "● Here is the plan:",
+        "",
+        "  First we read the file.",
+        "",
+        "  Then we write it.",
+        "",
+        "✻ Working (3s)",
+    ]);
+    turn.terminal_shows(&drawn);
+    turn.terminal_shows(&drawn);
+    let partial = "Here is the plan:\n\nFirst we read the file.";
+    assert_eq!(turn.live_rows(), [partial]);
+    super::live_reply::forget(turn.run.id());
+    // The same block is drawn again; the new reader reads it twice.
+    turn.terminal_shows(&drawn);
+    turn.terminal_shows(&drawn);
+    assert_eq!(
+        turn.live_rows(),
+        [partial],
+        "the redrawn block goes on in the row it began in"
+    );
+    assert_eq!(turn.stored_replies(), [partial]);
+    let reply = "Here is the plan:\n\n1. First we **read** the file.\n\nThen we write it.";
+    turn.append_transcript(assistant_text("reply", reply));
+    turn.pass();
+    assert_eq!(turn.live_rows(), [reply], "one completed row");
+    assert_eq!(turn.stored_replies(), [reply]);
+}
+
 #[test]
 fn a_reply_longer_than_one_live_record_is_replaced_whole() {
     let mut turn = running_turn("streamed-long-reply");
