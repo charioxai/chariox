@@ -86,13 +86,18 @@ export async function withKernel<T>(
   } finally { await client.close() }
 }
 
+export function localAgentClientOptions(commandId: string | undefined) {
+  return { controlRequestRetryDeadlineMs: 0, controlResponseStallMs: 30000, commandId }
+}
+
 /** An owner uses the ordinary local endpoint. An external agent can name its grant socket. */
 export async function withAgentKernel<T>(
   options: { socket: string | undefined; kernel?: string | undefined; commandId?: string | undefined },
   use: (send: SendRequest) => Promise<T>,
 ): Promise<T> {
   if (options.socket || options.kernel) return withKernel({ ...options, timeoutSeconds: 30 }, use)
-  const client = new LocalIpcClient(defaultKernelEndpoint(), { controlRequestRetryDeadlineMs: 0, controlResponseStallMs: 30000 })
+  // The owner's command id travels with the request, so a retry replays the first result.
+  const client = new LocalIpcClient(defaultKernelEndpoint(), localAgentClientOptions(options.commandId))
   try { return await use(body => client.send(body)) } finally { await client.close() }
 }
 

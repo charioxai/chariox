@@ -177,6 +177,7 @@ impl KernelRuntimeOwnedState {
                     return Ok(false);
                 };
                 let source_account = self.agent_profile_source_account(&agent);
+                self.protect_deferred_window_downshift(session.id(), &agent, pending)?;
                 if let Some(run) = self
                     .provider_store
                     .get_run_for_agent(session.id(), agent_id)
@@ -209,6 +210,73 @@ impl KernelRuntimeOwnedState {
             self.invalidate_workflow_copies_after_source_agent_change(session.id(), agent_id)?;
         }
         Ok(applied)
+    }
+
+    /// A deferred model change moves a settled session onto the new profile. When that is a
+    /// Claude session moving to a smaller context window than its transcript fits, the next turn
+    /// must not resume the oversized transcript. The turn has ended, so the source model cannot
+    /// compact it here; take the protected fallback of a failed source compaction instead: keep
+    /// the kernel's own history for the next turn and clear only this native session.
+    fn protect_deferred_window_downshift(
+        &self,
+        session_id: &str,
+        agent: &AgentInstance,
+        pending: &crate::agent::PendingAgentProfile,
+    ) -> Result<(), DaemonError> {
+        let Some(run) = self
+            .provider_store
+            .get_run_for_agent(session_id, agent.id())
+        else {
+            return Ok(());
+        };
+        let Some(target_model) = pending.model.as_deref().or(agent.model()) else {
+            return Ok(());
+        };
+        if !super::agent_profile_compaction::needs_compaction(
+            &run,
+            &pending.provider,
+            &pending.account_profile,
+            target_model,
+        ) {
+            return Ok(());
+        }
+        self.prepare_compacted_session_context_handoff(&run)?;
+        if let Some(native_session) = run.provider_session_id().or_else(|| {
+            agent
+                .provider_resume_state()
+                .provider_session_id(run.adapter_key())
+        }) {
+            match self
+                .agent_store
+                .clear_provider_resume_state_durably_if_matches(
+                    &self.durable_state_store,
+                    agent.id(),
+                    run.adapter_key(),
+                    native_session,
+                    run.id(),
+                    "deferred_window_downshift",
+                )? {
+                crate::agent::ProviderResumeClearOutcome::Required => {
+                    return Err(
+                        crate::provider::NativeCheckpointFailure::ResumeFailed.into_daemon_error()
+                    );
+                }
+                crate::agent::ProviderResumeClearOutcome::Superseded { .. } => {
+                    return Err(DaemonError::LocalTransport {
+                        operation: "apply deferred agent profile",
+                        message: "the native session changed while the deferred model was applied; select the model again".into(),
+                    });
+                }
+                _ => {}
+            }
+        }
+        self.record_notice(
+            session_id,
+            Some(run.id()),
+            self.attachment_store.list_session_attachment_ids(session_id),
+            "The next turn starts the smaller context window from the kernel's saved history instead of resuming the larger Claude session.",
+        );
+        Ok(())
     }
 
     pub(super) fn invalidate_workflow_copies_after_source_agent_change(

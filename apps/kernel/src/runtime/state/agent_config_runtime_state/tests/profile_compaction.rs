@@ -1370,6 +1370,71 @@ async fn assert_failed_source_compaction_starts_fresh(leased: bool) {
     );
 }
 
+// A model change staged mid-turn applies when the turn settles. A Claude session larger than the
+// new window must not be resumed on the smaller model: the next turn starts from the protected
+// kernel history, as after a failed source compaction.
+#[tokio::test]
+async fn a_deferred_downshift_does_not_resume_the_oversized_native_session() {
+    let (_root, _app, runtime, session, agent, mut run) = compact_fixture().await;
+    runtime
+        .owned
+        .agent_store
+        .write()
+        .set_agent_provider_resume_state(
+            &agent,
+            ProviderResumeState::from_external_provider_session(
+                "claude",
+                "oversized-native-session",
+            ),
+        )
+        .unwrap();
+    run.set_provider_session_id(Some("oversized-native-session".into()));
+    runtime
+        .owned
+        .provider_store
+        .write()
+        .insert_run_for_test(run.clone());
+    {
+        let mut agents = runtime.owned.agent_store.write();
+        let mut current = agents.get_agent(&agent).unwrap();
+        let account = current.provider_account_profile().to_string();
+        current.set_pending_profile(Some(crate::agent::PendingAgentProfile {
+            provider: "claude".into(),
+            model: Some("haiku".into()),
+            effort: None,
+            account_profile: account,
+        }));
+        agents.restore_agent(current);
+    }
+
+    let snapshot = runtime.owned.session_store.get_session(&session).unwrap();
+    assert!(runtime
+        .owned
+        .apply_agent_profile_after_turn(&snapshot, &agent)
+        .unwrap());
+
+    let applied = runtime.owned.agent_store.get_agent(&agent).unwrap();
+    assert_eq!(applied.model(), Some("haiku"));
+    assert!(applied.pending_profile().is_none());
+    assert_eq!(
+        applied
+            .provider_resume_state()
+            .provider_session_id("claude"),
+        None,
+        "the smaller model must not resume the oversized transcript"
+    );
+    let mut target = run.clone();
+    target.set_model("haiku");
+    assert!(
+        runtime
+            .owned
+            .pending_agent_context_handoffs
+            .peek_matching(&session, &agent, &target)
+            .is_some(),
+        "the next turn carries the protected kernel history"
+    );
+}
+
 // MP-08 / MP-10 / MP-11: real launches keep selection default, not the resolved id.
 #[tokio::test]
 async fn r5_review_implicit_default_downshift_preserves_the_compacted_native_session() {
