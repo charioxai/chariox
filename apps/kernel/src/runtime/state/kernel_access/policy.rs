@@ -112,6 +112,14 @@ impl KernelRuntimeState {
         command: &crate::runtime::command::KernelCommand,
     ) -> Option<String> {
         if let Some(grant_id) = command.external_grant_id() {
+            // An elevated agent's request carries its sudo window's identity: the window, still bound to the
+            // running turn it was authorized for, names the owner and the agent the audit records.
+            if grant_id.starts_with("sudo:") {
+                let window = self.sudo_window_bound(&grant_id).ok()?;
+                return self
+                    .is_gateway_owner(&window.owner_user_id)
+                    .then_some(window.agent_id);
+            }
             let grant = self.access_grant_summary(&grant_id)?;
             return self
                 .is_gateway_owner(&grant.owner_user_id)
