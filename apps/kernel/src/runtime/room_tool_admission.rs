@@ -134,6 +134,25 @@ pub(crate) fn owns_object(
         })
 }
 
+/// The actor made the object, or an agent below it did, in any Room: `agent spawn --room` keeps
+/// the parent edge across Rooms, so an ancestor in another Room still sits above its descendant.
+/// `owns_object` stays same-Room for the workflow objects that share it.
+pub(crate) fn owns_object_across_rooms(
+    actor: &AgentInstance,
+    creator: Option<&str>,
+    agents: &[AgentInstance],
+) -> bool {
+    creator == Some(actor.id())
+        || creator.is_some_and(|id| {
+            agents.iter().any(|child| {
+                child.id() == id
+                    && crate::agent::authority_limit::ancestors(child, agents)
+                        .iter()
+                        .any(|parent| parent.id() == actor.id())
+            })
+        })
+}
+
 /// PR1 admits only room commands. Later capability/sudo PRs expand the typed policy.
 pub(crate) fn command(tokens: &[String]) -> Result<(), DaemonError> {
     match tokens.first().map(String::as_str) {

@@ -1,6 +1,6 @@
 //! Shared mutation fence below clients/provider bridges. MP-08 / MP-11, A01.
 use super::*;
-use crate::runtime::room_tool_admission::{denied, in_subtree, owns_object};
+use crate::runtime::room_tool_admission::{denied, in_subtree, owns_object_across_rooms};
 
 impl KernelRuntimeState {
     /// MP-08 / MP-11: retain the admitted typed operation across asynchronous waits.
@@ -373,7 +373,7 @@ impl KernelRuntimeState {
             return Err(owner_only());
         }
         let agents = self.list_agents();
-        if owns_object(&actor, room.created_by_agent_id(), &agents) {
+        if owns_object_across_rooms(&actor, room.created_by_agent_id(), &agents) {
             Ok(())
         } else {
             Err(owner_only())

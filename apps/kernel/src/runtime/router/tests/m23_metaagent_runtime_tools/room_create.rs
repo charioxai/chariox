@@ -149,6 +149,56 @@ async fn rc3() {
 }
 
 #[test]
+fn rc3b_an_ancestor_in_another_room_deletes_the_room_its_descendant_created() {
+    run_large_stack_async_test("room-create-rc3b", rc3b);
+}
+async fn rc3b() {
+    let mut world = world("room-create-rc3b").await;
+    // a (in `room`) starts xb in `other_room`: xb keeps a as its parent across the Rooms.
+    let spawned = room_command(
+        &world,
+        "a",
+        &format!(
+            "agent spawn xb --provider dev-stub --room {}",
+            world.other_room
+        ),
+    )
+    .await;
+    assert!(spawned.ok, "{spawned:?}");
+    let xb = world
+        .app
+        .lock()
+        .await
+        .agents()
+        .get_session_agents(&world.other_room)
+        .into_iter()
+        .find(|agent| agent.alias() == Some("xb"))
+        .expect("xb runs in the other Room")
+        .id()
+        .to_string();
+    let token = launch(&world.app, &world.other_room, &xb).await;
+    world.tokens.insert("xb", token);
+    let by_xb = created_room(&room_command(&world, "xb", "room create --name ByXb").await);
+    // q shares xb's Room but is not above it; peer is a sibling of a's subtree: neither deletes.
+    for who in ["q", "peer"] {
+        let refused = room_command(&world, who, &format!("room delete {by_xb}")).await;
+        assert!(!refused.ok, "{who}: {refused:?}");
+        assert!(error_text(&refused).contains("owner"), "{who}: {refused:?}");
+    }
+    assert_eq!(room_of(&world, &by_xb).await.id(), by_xb);
+    // a is above xb although they run in different Rooms.
+    let deleted = room_command(&world, "a", &format!("room delete {by_xb}")).await;
+    assert!(deleted.ok, "{deleted:?}");
+    assert!(world
+        .app
+        .lock()
+        .await
+        .sessions()
+        .get_session(&by_xb)
+        .is_err());
+}
+
+#[test]
 fn rc4_a_guest_and_a_non_owner_agent_cannot_create_a_room() {
     run_large_stack_async_test("room-create-rc4", rc4);
 }
