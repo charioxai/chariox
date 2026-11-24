@@ -140,6 +140,31 @@ fn volume_with(free: u64) -> Arc<pool::Pool> {
     ))
 }
 
+/// A volume of `total` bytes whose free space starts at `free` and falls by
+/// `per_second` from its first reading: the files a copy removes between two
+/// samples in these tests would have stayed, as in the 11-22 runaway.
+#[cfg(target_os = "linux")]
+fn losing_volume(free: u64, per_second: u64, total: u64) -> Arc<pool::Pool> {
+    let started = Arc::new(std::sync::OnceLock::<std::time::Instant>::new());
+    Arc::new(pool::Pool::with_volume(
+        1 << 40,
+        Box::new(move |path| {
+            use std::os::unix::fs::MetadataExt;
+            let lost = started
+                .get_or_init(std::time::Instant::now)
+                .elapsed()
+                .as_millis() as u64
+                * per_second
+                / 1000;
+            Some(admission::Space {
+                id: std::fs::metadata(path).ok()?.dev(),
+                free: free.saturating_sub(lost),
+                total,
+            })
+        }),
+    ))
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn a_command_filling_the_disk_is_stopped_with_its_reason_never_paused() {
@@ -184,8 +209,8 @@ fn many_file_writer() -> String {
 fn a_fast_many_file_copy_is_stopped_while_the_disk_still_has_room() {
     take_wait_events();
     // 512 MiB free is above half the floor: only the rate says the disk is
-    // seconds from full.
-    let pool = volume_with(512 * MIB);
+    // seconds from full: the copy's 200 MiB/s is what the volume really loses.
+    let pool = losing_volume(512 * MIB, 200 * MIB, 100 * GIB);
     let mut writer = Workload::run(
         domain(&pool, "copy", false),
         &[("copy", many_file_writer())],
@@ -277,8 +302,9 @@ fn a_writer_of_short_lived_files_is_stopped_on_the_volume_it_was_last_seen_on() 
     take_wait_events();
     // One output held open long enough to be seen, a pause, then 8 MiB files
     // each open for a few milliseconds, twice a second: almost no sample
-    // sees one open, and 40 MiB lasts less than five seconds at that pace.
-    let pool = small_volume_with(40 * MIB);
+    // sees one open, and 40 MiB lasts less than five seconds at that pace
+    // (16 MiB/s, which the volume really loses).
+    let pool = losing_volume(40 * MIB, 16 * MIB, 3 * GIB);
     let command = format!(
         "python3 -c '{DIE_WITH_PARENT}import os,sys,time\nd=sys.argv[1]\nf=open(os.path.join(d,\"first\"),\"wb\")\nfor _ in range(8):\n f.write(bytes(1048576)); f.flush(); time.sleep(0.1)\nf.close(); time.sleep(3)\nend=time.time()+10\ni=0\nwhile time.time()<end and os.path.isdir(d):\n p=os.path.join(d,\"part-%d\" % i); i+=1\n with open(p,\"wb\") as g: g.write(bytes(8388608))\n os.unlink(p); time.sleep(0.5)' \"$0\""
     );
