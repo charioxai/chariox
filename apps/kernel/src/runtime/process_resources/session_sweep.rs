@@ -80,6 +80,7 @@ impl SessionSweep {
 
 /// The leader's running descendants, from one reading of parent links so
 /// nothing reparents mid-walk.
+#[cfg(test)]
 pub(super) fn descendants(leader: i32) -> Vec<i32> {
     if leader <= 1 {
         return Vec::new();
