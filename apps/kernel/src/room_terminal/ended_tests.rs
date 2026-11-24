@@ -372,3 +372,156 @@ async fn an_agent_terminal_already_past_its_hour_at_startup_is_gone_before_the_f
     );
     assert!(!path.exists());
 }
+
+fn job_running(pid_file: &Path) -> bool {
+    let Some(pid) = std::fs::read_to_string(pid_file)
+        .ok()
+        .and_then(|pid| pid.trim().parse::<i32>().ok())
+        .filter(|pid| *pid > 1)
+    else {
+        return false;
+    };
+    std::process::Command::new("ps")
+        .args(["-o", "stat=", "-p", &pid.to_string()])
+        .output()
+        .ok()
+        .is_some_and(|output| {
+            let status = String::from_utf8_lossy(&output.stdout);
+            !status.trim().is_empty() && !status.trim().starts_with('Z')
+        })
+}
+
+fn kill_job(pid_file: &Path) {
+    if let Some(pid) = std::fs::read_to_string(pid_file)
+        .ok()
+        .and_then(|text| text.trim().parse::<i32>().ok())
+        .filter(|pid| *pid > 1)
+    {
+        // SAFETY: the positive PID of the job this test started; never a group.
+        unsafe { libc::kill(pid, libc::SIGKILL) };
+    }
+}
+
+/// A command that starts a detached job and exits: the terminal ends, the job keeps running.
+async fn open_with_detached_job(
+    service: &RoomTerminalService,
+    scope: &TerminalScope,
+    root: &Path,
+    opened_by: TerminalActor,
+    pid_file: &Path,
+) -> String {
+    let script = format!(
+        "nohup {} </dev/null >/dev/null 2>&1 &",
+        crate::test_support::detached_job(&format!("'{}'", pid_file.display()), 8895),
+    );
+    let id = open_command(service, scope.clone(), root, opened_by, &script);
+    until_ended(service, scope, &id).await;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !job_running(pid_file) && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(job_running(pid_file), "the detached job did not start");
+    id
+}
+
+async fn job_ends_after(pid_file: &Path, stop: impl FnOnce()) -> bool {
+    stop();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while job_running(pid_file) && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    !job_running(pid_file)
+}
+
+#[tokio::test]
+async fn an_unread_one_command_terminal_going_away_leaves_the_job_it_left_running() {
+    let root = TestWorktree::new("expiry-keeps-job-kernel");
+    let service = service(root.path());
+    let kernel = TerminalScope::Kernel;
+    let pid_file = root.path().join("kernel-expiry.pid");
+    let id = open_with_detached_job(
+        &service,
+        &kernel,
+        root.path(),
+        TerminalActor::User,
+        &pid_file,
+    )
+    .await;
+    service.advance_clock_for_test(ONE_COMMAND_UNREAD_RETENTION + Duration::from_secs(1));
+    assert!(
+        ids(&service, &kernel).is_empty(),
+        "the terminal is still listed"
+    );
+    assert!(!stored(root.path(), &id));
+    let alive = job_running(&pid_file);
+    // Still stoppable: the kernel's own stop path for what its terminals left running.
+    let stopped = job_ends_after(&pid_file, || {
+        crate::runtime::process_resources::end_owner(Some(kernel.process_key()), None)
+    })
+    .await;
+    kill_job(&pid_file);
+    assert!(
+        alive,
+        "removing the ended terminal ended the job it left running"
+    );
+    assert!(stopped, "the job left behind cannot be stopped");
+}
+
+#[tokio::test]
+async fn reading_a_one_command_terminal_to_the_end_leaves_the_job_it_left_running() {
+    let root = TestWorktree::new("read-keeps-job-kernel");
+    let service = service(root.path());
+    let kernel = TerminalScope::Kernel;
+    let pid_file = root.path().join("kernel-read.pid");
+    let id = open_with_detached_job(
+        &service,
+        &kernel,
+        root.path(),
+        TerminalActor::User,
+        &pid_file,
+    )
+    .await;
+    service
+        .read_output(kernel.clone(), &id, 0, Duration::ZERO)
+        .await
+        .unwrap();
+    assert!(
+        ids(&service, &kernel).is_empty(),
+        "read to the end, still listed"
+    );
+    let alive = job_running(&pid_file);
+    kill_job(&pid_file);
+    assert!(
+        alive,
+        "removing the read terminal ended the job it left running"
+    );
+}
+
+#[tokio::test]
+async fn an_agent_terminal_going_away_after_its_hour_leaves_the_job_it_left_running() {
+    let root = TestWorktree::new("expiry-keeps-job-room");
+    let service = service(root.path());
+    let room = TerminalScope::room("room-1");
+    let pid_file = root.path().join("room-expiry.pid");
+    open_with_detached_job(&service, &room, root.path(), agent(), &pid_file).await;
+    service.advance_clock_for_test(AGENT_ENDED_RETENTION + Duration::from_secs(1));
+    assert!(
+        ids(&service, &room).is_empty(),
+        "the terminal is still listed"
+    );
+    let alive = job_running(&pid_file);
+    // The Room's end still stops what its terminals left running.
+    let stopped = job_ends_after(&pid_file, || {
+        crate::runtime::process_resources::end_owner(Some("room-1"), None)
+    })
+    .await;
+    kill_job(&pid_file);
+    assert!(
+        alive,
+        "removing the ended terminal ended the job it left running"
+    );
+    assert!(
+        stopped,
+        "the job left behind cannot be stopped with its Room"
+    );
+}
