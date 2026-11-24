@@ -197,7 +197,7 @@ impl LaunchAdmission {
         cwd: &Path,
         minimum_memory: u64,
     ) -> bool {
-        self.reserve_with_memory(id, argv, cwd, false, minimum_memory)
+        self.reserve_logged(id, argv, cwd, false, minimum_memory, false)
             .is_err()
     }
 
@@ -230,6 +230,20 @@ impl LaunchAdmission {
         cwd: &Path,
         force: bool,
         minimum_memory: u64,
+    ) -> Result<LaunchPermit, LaunchWait> {
+        self.reserve_logged(id, argv, cwd, force, minimum_memory, true)
+    }
+
+    /// `decides`: a launch that will run (or wait) as asked, so what admission
+    /// decides is logged; a probe (`would_wait`) logs nothing.
+    fn reserve_logged(
+        &self,
+        id: &str,
+        argv: &[String],
+        cwd: &Path,
+        force: bool,
+        minimum_memory: u64,
+        decides: bool,
     ) -> Result<LaunchPermit, LaunchWait> {
         let pool = &self.0;
         let protection = pool.protection();
@@ -273,11 +287,12 @@ impl LaunchAdmission {
                 && (minimum_memory > 0 || heavy_known || pool.memory_emergency())
                 && memory > free
             {
-                let first = pool
-                    .launch_waiting
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .insert(id.to_string());
+                let first = decides
+                    && pool
+                        .launch_waiting
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .insert(id.to_string());
                 if first {
                     crate::logging::info_with_fields(
                         "process_resources.admission",
@@ -322,11 +337,12 @@ impl LaunchAdmission {
                     });
                 }
             }
-            if pool
-                .launch_waiting
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .remove(id)
+            if decides
+                && pool
+                    .launch_waiting
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(id)
             {
                 crate::logging::info_with_fields(
                     "process_resources.admission",
