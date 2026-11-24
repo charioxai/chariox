@@ -47,6 +47,8 @@ export type TranscriptStreamMetadata = ExternalProviderObservedMutableTranscript
   readonly historySequence?: number | undefined
   /** The chunk is the whole text of its merge key's row, not more of it. */
   readonly replaces?: true | undefined
+  /** The chunk is more of the text a `replaces` chunk of the same merge key set: it joins that row, wherever the row is now. */
+  readonly continuesReplacement?: true | undefined
   readonly promptId?: string | null | undefined
   readonly promptOrigin?: string | null | undefined
   readonly sourceAttachmentId?: string | null | undefined
