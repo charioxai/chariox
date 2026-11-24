@@ -167,6 +167,39 @@ impl Entry {
         )
     }
 
+    /// One log line for a decision admission took on this command: what it
+    /// did, to which command, and why, with the numbers it judged by.
+    pub(super) fn decision(
+        &self,
+        pid: u32,
+        decision: &str,
+        reason: WaitReason,
+        why: &str,
+        numbers: serde_json::Value,
+    ) {
+        let line = self.seen.as_ref().map_or_else(
+            || format!("pid {pid}"),
+            |seen| seen.line.chars().take(200).collect(),
+        );
+        let mut fields = serde_json::json!({
+            "decision": decision,
+            "reason": reason,
+            "pid": pid,
+            "command": line,
+            "why": why,
+            "resident_bytes": self.resident,
+            "expected_peak_bytes": self.expected.as_ref().map(|peak| peak.memory),
+        });
+        if let (Some(fields), Some(numbers)) = (fields.as_object_mut(), numbers.as_object()) {
+            fields.extend(numbers.clone());
+        }
+        crate::logging::info_with_fields(
+            "process_resources.admission",
+            &format!("admission {decision} ({reason:?}): {line}: {why}"),
+            fields,
+        );
+    }
+
     /// It runs again.
     fn stop_waiting(&mut self) {
         self.wait = None;
@@ -257,6 +290,15 @@ impl Entry {
     pub(super) fn force(&mut self) -> bool {
         if self.wait.is_none() {
             return false;
+        }
+        if let Some(wait) = self.wait {
+            self.decision(
+                self.seen.as_ref().map_or(0, |seen| seen.pid),
+                "started",
+                wait.reason(),
+                "the person started it now, whatever the room",
+                serde_json::json!({}),
+            );
         }
         self.stop_waiting();
         self.forced = true;
@@ -435,17 +477,22 @@ impl Room<'_> {
 }
 
 /// Release every wait whose resource is disabled or whose memory emergency
-/// ended. Disabling a resource must not leave a stopped command stranded.
+/// ended. Disabling a resource must not leave a stopped command stranded. A
+/// command held before it started for room it does not fit keeps waiting
+/// while memory protection is on, emergency or not: only the line in turn
+/// (`resume`) starts it, when its room is there.
 pub(super) fn release_unprotected(
     members: &[Arc<Mutex<Observation>>],
-    memory: bool,
+    protection: bool,
+    emergency: bool,
     disk: bool,
 ) -> Vec<Arc<Mutex<Observation>>> {
+    let memory = protection && emergency;
     let mut changed = Vec::new();
     for member in members {
         let mut observation = member.lock().unwrap_or_else(|e| e.into_inner());
         let mut released = false;
-        for entry in observation.admission.values_mut() {
+        for (pid, entry) in observation.admission.iter_mut() {
             if !memory {
                 entry.refused = None;
             }
@@ -453,13 +500,30 @@ pub(super) fn release_unprotected(
                 entry.filling = None;
             }
             if !entry.exhausted()
-                && entry.wait.is_some_and(|wait| match wait.reason() {
-                    WaitReason::Memory => !memory,
-                    WaitReason::Disk => !disk,
+                && entry.wait.is_some_and(|wait| match wait {
+                    Wait::Held(WaitReason::Memory) => !protection,
+                    Wait::Paused(WaitReason::Memory) => !memory,
+                    Wait::Held(WaitReason::Disk) | Wait::Paused(WaitReason::Disk) => !disk,
                 })
             {
+                let wait = entry.wait;
                 entry.stop_waiting();
                 released = true;
+                if let Some(wait) = wait {
+                    entry.decision(
+                        *pid,
+                        "released",
+                        wait.reason(),
+                        match wait.reason() {
+                            WaitReason::Memory if !protection => {
+                                "memory protection is off for this machine"
+                            }
+                            WaitReason::Memory => "the memory emergency ended",
+                            WaitReason::Disk => "disk protection is off for this machine",
+                        },
+                        serde_json::json!({}),
+                    );
+                }
             }
         }
         if released {
@@ -687,7 +751,8 @@ impl Ledger {
     ) -> bool {
         let mut changed = release_unprotected(
             members,
-            room.memory_protection && room.pressured,
+            room.memory_protection,
+            room.pressured,
             room.disk_protection,
         );
         let mut state = State::read(members, room);
@@ -884,13 +949,23 @@ impl Ledger {
     fn hold(&mut self, current: &Arc<Mutex<Observation>>, room: &Room, state: &mut State) {
         let mut observation = current.lock().unwrap_or_else(|e| e.into_inner());
         let unit = observation.unit.clone();
-        for entry in observation.admission.values_mut() {
+        for (pid, entry) in observation.admission.iter_mut() {
+            let pid = *pid;
             if entry.admitted || entry.forced || entry.wait.is_some() {
                 continue;
             }
             let Some(expected) = entry.expected.clone() else {
                 // Unknown: light until it grows.
                 entry.admitted = entry.resident >= room.light;
+                if entry.admitted {
+                    entry.decision(
+                        pid,
+                        "admitted",
+                        WaitReason::Memory,
+                        "no earlier run of it is known, so it can only be paused if it grows into a short pool",
+                        serde_json::json!({"room_bytes": room.memory}),
+                    );
+                }
                 continue;
             };
             if room.memory_protection
@@ -908,6 +983,13 @@ impl Ledger {
                 {
                     entry.refused = Some(expected.memory);
                     entry.admitted = true;
+                    entry.decision(
+                        pid,
+                        "refused",
+                        WaitReason::Memory,
+                        "its last run needed more than the whole pool, so it can never fit here",
+                        serde_json::json!({"need_bytes": expected.memory, "pool_bytes": room.capacity}),
+                    );
                 } else {
                     entry.expected = None;
                 }
@@ -919,11 +1001,13 @@ impl Ledger {
             let held = if !entry.holdable {
                 None
             } else if room.memory_protection
-                && room.pressured
                 && expected.memory >= room.light
                 && need > state.memory_room(&unit, room)
                 && state.heavy_running
             {
+                // Before it grows: a command whose known peak does not fit the
+                // room left waits for it, healthy machine or not. Holding
+                // costs nothing; only running work is spared until pressure.
                 Some(Wait::Held(WaitReason::Memory))
             } else if room.disk_protection
                 && disk.is_some_and(|disk| ahead > state.spare(disk, &unit, room))
@@ -934,8 +1018,40 @@ impl Ledger {
             };
             if let Some(held) = held {
                 entry.wait_for(held);
+                let free = match held {
+                    Wait::Held(WaitReason::Memory) => state.memory_room(&unit, room),
+                    Wait::Held(WaitReason::Disk) | Wait::Paused(_) => disk
+                        .map_or(0, |disk| state.spare(disk, &unit, room)),
+                };
+                entry.decision(
+                    pid,
+                    "held",
+                    held.reason(),
+                    match held.reason() {
+                        WaitReason::Memory => "its last run peaked above the room left in the pool, so it waits before it grows",
+                        WaitReason::Disk => "its last run wrote more than the space left above the volume's floor, so it waits before it writes",
+                    },
+                    serde_json::json!({
+                        "need_bytes": if held.reason() == WaitReason::Memory { need } else { ahead },
+                        "free_bytes": free,
+                        "peak_bytes": expected.memory,
+                    }),
+                );
             } else {
                 entry.admitted = true;
+                if expected.memory >= room.light || disk.is_some() {
+                    entry.decision(
+                        pid,
+                        "started",
+                        WaitReason::Memory,
+                        "its last peak fits the room left in the pool",
+                        serde_json::json!({
+                            "need_bytes": need,
+                            "free_bytes": state.memory_room(&unit, room),
+                            "peak_bytes": expected.memory,
+                        }),
+                    );
+                }
                 state.reserve_memory(&unit, need, room);
                 if let Some(disk) = disk {
                     state.reserve_disk(disk, ahead, &unit, room);
@@ -990,12 +1106,14 @@ impl Ledger {
         {
             entry.wait_for(Wait::Paused(reason));
             entry.paused_rate = rate;
+            entry.decision(
+                pid,
+                "paused",
+                reason,
+                "it was growing into a pool short of memory; paused instead of stopping one",
+                serde_json::json!({"rate_bytes_per_second": rate}),
+            );
         }
-        crate::logging::info_with_fields(
-            "process_resources.admission_pause",
-            "paused a growing command instead of stopping one",
-            serde_json::json!({"pid": pid, "reason": reason, "rate_bytes_per_second": rate}),
-        );
         PauseDecision::Paused(member.clone())
     }
 
@@ -1027,8 +1145,26 @@ impl Ledger {
             if let Some(volume) = volume {
                 state.reserve_disk(volume, entry.writes_ahead(room), &unit, room);
             }
+            let was = entry.wait;
+            let free = state.memory_room(&unit, room);
+            let needs = need(entry, reason, room);
             entry.stop_waiting();
             entry.admitted = true;
+            entry.decision(
+                pid,
+                if matches!(was, Some(Wait::Paused(_))) {
+                    "resumed"
+                } else {
+                    "started"
+                },
+                reason,
+                if state.heavy_running {
+                    "it is next in line and the room it needs is free"
+                } else {
+                    "nothing heavy runs any more, so the next in line goes on"
+                },
+                serde_json::json!({"need_bytes": needs, "free_bytes": free}),
+            );
             state.running(entry, room);
             let unit = observation.unit.clone();
             drop(observation);
@@ -1293,7 +1429,10 @@ impl State {
         let left = self.memory_room(unit, room);
         let paused_memory =
             reason == WaitReason::Memory && matches!(entry.wait, Some(Wait::Paused(_)));
-        if room.memory_protection && room.pressured && self.heavy_running && memory > left {
+        // A held command is judged by the room, an emergency or not (the same
+        // test `hold` made); a paused one continues by the emergency's rules.
+        let judged = room.pressured || matches!(entry.wait, Some(Wait::Held(_)));
+        if room.memory_protection && judged && self.heavy_running && memory > left {
             return Some(Blocked::Memory { left, need: memory });
         }
         if room.memory_protection && room.pressured && self.heavy_running && paused_memory {

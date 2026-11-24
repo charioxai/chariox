@@ -2519,7 +2519,7 @@ fn an_old_allocation_rate_cannot_end_a_command_that_just_paused() {
 }
 
 #[test]
-fn resset_healthy_host_never_holds_or_refuses_predicted_memory() {
+fn resset_healthy_host_never_refuses_predicted_memory_and_holds_only_what_does_not_fit() {
     let volume = volume(&Arc::new(AtomicU64::new(100 * GIB)));
     let current = owner(
         "agent",
@@ -2562,10 +2562,18 @@ fn resset_healthy_host_never_holds_or_refuses_predicted_memory() {
     let mut healthy = room(GIB, false, &*volume);
     healthy.pressured = false;
     ledger.pass(std::slice::from_ref(&current), &current, &healthy);
+    // A prediction never stops work that runs, and never ends a command on a
+    // healthy machine; one that does not fit the room left waits before it
+    // starts (row 541).
     assert_eq!(
-        wait(&current, 2),
+        wait(&current, 1),
         None,
         "predictions must not stop healthy work"
+    );
+    assert_eq!(
+        wait(&current, 2),
+        Some(Wait::Held(WaitReason::Memory)),
+        "a peak above the room left waits before it starts"
     );
     assert!(
         ledger.take_refused(&current).is_empty(),
@@ -2653,4 +2661,181 @@ fn resset_disk_off_releases_waits_and_never_stops_a_filler() {
     }
     assert_eq!(wait(&current, 1), None);
     assert!(ledger.take_fillers(&current).is_empty());
+}
+
+/// A healthy machine: MemAvailable is above the margin, so no emergency.
+fn healthy<'a>(memory: u64, volume: &'a Volume) -> Room<'a> {
+    let mut room = room(memory, false, volume);
+    room.pressured = false;
+    room
+}
+
+/// A heavy command already running: it is the oldest and holds `resident`.
+fn running(arrived: u64, resident: u64) -> Entry {
+    let mut running = entry(arrived, Peak::default());
+    running.admitted = true;
+    running.resident = resident;
+    running
+}
+
+fn heavy(memory: u64) -> Peak {
+    Peak {
+        memory,
+        ..Peak::default()
+    }
+}
+
+fn pass_after_settle(ledger: &mut Ledger, current: &Arc<Mutex<Observation>>, room: &Room) {
+    unsettle(ledger);
+    ledger.pass(std::slice::from_ref(current), current, room);
+}
+
+#[test]
+fn a_known_peak_that_does_not_fit_waits_before_it_starts_on_a_healthy_machine() {
+    let volume = volume(&Arc::new(AtomicU64::new(100 * GIB)));
+    let current = owner(
+        "agent",
+        true,
+        vec![command(1, 3 * GIB, 0), command(2, 0, 0)],
+        vec![(1, running(1, 3 * GIB)), (2, entry(2, heavy(45 * GIB)))],
+    );
+    let mut ledger = Ledger::new(None);
+    ledger.pass(
+        std::slice::from_ref(&current),
+        &current,
+        &healthy(20 * GIB, &*volume),
+    );
+    assert_eq!(wait(&current, 1), None, "running work is never stopped");
+    assert_eq!(
+        wait(&current, 2),
+        Some(Wait::Held(WaitReason::Memory)),
+        "a 45 GiB peak did not fit 20 GiB of room"
+    );
+    // The room does not come: it stays held, however many passes.
+    for _ in 0..5 {
+        pass_after_settle(&mut ledger, &current, &healthy(20 * GIB, &*volume));
+    }
+    assert_eq!(wait(&current, 2), Some(Wait::Held(WaitReason::Memory)));
+    // The room comes: it starts, and keeps running.
+    pass_after_settle(&mut ledger, &current, &healthy(60 * GIB, &*volume));
+    assert_eq!(wait(&current, 2), None);
+    pass_after_settle(&mut ledger, &current, &healthy(20 * GIB, &*volume));
+    assert_eq!(wait(&current, 2), None, "a started command is not held again");
+}
+
+#[test]
+fn a_known_peak_that_fits_starts_on_a_healthy_machine() {
+    let volume = volume(&Arc::new(AtomicU64::new(100 * GIB)));
+    let current = owner(
+        "agent",
+        true,
+        vec![command(1, 3 * GIB, 0), command(2, 0, 0)],
+        vec![(1, running(1, 3 * GIB)), (2, entry(2, heavy(45 * GIB)))],
+    );
+    let mut ledger = Ledger::new(None);
+    ledger.pass(
+        std::slice::from_ref(&current),
+        &current,
+        &healthy(60 * GIB, &*volume),
+    );
+    assert_eq!(wait(&current, 2), None);
+}
+
+#[test]
+fn held_commands_start_in_turn_as_the_room_frees_and_a_light_one_never_waits() {
+    let volume = volume(&Arc::new(AtomicU64::new(100 * GIB)));
+    let current = owner(
+        "agent",
+        true,
+        vec![
+            command(1, 3 * GIB, 0),
+            command(2, 0, 0),
+            command(3, 0, 0),
+            command(4, 0, 0),
+            command(5, 0, 0),
+        ],
+        vec![
+            (1, running(1, 3 * GIB)),
+            (2, entry(2, heavy(8 * GIB))),
+            (3, entry(3, heavy(8 * GIB))),
+            (4, entry(4, heavy(8 * GIB))),
+            // The fifth ran light last time: it never waits.
+            (5, entry(5, heavy(100 * MIB))),
+        ],
+    );
+    let mut ledger = Ledger::new(None);
+    ledger.pass(
+        std::slice::from_ref(&current),
+        &current,
+        &healthy(9 * GIB, &*volume),
+    );
+    assert_eq!(wait(&current, 2), None, "the first of three fits");
+    assert_eq!(wait(&current, 3), Some(Wait::Held(WaitReason::Memory)));
+    assert_eq!(wait(&current, 4), Some(Wait::Held(WaitReason::Memory)));
+    assert_eq!(wait(&current, 5), None, "a light command never waits");
+    pass_after_settle(&mut ledger, &current, &healthy(17 * GIB, &*volume));
+    assert_eq!(wait(&current, 3), None, "the next in line starts first");
+    assert_eq!(wait(&current, 4), Some(Wait::Held(WaitReason::Memory)));
+    pass_after_settle(&mut ledger, &current, &healthy(25 * GIB, &*volume));
+    assert_eq!(wait(&current, 4), None);
+}
+
+#[test]
+fn memory_protection_off_starts_a_held_command_on_a_healthy_machine() {
+    let volume = volume(&Arc::new(AtomicU64::new(100 * GIB)));
+    let current = owner(
+        "agent",
+        true,
+        vec![command(1, 3 * GIB, 0), command(2, 0, 0)],
+        vec![(1, running(1, 3 * GIB)), (2, entry(2, heavy(45 * GIB)))],
+    );
+    let mut ledger = Ledger::new(None);
+    ledger.pass(
+        std::slice::from_ref(&current),
+        &current,
+        &healthy(20 * GIB, &*volume),
+    );
+    assert!(wait(&current, 2).is_some());
+    let mut off = healthy(20 * GIB, &*volume);
+    off.memory_protection = false;
+    ledger.pass(std::slice::from_ref(&current), &current, &off);
+    assert_eq!(wait(&current, 2), None);
+}
+
+#[test]
+fn every_hold_start_and_release_is_logged_with_its_reason() {
+    let capture = crate::logging::capture::start();
+    let volume = volume(&Arc::new(AtomicU64::new(100 * GIB)));
+    let mut heldline = entry(2, heavy(45 * GIB));
+    heldline.seen.as_mut().unwrap().line = "frame-analysis-541 --all".into();
+    let current = owner(
+        "agent",
+        true,
+        vec![command(1, 3 * GIB, 0), command(2, 0, 0)],
+        vec![(1, running(1, 3 * GIB)), (2, heldline)],
+    );
+    let mut ledger = Ledger::new(None);
+    ledger.pass(
+        std::slice::from_ref(&current),
+        &current,
+        &healthy(20 * GIB, &*volume),
+    );
+    pass_after_settle(&mut ledger, &current, &healthy(60 * GIB, &*volume));
+    let lines = capture
+        .records()
+        .into_iter()
+        .filter(|line| line.contains("frame-analysis-541"))
+        .collect::<Vec<_>>();
+    assert!(
+        lines.iter().any(|line| line.starts_with("process_resources.admission admission held")
+            && line.contains("its last run peaked above the room left")
+            && line.contains("\"need_bytes\"")
+            && line.contains("\"free_bytes\"")),
+        "no held line: {lines:?}"
+    );
+    assert!(
+        lines.iter().any(|line| line.starts_with("process_resources.admission admission started")
+            && line.contains("next in line")),
+        "no started line: {lines:?}"
+    );
 }
