@@ -661,9 +661,19 @@ async fn a_model_switch_between_turns_keeps_the_process_that_runs_a_background_c
         }],
         ..Default::default()
     };
+    // The production pump prepares and applies each batch itself; the test wrapper is not on that path.
+    let prepared = turn
+        .runtime
+        .prepare_owned_structured_output_batch(&turn.session_id, &replaced, reply)
+        .expect("the batch is prepared");
     let _ = turn
         .runtime
-        .apply_owned_structured_output_batch(&turn.session_id, &replaced, Vec::new(), reply)
+        .apply_prepared_owned_structured_output_batch(
+            &turn.session_id,
+            &replaced,
+            Vec::new(),
+            prepared,
+        )
         .await;
     let notices = settings_notices(&turn);
     assert!(
