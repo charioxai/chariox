@@ -110,7 +110,7 @@ impl KernelRuntimeState {
                         .session_store
                         .get_session(agent.session_id())
                         .ok()
-                        .map(|room| self.agent_activity_for_session(&room))
+                        .map(|room| self.agent_activity_for_tree(&room))
                         .unwrap_or_default()
                 });
                 activity.get(agent.id()).map(|activity| activity.liveness.clone())

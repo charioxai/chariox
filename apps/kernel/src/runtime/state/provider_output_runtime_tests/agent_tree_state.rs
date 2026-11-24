@@ -676,7 +676,7 @@ async fn a_node_reports_its_account_workspace_worktree_and_machine() {
 // the node waits on in the tree the client reads, and the wake going away takes the reason with it.
 #[tokio::test]
 async fn a_live_wake_of_a_settled_child_is_its_node_wait_reason() {
-    let team = team("tree-live-wake", false, true).await;
+    let team = team_with("tree-live-wake", None, true).await;
     assert!(read(&team).nodes[0].liveness.is_none(), "nothing armed: no reason");
     let store = &team.runtime.owned.durable_state_store;
     let now = crate::session::unix_epoch_ms();
@@ -696,6 +696,18 @@ async fn a_live_wake_of_a_settled_child_is_its_node_wait_reason() {
             task: team.task.task_id.clone(),
             prompt: team.task.prompt_id.clone(),
             wake,
+        })
+        .unwrap();
+    // The turn ends without a yield: its task settles done and the wake stays armed.
+    store
+        .agent_lifecycle(Operation::Settle {
+            room: team.room.clone(),
+            agent: team.child.clone(),
+            prompt: team.child_prompt.id().into(),
+            run: team.child_run.clone(),
+            has_answer: true,
+            cancelled: false,
+            now: now + 1,
         })
         .unwrap();
     let tree = read(&team);
