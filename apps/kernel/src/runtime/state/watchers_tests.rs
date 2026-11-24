@@ -422,6 +422,86 @@ echo '{"event":"mail","key":"x","text":"false alarm"}'
 }
 
 #[tokio::test]
+async fn a_dry_run_repeated_after_the_source_became_unreadable_keeps_the_reading_requirement() {
+    let rig = rig().await;
+    let marker = std::env::temp_dir().join(format!("watcher-unreadable-{}", std::process::id()));
+    let _ = std::fs::remove_file(&marker);
+    let script = format!(
+        r#"read input
+if [ -e '{marker}' ]; then
+    echo '{{"cursor":"unreadable"}}'
+    exit 0
+fi
+echo '{{"reading":"€1,599"}}'
+"#,
+        marker = marker.display()
+    );
+    let (watcher_id, _) = rig.create(&script).await;
+    let dry_run = json!({"watcher_id": watcher_id});
+    let first = rig
+        .tool("chariox.watcher.dry_run", dry_run.clone())
+        .await
+        .unwrap();
+    assert_eq!(first["reading"], "€1,599");
+    // The source turns unreadable and the builder repeats the preview while diagnosing it:
+    // an exit-0 preview without a reading still passes.
+    std::fs::write(&marker, "").unwrap();
+    let second = rig.tool("chariox.watcher.dry_run", dry_run).await.unwrap();
+    assert!(second["reading"].is_null(), "{second}");
+    rig.tool(
+        "chariox.watcher.activate",
+        json!({"watcher_id": watcher_id}),
+    )
+    .await
+    .unwrap();
+    let record = rig
+        .record_until(&watcher_id, |record| record.last_check_ms.is_some())
+        .await;
+    let _ = std::fs::remove_file(&marker);
+    assert!(
+        matches!(record.health, WatcherHealth::Failing { .. }),
+        "{record:?}"
+    );
+    assert_eq!((record.fired_count, record.cursor), (0, None));
+}
+
+#[tokio::test]
+async fn an_unreadable_poll_that_exits_zero_keeps_the_tail_of_its_error_output() {
+    let rig = rig().await;
+    let (watcher_id, _) = rig
+        .create(
+            r#"read input
+case "$input" in
+    *'"dry_run":true'*) echo '{"reading":"€1,599"}'; exit 0;;
+esac
+echo 'login expired' >&2
+exit 0
+"#,
+        )
+        .await;
+    rig.tool("chariox.watcher.dry_run", json!({"watcher_id": watcher_id}))
+        .await
+        .unwrap();
+    rig.tool(
+        "chariox.watcher.activate",
+        json!({"watcher_id": watcher_id}),
+    )
+    .await
+    .unwrap();
+    let record = rig
+        .record_until(&watcher_id, |record| record.last_check_ms.is_some())
+        .await;
+    assert!(matches!(record.health, WatcherHealth::Failing { .. }));
+    assert!(
+        record
+            .last_failure_output
+            .as_deref()
+            .is_some_and(|output| output.contains("login expired")),
+        "{record:?}"
+    );
+}
+
+#[tokio::test]
 async fn a_watcher_the_owner_turned_on_requires_owner_approval_for_repairs() {
     let rig = rig().await;
     let (watcher_id, _) = rig

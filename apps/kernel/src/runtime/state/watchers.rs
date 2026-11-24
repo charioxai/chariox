@@ -466,9 +466,7 @@ async fn run_once(
         at: 0,
     };
     let mut commits = 0u64;
-    let expects_reading = record
-        .passed_dry_run()
-        .is_some_and(|preview| preview.reading.is_some());
+    let expects_reading = record.expects_reading();
     let spec = RunSpec {
         dir,
         manifest: record.manifest,
@@ -522,15 +520,19 @@ async fn run_once(
             .as_deref()
             .is_none_or(|reading| reading.trim().is_empty());
     match &end {
-        RunEnd::Finished if missing_reading => {
-            fail(NO_READING.into(), None);
+        // A script that exited 0 without a reading may have said why on its error output.
+        RunEnd::Finished { output } if missing_reading => {
+            fail(
+                NO_READING.into(),
+                (!output.is_empty()).then(|| output.clone()),
+            );
         }
-        RunEnd::Finished if !stream => {
+        RunEnd::Finished { .. } if !stream => {
             if let Err(reason) = commit(&mut pending) {
                 tracing::debug!(watcher = %watcher_id, %reason, "watcher run was not committed");
             }
         }
-        RunEnd::Finished => fail("the stream ended".into(), None),
+        RunEnd::Finished { .. } => fail("the stream ended".into(), None),
         RunEnd::Failed { reason, output } if missing_reading => {
             let failure = if output.is_empty() {
                 reason.clone()
@@ -583,7 +585,7 @@ async fn dry_run(
     })
     .await;
     match end {
-        RunEnd::Finished => Ok(result),
+        RunEnd::Finished { .. } => Ok(result),
         RunEnd::Failed { reason, output } if output.is_empty() => {
             Err(error(format!("the dry run failed: {reason}")))
         }

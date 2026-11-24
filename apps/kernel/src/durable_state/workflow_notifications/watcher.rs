@@ -73,6 +73,10 @@ pub(crate) struct WatcherRecord {
 pub(crate) struct PassedDryRun {
     pub revision: u64,
     pub result: WatcherDryRun,
+    /// Some dry run of this revision reported a reading: a later preview that lost it does not
+    /// lift the requirement, since the source may have become unreadable since.
+    #[serde(default)]
+    pub reading_demonstrated: bool,
 }
 
 impl WatcherRecord {
@@ -81,6 +85,14 @@ impl WatcherRecord {
             .as_ref()
             .filter(|dry_run| dry_run.revision == self.revision)
             .map(|dry_run| &dry_run.result)
+    }
+
+    /// A run of this revision must report a reading: one of its dry runs did.
+    pub(crate) fn expects_reading(&self) -> bool {
+        self.dry_run
+            .as_ref()
+            .filter(|dry_run| dry_run.revision == self.revision)
+            .is_some_and(|dry_run| dry_run.reading_demonstrated || dry_run.result.reading.is_some())
     }
 
     pub(crate) fn summary(&self) -> WatcherSummary {
@@ -281,7 +293,12 @@ pub(super) fn apply(
                     "the watcher changed during its dry run; run it again",
                 ));
             }
-            record.dry_run = Some(PassedDryRun { revision, result });
+            let reading_demonstrated = result.reading.is_some() || record.expects_reading();
+            record.dry_run = Some(PassedDryRun {
+                revision,
+                result,
+                reading_demonstrated,
+            });
             written(record, None)
         }
         WatcherOperation::SetState {
