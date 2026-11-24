@@ -124,3 +124,18 @@ test('a steering prompt between two outputs keeps one turn', () => {
   assert.equal(turns.length, 1, 'the steering prompt must not open a second turn')
   assert.deepEqual(turns[0].map(step => step.kind), ['prompt', 'text', 'text', 'end'])
 })
+
+// A tool's running and completed updates form one blob even when assistant output falls between them: its sequence range
+// reaches over the final reply without containing it, so only a blob of the reply's own kind covers its summary.
+test('a tool blob that spans the final reply does not drop it', () => {
+  const page = (kind, text, timestamp_ms, total_chars, extra = {}) => ({ entry_index: 11, fragment_start: 0, fragment_end: text.length, total_chars, entry: { kind, text, timestamp_ms }, ...extra })
+  const outline = { agents: [{ agent_id: 'agent-id-1', turns: [{
+    user_prompt: page('user_prompt', 'go', 100, 2, { entry_index: 1 }),
+    entries: [],
+    summary: page('provider_output', 'the answer', 900, 10, { entry_index: 11 }),
+    blobs: [{ kind: 'provider_tool', sequence_start: 10, sequence_end: 12, total_chars: 5_000, timestamp_ms: 500 }],
+  }] }] }
+  const steps = parseTrace(convertHistory(rowsFromOutline(outline)).get('agent-1.jsonl')).turns[0]
+  assert.deepEqual(steps.map(step => step.kind), ['prompt', 'tool', 'text', 'end'])
+  assert.equal(steps.find(step => step.kind === 'text').chars, 10)
+})
