@@ -309,6 +309,7 @@ mod claude_account_identity_tests {
 
     fn same_account_pair(
         name: &str,
+        explicit_is_default: bool,
     ) -> (
         crate::test_support::TestWorktree,
         std::path::PathBuf,
@@ -331,8 +332,13 @@ mod claude_account_identity_tests {
         let explicit = registry
             .link_existing("local", "claude", "Work", &second)
             .unwrap();
+        let default = if explicit_is_default {
+            &explicit
+        } else {
+            &automatic
+        };
         registry
-            .set_default("local", "claude", &automatic.profile_id)
+            .set_default("local", "claude", &default.profile_id)
             .unwrap();
         drop(registry);
         let account = "879d9f26-dd4a-40f5-9aa1-e9ebc8ffc16a";
@@ -344,7 +350,8 @@ mod claude_account_identity_tests {
     #[test]
     fn expired_explicit_binding_keeps_its_name_but_not_the_account_row() {
         crate::test_support::isolated_env_test!();
-        let (root, path, automatic, explicit) = same_account_pair("claude-account-mixed-auth");
+        let (root, path, automatic, explicit) =
+            same_account_pair("claude-account-mixed-auth", false);
         let registry = ProviderAccountProfileRegistry::open(&path).unwrap();
         for (profile, state) in [
             (&automatic, ProviderAccountAuthState::Authenticated),
@@ -376,6 +383,15 @@ mod claude_account_identity_tests {
         assert_eq!(usage.len(), 1);
         assert_eq!(usage[0].profile_id, automatic.profile_id);
         assert_eq!(usage[0].auth_state, ProviderAccountAuthState::Authenticated);
+        // The displayed name and the default select the shown account, not the expired binding.
+        for selector in ["Work", "default"] {
+            let selected = registry.get("local", "claude", selector).unwrap();
+            assert_eq!(selected.profile_id, automatic.profile_id, "{selector}");
+            assert_eq!(selected.auth_state, ProviderAccountAuthState::Authenticated);
+            registry
+                .require_authenticated("local", "claude", selector, None, "name drill")
+                .unwrap();
+        }
         // An agent already bound to the expired binding still resolves it exactly.
         assert_eq!(
             registry
@@ -388,9 +404,56 @@ mod claude_account_identity_tests {
     }
 
     #[test]
+    fn renaming_the_shown_account_changes_the_name_it_shows() {
+        crate::test_support::isolated_env_test!();
+        let (_root, path, automatic, explicit) = same_account_pair("claude-account-rename", true);
+        let registry = ProviderAccountProfileRegistry::open(&path).unwrap();
+        for (profile, state) in [
+            (&automatic, ProviderAccountAuthState::Authenticated),
+            (&explicit, ProviderAccountAuthState::Expired),
+        ] {
+            registry
+                .update_observation(
+                    "local",
+                    "claude",
+                    &profile.profile_id,
+                    state,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap();
+        }
+        // The expired explicit default keeps the name; the authenticated binding is shown.
+        let shown = registry.list("local", Some("claude")).unwrap();
+        assert_eq!(shown.len(), 1);
+        assert_eq!(shown[0].profile_id, automatic.profile_id);
+        assert_eq!(shown[0].label, "Work");
+        registry
+            .rename("local", "claude", &automatic.profile_id, "Renamed")
+            .unwrap();
+        let shown = registry.list("local", Some("claude")).unwrap();
+        assert_eq!(shown.len(), 1);
+        assert_eq!(shown[0].label, "Renamed");
+        assert_eq!(
+            registry.usage_accounts("local", "machine-a").unwrap()[0].label,
+            "Renamed"
+        );
+        assert_eq!(
+            registry
+                .get("local", "claude", "Renamed")
+                .unwrap()
+                .profile_id,
+            automatic.profile_id
+        );
+    }
+
+    #[test]
     fn usage_read_through_a_hidden_binding_reaches_the_account_row() {
         crate::test_support::isolated_env_test!();
-        let (root, path, automatic, explicit) = same_account_pair("claude-account-hidden-usage");
+        let (root, path, automatic, explicit) =
+            same_account_pair("claude-account-hidden-usage", false);
         let registry = ProviderAccountProfileRegistry::open(&path).unwrap();
         for profile in [&automatic, &explicit] {
             registry

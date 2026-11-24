@@ -142,6 +142,31 @@ impl RegistryDocument {
         Some(project_usage_freshness(public))
     }
 
+    /// The binding that stands for `stored`'s account when it is chosen by name or as the default.
+    /// Selection by profile ID stays exact so existing agents keep their own binding.
+    pub(super) fn named_binding<'a>(
+        &'a self,
+        stored: &'a StoredProviderAccountProfile,
+    ) -> &'a StoredProviderAccountProfile {
+        stored
+            .provider_account_id
+            .as_deref()
+            .and_then(|id| self.claude_representative(&stored.public.owner_user_id, id))
+            .unwrap_or(stored)
+    }
+
+    /// The binding whose label is the account's displayed name, so a rename lands where it shows.
+    pub(super) fn name_holder<'a>(
+        &'a self,
+        stored: &'a StoredProviderAccountProfile,
+    ) -> &'a StoredProviderAccountProfile {
+        stored
+            .provider_account_id
+            .as_deref()
+            .and_then(|id| self.claude_account(&stored.public.owner_user_id, id))
+            .unwrap_or(stored)
+    }
+
     /// The binding to show for a known account, for callers that return one profile.
     pub(super) fn claude_visible_profile(
         &self,

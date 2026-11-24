@@ -2121,9 +2121,13 @@ impl ProviderAccountProfileRegistry {
         let provider = normalize_provider(provider)?;
         let label = validate_label(label)?;
         let mut document = self.write_document()?;
-        ensure_unique_label_except(&document, owner_user_id, provider, label, profile_id)?;
+        let index = resolved_profile_index(&document, owner_user_id, provider, profile_id)?;
+        // An account that groups several bindings is renamed where its name is kept.
+        let holder = document.name_holder(&document.profiles[index]);
+        let holder_id = holder.public.profile_id.clone();
+        ensure_unique_label_except(&document, owner_user_id, provider, label, &holder_id)?;
         let profile =
-            resolve_stored_profile_mut(&mut document, owner_user_id, provider, profile_id)?;
+            resolve_stored_profile_mut(&mut document, owner_user_id, provider, &holder_id)?;
         profile.public.label = label.to_string();
         profile.label_source = Some(ProviderAccountLabelSource::Explicit);
         let result = profile.public.clone();
@@ -4660,29 +4664,33 @@ fn find_stored_profile<'a>(
     profile_id: &str,
 ) -> Option<&'a StoredProviderAccountProfile> {
     let profile_id = profile_id.trim();
-    if profile_id == "default" {
-        document.profiles.iter().find(|profile| {
-            profile.public.owner_user_id == owner_user_id
-                && profile.public.provider == provider
-                && profile.public.is_default
-        })
-    } else {
-        let in_namespace = |profile: &&StoredProviderAccountProfile| {
-            profile.public.owner_user_id == owner_user_id && profile.public.provider == provider
-        };
+    let in_namespace = |profile: &&StoredProviderAccountProfile| {
+        profile.public.owner_user_id == owner_user_id && profile.public.provider == provider
+    };
+    if let Some(exact) = document
+        .profiles
+        .iter()
+        .filter(in_namespace)
+        .find(|profile| profile.public.profile_id == profile_id)
+        .filter(|_| profile_id != "default")
+    {
+        return Some(exact);
+    }
+    // A name or the default stands for the account the list shows, not for one binding of it.
+    let named = if profile_id == "default" {
         document
             .profiles
             .iter()
             .filter(in_namespace)
-            .find(|profile| profile.public.profile_id == profile_id)
-            .or_else(|| {
-                document
-                    .profiles
-                    .iter()
-                    .filter(in_namespace)
-                    .find(|profile| profile.public.label == profile_id)
-            })
-    }
+            .find(|profile| profile.public.is_default)
+    } else {
+        document
+            .profiles
+            .iter()
+            .filter(in_namespace)
+            .find(|profile| profile.public.label == profile_id)
+    };
+    named.map(|profile| document.named_binding(profile))
 }
 
 fn resolve_stored_profile_mut<'a>(
