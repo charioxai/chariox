@@ -45,6 +45,20 @@ impl KernelRuntimeState {
         )
     }
 
+    #[cfg(test)]
+    pub(crate) fn count_transport_pump_iteration(&self) {
+        self.owned
+            .transport_pump_iterations
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn transport_pump_iterations_for_test(&self) -> u64 {
+        self.owned
+            .transport_pump_iterations
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
     pub(crate) async fn pump_transport_runtime(&self) {
         let progress = crate::runtime::stall_watchdog::progress_watch(
             "kernel.runtime",

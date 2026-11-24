@@ -149,18 +149,6 @@ impl KernelRuntimeState {
         Ok(config)
     }
 
-    pub(crate) async fn install_cloud_relay_renewal(
-        &self,
-        previous: crate::config::DaemonConfig,
-        token: String,
-        expires_at_ms: u64,
-    ) -> Result<(), DaemonError> {
-        self.with_app_side_effect_blocking(move |app| {
-            app.install_cloud_relay_renewal(&previous, token, expires_at_ms)
-        })
-        .await
-    }
-
     pub(crate) async fn configure_relay_with_cloud_profile(
         &self,
         relay_url: Option<String>,

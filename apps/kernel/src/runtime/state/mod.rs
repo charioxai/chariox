@@ -431,6 +431,8 @@ struct KernelRuntimeOwnedState {
     >,
     #[cfg(test)]
     managed_activity_record_calls: Arc<std::sync::atomic::AtomicU64>,
+    #[cfg(test)]
+    transport_pump_iterations: Arc<std::sync::atomic::AtomicU64>,
     legacy_workflow_history: crate::app::LegacyWorkflowHistoryStore,
     provider_account_profiles: crate::account_profile::ProviderAccountProfileRegistry,
     provider_usage_refresher: Arc<crate::runtime::provider_usage_refresh::ProviderUsageRefresher>,
@@ -1367,6 +1369,8 @@ impl KernelRuntimeState {
                 managed_activity_next_lock_probe: Arc::new(std::sync::Mutex::new(None)),
                 #[cfg(test)]
                 managed_activity_record_calls: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+                #[cfg(test)]
+                transport_pump_iterations: Arc::new(std::sync::atomic::AtomicU64::new(0)),
                 legacy_workflow_history,
                 provider_account_profiles,
                 provider_login_processes: ProviderLoginProcessStore::default(),

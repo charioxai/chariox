@@ -2628,6 +2628,8 @@ mod kernel_access_grants;
 
 mod ka_validation;
 
+mod holder_exit_wake;
+
 #[cfg(unix)]
 #[tokio::test]
 async fn md5_local_cached_browser_observations_obey_current_vault_policy() {

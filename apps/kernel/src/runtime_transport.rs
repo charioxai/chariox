@@ -712,6 +712,8 @@ where
         let mut pass_requested = true;
         loop {
             progress.stage("schedule maintenance", Duration::from_secs(1));
+            #[cfg(test)]
+            pump_state.count_transport_pump_iteration();
             let output_ready_sequence = pump_state.provider_output_ready_sequence();
             let provider_actor_completion_sequence =
                 pump_router.provider_run_actor_completion_sequence();
@@ -758,7 +760,10 @@ where
                 _ = pump_router.wait_for_provider_run_actor_completion_after(provider_actor_completion_sequence) => pass_requested = true,
                 _ = pump_router.wait_for_started_app_refreshes() => pass_requested = true,
                 _ = pump_state.wait_for_provider_output_ready_after(output_ready_sequence) => pass_requested = true,
-                _ = pump_state.wait_for_kernel_access_holder_exit() => pass_requested = true,
+                // The pass sweeps grants when it starts. While one runs, a holder that
+                // exited after that sweep would resolve this wake on every iteration;
+                // the next pass sweeps it, so the wake only listens between passes.
+                _ = pump_state.wait_for_kernel_access_holder_exit(), if maintenance.is_empty() => pass_requested = true,
             }
         }
     });
