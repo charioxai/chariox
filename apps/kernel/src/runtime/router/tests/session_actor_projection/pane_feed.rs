@@ -1,4 +1,4 @@
-//! Local 1014: the pane feed through the router, as a provider terminal and the web pane read it.
+//! Local 1015: the pane feed through the router, as a provider terminal and the web pane read it.
 use super::*;
 use crate::local::{GetPaneFeedRequest, PaneFeed, PaneState, ReportPaneSettingsRequest};
 use crate::transport::kernel_protocol::KernelEvent;
@@ -275,7 +275,18 @@ async fn reported_settings_survive_a_kernel_restart() {
         ..
     } = terminal;
     drop(router);
-    let restored = DaemonApp::bootstrap(config).expect("the kernel restarts on its state");
+    // The dropped kernel's background tasks release its hold on the state a moment later.
+    let mut restarts = 0;
+    let restored = loop {
+        match DaemonApp::bootstrap(config.clone()) {
+            Ok(app) => break app,
+            Err(_) if restarts < 100 => {
+                restarts += 1;
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+            Err(error) => panic!("the kernel restarts on its state: {error:?}"),
+        }
+    };
     let agent = restored
         .agents()
         .get_agent(&agent_id)
@@ -293,10 +304,10 @@ async fn reported_settings_survive_a_kernel_restart() {
     );
 }
 
-/// A run of a person-responsible workflow fails two steps down (A -> B -> C, C needs help): the
-/// attention stripe is in C's pane and names C; A's and B's panes have none.
-#[tokio::test]
-async fn a_failed_run_is_a_stripe_in_the_pane_of_the_agent_whose_step_failed() {
+/// A run of a person-responsible workflow fails two steps down (A -> B -> C, C needs help). Another
+/// workflow of the Room has `newer_runs` completed runs, all newer than that run. Returns each agent's
+/// attention stripes, in the order entry, middle, deploy.
+async fn attention_stripes_of_a_failed_run(newer_runs: usize) -> Vec<Vec<String>> {
     use crate::session::{
         WorkflowFailureEvent, WorkflowFailureKind, WorkflowNodeRun, WorkflowNodeRunStatus,
         WorkflowRun, WorkflowRunStatus,
@@ -369,6 +380,34 @@ async fn a_failed_run_is_a_stripe_in_the_pane_of_the_agent_whose_step_failed() {
     run.set_status(WorkflowRunStatus::Failed);
     session.create_workflow_run(run);
     app.sessions_mut().restore_session(session);
+    // A busy workflow with newer runs: they sort ahead of the failed run, which a feed that read only
+    // the newest page of runs would lose.
+    let busy = app
+        .sessions_mut()
+        .create_workflow(&session_id, Some("nightly".into()))
+        .unwrap();
+    let mut session = app.sessions_mut().get_session(&session_id).unwrap();
+    for index in 0..newer_runs {
+        let mut newer = WorkflowRun::new(
+            &format!("z-run-{index:04}"),
+            busy.id(),
+            "endpoint",
+            "node-a",
+            None,
+            None,
+            vec![WorkflowNodeRun::new(
+                format!("busy-node-run-{index}"),
+                "node-a",
+                &agents[0],
+                0,
+                WorkflowNodeRunStatus::Completed,
+            )],
+            vec![],
+        );
+        newer.set_status(WorkflowRunStatus::Completed);
+        session.create_workflow_run(newer);
+    }
+    app.sessions_mut().restore_session(session);
     let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1);
     let mut attention = Vec::new();
     for agent_id in &agents {
@@ -390,6 +429,10 @@ async fn a_failed_run_is_a_stripe_in_the_pane_of_the_agent_whose_step_failed() {
                 .collect::<Vec<_>>(),
         );
     }
+    attention
+}
+
+fn assert_the_failing_agents_pane_only(attention: &[Vec<String>]) {
     assert!(
         attention[0].is_empty(),
         "the entry agent's pane: {:?}",
@@ -411,4 +454,18 @@ async fn a_failed_run_is_a_stripe_in_the_pane_of_the_agent_whose_step_failed() {
         "{}",
         attention[2][0]
     );
+}
+
+/// A run of a person-responsible workflow fails two steps down (A -> B -> C, C needs help): the
+/// attention stripe is in C's pane and names C; A's and B's panes have none.
+#[tokio::test]
+async fn a_failed_run_is_a_stripe_in_the_pane_of_the_agent_whose_step_failed() {
+    assert_the_failing_agents_pane_only(&attention_stripes_of_a_failed_run(0).await);
+}
+
+/// The failed run is older than more runs than one page of the run list holds, all of another
+/// workflow: its attention stripe stays in the failing agent's pane.
+#[tokio::test]
+async fn a_failed_run_behind_two_hundred_newer_runs_of_another_workflow_keeps_its_stripe() {
+    assert_the_failing_agents_pane_only(&attention_stripes_of_a_failed_run(250).await);
 }

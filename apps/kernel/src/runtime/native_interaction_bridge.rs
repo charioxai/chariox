@@ -163,16 +163,20 @@ async fn forward_native_interaction_to_home(
     mut target: RemoteNativeInteractionTarget,
     interaction: RuntimeInteraction,
 ) -> Result<ProviderNativeInteractionResolution, DaemonError> {
-    // The home's card expires at `expires_at`; the worker outwaits it by the buffer.
+    // The home's card expires at `expires_at`, and the home may hold it past that for the person at a
+    // provider terminal: the worker outwaits the card by that hold and the buffer, so an answer at
+    // any time the home still holds the card reaches the provider operation.
     let expires_at = interaction
         .timeout_sec()
         .map(|seconds| tokio::time::Instant::now() + Duration::from_secs(seconds));
-    let deadline = expires_at.map(|at| at + REMOTE_NATIVE_INTERACTION_RESPONSE_BUFFER);
+    let deadline = expires_at.map(forwarding_deadline);
     let mut backoff = Duration::from_secs(1);
     let mut attempt = 1_u32;
     loop {
+        if deadline.is_some_and(|deadline| deadline <= tokio::time::Instant::now()) {
+            return Ok(timed_out_resolution());
+        }
         let forwarded = match expires_at {
-            Some(at) if at <= tokio::time::Instant::now() => return Ok(timed_out_resolution()),
             Some(at) => interaction.clone().with_decision_expiry(at),
             None => interaction.clone(),
         };
@@ -338,8 +342,16 @@ fn remote_native_interaction_response_timeout(
     interaction
         .timeout_sec()
         .map(Duration::from_secs)
-        .map(|timeout| timeout.saturating_add(REMOTE_NATIVE_INTERACTION_RESPONSE_BUFFER))
+        .map(|timeout| {
+            timeout.saturating_add(REMOTE_NATIVE_INTERACTION_RESPONSE_BUFFER)
+        })
         .unwrap_or_else(|| Duration::from_millis(relay_request_timeout_ms))
+}
+
+/// When the worker gives up waiting for the home: the card's own deadline, the longest the home
+/// holds it past that, and the buffer for the home's answer to come back.
+fn forwarding_deadline(expires_at: tokio::time::Instant) -> tokio::time::Instant {
+    expires_at + REMOTE_NATIVE_INTERACTION_RESPONSE_BUFFER
 }
 
 pub(crate) fn install_provider_native_interaction_bridge(
@@ -686,14 +698,37 @@ mod tests {
 
     #[test]
     fn remote_response_timeout_outlives_the_user_interaction_deadline() {
+        // The card's timeout, the longest the home holds it past that for the person at a provider
+        // terminal, and the buffer for the answer to come back.
+        let held = PROVIDER_TERMINAL_HOLD_LIMIT_SECS;
         assert_eq!(
             remote_native_interaction_response_timeout(&interaction(Some(300)), 60_000),
-            Duration::from_secs(315)
+            Duration::from_secs(300 + held + 15)
         );
         assert_eq!(
             remote_native_interaction_response_timeout(&interaction(Some(5)), 60_000),
-            Duration::from_secs(20)
+            Duration::from_secs(5 + held + 15)
         );
+    }
+
+    /// A leased child asks permission in its native-terminal parent's pane: the home holds the card
+    /// past its 300 s deadline, so the worker must still be waiting when the person answers late.
+    #[tokio::test(start_paused = true)]
+    async fn the_worker_keeps_waiting_while_the_home_holds_the_card() {
+        let expires_at = tokio::time::Instant::now() + Duration::from_secs(300);
+        let deadline = forwarding_deadline(expires_at);
+        tokio::time::advance(Duration::from_secs(316)).await;
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "a worker that gave up at the card's timeout plus the buffer loses a later answer"
+        );
+        tokio::time::advance(Duration::from_secs(PROVIDER_TERMINAL_HOLD_LIMIT_SECS - 300)).await;
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the home settles the card at the end of its hold: the worker is still there to receive that"
+        );
+        tokio::time::advance(deadline - tokio::time::Instant::now()).await;
+        assert!(tokio::time::Instant::now() >= deadline);
     }
 
     #[tokio::test(start_paused = true)]
