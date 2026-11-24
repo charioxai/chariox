@@ -324,7 +324,7 @@ mod tests {
             ["terminal-2"]
         );
         revoke(&config, "terminal-2").unwrap();
-        assert!(admit(&config, "terminal-key").is_err());
+        assert!(admit(&config, "terminal-key", None).is_err());
         assert!(redeem(&config, "synthetic-issued-link", grant).is_err());
         assert!(admit(&config, "terminal-key", None).is_err());
         std::fs::remove_dir_all(root).unwrap();

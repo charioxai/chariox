@@ -303,8 +303,6 @@ pub(super) fn relay_request_kind(request: &LocalDaemonRequest) -> &'static str {
             "workspace.commit_message.generate"
         }
         LocalDaemonRequest::CommitWorkspaceChanges(_) => "workspace.git.commit",
-        LocalDaemonRequest::PushWorkspaceBranch(_) => "workspace.git.push",
-        LocalDaemonRequest::CommitAndPushWorkspaceChanges(_) => "workspace.git.commit_and_push",
         // MP-11: renewals of self-hosted relay grants stay visible in relay dispatch logs.
         LocalDaemonRequest::IssueRelayClientToken(_) => "relay_issuer.client_token.issue",
         _ => "other",

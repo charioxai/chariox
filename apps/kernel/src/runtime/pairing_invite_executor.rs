@@ -45,7 +45,8 @@ pub(crate) async fn execute_pairing_request(
             .await
         }
         LocalDaemonRequest::CreateTerminalPairingLink(request) => {
-            execute_create_terminal_pairing_link_request(config_projection, request).await
+            execute_create_terminal_pairing_link_request(runtime_state, config_projection, request)
+                .await
         }
         LocalDaemonRequest::JoinTerminalPairingLink(request) => {
             let key_thumbprint = request.public_key_thumbprint.clone();
@@ -267,6 +268,7 @@ pub(crate) async fn execute_create_pairing_invite_request(
 }
 
 pub(crate) async fn execute_create_terminal_pairing_link_request(
+    _runtime_state: &KernelRuntimeState,
     config_projection: &DaemonConfigProjectionStore,
     request: CreateTerminalPairingLinkRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
@@ -452,6 +454,7 @@ pub(crate) async fn execute_join_pairing_invite_request(
 }
 
 pub(crate) async fn execute_join_terminal_pairing_link_request(
+    _runtime_state: &KernelRuntimeState,
     config_projection: &DaemonConfigProjectionStore,
     request: JoinTerminalPairingLinkRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
@@ -670,7 +673,7 @@ mod self_host_invite_tests {
             kernel_credential: Some("synthetic-enrollment".into()),
             ..Default::default()
         });
-        assert!(grants::admit(&config, "unpaired-terminal-key").is_err());
+        assert!(grants::admit(&config, "unpaired-terminal-key", None).is_err());
         let app = crate::app::DaemonApp::bootstrap(config.clone()).unwrap();
         let projection = app.config_projection_store();
         let catalog = app.provider_catalog_projection_store();
@@ -717,7 +720,9 @@ mod self_host_invite_tests {
                 ..
             }
         ));
-        assert!(grants::admit(&config, "terminal-key").unwrap().is_some());
+        assert!(grants::admit(&config, "terminal-key", None)
+            .unwrap()
+            .is_some());
         for request in [
             LocalDaemonRequest::ListTerminals(crate::local::ListTerminalsRequest),
             LocalDaemonRequest::ListPairedClients(crate::local::ListPairedClientsRequest),
@@ -746,7 +751,7 @@ mod self_host_invite_tests {
         )
         .await
         .unwrap();
-        assert!(grants::admit(&config, "terminal-key").is_err());
+        assert!(grants::admit(&config, "terminal-key", None).is_err());
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -799,6 +804,12 @@ mod self_host_invite_tests {
         config.relay_token = Some("operator-test-token".into());
         config.cloud_relay = None;
         let projection = DaemonConfigProjectionStore::new(config.clone());
+        let app = crate::app::DaemonApp::bootstrap(config.clone()).unwrap();
+        let router = crate::runtime::router::CommandRouter::with_interactive_capacity(
+            Arc::new(tokio::sync::Mutex::new(app)),
+            1,
+        );
+        let runtime = router.runtime_state();
         let caller = crate::runtime::command::KernelCaller::for_source(
             &crate::runtime::command::KernelCommandSource::LocalIpc,
         );
@@ -821,6 +832,7 @@ mod self_host_invite_tests {
         );
         let LocalDaemonResponse::TerminalPairingLinkCreated { pairing } =
             execute_create_terminal_pairing_link_request(
+                &runtime,
                 &projection,
                 CreateTerminalPairingLinkRequest {
                     terminal_type: None,
@@ -884,6 +896,7 @@ mod self_host_invite_tests {
         let thumbprint = public_key_thumbprint("terminal-key");
         let LocalDaemonResponse::TerminalPairingLinkJoined { relay_token, .. } =
             execute_join_terminal_pairing_link_request(
+                &runtime,
                 &projection,
                 JoinTerminalPairingLinkRequest {
                     pairing_link: pairing.pairing_link.clone(),

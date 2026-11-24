@@ -181,7 +181,7 @@ fn a_paired_terminal_renews_only_its_own_identity_and_key() {
     enable(&config, RelayIssuerStep::Enable);
     let own = pair(&config, "cli-1", "cli-key");
     pair(&config, "cli-2", "other-key");
-    let caller = KernelCaller::from_paired_terminal(own);
+    let caller = KernelCaller::from_paired_terminal(own, "owner-user".into());
     assert!(issue(
         &config,
         &caller,
