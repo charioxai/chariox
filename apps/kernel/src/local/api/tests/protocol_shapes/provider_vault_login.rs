@@ -98,3 +98,21 @@ fn the_closed_receiving_vault_reason_classes_are_wire_stable() {
         }
     ));
 }
+
+#[test]
+fn native_account_identity_peer_shape_is_versioned_and_hashed() {
+    let bytes = include_bytes!("provider-account-identity-452.json");
+    assert_eq!(
+        format!("{:x}", Sha256::digest(bytes)),
+        "2470f8b947c3bc253df6407c77a754ff718cfb6e4fffa0c0d74ea35187ccb6b5"
+    );
+    let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    assert_eq!(
+        fixture["peer"],
+        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION
+    );
+    let metadata: ProviderAccountReplicaMetadata =
+        serde_json::from_value(fixture["profile"].clone()).unwrap();
+    assert!(metadata.provider_account_id.is_some());
+    assert_eq!(serde_json::to_value(metadata).unwrap(), fixture["profile"]);
+}

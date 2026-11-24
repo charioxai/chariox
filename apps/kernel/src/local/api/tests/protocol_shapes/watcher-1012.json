@@ -1,6 +1,6 @@
 {
   "local": 1014,
-  "relayPeer": 451,
+  "relayPeer": 452,
   "requests": [
     {"Watcher": {"create": {"session_id": "room-1", "manifest": {"name": "Build status", "sentence": "Tells you when the nightly build fails.", "mode": {"poll": {"every_s": 1800}}, "command": ["python3", "watch.py"], "events": [{"name": "failed", "keyed": true}], "coalesce": "latest_per_key", "debounce_s": 0}, "script": {"file_name": "watch.py", "text": "print('{}')"}}}},
     {"Watcher": {"update": {"watcher_id": "w1", "manifest": {"name": "Build log", "sentence": "Tells you when the log says ERROR.", "mode": "stream", "command": ["sh", "tail.sh"], "events": [{"name": "error", "keyed": false}], "coalesce": "every", "debounce_s": 30}, "script": {"file_name": "tail.sh", "text": "tail -F build.log"}}}},
