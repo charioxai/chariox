@@ -38,7 +38,7 @@ async fn remote(
 }
 
 #[test]
-fn two_pairing_links_with_one_cli_key_renew_through_relay_admission() {
+fn a_second_pairing_link_with_one_cli_key_replaces_the_first_for_relay_admission() {
     std::thread::Builder::new()
         .stack_size(64 * 1024 * 1024)
         .spawn(|| {
@@ -144,15 +144,29 @@ fn two_pairing_links_with_one_cli_key_renew_through_relay_admission() {
                             lifetime_ms: None,
                         })
                     };
-                    for identity in &identities {
-                        let response =
-                            remote(&router, &sender, identity.clone(), renew(&identity.subject))
-                                .await;
-                        assert!(
-                            response.get("RelayClientTokenIssued").is_some(),
-                            "each link must renew through relay admission: {response}"
-                        );
-                    }
+                    // Main keeps one grant per key: the second link replaced the first.
+                    let replaced = remote(
+                        &router,
+                        &sender,
+                        identities[0].clone(),
+                        renew(&identities[0].subject),
+                    )
+                    .await;
+                    assert_eq!(
+                        replaced["refused"], "authorization_denied",
+                        "a replaced link's grant is gone: {replaced}"
+                    );
+                    let response = remote(
+                        &router,
+                        &sender,
+                        identities[1].clone(),
+                        renew(&identities[1].subject),
+                    )
+                    .await;
+                    assert!(
+                        response.get("RelayClientTokenIssued").is_some(),
+                        "the current link must renew through relay admission: {response}"
+                    );
                     let cross = remote(
                         &router,
                         &sender,
@@ -177,29 +191,13 @@ fn two_pairing_links_with_one_cli_key_renew_through_relay_admission() {
                             remote(&router, &sender, identities[1].clone(), request).await;
                         assert_eq!(response["refused"], "authorization_denied");
                     }
-                    let response = remote(
-                        &router,
-                        &sender,
-                        identities[0].clone(),
-                        renew(&identities[0].subject),
-                    )
-                    .await;
-                    assert!(
-                        response.get("RelayClientTokenIssued").is_some(),
-                        "revoking one link preserves the other"
-                    );
-                    crate::runtime::self_host_terminal_grants::revoke(
-                        &config,
-                        &identities[0].subject,
-                    )
-                    .unwrap();
                     for identity in identities {
                         let response =
                             remote(&router, &sender, identity.clone(), renew(&identity.subject))
                                 .await;
                         assert_eq!(
                             response["refused"], "authorization_denied",
-                            "revoking every grant revokes the device"
+                            "revoking the key's grant revokes the device"
                         );
                     }
                     router.runtime_state().shutdown_cleanup().await.unwrap();
