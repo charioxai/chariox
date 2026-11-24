@@ -271,6 +271,9 @@ async fn agent_kernel(
     let worktree = crate::test_support::TestWorktree::new("machine-tool");
     let mut config = crate::config::DaemonConfig::for_tests();
     config.user_config.agents.offload_without_asking = Some(true);
+    // These tests are about which option an acquire takes, not about the owner's limits: every
+    // class the stand-in service lists is allowed.
+    config.user_config.agents.offload_classes = Some(vec!["small".into(), "big".into()]);
     let mut app = crate::DaemonApp::bootstrap(config).unwrap();
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(worktree.session_request())

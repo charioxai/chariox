@@ -197,7 +197,7 @@ impl KernelRuntimeState {
                 if answer.choice_id.as_deref() != Some("approve") {
                     return Err(acquisition_error(
                         "acquisition_denied",
-                        "The owner denied this request; nothing was allocated or charged",
+                        "The owner denied this request, so it was not sent to the service; nothing was allocated or charged",
                     ));
                 }
                 None
@@ -219,7 +219,7 @@ impl KernelRuntimeState {
             self.timeout_runtime_interaction(&room, &id).await?;
             return Err(acquisition_error(
                 "acquisition_unanswered",
-                &format!("The owner's card {id} for this request closed without a decision: {why}. Nothing was allocated or charged; retry with the same request_id when the owner can answer."),
+                &format!("The owner's card {id} for this request closed without a decision: {why}. It was not sent to the service and nothing was allocated or charged; retry with the same request_id when the owner can answer."),
             ));
         }
         self.owned.durable_state_store.append_event("compute.acquisition_approved", Some(id), serde_json::json!({"owner":session.owner_user_id(),"approved_at_ms":crate::session::unix_epoch_ms()}))?;
