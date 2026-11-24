@@ -105,6 +105,27 @@ impl KernelRuntimeState {
         Ok(())
     }
 
+    /// Who a linked-kernel directory request acts for: the owner's own grant holder, or the owner's Room agent
+    /// on its live run. `None` is a caller that is neither, and the request is refused.
+    pub(crate) fn account_kernel_actor(
+        &self,
+        command: &crate::runtime::command::KernelCommand,
+    ) -> Option<String> {
+        if let Some(grant_id) = command.external_grant_id() {
+            let grant = self.access_grant_summary(&grant_id)?;
+            return self
+                .is_gateway_owner(&grant.owner_user_id)
+                .then_some(grant.grant_id);
+        }
+        if command.caller.caller_kind != crate::runtime::command::KernelCallerKind::Metaagent {
+            return None;
+        }
+        let run = command.provider_run_id.as_deref()?;
+        let reach = self.reach_for_id(&format!("{}{run}", super::reach::REACH_PREFIX))?;
+        (command.caller.metaagent_id.as_deref() == Some(reach.agent_id.as_str()))
+            .then_some(reach.agent_id)
+    }
+
     /// The kernel owner is the one person who forwards to the owner's other kernels without
     /// an access grant: the owner's own gateway grant on this kernel.
     pub(crate) fn is_gateway_owner(&self, user_id: &str) -> bool {
