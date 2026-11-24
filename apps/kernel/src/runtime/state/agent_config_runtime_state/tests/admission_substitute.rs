@@ -224,3 +224,79 @@ async fn a_weekly_limit_refusal_marks_the_account_exhausted_until_its_reset() {
         }
     ));
 }
+
+// A provider refusal is the newest word on the account: a healthy credit reading
+// taken before it does not keep the account admitted.
+#[tokio::test]
+async fn a_refusal_wins_over_an_older_healthy_credit_reading() {
+    use crate::account_profile::{
+        ProviderAccountUsageAvailability, ProviderAccountUsageMeter, ProviderAccountUsageMeterKind,
+        ProviderAccountUsageMeterScope, ProviderAccountUsageMeterState,
+        ProviderAccountUsageSnapshot,
+    };
+    crate::test_support::isolated_env_test!();
+    let turn = super::automatic_substitutes::failing_turn_on("claude").await;
+    let registry = &turn.runtime.owned.provider_account_profiles;
+    crate::test_support::authenticate_provider_account(registry, OWNER, "claude", "default")
+        .unwrap();
+    let now_ms = crate::session::unix_epoch_ms();
+    let healthy = |meter_id: &str, kind| ProviderAccountUsageMeter {
+        meter_id: meter_id.to_string(),
+        label: meter_id.to_string(),
+        service_id: None,
+        kind,
+        scope: ProviderAccountUsageMeterScope::Account,
+        used_percent: Some(10.0),
+        used: None,
+        remaining: None,
+        total: None,
+        unit: None,
+        window_duration_minutes: None,
+        resets_at_ms: None,
+        state: ProviderAccountUsageMeterState::Healthy,
+        source: "test.fixture".to_string(),
+        observed_at_ms: now_ms,
+    };
+    registry
+        .update_usage(
+            OWNER,
+            "claude",
+            "default",
+            ProviderAccountUsageSnapshot {
+                profile_id: "default".to_string(),
+                provider: "claude".to_string(),
+                availability: ProviderAccountUsageAvailability::Available,
+                meters: vec![
+                    healthy("credits", ProviderAccountUsageMeterKind::CreditBalance),
+                    healthy("spend", ProviderAccountUsageMeterKind::SpendLimit),
+                ],
+                observed_at_ms: Some(now_ms),
+                source: "test.fixture".to_string(),
+                management_url: None,
+            },
+        )
+        .unwrap();
+
+    registry
+        .mark_usage_refused(OWNER, "claude", "default", Some(now_ms + 3_600_000))
+        .unwrap();
+
+    let refusal = registry
+        .require_authenticated(OWNER, "claude", "default", Some("primary-model"), "test")
+        .expect_err("the provider refused the turn, so the account is used up");
+    assert!(matches!(
+        refusal,
+        crate::error::DaemonError::ProviderProfileRefused {
+            reason: crate::error::ProviderProfileRefusal::UsageExhausted,
+            ..
+        }
+    ));
+    assert!(
+        registry
+            .get(OWNER, "claude", "default")
+            .unwrap()
+            .blocked_until("default", now_ms)
+            .is_some(),
+        "the reset watcher sees the account blocked"
+    );
+}

@@ -100,14 +100,18 @@ impl KernelRuntimeState {
                 continue;
             };
             // The stop names the account as the run launched on it: its id, or the
-            // `default` alias of the owner's.
+            // `default` alias of the owner's. The alias is read in the stopped agent's own
+            // account authority, so one owner's reset never moves another owner's stop.
+            let agent_account_owner =
+                self.provider_account_authority_owner_user_id(agent.owner_user_id());
             let stopped_on_account = crate::provider::canonical_provider_family(&stop.provider)
                 == Some(account.provider.as_str())
+                && agent_account_owner == account.owner_user_id
                 && self
                     .owned
                     .provider_account_profiles
                     .find(
-                        &account.owner_user_id,
+                        &agent_account_owner,
                         &account.provider,
                         &stop.account_profile,
                     )

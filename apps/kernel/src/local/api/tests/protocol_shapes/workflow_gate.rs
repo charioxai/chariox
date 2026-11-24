@@ -34,12 +34,38 @@ fn workflow_gate_entry_and_owned_state_protocol_snapshot() {
             *wire
         );
     }
+    // A held entry names its account and the earliest reset; both ride the node run and are
+    // absent from one that is not held.
+    for wire in snapshot["node_run_held_entries"].as_array().unwrap() {
+        let mut node_run = crate::session::WorkflowNodeRun::new(
+            "node-run",
+            "node",
+            "agent",
+            0,
+            crate::session::WorkflowNodeRunStatus::Ready,
+        );
+        let free = serde_json::to_value(&node_run).unwrap();
+        for field in ["waiting_reason", "waiting_account", "waiting_until_ms"] {
+            assert!(free.get(field).is_none(), "{field} is absent when not held");
+        }
+        node_run.set_wait(crate::session::WorkflowNodeWait {
+            reason: serde_json::from_value(wire["waiting_reason"].clone()).unwrap(),
+            account: Some(wire["waiting_account"].as_str().unwrap().to_string()),
+            resets_at_ms: wire["waiting_until_ms"].as_u64(),
+        });
+        let held = serde_json::to_value(&node_run).unwrap();
+        for field in ["waiting_reason", "waiting_account", "waiting_until_ms"] {
+            assert_eq!(held[field], wire[field], "{field}");
+        }
+        let read: crate::session::WorkflowNodeRun = serde_json::from_value(held.clone()).unwrap();
+        assert_eq!(serde_json::to_value(read).unwrap(), held);
+    }
     assert_eq!(
         format!(
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "f73cbd000e96f75dae307b456499217b44fee835ba85cc9b94c93eec789bfb4a"
+        "8e943aa52d32abb8c7dafcfd69147aeb8160197c15f709467529ad6073c5b3b9"
     );
     assert!(serde_json::from_value::<LocalDaemonRequest>(serde_json::json!({"WorkflowGate":{"session_id":"room","workflow_ref":"advisory","action":{"kind":"reset_state","reason":"clear","state":{"forged":true}}}})).is_err());
 }

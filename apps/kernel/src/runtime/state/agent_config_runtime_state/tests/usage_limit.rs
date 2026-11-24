@@ -45,6 +45,16 @@ async fn team(config: crate::config::DaemonConfig, count: usize) -> Team {
 
 /// The first lane's turn is a step of a workflow run when `workflow_step`.
 async fn team_of(config: crate::config::DaemonConfig, count: usize, workflow_step: bool) -> Team {
+    team_owned_by(config, &vec![OWNER; count], workflow_step).await
+}
+
+/// One agent per entry, each owned by the person named there.
+async fn team_owned_by(
+    config: crate::config::DaemonConfig,
+    owners: &[&str],
+    workflow_step: bool,
+) -> Team {
+    let count = owners.len();
     let worktree = crate::test_support::test_workspace_root().join(format!(
         "chariox-usage-limit-{:016x}",
         rand::random::<u64>()
@@ -61,10 +71,10 @@ async fn team_of(config: crate::config::DaemonConfig, count: usize, workflow_ste
     let mut agent_ids = vec![first.id().to_string()];
     for _ in 1..count {
         let agent = crate::app::KernelSessionService::new(&mut app)
-            .spawn_agent(crate::agent::CreateAgentRequest::new(
-                &session_id,
-                "dev-stub",
-            ))
+            .spawn_agent(
+                crate::agent::CreateAgentRequest::new(&session_id, "dev-stub")
+                    .with_owner_user_id(owners[agent_ids.len()]),
+            )
             .expect("agent should spawn");
         agent_ids.push(agent.id().to_string());
     }
@@ -218,6 +228,14 @@ impl Team {
             .change_usage_limit_stop(&self.lanes[lane].agent_id, |_| Some(Some(stop)))
             .unwrap()
             .expect("the stop is written");
+    }
+
+    /// The stop as a real Claude run leaves it: the fixture runs under `dev-stub`, which no
+    /// account is named for.
+    fn stopped_as_claude(&self, lane: usize) {
+        let mut stop = self.stop(lane).expect("the limit stops the agent");
+        stop.provider = "claude".to_string();
+        self.put_stop(lane, stop);
     }
 
     /// The person's choice on the stripe, through the entry every client uses.
@@ -526,6 +544,7 @@ async fn tick(runtime: &KernelRuntimeState, now: u64) {
 async fn an_early_reset_resumes_the_armed_stops_on_the_account_and_tells_the_room_once() {
     let team = team(config(UsageLimitResume::Automatic), 1).await;
     team.hit_the_limit(0).await;
+    team.stopped_as_claude(0);
     let stop = team.stop(0).expect("the limit stops the agent");
     let UsageLimitStopState::Armed { at_ms } = stop.state else {
         panic!("the stop is armed: {stop:?}");
@@ -568,6 +587,57 @@ async fn an_early_reset_resumes_the_armed_stops_on_the_account_and_tells_the_roo
         .filter(|notice| notice.contains("reset: 1 item resumes by itself"))
         .count();
     assert_eq!(told, 1, "{notices:?}");
+}
+
+// Each agent's stop is read in its own owner's accounts: when one owner's `default` account
+// is back, another owner's armed stop on their own still-used-up `default` stays put.
+#[tokio::test]
+async fn one_owners_reset_does_not_move_another_owners_armed_stop() {
+    const OTHER: &str = "collaborator";
+    let team = team_owned_by(config(UsageLimitResume::Automatic), &[OWNER, OTHER], false).await;
+    for lane in 0..2 {
+        team.hit_the_limit(lane).await;
+        team.stopped_as_claude(lane);
+    }
+    let UsageLimitStopState::Armed { at_ms } = team.stop(1).unwrap().state else {
+        panic!("the other owner's stop is armed");
+    };
+    let registry = &team.rt().owned.provider_account_profiles;
+    let now = crate::session::unix_epoch_ms();
+    assert!(at_ms > now, "the provider names a reset still ahead");
+    crate::test_support::authenticate_provider_account(registry, OWNER, "claude", "default")
+        .unwrap();
+    let other = registry
+        .create_managed(OTHER, "claude", "Collaborator")
+        .unwrap();
+    registry
+        .set_default(OTHER, "claude", &other.profile_id)
+        .unwrap();
+    crate::test_support::authenticate_provider_account(registry, OTHER, "claude", "default")
+        .unwrap();
+    for owner in [OWNER, OTHER] {
+        registry
+            .mark_usage_refused(owner, "claude", "default", Some(at_ms))
+            .unwrap();
+    }
+    team.rt().tick_provider_usage_resets(now).await;
+
+    // Only the first owner's account is back.
+    crate::test_support::restore_provider_account(registry, OWNER, "claude", "default").unwrap();
+    team.rt().tick_provider_usage_resets(now + 11_000).await;
+
+    assert_eq!(
+        team.stop(1).unwrap().state,
+        UsageLimitStopState::Armed { at_ms },
+        "the other owner's account is still used up"
+    );
+    assert_eq!(
+        team.stop(0).unwrap().state,
+        UsageLimitStopState::Armed {
+            at_ms: now + 11_000
+        },
+        "the owner whose account is back resumes now"
+    );
 }
 
 fn count_resuming(team: &Team) -> usize {

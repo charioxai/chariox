@@ -1707,8 +1707,12 @@ impl ProviderAccountProfileRegistry {
         usage.provider = provider.to_string();
         if usage.availability != ProviderAccountUsageAvailability::Unavailable {
             let mut merged = profile.public.usage.meters.clone();
-            // A reading from the provider supersedes the mark a refusal left.
-            if usage.source != PROVIDER_REFUSAL_SOURCE {
+            if usage.source == PROVIDER_REFUSAL_SOURCE {
+                // The provider refused a turn after those readings: its word is the account's
+                // state, and an older healthy credit or spend meter must not admit it again.
+                merged.clear();
+            } else {
+                // A reading from the provider supersedes the mark a refusal left.
                 merged.retain(|meter| meter.source != PROVIDER_REFUSAL_SOURCE);
             }
             for meter in usage.meters.drain(..) {
