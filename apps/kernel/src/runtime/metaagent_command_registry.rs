@@ -113,74 +113,66 @@ fn meta_commands() -> impl Iterator<Item = &'static MetaCommandDoc> {
     catalog::commands()
 }
 
+const MAX_SEARCH_RESULTS: usize = 5;
+
 pub(crate) fn search_commands(args: MetaCommandSearchArgs) -> Vec<serde_json::Value> {
-    let query_terms = args.query.as_deref().map(search_terms);
-    let tag = args.tag.map(|value| value.to_lowercase());
-    let scope = args.scope.map(|value| value.to_lowercase());
-    let policy = args.policy.map(|value| value.to_lowercase());
-    let limit = args.limit.unwrap_or(50).clamp(1, 100);
-
-    let mut commands: Vec<(&MetaCommandDoc, Option<CommandSearchMatch>)> = meta_commands()
-        .filter(|command| {
-            tag.as_ref().is_none_or(|tag| {
-                command
-                    .tags
-                    .iter()
-                    .any(|candidate| candidate.to_lowercase() == *tag)
-            })
-        })
-        .filter(|command| scope.as_ref().is_none_or(|scope| command.scope == scope))
-        .filter(|command| {
-            args.mutates
-                .is_none_or(|mutates| command.mutates == mutates)
-        })
-        .filter(|command| {
-            policy
-                .as_ref()
-                .is_none_or(|policy| command.policy.as_str() == policy)
-        })
-        .filter_map(|command| match query_terms.as_ref() {
-            Some(terms) => score_command(command, terms).map(|score| (command, Some(score))),
-            None => Some((command, None)),
-        })
-        .collect();
-
-    if query_terms.is_some() {
-        commands.sort_by(|(left, left_match), (right, right_match)| {
-            right_match
-                .as_ref()
-                .map_or(0, |search_match| search_match.score)
-                .cmp(
-                    &left_match
-                        .as_ref()
-                        .map_or(0, |search_match| search_match.score),
-                )
+    let terms = args.query.as_deref().map(search_terms).unwrap_or_default();
+    let mut matches = filtered_commands(args.tag, args.scope, args.mutates, args.policy)
+        .filter_map(|command| score_command(command, &terms).map(|score| (command, score)))
+        .collect::<Vec<_>>();
+    if !terms.is_empty() {
+        matches.sort_by(|(left, left_score), (right, right_score)| {
+            right_score
+                .cmp(left_score)
                 .then_with(|| right.routed.cmp(&left.routed))
                 .then_with(|| left.policy.as_str().cmp(right.policy.as_str()))
                 .then_with(|| left.name.cmp(right.name))
         });
     }
-
-    commands
+    matches
         .into_iter()
-        .take(limit)
-        .map(|(command, search_match)| {
-            search_match.map_or_else(
-                || command_json(command),
-                |search_match| command_search_json(command, search_match),
-            )
+        .take(
+            args.limit
+                .unwrap_or(MAX_SEARCH_RESULTS)
+                .clamp(1, MAX_SEARCH_RESULTS),
+        )
+        .map(|(command, score)| {
+            serde_json::json!({
+                "name": command.name,
+                "routed": command.routed,
+                "metaagent_policy": command.policy.as_str(),
+                "search_score": score,
+            })
         })
         .collect()
 }
 
 pub(crate) fn list_commands(args: MetaCommandListArgs) -> Vec<serde_json::Value> {
-    search_commands(MetaCommandSearchArgs {
-        query: None,
-        tag: args.tag,
-        scope: args.scope,
-        mutates: args.mutates,
-        policy: args.policy,
-        limit: args.limit,
+    filtered_commands(args.tag, args.scope, args.mutates, args.policy)
+        .take(args.limit.unwrap_or(50).clamp(1, 100))
+        .map(command_json)
+        .collect()
+}
+
+fn filtered_commands(
+    tag: Option<String>,
+    scope: Option<String>,
+    mutates: Option<bool>,
+    policy: Option<String>,
+) -> impl Iterator<Item = &'static MetaCommandDoc> {
+    meta_commands().filter(move |command| {
+        tag.as_ref().is_none_or(|tag| {
+            command
+                .tags
+                .iter()
+                .any(|candidate| candidate.eq_ignore_ascii_case(tag))
+        }) && scope
+            .as_ref()
+            .is_none_or(|scope| command.scope.eq_ignore_ascii_case(scope))
+            && mutates.is_none_or(|mutates| command.mutates == mutates)
+            && policy
+                .as_ref()
+                .is_none_or(|policy| command.policy.as_str().eq_ignore_ascii_case(policy))
     })
 }
 
@@ -199,7 +191,7 @@ pub(crate) fn execution_policy(tokens: &[String]) -> MetaCommandExecutionPolicy 
             .get(1)
             .map(|subcommand| format!("session {}", subcommand.to_lowercase()))
             .unwrap_or_else(|| "session".to_string())
-    } else if matches!(first.as_str(), "agent" | "workflow") {
+    } else if matches!(first.as_str(), "agent" | "workflow" | "kernel") {
         tokens
             .get(1)
             .map(|subcommand| format!("{first} {}", subcommand.to_lowercase()))
@@ -448,108 +440,70 @@ fn token_prefix_matches(normalized: &str, candidate: &str) -> bool {
             .is_some_and(|rest| rest.starts_with(char::is_whitespace))
 }
 
-#[derive(Debug, Clone)]
-struct CommandSearchMatch {
-    score: i64,
-    matched_fields: Vec<&'static str>,
-    matched_terms: Vec<String>,
-}
-
-#[derive(Debug, Clone)]
-struct SearchTerm {
-    original: String,
-    expanded: Vec<String>,
-}
-
-fn search_terms(query: &str) -> Vec<SearchTerm> {
+fn search_terms(query: &str) -> Vec<Vec<String>> {
     normalize_tokens(query)
         .into_iter()
         .map(|term| {
-            let mut expanded = vec![term.clone()];
-            for synonym in synonyms_for(&term) {
-                if !expanded.iter().any(|candidate| candidate == synonym) {
-                    expanded.push((*synonym).to_string());
-                }
-            }
-            SearchTerm {
-                original: term,
-                expanded,
-            }
+            let synonyms = synonyms_for(&term);
+            std::iter::once(term)
+                .chain(synonyms.iter().map(|word| (*word).to_owned()))
+                .collect()
         })
         .collect()
 }
 
-fn score_command(command: &MetaCommandDoc, terms: &[SearchTerm]) -> Option<CommandSearchMatch> {
+fn score_command(command: &MetaCommandDoc, terms: &[Vec<String>]) -> Option<i64> {
     if terms.is_empty() {
-        return Some(CommandSearchMatch {
-            score: 1,
-            matched_fields: Vec::new(),
-            matched_terms: Vec::new(),
-        });
+        return Some(0);
     }
 
-    let fields: [(&'static str, i64, String); 8] = [
-        ("name", 90, command.name.to_string()),
-        ("aliases", 75, command.aliases.join(" ")),
-        ("intents", 55, command.intents.join(" ")),
-        ("description", 35, command.description.to_string()),
-        ("usage", 30, command.usage.to_string()),
-        ("examples", 20, command.examples.join(" ")),
-        ("tags", 20, command.tags.join(" ")),
-        ("authority", 10, command.authority.to_string()),
+    let fields = [
+        (90, command.name.to_string()),
+        (75, command.aliases.join(" ")),
+        (55, command.intents.join(" ")),
+        (35, command.description.to_string()),
+        (30, command.usage.to_string()),
+        (20, command.examples.join(" ")),
+        (20, command.tags.join(" ")),
+        (10, command.authority.to_string()),
     ];
-    let field_tokens: Vec<(&'static str, i64, Vec<String>)> = fields
-        .iter()
-        .map(|(name, weight, text)| (*name, *weight, normalize_tokens(text)))
-        .collect();
+    let fields = fields.map(|(weight, text)| (weight, normalize_tokens(&text)));
     let mut score = 0;
-    let mut matched_fields = Vec::new();
-    let mut matched_terms = Vec::new();
-
+    let mut matched_terms = 0;
     for term in terms {
-        let mut term_matched = false;
-        for (field_name, weight, tokens) in &field_tokens {
-            let field_hits = term
-                .expanded
-                .iter()
-                .filter(|expanded| tokens.iter().any(|token| token == *expanded))
-                .count();
-            if field_hits > 0 {
-                score += *weight * i64::try_from(field_hits).unwrap_or(1);
-                term_matched = true;
-                if !matched_fields.contains(field_name) {
-                    matched_fields.push(*field_name);
-                }
-            }
-        }
-        if term_matched
-            && !matched_terms
-                .iter()
-                .any(|matched| matched == &term.original)
-        {
-            matched_terms.push(term.original.clone());
+        let term_score: i64 = fields
+            .iter()
+            .map(|(weight, tokens)| {
+                let hits = term
+                    .iter()
+                    .filter(|expanded| tokens.contains(expanded))
+                    .count() as i64;
+                weight * hits
+            })
+            .sum();
+        if term_score > 0 {
+            matched_terms += 1;
+            score += term_score;
         }
     }
-
-    if matched_terms.len() == terms.len() {
+    // A ranking bonus must never turn an unrelated, routable command into a hit.
+    if matched_terms == 0 {
+        return None;
+    }
+    if matched_terms == terms.len() {
         score += 40;
     }
-    if terms.iter().any(|term| {
-        term.expanded.iter().any(|expanded| {
-            command.name == expanded || command.aliases.contains(&expanded.as_str())
-        })
-    }) {
+    if terms
+        .iter()
+        .flatten()
+        .any(|expanded| command.name == expanded || command.aliases.contains(&expanded.as_str()))
+    {
         score += 50;
     }
     if command.routed {
         score += 5;
     }
-
-    (score > 0).then_some(CommandSearchMatch {
-        score,
-        matched_fields,
-        matched_terms,
-    })
+    Some(score)
 }
 
 fn normalize_tokens(input: &str) -> Vec<String> {
@@ -636,26 +590,4 @@ fn command_json(command: &MetaCommandDoc) -> serde_json::Value {
         "routed": command.routed,
         "description": command.description,
     })
-}
-
-fn command_search_json(
-    command: &MetaCommandDoc,
-    search_match: CommandSearchMatch,
-) -> serde_json::Value {
-    let mut value = command_json(command);
-    if let Some(object) = value.as_object_mut() {
-        object.insert(
-            "search_score".to_string(),
-            serde_json::json!(search_match.score),
-        );
-        object.insert(
-            "matched_fields".to_string(),
-            serde_json::json!(search_match.matched_fields),
-        );
-        object.insert(
-            "matched_terms".to_string(),
-            serde_json::json!(search_match.matched_terms),
-        );
-    }
-    value
 }

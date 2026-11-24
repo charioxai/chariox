@@ -524,7 +524,7 @@ impl KernelRuntimeOwnedState {
         endpoint_ref: &str,
         user_id: &str,
         operation: &'static str,
-    ) -> Result<(), DaemonError> {
+    ) -> Result<crate::session::WorkflowEndpointDefinition, DaemonError> {
         let sessions = self.session_store.read();
         let endpoint =
             sessions.resolve_workflow_endpoint_ref(session_id, workflow_ref, endpoint_ref)?;
@@ -532,7 +532,7 @@ impl KernelRuntimeOwnedState {
             .session_owner_user_id(session_id)
             .unwrap_or_default();
         if self.acts_for_owner_in(&room_owner, user_id, endpoint.owner_user_id()) {
-            Ok(())
+            Ok(endpoint)
         } else {
             Err(Self::deny_owner(
                 user_id,

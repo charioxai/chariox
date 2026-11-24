@@ -24,6 +24,32 @@ pub(super) struct Context {
     #[cfg(test)]
     pub claim_checkpoint: Option<Arc<dyn Fn() + Send + Sync>>,
 }
+impl Context {
+    /// The budget for the kernel-side steps of this start. Tests that cannot
+    /// wait the real limit shorten it through the fixture platform.
+    pub(super) fn budget(&self) -> AppOperationBudget {
+        #[cfg(test)]
+        if let Some(limit) = self.fixture.as_ref().and_then(|fixture| fixture.budget) {
+            let control = self.control.clone();
+            return AppOperationBudget::within(limit, move || control.stopped());
+        }
+        self.control.budget()
+    }
+
+    fn deadline_failure(&self) -> String {
+        let step = self.control.step();
+        crate::logging::warn_with_fields(
+            "app.worker",
+            "App start ran out of its budget",
+            serde_json::json!({
+                "installation_id": self.installation,
+                "step": step.code(),
+                "budget_ms": crate::runtime::app_operation_budget::SUPERVISOR_LIMIT.as_millis(),
+            }),
+        );
+        LifecycleError::Deadline.failure_code(step)
+    }
+}
 enum Admitted {
     Restart(ActiveStartAdmission),
     First {
@@ -68,9 +94,9 @@ pub(super) fn run(context: Context, live: OwnedSemaphorePermit) {
     let _completion = Completion(context.control.clone());
     let _live = live;
     // The claim is a writer operation: it holds a shared App slot through the
-    // claim and, if it fails, through the deferred stop write below.
+    // claim and, if it fails, through the terminal receipt and deferred stop writes.
     let operation = queue(&context.control, &context.admission);
-    let claim_budget = context.control.budget();
+    let claim_budget = context.budget();
     #[cfg(test)]
     let claim_budget = match &context.claim_checkpoint {
         Some(observe) => claim_budget.fixture_observe_checks(observe.clone()),
@@ -112,21 +138,37 @@ pub(super) fn run(context: Context, live: OwnedSemaphorePermit) {
             let _ = context.store.fence_writer();
             return;
         }
-        Err(_) => {
-            if first_authority_withdrawn {
-                if let StartKind::First { request_id, .. } = &context.kind {
-                    // A revoked/re-enrolled signer or changed stage cannot be
-                    // retried into authority. Keep a terminal receipt; a new
-                    // install request needs fresh verification and approval.
-                    let result = context.store.cancel_first_app_install(
+        Err(error) => {
+            if let StartKind::First { request_id, .. } = &context.kind {
+                let receipt = match error {
+                    LifecycleError::Deadline => Some(context.store.fail_app_install(
+                        &context.owner,
+                        request_id,
+                        &context.deadline_failure(),
+                        AppOperationBudget::from_supervisor(|| false),
+                    )),
+                    // A revoked signer or changed stage needs fresh verification and approval.
+                    _ if first_authority_withdrawn => Some(context.store.cancel_first_app_install(
                         &context.owner,
                         request_id,
                         AppOperationBudget::from_supervisor(|| false),
-                    );
-                    if matches!(result, Err(InstallOperationError::CommitUnknown)) {
+                    )),
+                    _ => None,
+                };
+                match receipt {
+                    Some(Err(InstallOperationError::CommitUnknown)) => {
                         let _ = context.store.fence_writer();
                         return;
                     }
+                    Some(Err(error)) => crate::logging::warn_with_fields(
+                        "app.worker",
+                        "Could not record the App install outcome after claim failed",
+                        serde_json::json!({
+                            "installation_id": context.installation,
+                            "error": error.to_string(),
+                        }),
+                    ),
+                    _ => {}
                 }
             }
             // The claim failed or was cancelled; no ActiveStartAdmission or
@@ -183,6 +225,9 @@ pub(super) fn run(context: Context, live: OwnedSemaphorePermit) {
             ),
         ),
         Ok(Err(_)) if context.control.stopped() => (WorkerPhase::Stopped, None),
+        Ok(Err(LifecycleError::Deadline)) => {
+            (WorkerPhase::Failed, Some(context.deadline_failure()))
+        }
         Ok(Err(error)) => (WorkerPhase::Failed, Some(error.to_string())),
         Err(_) => (WorkerPhase::Failed, Some("app_lifecycle_supervisor".into())),
     };

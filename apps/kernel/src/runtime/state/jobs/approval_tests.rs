@@ -87,6 +87,8 @@ async fn offload_job_cancelled_during_owner_approval_never_posts_acquire() {
         machine_credential: None,
         cloud_session_token: None,
         cloud_session_expires_at_ms: None,
+        kernel_unlinked: false,
+        kernel_removal_pending: false,
         token_expires_at_ms: None,
     });
     state.owned.config_projection.update(config);

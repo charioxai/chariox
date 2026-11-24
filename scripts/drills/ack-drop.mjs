@@ -4,7 +4,7 @@
 // reconcile it: the wake reaches the agent once, and the person sees the outcome.
 // usage: node scripts/drills/ack-drop.mjs --kernel-binary <path> --state-root /root/.chariox/dev/<lane>/... \
 //   --evidence-dir <dir> --claude-profile-path <product-linked Claude profile directory> --kinds wake_intent,delivery_receipt
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { existsSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { setTimeout as delay } from "node:timers/promises"
 import { submitPromptRequest } from "../../packages/kernel-client/dist/ipc-requests.js"
@@ -16,9 +16,8 @@ const evidence = need("--evidence-dir")
 const kinds = flags.has("--kinds") ? flags.get("--kinds").split(",") : DEFAULT_KINDS
 const model = flags.get("--model") ?? "claude-haiku-5-5"
 const stateRoot = need("--state-root")
-const faults = join(stateRoot, "faults")
-mkdirSync(faults, { recursive: true, mode: 0o700 })
-const k = await startDrillKernel({ label: "ackdrop", binary: need("--kernel-binary"), stateRoot, evidence, profilePath: need("--claude-profile-path"), extraEnv: { CHARIOX_AGENT_FAULT_DIR: faults } })
+const k = await startDrillKernel({ label: "ackdrop", binary: need("--kernel-binary"), stateRoot, evidence, profilePath: need("--claude-profile-path"), enableFaults: true })
+const faults = k.env.CHARIOX_AGENT_FAULT_DIR
 const lines = file => existsSync(file) ? readFileSync(file, "utf8").split("\n").filter(Boolean).length : 0
 let exitCode = 0
 try {

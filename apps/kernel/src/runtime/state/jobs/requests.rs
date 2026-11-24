@@ -8,10 +8,7 @@ impl KernelRuntimeState {
         args: &serde_json::Value,
         task: &AgentTaskExecution,
     ) -> Result<serde_json::Value, DaemonError> {
-        let driver = self
-            .job_wake_driver
-            .as_ref()
-            .ok_or_else(|| ledger::error("job service unavailable"))?;
+        let driver = self.job_driver()?;
         if name == "chariox.jobs.list" {
             return Ok(self.own_job_list(task));
         }
@@ -21,11 +18,29 @@ impl KernelRuntimeState {
                 .ok_or_else(|| ledger::error("job_id required"))?;
             let mut record = driver.own(id, task)?;
             let mut collection_error = None;
+            let mut release_notice = None;
+            if record.state == "finished" && !record.deleted {
+                match self.held_job_release(&record).await {
+                    Some(release @ super::held::HeldRelease::Deleted) => {
+                        self.mark_held_job_deleted(&mut record);
+                        if let Some(result) = &mut record.result {
+                            result.output_tail.push_str(release.notice());
+                        }
+                        driver.save(&record)?;
+                    }
+                    Some(release @ super::held::HeldRelease::Deleting) => {
+                        release_notice = Some(release.notice().trim_end());
+                    }
+                    None => {}
+                }
+            }
+
             // Whatever placement the job ended with, a saved allocation receipt keeps its
             // cleanup owed until the service confirms the deletion.
             if record.state == "finished"
                 && record.has_remote_trace()
                 && !record.deleted
+                && release_notice.is_none()
                 && (self.remote_jobs_enabled() || record.request.machine.is_some())
             {
                 match record.remote {
@@ -88,84 +103,44 @@ impl KernelRuntimeState {
             if let Some(error) = collection_error {
                 value["return_error"] = error.into();
             }
+            if let Some(notice) = release_notice {
+                value["machine_status"] = notice.into();
+            }
             return Ok(value);
         }
-        let run =
-            run.ok_or_else(|| ledger::error("jobs require the home agent's active build run"))?;
-        let run = self.watched_process_run(run.id())?;
-        let mut arguments = args.clone();
-        let object = arguments
-            .as_object_mut()
-            .ok_or_else(|| ledger::error("job arguments must be an object"))?;
-        object.remove("task_id");
-        object.remove("origin_prompt_id");
-        let request: RunJobRequest = serde_json::from_value(arguments)
-            .map_err(|e| ledger::error(format!("Invalid job request: {e}")))?;
-        let command = validate(&request)?;
-        // The agent already holds the machine, so naming it asks the owner nothing more. It is
-        // checked now so a machine that is gone or unreachable is refused at once, not as a failed job.
-        let held = match &request.machine {
-            Some(allocation_ref) => Some(self.held_machine_for_run(&run, allocation_ref).await?),
+        let mut request = parse_request(args)?;
+        let wake = new_job_wake(task, &request)?;
+        let Some(run) = run else {
+            return self.start_placed_job(task, wake, request).await;
+        };
+        let run = self.job_build_run(run.id())?;
+        let machine = match &mut request.machine {
+            Some(JobMachineTarget::Allocation(allocation)) => {
+                Some(self.held_machine_for_run(&run, allocation).await?)
+            }
+            Some(JobMachineTarget::Enrolled { kernel, .. }) => {
+                self.check_enrolled_job_agent(&task.agent_id, kernel)?;
+                let harness = self
+                    .agent_harness_name(&task.room_id, &task.agent_id)
+                    .unwrap_or_else(|| "Chariox".into());
+                let machine = self.enrolled_job_machine(kernel, &harness).await?;
+                *kernel = machine.kernel_id.clone();
+                Some(machine)
+            }
             None => None,
         };
-        let workspace = run
-            .working_directory()
-            .ok_or_else(|| ledger::error("job workspace missing"))?
-            .canonicalize()
-            .map_err(|e| ledger::error(e.to_string()))?;
-        let cwd = super::agent_process_watch::workspace_cwd(&run, request.cwd.as_deref())?;
-        let mut wake = super::tool_dispatch::agent_wakes::new_wake(
-            task,
-            KIND,
-            super::agent_process_output::sanitize(
-                crate::runtime::process_resources::command_line(&command).as_bytes(),
-            )
-            .chars()
-            .take(200)
-            .collect(),
-            crate::session::unix_epoch_ms(),
-        );
-        wake.state = "starting".into();
-        wake.command = command;
+        let (workspace, cwd) = job_workspace(&run, &request)?;
         self.approve_agent_process(&run, &wake, &cwd, &task.prompt_id)
             .await?;
         self.authorize_current_external_command()?;
-        let id = format!("job-{:032x}", rand::random::<u128>());
-        let mut record = Record {
-            job_id: id.clone(),
-            wake_id: wake.id.clone(),
-            registration_id: wake.registration_id.clone(),
-            room_id: task.room_id.clone(),
-            agent_id: task.agent_id.clone(),
-            request: request.clone(),
-            workspace,
-            cwd,
-            placement: JobPlacement::Local,
-            started_at_ms: crate::session::unix_epoch_ms(),
-            running_at_ms: None,
-            state: "starting".into(),
-            allocation_ref: None,
-            capability_revision: None,
-            machine_label: None,
-            address: None,
-            result: None,
-            exec_id: None,
-            class_id: None,
-            rate_per_minute: None,
-            estimate_micros: None,
-            deleted: false,
-            remote_available: false,
-            remote_refusal: None,
-            estimated_minutes: None,
-            memory_mib: None,
-            remote: RemoteStage::Idle,
-        };
-        if let Some(machine) = &held {
+        let mut record = Record::new(&wake, request.clone(), workspace, cwd);
+        let id = record.job_id.clone();
+        if let Some(machine) = &machine {
             record.placement = JobPlacement::Remote;
             record.machine_label = Some(machine.machine_label.clone());
             record.address = machine.address.clone();
         }
-        if let Some(reach) = (self.remote_jobs_enabled() && held.is_none())
+        if let Some(reach) = (self.remote_jobs_enabled() && machine.is_none())
             .then(|| self.reach_for_id(&format!("{}{}", super::reach::REACH_PREFIX, run.id())))
             .flatten()
         {
@@ -206,7 +181,6 @@ impl KernelRuntimeState {
         if remote {
             record.placement = JobPlacement::Remote;
         }
-        wake.detail = serde_json::json!({"job_id":id});
         driver.save(&record)?;
         driver.pending.lock().expect("job pending").insert(
             wake.id.clone(),
@@ -220,15 +194,83 @@ impl KernelRuntimeState {
             return Err(error);
         }
         self.refresh_wake_projection(&task.room_id);
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(request.wait_s);
+        self.wait_for_job(&id, request.wait_s).await
+    }
+
+    pub(super) fn job_driver(&self) -> Result<&JobDriver, DaemonError> {
+        self.job_wake_driver
+            .as_deref()
+            .ok_or_else(|| ledger::error("job service unavailable"))
+    }
+
+    pub(super) fn job_build_run(
+        &self,
+        id: &str,
+    ) -> Result<crate::provider::RuntimeProviderRun, DaemonError> {
+        self.watched_process_run(id)
+            .map_err(|_| ledger::error(super::refusal::BUILD_TURN_REQUIRED))
+    }
+
+    pub(super) async fn wait_for_job(
+        &self,
+        id: &str,
+        wait_s: u64,
+    ) -> Result<serde_json::Value, DaemonError> {
+        let driver = self.job_driver()?;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(wait_s);
         loop {
-            let record = driver.read(&id)?;
+            let record = driver.read(id)?;
             if record.state == "finished" || tokio::time::Instant::now() >= deadline {
                 return self.job_response(record);
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     }
+}
+
+fn parse_request(args: &serde_json::Value) -> Result<RunJobRequest, DaemonError> {
+    let mut arguments = args.clone();
+    let object = arguments
+        .as_object_mut()
+        .ok_or_else(|| ledger::error("job arguments must be an object"))?;
+    object.remove("task_id");
+    object.remove("origin_prompt_id");
+    serde_json::from_value(arguments)
+        .map_err(|error| ledger::error(format!("Invalid job request: {error}")))
+}
+
+fn new_job_wake(
+    task: &AgentTaskExecution,
+    request: &RunJobRequest,
+) -> Result<AgentWake, DaemonError> {
+    let command = validate(request)?;
+    let mut wake = super::super::tool_dispatch::agent_wakes::new_wake(
+        task,
+        KIND,
+        super::super::agent_process_output::sanitize(
+            crate::runtime::process_resources::command_line(&command).as_bytes(),
+        )
+        .chars()
+        .take(200)
+        .collect(),
+        crate::session::unix_epoch_ms(),
+    );
+    wake.state = "starting".into();
+    wake.command = command;
+    wake.detail = serde_json::json!({"job_id": format!("job-{:032x}", rand::random::<u128>())});
+    Ok(wake)
+}
+
+pub(super) fn job_workspace(
+    run: &crate::provider::RuntimeProviderRun,
+    request: &RunJobRequest,
+) -> Result<(PathBuf, PathBuf), DaemonError> {
+    let workspace = super::super::agent_process_watch::workspace_cwd(run, None)?;
+    let cwd = match request.target_directory() {
+        Some(directory) => Path::new(directory).join(request.cwd.as_deref().unwrap_or("")),
+        None => super::super::agent_process_watch::workspace_cwd(run, request.cwd.as_deref())?,
+    };
+    Ok((workspace, cwd))
 }
 
 pub(super) fn validate(request: &RunJobRequest) -> Result<Vec<String>, DaemonError> {
@@ -238,20 +280,58 @@ pub(super) fn validate(request: &RunJobRequest) -> Result<Vec<String>, DaemonErr
     if request.needs.cpus == Some(0) || request.needs.memory_gib == Some(0) {
         return Err(ledger::error("Job resource needs must be positive"));
     }
+    if request.machine_only {
+        if request.machine.is_none() {
+            return Err(ledger::error("machine_only requires a named machine"));
+        }
+        if !request.outputs.is_empty()
+            || (request.cwd.is_some() && request.target_directory().is_none())
+        {
+            return Err(ledger::error(
+                "machine_only leaves files on the machine. Omit outputs and pass cwd only with a target directory.",
+            ));
+        }
+    }
     if let Some(cwd) = &request.cwd {
         crate::jobs::relative(cwd)?;
     }
     for output in &request.outputs {
         crate::jobs::relative(output)?;
     }
-    if request.machine.as_ref().is_some_and(|machine| {
-        machine.is_empty()
-            || machine.len() > 200
-            || machine.chars().any(|c| c.is_whitespace() || c.is_control())
-    }) {
-        return Err(ledger::error(
-            "machine is the allocation_ref chariox.machines.acquire returned",
-        ));
+    match &request.machine {
+        Some(JobMachineTarget::Allocation(allocation))
+            if allocation.is_empty()
+                || allocation.len() > 200
+                || allocation
+                    .chars()
+                    .any(|c| c.is_whitespace() || c.is_control()) =>
+        {
+            return Err(ledger::error(
+                "Use the allocation_ref chariox.machines.acquire returned.",
+            ));
+        }
+        Some(JobMachineTarget::Enrolled { kernel, .. })
+            if kernel.trim().is_empty()
+                || kernel.len() > 200
+                || kernel.chars().any(char::is_control) =>
+        {
+            return Err(ledger::error(
+                "Name the enrolled machine by kernel ID or name.",
+            ));
+        }
+        _ => {}
+    }
+    if let Some(directory) = request.target_directory() {
+        if !Path::new(directory).is_absolute() || directory.contains('\0') {
+            return Err(ledger::error(
+                "Use an absolute directory on the enrolled machine.",
+            ));
+        }
+        if !request.outputs.is_empty() {
+            return Err(ledger::error(
+                "Jobs in an existing machine directory leave their files there. Use chariox.files.copy to bring them back.",
+            ));
+        }
     }
     if request.env.len() > 128
         || request.env.iter().any(|name| {

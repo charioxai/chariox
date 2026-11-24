@@ -2,6 +2,7 @@ use super::*;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum LocalDaemonRequest {
+    GetAgentReleaseNotes {},
     SubscribeEvents(SubscribeEventsRequest),
     UnsubscribeEvents(UnsubscribeEventsRequest),
     GetEventSubscription(GetEventSubscriptionRequest),
@@ -292,6 +293,7 @@ pub enum LocalDaemonRequest {
     QueryFreshRemoteMachineKernels(ListRemoteMachineKernelsRequest),
     ListRoomListSessions(ListRoomListSessionsRequest),
     GetRoomListSnapshot(GetRoomListSnapshotRequest),
+    OwnerView(OwnerViewRequest),
     GetPersonInbox(GetPersonInboxRequest),
     SetInboxCardState(SetInboxCardStateRequest),
     SetInboxMute(SetInboxMuteRequest),

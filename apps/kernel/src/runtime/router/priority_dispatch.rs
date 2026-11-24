@@ -501,24 +501,29 @@ impl CommandRouter {
                         .read_agent_trigger_http_options(request, &caller)
                 })
             }
+            LocalDaemonRequest::OwnerView(request) => {
+                boxed_handler(
+                    || async move { self.runtime_state.owner_view_request(&command, request) },
+                )
+            }
             LocalDaemonRequest::GetPersonInbox(_) => boxed_handler(|| async move {
                 crate::runtime::person_inbox::execute_person_inbox_request(
                     &self.runtime_state,
-                    &command_caller_user_id(&command),
+                    &command.caller,
                 )
             }),
             LocalDaemonRequest::SetInboxCardState(request) => boxed_handler(|| async move {
                 crate::runtime::person_inbox::execute_set_inbox_card_state(
                     &self.runtime_state,
                     request,
-                    &command_caller_user_id(&command),
+                    &command.caller,
                 )
             }),
             LocalDaemonRequest::SetInboxMute(request) => boxed_handler(|| async move {
                 crate::runtime::person_inbox::execute_set_inbox_mute(
                     &self.runtime_state,
                     request,
-                    &command_caller_user_id(&command),
+                    &command.caller,
                 )
             }),
             LocalDaemonRequest::ListNotificationSubscriptions(_) => boxed_handler(|| async move {
@@ -828,6 +833,7 @@ impl CommandRouter {
                             &request.session_id,
                             &command.caller,
                             &request.process_id,
+                            request.kernel.as_deref(),
                         )
                         .await?;
                     Ok(LocalDaemonResponse::SessionProcessRemoteStarted {

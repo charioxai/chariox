@@ -1,7 +1,7 @@
 import type { SessionProcessState } from "./kernel-events.js"
 import type { TurnOutcome } from "./kernel-types-runtime.js"
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 1013
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 1014
 
 export type * from "./kernel-types-apps.js"
 
@@ -22,7 +22,6 @@ export type * from "./kernel-types-workflow-notifications.js"
 export type * from "./kernel-types-watchers.js"
 export type * from "./kernel-types-kernel-browser.js"
 export type * from "./kernel-types-room-terminal.js"
-export { userDomainWindowBadge } from "./kernel-types-kernel-browser.js"
 
 export * from "./notes.js"
 

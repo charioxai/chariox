@@ -359,6 +359,9 @@ impl KernelRuntimeOwnedState {
                 shared_auth_token.unwrap_or_else(crate::app::generate_runtime_mcp_auth_token),
             ));
         }
+        if request.agent_id.is_some() {
+            request.agent_cli_endpoint = Some(config.agent_cli_endpoint());
+        }
         if request.provider_env_remove.is_empty() {
             request =
                 request.with_provider_env_remove(crate::app::default_provider_env_remove(&config));
@@ -1619,7 +1622,7 @@ mod tests {
         std::env::set_var("CHARIOX_HOME", &root);
         std::env::set_var("HOME", root.join("unrelated-home"));
 
-        let config = crate::config::DaemonConfig::load_from_env();
+        let config = crate::config::DaemonConfig::load_from_env().unwrap();
         let workflow_root = config
             .workflow_runtime_artifact_root()
             .join("instances")

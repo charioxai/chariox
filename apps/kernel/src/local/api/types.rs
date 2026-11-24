@@ -43,6 +43,7 @@ mod notes;
 mod notification_subscription;
 mod outside_events;
 mod own_machine_enrollment;
+mod owner_view;
 mod person_inbox;
 mod project_environment;
 mod prompt_control;
@@ -63,7 +64,6 @@ mod slice;
 mod terminal_command_catalog;
 mod terminal_interaction;
 mod usage_snapshot;
-mod user_domain_access;
 mod vault_secret;
 mod watcher;
 mod workflow;
@@ -103,6 +103,7 @@ pub use notes::*;
 pub use notification_subscription::*;
 pub use outside_events::*;
 pub use own_machine_enrollment::*;
+pub use owner_view::*;
 pub use person_inbox::*;
 pub use project_environment::*;
 pub use prompt_control::*;
@@ -123,7 +124,6 @@ pub use slice::*;
 pub use terminal_command_catalog::*;
 pub use terminal_interaction::*;
 pub use usage_snapshot::*;
-pub use user_domain_access::*;
 pub use vault_secret::*;
 pub use watcher::*;
 pub use workflow::*;
@@ -627,4 +627,20 @@ pub use workspace::*;
 /// 1013 links a folded notification outcome to its answering turn.
 /// Local 1013 (relay peer 450): the mirror v2 header carries `focus_visible`, whether the page's focused element
 /// matches `:focus-visible`, so a viewer draws the focus ring only where the page's browser does; absent means no ring.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1013;
+/// Local 1014 (relay peer 451), the Landing 13 union: a workflow run waiting on a workspace claim names the holding run;
+/// machine status carries kernel diagnostics and the machine-only job scope; the local direct grant answers
+/// `LocalBrowserConnectIssued`/`LocalTerminalConnectIssued` and `LocalBrowserLeaseRenewed`/`LocalTerminalLeaseRenewed` carry
+/// `expires_in_ms`, how long the grant lasts from the kernel's answer, so a client whose clock is off still renews a grant
+/// its identity shortened; mirror hover moves and right clicks reach the kernel page (KernelBrowser input), and the mirror
+/// v2 header carries `page_wheel`, whether the page's own script takes the wheel (a non-passive wheel listener on window,
+/// document, html or body), so the viewer sends it every wheel step.
+/// Machine status includes a readable relay failure reason (#1632).
+/// Local 1014 (relay peer 451): opening a terminal with a `command` takes `stdin`, inline up to
+/// 64 KiB or a file on the kernel, which the program reads as its standard input (docs/PROTOCOL.md, "Kernel terminals").
+/// Local 1014 (relay peer 451): the owner's agents need no grant for the kernel browser, Computer or
+/// App views. `UserDomainGrant`, `UserDomainNotice`, `UserDomainResource` and `UserDomainWindowAccess` are gone; the
+/// `user_domain_grants_changed` snapshot carries only `cursor` and `room_computer`; browser and App view results no
+/// longer carry `kernel_id`, `kernel_name`, `focused_agent_kernel_id` or `reachable_by_focused_agent`; the loader tools
+/// take no arguments and `chariox.kernel_browser_share` is removed.
+/// 1014 adds revision-based latest Room history outline reads.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1014;

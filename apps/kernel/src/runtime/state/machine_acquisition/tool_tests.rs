@@ -1,7 +1,7 @@
 //! The agent's `chariox.machines.acquire` tool against a stand-in connected service.
 use super::*;
 use crate::durable_state::acquire_choices::AcquireChoiceState;
-use crate::local::{MachineAllocationCapability, MachineOption};
+use crate::local::{ControlPlaneMachineTarget, MachineAllocationCapability, MachineOption};
 use crate::provider::*;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -31,6 +31,7 @@ struct Service {
     /// Answers for the next acquires, before the service's own judgement.
     answers: Arc<std::sync::Mutex<std::collections::VecDeque<Answer>>>,
     capability_failures: Arc<std::sync::Mutex<CapabilityFailures>>,
+    ready_target: Arc<std::sync::Mutex<Option<ControlPlaneMachineTarget>>>,
 }
 
 /// How the stand-in service answers the next capability calls, in order; it answers at once when
@@ -61,8 +62,11 @@ async fn service(offers: Vec<MachineOption>, sold_out: &'static [&'static str]) 
     let next_answer = answers.clone();
     let capability_failures = Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new()));
     let next_capability_failure = capability_failures.clone();
+    let ready_target = Arc::new(std::sync::Mutex::new(None::<ControlPlaneMachineTarget>));
+    let target = ready_target.clone();
     let mut accepted = BTreeMap::<String, (serde_json::Value, serde_json::Value, String)>::new();
     let mut closed = std::collections::BTreeSet::<String>::new();
+    let mut released = std::collections::BTreeSet::<String>::new();
     tokio::spawn(async move {
         loop {
             let (mut socket, _) = listener.accept().await.unwrap();
@@ -203,6 +207,30 @@ async fn service(offers: Vec<MachineOption>, sold_out: &'static [&'static str]) 
                         }
                     }
                 }
+                "get" | "release" => {
+                    let allocation_ref = request["allocation_ref"].as_str().unwrap();
+                    assert!(accepted.values().any(|(_, _, id)| id == allocation_ref));
+                    if request["action"] == "release" {
+                        assert_eq!(request["expected_revision"], 1);
+                        released.insert(allocation_ref.to_owned());
+                    }
+                    let (state, revision, actions, target) = if released.contains(allocation_ref) {
+                        ("deleted", 2, vec![], None)
+                    } else {
+                        (
+                            "ready",
+                            1,
+                            vec!["stop", "release"],
+                            target.lock().unwrap().clone(),
+                        )
+                    };
+                    (
+                        "200 OK",
+                        serde_json::json!({"kind":"machine","revision":revision,"available_actions":actions,
+                            "allocation_ref":allocation_ref,"state":state,"kernel_target":target,
+                            "access_state":"pending","access_reason":null}),
+                    )
+                }
                 other => panic!("unexpected control-plane action {other}"),
             };
             respond(socket, status, response).await;
@@ -214,6 +242,7 @@ async fn service(offers: Vec<MachineOption>, sold_out: &'static [&'static str]) 
         offers,
         answers,
         capability_failures,
+        ready_target,
     }
 }
 
@@ -298,6 +327,8 @@ async fn agent_kernel(
         machine_credential: None,
         cloud_session_token: None,
         cloud_session_expires_at_ms: None,
+        kernel_unlinked: false,
+        kernel_removal_pending: false,
         token_expires_at_ms: None,
     });
     state.owned.config_projection.update(config);
@@ -306,6 +337,79 @@ async fn agent_kernel(
 
 fn option(class_id: &str, region: &str, available: bool) -> MachineOption {
     super::tests::option(class_id, region, available)
+}
+
+#[tokio::test]
+async fn an_unverified_ready_machine_reports_reconnecting_and_can_be_released() {
+    let service = service(vec![option("small", "north", true)], &[]).await;
+    let (state, token, _workspace) = agent_kernel(service.api_url.clone()).await;
+    let acquired = state
+        .machine_tool(
+            &token,
+            "chariox.machines.acquire",
+            serde_json::json!({"request_id":"rental"}),
+        )
+        .await
+        .unwrap();
+    let args =
+        serde_json::json!({"allocation_ref":acquired.payload["allocation"]["allocation_ref"]});
+    let status = state
+        .machine_tool(&token, "chariox.machines.status", args.clone())
+        .await
+        .unwrap();
+    assert_eq!(status.payload["state"], "reconnecting");
+    assert_eq!(status.payload["access_state"], "pending");
+    assert_eq!(status.payload["access_reason"], "kernel_target_unverified");
+    assert_eq!(
+        status.payload["available_actions"],
+        serde_json::json!(["stop", "release"])
+    );
+
+    let presence = chariox_relay::protocol::RelayKernelPresence {
+        kernel_id: "rental-kernel".into(),
+        machine_id: "rental-machine".into(),
+        public_key: "rental-key".into(),
+        machine_alias: None,
+        relay_alias: None,
+        kernel_alias: None,
+        capabilities: vec![],
+        available_providers: vec![],
+        provider_accounts: vec![],
+        accepting_remote_leases: false,
+        leased_agent_count: 0,
+        local_session_count: 0,
+        local_protocol: Some(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION),
+    };
+    *service.ready_target.lock().unwrap() = Some(ControlPlaneMachineTarget {
+        kernel_id: presence.kernel_id.clone(),
+        machine_id: presence.machine_id.clone(),
+        relay_realm_id: "realm".into(),
+        key_thumbprint: "a".repeat(64),
+        presence: None,
+    });
+    let inventory = &state.owned.notification_inventory_projection;
+    inventory.update(Default::default(), vec![presence]);
+    let gateway = state.job_router.as_ref().unwrap().kernel_gateway();
+    assert_eq!(gateway.kernels().await.unwrap().len(), 1);
+    inventory.update(Default::default(), vec![]);
+    let status = state
+        .machine_tool(&token, "chariox.machines.status", args.clone())
+        .await
+        .unwrap();
+    assert_eq!(status.payload["state"], "reconnecting");
+    assert_eq!(status.payload["access_state"], "pending");
+    assert_eq!(status.payload["access_reason"], "kernel_offline");
+
+    let release = state
+        .machine_tool(&token, "chariox.machines.release", args.clone())
+        .await
+        .unwrap();
+    assert_eq!(release.payload["state"], "deleted");
+    let status = state
+        .machine_tool(&token, "chariox.machines.status", args)
+        .await
+        .unwrap();
+    assert_eq!(status.payload["state"], "deleted");
 }
 
 #[tokio::test]

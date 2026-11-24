@@ -4,6 +4,9 @@ use std::path::{Path, PathBuf};
 use crate::agent::GitWorktreePlacement;
 use crate::error::DaemonError;
 
+const WORKFLOW_SCRATCH_INSTANCE_PREFIX: &str = "workflow-scratch-instance-";
+const WORKFLOW_GIT_INSTANCE_PREFIX: &str = "workflow-instance-";
+
 const CHARIOX_STATE_DIRECTORY_NAMES: &[&str] = &[
     ".chariox",
     "kernels",
@@ -380,22 +383,22 @@ fn kernel_owned_workflow_runtime_instance_root(
     canonical_path: &Path,
     operation: &'static str,
 ) -> Result<Option<PathBuf>, DaemonError> {
-    let instances_roots = if let Some(raw_home) = std::env::var_os("CHARIOX_HOME") {
-        vec![PathBuf::from(raw_home)
-            .join("state")
-            .join("workflow-runtime")
-            .join("instances")]
-    } else if let Some(raw_home) = std::env::var_os("HOME") {
-        vec![PathBuf::from(raw_home)
-            .join(".chariox")
-            .join("state")
-            .join("workflow-runtime")
-            .join("instances")]
-    } else {
-        Vec::new()
+    let home = std::env::var_os("CHARIOX_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".chariox")));
+    let Some(home) = home else {
+        return Ok(None);
     };
+    let mut roots = vec![(home.join("state"), false)];
+    let kernels = canonical_or_lexical_path(&home.join("kernels"), operation)?;
+    if let Ok(relative) = canonical_path.strip_prefix(&kernels) {
+        if let Some(std::path::Component::Normal(kernel_id)) = relative.components().next() {
+            roots.push((kernels.join(kernel_id), true));
+        }
+    }
 
-    for instances_root in instances_roots {
+    for (root, named_instance_only) in roots {
+        let instances_root = root.join("workflow-runtime").join("instances");
         let instances_root = canonical_or_lexical_path(&instances_root, operation)?;
         let Ok(relative) = canonical_path.strip_prefix(&instances_root) else {
             continue;
@@ -407,6 +410,14 @@ fn kernel_owned_workflow_runtime_instance_root(
         let Some(std::path::Component::Normal(instance_id)) = components.next() else {
             continue;
         };
+        if named_instance_only {
+            let name = instance_id.to_string_lossy();
+            if !name.starts_with(WORKFLOW_SCRATCH_INSTANCE_PREFIX)
+                && !name.starts_with(WORKFLOW_GIT_INSTANCE_PREFIX)
+            {
+                continue;
+            }
+        }
         let instance_root = instances_root.join(session_id).join(instance_id);
         if canonical_path_is_within(canonical_path, &instance_root) {
             return Ok(Some(instance_root));
@@ -446,38 +457,92 @@ pub(crate) fn is_git_worktree(base_directory: impl AsRef<Path>) -> bool {
         })
 }
 
-pub(crate) fn prepare_workflow_runtime_worktree_or_reuse_directory(
-    placement: &GitWorktreePlacement,
-    base_directory: impl AsRef<Path>,
-    target_hint: Option<&str>,
+pub(crate) fn prepare_workflow_runtime_workspace(
+    base_directory: &Path,
+    instances_root: &Path,
     operation: &'static str,
-) -> Result<String, DaemonError> {
-    let base_directory = base_directory.as_ref();
-    preflight_working_directory(base_directory, operation, false, &[])?;
-    if is_git_worktree(base_directory) {
-        return prepare_git_worktree(placement, base_directory, target_hint, operation);
+) -> Result<(String, String), DaemonError> {
+    let source = preflight_working_directory(base_directory, operation, false, &[])?;
+    let has_git_worktree = is_git_worktree(&source.canonical_path);
+    let prefix = if has_git_worktree {
+        WORKFLOW_GIT_INSTANCE_PREFIX
+    } else {
+        WORKFLOW_SCRATCH_INSTANCE_PREFIX
+    };
+    let instance_id = format!("{prefix}{:032x}", rand::random::<u128>());
+    let target = instances_root.join(&instance_id);
+    let target_directory = target.display().to_string();
+    preflight_working_directory(&target, operation, true, &[])?;
+    std::fs::create_dir_all(instances_root).map_err(|error| {
+        working_directory_error(
+            operation,
+            format!(
+                "failed to create workflow instance root `{}`: {error}",
+                instances_root.display()
+            ),
+        )
+    })?;
+    if has_git_worktree {
+        let placement = GitWorktreePlacement {
+            target_directory: Some(target_directory),
+            branch: None,
+            from_ref: Some("HEAD".to_string()),
+        };
+        let worktree = prepare_git_worktree(&placement, &source.canonical_path, None, operation)?;
+        return Ok((instance_id, worktree));
     }
-    resolve_existing_worktree(
-        &base_directory.display().to_string(),
-        Path::new("."),
-        operation,
-    )
+    std::fs::create_dir(&target).map_err(|error| {
+        working_directory_error(
+            operation,
+            format!("failed to create workflow instance workspace `{target_directory}`: {error}"),
+        )
+    })?;
+    Ok((instance_id, target_directory))
 }
 
 pub(crate) fn remove_workflow_runtime_worktree(
     base_directory: impl AsRef<Path>,
     worktree_directory: impl AsRef<Path>,
+    instances_root: &Path,
     operation: &'static str,
 ) -> Result<(), DaemonError> {
     let base_directory = base_directory.as_ref();
     let worktree_directory = worktree_directory.as_ref();
-    preflight_working_directory(worktree_directory, operation, true, &[])?;
+    let directory = preflight_working_directory(worktree_directory, operation, true, &[])?;
     if base_directory == worktree_directory
         || std::fs::canonicalize(base_directory)
             .ok()
             .zip(std::fs::canonicalize(worktree_directory).ok())
             .is_some_and(|(base, worktree)| base == worktree)
     {
+        return Ok(());
+    }
+    if worktree_directory
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with(WORKFLOW_SCRATCH_INSTANCE_PREFIX))
+    {
+        let instances_root = canonical_or_lexical_path(instances_root, operation)?;
+        if directory.canonical_path.parent() != Some(instances_root.as_path()) {
+            return Err(working_directory_error(
+                operation,
+                format!(
+                    "invalid workflow scratch directory `{}`",
+                    worktree_directory.display()
+                ),
+            ));
+        }
+        if directory.exists {
+            std::fs::remove_dir_all(worktree_directory).map_err(|error| {
+                working_directory_error(
+                    operation,
+                    format!(
+                        "failed to remove workflow scratch directory `{}`: {error}",
+                        worktree_directory.display()
+                    ),
+                )
+            })?;
+        }
         return Ok(());
     }
     remove_git_worktree(base_directory, worktree_directory, operation)
@@ -805,8 +870,8 @@ fn default_worktree_directory_base(repo_name: &str, branch_or_ref: &str) -> Stri
 mod tests {
     use super::{
         default_worktree_directory_base, is_git_worktree, preflight_managed_repository_root,
-        preflight_working_directory, prepare_workflow_runtime_worktree_or_reuse_directory,
-        remove_workflow_runtime_worktree,
+        preflight_working_directory, prepare_git_worktree, prepare_workflow_runtime_workspace,
+        remove_workflow_runtime_worktree, WORKFLOW_SCRATCH_INSTANCE_PREFIX,
     };
     use crate::agent::GitWorktreePlacement;
     use std::path::{Path, PathBuf};
@@ -851,31 +916,31 @@ mod tests {
     }
 
     #[test]
-    fn runtime_instance_reuses_and_never_removes_a_plain_shared_directory() {
-        let directory = plain_temp_directory("shared");
-        let unused_target = directory.join("unused-instance");
-        let placement = GitWorktreePlacement {
-            target_directory: Some(unused_target.display().to_string()),
-            branch: None,
-            from_ref: Some("HEAD".to_string()),
-        };
-        let selected = prepare_workflow_runtime_worktree_or_reuse_directory(
-            &placement,
-            &directory,
-            None,
-            "prepare test runtime instance",
+    fn workflow_runtime_instance_uses_its_own_plain_directory() {
+        let base = plain_temp_directory("workflow-runtime-source");
+        let artifacts = plain_temp_directory("workflow-runtime-artifacts");
+        std::fs::write(base.join("input.txt"), "source file").unwrap();
+        let (id, workspace) =
+            prepare_workflow_runtime_workspace(&base, &artifacts, "provision test workflow copy")
+                .unwrap();
+        assert_eq!(PathBuf::from(&workspace), artifacts.join(id));
+        assert!(Path::new(&workspace).is_dir());
+        assert!(!Path::new(&workspace).join("input.txt").exists());
+        std::fs::write(Path::new(&workspace).join("output.txt"), "copy work").unwrap();
+        assert!(!base.join("output.txt").exists());
+        remove_workflow_runtime_worktree(
+            &base,
+            &workspace,
+            &artifacts,
+            "retire test workflow copy",
         )
-        .expect("plain workspace should be reusable");
-
-        assert_eq!(selected, directory.display().to_string());
-        assert!(!unused_target.exists());
-        remove_workflow_runtime_worktree(&directory, &selected, "cleanup test runtime instance")
-            .expect("shared workspace cleanup should be a no-op");
-        assert!(directory.exists());
-        std::fs::remove_dir(directory).expect("temporary directory should be removable");
+        .unwrap();
+        assert!(!Path::new(&workspace).exists());
+        assert!(base.join("input.txt").is_file());
+        std::fs::remove_dir_all(base).unwrap();
+        std::fs::remove_dir_all(artifacts).unwrap();
     }
 
-    #[cfg(unix)]
     #[test]
     fn worktree_checkout_with_a_slow_hook_outlives_the_query_cap() {
         use std::os::unix::fs::PermissionsExt as _;
@@ -901,14 +966,7 @@ mod tests {
         };
         let selected = crate::runtime::bounded_process::with_test_command_limit(
             std::time::Duration::from_secs(1),
-            || {
-                prepare_workflow_runtime_worktree_or_reuse_directory(
-                    &placement,
-                    &repository,
-                    None,
-                    "prepare slow checkout",
-                )
-            },
+            || prepare_git_worktree(&placement, &repository, None, "prepare slow checkout"),
         )
         .expect("a checkout hook slower than the query cap must complete");
         assert!(Path::new(&selected).join("README.md").exists());
@@ -1045,8 +1103,13 @@ mod tests {
         std::os::unix::fs::symlink(&directory, &alias)
             .expect("temporary directory alias should be created");
 
-        remove_workflow_runtime_worktree(&directory, &alias, "cleanup aliased runtime instance")
-            .expect("shared workspace cleanup should be a no-op through an alias");
+        remove_workflow_runtime_worktree(
+            &directory,
+            &alias,
+            &directory,
+            "cleanup aliased runtime instance",
+        )
+        .expect("shared workspace cleanup should be a no-op through an alias");
 
         assert!(directory.exists());
         assert!(alias.exists());
@@ -1256,6 +1319,26 @@ mod tests {
         preflight_working_directory(&unrelated, "workflow.unrelated.cwd", false, &[])
             .expect_err("unrelated Chariox state must remain protected");
 
+        let local_instances = root.join("kernels/kernel-1/workflow-runtime/instances/session-1");
+        let scratch = local_instances.join(format!("{WORKFLOW_SCRATCH_INSTANCE_PREFIX}1"));
+        let unrelated_kernel_state = local_instances.join("ordinary-directory");
+        std::fs::create_dir_all(&scratch).unwrap();
+        std::fs::create_dir_all(&unrelated_kernel_state).unwrap();
+        std::fs::write(scratch.join("output.txt"), "temporary output").unwrap();
+        preflight_working_directory(&scratch, "workflow.scratch.cwd", false, &[])
+            .expect("ordinary kernels can launch workflow providers in their scratch instances");
+        preflight_working_directory(&unrelated_kernel_state, "workflow.other.cwd", false, &[])
+            .expect_err("ordinary kernel state must remain protected");
+        remove_workflow_runtime_worktree(
+            &root,
+            &scratch,
+            &local_instances,
+            "workflow.scratch.remove",
+        )
+        .expect("the owned scratch directory and its outputs can be removed");
+        assert!(!scratch.exists());
+        assert!(unrelated_kernel_state.is_dir());
+
         restore_env("CHARIOX_HOME", previous_home);
         std::fs::remove_dir_all(root).expect("workflow auth fixture should be removable");
     }
@@ -1291,7 +1374,7 @@ mod tests {
             branch: None,
             from_ref: Some("HEAD".to_string()),
         };
-        let selected = prepare_workflow_runtime_worktree_or_reuse_directory(
+        let selected = prepare_git_worktree(
             &placement,
             &source,
             None,
@@ -1304,6 +1387,7 @@ mod tests {
         remove_workflow_runtime_worktree(
             &source,
             &selected,
+            target.parent().unwrap(),
             "cleanup workflow runtime test instance",
         )
         .expect("workflow runtime worktree should clean up");

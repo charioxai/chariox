@@ -778,6 +778,7 @@ fn open_leased_room_terminal(
 ) {
     app.room_terminals()
         .open(crate::room_terminal::OpenRoomTerminal {
+            stdin: None,
             project_environment: Default::default(),
             scope: crate::room_terminal::TerminalScope::room(backing_session_id),
             working_directory: worktree.to_path_buf(),

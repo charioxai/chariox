@@ -1,6 +1,8 @@
 use super::*;
 
 #[cfg(unix)]
+mod agent_cli;
+#[cfg(unix)]
 mod kernel_browser_terminals;
 mod session_feed_events;
 mod task_subscriptions;
@@ -318,6 +320,7 @@ async fn connection_closing_for_backpressure_admits_no_more_requests() {
             close_requested: &Arc::new(AtomicBool::new(true)),
             connection_class: KernelConnectionClass::Unauthenticated,
             peer: None,
+            agent_run_id: None,
             bound_grant: &Arc::default(),
         },
         &payload,
@@ -2285,6 +2288,7 @@ async fn dispatch_transport_test_request_on_connection(
             close_requested: &Arc::new(AtomicBool::new(false)),
             connection_class,
             peer: None,
+            agent_run_id: None,
             bound_grant: &Arc::default(),
         },
         &payload,

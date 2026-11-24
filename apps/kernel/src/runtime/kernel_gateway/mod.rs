@@ -199,6 +199,16 @@ impl KernelGateway {
         origin: &Origin,
         command_id: &str,
     ) -> Result<(), GatewayError> {
+        #[cfg(test)]
+        if let Some(kernel) = crate::runtime::state::stand_in_kernel(&target.kernel_id) {
+            return kernel
+                .send(
+                    command_id.to_owned(),
+                    &LocalDaemonRequest::GetDaemonHealth(crate::local::GetDaemonHealthRequest),
+                )
+                .await
+                .map(|_| ());
+        }
         self.send(
             &target.kernel_id,
             origin,

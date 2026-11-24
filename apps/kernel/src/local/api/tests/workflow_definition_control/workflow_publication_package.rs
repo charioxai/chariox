@@ -390,6 +390,7 @@ fn publication_package_omits_runtime_agent_state_and_remains_stable() {
 
 #[test]
 fn publication_export_captures_exact_grants_and_rejects_missing_definitions() {
+    crate::test_support::isolated_env_test!();
     let harness = LocalRouterTestHarness::new();
     let workspace = std::env::temp_dir().join(format!(
         "chariox-publication-extensions-{}-{}",

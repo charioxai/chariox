@@ -84,15 +84,8 @@ async fn host_offer_concurrency() {
     let epoch = state
         .owned
         .kernel_browser_host
-        .retain_resource_grant(
-            "alice",
-            agent.id(),
-            UserDomainResource::AppView {
-                view_id: view.clone(),
-            },
-        )
-        .unwrap();
-    tracked.retain_browser_grant(epoch.clone());
+        .run_fence("alice", agent.id());
+    tracked.retain_run_fence(epoch.clone());
     let authority = AppViewAuthority::new(
         state.owned.agent_store.clone(),
         Some(&agent),
@@ -161,10 +154,7 @@ async fn host_offer_concurrency() {
             .accept_app_tool_reply(reply)
             .unwrap();
         assert_eq!(host.await.unwrap().unwrap()["state"], "pending");
-        state
-            .owned
-            .kernel_browser_host
-            .revoke_grants("alice", Some(agent.id()));
+        state.owned.kernel_browser_host.revoke_agent(agent.id());
         assert!(tracked.operation_budget().check().is_err());
 
         // A second offer waits on a real external SQLite writer. Revoking and
@@ -174,15 +164,8 @@ async fn host_offer_concurrency() {
         let epoch = state
             .owned
             .kernel_browser_host
-            .retain_resource_grant(
-                "alice",
-                agent.id(),
-                UserDomainResource::AppView {
-                    view_id: view.clone(),
-                },
-            )
-            .unwrap();
-        queued.retain_browser_grant(epoch.clone());
+            .run_fence("alice", agent.id());
+        queued.retain_run_fence(epoch.clone());
         let authority = AppViewAuthority::new(
             state.owned.agent_store.clone(),
             Some(&agent),
@@ -219,10 +202,7 @@ async fn host_offer_concurrency() {
                 .await
         });
         waiting.recv_timeout(Duration::from_secs(3)).unwrap();
-        state
-            .owned
-            .kernel_browser_host
-            .revoke_grants("alice", Some(agent.id()));
+        state.owned.kernel_browser_host.revoke_agent(agent.id());
         grant(&state, &agent, &view);
         connection.execute_batch("ROLLBACK").unwrap();
         assert_eq!(

@@ -84,7 +84,7 @@ fn room_admission_saved_artifact_run_preserves_peer_metadata() {
                         let before = registry.get(name).unwrap().unwrap();
                         let mut held = app.lock().await;
                         let result = crate::runtime::state::workflow_code_request_support::workflow_code_artifact_apply_result(
-                            &mut held, name, WorkflowCodeArtifactHistoryAction::Run,
+                            &mut held, name, Some(WorkflowCodeArtifactHistoryAction::Run),
                             crate::runtime::state::workflow_code_request_support::WorkflowApplyContext {
                                 session_id: room.id(), provider_rebindings: &[], agent_rebindings: &[],
                                 caller_user_id: actor.owner_user_id().to_owned(),

@@ -831,6 +831,7 @@ impl ProviderProcessServiceStore {
         mode: PromptAssemblyMode,
         private_assessment_evidence: Option<crate::prompt_assembly::AssessmentEvidence>,
         steering: bool,
+        render_handoff: Option<&crate::provider::switch_turn::RenderHandoff<'_>>,
     ) -> Result<
         tokio::sync::oneshot::Receiver<crate::provider::ProviderPromptSubmitReceipt>,
         DaemonError,
@@ -845,14 +846,32 @@ impl ProviderProcessServiceStore {
             steering,
             origin_prompt_id,
         )?;
-        let envelope = self.prepare_skill_prompt(
-            &session_id,
-            &agent_id,
-            &prompt_id,
-            origin_prompt_id,
-            run,
-            envelope,
-        )?;
+        let envelope = if let Some(render_handoff) = render_handoff {
+            let (mut envelope, handoff) = self.prepare_switch_skill_prompt(
+                run,
+                &prompt_id,
+                origin_prompt_id,
+                envelope,
+                false,
+                render_handoff,
+            )?;
+            if let Some(handoff) = handoff {
+                envelope.visible_user_prompt = crate::provider::encode_account_handoff(
+                    &handoff.text,
+                    &envelope.visible_user_prompt,
+                );
+            }
+            envelope
+        } else {
+            self.prepare_skill_prompt(
+                &session_id,
+                &agent_id,
+                &prompt_id,
+                origin_prompt_id,
+                run,
+                envelope,
+            )?
+        };
         let move_session = session_id.clone();
         let move_agent = agent_id.clone();
         self.with_agent_move_admission(&move_session, Some(&move_agent), None, || {

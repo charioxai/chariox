@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { drillDockerLabels } from "../../../scripts/lib/drill-docker-owner.mjs"
 import { spawnOwned, signalOwnedProcessGroup } from "../../kernel/slice-linux-docker/owned-process-signals.mjs"
 // MP-08/MP-10: timing-exact Drill E. The selected test artifact must be built
 // from this checkout; this runner records identity, it does not attest provenance.
@@ -75,7 +76,7 @@ try {
   assertConcurrencyArtifact({ sha256: receipt.testBinarySha256, expectedSha256: options["test-binary-sha256"], listing });
   receipt.testSymbol = concurrencyTestSymbol;
   receipt.testBinaryDigestPinned = options["test-binary-sha256"] !== undefined;
-  await docker(["run", "-d", "--name", container, "--label", "io.chariox.drill=controller-concurrency",
+  await docker(["run", "-d", ...drillDockerLabels(import.meta.url), "--name", container, "--label", "io.chariox.drill=controller-concurrency",
     "--label", "io.chariox.lane=ctlconc", "--cpus=1", "--memory=2g", "--memory-swap=2g", "--pids-limit=512",
     "-e", "CHARIOX_SLICE_PRIVATE_ROOT=/tmp/chariox-ctlconc", "-e", "PYTHONDONTWRITEBYTECODE=1",
     "--security-opt", `seccomp=${path.join(root, "apps/kernel/slice-linux-docker/chromium-seccomp.json")}`,

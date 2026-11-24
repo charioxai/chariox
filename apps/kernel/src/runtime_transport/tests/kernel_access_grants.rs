@@ -8,6 +8,7 @@ use tokio_tungstenite::{client_async, MaybeTlsStream, WebSocketStream};
 const PASSKEY: &str = "Access TEST Passkey";
 const AUTH: &str = "test-terminal";
 const SESSION: &str = "access-session";
+const PROJECT_TEST_MODEL: &str = "claude-sonnet-5-5";
 
 fn kernel_access_socket(root: &Path) -> PathBuf {
     // Isolated tests nest TMPDIR, so it cannot also be the sockaddr_un prefix.
@@ -60,6 +61,7 @@ fn kernel_access_child_server() {
                 crate::config::CredentialVaultUnlockPolicy::KernelInit;
             crate::secret::create_chariox_encrypted_vault_for_test(&vault, PASSKEY).unwrap();
             let app = crate::test_support::bootstrap_authenticated_app(config).unwrap();
+            crate::test_support::seed_default_account_models(&app, "claude", &[PROJECT_TEST_MODEL]);
             let credential_session =
                 std::env::var("CHARIOX_ACCESS_TEST_CREDENTIAL_SESSION").as_deref() == Ok("1");
             for id in [SESSION, "other-session"]
@@ -1990,7 +1992,7 @@ async fn a_refused_request_tells_the_grant_holder_why() {
         "workspace_id": "/tmp",
         "worktree_id": "/tmp",
         "metaagent": true,
-        "agent_defaults": {"provider": "claude", "model": "claude-sonnet-5-5", "effort": "low"}
+        "agent_defaults": {"provider": "claude", "model": PROJECT_TEST_MODEL, "effort": "low"}
     }}));
     let error = &refused["error"];
     let message = error["message"].as_str().unwrap_or_default();
@@ -2011,10 +2013,9 @@ async fn an_archived_default_project_is_explained_to_the_grant_holder() {
     grant(&mut kernel, &mut holder).await;
     let workspace = kernel.root.join("project-workspace");
     std::fs::create_dir(&workspace).unwrap();
-    // A model of the offline Claude catalog and an effort keep the account catalog out of this test.
     let request = serde_json::json!({"CreateSession": {
         "workspace_id": workspace, "worktree_id": workspace,
-        "agent_defaults": {"provider": "claude", "model": "claude-sonnet-5-5", "effort": "low"}
+        "agent_defaults": {"provider": "claude", "model": PROJECT_TEST_MODEL, "effort": "low"}
     }});
     let created = kernel.request(request.clone()).await;
     let project_id = created["response"]["SessionCreated"]["session"]["project_id"]

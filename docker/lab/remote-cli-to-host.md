@@ -5,7 +5,7 @@ This drill proves that a CLI running inside a Docker worker can connect through 
 ## Start The Lab
 
 ```sh
-docker compose -f docker/lab/docker-compose.yml up -d relay worker-a worker-b
+docker/lab/up.sh
 ```
 
 ## Connect The Host Kernel To The Lab Relay

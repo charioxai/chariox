@@ -169,7 +169,7 @@ pub async fn enroll_from_stdin(require_owner: bool) -> Result<(), DaemonError> {
     let input: EnrollmentInput = serde_json::from_slice(&bytes).map_err(|_| error())?;
     bytes.zeroize();
     require_explicit_root()?;
-    let mut config = DaemonConfig::load_from_env();
+    let mut config = DaemonConfig::load_from_env()?;
     println!("{}", enroll(&mut config, input, require_owner).await?);
     Ok(())
 }
@@ -194,7 +194,7 @@ pub async fn enroll_device_from_stdin() -> Result<(), DaemonError> {
     bytes.zeroize();
     require_explicit_root()?;
     let api_url = admit_api_url(&input.api_url)?;
-    let mut config = DaemonConfig::load_from_env();
+    let mut config = DaemonConfig::load_from_env()?;
     if let Some(profile) = &config.cloud_relay {
         if profile.api_url != api_url
             || input
@@ -307,7 +307,7 @@ fn require_home_folder(root: Option<&str>) -> Result<(), DaemonError> {
 }
 pub async fn wait_ready() -> Result<(), DaemonError> {
     require_explicit_root()?;
-    let config = DaemonConfig::load_from_env();
+    let config = DaemonConfig::load_from_env()?;
     let mut identity = public_identity(&config)?;
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(90);
     loop {

@@ -79,6 +79,8 @@ pub struct SliceRecord {
     pub session_ids: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub agent_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) delete_when_unused: bool,
     pub backend: SliceBackendKind,
     pub os: String,
     #[serde(default)]

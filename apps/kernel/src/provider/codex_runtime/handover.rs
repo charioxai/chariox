@@ -40,6 +40,8 @@ pub(crate) struct CodexHandover {
     turn_tracker: CodexTurnTracker,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     workspace_approval: Option<WorkspaceApprovalState>,
+    // A predecessor program (L12) tracked no usage baseline; the adopted turn starts one.
+    #[serde(default)]
     usage_tracker: super::model_usage::CodexUsageTracker,
     selected_model: Option<String>,
 }
@@ -231,6 +233,37 @@ mod tests {
             Message::text("after the swap")
         );
         drop(adopted);
+        server.join().unwrap();
+    }
+
+    /// A hot reload from L12 hands over no usage baseline: the turn is still adopted.
+    #[test]
+    fn a_predecessor_handover_without_a_usage_baseline_is_adopted() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("ws://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut socket = accept(stream).unwrap();
+            while socket.read().is_ok() {}
+        });
+        let (socket, ()) = test_codex_connect(&endpoint).unwrap();
+        let ProviderRuntimeBinding::Codex(binding) =
+            CodexRuntimeState::active_turn_binding_fixture(endpoint, socket)
+        else {
+            unreachable!("a Codex fixture")
+        };
+        let handover = hand_over_codex_turn(binding.state)
+            .unwrap_or_else(|_| panic!("a running turn is handed over"));
+        let mut written = serde_json::to_value(&handover).unwrap();
+        assert!(written
+            .as_object_mut()
+            .unwrap()
+            .remove("usage_tracker")
+            .is_some());
+
+        let handover: CodexHandover =
+            serde_json::from_value(written).expect("an L12 handover is read");
+        drop(adopt(handover));
         server.join().unwrap();
     }
 

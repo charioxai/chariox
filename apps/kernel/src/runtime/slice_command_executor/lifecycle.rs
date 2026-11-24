@@ -62,8 +62,11 @@ pub(super) async fn execute_list_slices_request(
 pub(super) async fn execute_create_slice_request(
     runtime_state: &KernelRuntimeState,
     request: CreateSliceRequest,
+    delete_when_unused: bool,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    let slice = runtime_state.create_slice(request).await?;
+    let slice = runtime_state
+        .create_slice_with_agent_lifetime(request, delete_when_unused)
+        .await?;
     Ok(LocalDaemonResponse::SliceCreated { slice })
 }
 
@@ -1038,9 +1041,49 @@ pub(super) async fn execute_delete_slice_request(
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let _operation = runtime_state.begin_slice_operation(&request.slice_ref, "slice.delete")?;
     let resolved_slice = runtime_state.resolve_slice(&request.slice_ref)?;
+    delete_slice(
+        runtime_state,
+        config_projection,
+        relay_state,
+        resolved_slice,
+    )
+    .await
+}
+
+pub(crate) async fn delete_agent_slice_if_unused(
+    runtime_state: &KernelRuntimeState,
+    config_projection: &DaemonConfigProjectionStore,
+    relay_state: Arc<RwLock<RelayClientState>>,
+    slice: &crate::slice::SliceRecord,
+) -> Result<(), DaemonError> {
+    if !slice.delete_when_unused || !slice.agent_ids.is_empty() {
+        return Ok(());
+    }
+    let _operation = runtime_state.begin_slice_operation(&slice.id, "slice.delete")?;
+    let current = runtime_state.resolve_slice(&slice.id)?;
+    if current.environment_session_id.is_some() || !current.agent_ids.is_empty() {
+        return Ok(());
+    }
+    // A spawn may have committed the agent before recording its attachment.
+    let current = runtime_state
+        .reconcile_slice_agent_attachments(&current)
+        .await?;
+    if current.agent_ids.is_empty() {
+        delete_slice(runtime_state, config_projection, Some(relay_state), current).await?;
+    }
+    Ok(())
+}
+
+async fn delete_slice(
+    runtime_state: &KernelRuntimeState,
+    config_projection: &DaemonConfigProjectionStore,
+    relay_state: Option<Arc<RwLock<RelayClientState>>>,
+    resolved_slice: crate::slice::SliceRecord,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    let slice_id = &resolved_slice.id;
     runtime_state.record_slice_audit_event(&resolved_slice, "delete", "accepted", None, None)?;
     if let Err(error) = ensure_slice_has_no_active_agents(&resolved_slice, "slice.delete") {
-        let _ = runtime_state.mark_slice_delete_failed(&request.slice_ref, &error);
+        let _ = runtime_state.mark_slice_delete_failed(slice_id, &error);
         let _ = runtime_state.record_slice_audit_event(
             &resolved_slice,
             "delete",
@@ -1050,7 +1093,7 @@ pub(super) async fn execute_delete_slice_request(
         );
         return Err(error);
     }
-    let deleting_slice = runtime_state.mark_slice_delete_in_progress(&request.slice_ref)?;
+    let deleting_slice = runtime_state.mark_slice_delete_in_progress(slice_id)?;
     if resolved_slice.backend == crate::slice::SliceBackendKind::LocalDocker {
         let docker_options =
             crate::slice::LocalDockerSliceOptions::from_config(&config_projection.snapshot());
@@ -1071,7 +1114,7 @@ pub(super) async fn execute_delete_slice_request(
             message: format!("slice supervisor task failed: {error}"),
         })?;
         if let Err(error) = supervisor_result {
-            let _ = runtime_state.mark_slice_delete_failed(&request.slice_ref, &error);
+            let _ = runtime_state.mark_slice_delete_failed(slice_id, &error);
             let _ = runtime_state.record_slice_audit_event(
                 &deleting_slice,
                 "delete",
@@ -1093,7 +1136,7 @@ pub(super) async fn execute_delete_slice_request(
         message: format!("slice development cleanup task failed: {error}"),
     })?;
     if let Err(error) = cleanup_result {
-        let _ = runtime_state.mark_slice_delete_failed(&request.slice_ref, &error);
+        let _ = runtime_state.mark_slice_delete_failed(slice_id, &error);
         let _ = runtime_state.record_slice_audit_event(
             &deleting_slice,
             "delete",
@@ -1103,7 +1146,7 @@ pub(super) async fn execute_delete_slice_request(
         );
         return Err(error);
     }
-    let slice = runtime_state.delete_slice(&request.slice_ref)?;
+    let slice = runtime_state.delete_slice(slice_id)?;
     runtime_state
         .stop_slice_private_relay_home_connection(&slice.id)
         .await;
@@ -1647,6 +1690,7 @@ mod tests {
             session_id: None,
             session_ids: Vec::new(),
             agent_ids,
+            delete_when_unused: false,
             backend: crate::slice::SliceBackendKind::LocalDocker,
             os: "linux".to_string(),
             display_mode: crate::slice::SliceDisplayMode::Headless,
@@ -1696,6 +1740,8 @@ mod tests {
             machine_credential: Some("machine-secret".to_string()),
             cloud_session_token: None,
             cloud_session_expires_at_ms: None,
+            kernel_unlinked: false,
+            kernel_removal_pending: false,
             token_expires_at_ms: Some(200_000),
         }
     }

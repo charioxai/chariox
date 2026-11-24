@@ -164,7 +164,7 @@ impl KernelRuntimeState {
             "action":action,"observed_by":actor,"mask_code_input":mask_code_input})
     }
 
-    /// MP-11: preserve task, expiry and source grant authority through physical dispatch.
+    /// MP-11: preserve task, expiry and the source agent's run through physical dispatch.
     pub(super) fn handoff_action_admission(
         &self,
         admission: KernelBrowserAdmission,
@@ -174,29 +174,9 @@ impl KernelRuntimeState {
         let task_authority = self.owned.clone();
         let binding = handoff.clone();
         let browser_host = self.owned.kernel_browser_host.clone();
-        let current_grant_identity = browser_host.grant_identity(&source_admission).ok();
         let source_fence = source_admission;
-        let retained_grant_identity = self
-            .owned
-            .durable_state_store
-            .load_subject_events_by_kind(
-                &RuntimeHandoff::interaction_id(&handoff.obligation_id),
-                "handoff.binding",
-                1,
-            )
-            .ok()
-            .and_then(|events| {
-                events
-                    .last()
-                    .and_then(|event| event.payload["source_grant_identity"].as_str())
-                    .map(str::to_owned)
-            });
         admission.with_authority(move || {
             crate::session::unix_epoch_ms() < binding.expires_at_ms
-                && retained_grant_identity
-                    .as_ref()
-                    .zip(current_grant_identity.as_ref())
-                    .is_some_and(|(retained, current)| retained == current)
                 && browser_host.check_admission(Some(&source_fence)).is_ok()
                 && task_authority
                     .durable_state_store

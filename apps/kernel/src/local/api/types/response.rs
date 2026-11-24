@@ -3,6 +3,7 @@ use super::*;
 #[rustfmt::skip]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum LocalDaemonResponse {
+    AgentReleaseNotes { landing: u32, text: String },
     ControlPlane { result: ControlPlaneResponse },
     SessionProcessesStopped { result: crate::runtime::process_resources::ProcessControlResult },
     SessionProcessStartedNow { process_id: String },
@@ -324,6 +325,11 @@ pub enum LocalDaemonResponse {
     },
     RoomListSessionsListed { page: RoomListSessionPage, },
     RoomListSnapshot { snapshot: RoomListSnapshot, },
+    OwnerViewStatus {
+        generation: String,
+        tab_id: Option<String>,
+        watchers: Vec<OwnerViewWatcher>,
+    },
     PersonInbox {
         cards: Vec<PersonInboxCard>,
         mutes: Vec<PersonInboxOrigin>,

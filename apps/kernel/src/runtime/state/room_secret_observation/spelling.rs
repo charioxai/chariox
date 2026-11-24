@@ -123,6 +123,7 @@ pub(super) fn secret_spellings(secret: &str) -> Vec<Spelling> {
 /// Replaces every spelling occurrence in the parts joined together; a match that
 /// crosses parts becomes one marker in the part where it starts. Returns whether
 /// anything was replaced.
+#[cfg(test)]
 pub(super) fn redact_split_values(parts: &mut [String], variants: &[Spelling]) -> bool {
     redact_split_with(parts, variants, &Prefixes::of(variants))
 }

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { drillDockerLabels } from "../../../scripts/lib/drill-docker-owner.mjs"
 // No builds or downloads. Supply an existing slice-compatible image and Docker
 // endpoint. Only this run's uniquely named containers, volume and temp archive
 // are created/deleted. Source must be visible to the Docker daemon for mounting.
@@ -17,6 +18,7 @@ const repo = path.resolve(source, "../../..");
 const image = process.env.CHARIOX_BROWSER_PROFILE_IMAGE;
 const legacy = process.env.CHARIOX_BROWSER_PROFILE_LEGACY_SEED === "1";
 assert.ok(image, "set CHARIOX_BROWSER_PROFILE_IMAGE to an existing slice-compatible image");
+const ownership = drillDockerLabels(import.meta.url);
 const id = `chariox-browser-profile-${randomUUID().slice(0, 8)}`;
 const volume = `${id}-home`;
 const root = await mkdtemp(path.join(tmpdir(), "chariox-browser-profile-"));
@@ -62,10 +64,10 @@ try {
 }
 
 async function create(legacySeed = false) {
-  await docker("volume", "create", volume);
-  await docker("run", "--rm", "--name", `${id}-init`, ...limits, "--user", "0",
+  await docker("volume", "create", ...ownership, volume);
+  await docker("run", "--rm", ...ownership, "--name", `${id}-init`, ...limits, "--user", "0",
     "--mount", `type=volume,src=${volume},dst=/home/slice`, image, "chown", "1000:1000", "/home/slice");
-  await docker("run", "-d", "--init", "--name", id, ...limits, "--user", "1000:1000",
+  await docker("run", "-d", ...ownership, "--init", "--name", id, ...limits, "--user", "1000:1000",
     ...(legacySeed ? [] : ["--security-opt", `seccomp=${path.join(source, "chromium-seccomp.json")}`]),
     "--mount", `type=bind,src=${repo},dst=/src,readonly`,
     "--mount", `type=volume,src=${volume},dst=/home/slice`,

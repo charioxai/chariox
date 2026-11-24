@@ -693,6 +693,7 @@ async fn pty_model_refusal_history_keeps_only_the_redacted_diagnostic() {
                 session_id: session.id().to_string(),
                 agent_ids: Some(vec![agent.id().to_string()]),
                 latest_prompt_count: None,
+                after_sequence: None,
                 cursor: None,
                 include_prefetched_content: true,
             },

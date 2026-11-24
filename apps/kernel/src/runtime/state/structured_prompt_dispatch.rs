@@ -76,25 +76,37 @@ impl KernelRuntimeState {
                 operation: "submit prompt",
             });
         }
-        let prompt_with_handoff = match handoff {
-            Some(handoff) => {
-                let handoff = owned.revalidate_context_handoff(
+        let handoff = handoff
+            .map(|handoff| {
+                owned.revalidate_context_handoff(
                     handoff,
                     &dispatch.session_id,
                     &dispatch.agent_id,
                     &dispatch.prompt_id,
-                )?;
-                super::context_handoff::inject_protected_context_handoff(
-                    &dispatch.prompt,
-                    &handoff,
-                    |context| {
-                        owned
-                            .room_secret_observations
-                            .scrub(&dispatch.session_id, context)
-                    },
-                )?
-            }
+                )
+            })
+            .transpose()?;
+        let explicit_handoff = handoff.as_ref().filter(|handoff| !handoff.derived);
+        let prompt = match explicit_handoff {
+            Some(handoff) => super::context_handoff::inject_protected_context_handoff(
+                &dispatch.prompt,
+                handoff,
+                |context| {
+                    owned
+                        .room_secret_observations
+                        .scrub(&dispatch.session_id, context)
+                },
+            )?,
             None => dispatch.prompt.clone(),
+        };
+        let render_handoff = |room| {
+            let text = handoff
+                .as_ref()
+                .map(|handoff| handoff.render_switch(room))
+                .unwrap_or_default();
+            owned
+                .room_secret_observations
+                .scrub(&dispatch.session_id, text)
         };
         let hidden_system_context = hidden_system_context.to_string();
         // Preparation can outlive a Room policy change. Protect every retained
@@ -137,12 +149,16 @@ impl KernelRuntimeState {
                 .as_deref()
                 .unwrap_or(&dispatch.prompt_id),
             provider_run,
-            &prompt_with_handoff,
+            &prompt,
             &hidden_system_context,
             &attachments,
             mode.with_prompt_origin(dispatch.prompt_origin),
             private_assessment_evidence,
             dispatch.steering,
+            handoff
+                .as_ref()
+                .filter(|handoff| handoff.derived)
+                .map(|_| &render_handoff as &crate::provider::switch_turn::RenderHandoff<'_>),
         );
         let receipt = result?;
         // MP-08/MP-09/MP-10: a trigger's queued steer is recoverable until the

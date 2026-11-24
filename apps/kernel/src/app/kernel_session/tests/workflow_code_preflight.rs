@@ -12,7 +12,9 @@ fn create_session_writes_durable_state_event() {
         .load_events_after(0)
         .expect("durable state events should load")
         .into_iter()
-        .filter(|event| event.kind != "skills.v2.home")
+        .filter(|event| {
+            event.kind != "skills.v2.home" && !event.kind.starts_with("agent_release_notes.")
+        })
         .collect::<Vec<_>>();
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].kind, "session.created");
@@ -39,7 +41,9 @@ fn spawn_agent_and_end_session_write_durable_state_events() {
         .load_events_after(0)
         .expect("durable state events should load")
         .into_iter()
-        .filter(|event| event.kind != "skills.v2.home")
+        .filter(|event| {
+            event.kind != "skills.v2.home" && !event.kind.starts_with("agent_release_notes.")
+        })
         .collect::<Vec<_>>();
     assert_eq!(
         events
@@ -72,7 +76,9 @@ fn destroy_agent_writes_durable_state_event() {
         .load_events_after(0)
         .expect("durable state events should load")
         .into_iter()
-        .filter(|event| event.kind != "skills.v2.home")
+        .filter(|event| {
+            event.kind != "skills.v2.home" && !event.kind.starts_with("agent_release_notes.")
+        })
         .collect::<Vec<_>>();
     assert_eq!(
         events

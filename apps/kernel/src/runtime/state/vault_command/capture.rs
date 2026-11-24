@@ -182,7 +182,7 @@ impl KernelRuntimeState {
     ) -> Result<RuntimeToolResult, DaemonError> {
         args.use_binding.target.validate()?;
         let host = service_host(&args.host)?;
-        let argv = super::super::agent_process_watch::command_argv(&args.argv)?;
+        let argv = super::super::agent_process_watch::command_argv(&args.argv, false)?;
         let pattern = extract_pattern(&args.extract)?;
         let timeout = command_timeout(args.timeout_seconds)?;
         let actor = context.actor();

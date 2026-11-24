@@ -1,6 +1,7 @@
 import { closeRoomTerminalRequest, expectRoomTerminalResult, openRoomTerminalRequest, readRoomTerminalOutputRequest, roomTerminalRequest, type KernelTerminalTarget } from "@chariox/kernel-client/ipc-requests"
+import type { ProgramInput } from "@chariox/kernel-client/kernel-types"
 import { StringDecoder } from "node:string_decoder"
-import type { Writable } from "node:stream"
+import type { Readable, Writable } from "node:stream"
 import { CommandFailure } from "./agent-command-table.js"
 import type { SendRequest } from "./kernel-files.js"
 
@@ -9,7 +10,35 @@ const ROWS = 50
 // The terminal service answers a wait after at most four minutes; a longer wait is several requests.
 const WAIT_CHUNK_MS = 240_000
 
-export type KernelExecOptions = { command: readonly string[]; directory?: string | undefined; timeoutSeconds: number; signals?: NodeJS.Process }
+// One request carries at most this much input; the kernel enforces the same limit.
+export const MAX_INLINE_STDIN_BYTES = 64 * 1024
+
+export type KernelExecOptions = { command: readonly string[]; directory?: string | undefined; timeoutSeconds: number; stdin?: ProgramInput | undefined; signals?: NodeJS.Process }
+
+/**
+ * The input of the program: a file already on the kernel when `--stdin-file` names one, else what
+ * this process's own stdin carries up to its end (nothing for a terminal or an empty input).
+ */
+export async function readExecInput(input: Readable & { isTTY?: boolean }, stdinFile: string | undefined, timeoutSeconds: number): Promise<ProgramInput | undefined> {
+  if (stdinFile !== undefined) return { kind: "file", path: stdinFile }
+  if (input.isTTY) return undefined
+  const chunks: Buffer[] = []
+  let size = 0
+  const timer = setTimeout(() => input.destroy(new CommandFailure("exec_stdin_not_ended", `stdin did not end within ${timeoutSeconds} s; end it (for example </dev/null), pipe the input in, or pass --stdin-file`)), timeoutSeconds * 1000)
+  try {
+    for await (const chunk of input) {
+      chunks.push(chunk as Buffer)
+      size += (chunk as Buffer).length
+      if (size > MAX_INLINE_STDIN_BYTES) throw new CommandFailure("exec_stdin_too_large", `stdin is larger than ${MAX_INLINE_STDIN_BYTES} bytes (64 KiB), the most one exec carries; upload the file with chariox files put --kernel NAME and run it with --stdin-file KERNEL_PATH`)
+    }
+  } catch (error) {
+    if (error instanceof CommandFailure) throw error
+    throw new CommandFailure("exec_stdin_unreadable", `stdin could not be read: ${String((error as Error)?.message ?? error)}`)
+  } finally {
+    clearTimeout(timer)
+  }
+  return size === 0 ? undefined : { kind: "inline", data_base64: Buffer.concat(chunks).toString("base64") }
+}
 
 /**
  * One command on a kernel with no Room: open a terminal of the kernel's own running the argv,
@@ -21,7 +50,7 @@ export async function runKernelExec(options: KernelExecOptions, send: SendReques
   // The folder is chosen when the terminal opens; the kernel refuses it on every later operation.
   const opening: KernelTerminalTarget = { kernelTerminal: true, ...(options.directory ? { directory: options.directory } : {}) }
   const target: KernelTerminalTarget = { kernelTerminal: true }
-  const { terminal } = expectRoomTerminalResult(await send(openRoomTerminalRequest(opening, { cols: COLS, rows: ROWS }, { command: options.command })), "opened")
+  const { terminal } = expectRoomTerminalResult(await send(openRoomTerminalRequest(opening, { cols: COLS, rows: ROWS }, { command: options.command, ...(options.stdin ? { stdin: options.stdin } : {}) })), "opened")
   const terminalId = terminal.terminal_id
   let failed = true
   // An interrupt ends the command with the terminal: Ctrl-C must not leave a shell running on the kernel.

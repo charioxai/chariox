@@ -841,7 +841,7 @@ impl KernelRuntimeState {
             self.owned.agent_store.clone(),
             caller.agent(),
             &binding.installation,
-            tracked.browser_grant(),
+            tracked.run_fence(),
             caller
                 .agent()
                 .map(|agent| self.app_binding_epoch(agent.id(), &binding.installation)),

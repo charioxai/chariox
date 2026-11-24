@@ -35,6 +35,7 @@ fn assert_unauthorized(result: Result<RelayPeerResponse, crate::error::DaemonErr
 
 #[test]
 fn ordinary_lease_caller_binding_survives_restart_and_rejects_spoofs() {
+    crate::test_support::isolated_env_test!();
     run_async_with_large_test_stack(
         "ordinary-lease-caller-binding",
         ordinary_lease_caller_binding_survives_restart_and_rejects_spoofs_async,

@@ -132,6 +132,7 @@ fn cloud_kernel_ownership_local_router_drill() {
     let durable: serde_json::Value =
         serde_json::from_slice(&fs::read(root.join("a/cloud-relay.json")).unwrap()).unwrap();
     assert!(durable["profile"].is_null());
+    assert_eq!(durable["former_cloud_kernel_id"], "kernel-a");
     assert!(durable["relay_token"].is_null());
     drop(harness);
     drop(sibling);

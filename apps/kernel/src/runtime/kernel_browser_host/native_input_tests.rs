@@ -65,8 +65,11 @@ document.getElementById('field').focus();
             server: Some(server),
             tab: Value::Null,
         };
-        fixture.host.set_focus("owner", Some("first"));
-        fixture.host.load("owner", "first").unwrap();
+        fixture.host.load_for(
+            "owner",
+            "first",
+            crate::runtime::kernel_browser_host::KernelBrowserCapability::Browser,
+        );
         let state = fixture.request(json!({"op":"open","url":url})).unwrap();
         fixture.tab = state["tabs"][0].clone();
         fixture.tab["generation"] = state["generation"].clone();
@@ -125,11 +128,10 @@ impl Drop for NativeInput {
 
 #[test]
 #[ignore = "MP-10: sandbox-capable native Chromium and disposable CHARIOX_MDACCESS_DRILL_ROOT required"]
-fn mdaccess_native_retained_enter_dispatches_like_focused() {
+fn native_enter_dispatches() {
     let fixture = NativeInput::new(
         r#"<form><input id="field" type="text" style="height:30px"><button id="pay" type="submit">Pay</button></form>"#,
     );
-    fixture.host.set_focus("owner", Some("second"));
     let result = fixture.input(json!({"kind":"key","key":"Enter"}));
     assert!(
         fixture.status().starts_with("submitted=1 "),
@@ -164,7 +166,6 @@ fn mdaccess_native_focused_tab_releases_without_stopping_browser() {
 #[ignore = "MP-10: sandbox-capable native Chromium and disposable CHARIOX_MDACCESS_DRILL_ROOT required"]
 fn mdaccess_native_retained_state_cannot_restart_after_human_stop() {
     let fixture = NativeInput::new(r#"<input id="field" style="height:30px">"#);
-    fixture.host.set_focus("owner", Some("second"));
     fixture
         .host
         .protected_request(
@@ -184,7 +185,6 @@ fn mdaccess_native_retained_state_cannot_restart_after_human_stop() {
             BrowserControllerProcessState::Stopped
         );
     }
-    fixture.host.set_focus("owner", Some("first"));
     let restarted = fixture.request(json!({"op":"start"})).unwrap();
     assert_eq!(
         restarted["generation"].as_u64().unwrap(),
@@ -198,10 +198,8 @@ fn mdaccess_native_retained_state_cannot_restart_after_human_stop() {
         .unwrap()
         .host_request("host.browser", json!({"op":"stop"}))
         .unwrap();
-    fixture.host.set_focus("owner", Some("second"));
     let error = fixture.request(json!({"op":"state"})).unwrap_err();
     assert!(error.contains("browser_unavailable"), "MP-11: {error}");
-    fixture.host.set_focus("owner", Some("first"));
     let recovered = fixture.request(json!({"op":"start"})).unwrap();
     assert_eq!(
         recovered["generation"].as_u64().unwrap(),
@@ -215,7 +213,6 @@ fn mdaccess_native_retained_keys_clicks_and_revoke() {
     let fixture = NativeInput::new(
         r#"<input id="field" style="height:30px" onkeydown="submitted++;status()" onkeyup="submitted++;status()"><button id="pay" onclick="submitted++;status()">Search</button><div style="height:3000px"></div>"#,
     );
-    fixture.host.set_focus("owner", Some("second"));
     fixture
         .input(json!({"kind":"text","text":"retained"}))
         .unwrap();
@@ -242,30 +239,27 @@ fn mdaccess_native_retained_keys_clicks_and_revoke() {
 
 #[test]
 #[ignore = "MP-10: sandbox-capable native Chromium and disposable CHARIOX_MDACCESS_DRILL_ROOT required"]
-fn mdaccess_native_protected_keys_require_vault_for_focused_and_retained() {
+fn native_protected_keys_require_vault() {
     for markup in [
         r#"<input id="field" type="password" style="height:30px">"#,
         r#"<input id="field" autocomplete="one-time-code" style="height:30px">"#,
         r#"<iframe id="field" srcdoc="<input autofocus>" style="height:60px"></iframe>"#,
     ] {
         let fixture = NativeInput::new(markup);
-        for focus in ["first", "second"] {
-            fixture.host.set_focus("owner", Some(focus));
-            for input in [
-                json!({"kind":"text","text":"fixture"}),
-                json!({"kind":"key","key":"a"}),
-                json!({"kind":"key","key":"é"}),
-                json!({"kind":"key","key":"Enter"}),
-                json!({"kind":"key","key":"Space"}),
-            ] {
-                let error = fixture.input(input).unwrap_err();
-                assert!(error.contains("kernel_browser_failed"), "MP-11: {error}");
-                let state = fixture.request(json!({"op":"state"})).unwrap();
-                assert_eq!(
-                    state["generation"], fixture.tab["generation"],
-                    "MP-08: pre-dispatch protection stopped Chromium"
-                );
-            }
+        for input in [
+            json!({"kind":"text","text":"fixture"}),
+            json!({"kind":"key","key":"a"}),
+            json!({"kind":"key","key":"é"}),
+            json!({"kind":"key","key":"Enter"}),
+            json!({"kind":"key","key":"Space"}),
+        ] {
+            let error = fixture.input(input).unwrap_err();
+            assert!(error.contains("kernel_browser_failed"), "MP-11: {error}");
+            let state = fixture.request(json!({"op":"state"})).unwrap();
+            assert_eq!(
+                state["generation"], fixture.tab["generation"],
+                "MP-08: pre-dispatch protection stopped Chromium"
+            );
         }
     }
 }

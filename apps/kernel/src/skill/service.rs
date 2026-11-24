@@ -3,7 +3,7 @@
 use super::{
     catalog::{failure, safe_locator, SkillCatalogSet},
     frontmatter::parse_frontmatter,
-    package::{instruction_body, package_skill_directory},
+    package::{instruction_body, package_recorded_skill_directory, package_skill_directory},
     repository::{staging_directory, RepositoryCheckout, RepositoryCheckouts},
     resolver::*,
     selection::explicit_skill_names,
@@ -130,7 +130,11 @@ impl SkillCatalogService {
                 if native_sources.contains_key(&index) {
                     return Err(failure("native source does not match its reviewed action"));
                 }
-                self.prepare_source(source, access)?
+                if matches!(source, SkillInstallSource::RecordedFolder {}) {
+                    prepare_recorded_folder(&current, mutation, action)?
+                } else {
+                    self.prepare_source(source, access)?
+                }
             };
             let body = package
                 .files
@@ -172,7 +176,8 @@ impl SkillCatalogService {
                     .collect::<Result<_, DaemonError>>()?,
                 provenance: SkillProvenance {
                     kind: match source {
-                        SkillInstallSource::Folder { .. } => "folder",
+                        SkillInstallSource::Folder { .. }
+                        | SkillInstallSource::RecordedFolder {} => "folder",
                         SkillInstallSource::Content { .. } => "content",
                         SkillInstallSource::Url { .. } => "url",
                         SkillInstallSource::Repository { .. } => "repository",
@@ -512,6 +517,9 @@ impl SkillCatalogService {
                 let locator = Some(safe_locator(&locator.to_string_lossy())?);
                 Ok((package, locator))
             }
+            SkillInstallSource::RecordedFolder {} => Err(failure(
+                "recorded folders can only refresh installed skills",
+            )),
             SkillInstallSource::Content { skill_md } => self.content_package(skill_md, None),
             SkillInstallSource::Url {
                 url,
@@ -577,4 +585,47 @@ impl SkillCatalogService {
         }
         result.map(|package| (package, locator))
     }
+}
+
+fn prepare_recorded_folder(
+    current: &SkillCatalogSet,
+    mutation: &SkillCatalogMutation,
+    action: &SkillCatalogAction,
+) -> Result<(CharioxSkillPackage, Option<String>), DaemonError> {
+    let SkillCatalogAction::Update {
+        skill_id,
+        expected_digest,
+        ..
+    } = action
+    else {
+        return Err(failure(
+            "recorded folders can only refresh installed skills",
+        ));
+    };
+    let skill = current
+        .record(skill_id)
+        .filter(|skill| skill.scope == mutation.scope && skill.digest == *expected_digest)
+        .ok_or_else(|| failure("skill scope or revision changed; review update again"))?;
+    let locator = skill
+        .provenance
+        .locator
+        .as_deref()
+        .filter(|path| {
+            skill.provenance.kind == "folder"
+                && Path::new(path).is_absolute()
+                // Older folder locators came from a lossy path conversion.
+                && !path.contains('\u{fffd}')
+        })
+        .ok_or_else(|| {
+            failure("this skill has no usable recorded folder; choose a source to update it")
+        })?;
+    let source = Path::new(locator);
+    let package = package_recorded_skill_directory(source).map_err(|error| failure(format!(
+        "Cannot refresh {} from {}. Restore the recorded SKILL.md and bundled files, then preview again. {error}",
+        skill.name, source.join("SKILL.md").display(),
+    )))?;
+    if package.version_hash == skill.digest {
+        return Err(failure(format!("{} is already current", skill.name)));
+    }
+    Ok((package, Some(locator.into())))
 }

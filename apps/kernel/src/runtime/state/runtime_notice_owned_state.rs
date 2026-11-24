@@ -3,6 +3,31 @@
 use super::*;
 
 impl KernelRuntimeState {
+    pub(crate) fn announce_relay_registration_refusal(&self, message: &str) -> bool {
+        let mut notified = false;
+        let attachments = &self.owned.attachment_store;
+        for session_id in attachments.list_attached_session_ids() {
+            let mut recipients = attachments.list_session_attachment_ids(&session_id);
+            recipients.retain(|id| {
+                attachments
+                    .get_attachment(id)
+                    .is_ok_and(|attachment| self.acts_for_kernel_owner(attachment.owner_user_id()))
+            });
+            if !recipients.is_empty() {
+                // Keep a kernel-private notice out of the Room's shared history.
+                self.owned.terminal_stream.record_notice(
+                    &session_id,
+                    None,
+                    None,
+                    recipients,
+                    message,
+                );
+                notified = true;
+            }
+        }
+        notified
+    }
+
     pub(crate) fn record_meta_migration_notice(&self, session_id: &str, agent_id: &str) {
         self.owned.record_notice_for_agent(session_id, None, Some(agent_id),
             self.owned.attachment_store.list_session_attachment_ids(session_id),

@@ -285,6 +285,9 @@ impl TurnOutcome {
         let text = text
             .strip_prefix("Provider reported a resource limit: ")
             .unwrap_or(text);
+        if adapter_key == "opencode" && text == super::opencode_runtime::NATIVE_PERMISSION_DENIED {
+            return Self::cancelled();
+        }
         let failure = if let Some((code, message, native_retryable)) =
             super::prompt_signals::split_coded_failure(text)
         {

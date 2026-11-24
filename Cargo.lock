@@ -706,6 +706,7 @@ dependencies = [
  "regex",
  "rqrr",
  "rusqlite",
+ "rustix",
  "rustls",
  "serde",
  "serde_json",

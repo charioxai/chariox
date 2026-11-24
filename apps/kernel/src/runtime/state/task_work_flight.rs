@@ -3,6 +3,7 @@
 //! task it belongs to; the sweep goes on with every other agent and starts the work again when it
 //! finds it undone.
 use super::*;
+use crate::durable_state::agent_lifecycle::AgentTaskExecution;
 use std::collections::{BTreeSet, VecDeque};
 use std::future::Future;
 use std::time::Instant;
@@ -10,6 +11,22 @@ use std::time::Instant;
 /// How long one piece of work may run. The longest wait inside it is a relay request to a worker
 /// (`relay_request_timeout_ms`, 60 s by default), and a cancellation walks a task and its children.
 const WORK_LIMIT: Duration = Duration::from_secs(180);
+/// How long the sweep waits for one task's settlement before it moves on to the next task, and how
+/// long it waits for all of them together in one pass. The work goes on apart from the sweep, up
+/// to `WORK_LIMIT`, and the next sweep asks again. A pass stays well under the dead-man check
+/// (three sweeps) even when several tasks hold.
+const TASK_WAIT: Duration = Duration::from_secs(5);
+pub(super) const SWEEP_PATIENCE: Duration = Duration::from_secs(20);
+
+/// How the work of one task ended as far as the sweep that asked for it is concerned.
+pub(super) enum TaskStep<T> {
+    Done(T),
+    /// The same work still runs from an earlier sweep, or no place is left for it.
+    Busy,
+    /// The work did not end within the sweep's patience; it goes on apart from the sweep.
+    TimedOut,
+}
+
 /// How many pieces of work run at once; the sweep that finds more undone starts them later.
 pub(super) const WORK_AT_ONCE: usize = 32;
 
@@ -127,6 +144,56 @@ impl KernelRuntimeState {
                 }
             }
         });
+    }
+
+    /// Runs the settlement of one task as its own work and waits for it at most `TASK_WAIT` and
+    /// what is left of `patience`, so a task whose turn never settles holds only itself and
+    /// never the pass of every other agent. The work keeps its claim until it ends, so the
+    /// following sweeps pass it by instead of waiting again.
+    pub(super) async fn sweep_task_within<Work, Done>(
+        &self,
+        key: String,
+        patience: &mut Duration,
+        work: Work,
+    ) -> TaskStep<Result<Option<AgentTaskExecution>, DaemonError>>
+    where
+        Work: FnOnce(KernelRuntimeState) -> Done + Send + 'static,
+        Done: Future<Output = Result<Option<AgentTaskExecution>, DaemonError>> + Send + 'static,
+    {
+        let Some(claim) = self.task_work.claim(&key) else {
+            return TaskStep::Busy;
+        };
+        let (answer, answered) = tokio::sync::oneshot::channel();
+        let state = self.clone();
+        tokio::spawn(async move {
+            let _claim = claim;
+            match tokio::time::timeout(WORK_LIMIT, work(state.clone())).await {
+                Ok(settled) => {
+                    if let Err(settled) = answer.send(settled) {
+                        // The sweep moved on: the work reports what it ended itself.
+                        match settled {
+                            Ok(ended) => state.record_task_transition_notices(ended),
+                            Err(error) => {
+                                tracing::warn!(%key, error=%crate::secret_redaction::redact_secrets(&error.to_string()),
+                                "MP-08/MP-09/MP-10/MP-11: task settlement retained for the next sweep")
+                            }
+                        }
+                    }
+                }
+                Err(_) => {
+                    tracing::warn!(%key, "MP-08/MP-09/MP-10/MP-11: task settlement ran out of time; the next sweep starts it again");
+                }
+            }
+        });
+        let wait = TASK_WAIT.min(*patience);
+        let started = Instant::now();
+        let outcome = tokio::time::timeout(wait, answered).await;
+        *patience = patience.saturating_sub(started.elapsed());
+        match outcome {
+            Ok(Ok(settled)) => TaskStep::Done(settled),
+            Ok(Err(_)) => TaskStep::Busy,
+            Err(_) => TaskStep::TimedOut,
+        }
     }
 
     /// Waits until no task work runs.

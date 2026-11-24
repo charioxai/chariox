@@ -10,27 +10,27 @@ impl KernelBrowserHost {
     ) -> Result<Value, crate::error::HostFailure> {
         self.check_admission(admission)?;
         if params["op"] == "display_subscribe" && admission.is_some_and(|a| a.agent.is_some()) {
-            return Err("MP-11: not_granted: desktop video requires a human terminal".into());
+            return Err("MP-11: desktop video requires a human terminal".into());
         }
         if admission.is_some_and(|a| {
             a.user != user
                 || (a.agent.is_some() && a.capability != KernelBrowserCapability::Computer)
         }) {
-            return Err("MP-11: not_granted: Computer capability required".into());
+            return Err("MP-11: Computer capability required".into());
         }
         if matches!(
             params["op"].as_str(),
             Some("takeover" | "release" | "actors")
         ) {
             if admission.is_some_and(|a| a.agent.is_some()) {
-                return Err("MP-11: not_granted: human desktop control required".into());
+                return Err("MP-11: human desktop control required".into());
             }
             let model = self.actor_model(user)?;
             let mut model = model
                 .lock()
                 .map_err(|_| "MP-11: desktop actor lock unavailable")?;
             if admission.is_some_and(|a| a.revoked_in_actor_lock()) {
-                return Err("MP-11: not_granted: terminal desktop authority retired".into());
+                return Err("MP-11: terminal desktop authority retired".into());
             }
             if params["op"] == "actors" {
                 model.retire_lapsed_desktop_viewers(std::time::Instant::now());
@@ -59,7 +59,7 @@ impl KernelBrowserHost {
                     .map_err(|_| "MP-11: desktop actor lock unavailable")?
                     .desktop_owner_is(&actor.actor_id)
                 {
-                    return Err("MP-11: not_granted: desktop takeover superseded".into());
+                    return Err("MP-11: desktop takeover superseded".into());
                 }
                 backend.host_request_classified("host.computer.reset", serde_json::json!({}))?;
                 self.check_admission(admission)?;
@@ -96,7 +96,7 @@ impl KernelBrowserHost {
                 .lock()
                 .map_err(|_| "MP-11: desktop actor lock unavailable")?;
             if admission.is_some_and(|a| a.revoked_in_actor_lock()) {
-                return Err("MP-11: not_granted: terminal desktop authority retired".into());
+                return Err("MP-11: terminal desktop authority retired".into());
             }
             model.takeover_desktop(
                 browser_actor(admission, &params),
@@ -126,18 +126,13 @@ impl KernelBrowserHost {
             backend.start()?;
         }
         if let Some(a) = admission.filter(|a| a.agent.is_some()) {
-            let state = self
+            let mut state = self
                 .inner
                 .lock()
-                .map_err(|_| "MP-11: desktop grant lock unavailable")?;
-            Self::check_admission_epoch(&state, a)?;
+                .map_err(|_| "MP-11: desktop host lock unavailable")?;
             params["_agent_input"] = true.into();
-            params["_subscription_owner"] = state
-                .access
-                .grant(user, a.agent.as_deref().unwrap())?
-                .subscription_owner
-                .clone()
-                .into();
+            params["_subscription_owner"] =
+                Self::subscription_scope(&mut state, user, a.agent.as_deref().unwrap()).into();
             params["observed_by"] = format!("agent:{}", a.agent.as_deref().unwrap()).into();
         }
         // Changed policy remains a controller barrier; cache only the exact
@@ -151,15 +146,9 @@ impl KernelBrowserHost {
                 admission.map(|a| a.cancellation.clone()),
             )?;
             self.check_admission(admission)?;
-            let surface = state["surface_id"]
+            state["surface_id"]
                 .as_str()
                 .ok_or("MP-11: invalid desktop identity")?;
-            self.claim_resource(
-                admission,
-                UserDomainResource::Desktop {
-                    surface_id: surface.into(),
-                },
-            )?;
             let browser_state = backend
                 .host_request_classified("host.browser", serde_json::json!({"op":"state"}))?;
             let model = self.actor_model(user)?;
@@ -180,15 +169,9 @@ impl KernelBrowserHost {
             crate::transport::kernel_browser_display::timing("computer_state", state_at);
         }
         self.check_admission(admission)?;
-        let surface = state["surface_id"]
+        state["surface_id"]
             .as_str()
             .ok_or("MP-11: invalid desktop identity")?;
-        self.claim_resource(
-            admission,
-            UserDomainResource::Desktop {
-                surface_id: surface.into(),
-            },
-        )?;
         let model = self.actor_model(user)?;
         {
             // MP-08/MP-10/MP-11: authenticated human native input uses the
@@ -228,7 +211,7 @@ impl KernelBrowserHost {
                 .lock()
                 .map_err(|_| "MP-11: desktop actor lock unavailable")?;
             if admission.is_some_and(|a| a.revoked_in_actor_lock()) {
-                return Err("MP-11: not_granted: desktop authority revoked".into());
+                return Err("MP-11: desktop authority revoked".into());
             }
             let mut metadata = params.clone();
             metadata["_native"] = true.into();
@@ -269,14 +252,6 @@ impl KernelBrowserHost {
                 .map_err(crate::error::HostFailure::Other)
                 .and_then(|response| response.into_host_result("host.computer"));
             self.check_admission(admission)?;
-            if result.is_ok() {
-                self.resource_notice(
-                    admission,
-                    UserDomainResource::Desktop {
-                        surface_id: surface.into(),
-                    },
-                );
-            }
             return result;
         }
         // MP-08/MP-11: a human desktop video subscription starts a viewer lease.
@@ -318,14 +293,6 @@ impl KernelBrowserHost {
             action.finish(terminal);
         }
         self.check_admission(admission)?;
-        if result.is_ok() {
-            self.resource_notice(
-                admission,
-                UserDomainResource::Desktop {
-                    surface_id: surface.into(),
-                },
-            );
-        }
         result
     }
 }

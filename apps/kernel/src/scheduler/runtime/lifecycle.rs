@@ -330,7 +330,7 @@ pub fn on_workflow_prompt_completed(
     if released_claim {
         let _ = retry_blocked_workflow_claims(app);
     }
-    let state_suffix = workflow_run_status_notice_suffix(workflow_run.status());
+    let state_suffix = workflow_run.status_notice_suffix();
     app.record_notice(
         session_id,
         None,
@@ -355,17 +355,6 @@ pub(super) fn current_workflow_run_for_notice(
     app.sessions()
         .resolve_workflow_run_ref(session_id, workflow_run.id())
         .unwrap_or(workflow_run)
-}
-
-pub(super) fn workflow_run_status_notice_suffix(status: WorkflowRunStatus) -> &'static str {
-    match status {
-        WorkflowRunStatus::Waiting => "waiting for downstream handoffs",
-        WorkflowRunStatus::Completing => "is completing",
-        WorkflowRunStatus::Completed => "completed",
-        WorkflowRunStatus::Failed => "failed",
-        WorkflowRunStatus::Stopped => "stopped",
-        _ => "updated",
-    }
 }
 
 pub fn on_workflow_provider_failure(

@@ -1,4 +1,4 @@
-mod tool_errors;
+use crate::error::runtime_tool as tool_errors;
 use std::convert::Infallible;
 use std::sync::Arc;
 
@@ -228,9 +228,13 @@ fn catalog_notification_stream(
     let registry = http_body_util::BodyStream::new(registry.into_body());
     let body = stream::once(async move {
         let ((scoped_opening, scoped), (registry_opening, registry)) =
-            futures_util::future::join(scoped.into_future(), registry.into_future()).await;
+            futures_util::future::join(scoped.into_future(), registry.fuse().into_future()).await;
+        let scoped_opening = scoped_opening?;
         let mut opening = bytes::BytesMut::new();
-        for frame in [scoped_opening, registry_opening].into_iter().flatten() {
+        for frame in [Some(scoped_opening), registry_opening]
+            .into_iter()
+            .flatten()
+        {
             if let Ok(Ok(data)) = frame.map(hyper::body::Frame::into_data) {
                 opening.extend_from_slice(&data);
             }
@@ -241,8 +245,11 @@ fn catalog_notification_stream(
         )
         .take_while(|frame| std::future::ready(frame.is_some()))
         .filter_map(std::future::ready);
-        stream::once(async move { Ok(hyper::body::Frame::data(opening.freeze())) }).chain(rest)
+        Some(
+            stream::once(async move { Ok(hyper::body::Frame::data(opening.freeze())) }).chain(rest),
+        )
     })
+    .filter_map(std::future::ready)
     .flatten();
     Response::from_parts(parts, http_body_util::StreamBody::new(body).boxed_unsync())
 }
@@ -421,11 +428,7 @@ async fn handle_json_rpc_value(
                 .runtime_tool_specs_for_auth_token_async(auth_token.to_owned())
                 .await?;
             let claude_loading = tool_loading::ClaudeLoading::for_run(&router, auth_token);
-            let tools = if claude_loading.is_some() {
-                tool_loading::without_alias_twins(tools)
-            } else {
-                tools
-            };
+            let tools = tool_loading::without_alias_twins(tools);
             // An invalidation during discovery cannot be acknowledged by an
             // older list. Record only successful discovery for the same run.
             if let Some((run_id, revision)) = captured {
@@ -537,8 +540,22 @@ async fn handle_json_rpc_value(
                     ))
                 }
                 Ok(result) => {
+                    let first_keys: &[&str] = if tool_name.ends_with("wakes")
+                        && crate::transport::runtime_tools::canonical_agent_event_tool_name(
+                            tool_name,
+                        ) == Some("chariox.events.wakes")
+                    {
+                        &["scheduler", "now_ms"]
+                    } else if crate::transport::runtime_tools::canonical_agent_messaging_tool_name(
+                        tool_name,
+                    ) == Some(crate::transport::runtime_tools::LIST_SESSION_AGENTS_TOOL)
+                    {
+                        &["agents", "session_id", "focused_agent_id"]
+                    } else {
+                        &[]
+                    };
                     let (content, structured_content) =
-                        tool_content::runtime_tool_content(result.payload);
+                        tool_content::runtime_tool_content_ordered(result.payload, first_keys);
                     let changed = previous_catalog != catalog::listing(&router, auth_token).await;
                     Ok(catalog::tool_response(
                         changed,

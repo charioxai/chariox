@@ -110,14 +110,12 @@ impl KernelRuntimeOwnedState {
                             );
                     }
                     Err(error @ DaemonError::WorkspaceClaimConflict { .. }) => {
-                        let _ = self
-                            .session_store
-                            .write()
-                            .block_workflow_node_on_workspace_claim(
-                                session_id,
-                                workflow_run_id,
-                                dispatch.node_run.id(),
-                            );
+                        self.workflow_record_blocked_claim(
+                            session_id,
+                            workflow_run_id,
+                            dispatch.node_run.id(),
+                            &error,
+                        )?;
                         self.record_notice(
                             session_id,
                             None,

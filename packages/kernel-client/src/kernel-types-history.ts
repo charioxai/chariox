@@ -51,12 +51,26 @@ export type SessionHistoryOutline = {
 export type SessionHistoryOutlineAgent = {
   agent_id: string
   turns: SessionHistoryOutlineTurn[]
+  delta_cursor?: SessionHistoryOutlineDeltaCursor
+  turn_deltas?: SessionHistoryOutlineTurnDelta[]
   next_cursor?: SessionHistoryOutlineCursor | null
   prefetched_blobs?: SessionHistoryBlobContent[]
 }
 
 export type SessionHistoryOutlineCursor = {
   before_sequence: number
+}
+
+export type SessionHistoryOutlineDeltaCursor = {
+  after_sequence: number
+  revision: string
+}
+
+export type SessionHistoryOutlineTurnDelta = {
+  header: SessionHistoryOutlineTurn | number
+  summary: SessionHistoryPageEntry | number | { append_to: number; suffix: SessionHistoryPageEntry } | null
+  entries: (SessionHistoryPageEntry | number)[]
+  blobs: (SessionHistoryOutlineBlob | number)[]
 }
 
 export type SessionHistoryOutlineTurn = {
@@ -80,6 +94,7 @@ export type SessionHistoryOutlineTurn = {
 
 export type SessionHistoryOutlineBlob = {
   blob_id: string
+  revision?: string
   kind: SessionHistoryEntry["kind"]
   title: string
   summary: string

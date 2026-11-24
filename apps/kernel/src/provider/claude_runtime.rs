@@ -91,7 +91,7 @@ pub(crate) fn initialize_claude_runtime_with_credentials(
     if run.resume_state().claude_session_id().is_none() {
         args.extend(["--session-id".to_string(), session_id.clone()]);
     }
-    let env = run.pty_env().clone();
+    let env = run.process_environment();
     let context_file = env.get("CHARIOX_CLAUDE_NATIVE_CONTEXT").map(PathBuf::from);
     let settings_file = env.get("CHARIOX_CLAUDE_SETTINGS_FILE").map(PathBuf::from);
     let usage_file = env.get("CHARIOX_CLAUDE_USAGE_FILE").map(PathBuf::from);
@@ -638,7 +638,7 @@ fn claude_runtime_selection_changed(run: &RuntimeProviderRun, state: &ClaudeRunt
         || state.active_variant.as_deref() != run.variant()
         || state.active_execution_mode != run.execution_mode()
         || state.active_permission_level != run.permission_level()
-        || state.env != *run.pty_env()
+        || state.env != run.process_environment()
         || state.env_remove != claude_env_remove(run)
         || state.working_directory.as_ref() != run.working_directory()
 }
@@ -727,7 +727,7 @@ fn restart_claude_runtime(
     {
         args.extend([argument.to_string(), session_id.to_string()]);
     }
-    let env = run.pty_env().clone();
+    let env = run.process_environment();
     let env_remove = claude_env_remove(run);
     let working_directory = run.working_directory().cloned();
     let output_notifier = state.output_notifier.clone();
@@ -1460,6 +1460,52 @@ cat >/dev/null
             super::watchdog::ClaudeTurnStallAction::FailStart,
             "60 s after the reload the budget counted from the delivery has run out: neither a restart nor a fresh budget"
         );
+    }
+
+    /// A hot reload from L12 hands over no own-turn state: the turn is still adopted.
+    #[cfg(unix)]
+    #[test]
+    fn a_predecessor_handover_without_own_turn_state_is_adopted() {
+        let worktree = crate::test_support::TestWorktree::new("claude-reload-predecessor");
+        let run = RuntimeProviderRun::new(
+            "provider-run-reload-predecessor",
+            &LaunchProviderRequest::new("room", "claude", "claude", "default", "sonnet"),
+            ProviderLaunchResult {
+                endpoint_mode: AgentEndpointMode::External,
+                process_label: "claude-fixture".to_string(),
+                pty_target: None,
+                pty_program: Some("/bin/sh".to_string()),
+                pty_args: vec![
+                    "-c".to_string(),
+                    "cat >/dev/null".to_string(),
+                    "fixture".to_string(),
+                ],
+                pty_env: BTreeMap::new(),
+                pty_env_remove: Vec::new(),
+                working_directory: Some(worktree.path().to_path_buf()),
+                structured_endpoint: None,
+            },
+        );
+        let envelope = crate::prompt_assembly::PromptEnvelope::new(
+            "use your tools",
+            "",
+            Vec::new(),
+            crate::prompt_assembly::PromptManifest::current(),
+        );
+        let mut binding = initialize_claude_runtime(&run).unwrap();
+        submit_claude_prompt(&run, &mut binding.state, &envelope).unwrap();
+        let handover =
+            super::hand_over_claude_runtime(binding.state).expect("a running turn is handed over");
+        let mut written = serde_json::to_value(&handover).unwrap();
+        let turn = written["turn"].as_object_mut().unwrap();
+        assert!(turn.remove("own_turn").is_some());
+        assert!(turn.remove("background_notification_pending").is_some());
+
+        let handover: super::ClaudeHandover =
+            serde_json::from_value(written).expect("an L12 handover is read");
+        crate::hot_reload::adopt_claude_for_tests(run.id(), handover);
+        let mut binding = initialize_claude_runtime(&run).unwrap();
+        super::stop_child(&mut binding.state.child);
     }
 
     #[test]

@@ -212,8 +212,16 @@ impl Remote {
         grant: Arc<dyn GrantedSend>,
         job_id: &str,
     ) -> Result<Located, DaemonError> {
+        let home = Self::home(grant, job_id).await?;
+        let root = format!(
+            "{}/chariox-jobs/{job_id}/workspace",
+            home.trim_end_matches('/')
+        );
+        Ok(Located { home, root })
+    }
+    async fn home(grant: Arc<dyn GrantedSend>, job_id: &str) -> Result<String, DaemonError> {
         let probe = Self::new(grant, String::new(), job_id.into());
-        let home = match probe
+        match probe
             .call(
                 "home",
                 LocalDaemonRequest::StatKernelFile(StatKernelFileRequest {
@@ -223,15 +231,46 @@ impl Remote {
             )
             .await?
         {
-            LocalDaemonResponse::KernelFileStat { stat } if stat.exists => stat.path,
-            _ => return Err(ledger::error("Job machine has no home directory")),
-        };
-        let root = format!(
-            "{}/chariox-jobs/{job_id}/workspace",
-            home.trim_end_matches('/')
-        );
-        Ok(Located { home, root })
+            LocalDaemonResponse::KernelFileStat { stat } if stat.exists => Ok(stat.path),
+            _ => Err(ledger::error("Job machine has no home directory")),
+        }
     }
+
+    pub(super) async fn without_workspace(
+        grant: Arc<dyn GrantedSend>,
+        record: &Record,
+    ) -> Result<Self, DaemonError> {
+        let command_id = format!("{}:command", record.job_id);
+        if record.request.target_directory().is_none() {
+            let home = Self::home(grant.clone(), &record.job_id).await?;
+            let room = create_target_room(&*grant, &command_id, Some(&home)).await?;
+            return Ok(Self::new(grant, room, record.job_id.clone()));
+        }
+        let directory = record.cwd.to_string_lossy();
+        let mut remote = Self::new(grant, String::new(), record.job_id.clone());
+        let answer = remote
+            .call(
+                "directory",
+                LocalDaemonRequest::StatKernelFile(StatKernelFileRequest {
+                    path: directory.to_string(),
+                    with_sha256: false,
+                }),
+            )
+            .await?;
+        let LocalDaemonResponse::KernelFileStat { stat } = answer else {
+            return Err(ledger::error(
+                "The enrolled machine did not confirm the job directory.",
+            ));
+        };
+        if !stat.exists || stat.kind != Some(KernelFileKind::Directory) {
+            return Err(ledger::error(format!(
+                "The directory {directory} is missing on the enrolled machine. Copy it there with chariox.files.copy and try again."
+            )));
+        }
+        remote.room = create_target_room(&*remote.grant, &command_id, Some(&stat.path)).await?;
+        Ok(remote)
+    }
+
     pub(super) async fn prepare(
         grant: Arc<dyn GrantedSend>,
         record: &Record,

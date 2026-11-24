@@ -944,7 +944,11 @@ impl SkillPromptBridge for SkillDispatchService {
             native,
             context_window,
             config.user_config.skills.metadata_budget_percent.get(),
-            remaining,
+            if envelope.switch_skill_budget.is_some() {
+                u64::MAX
+            } else {
+                remaining
+            },
             &generation,
             self.live_context_run_id(session_id, agent_id, run)?,
         )?;
@@ -966,24 +970,71 @@ impl SkillPromptBridge for SkillDispatchService {
                 context.native_selections.clear();
             }
         }
-        let delivery = match &inventory {
-            Some(inventory) => crate::provider::skill_delivery::prepare_skill_delivery(
-                crate::provider::canonical_provider_family(run.provider())
-                    .ok_or_else(|| failure("unsupported skill provider"))?,
-                &envelope.visible_user_prompt,
-                &context,
-                inventory,
-                prompt.skill_selections(),
-            )?,
-            None => ProviderSkillDelivery {
+        let prepare_delivery = |context: &SkillTurnContext, by_reference| match &inventory {
+            Some(inventory) => {
+                crate::provider::skill_delivery::prepare_skill_delivery_with_references(
+                    crate::provider::canonical_provider_family(run.provider())
+                        .ok_or_else(|| failure("unsupported skill provider"))?,
+                    &envelope.visible_user_prompt,
+                    context,
+                    inventory,
+                    prompt.skill_selections(),
+                    by_reference,
+                )
+            }
+            None => Ok(ProviderSkillDelivery {
                 visible_prompt: envelope.visible_user_prompt.clone(),
                 hidden_context: context.metadata.clone(),
                 codex_input: vec![],
                 requires_native_load_ack: vec![],
                 typed_leased_loads: vec![],
                 leased_names: None,
-            },
+            }),
         };
+        let mut delivery = prepare_delivery(&context, false)?;
+        let delivery_bytes = |delivery: &ProviderSkillDelivery| {
+            delivery.hidden_context.len()
+                + delivery
+                    .visible_prompt
+                    .len()
+                    .saturating_sub(envelope.visible_user_prompt.len())
+        };
+        let mut by_reference = false;
+        if let Some(budget) = envelope.switch_skill_budget {
+            let before = delivery_bytes(&delivery);
+            if before > budget.full_skill_room() {
+                by_reference = context
+                    .loaded
+                    .iter()
+                    .any(|body| !matches!(body.delivery, SkillDelivery::ProvidedBy { .. }));
+                // Discovery metadata is optional here. The admitted references
+                // still carry all selected skills and the catalog remains available.
+                context.metadata.clear();
+                delivery = prepare_delivery(&context, by_reference)?;
+                if by_reference {
+                    delivery.hidden_context.insert_str(0,
+                        "Skill bodies were omitted to fit this provider switch. Use these references to load the instructions you need.\n",
+                    );
+                }
+            }
+            let after = delivery_bytes(&delivery);
+            crate::logging::info_with_fields(
+                "daemon.provider_context_handoff",
+                "fitted provider switch skills",
+                serde_json::json!({
+                    "target_provider_run_id": run.id(),
+                    "prompt_id": prompt.id(),
+                    "skill_bytes_before": before,
+                    "skill_bytes_after": after,
+                    "skills_by_reference": by_reference,
+                }),
+            );
+            if after > budget.delivery_room.min(budget.skill_room) {
+                return Err(crate::provider::switch_turn::too_large(
+                    "the skill references together with the required turn context",
+                ));
+            }
+        }
         let extra_visible = delivery
             .visible_prompt
             .len()
@@ -999,9 +1050,22 @@ impl SkillPromptBridge for SkillDispatchService {
                 .filter(|body| body.reason == SkillLoadReason::Explicit)
                 .map(|body| body.skill_id.clone())
                 .collect(),
-            body_budget_tokens: remaining
-                .saturating_sub(context.metadata.len() as u64)
-                .saturating_sub(extra_visible),
+            body_budget_tokens: if let Some(budget) = envelope.switch_skill_budget {
+                // Reserve the maximum handoff size before allowing later skill loads.
+                let room = budget
+                    .model_room
+                    .saturating_sub(budget.preferred_handoff_bytes.min(budget.delivery_room))
+                    .saturating_sub(extra_visible as usize);
+                if by_reference {
+                    room.saturating_sub(delivery.hidden_context.len()) as u64
+                } else {
+                    room.saturating_sub(context.metadata.len()) as u64
+                }
+            } else {
+                remaining
+                    .saturating_sub(context.metadata.len() as u64)
+                    .saturating_sub(extra_visible)
+            },
             reserved_body_tokens: BTreeMap::new(),
             pending_loads: vec![],
             prompt_delivery_skill_ids: Default::default(),
@@ -1029,6 +1093,9 @@ impl SkillPromptBridge for SkillDispatchService {
                 native_tool_loads(&context.loaded, &context.native_selections, native);
         }
         for body in &context.loaded {
+            if by_reference && !matches!(body.delivery, SkillDelivery::ProvidedBy { .. }) {
+                continue;
+            }
             if !matches!(body.delivery, SkillDelivery::ProvidedBy { .. })
                 || crate::provider::canonical_provider_family(run.provider()) == Some("codex")
             {

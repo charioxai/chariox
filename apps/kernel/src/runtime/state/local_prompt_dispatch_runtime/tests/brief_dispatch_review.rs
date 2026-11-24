@@ -639,6 +639,7 @@ async fn native_policy_rebuilds_explicit_snapshot_after_room_change() {
         &fixture.prompt_id,
         false,
         String::new(),
+        None,
     );
     let context = result.unwrap();
     assert!(
@@ -677,6 +678,7 @@ async fn native_hook_rebuild_excludes_the_current_managed_prompt() {
         &fixture.prompt_id,
         false,
         String::new(),
+        None,
     )
     .unwrap();
     assert!(

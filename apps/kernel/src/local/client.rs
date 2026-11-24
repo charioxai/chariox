@@ -105,6 +105,8 @@ mod tests {
             machine_credential: None,
             cloud_session_token: Some("session-token".to_string()),
             cloud_session_expires_at_ms: None,
+            kernel_unlinked: false,
+            kernel_removal_pending: false,
             token_expires_at_ms: None,
         });
         let app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");

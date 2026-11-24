@@ -1270,7 +1270,8 @@ async fn runtime_mcp_shared_token_with_metaagent_stays_meta_only() {
                 || spec.name == crate::transport::runtime_tools::PROMOTE_AGENT_MESSAGE_TOOL
                 || spec.name == crate::transport::runtime_tools::READ_ARTIFACT_TOOL
                 || spec.name == crate::transport::runtime_tools::SEARCH_RECALL_TOOL
-                || spec.name == crate::transport::runtime_tools::QUERY_RECALL_TOOL),
+                || spec.name == crate::transport::runtime_tools::QUERY_RECALL_TOOL
+                || spec.name == crate::transport::runtime_tools::OWNER_VIEW_TOOL),
         "shared token with a metaagent run should expose only meta, agent collaboration, agent peek, read-only workspace, and recall tools: {specs:?}"
     );
 

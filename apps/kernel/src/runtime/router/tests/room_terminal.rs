@@ -156,6 +156,7 @@ fn only_the_room_owner_reaches_terminals_and_drivers_do_not_collide() {
                 rows: 30,
                 title: None,
                 command: None,
+                stdin: None,
             },
         )
         .await
@@ -586,6 +587,7 @@ fn a_one_shot_machine_resources_read_lists_the_rooms_processes() {
                 rows: 24,
                 title: None,
                 command: Some(vec!["/bin/sleep".into(), "8897".into()]),
+                stdin: None,
             },
         )
         .await
@@ -667,6 +669,7 @@ async fn agent_deletion_ends_a_detached_terminal_job(close_first: bool, name: &s
             rows: 30,
             title: None,
             command: Some(vec!["/bin/sh".into(), "-c".into(), script]),
+            stdin: None,
         },
     )
     .await

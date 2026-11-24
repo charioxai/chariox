@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 struct KernelCloudState {
     kernel_id: String,
     profile: Option<PersistedCloudRelayProfile>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    former_cloud_kernel_id: Option<String>,
     relay_url: Option<String>,
     relay_token: Option<String>,
 }
@@ -18,20 +20,17 @@ impl DaemonConfig {
     pub(super) fn kernel_cloud_state_exists(&self) -> bool {
         self.kernel_cloud_state_path().exists()
     }
-    pub(super) fn load_kernel_cloud_state(&mut self) {
-        if let Err(message) = self.read_kernel_cloud_state() {
-            panic!("{message}");
-        }
-    }
-    /// Request handlers report a corrupt or foreign state file instead of panicking.
-    pub(super) fn try_load_kernel_cloud_state(&mut self) -> Result<(), DaemonError> {
-        self.read_kernel_cloud_state()
+    pub(super) fn try_load_kernel_cloud_state(
+        &mut self,
+        relay_override: bool,
+    ) -> Result<(), DaemonError> {
+        self.read_kernel_cloud_state(relay_override)
             .map_err(|message| DaemonError::LocalTransport {
                 operation: "load kernel-private Cloud state",
                 message,
             })
     }
-    fn read_kernel_cloud_state(&mut self) -> Result<(), String> {
+    fn read_kernel_cloud_state(&mut self, relay_override: bool) -> Result<(), String> {
         let path = self.kernel_cloud_state_path();
         let bytes = match std::fs::read(&path) {
             Ok(bytes) => bytes,
@@ -45,20 +44,26 @@ impl DaemonConfig {
         };
         let state: KernelCloudState = serde_json::from_slice(&bytes)
             .map_err(|_| format!("invalid kernel-private Cloud state at {}", path.display()))?;
-        if state.kernel_id != self.daemon_id
-            || state
-                .profile
-                .as_ref()
-                .and_then(|p| p.kernel_id.as_deref())
-                .is_some_and(|id| id != self.daemon_id)
-        {
-            return Err(
-                "Cloud credential belongs to another kernel; use a separate state root".into(),
-            );
+        let foreign_kernel_id = std::iter::once(state.kernel_id.as_str())
+            .chain(state.profile.as_ref().and_then(|p| p.kernel_id.as_deref()))
+            .find(|id| *id != self.daemon_id);
+        if let Some(id) = foreign_kernel_id {
+            return Err(format!(
+                "This home's Cloud link belongs to kernel {id:?}, and this address starts kernel {:?}. Start it at its original address, or use a new kernel home and link it to Cloud.",
+                self.daemon_id,
+            ));
         }
-        self.cloud_relay = state.profile;
-        self.relay_url = state.relay_url;
-        self.relay_token = state.relay_token;
+        self.persisted_cloud_kernel_id = state
+            .profile
+            .as_ref()
+            .and_then(PersistedCloudRelayProfile::enrolled_kernel_id)
+            .map(str::to_owned);
+        self.former_cloud_kernel_id = state.former_cloud_kernel_id;
+        if !relay_override {
+            self.cloud_relay = state.profile;
+            self.relay_url = state.relay_url;
+            self.relay_token = state.relay_token;
+        }
         Ok(())
     }
     pub(super) fn persist_kernel_cloud_state(&self) -> Result<(), DaemonError> {
@@ -93,6 +98,7 @@ impl DaemonConfig {
         let bytes = serde_json::to_vec_pretty(&KernelCloudState {
             kernel_id: self.daemon_id.clone(),
             profile: self.cloud_relay.clone(),
+            former_cloud_kernel_id: self.former_cloud_kernel_id.clone(),
             relay_url: self.relay_url.clone(),
             relay_token: self.relay_token.clone(),
         })
@@ -111,6 +117,35 @@ impl DaemonConfig {
 mod tests {
     use super::*;
     #[test]
+    fn config_loading_refuses_a_cloud_link_at_a_different_address() {
+        crate::test_support::isolated_env_test!();
+        let home = crate::test_support::TestTempDir::new("foreign-cloud-link");
+        std::env::set_var("CHARIOX_HOME", home.path());
+        std::env::set_var("CHARIOX_KERNEL_HOST", "127.0.0.1");
+        std::env::set_var("CHARIOX_KERNEL_PORT", "43118");
+        std::fs::write(
+            home.join("config.toml"),
+            "[state]\npath = \"~/.chariox/shared/state.db\"\n",
+        )
+        .unwrap();
+        let mut original = DaemonConfig::load_from_env().unwrap();
+        original.cloud_relay = Some(PersistedCloudRelayProfile {
+            kernel_id: Some(original.daemon_id.clone()),
+            ..Default::default()
+        });
+        original.persist_kernel_cloud_state().unwrap();
+        assert_eq!(
+            DaemonConfig::load_from_env().unwrap().cloud_relay,
+            original.cloud_relay
+        );
+
+        std::env::set_var("CHARIOX_KERNEL_PORT", "43119");
+        let error = DaemonConfig::load_from_env().err().unwrap().to_string();
+        assert!(error.contains(&original.daemon_id));
+        assert!(error.contains("Start it at its original address"));
+    }
+
+    #[test]
     fn mp08_mp11_relay_override_persistence_preserves_kernel_enrollment() {
         let root = crate::test_support::TestWorktree::new("relay-override-enrollment");
         let mut config = DaemonConfig::for_tests();
@@ -128,7 +163,7 @@ mod tests {
         config.relay_token = Some("synthetic-private-relay".into());
         config.persist_relay_config().unwrap();
         let mut restarted = config.clone();
-        restarted.load_kernel_cloud_state();
+        restarted.try_load_kernel_cloud_state(false).unwrap();
         assert_eq!(restarted.cloud_relay, Some(profile));
         assert_eq!(restarted.relay_url, config.relay_url);
     }
@@ -156,11 +191,59 @@ mod tests {
     }
 
     #[test]
+    fn kernel_map_loads_cloud_identity_with_an_explicit_relay_override() {
+        crate::test_support::isolated_env_test!();
+        let _env = crate::env_lock::lock();
+        let root = crate::test_support::TestTempDir::new("kernel-map-override");
+        std::env::set_var("CHARIOX_HOME", root.path());
+        std::env::set_var("CHARIOX_DAEMON_ID", "fixture-kernel");
+        std::env::remove_var("CHARIOX_RELAY_URL");
+        std::env::remove_var("CHARIOX_RELAY_TOKEN");
+        std::env::remove_var("CHARIOX_CLOUD_RELAY_CONFIG_JSON");
+
+        let mut enrolled = DaemonConfig::load_from_env().unwrap();
+        enrolled.relay_url = Some("wss://cloud.example.invalid".into());
+        enrolled.relay_token = Some("synthetic-cloud-relay".into());
+        enrolled
+            .persist_cloud_relay_profile(Some(PersistedCloudRelayProfile {
+                kernel_id: Some("fixture-kernel".into()),
+                kernel_credential: Some("synthetic-kernel-grant".into()),
+                ..Default::default()
+            }))
+            .unwrap();
+
+        std::env::set_var("CHARIOX_RELAY_URL", "ws://127.0.0.1:2");
+        std::env::set_var("CHARIOX_RELAY_TOKEN", "synthetic-private-relay");
+        let restarted = DaemonConfig::load_from_env().unwrap();
+        assert_eq!(restarted.enrolled_cloud_kernel_id(), Some("fixture-kernel"));
+        assert!(restarted.cloud_relay.is_none());
+        assert_eq!(restarted.relay_url.as_deref(), Some("ws://127.0.0.1:2"));
+        assert_eq!(
+            restarted.relay_token.as_deref(),
+            Some("synthetic-private-relay")
+        );
+
+        enrolled.persist_cloud_relay_profile(None).unwrap();
+        assert!(enrolled.enrolled_cloud_kernel_id().is_none());
+        let unlinked = DaemonConfig::load_from_env().unwrap();
+        assert!(unlinked.enrolled_cloud_kernel_id().is_none());
+        assert_eq!(
+            unlinked.former_cloud_kernel_id.as_deref(),
+            Some("fixture-kernel")
+        );
+        assert!(unlinked.cloud_relay.is_none());
+        assert_eq!(unlinked.relay_url.as_deref(), Some("ws://127.0.0.1:2"));
+    }
+
+    #[test]
     fn kernel_cloud_state_is_private_independent_and_unlink_is_durable() {
+        crate::test_support::isolated_env_test!();
+        let _env = crate::env_lock::lock();
         let root = std::env::temp_dir().join(format!(
             "chariox-kernel-cloud-store-{}",
             rand::random::<u64>()
         ));
+        std::env::set_var("CHARIOX_HOME", &root);
         let make = |id: &str| {
             let mut config = DaemonConfig::new(id, "machine-fixture", "fixture");
             config.user_config.state.path =
@@ -175,7 +258,7 @@ mod tests {
         });
         a.persist_kernel_cloud_state().unwrap();
         let mut b = make("b");
-        b.load_kernel_cloud_state();
+        b.try_load_kernel_cloud_state(false).unwrap();
         assert!(b.cloud_relay.is_none());
         b.cloud_relay = Some(PersistedCloudRelayProfile {
             kernel_id: Some("b".into()),
@@ -184,7 +267,7 @@ mod tests {
         });
         b.persist_kernel_cloud_state().unwrap();
         let mut restarted = make("a");
-        restarted.load_kernel_cloud_state();
+        restarted.try_load_kernel_cloud_state(false).unwrap();
         assert_eq!(
             restarted.cloud_relay.unwrap().kernel_id.as_deref(),
             Some("a")
@@ -201,15 +284,16 @@ mod tests {
                 0o600
             );
         }
-        a.cloud_relay = None;
+        a.persist_cloud_relay_profile(None).unwrap();
         a.relay_url = None;
         a.relay_token = None;
         a.persist_kernel_cloud_state().unwrap();
         let mut restarted = make("a");
         restarted.cloud_relay = b.cloud_relay.clone(); // legacy fallback must not resurrect authority
-        restarted.load_kernel_cloud_state();
+        restarted.try_load_kernel_cloud_state(false).unwrap();
         assert!(restarted.cloud_relay.is_none());
-        b.load_kernel_cloud_state();
+        assert_eq!(restarted.former_cloud_kernel_id.as_deref(), Some("a"));
+        b.try_load_kernel_cloud_state(false).unwrap();
         assert_eq!(b.cloud_relay.unwrap().kernel_id.as_deref(), Some("b"));
         std::fs::remove_dir_all(root).unwrap();
     }

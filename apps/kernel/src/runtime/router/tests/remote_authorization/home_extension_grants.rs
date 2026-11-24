@@ -2,6 +2,7 @@ use super::*;
 
 #[test]
 fn home_owner_controls_extension_grants_for_collaborator_remote_agent() {
+    crate::test_support::isolated_env_test!();
     run_remote_authorization_large_stack_test(
         "home-owner-controls-extension-grants",
         home_owner_controls_extension_grants_for_collaborator_remote_agent_inner,

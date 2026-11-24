@@ -122,6 +122,8 @@ impl Kernel {
             machine_credential: None,
             cloud_session_token: None,
             cloud_session_expires_at_ms: None,
+            kernel_unlinked: false,
+            kernel_removal_pending: false,
             token_expires_at_ms: None,
         });
         let scratch = Scratch(
@@ -209,6 +211,8 @@ struct Grant {
     kernel_id: String,
     endpoint_epoch: String,
     expires_at_ms: u64,
+    #[serde(default)]
+    expires_in_ms: Option<u64>,
 }
 
 type ClientSocket =
@@ -752,6 +756,8 @@ fn mp11_authority_tracks_pairing_origin_and_kernel_key() {
         machine_credential: None,
         cloud_session_token: None,
         cloud_session_expires_at_ms: None,
+        kernel_unlinked: false,
+        kernel_removal_pending: false,
         token_expires_at_ms: None,
     });
     let paired = current_authority(&config).unwrap();
@@ -813,12 +819,12 @@ fn mp08_mp11_local_browser_wire_is_bound_to_protocol473() {
         "request": {"local_browser_connect": {}},
         "terminal_request": {"local_terminal_connect": {}},
         "terminal_renew_request": {"local_terminal_renew": {"grant": "grant", "sequence": 1}},
-        "terminal_response": ["LocalTerminalConnectIssued", "endpoint", "grant", "kernel_id", "endpoint_epoch", "expires_at_ms", "paired_origin"],
-        "terminal_renew_response": ["LocalTerminalLeaseRenewed", "expires_at_ms", "next_sequence"],
+        "terminal_response": ["LocalTerminalConnectIssued", "endpoint", "grant", "kernel_id", "endpoint_epoch", "expires_at_ms", "expires_in_ms", "paired_origin"],
+        "terminal_renew_response": ["LocalTerminalLeaseRenewed", "expires_at_ms", "expires_in_ms", "next_sequence"],
         "renew_request": {"local_browser_renew": {"grant": "grant", "sequence": 1}},
-        "renew_response": ["LocalBrowserLeaseRenewed", "expires_at_ms", "next_sequence"],
+        "renew_response": ["LocalBrowserLeaseRenewed", "expires_at_ms", "expires_in_ms", "next_sequence"],
         "lease_ms": GRANT_TTL_MS,
-        "response": ["LocalBrowserConnectIssued", "endpoint", "grant", "kernel_id", "endpoint_epoch", "expires_at_ms"],
+        "response": ["LocalBrowserConnectIssued", "endpoint", "grant", "kernel_id", "endpoint_epoch", "expires_at_ms", "expires_in_ms"],
         "proof": ["grant", "challenge", "origin", "kernel_id", "endpoint_epoch"],
         "kernel_proof": ["grant", "challenge"],
         "client": connect,
@@ -826,7 +832,7 @@ fn mp08_mp11_local_browser_wire_is_bound_to_protocol473() {
     });
     assert_eq!(
         format!("{:x}", Sha256::digest(serde_json::to_vec(&wire).unwrap())),
-        "1d76b5e7fa463afc67e4222a1b7ef74061b906c5846356b12fd2035422bdc473"
+        "a7aa8101f39b0aa2f17c80e6e9a5c03692b206453bdf5460e13874ea6bb6fe7a"
     );
 }
 
@@ -1105,6 +1111,25 @@ fn mp11_relay_renewal_extends_the_socket_only_to_short_identity_expiry() {
             "expired socket revived"
         );
     });
+}
+
+/// Redeems a grant over its loopback endpoint and waits until the kernel holds its lease: only a redeemed grant renews.
+async fn redeemed(kernel: &Kernel, browser: &Browser, grant: &Grant) -> ClientSocket {
+    let (socket, verdict) = connect(kernel, browser, grant).await;
+    assert_eq!(verdict["kind"], "local_connected");
+    for _ in 0..100 {
+        if kernel
+            .direct
+            .leases
+            .lock()
+            .unwrap()
+            .contains_key(&grant.grant)
+        {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    socket
 }
 
 fn renewed_lease(browser: &Browser, outcome: RelayRequestOutcome) -> serde_json::Value {
@@ -1988,6 +2013,231 @@ fn mp08_webrtc_answer_offers_the_address_the_relay_stun_responder_sees() {
         let grant = issued["grant"].as_str().unwrap().to_owned();
         let verdict = rtc_handshake(&kernel, &browser, &mut client, &issued, &grant).await;
         assert_eq!(verdict["kind"], "local_connected", "{verdict}");
+    });
+}
+
+/// c#794 review (row 236): a grant's end is in the kernel's clock, and it can be shorter than the 30 s maximum (bounded by the caller's
+/// identity). Each grant and renewal answer also says how long it lasts from now, so a page whose clock is off by any amount renews it
+/// before it ends.
+#[test]
+fn row236_grant_and_renewal_answers_carry_the_remaining_lifetime() {
+    large_stack(async {
+        let kernel = Kernel::new();
+        let browser = Browser::new();
+        let (_client, offer) = RtcClient::offer();
+        let issued = kernel.mint_rtc(&browser, &offer).await;
+        let first = issued["expires_in_ms"]
+            .as_u64()
+            .expect("the connect answer says how long the grant lasts");
+        assert!(first > 29_000 && first <= GRANT_TTL_MS, "{issued}");
+        let grant = kernel.mint(&browser, browser.identity()).await.unwrap();
+        let _socket = redeemed(&kernel, &browser, &grant).await;
+        let mut short = browser.identity();
+        short.expires_at_ms = crate::session::unix_epoch_ms() + 15_000;
+        let outcome = renew(&kernel, &browser, short, &grant, 1, true).await;
+        assert!(outcome.error.is_none(), "{:?}", outcome.error);
+        let plaintext = relay_crypto::decrypt_payload_for_private_key(
+            &browser.private_key,
+            &outcome.encrypted_response.unwrap(),
+        )
+        .unwrap();
+        let answer: serde_json::Value = serde_json::from_slice(&plaintext.plaintext).unwrap();
+        let renewed = answer["LocalBrowserLeaseRenewed"]["expires_in_ms"]
+            .as_u64()
+            .expect("the renewal answer says how long it lasts");
+        assert!(
+            renewed > 14_000 && renewed <= 15_000,
+            "a grant shortened by its identity lasts what remains of it: {answer}"
+        );
+    });
+}
+
+/// Local 1014 (provisional): the snapshot pins the four grant answers that carry `expires_in_ms`, and the kernel's own answers
+/// carry every field it names.
+#[test]
+fn mp08_local_browser_expires_in_1014_snapshot_and_hash() {
+    use sha2::{Digest, Sha256};
+    let bytes = include_bytes!(
+        "../../../local/api/tests/protocol_shapes/local-browser-expires-in-1014.json"
+    );
+    assert_eq!(
+        format!("{:x}", Sha256::digest(bytes)),
+        "74c749fe8226dfe091763e76d8339b353f1cce15a4dd70d4ca9fe8fb295b6740"
+    );
+    let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    assert_eq!(
+        fixture["local_protocol"],
+        crate::local::LOCAL_DAEMON_PROTOCOL_VERSION
+    );
+    let fields = |name: &str| -> Vec<String> {
+        fixture[name]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|field| field.as_str().unwrap().to_owned())
+            .collect()
+    };
+    let connect_fields = fields("LocalBrowserConnectIssued");
+    let mut renew_fields = fields("LocalBrowserLeaseRenewed");
+    renew_fields.sort();
+    large_stack(async move {
+        let kernel = Kernel::new();
+        let browser = Browser::new();
+        let (_client, offer) = RtcClient::offer();
+        let issued = kernel.mint_rtc(&browser, &offer).await;
+        for field in [
+            "answer",
+            "grant",
+            "kernel_id",
+            "endpoint_epoch",
+            "expires_at_ms",
+            "expires_in_ms",
+        ] {
+            assert!(
+                issued.get(field).is_some(),
+                "WebRTC connect answer lacks {field}: {issued}"
+            );
+        }
+        // The loopback connect answer is the snapshot's LocalBrowserConnectIssued: Grant parses every other field it names.
+        let mut pinned = connect_fields.clone();
+        pinned.sort();
+        assert_eq!(
+            pinned,
+            [
+                "endpoint",
+                "endpoint_epoch",
+                "expires_at_ms",
+                "expires_in_ms",
+                "grant",
+                "kernel_id"
+            ]
+        );
+        let grant = kernel.mint(&browser, browser.identity()).await.unwrap();
+        assert!(
+            grant
+                .expires_in_ms
+                .is_some_and(|ms| ms > 29_000 && ms <= GRANT_TTL_MS),
+            "{grant:?}"
+        );
+        let _socket = redeemed(&kernel, &browser, &grant).await;
+        let outcome = renew(&kernel, &browser, browser.identity(), &grant, 1, true).await;
+        let renewed = renewed_lease(&browser, outcome);
+        let mut keys: Vec<String> = renewed.as_object().unwrap().keys().cloned().collect();
+        keys.sort();
+        assert_eq!(keys, renew_fields, "{renewed}");
+    });
+    for name in ["LocalTerminalConnectIssued", "LocalTerminalLeaseRenewed"] {
+        assert!(
+            fields(name).iter().any(|field| field == "expires_in_ms"),
+            "{name}"
+        );
+    }
+}
+
+/// Row 252 (webperf-r18 lab): the kernel's grant waited for its STUN lookup (300 + 400 ms when nothing answers) before it answered,
+/// and the browser's first transcript waited for the grant. An unanswered lookup no longer holds the answer: it carries the host
+/// candidates at once, and the host path still connects.
+#[test]
+fn row252_an_unanswered_stun_lookup_does_not_hold_the_webrtc_answer() {
+    large_stack(async {
+        // A STUN responder that never answers.
+        let silent = tokio::net::UdpSocket::bind(("127.0.0.2", 0)).await.unwrap();
+        let stun_port = silent.local_addr().unwrap().port();
+        let kernel = Kernel::build_with_rtc(
+            true,
+            Some(0),
+            rtc::RtcEndpoint::new(Some(0), Arc::new(rtc::host_addresses)).with_stun_port(stun_port),
+        );
+        let mut config = kernel.projection.snapshot();
+        config.relay_url = Some("wss://127.0.0.2:8443/".into());
+        kernel.projection.update(config);
+        let browser = Browser::new();
+        for round in 0..2 {
+            let (mut client, offer) = RtcClient::offer();
+            let started = std::time::Instant::now();
+            let issued = kernel.mint_rtc(&browser, &offer).await;
+            let waited = started.elapsed();
+            assert!(
+                waited < std::time::Duration::from_millis(250),
+                "round {round}: the answer waited {waited:?} for STUN"
+            );
+            let answer = issued["answer"].as_str().expect("an SDP answer");
+            assert!(
+                answer.lines().any(|line| line.contains(" typ host")),
+                "{answer}"
+            );
+            client.accept(answer);
+            let grant = issued["grant"].as_str().unwrap().to_owned();
+            let verdict = rtc_handshake(&kernel, &browser, &mut client, &issued, &grant).await;
+            assert_eq!(
+                verdict["kind"], "local_connected",
+                "round {round}: {verdict}"
+            );
+        }
+        drop(silent);
+    });
+}
+
+/// Row 252: the reflexive address is learned once per endpoint and reused, so later answers neither wait for nor repeat the lookup.
+#[test]
+fn row252_a_later_webrtc_answer_reuses_the_reflexive_address_without_asking_again() {
+    large_stack(async {
+        let mapped_ip: std::net::IpAddr = "203.0.113.9".parse().unwrap();
+        let responder = tokio::net::UdpSocket::bind(("127.0.0.2", 0)).await.unwrap();
+        let stun_port = responder.local_addr().unwrap().port();
+        let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = Arc::clone(&asked);
+        tokio::spawn(async move {
+            let mut buf = [0_u8; 1500];
+            while let Ok((len, source)) = responder.recv_from(&mut buf).await {
+                counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let mapped = std::net::SocketAddr::new(mapped_ip, source.port());
+                if let Some(answer) = chariox_relay::stun::binding_response(&buf[..len], mapped) {
+                    let _ = responder.send_to(&answer, source).await;
+                }
+            }
+        });
+        let kernel = Kernel::build_with_rtc(
+            true,
+            Some(0),
+            rtc::RtcEndpoint::new(Some(0), Arc::new(rtc::host_addresses)).with_stun_port(stun_port),
+        );
+        let mut config = kernel.projection.snapshot();
+        config.relay_url = Some("wss://127.0.0.2:8443/".into());
+        kernel.projection.update(config);
+        let browser = Browser::new();
+        let (_first_client, first_offer) = RtcClient::offer();
+        let first = kernel.mint_rtc(&browser, &first_offer).await;
+        assert!(
+            first["answer"]
+                .as_str()
+                .unwrap()
+                .lines()
+                .any(|line| line.contains(" typ srflx")),
+            "{first}"
+        );
+        let after_first = asked.load(std::sync::atomic::Ordering::SeqCst);
+        let (_second_client, second_offer) = RtcClient::offer();
+        let started = std::time::Instant::now();
+        let second = kernel.mint_rtc(&browser, &second_offer).await;
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(100),
+            "the second answer waited {:?}",
+            started.elapsed()
+        );
+        assert!(
+            second["answer"]
+                .as_str()
+                .unwrap()
+                .lines()
+                .any(|line| line.contains(" typ srflx") && line.contains("203.0.113.9")),
+            "{second}"
+        );
+        assert_eq!(
+            asked.load(std::sync::atomic::Ordering::SeqCst),
+            after_first,
+            "the known reflexive address is not asked for again"
+        );
     });
 }
 

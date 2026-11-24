@@ -50,6 +50,7 @@ import {
   navigateBrowserHistory,
 } from "./browser-controller-history.mjs";
 import { BrowserPagePermissions } from './browser-page-permissions.mjs';
+import { BrowserPageFonts } from './browser-page-fonts.mjs';
 import { BrowserDialogDefaults } from "./browser-controller-dialogs.mjs";
 import { applyBrowserBar } from "./browser-controller-bar.mjs";
 import { acquireBrowserCookieWriterFence } from "./browser-controller-cookie-fence.mjs";
@@ -154,6 +155,8 @@ export class BrowserCdpClient {
     this.fillRevision = 0;
     this.dialogDefaults = new BrowserDialogDefaults();
     this.pagePermissions = permissionRequests ? new BrowserPagePermissions(this) : null;
+    // F5: faces a page makes by script reach the mirror as @font-face rules (browser-page-fonts.mjs).
+    this.pageFonts = new BrowserPageFonts(this);
     this.networkRequestsBySession = new Map();
     this.responseBodies = new BrowserResponseBodies();
     this.cookieWriterFence = null;
@@ -409,6 +412,7 @@ export class BrowserCdpClient {
     this.fillTargets.clear();
     this.snapshotStateByTarget.clear();
     this.pagePermissions?.clear();
+    this.pageFonts.clear();
     this.dialogDefaults.clear();
     this.networkRequestsBySession.clear();
     this.responseBodies.clear();
@@ -541,6 +545,7 @@ export class BrowserCdpClient {
     const failed = results.find((result) => result.status === "rejected");
     if (failed) throw failed.reason;
     await this.pagePermissions?.install(connection, sessionId);
+    await this.pageFonts.install(connection, sessionId);
   }
 
   async configureWriterTargetSession(connection, sessionId) {
@@ -668,6 +673,7 @@ export class BrowserCdpClient {
     this.focusWorldsByTarget.delete(targetId);
     this.snapshotStateByTarget.delete(targetId);
     this.pagePermissions?.dropTarget(targetId);
+    this.pageFonts.dropTarget(targetId);
     this.dialogDefaults.delete(targetId);
     this.targetsByFrame.removeTarget(targetId);
     await this.frameSessions.removeTarget(targetId);
@@ -1598,6 +1604,7 @@ export class BrowserCdpClient {
   recordConnectionEvent(message) {
     this.webBotAuth.observe(message);
     this.pagePermissions?.observe(message);
+    this.pageFonts.observe(message);
     this.rendererRecovery.observe(message);
     this.responseBodies.observe(message);
     if (message?.method === "Network.requestWillBeSent" && typeof message.sessionId === "string"
@@ -1639,6 +1646,7 @@ export class BrowserCdpClient {
         this.viewportByTarget.delete(targetId);
         this.focusWorldsByTarget.delete(targetId);
         this.pagePermissions?.dropTarget(targetId);
+        this.pageFonts.dropTarget(targetId);
         this.dialogDefaults.delete(targetId);
         this.targetsByFrame.removeTarget(targetId);
         void this.frameSessions.removeTarget(targetId);

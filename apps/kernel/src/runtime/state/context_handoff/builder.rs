@@ -192,11 +192,41 @@ impl AgentConversation {
         self.render_framed(
             max_bytes,
             &format!("{HANDOFF_OPEN}\n{HANDOFF_LEAD} {HANDOFF_COPY_RULES}\n\n"),
+            false,
         )
     }
 
-    fn render_framed(&self, max_bytes: usize, open: &str) -> Option<String> {
-        let (brief, facts) = (self.brief.as_deref(), self.facts.render(max_bytes));
+    pub(super) fn task_brief(&self) -> String {
+        self.brief.clone().unwrap_or_else(|| {
+            self.turns
+                .iter()
+                .find(|turn| !turn.user_prompt.trim().is_empty())
+                .map(|turn| {
+                    format!(
+                        "Original request: {}",
+                        truncate_bytes(turn.user_prompt.trim(), 1_200)
+                    )
+                })
+                .unwrap_or_else(|| "The active request supplies the task.".into())
+        })
+    }
+
+    pub(super) fn render_switch_summary(&self, max_bytes: usize) -> Option<String> {
+        let open = format!(
+            "{HANDOFF_OPEN}\n{HANDOFF_LEAD} {HANDOFF_COPY_RULES}\n\nThe switch shortened the handoff. Bulky tool output and older turns may be omitted. Use chariox.search_recall for the original records.\n\n"
+        );
+        self.render_framed(max_bytes, &open, true)
+    }
+
+    fn render_framed(&self, max_bytes: usize, open: &str, compact: bool) -> Option<String> {
+        let fallback_brief;
+        let brief = if compact && self.brief.is_none() {
+            fallback_brief = self.task_brief();
+            fallback_brief.as_str()
+        } else {
+            self.brief.as_deref().unwrap_or_default()
+        };
+        let facts = self.facts.render(max_bytes);
         let (latest, prior) = self.turns.split_last()?;
         let mut packet = open.to_string();
         let mut room = max_bytes.checked_sub(packet.len() + HANDOFF_CLOSE.len())?;
@@ -207,12 +237,14 @@ impl AgentConversation {
             text
         };
         let fit = |header: &str, room: usize| room.saturating_sub(header.len() + 2);
+        let brief_header = if compact && self.brief.is_none() {
+            "Task brief:\n"
+        } else {
+            BRIEF_HEADER
+        };
         let brief = section(
-            BRIEF_HEADER,
-            truncate_bytes(
-                brief.unwrap_or_default().trim(),
-                fit(BRIEF_HEADER, room) / 2,
-            ),
+            brief_header,
+            truncate_bytes(brief.trim(), fit(brief_header, room) / 2),
             &mut room,
         );
         let latest = section(
@@ -220,20 +252,27 @@ impl AgentConversation {
             format_latest_turn(
                 latest,
                 fit(LATEST_TURN_HEADER, room).min(MAX_LATEST_TURN_BYTES),
+                !compact,
             ),
             &mut room,
         );
+        if compact && (brief.is_empty() || latest.is_empty()) {
+            return None;
+        }
         let facts = section(
             FACTS_HEADER,
-            truncate_bytes(&facts, fit(FACTS_HEADER, room) / 2),
+            truncate_bytes(
+                &facts,
+                fit(FACTS_HEADER, room) / if compact { 4 } else { 2 },
+            ),
             &mut room,
         );
-        let prior = format_prior_turns(prior, fit(PRIOR_TURNS_HEADER, room));
+        let prior = format_prior_turns(prior, fit(PRIOR_TURNS_HEADER, room), !compact);
         if latest.is_empty() && prior.is_empty() {
             return None;
         }
         for (header, text) in [
-            (BRIEF_HEADER, brief),
+            (brief_header, brief),
             (FACTS_HEADER, facts),
             (PRIOR_TURNS_HEADER, prior),
             (LATEST_TURN_HEADER, latest),
@@ -262,7 +301,7 @@ pub(super) fn build_recreated_lease_context(
     );
     AgentConversation::from_events(events)
         .before_prompt(prompt_id)
-        .render_framed(max_bytes, &open)
+        .render_framed(max_bytes, &open, false)
 }
 
 #[derive(Debug, Clone, Default)]
@@ -420,7 +459,7 @@ fn prompt_text(turn: &HandoffTurn, max_bytes: usize) -> String {
     truncate_bytes(&transcript_text(&turn.user_prompt), max_bytes)
 }
 
-fn format_prior_turns(turns: &[HandoffTurn], budget: usize) -> String {
+fn format_prior_turns(turns: &[HandoffTurn], budget: usize, include_details: bool) -> String {
     // MP-08 / MP-10 / MP-11: shortening is a budget fallback. A generous
     // target window must not replace a remembered filename or result with a
     // clipped copy while describing the transcript as verbatim.
@@ -459,7 +498,11 @@ fn format_prior_turns(turns: &[HandoffTurn], budget: usize) -> String {
             })
     };
     // Bulk tools must not push a fitting original answer into the clipped fallback.
-    if let Some(complete) = complete(true).or_else(|| complete(false)) {
+    if let Some(complete) = include_details
+        .then(|| complete(true))
+        .flatten()
+        .or_else(|| complete(false))
+    {
         return complete;
     }
     let Some(mut room) = budget.checked_sub(omitted_turns_line(turns.len()).len() + 1) else {
@@ -486,11 +529,23 @@ fn format_prior_turns(turns: &[HandoffTurn], budget: usize) -> String {
         })
         .collect::<Vec<_>>();
     let mut first = turns.len();
+    let mut recent_answers = 0;
+    if !include_details {
+        for (user, answer) in users.iter().zip(&answers).skip(recent_from).rev() {
+            let cost = user.len() + 1 + answer.as_ref().map_or(0, |line| line.len() + 1);
+            if cost > room {
+                break;
+            }
+            room -= cost;
+            first -= 1;
+            recent_answers += 1;
+        }
+    }
     while first > 0 && users[first - 1].len() < room {
         first -= 1;
         room -= users[first].len() + 1;
     }
-    let mut answered_from = turns.len();
+    let mut answered_from = turns.len() - recent_answers;
     while answered_from > first {
         let cost = answers[answered_from - 1]
             .as_ref()
@@ -517,7 +572,7 @@ fn omitted_turns_line(count: usize) -> String {
     format!("- ({count} earlier turns omitted; find them with the chariox.search_recall tool.)")
 }
 
-fn format_latest_turn(turn: &HandoffTurn, max_bytes: usize) -> String {
+fn format_latest_turn(turn: &HandoffTurn, max_bytes: usize, include_details: bool) -> String {
     let mut complete = vec![if turn.user_prompt.is_empty() {
         "- Interrupted attempt of the current request:".to_string()
     } else {
@@ -527,12 +582,15 @@ fn format_latest_turn(turn: &HandoffTurn, max_bytes: usize) -> String {
     if !answer.trim().is_empty() {
         complete.push(format!("- Assistant output: {}", answer.trim()));
     }
-    let details = turn
-        .latest_details
-        .iter()
-        .map(|(_, line)| line.as_str())
-        .collect::<Vec<_>>()
-        .join("\n");
+    let details = if include_details {
+        turn.latest_details
+            .iter()
+            .map(|(_, line)| line.as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
+    } else {
+        String::new()
+    };
     if !details.is_empty() {
         complete.push(format!(
             "- Latest-turn tool/status/error details:\n{details}"
@@ -555,15 +613,7 @@ fn format_latest_turn(turn: &HandoffTurn, max_bytes: usize) -> String {
     if !assistant.trim().is_empty() {
         lines.push(format!("- Assistant output: {}", assistant.trim()));
     }
-    let details = truncate_bytes(
-        &turn
-            .latest_details
-            .iter()
-            .map(|(_, line)| line.as_str())
-            .collect::<Vec<_>>()
-            .join("\n"),
-        MAX_LATEST_ITEM_BYTES * 2,
-    );
+    let details = truncate_bytes(&details, MAX_LATEST_ITEM_BYTES * 2);
     if !details.trim().is_empty() {
         lines.push(format!(
             "- Latest-turn tool/status/error details:\n{}",
@@ -650,6 +700,44 @@ mod tests {
     use super::*;
     use crate::history::{HistoryEventTurnContext, SessionHistoryEntry};
     use crate::terminal::TerminalOutputKind;
+
+    #[test]
+    fn switch_summary_preserves_the_task_and_recent_turns_before_tool_output() {
+        let mut conversation = AgentConversation {
+            turns: (0..12)
+                .map(|index| HandoffTurn {
+                    user_prompt: format!("request {index} {}", "input ".repeat(80)),
+                    assistant_outputs: vec![format!("answer {index} {}", "work ".repeat(80))],
+                    latest_details: vec![(
+                        None,
+                        format!("tool output {index} {}", "log ".repeat(200)),
+                    )],
+                    ..HandoffTurn::default()
+                })
+                .collect(),
+            brief: Some("Keep the amber task brief".into()),
+            ..AgentConversation::default()
+        };
+        let full = conversation.render(24_000).unwrap();
+        assert!(full.contains("tool output 11"));
+        let compact = conversation.render_switch_summary(3_200).unwrap();
+        assert!(compact.len() <= 3_200);
+        for text in [
+            "Keep the amber task brief",
+            "request 11",
+            "answer 11",
+            "request 10",
+            "answer 10",
+            "shortened the handoff",
+        ] {
+            assert!(compact.contains(text), "{text} missing from {compact}");
+        }
+        assert!(!compact.contains("tool output 11"));
+        assert!(conversation.render_switch_summary(32).is_none());
+        conversation.brief = None;
+        let compact = conversation.render_switch_summary(3_200).unwrap();
+        assert!(compact.contains("Original request: request 0"));
+    }
 
     // MP-08 / MP-10 / MP-11: recovery has room for the original exact record.
     #[test]

@@ -127,11 +127,25 @@ impl WorkspaceCoordinator {
             .cloned()
         {
             state.contended.insert(conflict.claim_id);
+            // The workflow attachment identifies the run and its node. Only report a
+            // run visible in the requesting Room.
+            let existing_workflow_run_id = if conflict.session_id == session_id
+                && conflict.operation == "workflow_node_dispatch"
+            {
+                conflict
+                    .attachment_id
+                    .as_deref()
+                    .and_then(|attachment| attachment.split_once(':'))
+                    .map(|(run_id, _)| Box::new(run_id.to_owned()))
+            } else {
+                None
+            };
             return Err(DaemonError::WorkspaceClaimConflict {
                 workspace_id,
                 worktree_id,
                 existing_session_id: conflict.session_id,
                 existing_operation: Box::new(conflict.operation),
+                existing_workflow_run_id,
                 requested_session_id: session_id,
                 requested_operation: Box::new(operation.to_string()),
             });

@@ -1,3 +1,4 @@
+import { drillEnvironment, drillOwner } from "../../../scripts/lib/drill-docker-owner.mjs"
 import {linkManagedSliceProviderProfile} from "./lib/managed-slice-provider-profile.mjs"
 import {requireScopedProviderPath,withPrivateDrillRuntime} from "./lib/private-drill-runtime.mjs"
 import { execFile, spawn } from "node:child_process"
@@ -371,6 +372,7 @@ async function dismissCodexUpdatePromptIfPresent(screenName, logFile) {
 }
 
 async function runDrill(privateRoot) {
+  const drill = drillEnvironment(drillOwner(import.meta.url))
   const options = parseArgs(process.argv.slice(2))
   if (options.help) {
     printHelp()
@@ -549,6 +551,7 @@ async function runDrill(privateRoot) {
         XDG_CACHE_HOME: xdgCacheHome,
         ...(options.providers.includes("codex")?{CODEX_HOME: requireScopedProviderPath(process.env,"CODEX_HOME")} : {}),
         OPENCODE_CONFIG_DIR: options.providers.includes("opencode") ? requireScopedProviderPath(process.env,"OPENCODE_CONFIG_DIR") : undefined,
+        ...drill,
         CHARIOX_HOME: path.join(root,"kernel-home"),
         CHARIOX_LOG_DIR: path.join(root, "logs"),
         CHARIOX_KERNEL_PORT: String(ports.kernelPort),
@@ -586,6 +589,7 @@ async function runDrill(privateRoot) {
           ...(options.providers.includes("codex")?{CODEX_HOME: requireScopedProviderPath(process.env,"CHARIOX_DRILL_WORKER_CODEX_HOME")} : {}),
           OPENCODE_CONFIG_DIR: options.providers.includes("opencode") ? requireScopedProviderPath(process.env,"CHARIOX_DRILL_WORKER_OPENCODE_CONFIG_DIR") : undefined,
           OPENCODE_DATA_HOME: options.providers.includes("opencode") ? requireScopedProviderPath(process.env,"CHARIOX_DRILL_WORKER_OPENCODE_DATA_HOME") : undefined,
+          ...drill,
           CHARIOX_HOME: path.posix.join(remoteRuntimeRoot,"kernel-home"),
           CHARIOX_LOG_DIR: path.posix.join(remoteRuntimeRoot, "worker-logs"),
           CHARIOX_KERNEL_PORT: String(ports.workerKernelPort),
@@ -617,6 +621,7 @@ async function runDrill(privateRoot) {
             ...(options.providers.includes("codex")?{CODEX_HOME: requireScopedProviderPath(process.env,"CODEX_HOME")} : {}),
             OPENCODE_CONFIG_DIR: options.providers.includes("opencode") ? requireScopedProviderPath(process.env,"OPENCODE_CONFIG_DIR") : undefined,
             CHARIOX_LOG_DIR: path.join(root, "worker-logs"),
+            ...drill,
             CHARIOX_HOME: path.join(root,"worker-kernel-home"),
             CHARIOX_KERNEL_PORT: String(ports.workerKernelPort),
             CHARIOX_MCP_PORT: String(ports.workerMcpPort),

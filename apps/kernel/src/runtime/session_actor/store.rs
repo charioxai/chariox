@@ -889,19 +889,13 @@ impl SessionRuntimeStore {
         &self,
         request: FocusAgentRequest,
         caller_user_id: String,
-        terminal_caller: bool,
     ) -> (
         Result<LocalDaemonResponse, DaemonError>,
         Option<SessionProjectionAction>,
     ) {
         let result = self
             .state
-            .focus_agent(
-                &request.session_id,
-                &request.agent_id,
-                &caller_user_id,
-                terminal_caller,
-            )
+            .focus_agent(&request.session_id, &request.agent_id, &caller_user_id)
             .await
             .map_err(|error| match error {
                 DaemonError::AgentNotFound { agent_id } => DaemonError::AgentNotInSession {
@@ -954,14 +948,13 @@ impl SessionRuntimeStore {
         &self,
         request: CycleAgentFocusRequest,
         caller_user_id: String,
-        terminal_caller: bool,
     ) -> (
         Result<LocalDaemonResponse, DaemonError>,
         Option<SessionProjectionAction>,
     ) {
         let result = self
             .state
-            .cycle_agent_focus(&request.session_id, &caller_user_id, terminal_caller)
+            .cycle_agent_focus(&request.session_id, &caller_user_id)
             .await
             .map(|agent| LocalDaemonResponse::AgentFocusCycled { agent });
         self.with_session_projection_action_result(result).await

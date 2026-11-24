@@ -1,6 +1,70 @@
 use super::*;
 
 impl KernelRuntimeState {
+    pub(crate) async fn mark_cloud_kernel_removal(
+        &self,
+        profile: crate::config::PersistedCloudRelayProfile,
+        removal: crate::config::CloudKernelRemoval,
+    ) -> Result<(), DaemonError> {
+        self.with_app_side_effect(move |app| app.mark_cloud_kernel_removal(&profile, removal))
+            .await
+    }
+
+    pub(crate) async fn finish_cloud_relay_renewal(
+        &self,
+        expected: crate::config::PersistedCloudRelayProfile,
+        renewal: Option<(crate::config::PersistedCloudRelayProfile, String)>,
+    ) -> Result<(), DaemonError> {
+        self.with_authorized_app_side_effect(move |app| {
+            if app.config().cloud_relay.as_ref() == Some(&expected)
+                && crate::runtime::cloud_relay_control::cloud_relay_transport_selected(app.config())
+            {
+                match renewal {
+                    Some((updated, token)) => {
+                        app.persist_cloud_relay_token(updated, token)?;
+                    }
+                    None => app.persist_cloud_relay_profile(None)?,
+                }
+            }
+            Ok(())
+        })
+        .await
+    }
+
+    pub(crate) async fn connect_cloud_relay(
+        &self,
+        expected: crate::config::PersistedCloudRelayProfile,
+        profile: crate::config::PersistedCloudRelayProfile,
+        token: String,
+    ) -> Result<(), DaemonError> {
+        self.with_authorized_app_side_effect(move |app| {
+            if app.config().cloud_relay.as_ref() != Some(&expected) {
+                if let Some(removal) = app
+                    .config()
+                    .cloud_relay
+                    .as_ref()
+                    .and_then(|profile| profile.kernel_removal())
+                {
+                    return Err(
+                        crate::runtime::cloud_relay_control::cloud_kernel_removal_error(
+                            "connect Cloud relay",
+                            removal,
+                        ),
+                    );
+                }
+                return Err(DaemonError::LocalTransport {
+                    operation: "connect Cloud relay",
+                    message: "Cloud enrollment changed during connection. Try connecting again."
+                        .into(),
+                });
+            }
+            app.persist_cloud_relay_token(profile, token)?;
+            app.invalidate_provider_catalog_cache();
+            Ok(())
+        })
+        .await
+    }
+
     pub(crate) async fn set_user_config_value(
         &self,
         path: String,
@@ -104,5 +168,31 @@ impl KernelRuntimeState {
             .await?;
         self.owned.config_projection.update(config.clone());
         Ok(config)
+    }
+}
+
+impl KernelRuntimeOwnedState {
+    pub(super) fn require_linked_workflow_owner(
+        &self,
+        session_id: &str,
+    ) -> Result<(), DaemonError> {
+        let config = self.config_projection.snapshot();
+        if let Some(profile) = config.cloud_relay {
+            if let Some(removal) = profile.kernel_removal().filter(|_| {
+                self.session_store
+                    .read()
+                    .session_owner_user_id(session_id)
+                    .as_deref()
+                    == Some(profile.user_id.as_str())
+            }) {
+                return Err(
+                    crate::runtime::cloud_relay_control::cloud_kernel_removal_error(
+                        "start owner workflow",
+                        removal,
+                    ),
+                );
+            }
+        }
+        Ok(())
     }
 }

@@ -240,7 +240,11 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// 450 carries the lean Room state and independently read Room history and machine samples.
 /// Peer 450 carries native background notification receipts on leased completions.
 /// Peer 450 carries the local 1013 mirror v2 header `focus_visible`.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 450;
+/// Peer 451 (local 1014, the Landing 13 union) carries the holding run of a workspace-claim wait in the workflow run
+/// outcome and the mirror v2 header's `page_wheel`, and requires the relay's registration acknowledgment before reporting
+/// the kernel online.
+/// Peer 451 carries the local 1014 terminal `stdin` of a program.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 451;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
 pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = RELAY_PEER_PROTOCOL_VERSION;
@@ -274,6 +278,8 @@ pub enum LeasedWatchedProcessAction {
         wake: crate::durable_state::agent_lifecycle::AgentWake,
         binding: crate::durable_state::agent_lifecycle::LeasedProcessBinding,
         cwd: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        job: Option<Box<crate::local::RunJobRequest>>,
     },
     Query {
         wake_id: String,

@@ -178,6 +178,7 @@ fn local_daemon_protocol_workflow_code_shape_is_versioned() {
             }],
         },
         logs: "compiled".to_string(),
+        source_sha256: String::new(),
         source_spans: BTreeMap::new(),
     };
     let validate_response = LocalDaemonResponse::WorkflowCodeValidated {

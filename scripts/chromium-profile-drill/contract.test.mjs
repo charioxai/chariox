@@ -81,12 +81,15 @@ test("restore adapter consumes current guarded production functions and rejects 
 });
 
 test("restore Docker shim preserves production helper options without duplicating network or resource limits", () => {
+  const owner = { run: "restore-fixture", started: "2026-01-01T00:00:00Z", harness: "contract.test.mjs" };
+  const ownership = ["--label", "io.chariox.drill.run=restore-fixture", "--label",
+    "io.chariox.drill.started=2026-01-01T00:00:00Z", "--label", "io.chariox.drill.harness=contract.test.mjs"];
   const label = `io.chariox.chromium-drill=${"a".repeat(24)}`;
   // Intercept only the final exec; exercise the actual shell dispatch without
   // creating Docker resources during the contract test.
   const invoke = args => {
     const result = spawnSync("bash", ["-c",
-      `exec() { printf '%s\\0' "$@"; exit 0; }\n${restoreDockerShim(label)}`,
+      `exec() { printf '%s\\0' "$@"; exit 0; }\n${restoreDockerShim(label, owner)}`,
       "--", ...args], { encoding: "utf8" });
     assert.equal(result.status, 0, result.stderr);
     return result.stdout.split("\0").slice(0, -1);
@@ -95,9 +98,9 @@ test("restore Docker shim preserves production helper options without duplicatin
     "--cpus", "1", "--pids-limit", "64", "--network", "none", "--label",
     "io.chariox.home-restore-helper=restore-helper", "-v", "home:/home-dst", "image", "sleep", "infinity"];
   assert.deepEqual(invoke(["create", ...helper]),
-    ["/usr/bin/docker", "create", "--memory-swap", "512m", "--label", label, ...helper]);
+    ["/usr/bin/docker", "create", "--memory-swap", "512m", "--label", label, ...ownership, ...helper]);
   assert.deepEqual(invoke(["volume", "create", "--label", "archive=identity", "home"]),
-    ["/usr/bin/docker", "volume", "create", "--label", label, "--label", "archive=identity", "home"]);
+    ["/usr/bin/docker", "volume", "create", "--label", label, ...ownership, "--label", "archive=identity", "home"]);
   assert.deepEqual(invoke(["exec", "-i", "restore-helper", "tar", "--zstd", "-xf", "-"]),
     ["/usr/bin/docker", "exec", "-i", "restore-helper", "tar", "--zstd", "-xf", "-"]);
   assert.throws(() => restoreDockerShim("invalid-owner"));

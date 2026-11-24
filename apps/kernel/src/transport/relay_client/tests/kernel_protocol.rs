@@ -135,8 +135,7 @@ async fn machine_list_kernels(
         .collect()
 }
 
-// A client learns each remote kernel's protocol from the kernel's own relay registration;
-// a kernel that predates the field lists no protocol, which clients show as unknown.
+// A client learns each admitted kernel's protocol from the relay's inventory.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_remote_kernel_lists_the_protocol_it_registered_with() {
     let _relay_test_guard = relay_client_test_guard().await;
@@ -190,8 +189,20 @@ async fn a_remote_kernel_lists_the_protocol_it_registered_with() {
     let mut old = DaemonConfig::for_tests();
     old.daemon_id = "old-kernel".to_string();
     old.host_machine_id = "old-machine".to_string();
-    let old_socket = register_kernel_without_protocol(&relay_url, &old).await;
-    for daemon_id in [&home.daemon_id, &worker.daemon_id, &old.daemon_id] {
+    let mut old_socket = register_kernel_without_protocol(&relay_url, &old).await;
+    let refusal = timeout(Duration::from_secs(2), old_socket.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        refusal,
+        Message::Text(text) if matches!(
+            serde_json::from_str::<RelayEnvelope>(&text),
+            Ok(RelayEnvelope::Close { reason, .. }) if reason.starts_with("upgrade required: protocol unknown")
+        )
+    ));
+    for daemon_id in [&home.daemon_id, &worker.daemon_id] {
         wait_for_daemon_registration(registry.clone(), daemon_id).await;
     }
     refresh_remote_inventory_projection_for_app_with_relay_state(&home_app)
@@ -203,32 +214,17 @@ async fn a_remote_kernel_lists_the_protocol_it_registered_with() {
         Some(LOCAL_DAEMON_PROTOCOL_VERSION),
         "a current kernel lists the protocol it registered with"
     );
-    assert_eq!(
-        listed_protocol(&home_app, &old.host_machine_id).await,
-        None,
-        "a kernel that registered without a protocol lists none"
-    );
-
     let mut machines = machine_list_kernels(&home_app).await;
     machines.sort_by(|a, b| a.0.cmp(&b.0));
     assert_eq!(
         machines,
-        vec![
-            (
-                old.host_machine_id.clone(),
-                vec![RemoteMachineKernel {
-                    kernel_id: old.daemon_id.clone(),
-                    local_protocol: None,
-                }]
-            ),
-            (
-                worker.host_machine_id.clone(),
-                vec![RemoteMachineKernel {
-                    kernel_id: worker.daemon_id.clone(),
-                    local_protocol: Some(LOCAL_DAEMON_PROTOCOL_VERSION),
-                }]
-            ),
-        ],
+        vec![(
+            worker.host_machine_id.clone(),
+            vec![RemoteMachineKernel {
+                kernel_id: worker.daemon_id.clone(),
+                local_protocol: Some(LOCAL_DAEMON_PROTOCOL_VERSION),
+            }]
+        ),],
         "the machine list names each machine's kernels with their protocols"
     );
 

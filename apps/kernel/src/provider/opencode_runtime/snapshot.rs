@@ -39,17 +39,35 @@ pub(super) fn opencode_messages_active_prompt_failure(
     state: &OpenCodeRuntimeState,
     messages: &[OpenCodeMessage],
     active_user_message_id: Option<&str>,
+    session_idle: bool,
 ) -> Option<String> {
     let active_user_message_id = active_user_message_id?;
-    messages.iter().rev().find_map(|message| {
-        (message.info.role == "assistant"
+    let mut assistants = messages.iter().rev().filter(|message| {
+        message.info.role == "assistant"
             && message.info.session_id == state.session_id
             && state.matches_prompt_parent(
                 Some(active_user_message_id),
                 message.info.parent_id.as_deref(),
-            ))
-        .then(|| message.info.terminal_error_message())
-        .flatten()
+            )
+    });
+    let latest = assistants.next()?;
+    let provider_error = latest
+        .info
+        .terminal_error_message()
+        .or_else(|| assistants.find_map(|message| message.info.terminal_error_message()));
+    provider_error.or_else(|| {
+        // OpenCode can end a denied tool step without an assistant error or a final
+        // reply. A busy session or a different tool error can still produce a reply.
+        (session_idle
+            && latest.info.finish.as_deref() == Some("tool-calls")
+            && latest.info.time.completed.is_some()
+            && latest.parts.iter().any(|part| {
+                part.kind == "tool"
+                    && part.state.as_ref().is_some_and(|tool| {
+                        tool.status == "error" && tool.error == super::NATIVE_PERMISSION_DENIED
+                    })
+            }))
+        .then(|| super::NATIVE_PERMISSION_DENIED.to_string())
     })
 }
 

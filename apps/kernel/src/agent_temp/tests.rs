@@ -104,7 +104,7 @@ impl Drop for Scratch {
 }
 
 fn agent_folder(scratch: &Scratch) -> PathBuf {
-    let folder = scratch.0.join("t/room0001/agent001");
+    let folder = dir_in(&scratch.0.join("t"), "room0001", "agent-001");
     fs::create_dir_all(&folder).unwrap();
     folder
 }
@@ -119,12 +119,16 @@ fn the_path_is_short_and_the_same_after_a_restart() {
     let root = scratch.0.join("t");
     let (room, agent) = ("18e4df7c1509db5b", "agent-210eff29d53051337c3df0cbaeb69178");
     let first = dir_in(&root, room, agent);
-    assert_eq!(first, root.join("18e4df7c1509db5b/210eff29"));
+    let another_agent = "agent-210eff29d53051337c3df0cbaeb69179";
+    assert_ne!(first, dir_in(&root, room, another_agent));
     assert_eq!(first, dir_in(&root, room, agent));
-    let vars = environment_in(&root, room, agent);
-    assert_eq!(
-        vars.iter().map(|(name, _)| *name).collect::<Vec<_>>(),
-        ["TMPDIR", "TMP", "TEMP"]
+    assert_eq!(create_agent_directory(&root, room, agent).unwrap(), first);
+    let home = scratch.0.join("long-name".repeat(20));
+    let short = short_root(Path::new("/private/tmp"), &home, "127.0.0.1", 43118);
+    assert!(dir_in(&short, room, agent).as_os_str().len() < 60);
+    assert_ne!(
+        short,
+        short_root(Path::new("/private/tmp"), &home, "127.0.0.1", 43119)
     );
     assert!(first.is_dir());
 }
@@ -271,7 +275,7 @@ fn ending_a_room_clears_its_temp_at_once() {
     let folder = agent_folder(&scratch);
     fs::write(folder.join("fresh.txt"), b"x").unwrap();
     let room = folder.parent().unwrap().to_path_buf();
-    let other = scratch.0.join("t/room0002/agent001");
+    let other = dir_in(&scratch.0.join("t"), "room0002", "agent-001");
     fs::create_dir_all(&other).unwrap();
     clear_room_in(&scratch.0.join("t"), "room0001");
     assert!(!room.exists());
@@ -284,8 +288,8 @@ fn ending_a_room_preserves_scratch_for_another_with_the_same_prefix() {
     let root = scratch.0.join("t");
     let (ended, live) = ("18e4df7c1509db5b", "18e4df7c2509db5b");
     let agent = "agent-210eff29d53051337c3df0cbaeb69178";
-    environment_in(&root, ended, agent);
-    environment_in(&root, live, agent);
+    create_agent_directory(&root, ended, agent).unwrap();
+    create_agent_directory(&root, live, agent).unwrap();
     let file = dir_in(&root, live, agent).join("keep.txt");
     fs::write(&file, b"live scratch").unwrap();
     clear_room_in(&root, ended);
@@ -299,4 +303,18 @@ fn ending_a_room_preserves_scratch_for_another_with_the_same_prefix() {
         std::os::unix::net::UnixStream::connect(&socket).unwrap();
         listener.accept().unwrap();
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn precreated_scratch_links_are_refused_without_touching_the_target() {
+    let scratch = Scratch::new("private");
+    let outside = scratch.0.join("outside");
+    fs::create_dir(&outside).unwrap();
+    fs::write(outside.join("keep"), b"preserved").unwrap();
+    let root = scratch.0.join("t");
+    std::os::unix::fs::symlink(&outside, &root).unwrap();
+    assert!(create_agent_directory(&root, "room", "agent").is_err());
+    assert!(outside.join("keep").exists());
+    assert_eq!(fs::read_dir(&outside).unwrap().count(), 1);
 }

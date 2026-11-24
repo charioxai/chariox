@@ -135,6 +135,7 @@ async fn sudo_watched_process_keeps_worker_mode_and_write_fences() {
                 RelayPeerRequest::LeasedWatchedProcess {
                     leased_agent_id: remote.leased_agent_id.clone(),
                     action: LeasedWatchedProcessAction::Start {
+                        job: None,
                         wake,
                         binding: binding.clone(),
                         cwd: None,

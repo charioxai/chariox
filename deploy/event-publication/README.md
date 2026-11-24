@@ -23,9 +23,8 @@ This mode does not replace the default first-wave provider matrix.
 The drill limits Compose to one build at a time. It keeps AEDS running and
 builds, starts, exercises, stops, and removes exactly one AEGS at a time:
 dummy, GitHub, Jira Cloud, Linear, GitLab, Sentry, then Slack. Peak runtime is
-therefore AEDS plus one AEGS. Every AEGS has an explicit Compose profile, so a
-plain `docker compose up` starts only AEDS and cannot accidentally launch the
-whole integration matrix.
+therefore AEDS plus one AEGS. Every AEGS has an explicit Compose profile to keep the integration matrix
+from starting all at once.
 
 `prepare-secrets.sh` also pins the selected loopback host ports in the ignored
 compose `.env` file. Set `CHARIOX_AEDS_KERNEL_PORT`,

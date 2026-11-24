@@ -68,7 +68,7 @@ impl KernelRuntimeState {
         let [run] = runs else {
             return Vec::new();
         };
-        let loader=RuntimeToolSpec{name:LOADER.into(),description:"MP-08: load Computer tools for the user's kernel-owned Linux desktop. Every agent has it; loading needs no approval and no focus. The grant ends on idle lapse or revocation; load again when the tools are gone. Room/slice membership grants no host access.".into(),input_schema:serde_json::json!({"type":"object","properties":{},"additionalProperties":false})};
+        let loader=RuntimeToolSpec{name:LOADER.into(),description:"MP-08: load Computer tools for the user's kernel-owned Linux desktop. Every agent has it; loading needs no approval, no focus and no delegation. Load again when the tools are gone. Room/slice membership grants no host access.".into(),input_schema:serde_json::json!({"type":"object","properties":{},"additionalProperties":false})};
         let Some(agent) = self.kernel_computer_agent(run) else {
             // Every local Room agent may load the Computer; leased and remote runs may not.
             if self.room_agent_tools_enabled() && self.user_domain_agent_placement(run).is_ok() {
@@ -137,7 +137,7 @@ impl KernelRuntimeState {
         let leased_grant = self.leased_computer_tool_authority(run).await?;
         let agent = if leased_grant.is_some() {
             self.kernel_computer_agent(run)
-                .ok_or_else(|| host_error("MP-11: not_granted: Computer grant revoked".into()))?
+                .ok_or_else(|| host_error("MP-11: the leased Computer route ended".into()))?
         } else if name == LOADER {
             self.refuse_leased_user_domain_run(run).await?;
             self.refresh_user_domain_grants();
@@ -154,12 +154,7 @@ impl KernelRuntimeState {
                 ));
             }
             if leased_grant.is_none() {
-                let lifetime =
-                    crate::runtime::kernel_browser_host::KernelBrowserHost::grant_lifetime(None)
-                        .map_err(host_error)?;
-                self.grant_kernel_browser(run, &agent, lifetime)?;
-                host.load_for(&user, agent.id(), KernelBrowserCapability::Computer)
-                    .map_err(host_error)?;
+                host.load_for(&user, agent.id(), KernelBrowserCapability::Computer);
             }
             return Ok(RuntimeToolResult {
                 ok: true,
@@ -221,8 +216,7 @@ impl KernelRuntimeState {
                     || parameters["generation"].as_str() != Some(&grant.target.generation))
             {
                 return Err(host_error(
-                    "MP-11: not_granted: Computer target differs from the explicit desktop grant"
-                        .into(),
+                    "MP-11: Computer target differs from the explicit desktop grant".into(),
                 ));
             }
         }

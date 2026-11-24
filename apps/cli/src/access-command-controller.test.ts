@@ -4,7 +4,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 import { createAccessCommandController } from "./access-command-controller.js"
 import { parseSlashCommand } from "./commands.js"
-const snapshot = { event: "user_domain_grants_changed", cursor: 1, grants: [{ agent_id: "holder", session_id: "session", kernel_id: "kernel", resources: [{ kind: "browser_tab", tab_id: "tab" }], since_ms: 100, focused: false, idle_since_ms: null, idle_timeout_seconds: 1800 }], notice: null }
+const snapshot = { event: "user_domain_grants_changed", cursor: 1, room_computer: [{ agent_id: "holder", session_id: "session", allowed: true }] }
 test("MP-08 / MP-11 leased Computer uses explicit target and rejects older kernels", async () => {
   const old = fixture(494)
   await assert.rejects(old.controller.handle(["grant-computer", "holder", "desktop", "g"]), /500/)
@@ -26,12 +26,11 @@ test("access parser has a word boundary and passes revoke arguments", () => {
   assert.deepEqual(parseSlashCommand("/access revoke holder"), { kind: "access", raw: "/access revoke holder", args: ["revoke", "holder"] })
   assert.equal(parseSlashCommand("/accessory"), null)
 })
-test("lists scoped grants and uses owner revoke shapes", async () => {
+test("lists the Room Computer switches and uses owner revoke shapes", async () => {
   const h = fixture()
   // Skip the live feed in this focused command test.
   await h.controller.handle([])
-  assert.match(h.lines.at(-1)!, /holder · session session · kernel kernel/)
-  assert.match(h.lines.at(-1)!, /resources: tab tab/)
+  assert.match(h.lines.at(-1)!, /holder · session session · Room Computer allowed/)
   await h.controller.handle(["revoke", "holder"])
   assert.deepEqual(h.requests.at(-1), { KernelBrowser: { command: { op: "revoke_grants", agent_id: "holder" } } })
   await h.controller.handle(["revoke", "all"])
@@ -42,23 +41,6 @@ test("invalid syntax issues no mutations", async () => {
   const h = fixture()
   for (const args of [["revoke"], ["revoke", "all", "extra"], ["other"]]) await assert.rejects(h.controller.handle(args), /Usage/)
   assert.equal(h.requests.length, 0); h.controller.stop()
-})
-test("retained-use feed prints the shared notice once and stops after cleanup", async () => {
-  const lines: string[] = [], pending: ((response: unknown) => void)[] = []
-  const controller = createAccessCommandController({ client: { localDaemonProtocolVersion: 494, async send<T>(request: any): Promise<T> {
-    if (request.KernelBrowser.command.op === "subscribe_grants") return new Promise(resolve => pending.push(value => resolve(value as T)))
-    return { KernelBrowser: { result: snapshot } } as T
-  } }, appendNotice: line => lines.push(line) })
-  const tick = () => new Promise(resolve => setImmediate(resolve))
-  controller.start(); await tick()
-  const notice = { agent_id: "holder", resource: { kind: "browser_tab", tab_id: "tab" }, at_ms: 500 }
-  pending.shift()!({ KernelBrowser: { result: { ...snapshot, cursor: 2, notice } } }); await tick()
-  assert.deepEqual(lines, ["Agent holder used retained access to tab tab while not focused."])
-  pending.shift()!({ KernelBrowser: { result: { ...snapshot, cursor: 3, notice } } }); await tick()
-  assert.equal(lines.length, 1)
-  controller.stop()
-  pending.shift()!({ KernelBrowser: { result: { ...snapshot, cursor: 4, notice: { ...notice, at_ms: 600 } } } }); await tick()
-  assert.equal(lines.length, 1)
 })
 test("MP-08 / MP-10 / MP-11 owner re-grants Room Computer through Access", async()=>{
   const h=fixture(494)

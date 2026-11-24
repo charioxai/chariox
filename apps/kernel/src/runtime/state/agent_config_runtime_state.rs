@@ -921,11 +921,11 @@ impl KernelRuntimeState {
         Ok(config)
     }
 
-    /// Ends what a person allowed the agent for terminal input and watched commands, as its
-    /// permissions or scope change.
+    /// Ends the agent's terminal input, watched commands and owner view grants as its scope changes.
     pub(in crate::runtime::state) fn forget_agent_grants(&self, agent_id: &str) {
         self.terminal_input_grants.forget(agent_id);
         self.watched_process_grants.forget(agent_id);
+        self.owned.owner_view.detach(agent_id);
     }
 
     /// What each agent of the session runs under, as the session's own configuration decides it.

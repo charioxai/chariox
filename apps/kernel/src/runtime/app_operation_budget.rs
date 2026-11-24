@@ -5,10 +5,13 @@ use chariox_app_runtime::worker_peer::BrokerRequest;
 use std::sync::Arc;
 use tokio::time::Instant;
 
+/// What kernel-owned background work may spend on its own steps.
+pub(crate) const SUPERVISOR_LIMIT: std::time::Duration = std::time::Duration::from_secs(30);
+
 pub(crate) struct AppOperationBudget {
     deadline: Instant,
     cancelled: Arc<dyn Fn() -> bool + Send + Sync>,
-    resource: Option<super::kernel_browser_host::KernelBrowserResourceGrant>,
+    resource: Option<super::kernel_browser_host::AgentRunFence>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -33,8 +36,17 @@ impl AppOperationBudget {
     /// predicate observes retained lifecycle cancellation; it grants no authority
     /// and neither its deadline nor cancellation source comes from an App.
     pub(crate) fn from_supervisor(cancelled: impl Fn() -> bool + Send + Sync + 'static) -> Self {
+        Self::within(SUPERVISOR_LIMIT, cancelled)
+    }
+
+    /// The same budget with a caller-chosen limit, for tests that cannot wait
+    /// the full limit.
+    pub(crate) fn within(
+        limit: std::time::Duration,
+        cancelled: impl Fn() -> bool + Send + Sync + 'static,
+    ) -> Self {
         Self {
-            deadline: Instant::now() + std::time::Duration::from_secs(30),
+            deadline: Instant::now() + limit,
             resource: None,
             cancelled: Arc::new(cancelled),
         }
@@ -55,7 +67,7 @@ impl AppOperationBudget {
     /// so revocation can still cancel work while SQLite admission is waiting.
     pub(crate) fn with_resource(
         mut self,
-        resource: super::kernel_browser_host::KernelBrowserResourceGrant,
+        resource: super::kernel_browser_host::AgentRunFence,
     ) -> Self {
         let parent = self.cancelled.clone();
         let observed = resource.clone();

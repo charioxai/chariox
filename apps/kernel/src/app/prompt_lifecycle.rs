@@ -198,6 +198,7 @@ impl<'a> ProviderPromptDispatcher<'a> {
                 mode.with_prompt_origin(origin),
                 private_evidence,
                 false,
+                None,
             )?;
             return Ok(());
         }

@@ -65,6 +65,8 @@ pub struct RuntimeProviderRun {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     runtime_mcp_server_url: Option<String>,
     runtime_mcp_auth_token: Option<String>,
+    #[serde(skip)]
+    agent_cli_endpoint: Option<String>,
     /// Workflow-only runtime actions are projected after this run is selected
     /// for workflow execution, keeping ordinary turns' tool surface small.
     #[serde(skip)]
@@ -211,6 +213,7 @@ impl RuntimeProviderRun {
                 .runtime_mcp_binding
                 .as_ref()
                 .map(|binding| binding.auth_token.clone()),
+            agent_cli_endpoint: request.agent_cli_endpoint.clone(),
             workflow_tools_enabled: false,
             workflow_fresh_context_node_run_id: None,
             mcp_servers: request.mcp_servers.clone(),
@@ -294,6 +297,7 @@ impl RuntimeProviderRun {
             runtime_mcp_server_url: None,
             runtime_mcp_auth_token: inferred_has_runtime_mcp_binding
                 .then(|| "inferred-managed-mcp".to_string()),
+            agent_cli_endpoint: None,
             workflow_tools_enabled: false,
             workflow_fresh_context_node_run_id: None,
             mcp_servers: Vec::new(),
@@ -438,6 +442,19 @@ impl RuntimeProviderRun {
     }
     pub fn pty_env(&self) -> &BTreeMap<String, String> {
         &self.pty_env
+    }
+
+    /// Only the provider process receives the agent credential. Keeping it out
+    /// of the stored launch environment also keeps it out of snapshots.
+    pub(crate) fn process_environment(&self) -> BTreeMap<String, String> {
+        let mut environment = self.pty_env.clone();
+        if let Some(endpoint) = &self.agent_cli_endpoint {
+            if let Some(token) = crate::runtime_transport::agent_cli::token_for_run(self) {
+                environment.insert("CHARIOX_KERNEL_URL".into(), endpoint.clone());
+                environment.insert("CHARIOX_AGENT_CLI_TOKEN".into(), token);
+            }
+        }
+        environment
     }
 
     pub(crate) fn requested_provider_env_remove(&self) -> Option<&[String]> {
