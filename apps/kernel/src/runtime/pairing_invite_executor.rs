@@ -806,7 +806,7 @@ mod self_host_invite_tests {
         let projection = DaemonConfigProjectionStore::new(config.clone());
         let app = crate::app::DaemonApp::bootstrap(config.clone()).unwrap();
         let router = crate::runtime::router::CommandRouter::with_interactive_capacity(
-            Arc::new(tokio::sync::Mutex::new(app)),
+            std::sync::Arc::new(tokio::sync::Mutex::new(app)),
             1,
         );
         let runtime = router.runtime_state();
