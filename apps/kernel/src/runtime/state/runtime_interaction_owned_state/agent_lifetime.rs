@@ -353,7 +353,9 @@ impl KernelRuntimeOwnedState {
             }
             let (active_prompt, queued_prompts) =
                 self.prompt_state_owner.state_parts(&session, &agent_id);
-            self.mirror_prompt_owner_agent_state(
+            // The shutdown withdrawal holds the interaction mutation guard, which the ordinary
+            // mirror's stale-interaction sweep would take again.
+            self.mirror_prompt_owner_agent_state_holding_interactions(
                 session_id,
                 &agent_id,
                 active_prompt,

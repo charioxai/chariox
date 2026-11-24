@@ -3571,6 +3571,52 @@ mod tests {
             .await;
     }
 
+    /// The shutdown path holds the interaction store's admission guard while it records the
+    /// interruption and withdraws the cards: marking a turn must not take that guard again.
+    async fn assert_closing_provider_decisions_does_not_hang(
+        kind: crate::session::RuntimeInteractionKind,
+    ) {
+        let (runtime, session_id, agent_id, prompt_id) =
+            runtime_blocked_on_native_interaction(kind).await;
+        let (done, finished) = std::sync::mpsc::channel();
+        let closing = runtime.as_kernel();
+        std::thread::spawn(move || {
+            let _ = done.send(closing.close_provider_decisions_for_shutdown());
+        });
+        finished
+            .recv_timeout(std::time::Duration::from_secs(20))
+            .expect("closing the provider decisions at shutdown must not hang")
+            .expect("shutdown withdraws the pending decision");
+        assert!(
+            runtime
+                .owned
+                .session_store
+                .get_session(&session_id)
+                .expect("session")
+                .active_interaction_for_agent(&agent_id)
+                .is_none(),
+            "the pending decision is withdrawn"
+        );
+        assert_recovery_ends_the_turn_as_interrupted(&runtime, &session_id, &agent_id, &prompt_id)
+            .await;
+    }
+
+    #[tokio::test]
+    async fn shutdown_closing_a_pending_native_question_does_not_hang() {
+        assert_closing_provider_decisions_does_not_hang(
+            crate::session::RuntimeInteractionKind::Choice,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn shutdown_closing_a_pending_startup_permission_does_not_hang() {
+        assert_closing_provider_decisions_does_not_hang(
+            crate::session::RuntimeInteractionKind::Permission,
+        )
+        .await;
+    }
+
     #[tokio::test]
     async fn a_turn_recovery_gives_up_on_ends_failed_as_interrupted_by_restart() {
         assert_restart_owner_prompt_retires_failure(false).await;
