@@ -803,6 +803,92 @@ async fn a_parents_deadline_stops_the_working_sub_agent_below_it() {
     );
 }
 
+// The owner revives only the sub-agent a parent's deadline ended. The parent's finished cleanup
+// must not stop the work the revived sub-agent starts afterwards.
+#[tokio::test]
+async fn a_revived_sub_agents_new_work_survives_its_parents_ended_deadline() {
+    let team = team_with("child-revived-after-parent-deadline", None, false).await;
+    let runtime = &team.runtime;
+    let store = &runtime.owned.durable_state_store;
+    store
+        .agent_lifecycle(Operation::SetDeadline {
+            room: team.room.clone(),
+            agent: team.parent.clone(),
+            deadline: Some(crate::session::unix_epoch_ms() + 30),
+            inherited: Vec::new(),
+        })
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+    runtime
+        .tick_agent_deadlines(crate::session::unix_epoch_ms())
+        .await
+        .unwrap();
+    let parent_receipt = store.agent_deadline(&team.room, &team.parent).unwrap().unwrap();
+    assert!(parent_receipt.stopped_at_ms.is_some(), "{parent_receipt:?}");
+    assert_eq!(
+        runtime.owned.provider_store.get_run(&team.child_run).unwrap().state(),
+        crate::provider::ProviderRunState::Ended
+    );
+
+    // Only the child is revived: its limit is cleared, the parent's stays ended.
+    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    runtime
+        .set_agent_deadline(
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            crate::local::SetAgentDeadlineRequest {
+                session_id: team.room.clone(),
+                agent_id: team.child.clone(),
+                deadline_ms: None,
+            },
+        )
+        .await
+        .unwrap();
+    let attachment = runtime
+        .owned
+        .attachment_store
+        .list_session_attachment_ids(&team.room)
+        .into_iter()
+        .next()
+        .expect("the room has an attachment");
+    runtime
+        .submit_prepared_prompt(crate::app::KernelPreparedPromptSubmission {
+            session_id: team.room.clone(),
+            prompt: crate::session::PromptQueueItem::new(
+                "revived-prompt",
+                &attachment,
+                &team.child,
+                "continue",
+                crate::session::PromptStatus::Queued,
+            ),
+            force_queue: false,
+            refresh_projection: true,
+        })
+        .await
+        .unwrap();
+    let session = runtime.owned.session_store.get_session(&team.room).unwrap();
+    let work = |runtime: &KernelRuntimeState| {
+        let (active, queued) = runtime
+            .owned
+            .prompt_state_owner
+            .state_parts(&session, &team.child);
+        active.is_some() || !queued.is_empty()
+    };
+    assert!(work(runtime), "the revived child has new work");
+
+    // The scheduler's next tick sees the parent's ended deadline and the child's new work.
+    runtime
+        .tick_agent_deadlines(crate::session::unix_epoch_ms())
+        .await
+        .unwrap();
+    assert!(work(runtime), "the parent's old deadline stopped the revived child's new work");
+    let live = runtime
+        .owned
+        .provider_store
+        .get_run_for_agent(&team.room, &team.child)
+        .expect("the revived child's turn has a run");
+    assert_ne!(live.state(), crate::provider::ProviderRunState::Ended);
+}
+
 /// The parent's `child_finished`, read until `done` holds.
 async fn child_finished_when(
     runtime: &KernelRuntimeState,

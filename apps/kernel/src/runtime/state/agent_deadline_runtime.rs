@@ -251,7 +251,11 @@ impl KernelRuntimeState {
                 continue;
             }
             if deadline.stopped_at_ms.is_some()
-                && !self.deadline_work_remains(&deadline.session_id, &deadline.agent_id)?
+                && !self.deadline_work_remains(
+                    &deadline.session_id,
+                    &deadline.agent_id,
+                    deadline.reached_at_ms.unwrap_or(deadline.deadline_ms),
+                )?
             {
                 continue;
             }
@@ -269,9 +273,10 @@ impl KernelRuntimeState {
         let outcomes = futures_util::future::join_all(due.iter().map(|deadline| async move {
             let room = &deadline.session_id;
             let agent = &deadline.agent_id;
+            let reached_at_ms = deadline.reached_at_ms.unwrap_or(deadline.deadline_ms);
             match tokio::time::timeout(
                 Duration::from_secs(5),
-                self.stop_deadline_agent(room, agent),
+                self.stop_deadline_agent(room, agent, reached_at_ms),
             )
             .await
             {
@@ -299,12 +304,45 @@ impl KernelRuntimeState {
             .map(|_| ())
     }
 
+    /// The sub-agents a reached deadline ends: not one that an edit gave a new limit after the
+    /// deadline was reached, nor the team below it. That work was admitted on purpose.
+    fn deadline_covered_descendants(
+        &self,
+        agent: &str,
+        reached_at_ms: u64,
+    ) -> Result<Vec<crate::agent::AgentInstance>, DaemonError> {
+        let mut released = std::collections::HashSet::new();
+        let mut covered = Vec::new();
+        for descendant in self.descendants_depth_first(agent) {
+            let under_released = descendant
+                .parent_agent_id()
+                .is_some_and(|parent| released.contains(parent));
+            if under_released
+                || self.owned.durable_state_store.agent_revived_since(
+                    descendant.session_id(),
+                    descendant.id(),
+                    reached_at_ms,
+                )?
+            {
+                released.insert(descendant.id().to_owned());
+                continue;
+            }
+            covered.push(descendant);
+        }
+        Ok(covered)
+    }
+
     /// The agent's own work, or work of any sub-agent below it (A4).
-    fn deadline_work_remains(&self, room: &str, agent: &str) -> Result<bool, DaemonError> {
+    fn deadline_work_remains(
+        &self,
+        room: &str,
+        agent: &str,
+        reached_at_ms: u64,
+    ) -> Result<bool, DaemonError> {
         if self.agent_work_remains(room, agent)? {
             return Ok(true);
         }
-        for descendant in self.descendants_depth_first(agent) {
+        for descendant in self.deadline_covered_descendants(agent, reached_at_ms)? {
             if self.agent_work_remains(room, descendant.id())? {
                 return Ok(true);
             }
@@ -331,9 +369,18 @@ impl KernelRuntimeState {
 
     /// A deadline ends the agent and every sub-agent below it, depth-first.
     /// A sub-agent whose cleanup is pending does not keep the others running.
-    async fn stop_deadline_agent(&self, room: &str, agent: &str) -> Result<(), DaemonError> {
+    async fn stop_deadline_agent(
+        &self,
+        room: &str,
+        agent: &str,
+        reached_at_ms: u64,
+    ) -> Result<(), DaemonError> {
         let mut first_error = self.stop_one_deadline_agent(room, agent).await.err();
-        for descendant in self.descendants_depth_first(agent) {
+        let covered = match self.deadline_covered_descendants(agent, reached_at_ms) {
+            Ok(covered) => covered,
+            Err(error) => return Err(first_error.unwrap_or(error)),
+        };
+        for descendant in covered {
             if let Err(error) = self.stop_one_deadline_agent(room, descendant.id()).await {
                 first_error.get_or_insert(error);
             }
