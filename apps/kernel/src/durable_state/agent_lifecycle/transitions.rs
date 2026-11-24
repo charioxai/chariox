@@ -756,9 +756,6 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 let by_agent = t.reason == super::supervision::AGENT_CANCELLED_REASON;
                 super::supervision::cancel_intent(tx, &mut t, by_agent)?;
             } else if t.state != ExecutionState::Blocked {
-                if !valid_wait && super::wakes::drop_unwaited_timers(tx, &t, now)? {
-                    t = load(tx, &t.task_id)?;
-                }
                 let open = t
                     .obligations
                     .iter()

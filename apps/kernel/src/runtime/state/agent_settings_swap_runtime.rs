@@ -53,8 +53,6 @@ impl KernelRuntimeState {
                 .provider_store
                 .adapter_resumes_conversation_in_new_process(run.adapter_key())
             || owned.run_has_open_tools(provider_run_id)
-            // A background command is a child of this process: a new process would end it.
-            || owned.run_has_running_background_calls(session_id, provider_run_id)?
         {
             return Ok(false);
         }
@@ -82,6 +80,12 @@ impl KernelRuntimeState {
             || owned.prompt_completion_settlement_pending(provider_run_id)
             || !owned.provider_run_has_active_prompt(session_id, &run)?
         {
+            return Ok(false);
+        }
+        // A background command is a child of this process: a new process would end it, and with
+        // it the provider's notification turn. The batch just applied may hold its launch row.
+        self.flush_provider_history(provider_run_id).await?;
+        if owned.run_has_running_background_calls(session_id, provider_run_id)? {
             return Ok(false);
         }
         self.swap_turn_process(session_id, &agent, &run, &prompt)

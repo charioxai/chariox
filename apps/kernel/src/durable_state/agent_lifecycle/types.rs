@@ -123,13 +123,13 @@ impl AgentObligation {
         self.status == "open"
     }
 
-    /// Work the turn that started it may leave running: a watched process, a job, a terminal watch
-    /// or a delegate stays supervised after the turn ends and wakes the agent when it ends.
+    /// Work the turn that started it may leave running: a watched process, a job, a terminal watch,
+    /// a timer or a delegate stays supervised after the turn ends and wakes the agent when it ends.
     pub(crate) fn outlives_turn(&self) -> bool {
         self.status == "open"
             && matches!(
                 self.kind.as_str(),
-                "process" | "job" | "terminal" | "delegate"
+                "process" | "job" | "terminal" | "delegate" | "timer"
             )
     }
 
