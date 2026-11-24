@@ -109,6 +109,22 @@ fn requested<'a>(
                 smallest,
             })
         }
+        // A request that names no class takes the service's own default, which is its only option.
+        ControlPlaneRequest::Acquire { class_id: None, .. } => {
+            let offer = capability
+                .offer
+                .as_ref()
+                .ok_or_else(|| "the service lists no default machine".to_owned())?;
+            let rate = offer
+                .rate_per_minute
+                .as_ref()
+                .ok_or_else(|| "the default machine has no rate per minute".to_owned())?;
+            Ok(Requested {
+                class_id: &offer.machine_type,
+                rate,
+                smallest: &offer.machine_type,
+            })
+        }
         _ => Err("it names no class_id from chariox.machines.options".into()),
     }
 }

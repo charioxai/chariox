@@ -207,6 +207,18 @@ async fn service(offers: Vec<MachineOption>, sold_out: &'static [&'static str]) 
                         }
                     }
                 }
+                // The kernel reconciles the machines it recorded against the service's whole list.
+                "list" => (
+                    "200 OK",
+                    serde_json::json!({"kind":"machines","saved_states":[],
+                        "machines": accepted.values()
+                            .filter(|(_, _, id)| !released.contains(id))
+                            .map(|(_, _, id)| serde_json::json!({
+                                "allocation_ref":id,"name":id,"state":"ready","revision":1,
+                                "since":"2026-11-19T00:00:00Z","kernel_id":null,"machine_id":null,
+                                "available_actions":["stop","release"]}))
+                            .collect::<Vec<_>>()}),
+                ),
                 "get" | "release" => {
                     let allocation_ref = request["allocation_ref"].as_str().unwrap();
                     assert!(accepted.values().any(|(_, _, id)| id == allocation_ref));
