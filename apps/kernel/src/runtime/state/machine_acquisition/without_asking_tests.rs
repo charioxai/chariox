@@ -329,6 +329,20 @@ fn allowed(
     }
 }
 
+/// The key a request has in the ledger: main's derived service request_id for this agent.
+fn ledger_key(state: &KernelRuntimeState, agent: &str, request_id: &str) -> String {
+    super::choice::service_request_id(
+        &state.owned.config_projection.snapshot().daemon_id,
+        agent,
+        request_id,
+    )
+}
+
+/// The only running agent's id.
+fn only_agent(state: &KernelRuntimeState) -> String {
+    state.owned.agent_store.list_agents()[0].id().to_owned()
+}
+
 async fn acquire(
     state: &KernelRuntimeState,
     token: &str,
@@ -859,7 +873,9 @@ async fn a_refused_retry_of_a_lost_answer_keeps_the_machine_counted() {
         .acquired_machines(0)
         .unwrap();
     assert!(
-        acquired.len() == 1 && acquired[0].request_id == "r1" && acquired[0].state.is_live(),
+        acquired.len() == 1
+            && acquired[0].request_id == ledger_key(&state, &only_agent(&state), "r1")
+            && acquired[0].state.is_live(),
         "the machine that may exist still counts and costs: {acquired:?}"
     );
     service.script.lock().unwrap().acquire = AcquireReply::Machine;
@@ -930,7 +946,8 @@ async fn an_attempt_registered_while_a_sibling_admits_keeps_the_place_through_it
     let service = service().await;
     let (state, token, room, _workspace) =
         agent_kernel(service.api_url.clone(), allowed(None, Some(1), None)).await;
-    let (stopped, go_on) = stop_unrecorded_attempt("gap-held");
+    let (stopped, go_on) =
+        stop_unrecorded_attempt(&ledger_key(&state, &only_agent(&state), "gap-held"));
     let b = spawn_acquire(&state, &token, "gap-held", "small");
     has_stopped(stopped).await;
     let refuse_a = hold_next_acquire(&service, true);
@@ -967,7 +984,8 @@ async fn an_attempt_that_finds_its_siblings_row_released_is_admitted_anew() {
     let service = service().await;
     let (state, token, room, _workspace) =
         agent_kernel(service.api_url.clone(), allowed(None, Some(1), None)).await;
-    let (stopped, go_on) = stop_unrecorded_attempt("gap-freed");
+    let (stopped, go_on) =
+        stop_unrecorded_attempt(&ledger_key(&state, &only_agent(&state), "gap-freed"));
     let b = spawn_acquire(&state, &token, "gap-freed", "small");
     has_stopped(stopped).await;
     service.script.lock().unwrap().acquire = AcquireReply::Refused;
@@ -1027,7 +1045,7 @@ async fn a_retry_that_fails_reauthorization_keeps_a_lost_answer_counted() {
         .clone();
     let retry = ControlPlaneRequest::Acquire {
         capability_revision: "v1".into(),
-        request_id: "r1".into(),
+        request_id: ledger_key(&state, &agent, "r1"),
         class_id: Some("small".into()),
         region: Some("north".into()),
     };

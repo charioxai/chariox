@@ -355,6 +355,12 @@ impl KernelRuntimeState {
                     Ok(result) => result,
                     Err(error) => {
                         self.close_acquire_option(&reach.agent_id, &request_id, &option, &error)?;
+                        // The agent retries with its own request_id, not the service's derived one.
+                        let error = without_asking::name_agent_request(
+                            error,
+                            &service_request_id,
+                            &request_id,
+                        );
                         return Err(choice::acquire_refusal(
                             error,
                             &capability,

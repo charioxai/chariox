@@ -106,7 +106,25 @@ async fn service(offers: Vec<MachineOption>, sold_out: &'static [&'static str]) 
                     let capability = MachineAllocationCapability {
                         revision: "v1".into(),
                         actions: vec!["acquire".into()],
-                        offer: None,
+                        // A service that lists no options still has its one default machine.
+                        offer: listed.lock().unwrap().is_empty().then(|| {
+                            crate::local::MachineAcquisitionOffer {
+                                machine_type: "small".into(),
+                                vcpu: 2,
+                                ram_gb: 4.0,
+                                disk_gb: 40,
+                                location: "north".into(),
+                                terms: crate::local::MachineAcquisitionTerms {
+                                    amount: "0.06".into(),
+                                    currency: "EUR".into(),
+                                    period: crate::local::MachineAcquisitionPeriod::Hour,
+                                },
+                                rate_per_minute: Some(crate::local::JobMachineRate {
+                                    amount_micros: 1_000,
+                                    currency: "EUR".into(),
+                                }),
+                            }
+                        }),
                         offers: listed.lock().unwrap().clone(),
                         job_offers: vec![],
                         job_default_class_id: None,

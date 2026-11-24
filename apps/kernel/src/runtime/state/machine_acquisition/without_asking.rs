@@ -129,6 +129,24 @@ fn requested<'a>(
     }
 }
 
+/// An uncertain acquisition names the request_id its ledger row has, which is the service's derived
+/// one; the agent retries with the request_id it sent (or the one it was generated), so say that one.
+pub(super) fn name_agent_request(
+    error: DaemonError,
+    service_request_id: &str,
+    agent_request_id: &str,
+) -> DaemonError {
+    match error {
+        DaemonError::MachineRequest { code, message } if code == "acquisition_uncertain" => {
+            DaemonError::MachineRequest {
+                message: message.replace(service_request_id, agent_request_id),
+                code,
+            }
+        }
+        error => error,
+    }
+}
+
 #[cfg(test)]
 type Seam = (String, Box<dyn FnOnce() + Send>);
 
