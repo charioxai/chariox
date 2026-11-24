@@ -45,12 +45,12 @@ function keep(row) {
  * The history outline of GetSessionHistoryOutline (agents -> turns -> user_prompt, entries, summary, blobs) as flat rows.
  * A turn has one prompt, its own `user_prompt`; any other prompt in its entries or blobs is a steering prompt that belongs to the turn,
  * so it is marked and never opens a turn of its own. When a final reply is long, the kernel keeps a truncated `summary` and forces blobs
- * over the same events: the summary is dropped when a blob's sequence range covers it, so the reply is recorded once.
+ * over the same events: the summary is dropped when a blob of its own kind covers its sequence, so the reply is recorded once; a blob of another kind whose range spans it does not hold it.
  */
 function rowsFromOutline(outline) {
   const row = (agent, kind, timestamp_ms, total_chars, text, steering) => ({ kind, agent_id: agent.agent_id, timestamp_ms, total_chars, text, steering })
   return outline.agents.flatMap(agent => agent.turns.flatMap(turn => {
-    const covered = page => Number.isSafeInteger(page.entry_index) && turn.blobs.some(blob => blob.sequence_start <= page.entry_index && page.entry_index <= blob.sequence_end)
+    const covered = page => Number.isSafeInteger(page.entry_index) && turn.blobs.some(blob => blob.kind === page.entry.kind && blob.sequence_start <= page.entry_index && page.entry_index <= blob.sequence_end)
     const page = ({ total_chars, entry }, steering) => row(agent, entry.kind, entry.timestamp_ms, total_chars, entry.text, steering)
     return [
       page(turn.user_prompt, false),
