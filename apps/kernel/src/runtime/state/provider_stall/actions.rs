@@ -17,9 +17,12 @@ impl RecoveryAction {
         (Self::StartFresh, "start_fresh", "Start fresh from notes"),
     ];
 
-    pub(super) fn choices() -> Vec<RuntimeInteractionChoice> {
+    /// A workflow step is recovered only inside its run: a fresh agent would not carry the
+    /// step's node binding or completion authority, so that choice is not offered for it.
+    pub(super) fn choices(workflow_node: bool) -> Vec<RuntimeInteractionChoice> {
         Self::CHOICES
             .into_iter()
+            .filter(|(action, _, _)| !(workflow_node && *action == Self::StartFresh))
             .map(|(_, key, label)| RuntimeInteractionChoice::new(key, label, key, None))
             .collect()
     }
@@ -54,11 +57,38 @@ impl KernelRuntimeState {
         }
         let prompt = room
             .active_prompt_for_agent(agent.id())
-            .expect("notice matched the running prompt");
-        let attachment = self.ensure_agent_message_attachment(room.id(), &agent)?;
+            .expect("notice matched the running prompt")
+            .clone();
+        self.recover_stalled_turn(notice, &agent, &prompt, action)
+            .await
+    }
+
+    /// Stops the stalled turn and, unless the answer was Cancel, starts it again: in the same
+    /// agent, in a replacement, or, for a workflow step, through its run's own resume.
+    pub(super) async fn recover_stalled_turn(
+        &self,
+        notice: &StallNotice,
+        agent: &AgentInstance,
+        prompt: &PromptQueueItem,
+        action: RecoveryAction,
+    ) -> Result<(), DaemonError> {
+        let workflow_run = prompt
+            .workflow_run_id()
+            .zip(prompt.workflow_node_run_id())
+            .map(|(run, _)| run.to_owned());
+        if workflow_run.is_some() && action == RecoveryAction::StartFresh {
+            // Refused before anything stops: the turn keeps running.
+            return Err(DaemonError::LocalTransport {
+                operation: "recover stalled turn",
+                message:
+                    "A workflow step is recovered with Resume or Cancel, not in a fresh agent."
+                        .into(),
+            });
+        }
+        let attachment = self.ensure_agent_message_attachment(&notice.room, agent)?;
         let cancellation = self
             .cancel_agent_prompt_if_matches_with_external_authority(
-                room.id(),
+                &notice.room,
                 agent.id(),
                 &attachment,
                 Some(prompt.id()),
@@ -72,15 +102,26 @@ impl KernelRuntimeState {
             return Ok(());
         }
         self.wait_for_stall_cancellation(notice).await?;
+        if let Some(workflow_run) = workflow_run {
+            // The cancel stopped the step and kept its turn envelope: the run's resume sends
+            // the same step again, so its answer still completes the node and moves the run on.
+            let (resumed, _) = self
+                .execute_workflow_resume_run_request(crate::local::ResumeWorkflowRunRequest {
+                    session_id: notice.room.clone(),
+                    workflow_run_ref: workflow_run,
+                })
+                .await;
+            return resumed.map(|_| ());
+        }
         if action == RecoveryAction::StartFresh {
             let notes = self
                 .owned
-                .stall_recovery_notes(room.id(), agent.id(), prompt.id());
-            let fresh = self.spawn_stall_replacement(&agent, &notice.id()).await?;
+                .stall_recovery_notes(&notice.room, agent.id(), prompt.id());
+            let fresh = self.spawn_stall_replacement(agent, &notice.id()).await?;
             self.retry_stalled_prompt(&fresh, prompt, notes.as_deref())
                 .await
         } else {
-            self.retry_stalled_prompt(&agent, prompt, None).await
+            self.retry_stalled_prompt(agent, prompt, None).await
         }
     }
 

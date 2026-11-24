@@ -4,6 +4,8 @@ use crate::runtime::projection::{AgentPromptRuntimeStatus, AgentWaitKind, STALLE
 use crate::session::{RuntimeInteraction, RuntimeSession};
 
 mod actions;
+#[cfg(test)]
+mod tests;
 
 const PREFIX: &str = "provider-stall-";
 
@@ -168,10 +170,19 @@ impl KernelRuntimeState {
         let name = agent.alias().unwrap_or(agent.agent_ref());
         let minutes = now.saturating_sub(notice.quiet_since_ms) / 60_000;
         let provider = super::provider_auth_recovery::provider_label(agent.provider());
+        let workflow_node = self
+            .stall_room(&notice.room)?
+            .active_prompt_for_agent(agent.id())
+            .is_some_and(|prompt| prompt.workflow_node_run_id().is_some());
         let message = format!(
             "{name} has been waiting for its provider ({provider}) for {minutes} minutes without progress."
         );
-        let choices = actions::RecoveryAction::choices();
+        let message = if workflow_node {
+            format!("{message} Its turn is a workflow step: Resume sends the same step again in its run.")
+        } else {
+            message
+        };
+        let choices = actions::RecoveryAction::choices(workflow_node);
         let interaction =
             RuntimeInteraction::for_kernel_operation(&id, &id, "Agent stalled", &message, choices)
                 .without_timeout()
