@@ -9,6 +9,8 @@ struct Cloud {
     status: Arc<std::sync::Mutex<String>>,
     expires_in_s: Arc<std::sync::Mutex<i64>>,
     decisions: Arc<std::sync::Mutex<Vec<(String, serde_json::Value)>>>,
+    /// How many decision requests Cloud fails (500) before it applies one.
+    decide_failures: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 async fn cloud(status: &str) -> Cloud {
@@ -17,7 +19,8 @@ async fn cloud(status: &str) -> Cloud {
     let status = Arc::new(std::sync::Mutex::new(status.to_owned()));
     let expires_in_s = Arc::new(std::sync::Mutex::new(600_i64));
     let decisions = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let (state, expires, seen) = (status.clone(), expires_in_s.clone(), decisions.clone());
+    let decide_failures = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (state, expires, seen, failures) = (status.clone(), expires_in_s.clone(), decisions.clone(), decide_failures.clone());
     tokio::spawn(async move {
         loop {
             let (mut socket, _) = listener.accept().await.unwrap();
@@ -59,6 +62,11 @@ async fn cloud(status: &str) -> Cloud {
                 )
             } else if first.starts_with("GET /v1/kernel-device-approvals") {
                 ("404 Not Found", serde_json::json!({"error":{"code":"not_found","message":"not found"}}))
+            } else if failures
+                .fetch_update(std::sync::atomic::Ordering::SeqCst, std::sync::atomic::Ordering::SeqCst, |left| left.checked_sub(1))
+                .is_ok()
+            {
+                ("500 Internal Server Error", serde_json::json!({"error":{"code":"unavailable","message":"try again"}}))
             } else {
                 let body: serde_json::Value = serde_json::from_slice(&bytes[header_end..]).unwrap();
                 let decision = body["decision"].as_str().unwrap().to_owned();
@@ -73,7 +81,7 @@ async fn cloud(status: &str) -> Cloud {
                 .unwrap();
         }
     });
-    Cloud { api_url, status, expires_in_s, decisions }
+    Cloud { api_url, status, expires_in_s, decisions, decide_failures }
 }
 
 async fn cards(state: &KernelRuntimeState, room: &str, want: usize) -> Vec<(String, String)> {
@@ -290,4 +298,38 @@ async fn a_card_the_kernel_withdraws_on_its_own_timeout_tells_cloud_nothing_and_
     let again = state.kernel_enrollment_tool(&token, args()).await.unwrap();
     assert_eq!(again.payload["status"], "waiting_for_owner");
     assert_eq!(cards(&state, &room, 1).await.len(), 1);
+}
+
+#[tokio::test]
+async fn the_card_stays_answerable_for_the_whole_remaining_life_of_the_code() {
+    let cloud = cloud("PENDING").await;
+    let (state, token, _workspace) = super::super::machine_acquisition::tool_tests::agent_kernel(cloud.api_url.clone()).await;
+    let room = room_of(&state, &token);
+    let first = state.kernel_enrollment_tool(&token, args()).await.unwrap();
+    assert_eq!(first.payload["status"], "waiting_for_owner");
+    cards(&state, &room, 1).await;
+    // The code lives about 600 s: the ordinary deadline sweep must not take the card at 300 s.
+    let session = state.owned.session_store.get_session(&room).unwrap();
+    let timeout = session.active_interactions()[0].timeout_sec().unwrap();
+    assert!(timeout > 500, "the card's own deadline is {timeout} s while the code lives about 600 s");
+}
+
+#[tokio::test]
+async fn a_denial_cloud_did_not_get_is_applied_again_without_a_second_card() {
+    let cloud = cloud("PENDING").await;
+    let (state, token, _workspace) = super::super::machine_acquisition::tool_tests::agent_kernel(cloud.api_url.clone()).await;
+    let room = room_of(&state, &token);
+    let first = state.kernel_enrollment_tool(&token, args()).await.unwrap();
+    assert_eq!(first.payload["status"], "waiting_for_owner");
+    let listed = cards(&state, &room, 1).await;
+    cloud.decide_failures.store(1, std::sync::atomic::Ordering::SeqCst);
+    let owner = state.owned.session_store.get_session(&room).unwrap().owner_user_id().to_owned();
+    state.resolve_terminal_runtime_interaction(&room, &listed[0].0, "deny", None, Some(&owner)).await.unwrap();
+    // The first denial request failed before Cloud applied it: the login is still waiting there.
+    tokio::time::sleep(Duration::from_millis(6_000)).await;
+    assert!(cloud.decisions.lock().unwrap().is_empty());
+    let error = state.kernel_enrollment_tool(&token, args()).await.unwrap_err().to_string();
+    assert!(error.contains("denied"), "the owner's denial was lost: {error}");
+    assert_eq!(cloud.decisions.lock().unwrap().iter().filter(|(decision, _)| decision == "deny").count(), 1);
+    assert!(state.owned.session_store.get_session(&room).unwrap().active_interactions().is_empty(), "the owner was asked again");
 }
