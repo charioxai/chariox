@@ -141,6 +141,60 @@ async fn an_agent_cannot_approve_its_own_acquisition_or_one_its_sub_agents_asked
 }
 
 #[tokio::test]
+async fn an_agent_in_another_room_below_the_requester_cannot_approve_its_acquisition() {
+    let t = tree(
+        "acquisition-cross-room",
+        AgentPermissionLevel::Yolo,
+        AgentPermissionLevel::Yolo,
+    )
+    .await;
+    // Two more Rooms of the same owner: the first Room's agent was spawned by the requester `p` and
+    // keeps it as its parent; the second Room's agent was spawned by that one (a chain across Rooms).
+    let (below, deeper, _worktrees) = {
+        let mut app = t.app.lock().await;
+        let mut ids = Vec::new();
+        let mut worktrees = Vec::new();
+        let mut parent = t.p.clone();
+        for label in ["acquisition-cross-room-b", "acquisition-cross-room-c"] {
+            let worktree = crate::test_support::TestWorktree::new(label);
+            let (room, agent) = crate::app::KernelSessionService::new(&mut app)
+                .create_session(worktree.session_request())
+                .unwrap();
+            crate::test_support::admit_room_test_turn(&mut app, room.id(), agent.id());
+            app.agents()
+                .set_parent_agent(agent.id(), Some(crate::agent::AgentRef::local(&parent)))
+                .unwrap();
+            parent = agent.id().to_owned();
+            ids.push(agent.id().to_owned());
+            worktrees.push(worktree);
+        }
+        (ids[0].clone(), ids[1].clone(), worktrees)
+    };
+    let (gate, id) = acquire(&t, &t.p).await;
+    for answering in [&below, &deeper] {
+        let error = t
+            .runtime
+            .answer_owner_room_card(answering, &t.room, &id, "approve")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("cannot approve a machine acquisition"),
+            "an agent below the requester in another Room was let answer: {error}"
+        );
+    }
+    assert!(
+        !gate.is_finished(),
+        "a cross-Room self-approval let the acquisition go on"
+    );
+    // An agent outside the requester's subtree still can.
+    let status = t
+        .runtime
+        .answer_owner_room_card(&t.g, &t.room, &id, "approve")
+        .unwrap();
+    assert_eq!(status, ChildDecisionStatus::Answered);
+}
+
+#[tokio::test]
 async fn many_pending_decisions_do_not_block_an_acquisition() {
     let t = tree(
         "acquisition-many",

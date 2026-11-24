@@ -32,7 +32,9 @@ impl KernelRuntimeOwnedState {
         else {
             return Ok(());
         };
-        let agents = self.agent_store.get_session_agents(answering.session_id());
+        // The whole agent tree, not the answering agent's Room: a sub-agent spawned into another
+        // Room keeps its spawner as its parent, so the requester can sit in a different Room.
+        let agents = self.agent_store.list_agents();
         let own_subtree = answering.id() == requester
             || crate::agent::authority_limit::ancestors(answering, &agents)
                 .iter()
