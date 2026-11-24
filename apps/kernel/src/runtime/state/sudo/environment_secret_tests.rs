@@ -142,7 +142,7 @@ async fn a_filled_secret_follows_a_rotated_entry_until_a_typed_value_ends_the_li
     service
         .set_vault_secret(&key, "ghp_RotatedValue77")
         .unwrap();
-    f.state.refill_linked_environment_secrets(&handle);
+    f.state.refill_linked_environment_secrets(&handle).unwrap();
     assert_eq!(held(&f, "GH_TOKEN").as_deref(), Some("ghp_RotatedValue77"));
 
     // The entry is removed: the copy stays as a normal Secret.
@@ -150,7 +150,8 @@ async fn a_filled_secret_follows_a_rotated_entry_until_a_typed_value_ends_the_li
         .unwrap()
         .remove(&handle)
         .unwrap();
-    f.state.refill_linked_environment_secrets(&handle);
+    // Nothing is left to follow, and the owner is told so if the entry were still replaced.
+    assert!(f.state.refill_linked_environment_secrets(&handle).is_err());
     assert_eq!(held(&f, "GH_TOKEN").as_deref(), Some("ghp_RotatedValue77"));
 
     // A typed value ends the link: a later change of the entry no longer reaches the Secret.

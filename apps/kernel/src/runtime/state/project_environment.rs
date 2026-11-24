@@ -354,20 +354,26 @@ impl KernelRuntimeState {
     }
 
     /// The Vault entry named `entry_id` changed: every Secret filled from it takes the new value, through the
-    /// same use check and audit as the first fill. A Secret whose entry no longer fits stays as it was; its
-    /// link then reads as broken.
-    pub(crate) fn refill_linked_environment_secrets(&self, entry_id: &str) {
-        let refill = || -> Result<(), DaemonError> {
-            for (project_id, name) in self.secret_links().filled_from(entry_id)? {
-                if let Err(error) = self.refill_environment_secret(&project_id, &name, entry_id) {
-                    tracing::warn!(%error, project_id, name, "an Environment secret could not be re-filled");
-                }
+    /// same use check and audit as the first fill. Every Secret is tried; an error names those that could not
+    /// take the value and so still hold the old one, so the owner's replacement never reads as a clean rotation.
+    pub(crate) fn refill_linked_environment_secrets(
+        &self,
+        entry_id: &str,
+    ) -> Result<(), DaemonError> {
+        let mut stale = Vec::new();
+        for (project_id, name) in self.secret_links().filled_from(entry_id)? {
+            if let Err(error) = self.refill_environment_secret(&project_id, &name, entry_id) {
+                tracing::warn!(%error, project_id, name, "an Environment secret could not be re-filled");
+                stale.push(format!("{name} (Project {project_id})"));
             }
-            Ok(())
-        };
-        if let Err(error) = refill() {
-            tracing::warn!(%error, "the Environment secret links could not be read");
         }
+        if stale.is_empty() {
+            return Ok(());
+        }
+        Err(environment_error(format!(
+            "The entry was replaced, but these Environment secrets could not take the new value and still hold the old one: {}. Fix them or replace the entry again.",
+            stale.join(", ")
+        )))
     }
 
     fn refill_environment_secret(
