@@ -223,6 +223,75 @@ async fn a_browser_region_card_is_bound_again_to_the_page_a_restart_brought_back
         .is_err());
 }
 
+/// A restarted plain card whose page cannot be shown again is not the person finishing: after the
+/// observation budget the agent is told the card is unavailable, never `condition_met`.
+#[tokio::test]
+async fn a_restarted_browser_card_whose_rebind_keeps_failing_settles_unavailable_not_done() {
+    let f = fixture("async-popup-region-rebind-fails", true).await;
+    f.begin(&f.prompt_id);
+    let result = ask(&f, serde_json::json!({})).await;
+    let id = result["interaction_id"].as_str().unwrap().to_owned();
+    {
+        let mut sessions = f.runtime.owned.session_store.write();
+        let mut session = sessions.get_session(&f.room).unwrap();
+        let card = session.remove_active_interaction(&id).unwrap();
+        session.add_active_interaction(card.with_view(crate::session::RuntimeInteractionView {
+            browser_region: browser_region(),
+        }));
+        sessions.restore_session(session);
+    }
+    // The controller answers every poll "Browser restarted" and refuses every rebind.
+    let agent = f.runtime.owned.agent_store.get_agent(&f.agent).unwrap();
+    let user = f
+        .runtime
+        .provider_account_authority_owner_user_id(agent.owner_user_id());
+    let root = std::env::temp_dir().join(format!(
+        "chariox-rebind-fails-{:032x}",
+        rand::random::<u128>()
+    ));
+    std::fs::create_dir(&root).unwrap();
+    f.runtime.install_kernel_browser_fixture(&user, &root);
+    f.runtime.resume_browser_region_cards();
+    let closed = tokio::time::timeout(Duration::from_secs(40), async {
+        loop {
+            let open = f
+                .runtime
+                .owned
+                .session_store
+                .get_session(&f.room)
+                .unwrap()
+                .active_interactions()
+                .iter()
+                .any(|card| card.id() == id);
+            if !open {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    })
+    .await;
+    assert!(
+        closed.is_ok(),
+        "the card is settled once the budget runs out"
+    );
+    let told = answers(&f, &id);
+    assert_eq!(told.len(), 1, "{told:?}");
+    assert_eq!(told[0]["status"], "unavailable", "{told:?}");
+    assert!(
+        told[0]["choice_id"].is_null(),
+        "never condition_met: {told:?}"
+    );
+    assert!(
+        told[0]["reply"]
+            .as_str()
+            .unwrap()
+            .contains("could not be shown again"),
+        "{told:?}"
+    );
+    f.runtime.shutdown_cleanup().await.unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 /// Kept, not a gate: the browser-region card is the person's step (CAPTCHA, consent, one-time
 /// code). The owner answers it, it closes, and no browser-access card ever stands beside it.
 #[tokio::test]
