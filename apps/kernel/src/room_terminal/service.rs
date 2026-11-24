@@ -678,15 +678,19 @@ impl RoomTerminalService {
             state.removed = true;
             self.lock().terminals.remove(terminal_id);
         }
-        self.finish_removal(&owner, terminal_id)
+        self.finish_removal(&owner, terminal_id, true)
     }
 
+    /// Take a removed terminal's record out of the store. `end_released_jobs`: an explicit close
+    /// also ends what its commands left running; the kernel's own tidying of an ended terminal
+    /// does not (the jobs stay with their owner and end with their Room, agent or the kernel).
     fn finish_removal(
         &self,
         owner: &Arc<TerminalOwner>,
         terminal_id: &str,
+        end_released_jobs: bool,
     ) -> Result<(), DaemonError> {
-        let _ = self.stop_owner(owner, true);
+        let _ = self.stop_owner_with(owner, true, end_released_jobs);
         self.settle_outside_jobs(&mut owner.lock().terminal)?;
         self.inner.store.remove(terminal_id)?;
         self.report_work();
@@ -715,7 +719,7 @@ impl RoomTerminalService {
                 registry.terminals.remove(&terminal_id);
             }
         }
-        if let Err(error) = self.finish_removal(owner, &terminal_id) {
+        if let Err(error) = self.finish_removal(owner, &terminal_id, false) {
             crate::logging::error_with_fields(
                 "room_terminal.remove",
                 "ended terminal could not be removed",

@@ -6079,7 +6079,7 @@ A kernel terminal opened with a `command` (what `chariox exec` runs; every kerne
 command is what marks it) removes itself: once the command exited and a
 `read_output` reached its last byte it leaves the list and the store, and when no client read it, 60 s after it
 exited. A `close` that arrives after that answers that the kernel has no such terminal; `chariox exec` treats that as
-closed. See "Ended terminals" under Room terminals for every other one.
+closed. That removal only drops the terminal's record: a process that left the command's session (`setsid nohup job &`) keeps running, as it does after the command ends, and stops with its Room, its agent or the kernel; an explicit `close` still ends it. See "Ended terminals" under Room terminals for every other one.
 `chariox terminal [--kernel K] open|list|send|read|wait|close` and `chariox exec [--kernel K] -- argv` (no `--session`,
 no `--workspace`) use it; the one-shot opens a terminal running the argv, waits for it, reads its output and closes it.
 
@@ -6148,6 +6148,8 @@ a home restart ends the wake as lost, and the terminal itself is not affected.
   are the exception that follows the paragraph under Kernel terminals. Nothing counts ended terminals. No
   serialized shape changes (the end time is only in the stored record); a client never assumes an ended agent
   terminal stays. The retention numbers, 60 s and 1 h, are provisional constants in `room_terminal/service.rs`.
+  The kernel's removal drops only the record and the list entry: what the terminal's shell left running in the background
+  keeps running and stops with its Room, its agent or the kernel, as before. An explicit `close` ends it as always.
 - Closing a terminal, or its shell exiting, ends every process left in the shell's
   session (background jobs included). A process that left that session
   (`setsid nohup job >log 2>&1 </dev/null &`) keeps running after its shell or command
