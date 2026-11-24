@@ -1319,12 +1319,6 @@ impl KernelRuntimeState {
             self.owned
                 .ensure_agent_owner(agent_id, caller_user_id, "update agent profile")?;
         let session = self.owned.session_store.get_session(session_id)?;
-        let selections = super::agent_profile_owned_state::AgentProfileSelections {
-            provider,
-            account_profile,
-            model,
-            effort,
-        };
         if context.at_turn_end
             && self
                 .owned
