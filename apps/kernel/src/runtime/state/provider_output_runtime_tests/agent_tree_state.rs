@@ -692,10 +692,17 @@ async fn a_live_wake_of_a_settled_child_is_its_node_wait_reason() {
     }))
     .unwrap();
     store
-        .agent_lifecycle(Operation::CreateWake {
+        .agent_lifecycle(Operation::ArmWake {
             task: team.task.task_id.clone(),
             prompt: team.task.prompt_id.clone(),
-            wake,
+            wake: Box::new(wake),
+        })
+        .unwrap();
+    store
+        .agent_lifecycle(Operation::ProcessStarted {
+            id: "wake-build".into(),
+            pid: 42,
+            now,
         })
         .unwrap();
     // The turn ends without a yield: its task settles done and the wake stays armed.
@@ -711,7 +718,12 @@ async fn a_live_wake_of_a_settled_child_is_its_node_wait_reason() {
         })
         .unwrap();
     let tree = read(&team);
-    let liveness = tree.nodes[0].liveness.as_ref().expect("the live wake is named");
+    let liveness = tree.nodes[0].liveness.as_ref().unwrap_or_else(|| {
+        panic!(
+            "the live wake is named: wakes {:?}",
+            store.agent_wakes(Some(&team.room), Some(&team.child)).unwrap().iter().map(|w| (w.id.clone(), w.state.clone(), w.task_id.clone())).collect::<Vec<_>>()
+        )
+    });
     let on = liveness.waiting_on.as_ref().unwrap();
     assert_eq!(on.kind, crate::runtime::projection::AgentWaitKind::BackgroundCommand);
     assert_eq!(on.detail, "cargo test");
