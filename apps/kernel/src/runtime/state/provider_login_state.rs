@@ -242,6 +242,13 @@ pub(in crate::runtime) struct ProviderLoginProcessRecord {
     pub backend: ProviderLoginProcessBackend,
     pub operation: ProviderAuthProcessOperation,
     pub setup_token: Option<ClaudeSetupTokenLogin>,
+    /// The origin a Vault entry must be bound to for this login to take its
+    /// value; `None` when the login takes no API key.
+    pub vault_origin: Option<&'static str>,
+    /// The Vault value typed into this login. It is kept only to cut it out of
+    /// the screen and to refuse a second entry; it ends with the login.
+    pub typed_secret: Option<Zeroizing<String>>,
+    pub codex_device_login: Option<Arc<Mutex<crate::provider::CodexDeviceLogin>>>,
     pub serial: Arc<tokio::sync::Mutex<()>>,
     pub code_submitted: bool,
     pub message: Option<String>,
@@ -261,16 +268,72 @@ impl ProviderLoginProcessRecord {
 
     fn append_projected_output(&mut self, bytes: &[u8]) {
         self.output.extend_from_slice(bytes);
+        // Masked before the front is dropped, so a value that straddles the cut
+        // never leaves its tail behind.
+        self.mask_typed_secret();
         if self.output.len() > MAX_PROVIDER_LOGIN_OUTPUT_BYTES {
             let overflow = self.output.len() - MAX_PROVIDER_LOGIN_OUTPUT_BYTES;
             self.output.drain(..overflow);
         }
     }
 
+    /// A login that echoes what it was typed would show a Vault value on the
+    /// screen a model reads; every occurrence is overwritten in place.
+    fn mask_typed_secret(&mut self) {
+        let Some(secret) = self
+            .typed_secret
+            .as_ref()
+            .filter(|secret| !secret.is_empty())
+        else {
+            return;
+        };
+        let needle = secret.as_bytes();
+        let mut at = 0;
+        while let Some(found) = self.output[at..]
+            .windows(needle.len())
+            .position(|window| window == needle)
+        {
+            let start = at + found;
+            self.output[start..start + needle.len()].fill(b'*');
+            at = start + needle.len();
+        }
+    }
+
+    /// How many bytes at the end of the output may be the start of an echo of
+    /// the typed value still arriving: the longest suffix that is a proper
+    /// prefix of the value. Output comes over separate polls, so such a suffix
+    /// is held back from the public screen until the next bytes settle it.
+    fn pending_secret_tail(&self) -> usize {
+        let Some(secret) = self
+            .typed_secret
+            .as_ref()
+            .filter(|secret| !secret.is_empty())
+        else {
+            return 0;
+        };
+        let needle = secret.as_bytes();
+        (1..needle.len().min(self.output.len() + 1))
+            .rev()
+            .find(|&len| self.output.ends_with(&needle[..len]))
+            .unwrap_or(0)
+    }
+
+    /// The echo can no longer be completed, so what was held back is masked.
+    /// Kernel text goes after the screen only once this has run: behind it the
+    /// held-back bytes would no longer be the end of the output.
+    fn mask_pending_secret_tail(&mut self) {
+        let held_back = self.pending_secret_tail();
+        let end = self.output.len();
+        self.output[end - held_back..].fill(b'*');
+    }
+
     fn set_state(&mut self, state: ProviderLoginProcessState, now_ms: u64) {
         self.state = state;
         self.updated_at_ms = now_ms;
         if state != ProviderLoginProcessState::Running {
+            self.mask_pending_secret_tail();
+            self.typed_secret = None;
+            self.codex_device_login = None;
             if let Some(login) = self.setup_token.as_mut() {
                 if login.vault_prompt.take().is_some() {
                     self.message = None;
@@ -288,7 +351,8 @@ impl ProviderLoginProcessRecord {
             state: self.state,
             message: self.message.clone(),
             interaction: self.interaction(),
-            terminal_output_base64: base64::engine::general_purpose::STANDARD.encode(&self.output),
+            terminal_output_base64: base64::engine::general_purpose::STANDARD
+                .encode(&self.output[..self.output.len() - self.pending_secret_tail()]),
             started_at_ms: self.started_at_ms,
             updated_at_ms: self.updated_at_ms,
         }
@@ -462,6 +526,31 @@ impl ProviderLoginProcessStore {
         let mut records = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
         let record = owned_record_mut(&mut records, owner, login_id)?;
         record.code_submitted = authorization_code;
+        record.message = None;
+        record.updated_at_ms = now_ms;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub fn backdate_start_for_test(&self, login_id: &str, by_ms: u64) {
+        let mut records = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
+        let record = records.get_mut(login_id).expect("login exists");
+        record.started_at_ms = record.started_at_ms.saturating_sub(by_ms);
+    }
+
+    /// Notes that a Vault value was typed into the login and cuts it out of
+    /// the screen so far.
+    pub fn vault_value_typed(
+        &self,
+        owner: &str,
+        login_id: &str,
+        value: Zeroizing<String>,
+        now_ms: u64,
+    ) -> Result<(), DaemonError> {
+        let mut records = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
+        let record = owned_record_mut(&mut records, owner, login_id)?;
+        record.typed_secret = Some(value);
+        record.mask_typed_secret();
         record.message = None;
         record.updated_at_ms = now_ms;
         Ok(())
@@ -650,6 +739,23 @@ impl ProviderLoginProcessStore {
         Ok(record.status())
     }
 
+    /// Adds text the kernel writes itself (a timeout, a failed check) below the
+    /// login screen, after masking an echo that was still arriving.
+    pub fn append_note(
+        &self,
+        owner_user_id: &str,
+        login_id: &str,
+        note: &str,
+        now_ms: u64,
+    ) -> Result<ProviderLoginStatus, DaemonError> {
+        let mut records = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
+        let record = owned_record_mut(&mut records, owner_user_id, login_id)?;
+        record.mask_pending_secret_tail();
+        record.append_projected_output(note.as_bytes());
+        record.updated_at_ms = now_ms;
+        Ok(record.status())
+    }
+
     /// Adds a kernel message below the rendered `claude setup-token` screen.
     pub fn append_setup_token_note(
         &self,
@@ -817,6 +923,9 @@ mod tests {
             backend: ProviderLoginProcessBackend::Terminal,
             operation: ProviderAuthProcessOperation::Login,
             setup_token: None,
+            vault_origin: None,
+            typed_secret: None,
+            codex_device_login: None,
             serial: Arc::new(tokio::sync::Mutex::new(())),
             code_submitted: false,
             message: None,
@@ -1288,5 +1397,47 @@ mod tests {
             )
             .unwrap();
         assert!(completed.interaction.is_none());
+    }
+
+    fn shown(record: &ProviderLoginProcessRecord) -> String {
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(record.status().terminal_output_base64)
+            .unwrap();
+        String::from_utf8(bytes).unwrap()
+    }
+
+    #[test]
+    fn an_echo_still_arriving_is_held_back_until_it_settles() {
+        let mut record = record("owner-a", "login-a");
+        record.typed_secret = Some(Zeroizing::new("sk-abcdef".to_string()));
+        record.append_projected_output(b"key: sk-ab");
+        assert_eq!(shown(&record), "key: ");
+        record.append_projected_output(b"cdef");
+        assert_eq!(shown(&record), "key: *********");
+        record.append_projected_output(b" sk-");
+        assert_eq!(shown(&record), "key: ********* ");
+        record.append_projected_output(b"x");
+        assert_eq!(shown(&record), "key: ********* sk-x");
+    }
+
+    #[test]
+    fn a_held_back_echo_is_masked_when_the_login_ends() {
+        let mut record = record("owner-a", "login-a");
+        record.typed_secret = Some(Zeroizing::new("sk-abcdef".to_string()));
+        record.append_projected_output(b"key: sk-abc");
+        record.set_state(ProviderLoginProcessState::Failed, 1);
+        assert_eq!(shown(&record), "key: ******");
+    }
+
+    #[test]
+    fn a_value_cut_by_the_output_cap_leaves_no_tail() {
+        let mut record = record("owner-a", "login-a");
+        record.typed_secret = Some(Zeroizing::new("sk-abcdef".to_string()));
+        let mut chunk = vec![b'.'; MAX_PROVIDER_LOGIN_OUTPUT_BYTES - 4];
+        chunk.extend_from_slice(b"sk-abcdef");
+        record.append_projected_output(&chunk);
+        record.set_state(ProviderLoginProcessState::Failed, 1);
+        assert!(!shown(&record).contains("abcdef"));
+        assert!(!shown(&record).contains("def"));
     }
 }

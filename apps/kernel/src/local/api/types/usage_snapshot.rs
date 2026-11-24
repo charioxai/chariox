@@ -48,4 +48,19 @@ pub struct AgentUsageSnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context: Option<AgentContextUsage>,
     pub route: AgentExecutionRoute,
+    pub models: Vec<AgentModelUsage>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentModelUsage {
+    pub provider: String,
+    pub model: String,
+    /// Includes input cache reads and writes.
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cached_input_tokens: u64,
+    pub cache_write_input_tokens: u64,
+    /// Standard short-context API list rates with the shortest cache-write TTL.
+    /// Decimal string in USD nanodollars, or null when the model has no listed rate.
+    pub api_equivalent_nanodollars: Option<String>,
 }

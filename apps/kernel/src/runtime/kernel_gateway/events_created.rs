@@ -1,6 +1,7 @@
 //! MP-08 / MP-09 / MP-10 / MP-11: follow the work an outside grant creates.
 use super::*;
 use crate::local::*;
+use serde_json::Value;
 
 pub(super) fn follows_created(request: &LocalDaemonRequest) -> bool {
     match request {
@@ -42,10 +43,7 @@ impl KernelGateway {
                 .collect(),
             _ => return Ok(()),
         };
-        self.runtime_state
-            .subscribe_outside_part(&origin.grant_id, true, targets)?;
-        self.start_event_parts(origin);
-        Ok(())
+        self.subscribe_created_targets(origin, targets)
     }
 }
 
@@ -55,9 +53,36 @@ impl KernelGateway {
         origin: &Origin,
         target: &str,
         request: &LocalDaemonRequest,
-        response: &mut serde_json::Value,
+        response: &mut Value,
     ) {
         if !follows_created(request) {
+            return;
+        }
+        if matches!(request, LocalDaemonRequest::CreateSession(_)) {
+            let Some(session_id) = response
+                .pointer("/SessionCreated/session_id")
+                .and_then(Value::as_str)
+            else {
+                return;
+            };
+            let failed = match self.resolve(target).await {
+                Ok(kernel) => self
+                    .subscribe_created_targets(
+                        origin,
+                        vec![EventTarget {
+                            kernel: kernel.kernel_id,
+                            session_id: session_id.to_owned(),
+                            agent_id: None,
+                        }],
+                    )
+                    .is_err(),
+                Err(_) => true,
+            };
+            if failed {
+                response["SessionCreated"]["event_subscription_error"] =
+                    serde_json::to_value(event_subscription_failure())
+                        .expect("event issue serializes");
+            }
             return;
         }
         let Ok(mut created) = serde_json::from_value::<LocalDaemonResponse>(response.clone())
@@ -75,6 +100,17 @@ impl KernelGateway {
             created.record_event_subscription_failure();
             *response = serde_json::to_value(created).expect("created work response serializes");
         }
+    }
+
+    fn subscribe_created_targets(
+        self: &Arc<Self>,
+        origin: &Origin,
+        targets: Vec<EventTarget>,
+    ) -> Result<(), crate::error::DaemonError> {
+        self.runtime_state
+            .subscribe_outside_part(&origin.grant_id, true, targets)?;
+        self.start_event_parts(origin);
+        Ok(())
     }
 }
 
@@ -95,9 +131,13 @@ impl LocalDaemonResponse {
             } => event_subscription_error,
             _ => return,
         };
-        *issue = Some(EventKernelIssue {
-            code: "events_subscription_failed".into(),
-            message: "Work was created, but automatic event subscription failed. Keep the returned IDs. Run chariox events subscription; if it ended, request a new access grant, otherwise remove unneeded targets or restore the connection, then subscribe using those IDs.".into(),
-        });
+        *issue = Some(event_subscription_failure());
+    }
+}
+
+fn event_subscription_failure() -> EventKernelIssue {
+    EventKernelIssue {
+        code: "events_subscription_failed".into(),
+        message: "Work was created, but automatic event subscription failed. Keep the returned IDs. Run chariox events subscription; if it ended, request a new access grant, otherwise remove unneeded targets or restore the connection, then subscribe using those IDs.".into(),
     }
 }

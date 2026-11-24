@@ -141,11 +141,27 @@ async fn remote_session_projection_redacts_other_users_private_agent_and_workflo
         .find(|agent| agent.id() == user_two_agent.id())
         .expect("own agent should remain visible");
     assert!(visible_user_two_agent.visible_in_freeform());
-    let redacted_workflow = redacted_session
-        .workflows()
-        .iter()
-        .find(|workflow| workflow.id() == workflow_id)
-        .expect("workflow graph should remain visible");
+    assert!(
+        redacted_session.workflows().is_empty(),
+        "Room state omits workflow graphs"
+    );
+    let get_workflow = LocalDaemonRequest::ResolveWorkflow(crate::local::ResolveWorkflowRequest {
+        session_id: session_id.clone(),
+        workflow_ref: workflow_id.clone(),
+    });
+    let LocalDaemonResponse::WorkflowResolved {
+        workflow: redacted_workflow,
+    } = router
+        .dispatch(
+            remote_command_for_request(&get_workflow, Some("user-2")),
+            get_workflow,
+        )
+        .await
+        .expect("member should read the redacted workflow graph")
+    else {
+        panic!("unexpected workflow response");
+    };
+    assert_eq!(redacted_workflow.id(), workflow_id);
     assert_eq!(redacted_workflow.nodes().len(), 3);
     let redacted_local_node = redacted_workflow
         .node(local_node.id())
@@ -254,17 +270,22 @@ async fn collaborator_room_list_directory_redaction_inner() {
         .unwrap();
     let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
     router.remote_relay_inventory_projection.update(
-        vec![crate::local::RemoteMachineRecord {
-            machine_id: "private-machine".into(),
-            machine_alias: Some("private-host".into()),
-            display_name: "private-host".into(),
-            trust_status: crate::local::RemoteMachineTrustStatus::Approved,
-            online: true,
-            pending: false,
-            kernel_count: 1,
-            available_providers: vec!["codex".into()],
-            provider_accounts: vec![],
-        }],
+        crate::local::RemoteMachineInventory {
+            machines: vec![crate::local::RemoteMachineRecord {
+                directory: None,
+                machine_id: "private-machine".into(),
+                machine_alias: Some("private-host".into()),
+                display_name: "private-host".into(),
+                trust_status: crate::local::RemoteMachineTrustStatus::Approved,
+                presence: crate::local::RemoteMachinePresence::Online,
+                pending: false,
+                kernel_count: 1,
+                available_providers: vec!["codex".into()],
+                provider_accounts: vec![],
+                kernels: Vec::new(),
+            }],
+            ..Default::default()
+        },
         vec![chariox_relay::protocol::RelayKernelPresence {
             kernel_id: "private-kernel".into(),
             machine_id: "private-machine".into(),
@@ -278,6 +299,7 @@ async fn collaborator_room_list_directory_redaction_inner() {
             leased_agent_count: 0,
             local_session_count: 5,
             public_key: "public-fixture-key".into(),
+            local_protocol: None,
         }],
     );
     for request in [LocalDaemonRequest::GetRoomListSnapshot(
@@ -325,7 +347,7 @@ async fn collaborator_room_list_directory_redaction_inner() {
             assert!(!events.contains("private-kernel"));
             assert!(!events.contains("private-machine"));
             assert!(events.contains(&session_id));
-            let machines = router.relay_remote_machines_snapshot(&caller);
+            let machines = router.relay_remote_machines_snapshot(&caller).machines;
             assert_eq!(!machines.is_empty(), visible);
         }
     }

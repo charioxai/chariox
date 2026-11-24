@@ -196,26 +196,7 @@ fn inspect_repository_features(
             Ok(())
         },
     )?;
-    let lfs = git_output_allow_status_with_environment(
-        worktree,
-        &[
-            "grep",
-            "-I",
-            "-q",
-            "version https://git-lfs.github.com/spec/v1",
-            "HEAD",
-            "--",
-            ".",
-        ],
-        &[0, 1],
-        isolated,
-    )?;
-    if lfs.status.code() == Some(0) {
-        return Err(context_error(format!(
-            "repository `{}` contains Git LFS pointers; Git LFS is not supported in development context version 1",
-            worktree.display()
-        )));
-    }
+    reject_committed_lfs_pointers(worktree, isolated)?;
     Ok(RepositoryMaterializationEstimate {
         checkout_bytes,
         materialized_entries,
@@ -279,11 +260,57 @@ pub(super) fn reject_lfs_attributes(path: &str, bytes: &[u8]) -> Result<(), Daem
     Ok(())
 }
 
+const LFS_POINTER_HEADER: &[u8] = b"version https://git-lfs.github.com/spec/v1\n";
+// The Git LFS specification limits a pointer file to 1024 bytes.
+const MAX_LFS_POINTER_BYTES: u64 = 1024;
+
+/// A real Git LFS pointer is a blob that starts with the pointer header. Text
+/// that only mentions the header (source, docs, tests) is not a pointer.
+fn is_lfs_pointer(bytes: &[u8]) -> bool {
+    bytes.starts_with(LFS_POINTER_HEADER)
+}
+
 pub(super) fn reject_lfs_pointer(bytes: &[u8]) -> Result<(), DaemonError> {
-    if bytes.starts_with(b"version https://git-lfs.github.com/spec/v1\n") {
+    if is_lfs_pointer(bytes) {
         return Err(context_error(
             "dirty overlay contains a Git LFS pointer; Git LFS is not supported in development context version 1",
         ));
+    }
+    Ok(())
+}
+
+fn reject_committed_lfs_pointers(worktree: &Path, isolated: bool) -> Result<(), DaemonError> {
+    // Git finds the files that mention the header; only those that also start
+    // with it are pointers.
+    let candidates = git_output_allow_status_with_environment(
+        worktree,
+        &[
+            "grep",
+            "-I",
+            "-l",
+            "-z",
+            "-F",
+            "-e",
+            "version https://git-lfs.github.com/spec/v1",
+            "HEAD",
+            "--",
+            ".",
+        ],
+        &[0, 1],
+        isolated,
+    )?;
+    for candidate in split_nul(&candidates.stdout)? {
+        if git_blob_size_with_environment(worktree, &candidate, isolated)? > MAX_LFS_POINTER_BYTES {
+            continue;
+        }
+        let contents =
+            git_bytes_with_environment(worktree, &["cat-file", "blob", &candidate], isolated)?;
+        if is_lfs_pointer(&contents) {
+            return Err(context_error(format!(
+                "repository `{}` contains Git LFS pointers; Git LFS is not supported in development context version 1",
+                worktree.display()
+            )));
+        }
     }
     Ok(())
 }

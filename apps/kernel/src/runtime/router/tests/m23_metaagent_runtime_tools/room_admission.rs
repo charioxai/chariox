@@ -262,7 +262,6 @@ async fn regular_spawn_and_direct_child_control() {
     let workspace = env.root.join("workspace");
     std::fs::create_dir_all(&workspace).unwrap();
     let mut config = DaemonConfig::for_tests();
-    config.user_config.workflow.session_default_max_agents = Some(1);
     config.room_agent_tools = true;
     let mut app = DaemonApp::bootstrap(config).unwrap();
     let (session, a) = crate::app::KernelSessionService::new(&mut app)
@@ -841,14 +840,30 @@ fn room_admission_known_creation_rejection_records_failed_intent() {
 // MP-08/MP-11 A01: binding a peer is not implicit capability administration.
 #[test]
 fn room_admission_workflow_binding_cannot_grant_peer_extensions() {
+    crate::test_support::isolated_env_test!();
     let env = TestMetaRuntimeEnv::new("room-peer-capability");
     let workspace = env.root.join("workspace");
     std::fs::create_dir_all(&workspace).unwrap();
-    // Supplementary authored capability package in disposable test workspace, never acceptance.
-    let skill = workspace.join(".chariox/skills/am1-source-regression-only");
-    std::fs::create_dir_all(&skill).unwrap();
-    std::fs::write(skill.join("SKILL.md"), "---\nname: am1-source-regression-only\ndescription: Source regression capability package.\n---\nRead-only source review.\n").unwrap();
-    crate::runtime::capability_registry::ensure_skill_exists(
+    // Supplementary authored capability in disposable test workspace, never acceptance.
+    let script = workspace.join(".chariox/scripts/am1-source-regression-only");
+    std::fs::create_dir_all(&script).unwrap();
+    std::fs::write(script.join("script.py"), "print('ok')\n").unwrap();
+    std::fs::write(
+        script.join("metadata.json"),
+        format!(
+            r#"{{"name":"am1-source-regression-only","runtime":"python","entrypoint":"script.py","description":"Source regression capability.","input_schema":{{}},"definition_hash":"{}"}}"#,
+            "a".repeat(64)
+        ),
+    )
+    .unwrap();
+    let envs = workspace.join(".chariox/envs");
+    std::fs::create_dir_all(&envs).unwrap();
+    std::fs::write(
+        envs.join("python.json"),
+        r#"{"name":"python","runtime":{"type":"python","python":"/usr/bin/python3"}}"#,
+    )
+    .unwrap();
+    crate::runtime::capability_registry::ensure_script_exists(
         Some(&workspace.to_string_lossy()),
         "am1-source-regression-only",
     )
@@ -868,7 +883,7 @@ fn room_admission_workflow_binding_cannot_grant_peer_extensions() {
     let definition: crate::workflow_code::WorkflowCodeDefinition = serde_json::from_value(serde_json::json!({
         "workflow":{"alias":"unadmitted-peer-grants"},
         "nodes":[{"handle":"review", "agent":{"kind":"existing","agent_ref":peer.id()},
-            "can_complete_workflow_run":true, "extensions":[{"kind":"skill","name":"am1-source-regression-only"}]}],
+            "can_complete_workflow_run":true, "extensions":[{"kind":"script","name":"am1-source-regression-only","environment":"python"}]}],
         "endpoints":[{"handle":"entry","entry_node":"review"}],
     })).unwrap();
     // MP-08/MP-11: target validation must report the same provisioning fence as apply.
@@ -887,10 +902,13 @@ fn room_admission_workflow_binding_cannot_grant_peer_extensions() {
         !validation.ok,
         "room validation must reject unadmitted capability provisioning: {validation:?}"
     );
-    assert!(validation
-        .diagnostics
-        .iter()
-        .any(|diagnostic| diagnostic.code == "unauthorized_extension_provisioning"));
+    assert!(
+        validation
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "unauthorized_extension_provisioning"),
+        "{validation:?}"
+    );
     let (_, owner_validation) = crate::app::KernelSessionService::new(&mut app)
         .validate_workflow_code_definition_with_rebindings(
             session.id(),
@@ -1476,7 +1494,7 @@ async fn room_notification_subscription() {
         .dispatch_authenticated_runtime_tool_call(
             &auth,
             "chariox.notification_subscribe",
-            serde_json::json!({"source":source,"agent":peer.id()})
+            serde_json::json!({"source":source,"prompt":"Read the run","agent":peer.id()})
         )
         .await
         .is_err());
@@ -1484,7 +1502,7 @@ async fn room_notification_subscription() {
         .dispatch_authenticated_runtime_tool_call(
             &auth,
             "chariox.notification_subscribe",
-            serde_json::json!({"source":source,"delivery":"steer"})
+            serde_json::json!({"source":source,"prompt":"Read the run","delivery":"steer"})
         )
         .await
         .is_err());
@@ -1492,7 +1510,7 @@ async fn room_notification_subscription() {
         .dispatch_authenticated_runtime_tool_call(
             &auth,
             "mcp__chariox__chariox_notification_subscribe",
-            serde_json::json!({"source":source}),
+            serde_json::json!({"source":source,"prompt":"Read the run and reply"}),
         )
         .await
         .unwrap();
@@ -1805,4 +1823,60 @@ async fn room_own_schedule() {
     let left = triggers(a.id().to_string()).await;
     assert_eq!(left.len(), 1);
     assert_eq!(left[0].id(), own[1].id());
+}
+
+#[test]
+fn kernel_map_returns_this_kernel_through_the_room_command() {
+    run_large_stack_async_test("room-kernel-map", || async {
+        let env = TestMetaRuntimeEnv::new("room-kernel-map");
+        let workspace = env.root.join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let mut config = DaemonConfig::for_tests();
+        config.room_agent_tools = true;
+        config.daemon_id = "kernel-fixture".to_owned();
+        config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+            kernel_id: Some(config.daemon_id.clone()),
+            kernel_credential: Some("synthetic-kernel-map-grant".into()),
+            user_id: crate::session::DEFAULT_LOCAL_USER_ID.to_owned(),
+            ..Default::default()
+        });
+        config.machine_name_for_tests = Some("fixture-machine".into());
+        let mut app = DaemonApp::bootstrap(config).unwrap();
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new(
+                workspace.to_string_lossy(),
+                workspace.to_string_lossy(),
+            ))
+            .unwrap();
+        let run = launch_test_provider(
+            &mut app,
+            session.id(),
+            agent.id(),
+            "dev-stub",
+            "dev-stub",
+            "room-model",
+        );
+        let auth = run.runtime_mcp_auth_token().unwrap().to_string();
+        let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
+        let result = room_command(&router, &auth, "kernel status").await;
+        assert!(result.ok, "{result:?}");
+        let response = &result.payload["response"];
+        assert_eq!(response["kernel"]["kernel_id"], "kernel-fixture");
+        assert_eq!(response["kernel"]["cloud"]["kernel_id"], "kernel-fixture");
+        assert_eq!(response["kernel"]["label"], "fixture-machine");
+        assert_eq!(response["kernel"]["running"], true);
+        assert!(response["kernel"]["workload"]["last_room_activity_at_ms"]
+            .as_u64()
+            .is_some());
+        assert!(!response.to_string().contains("synthetic-kernel-map-grant"));
+        let list = room_command(&router, &auth, "kernel list-local").await;
+        assert!(list.ok, "{list:?}");
+        assert!(list.payload["response"]["kernels"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| { entry["kernel"]["cloud"]["kernel_id"] == "kernel-fixture" }));
+        let invalid = room_command(&router, &auth, "kernel list-local --machine remote").await;
+        assert!(!invalid.ok);
+    });
 }

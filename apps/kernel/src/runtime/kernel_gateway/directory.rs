@@ -47,8 +47,16 @@ impl Directory {
         self.merge();
         let via = self.source.via();
         let seen = self.seen.lock().expect("directory poisoned");
+        let now_ms = crate::session::unix_epoch_ms();
         Ok(names::grouped(
             seen.values()
+                .filter(|seen| {
+                    seen.online
+                        || crate::runtime::machine_presence::still_reconnecting(
+                            seen.last_seen_ms,
+                            now_ms,
+                        )
+                })
                 .map(|seen| GatewayKernel {
                     name: names::display_name(&seen.kernel),
                     label: names::label(&seen.kernel),
@@ -94,6 +102,14 @@ impl Directory {
         } else {
             Err(GatewayError::Offline { name: name.into() })
         }
+    }
+
+    pub(super) fn known_kernel_id(&self, name: &str) -> Option<String> {
+        let seen = self.seen.lock().expect("directory poisoned");
+        let known: Vec<&RelayKernelPresence> = seen.values().map(|seen| &seen.kernel).collect();
+        names::find(&known, name)
+            .ok()
+            .map(|kernel| kernel.kernel_id.clone())
     }
 
     fn refresh_behind(&self) {
@@ -166,6 +182,7 @@ pub(super) fn reads_framed_plaintext(kernel: &RelayKernelPresence) -> bool {
 /// A kernel that runs the Room terminal service says so; an older one would only answer
 /// that it cannot read the request.
 const ROOM_TERMINAL_CAPABILITY: &str = "room_terminal_v1";
+const KERNEL_TERMINAL_CAPABILITY: &str = "kernel_terminal_v1";
 
 fn advertises(kernel: &RelayKernelPresence, capability: &str) -> bool {
     kernel.capabilities.iter().any(|value| value == capability)
@@ -193,6 +210,11 @@ pub(super) fn incompatibility(
         }
         LocalDaemonRequest::RoomTerminal(_) if !advertises(kernel, ROOM_TERMINAL_CAPABILITY) => {
             Some("it predates Room terminals".into())
+        }
+        LocalDaemonRequest::KernelTerminal(_)
+            if !advertises(kernel, KERNEL_TERMINAL_CAPABILITY) =>
+        {
+            Some("it predates the kernel's own terminals; update the target kernel".into())
         }
         _ => None,
     }
@@ -251,6 +273,7 @@ mod tests {
             leased_agent_count: 0,
             local_session_count: 0,
             public_key: format!("key-{id}"),
+            local_protocol: None,
         }
     }
 
@@ -492,5 +515,17 @@ mod tests {
                 .any(|m| m.name == "twin" && m.kernel_id == "k-y"),
             "a kernel without a relay name is shown by its computer's name"
         );
+        // Gone for longer than the reconnecting window it is offline, and no list shows it.
+        let gone_ms = crate::runtime::machine_presence::RECONNECTING_WINDOW_MS + 1;
+        directory
+            .seen
+            .lock()
+            .unwrap()
+            .get_mut("k-b3")
+            .unwrap()
+            .last_seen_ms = crate::session::unix_epoch_ms() - gone_ms;
+        let listed = directory.kernels().await.unwrap();
+        assert!(listed.iter().all(|m| m.name != "b3"), "{listed:?}");
+        assert!(listed.iter().any(|m| m.name == "shared-host"));
     }
 }

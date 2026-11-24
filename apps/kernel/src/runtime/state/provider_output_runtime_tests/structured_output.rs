@@ -223,6 +223,7 @@ async fn panes_stream_terminal_delivery_does_not_wait_for_history_writer() {
                     agent_ids: Some(vec![history_agent]),
                     latest_prompt_count: Some(4),
                     cursor: None,
+                    after_sequence: None,
                     include_prefetched_content: true,
                 },
             ),
@@ -2017,5 +2018,245 @@ async fn panes_stream_maintenance_cannot_strand_a_ready_sibling() {
     assert!(
         delivered.is_ok(),
         "MP-08 / MP-10 maintenance stranded B behind blocked A without another provider event"
+    );
+}
+
+#[tokio::test]
+async fn a_turn_that_thinks_without_text_shows_thinking_until_its_first_output() {
+    let worktree = crate::test_support::TestWorktree::new("structured-output-thinking");
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon bootstrap should succeed");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .expect("session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-structured-thinking",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let run = app
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "claude-code",
+                "default",
+                "sonnet",
+            )
+            .with_agent_id(agent.id()),
+        )
+        .expect("provider run should launch");
+    app.update_provider_run_projection(run.clone());
+    app.submit_prompt(
+        session.id(),
+        attachment.id(),
+        Some(agent.id()),
+        "think hard\n",
+        Vec::new(),
+    )
+    .expect("prompt should start");
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let active_prompt = runtime
+        .owned
+        .session_snapshot(session.id())
+        .expect("session snapshot should load")
+        .active_prompt_for_agent(agent.id())
+        .expect("active prompt should exist")
+        .clone();
+    runtime.start_active_turn_with_trace_id(
+        session.id(),
+        agent.id(),
+        active_prompt.id(),
+        run.id(),
+        "trace-structured-thinking",
+    );
+    runtime
+        .owned
+        .active_turns
+        .mark_awaiting_first_output(run.id());
+    let phase = || {
+        runtime
+            .owned
+            .active_turns
+            .get(run.id())
+            .expect("active turn should be tracked")
+            .phase
+    };
+    let apply = |batch| {
+        runtime.apply_owned_structured_output_batch(
+            session.id(),
+            run.id(),
+            vec![attachment.id().to_string()],
+            batch,
+        )
+    };
+
+    // Claude reports only a thinking-token count while the model reasons.
+    apply(crate::provider::ProviderPromptSignalBatch {
+        thinking_tokens: Some(1_200),
+        ..Default::default()
+    })
+    .await
+    .expect("thinking batch should apply");
+    assert_eq!(phase(), crate::app::ActiveTurnPhase::Thinking);
+    assert_eq!(
+        crate::runtime::projection::AgentTurnRuntimePhase::from(&phase()),
+        crate::runtime::projection::AgentTurnRuntimePhase::Thinking
+    );
+
+    apply(crate::provider::ProviderPromptSignalBatch {
+        chunks: vec![crate::provider::ProviderPromptChunk {
+            kind: crate::terminal::TerminalOutputKind::ProviderOutput,
+            merge_key: Some("structured-thinking-answer".to_string()),
+            bytes: b"answer".to_vec(),
+        }],
+        ..Default::default()
+    })
+    .await
+    .expect("answer batch should apply");
+    assert_eq!(phase(), crate::app::ActiveTurnPhase::Streaming);
+
+    // Thinking never moves a streaming turn back.
+    apply(crate::provider::ProviderPromptSignalBatch {
+        thinking_tokens: Some(50),
+        ..Default::default()
+    })
+    .await
+    .expect("later thinking batch should apply");
+    assert_eq!(phase(), crate::app::ActiveTurnPhase::Streaming);
+}
+
+#[tokio::test]
+async fn model_usage_write_failure_does_not_discard_a_claude_reply() {
+    use crate::provider::{ModelTokenCounts, ModelTurnUsage, ProviderPromptSignalBatch};
+
+    let worktree = crate::test_support::TestWorktree::new("claude-usage-write-failure");
+    let mut app =
+        crate::test_support::bootstrap_authenticated_app(crate::DaemonConfig::for_tests()).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "usage-test",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .unwrap();
+    let request = crate::provider::LaunchProviderRequest::new(
+        session.id(),
+        "claude",
+        "claude-p",
+        "default",
+        "haiku",
+    )
+    .with_agent_id(agent.id());
+    let mut run = crate::provider::RuntimeProviderRun::new(
+        "claude-usage-test",
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::External,
+            process_label: "claude-usage-fixture".into(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: Default::default(),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: Some("test-claude-runtime".into()),
+        },
+    );
+    run.mark_running();
+    app.providers_mut().insert_run_for_test(run.clone());
+    app.update_provider_run_projection(run.clone());
+    let prompt = crate::session::PromptQueueItem::new(
+        "claude-usage-prompt",
+        attachment.id(),
+        agent.id(),
+        "test",
+        crate::session::PromptStatus::Queued,
+    );
+    let crate::session::PromptSubmissionOutcome::Started { prompt } = app
+        .prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
+        .unwrap()
+    else {
+        panic!("prompt should start immediately");
+    };
+    app.mark_active_prompt_delivery(
+        session.id(),
+        agent.id(),
+        prompt.id(),
+        crate::session::DurablePromptDeliveryPhase::Delivered,
+        Some(run.id().into()),
+        None,
+    )
+    .unwrap();
+
+    // Fail only the usage write so normal transcript appends can still commit.
+    rusqlite::Connection::open(app.operational_history_store().path())
+        .unwrap()
+        .execute_batch(
+            "CREATE TRIGGER fail_usage BEFORE INSERT ON history_claude_model_totals
+             BEGIN SELECT RAISE(ABORT, 'usage write unavailable'); END;",
+        )
+        .unwrap();
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    runtime.owned.note_prompt_started(run.id());
+    let records = runtime
+        .apply_owned_structured_output_batch(
+            session.id(),
+            run.id(),
+            vec![attachment.id().into()],
+            ProviderPromptSignalBatch {
+                chunks: vec![crate::provider::ProviderPromptChunk {
+                    kind: crate::terminal::TerminalOutputKind::ProviderOutput,
+                    merge_key: Some("usage-test-reply".into()),
+                    bytes: b"reply still arrives".to_vec(),
+                }],
+                model_usage: vec![ModelTurnUsage {
+                    model: "haiku".into(),
+                    tokens: ModelTokenCounts {
+                        input_tokens: 8,
+                        ..Default::default()
+                    },
+                }],
+                prompt_completed: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("a usage-only failure must not abort the reply");
+    assert!(records
+        .iter()
+        .any(|record| record.bytes == b"reply still arrives"));
+    assert!(runtime
+        .owned
+        .operational_history_store
+        .turn_model_usage(session.id(), agent.id(), prompt.id(), run.id())
+        .unwrap()
+        .is_empty());
+    // Claude drains its final output before the next quiet poll settles it.
+    tokio::time::sleep(std::time::Duration::from_millis(70)).await;
+    runtime
+        .apply_owned_structured_output_batch(
+            session.id(),
+            run.id(),
+            vec![attachment.id().into()],
+            ProviderPromptSignalBatch::default(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        runtime
+            .owned
+            .session_snapshot(session.id())
+            .unwrap()
+            .active_prompt_for_agent(agent.id())
+            .is_none(),
+        "the reply must settle the prompt"
     );
 }

@@ -53,6 +53,7 @@ fn mp08_mp10_active_steering_is_bound_to_an_exact_home_prompt() {
             "SteerActivePrompt": {
                 "session_id": session.id(), "attachment_id": attachment.id(),
                 "target_agent_id": agent.id(), "expected_active_prompt_id": expected,
+                "require_exact_turn": true,
                 "prompt": "change direction", "attachments": []
             }
         }))
@@ -101,6 +102,7 @@ fn mp08_mp10_active_steering_is_bound_to_an_exact_home_prompt() {
                     agent_id: Some(agent.id().into()),
                 }],
                 sources: Vec::new(),
+                like: None,
             }),
         )
         .unwrap();
@@ -127,11 +129,16 @@ fn mp08_mp10_active_steering_is_bound_to_an_exact_home_prompt() {
         .dispatch(steer_note(r#"{"quote":"x","source":{"kind":"panel"}}"#))
         .unwrap()
     {
-        LocalDaemonResponse::ActivePromptSteered { prompt } => {
-            assert_eq!(prompt.prompt(), "Please read the attached notes.");
+        LocalDaemonResponse::ActivePromptSteered { steer_id, .. } => {
+            let history = harness
+                .with_app(|app| app.load_session_history_entries(&session, Some(agent.id())))
+                .unwrap();
+            assert!(history
+                .iter()
+                .any(|entry| entry.text.contains("Please read the attached notes.")));
             assert_eq!(
                 steer_events(),
-                vec![(Some(agent.id().to_string()), prompt.id().to_string())],
+                vec![(Some(agent.id().to_string()), steer_id)],
                 "the rejected steer published nothing and the accepted one names its id"
             );
         }
@@ -170,6 +177,54 @@ fn mp08_mp10_active_steering_is_bound_to_an_exact_home_prompt() {
             .unwrap()
             .is_none());
     });
+
+    let successor = match harness
+        .dispatch(LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+            session_id: session.id().into(),
+            attachment_id: attachment.id().into(),
+            target_agent_id: Some(agent.id().into()),
+            prompt: "successor turn".into(),
+            attachments: vec![],
+        }))
+        .unwrap()
+    {
+        LocalDaemonResponse::PromptSubmitted {
+            outcome: PromptSubmissionOutcome::Started { prompt },
+            ..
+        } => prompt,
+        other => panic!("unexpected response: {other:?}"),
+    };
+    let LocalDaemonRequest::SteerActivePrompt(mut ordinary_steer) = request(active.id()) else {
+        unreachable!();
+    };
+    ordinary_steer.require_exact_turn = false;
+    let result = harness
+        .dispatch(LocalDaemonRequest::SteerActivePrompt(
+            ordinary_steer.clone(),
+        ))
+        .unwrap();
+    assert!(
+        matches!(result, LocalDaemonResponse::ActivePromptSteered { active_prompt_id, .. }
+        if active_prompt_id == successor.id())
+    );
+    assert_eq!(steer_events().len(), 2);
+
+    harness
+        .dispatch(LocalDaemonRequest::CompletePrompt(CompletePromptRequest {
+            session_id: session.id().into(),
+        }))
+        .unwrap();
+    let result = harness
+        .dispatch(LocalDaemonRequest::SteerActivePrompt(ordinary_steer))
+        .unwrap();
+    assert!(matches!(
+        result,
+        LocalDaemonResponse::PromptSubmitted {
+            outcome: PromptSubmissionOutcome::Started { .. },
+            ..
+        }
+    ));
+    assert_eq!(steer_events().len(), 2, "the next prompt is a submission");
 }
 
 // MP-08 / MP-10 / MP-11 R1080-5: a grant holder whose steer reached the provider but whose
@@ -230,6 +285,7 @@ fn outside_caller_learns_a_delivered_steer_whose_event_was_not_recorded() {
             agent_id: Some(agent.id().into()),
         }],
         sources: Vec::new(),
+        like: None,
     });
     let runtime = harness.runtime_state();
     let mut subscribed = false;
@@ -340,6 +396,14 @@ fn public_session_state_preserves_failed_settlement_termination_after_late_compl
         } => prompt,
         other => panic!("unexpected prompt submit response: {other:?}"),
     };
+    let prompt_id = prompt.id().to_owned();
+    let state = harness.wait_for_session_where(
+        session.id(),
+        "settlement prompt in Room state",
+        |session| session.active_prompt_for_agent(agent.id()).is_some(),
+    );
+    let prompt = state.active_prompt_for_agent(agent.id()).unwrap();
+    assert_eq!(prompt.id(), prompt_id);
     let termination = crate::provider::ProviderRunTermination::process_exit(137, 9_999);
     harness.with_app_mut(|app| {
         app.completed_git_turn_snapshot_store()
@@ -347,7 +411,7 @@ fn public_session_state_preserves_failed_settlement_termination_after_late_compl
                 session.id(),
                 agent.id(),
                 "provider-run-settlement-termination",
-                &prompt,
+                prompt,
                 400,
                 Some(300),
                 crate::git_observer::CompletedTurnSettlementStatus::Failed,
@@ -359,7 +423,7 @@ fn public_session_state_preserves_failed_settlement_termination_after_late_compl
                 session.id(),
                 agent.id(),
                 "provider-run-settlement-termination",
-                &prompt,
+                prompt,
                 450,
                 Some(300),
                 crate::git_observer::CompletedTurnSettlementStatus::Completed,
@@ -468,8 +532,6 @@ fn completed_native_tui_turn_projects_undo_action_for_tracked_session() {
     {
         LocalDaemonResponse::PromptCompleted { completion } => {
             assert_eq!(completion.completed.id(), prompt.id());
-            assert_eq!(completion.completed.prompt(), prompt.prompt());
-            assert_eq!(completion.completed.pending_prompt_id(), None);
         }
         other => panic!("unexpected completion response: {other:?}"),
     }
@@ -595,7 +657,7 @@ fn queued_native_tui_turn_projects_undo_action_after_provider_launch_inner() {
             session
                 .active_prompt_for_agent(agent.id())
                 .is_some_and(|active| {
-                    active.prompt() == prompt.prompt()
+                    active.prompt() == "queued turn actions prompt"
                         && active.pending_prompt_id().is_none()
                         && active.id() == prompt.id()
                         && active.durable_delivery_phase()
@@ -618,8 +680,6 @@ fn queued_native_tui_turn_projects_undo_action_after_provider_launch_inner() {
     {
         LocalDaemonResponse::PromptCompleted { completion } => {
             assert_eq!(completion.completed.id(), promoted_prompt_id);
-            assert_eq!(completion.completed.prompt(), prompt.prompt());
-            assert_eq!(completion.completed.pending_prompt_id(), None);
         }
         other => panic!("unexpected completion response: {other:?}"),
     }
@@ -1146,6 +1206,8 @@ fn fork_agent_clones_config_and_launches_provider_inner() {
     };
     let source = match harness
         .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            initial_task: None,
+            peer_spawn: None,
             max_context_tokens: None,
             no_subscribe: false,
             account_profile: None,
@@ -1340,8 +1402,23 @@ fn editing_a_queued_note_prompt_to_empty_text_keeps_the_note_request() {
     }))
     .unwrap();
     match harness.dispatch(update).unwrap() {
-        LocalDaemonResponse::QueuedPromptUpdated { prompt, .. } => {
-            assert_eq!(prompt.prompt(), "Please read the attached notes.");
+        LocalDaemonResponse::QueuedPromptUpdated { prompt, session_id } => {
+            assert_eq!(prompt.id(), queued.id());
+            let state = harness.wait_for_session_where(
+                &session_id,
+                "updated note-only prompt in Room state",
+                |session| {
+                    session
+                        .queued_prompts_for_agent(agent.id())
+                        .is_some_and(|queue| {
+                            queue.iter().any(|queued| {
+                                queued.id() == prompt.id()
+                                    && queued.prompt() == "Please read the attached notes."
+                            })
+                        })
+                },
+            );
+            assert!(state.queued_prompts_for_agent(agent.id()).is_some());
         }
         other => panic!("unexpected response: {other:?}"),
     }

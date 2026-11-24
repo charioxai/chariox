@@ -19,6 +19,8 @@ pub(super) struct Record {
     pub(super) allocation_ref: Option<String>,
     pub(super) capability_revision: Option<String>,
     pub(super) machine_label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) held_kernel_id: Option<String>,
     pub(super) address: Option<String>,
     pub(super) result: Option<JobResult>,
     #[serde(default)]
@@ -45,6 +47,52 @@ pub(super) struct Record {
 }
 
 impl Record {
+    pub(super) fn new(
+        wake: &AgentWake,
+        request: RunJobRequest,
+        workspace: PathBuf,
+        cwd: PathBuf,
+    ) -> Self {
+        Self {
+            job_id: wake.detail["job_id"]
+                .as_str()
+                .expect("job wake has an ID")
+                .into(),
+            wake_id: wake.id.clone(),
+            registration_id: wake.registration_id.clone(),
+            room_id: wake.room_id.clone(),
+            agent_id: wake.agent_id.clone(),
+            request,
+            workspace,
+            cwd,
+            placement: JobPlacement::Local,
+            started_at_ms: wake.created_at_ms,
+            running_at_ms: None,
+            state: "starting".into(),
+            allocation_ref: None,
+            capability_revision: None,
+            machine_label: None,
+            held_kernel_id: None,
+            address: None,
+            result: None,
+            exec_id: None,
+            class_id: None,
+            rate_per_minute: None,
+            estimate_micros: None,
+            deleted: false,
+            remote_available: false,
+            remote_refusal: None,
+            estimated_minutes: None,
+            memory_mib: None,
+            remote: RemoteStage::Idle,
+        }
+    }
+
+    pub(super) fn runs_for_lease(&self, wake: &AgentWake) -> bool {
+        // A worker executes in its backing room. The wake belongs to the home room.
+        self.room_id != wake.room_id
+    }
+
     /// The job asked for, holds or may still hold something on a remote machine.
     pub(super) fn has_remote_trace(&self) -> bool {
         self.placement == JobPlacement::Remote
@@ -68,15 +116,34 @@ impl JobDriver {
             .join(format!("{id}.json")))
     }
     pub(super) fn read(&self, id: &str) -> Result<Record, DaemonError> {
-        let bytes = std::fs::read(self.path(id)?)
-            .map_err(|_| ledger::error("this agent has no such job"))?;
+        let bytes = std::fs::read(self.path(id)?).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                ledger::error("job result is missing")
+            } else {
+                ledger::error("job result cannot be read")
+            }
+        })?;
         serde_json::from_slice(&bytes).map_err(|_| ledger::error("job record is unreadable"))
     }
     pub(super) fn save(&self, record: &Record) -> Result<(), DaemonError> {
         save_record(&self.state, record)
     }
+    pub(super) fn remove(&self, record: &Record) -> Result<(), DaemonError> {
+        summary::remove(&self.state, record)?;
+        std::fs::remove_file(self.path(&record.job_id)?)
+            .map_err(|error| ledger::error(error.to_string()))?;
+        self.state
+            .owned
+            .session_projection
+            .record_session_change(&record.room_id);
+        Ok(())
+    }
+
     pub(super) fn own(&self, id: &str, task: &AgentTaskExecution) -> Result<Record, DaemonError> {
-        let record = self.read(id)?;
+        self.path(id)?;
+        let record = self.read(id).inspect_err(|error| {
+            summary::mark_read_error(&self.state, task, id, &error.to_string());
+        })?;
         if record.room_id != task.room_id || record.agent_id != task.agent_id {
             return Err(ledger::error("this agent has no such job"));
         }
@@ -92,20 +159,26 @@ pub(super) fn save_record(state: &KernelRuntimeState, record: &Record) -> Result
         .private_runtime_state_root()
         .join("jobs")
         .join(format!("{}.json", record.job_id));
-    let parent = path.parent().expect("job record parent");
-    std::fs::create_dir_all(parent).map_err(|e| ledger::error(e.to_string()))?;
-    let temporary = parent.join(format!(".job-{:032x}", rand::random::<u128>()));
-    std::fs::write(
-        &temporary,
-        serde_json::to_vec(record).map_err(|e| ledger::error(e.to_string()))?,
-    )
-    .and_then(|()| std::fs::rename(temporary, path))
-    .map_err(|e| ledger::error(e.to_string()))?;
+    let bytes = serde_json::to_vec(record).map_err(|error| ledger::error(error.to_string()))?;
+    // A list entry advertises a result only after its full body has been saved.
+    atomic_write(&path, &bytes)?;
+    summary::save(state, record, bytes.len() as u64)?;
     state
         .owned
         .session_projection
         .record_session_change(&record.room_id);
     Ok(())
+}
+
+pub(super) fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), DaemonError> {
+    let parent = path.parent().expect("job record parent");
+    std::fs::create_dir_all(parent).map_err(|error| ledger::error(error.to_string()))?;
+    let temporary = parent.join(format!(".job-{:032x}", rand::random::<u128>()));
+    let result = std::fs::write(&temporary, bytes).and_then(|()| std::fs::rename(&temporary, path));
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    result.map_err(|error| ledger::error(error.to_string()))
 }
 
 pub(super) fn public_record(record: Record) -> Result<serde_json::Value, DaemonError> {

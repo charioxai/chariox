@@ -91,12 +91,17 @@ impl KernelRuntimeState {
                 via_kernel_id: None,
             },
         };
+        let models = self
+            .owned
+            .operational_history_store
+            .agent_model_usage(session.id(), agent.id())?;
         Ok(LocalDaemonResponse::AgentUsageSnapshot {
             snapshot: AgentUsageSnapshot {
                 session_id: request.session_id,
                 agent_id: request.agent_id,
                 context,
                 route,
+                models,
             },
         })
     }

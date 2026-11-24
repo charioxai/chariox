@@ -23,6 +23,11 @@ pub(super) fn map_relay_error(error: &DaemonError) -> RelayError {
             &error.to_string(),
             code == "exec_input_busy" || code == crate::runtime::room_tool_admission::RETRY_CODE,
         ),
+        DaemonError::ExternalRequestFailed {
+            code,
+            message,
+            retryable,
+        } => relay_error(code, message, *retryable),
         DaemonError::SteerDeliveredEventUnrecorded { .. } => {
             relay_error("prompt_steer_event_unrecorded", &error.to_string(), false)
         }
@@ -30,11 +35,12 @@ pub(super) fn map_relay_error(error: &DaemonError) -> RelayError {
         | DaemonError::ProviderLoginCodeIncomplete
         | DaemonError::ProviderLoginCodeInvalid
         | DaemonError::ProviderProfileRefused { .. }
-        | DaemonError::ExternalRequestFailed { .. }
+        | DaemonError::ProviderDevStubDisabled
         | DaemonError::AgentNotInSession { .. }
         | DaemonError::AgentNotFound { .. }
         | DaemonError::NoActivePrompt { .. }
         | DaemonError::ProviderPromptSteerRejected { .. }
+        | DaemonError::OpenCodeSteerConflict
         | DaemonError::LocalTransport {
             operation: "steer active prompt" | "resolve account profile",
             ..
@@ -103,6 +109,39 @@ pub(super) fn map_relay_error(error: &DaemonError) -> RelayError {
             &error.to_string(),
             false,
         ),
+        DaemonError::LocalTransport { operation, message } if *operation == "skill.package" => {
+            relay_error(
+                crate::transport::relay_peer::SKILL_PACKAGE_STORE_FAILED_CODE,
+                &format!(
+                    "the worker could not store the skill package ({message}); free disk space or fix the permissions of the Chariox skill cache on the worker, then send the message again"
+                ),
+                false,
+            )
+        }
+        DaemonError::LocalTransport {
+            operation: "browser_controller.route",
+            message,
+        } if crate::runtime::browser_controller_process::controller_failure_code(message)
+            .is_some() =>
+        {
+            relay_error(
+                crate::runtime::browser_controller_process::BROWSER_CONTROLLER_FAILED_CODE,
+                message,
+                crate::runtime::browser_controller_process::controller_failure_is_transient(
+                    message,
+                ),
+            )
+        }
+        // A refusal Cloud named (budget, no capacity, denied) is retryable only when Cloud says it is transient.
+        DaemonError::LocalTransport { .. }
+            if crate::runtime::cloud_api_client::cloud_error_code(error).is_some() =>
+        {
+            relay_error(
+                "transport_error",
+                &error.to_string(),
+                crate::runtime::cloud_api_client::cloud_error_is_retryable(error),
+            )
+        }
         DaemonError::LocalTransport { .. } => {
             relay_error("transport_error", &error.to_string(), true)
         }
@@ -172,6 +211,7 @@ pub(super) fn relay_request_kind(request: &LocalDaemonRequest) -> &'static str {
     match request {
         LocalDaemonRequest::ListRoomListSessions(_) => "room_list.sessions.list",
         LocalDaemonRequest::GetRoomListSnapshot(_) => "room_list.public_snapshot.get",
+        LocalDaemonRequest::GetAgentReleaseNotes { .. } => "agent_release_notes.read",
         LocalDaemonRequest::GetTerminalCommandCatalog(_) => "terminal.command_catalog.get",
         LocalDaemonRequest::GetProviderUsageSnapshot(_) => "provider_account.usage_snapshot.get",
         LocalDaemonRequest::GetAgentUsageSnapshot(_) => "agent.usage_snapshot.get",
@@ -181,7 +221,10 @@ pub(super) fn relay_request_kind(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::ListSessions(_) => "session.list",
         LocalDaemonRequest::CreateSession(_) => "session.create",
         LocalDaemonRequest::AttachToSession(_) => "session.attach",
+        LocalDaemonRequest::OwnerView(_) => "owner_view",
         LocalDaemonRequest::GetSessionState(_) => "session.state.get",
+        LocalDaemonRequest::ListFinishedRoomTasks(_) => "session.tasks.finished.list",
+        LocalDaemonRequest::GetMachineRoomResources(_) => "machine.room_resources.get",
         LocalDaemonRequest::SubmitPrompt(_) => "prompt.submit",
         LocalDaemonRequest::GetRoomEnvironmentState(_) => "environment.state.get",
         LocalDaemonRequest::GetRoomEnvironmentEvents(_) => "environment.events.get",
@@ -211,6 +254,7 @@ pub(super) fn relay_request_kind(request: &LocalDaemonRequest) -> &'static str {
             "terminal.room.snapshot"
         }
         LocalDaemonRequest::RoomTerminal(_) => "terminal.room",
+        LocalDaemonRequest::KernelTerminal(_) => "terminal.kernel",
         LocalDaemonRequest::CaptureVisibleRegion(_) => "screenshot.capture",
         LocalDaemonRequest::KernelBrowser(KernelBrowserRequest {
             command:
@@ -259,11 +303,12 @@ pub(super) fn relay_request_kind(request: &LocalDaemonRequest) -> &'static str {
             "workspace.commit_message.generate"
         }
         LocalDaemonRequest::CommitWorkspaceChanges(_) => "workspace.git.commit",
-        LocalDaemonRequest::PushWorkspaceBranch(_) => "workspace.git.push",
-        LocalDaemonRequest::CommitAndPushWorkspaceChanges(_) => "workspace.git.commit_and_push",
         _ => "other",
     }
 }
+
+#[cfg(test)]
+mod cloud_refusal_tests;
 
 #[cfg(test)]
 mod tests {
@@ -301,6 +346,33 @@ mod tests {
         .is_no_active_prompt());
     }
 
+    const STALE_ELEMENT: &str =
+        "browser controller `browser.action` failed with stale_element_reference: the element is stale";
+
+    #[test]
+    fn controller_refusal_crosses_the_relay_as_its_own_sentence_not_a_retryable_transport_error() {
+        let mapped = map_relay_error(&DaemonError::LocalTransport {
+            operation: "browser_controller.route",
+            message: STALE_ELEMENT.to_string(),
+        });
+        assert_eq!(mapped.code, "browser_controller_failed");
+        assert_eq!(mapped.message, STALE_ELEMENT);
+        assert!(!mapped.retryable);
+        let transient = map_relay_error(&DaemonError::LocalTransport {
+            operation: "browser_controller.route",
+            message: "browser controller `browser.action` failed with browser_cdp_timeout: slow"
+                .to_string(),
+        });
+        assert_eq!(transient.code, "browser_controller_failed");
+        assert!(transient.retryable);
+        let lost = map_relay_error(&DaemonError::LocalTransport {
+            operation: "browser_controller.route",
+            message: "browser controller exited during `browser.action`".to_string(),
+        });
+        assert_eq!(lost.code, "transport_error");
+        assert!(lost.retryable);
+    }
+
     #[test]
     fn local_profile_refusal_names_account_but_relay_uses_static_remedy() {
         crate::test_support::isolated_env_test!();
@@ -325,7 +397,7 @@ mod tests {
         assert!(!local.message.contains(&profile.profile_id));
         let external = map_relay_error(&error);
         assert_eq!(external.code, "provider_profile_unverified");
-        assert!(external.message.contains("RefreshProviderAccountProfile"));
+        assert!(external.message.contains("Sign in"));
         assert!(!external.message.contains(&profile.label));
         assert!(!external.message.contains(&profile.profile_id));
     }
@@ -458,7 +530,7 @@ mod tests {
             crate::transport::relay_peer::REMOTE_PROVIDER_ACCOUNT_UNUSABLE_CODE
         );
         assert!(!mapped.retryable);
-        assert!(mapped.message.contains("RefreshProviderAccountProfile"));
+        assert!(mapped.message.contains("Sign in"));
         assert!(!mapped.message.contains("private-label-canary"));
     }
     use crate::local::{
@@ -597,7 +669,6 @@ mod tests {
     fn mp08_room_computer_policy_refusals_retain_codes_across_relay() {
         use crate::error::UserDomainRefusalReason;
         for reason in [
-            UserDomainRefusalReason::NotFocusedAgent,
             UserDomainRefusalReason::ForeignOwner,
             UserDomainRefusalReason::StaleEpoch,
             UserDomainRefusalReason::StaleReference,

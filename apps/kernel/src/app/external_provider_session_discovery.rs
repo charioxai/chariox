@@ -22,6 +22,7 @@ use crate::session::unix_epoch_ms;
 
 mod cache;
 mod claude;
+pub(crate) use claude::claude_compaction_turn_id;
 mod codex;
 mod common;
 mod jsonl;

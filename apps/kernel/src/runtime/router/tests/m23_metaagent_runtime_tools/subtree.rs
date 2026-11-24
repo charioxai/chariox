@@ -4,6 +4,7 @@ use super::*;
 use crate::transport::runtime_tools::RuntimeToolResult;
 
 mod destructive_children;
+mod waiting_children;
 
 pub(super) struct World {
     pub(super) router: CommandRouter,
@@ -588,6 +589,8 @@ async fn spawn_answer_worktree() {
 /// The local-protocol answer of `SpawnAgent` as a client reads it.
 async fn local_spawn_answer(world: &World, key: Option<&str>) -> serde_json::Value {
     let request = LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+        initial_task: None,
+        peer_spawn: None,
         max_context_tokens: None,
         no_subscribe: true,
         session_id: world.room.clone(),

@@ -8,7 +8,9 @@ use std::os::fd::{FromRawFd, IntoRawFd};
 
 use serde::{Deserialize, Serialize};
 
-use crate::provider::codex_client::continue_codex_socket;
+use crate::provider::codex_client::{
+    continue_codex_socket, UnavailableWorkspaceSandbox, WorkspaceApprovalState,
+};
 use crate::provider::CodexNotification;
 
 use super::transcript::{CodexTextTranscriptState, CodexToolTranscriptState};
@@ -36,6 +38,12 @@ pub(crate) struct CodexHandover {
     // The completion evidence already applied: a turn whose last item came
     // before the swap is settled from it when no `turn/completed` follows.
     turn_tracker: CodexTurnTracker,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    workspace_approval: Option<WorkspaceApprovalState>,
+    // A predecessor program (L12) tracked no usage baseline; the adopted turn starts one.
+    #[serde(default)]
+    usage_tracker: super::model_usage::CodexUsageTracker,
+    selected_model: Option<String>,
 }
 
 impl CodexHandover {
@@ -45,6 +53,10 @@ impl CodexHandover {
 
     pub(crate) fn connection(&self) -> i32 {
         self.connection
+    }
+
+    pub(crate) fn pending_goal_approval(&self) -> Option<&crate::provider::NativeApprovalGoal> {
+        self.workspace_approval.as_ref()?.pending_goal_approval()
     }
 }
 
@@ -83,6 +95,12 @@ pub(crate) fn hand_over_codex_turn(
     let text_items = std::mem::take(&mut state.text_items);
     let tool_items = std::mem::take(&mut state.tool_items);
     let turn_tracker = std::mem::take(&mut state.turn_tracker);
+    let workspace_approval = state
+        .unavailable_workspace_sandbox
+        .take()
+        .map(|sandbox| sandbox.hand_over());
+    let usage_tracker = std::mem::take(&mut state.usage_tracker);
+    let selected_model = state.selected_model.take();
     // This program's descriptor closes; the connection stays open in `tcp`.
     drop(state);
     Ok(CodexHandover {
@@ -96,6 +114,9 @@ pub(crate) fn hand_over_codex_turn(
         text_items,
         tool_items,
         turn_tracker,
+        workspace_approval,
+        usage_tracker,
+        selected_model,
     })
 }
 
@@ -107,6 +128,8 @@ pub(super) struct AdoptedTurn {
     text_items: BTreeMap<String, CodexTextTranscriptState>,
     tool_items: BTreeMap<String, CodexToolTranscriptState>,
     turn_tracker: CodexTurnTracker,
+    usage_tracker: super::model_usage::CodexUsageTracker,
+    selected_model: Option<String>,
 }
 
 /// The runtime of a handed-over turn, reading on where the previous program
@@ -118,12 +141,17 @@ pub(super) fn adopt(turn: CodexHandover) -> CodexRuntimeState {
     let socket = continue_codex_socket(tcp, turn.unread);
     let mut state =
         CodexRuntimeState::new(turn.endpoint, turn.thread_id, socket, turn.next_request_id);
+    state.unavailable_workspace_sandbox = turn
+        .workspace_approval
+        .map(UnavailableWorkspaceSandbox::adopt);
     state.adopted_turn = Some(AdoptedTurn {
         turn_id: turn.turn_id,
         buffered_notifications: turn.buffered_notifications,
         text_items: turn.text_items,
         tool_items: turn.tool_items,
         turn_tracker: turn.turn_tracker,
+        usage_tracker: turn.usage_tracker,
+        selected_model: turn.selected_model,
     });
     state
 }
@@ -131,6 +159,8 @@ pub(super) fn adopt(turn: CodexHandover) -> CodexRuntimeState {
 /// Continues the handed-over turn on this program.
 pub(super) fn continue_turn(state: &mut CodexRuntimeState, turn: AdoptedTurn) {
     state.turn_tracker = turn.turn_tracker;
+    state.usage_tracker = turn.usage_tracker;
+    state.selected_model = turn.selected_model;
     state.turn_tracker.note_activity();
     state.active_turn_id = Some(turn.turn_id);
     state.buffered_notifications = turn.buffered_notifications;
@@ -203,6 +233,37 @@ mod tests {
             Message::text("after the swap")
         );
         drop(adopted);
+        server.join().unwrap();
+    }
+
+    /// A hot reload from L12 hands over no usage baseline: the turn is still adopted.
+    #[test]
+    fn a_predecessor_handover_without_a_usage_baseline_is_adopted() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("ws://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut socket = accept(stream).unwrap();
+            while socket.read().is_ok() {}
+        });
+        let (socket, ()) = test_codex_connect(&endpoint).unwrap();
+        let ProviderRuntimeBinding::Codex(binding) =
+            CodexRuntimeState::active_turn_binding_fixture(endpoint, socket)
+        else {
+            unreachable!("a Codex fixture")
+        };
+        let handover = hand_over_codex_turn(binding.state)
+            .unwrap_or_else(|_| panic!("a running turn is handed over"));
+        let mut written = serde_json::to_value(&handover).unwrap();
+        assert!(written
+            .as_object_mut()
+            .unwrap()
+            .remove("usage_tracker")
+            .is_some());
+
+        let handover: CodexHandover =
+            serde_json::from_value(written).expect("an L12 handover is read");
+        drop(adopt(handover));
         server.join().unwrap();
     }
 

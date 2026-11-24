@@ -40,9 +40,7 @@ mod workspace_live_sync_tests {
         assert!(specs.iter().any(|spec| spec.name == LIST_EXTENSIONS_TOOL));
         assert!(specs.iter().any(|spec| spec.name == REQUEST_EXTENSION_TOOL));
         assert!(specs.iter().any(|spec| spec.name == REGISTER_MCP_TOOL));
-        assert!(specs
-            .iter()
-            .any(|spec| spec.name == REGISTER_SKILL_PATH_TOOL));
+        assert!(!specs.iter().any(|spec| spec.name == "register_skill_path"));
         assert!(specs
             .iter()
             .any(|spec| spec.name == REGISTER_ENVIRONMENT_TOOL));
@@ -947,4 +945,16 @@ fn vflag_popup_tool_tells_agents_to_use_wait_false_for_human_steps() {
         .expect("popup tool is advertised");
     assert!(spec.description.contains("use wait:false and yield"));
     assert!(spec.description.contains("about 5 minutes"));
+}
+
+#[test]
+fn popup_tool_tells_agents_a_reply_line_wakes_nobody() {
+    let spec = credential_runtime_tool_specs()
+        .into_iter()
+        .find(|spec| spec.name == REQUEST_POPUP_TOOL)
+        .expect("popup tool is advertised");
+    assert!(spec
+        .description
+        .contains("`FOR <name>:` in your reply wakes nobody"));
+    assert!(spec.input_schema["properties"]["idempotency_key"].is_object());
 }

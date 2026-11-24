@@ -66,9 +66,8 @@ Agent categories:
 4. Relaunch manifest fields:
    - home session id;
    - home agent id;
-   - provider adapter/provider/model/account/variant;
-   - provider session id when known;
    - current remote execution binding;
+   - for a provider running in a native terminal only: adapter/provider/model/account/variant and the provider session id when known;
    - effective permissions and execution mode.
 
 5. `restart_agents` flow:
@@ -79,7 +78,7 @@ Agent categories:
    - start the slice from the saved state;
    - discover the new worker kernel;
    - recreate or repair leased-agent bindings;
-   - relaunch provider runs using the captured provider session ids where available;
+   - relaunch native terminal provider runs using the captured provider session ids where available; every other agent's provider starts with its next prompt and resumes its thread (a native terminal nobody drives stops at Claude's workspace-trust question);
    - emit audit/progress events.
 
 6. `shutdown` flow:

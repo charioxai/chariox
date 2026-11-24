@@ -4,8 +4,9 @@ use std::time::Duration;
 use crate::error::DaemonError;
 use crate::prompt_assembly::PromptEnvelope;
 use crate::provider::{
-    ProviderAssistantCompletion, ProviderPromptChunk, ProviderPromptSignalBatch,
-    ProviderResumeState, ProviderUtilityExecutionPolicy, RuntimeProviderRun,
+    ProviderAssistantCompletion, ProviderOwnTurnSignal, ProviderPromptChunk,
+    ProviderPromptSignalBatch, ProviderResumeState, ProviderUtilityExecutionPolicy,
+    RuntimeProviderRun,
 };
 
 use super::super::{
@@ -89,7 +90,13 @@ pub(super) fn execute_submit_command(
         let (slot, mut state) = runtime_registry
             .take_claude_runtime(&run_id)
             .map_err(|error| error.steer_not_submitted(envelope.steering))?;
-        let result = submit_claude_prompt(&run, &mut state, &envelope);
+        let result = submit_claude_prompt(&run, &mut state, &envelope).map_err(|error| {
+            if matches!(error, DaemonError::IdleProviderProcessExited { .. }) {
+                error.steer_not_submitted(envelope.steering)
+            } else {
+                error
+            }
+        });
         let mut resume_state = run.resume_state().clone();
         if let Some(session_id) = state.session_id() {
             resume_state.set_claude_session_id(session_id);
@@ -97,7 +104,7 @@ pub(super) fn execute_submit_command(
         runtime_registry.restore_claude_runtime_if_live(&run_id, &slot, state);
         return result.map(|_| ProviderPromptSubmitAcknowledgement { resume_state });
     }
-    if run.adapter_key() != "opencode" {
+    if !crate::provider::provider_run_uses_opencode_io(&run) {
         return Ok(ProviderPromptSubmitAcknowledgement {
             resume_state: run.resume_state().clone(),
         });
@@ -149,7 +156,7 @@ pub(super) fn execute_abort_command(
         runtime_registry.restore_claude_runtime_if_live(&run_id, &slot, state);
         return result;
     }
-    if run.adapter_key() != "opencode" {
+    if !crate::provider::provider_run_uses_opencode_io(&run) {
         return Ok(());
     }
 
@@ -225,6 +232,38 @@ pub(super) fn execute_utility_command(
     );
     runtime_registry.restore_claude_runtime_if_live(&run_id, &slot, state);
     result
+}
+
+/// A setup turn on a Claude run that has no structured I/O (headless, native terminal): the
+/// answer comes from a fresh official `claude -p` child that lives only for this turn.
+pub(crate) fn run_room_commands_on_fresh_claude(
+    run: &RuntimeProviderRun,
+    credentials: &crate::provider::ProviderCredentialEnvironment,
+    visible_user_prompt: &str,
+    hidden_system_context: &str,
+    timeout: Duration,
+) -> Result<String, DaemonError> {
+    let clone = run.room_commands_claude_clone(hidden_system_context);
+    let mut state = crate::provider::claude_runtime::initialize_claude_runtime_with_credentials(
+        &clone,
+        credentials,
+    )?
+    .state;
+    let envelope = PromptEnvelope::new(
+        visible_user_prompt,
+        hidden_system_context,
+        Vec::new(),
+        crate::prompt_assembly::PromptManifest::current(),
+    );
+    run_claude_utility_prompt_on_runtime(
+        &clone,
+        &mut state,
+        &envelope,
+        timeout,
+        ProviderUtilityExecutionPolicy::RoomCommands,
+        None,
+        None,
+    )
 }
 
 fn run_claude_utility_prompt_on_runtime(
@@ -350,7 +389,7 @@ pub(super) fn execute_terminate_command(
             }
         }
     }
-    if run.adapter_key() == "opencode"
+    if crate::provider::provider_run_uses_opencode_io(&run)
         && runtime_registry.runtime_slot_missing_or_empty_opencode(&run_id)
     {
         return Ok(());
@@ -440,9 +479,26 @@ pub(super) fn execute_output_poll_command(
                 "notices": poll.notices.len(),
             }),
         );
+        let skill_tool_delivery_acknowledgements = poll
+            .chunks
+            .iter()
+            .filter_map(|chunk| {
+                crate::provider::skill_ack::completed_tool_transcript(
+                    "codex",
+                    chunk.kind.clone(),
+                    &chunk.bytes,
+                )
+            })
+            .collect();
         return Ok(Some(ProviderPromptSignalBatch {
+            provider_own_turn: ProviderOwnTurnSignal::None,
+            background_notifications: Vec::new(),
             process_memory_limit_bytes: None,
             process_outside_ended: false,
+            turn_outcome: None,
+            hook_context_delivered: false,
+            native_compactions: Vec::new(),
+            skill_tool_delivery_acknowledgements,
             chunks: poll
                 .chunks
                 .into_iter()
@@ -469,6 +525,7 @@ pub(super) fn execute_output_poll_command(
             resolved_variant: None,
             resolved_usage_tokens_total: poll.resolved_usage.and_then(|usage| usage.total_tokens),
             resolved_usage: poll.resolved_usage,
+            model_usage: poll.model_usage,
             account_usage: (!poll.account_rate_limits.is_empty()).then(|| {
                 let limits = serde_json::Value::Array(poll.account_rate_limits);
                 crate::provider::codex_client::normalize_codex_usage(
@@ -478,6 +535,7 @@ pub(super) fn execute_output_poll_command(
                 )
             }),
             resolved_resume_state,
+            thinking_tokens: None,
         }));
     }
     if run.adapter_key() == "claude" {
@@ -498,7 +556,7 @@ pub(super) fn execute_output_poll_command(
         runtime_registry.restore_claude_runtime_if_live(run_id, &slot, state);
         return drain.map(Some);
     }
-    if run.adapter_key() != "opencode" {
+    if !crate::provider::provider_run_uses_opencode_io(run) {
         return Ok(None);
     }
     // MP-08 / MP-10: separate actor/HTTP time from pump and app-lock time.
@@ -527,9 +585,26 @@ pub(super) fn execute_output_poll_command(
     );
     let drain = drain?;
     let explicit_provider_error = drain.explicit_provider_error;
+    let skill_tool_delivery_acknowledgements = drain
+        .chunks
+        .iter()
+        .filter_map(|chunk| {
+            crate::provider::skill_ack::completed_tool_transcript(
+                "opencode",
+                chunk.kind.clone(),
+                &chunk.bytes,
+            )
+        })
+        .collect();
     Ok(Some(ProviderPromptSignalBatch {
+        provider_own_turn: ProviderOwnTurnSignal::None,
+        background_notifications: Vec::new(),
         process_memory_limit_bytes: None,
         process_outside_ended: false,
+        turn_outcome: None,
+        hook_context_delivered: false,
+        native_compactions: Vec::new(),
+        skill_tool_delivery_acknowledgements,
         chunks: drain
             .chunks
             .into_iter()
@@ -556,8 +631,10 @@ pub(super) fn execute_output_poll_command(
         resolved_variant: drain.resolved_variant,
         resolved_usage_tokens_total: drain.resolved_usage_tokens_total,
         resolved_usage: None,
+        model_usage: Vec::new(),
         account_usage: None,
         resolved_resume_state: None,
+        thinking_tokens: None,
     }))
 }
 
@@ -608,6 +685,7 @@ mod tests {
             terminal_failure: None,
             notices: Vec::new(),
             resolved_usage: None,
+            model_usage: Vec::new(),
             account_rate_limits: Vec::new(),
         }
     }

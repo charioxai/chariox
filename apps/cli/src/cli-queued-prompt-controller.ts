@@ -132,14 +132,12 @@ export function createCliQueuedPromptController(deps: CliQueuedPromptControllerD
             queuedPrompt.promptId,
           )
         if (action === "steer") {
-          const promptOrigin = payload.prompt.prompt_origin ?? queuedPrompt.promptOrigin
-          deps.appendSteeredPrompt(payload.prompt.prompt, queuedPrompt.agentId, {
+          deps.appendSteeredPrompt(entry.text, queuedPrompt.agentId, {
             promptId: payload.prompt.id,
-            sourceAttachmentId: payload.prompt.source_attachment_id,
-            ...(promptOrigin !== undefined ? { promptOrigin } : {}),
+            sourceAttachmentId: entry.sourceAttachmentId,
+            promptOrigin: queuedPrompt.promptOrigin,
           })
         }
-        deps.applySessionState(payload.session)
         updateQueuedPromptStatusOverride(queuedPrompt.agentId, queuedPrompt.promptId, "queued")
         deps.updateSessionChrome()
       } catch (error) {

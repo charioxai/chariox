@@ -7,27 +7,33 @@ fn local_request_api_lists_live_remote_machines_and_kernels() {
     let harness = LocalRouterTestHarness::with_config(config);
     harness.with_app_mut(|app| {
         app.remote_relay_inventory_projection_store().update(
-            crate::local::provider_requests::remote_machine_records(
-                vec![RelayMachinePresence {
-                    machine_id: "machine-1".to_string(),
-                    machine_alias: Some("workstation".to_string()),
-                    kernel_count: 1,
-                    available_providers: vec!["codex".to_string(), "opencode".to_string()],
-                    provider_accounts: vec![chariox_relay::protocol::RelayProviderAccountSummary {
-                        copyable: false,
-                        provider: "codex".to_string(),
-                        state: "configured".to_string(),
-                        auth_type: Some("chatgpt".to_string()),
-                        account_id: Some("acct-remote-1".to_string()),
-                        email: None,
-                        organization_id: None,
-                        organization_name: None,
-                        subscription_type: None,
-                        alias: Some("remote-codex".to_string()),
+            crate::local::RemoteMachineInventory {
+                machines: crate::local::provider_requests::remote_machine_records(
+                    vec![RelayMachinePresence {
+                        machine_id: "machine-1".to_string(),
+                        machine_alias: Some("workstation".to_string()),
+                        kernel_count: 1,
+                        available_providers: vec!["codex".to_string(), "opencode".to_string()],
+                        provider_accounts: vec![
+                            chariox_relay::protocol::RelayProviderAccountSummary {
+                                copyable: false,
+                                provider: "codex".to_string(),
+                                state: "configured".to_string(),
+                                auth_type: Some("chatgpt".to_string()),
+                                account_id: Some("acct-remote-1".to_string()),
+                                email: None,
+                                organization_id: None,
+                                organization_name: None,
+                                subscription_type: None,
+                                alias: Some("remote-codex".to_string()),
+                            },
+                        ],
+                        update_needed_kernels: Vec::new(),
                     }],
-                }],
-                &host_machine_id,
-            ),
+                    &host_machine_id,
+                ),
+                ..Default::default()
+            },
             vec![RelayKernelPresence {
                 kernel_id: "daemon-1".to_string(),
                 machine_id: "machine-1".to_string(),
@@ -52,6 +58,7 @@ fn local_request_api_lists_live_remote_machines_and_kernels() {
                 leased_agent_count: 2,
                 local_session_count: 3,
                 public_key: "public-key".to_string(),
+                local_protocol: None,
             }],
         );
     });
@@ -62,7 +69,7 @@ fn local_request_api_lists_live_remote_machines_and_kernels() {
         ))
         .expect("remote machines request should succeed")
     {
-        LocalDaemonResponse::RemoteMachinesListed { machines } => machines,
+        LocalDaemonResponse::RemoteMachinesListed { machines, .. } => machines,
         other => panic!("unexpected response: {other:?}"),
     };
     let machine = machines
@@ -107,16 +114,20 @@ fn local_request_api_resolves_self_hosted_kernel_client_connection_from_inventor
     let harness = LocalRouterTestHarness::with_config(config);
     harness.with_app_mut(|app| {
         app.remote_relay_inventory_projection_store().update(
-            crate::local::provider_requests::remote_machine_records(
-                vec![RelayMachinePresence {
-                    machine_id: "machine-1".to_string(),
-                    machine_alias: Some("workstation".to_string()),
-                    kernel_count: 1,
-                    available_providers: vec!["opencode".to_string()],
-                    provider_accounts: vec![],
-                }],
-                &host_machine_id,
-            ),
+            crate::local::RemoteMachineInventory {
+                machines: crate::local::provider_requests::remote_machine_records(
+                    vec![RelayMachinePresence {
+                        machine_id: "machine-1".to_string(),
+                        machine_alias: Some("workstation".to_string()),
+                        kernel_count: 1,
+                        available_providers: vec!["opencode".to_string()],
+                        provider_accounts: vec![],
+                        update_needed_kernels: Vec::new(),
+                    }],
+                    &host_machine_id,
+                ),
+                ..Default::default()
+            },
             vec![RelayKernelPresence {
                 kernel_id: "daemon-1".to_string(),
                 machine_id: "machine-1".to_string(),
@@ -130,6 +141,7 @@ fn local_request_api_resolves_self_hosted_kernel_client_connection_from_inventor
                 leased_agent_count: 0,
                 local_session_count: 0,
                 public_key: "public-key".to_string(),
+                local_protocol: None,
             }],
         );
     });
@@ -168,16 +180,20 @@ fn local_request_api_lists_same_machine_sibling_kernels_as_trusted() {
     let harness = LocalRouterTestHarness::with_config(config);
     harness.with_app_mut(|app| {
         app.remote_relay_inventory_projection_store().update(
-            crate::local::provider_requests::remote_machine_records(
-                vec![RelayMachinePresence {
-                    machine_id: host_machine_id.clone(),
-                    machine_alias: Some("laptop".to_string()),
-                    kernel_count: 2,
-                    available_providers: Vec::new(),
-                    provider_accounts: Vec::new(),
-                }],
-                &host_machine_id,
-            ),
+            crate::local::RemoteMachineInventory {
+                machines: crate::local::provider_requests::remote_machine_records(
+                    vec![RelayMachinePresence {
+                        machine_id: host_machine_id.clone(),
+                        machine_alias: Some("laptop".to_string()),
+                        kernel_count: 2,
+                        available_providers: Vec::new(),
+                        provider_accounts: Vec::new(),
+                        update_needed_kernels: Vec::new(),
+                    }],
+                    &host_machine_id,
+                ),
+                ..Default::default()
+            },
             vec![RelayKernelPresence {
                 kernel_id: "sibling-kernel".to_string(),
                 machine_id: host_machine_id.clone(),
@@ -191,6 +207,7 @@ fn local_request_api_lists_same_machine_sibling_kernels_as_trusted() {
                 leased_agent_count: 0,
                 local_session_count: 1,
                 public_key: "sibling-public-key".to_string(),
+                local_protocol: None,
             }],
         );
     });
@@ -201,7 +218,7 @@ fn local_request_api_lists_same_machine_sibling_kernels_as_trusted() {
         ))
         .expect("same-machine inventory should succeed")
     {
-        LocalDaemonResponse::RemoteMachinesListed { machines } => machines,
+        LocalDaemonResponse::RemoteMachinesListed { machines, .. } => machines,
         other => panic!("unexpected response: {other:?}"),
     };
     let machine = machines
@@ -211,4 +228,108 @@ fn local_request_api_lists_same_machine_sibling_kernels_as_trusted() {
     assert_eq!(machine.trust_status, RemoteMachineTrustStatus::Approved);
     assert!(!machine.pending);
     assert_eq!(machine.kernel_count, 2);
+}
+
+#[test]
+fn local_request_api_lists_offline_machines_apart_from_the_machines_to_pick() {
+    crate::test_support::isolated_env_test!();
+    let harness = LocalRouterTestHarness::with_config(DaemonConfig::for_tests());
+    harness.with_app_mut(|app| {
+        app.remote_relay_inventory_projection_store().update(
+            crate::local::RemoteMachineInventory {
+                directory: None,
+                machines: Vec::new(),
+                offline_machines: vec![crate::local::OfflineMachineRecord {
+                    directory: None,
+                    machine_id: "machine-gone".to_string(),
+                    display_name: "gone box".to_string(),
+                    last_seen_ms: 42,
+                }],
+            },
+            Vec::new(),
+        );
+    });
+
+    match harness
+        .dispatch(LocalDaemonRequest::ListRemoteMachines(
+            ListRemoteMachinesRequest,
+        ))
+        .expect("remote machines request should succeed")
+    {
+        LocalDaemonResponse::RemoteMachinesListed {
+            renewing: false,
+            directory: _,
+            machines,
+            offline_machines,
+        } => {
+            assert!(
+                machines.is_empty(),
+                "an offline machine is never in the list to pick from"
+            );
+            assert_eq!(offline_machines.len(), 1);
+            assert_eq!(offline_machines[0].machine_id, "machine-gone");
+            assert_eq!(offline_machines[0].last_seen_ms, 42);
+        }
+        other => panic!("unexpected response: {other:?}"),
+    }
+}
+
+#[test]
+fn local_request_api_removing_a_machine_deletes_its_registry_entry_and_it_returns_as_pending() {
+    crate::test_support::isolated_env_test!();
+    let config = DaemonConfig::for_tests();
+    let host_machine_id = config.host_machine_id.clone();
+    let harness = LocalRouterTestHarness::with_config(config);
+    DaemonConfig::approve_remote_machine("machine-1").expect("approve");
+    let presence = || RelayMachinePresence {
+        machine_id: "machine-1".to_string(),
+        machine_alias: Some("workstation".to_string()),
+        kernel_count: 1,
+        available_providers: Vec::new(),
+        provider_accounts: Vec::new(),
+        update_needed_kernels: Vec::new(),
+    };
+    harness.with_app_mut(|app| {
+        app.remote_relay_inventory_projection_store().update(
+            crate::local::RemoteMachineInventory {
+                machines: crate::local::provider_requests::remote_machine_records(
+                    vec![presence()],
+                    &host_machine_id,
+                ),
+                ..Default::default()
+            },
+            Vec::new(),
+        );
+    });
+    assert!(DaemonConfig::machine_registry_entries()
+        .iter()
+        .any(|entry| entry.machine_id == "machine-1" && entry.approved));
+
+    match harness
+        .dispatch(LocalDaemonRequest::ForgetRemoteMachine(
+            crate::local::ForgetRemoteMachineRequest {
+                machine_ref: "machine-1".to_string(),
+            },
+        ))
+        .expect("removing a machine should succeed")
+    {
+        LocalDaemonResponse::RemoteMachineForgotten { machine_id, .. } => {
+            assert_eq!(machine_id, "machine-1")
+        }
+        other => panic!("unexpected response: {other:?}"),
+    }
+
+    assert!(
+        DaemonConfig::machine_registry_entries()
+            .iter()
+            .all(|entry| entry.machine_id != "machine-1"),
+        "the registry entry is deleted, not marked"
+    );
+    let listed =
+        crate::local::provider_requests::remote_machine_records(vec![presence()], &host_machine_id);
+    assert_eq!(
+        listed[0].trust_status,
+        crate::local::RemoteMachineTrustStatus::Pending,
+        "a removed machine that connects again is a new, pending machine"
+    );
 }

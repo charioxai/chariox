@@ -514,25 +514,20 @@ workflow.endpoint(reviewer, { handle: "entry", alias: "entry" })
     assert!(rejected
         .to_string()
         .contains("generated workflow source changed after preview"));
-    let after_rejection = harness
-        .dispatch(LocalDaemonRequest::GetSessionState(
-            GetSessionStateRequest {
+    let after_rejection = match harness
+        .dispatch(LocalDaemonRequest::ResolveWorkflow(
+            ResolveWorkflowRequest {
                 session_id: session.id().to_string(),
+                workflow_ref: workflow_id.clone(),
             },
         ))
-        .expect("session should still load after rejected update");
-    let after_rejection = match after_rejection {
-        LocalDaemonResponse::SessionState { session, .. } => session,
+        .expect("workflow should still resolve after rejected update")
+    {
+        LocalDaemonResponse::WorkflowResolved { workflow } => workflow,
         _ => panic!("unexpected session response"),
     };
-    assert_eq!(
-        after_rejection
-            .workflow(&workflow_id)
-            .expect("workflow should remain after rejected update")
-            .revision(),
-        changed_revision
-    );
-    let updated_session = match harness
+    assert_eq!(after_rejection.revision(), changed_revision);
+    let updated = match harness
         .dispatch(LocalDaemonRequest::UpdateWorkflowCodeSourceFromWorkflow(
             crate::local::UpdateWorkflowCodeSourceFromWorkflowRequest {
                 session_id: session.id().to_string(),
@@ -546,12 +541,10 @@ workflow.endpoint(reviewer, { handle: "entry", alias: "entry" })
         ))
         .expect("source update should succeed")
     {
-        LocalDaemonResponse::WorkflowCodeSourceUpdated { session, .. } => session,
+        LocalDaemonResponse::WorkflowCodeSourceUpdated { workflow, .. } => workflow,
         _ => panic!("unexpected source update response"),
     };
-    let updated = updated_session
-        .workflow(&workflow_id)
-        .expect("updated workflow should remain");
+    assert_eq!(updated.id(), workflow_id);
     assert_eq!(updated.alias(), Some("visual_source"));
     assert_eq!(
         updated

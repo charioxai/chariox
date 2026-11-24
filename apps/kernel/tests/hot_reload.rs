@@ -3,6 +3,15 @@
 //! running agent turn continues in the same provider process.
 #![cfg(unix)]
 
+#[path = "hot_reload/local_jobs.rs"]
+mod local_jobs;
+
+#[path = "hot_reload/steered_tool_history.rs"]
+mod steered_tool_history;
+
+#[path = "hot_reload/decision_restart.rs"]
+mod decision_restart;
+
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -31,6 +40,69 @@ fn install(write: impl FnOnce(&Path), installed: &Path) {
     std::fs::rename(&staged, installed).unwrap();
 }
 
+/// Installs the program the upgrade swaps in: a copy of the running one, or
+/// the build `CHARIOX_HOT_RELOAD_UPGRADE_TO` names (with
+/// `CHARIOX_HOT_RELOAD_KERNEL` the previous release hands over to this build).
+/// The new program is a small wrapper when the run keeps the handover
+/// document it receives (`CHARIOX_HOT_RELOAD_CAPTURE`, a path) or damages one
+/// agent's part of it (`corruption`): it changes the document before
+/// the real program reads it, as a release that wrote it differently would.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Corruption {
+    None,
+    /// One Codex agent's part of the document cannot be read.
+    CodexPart,
+    /// The document is of a format this program does not read.
+    WholeDocument,
+}
+
+fn install_next_program(installed: &Path, corruption: Corruption) {
+    let upgrade_to = std::env::var_os("CHARIOX_HOT_RELOAD_UPGRADE_TO").map(PathBuf::from);
+    let capture = std::env::var_os("CHARIOX_HOT_RELOAD_CAPTURE").map(PathBuf::from);
+    if upgrade_to.is_none() && capture.is_none() && corruption == Corruption::None {
+        install(
+            |staged| {
+                std::fs::copy(installed, staged).unwrap();
+            },
+            installed,
+        );
+        return;
+    }
+    let real = installed.with_file_name("chariox-kernel-next");
+    install(
+        |staged| {
+            std::fs::copy(upgrade_to.as_deref().unwrap_or(installed), staged).unwrap();
+        },
+        &real,
+    );
+    let mut wrapper = String::from("#!/bin/sh\nif [ -n \"$CHARIOX_HANDOVER\" ]; then\n:\n");
+    if corruption == Corruption::WholeDocument {
+        // A format no release writes: the whole document is refused.
+        wrapper.push_str(
+            "python3 - \"$CHARIOX_HANDOVER\" <<'PY'\nimport json, sys\npath = sys.argv[1]\n\
+             document = json.load(open(path))\ndocument['format'] = 99\n\
+             json.dump(document, open(path, 'w'))\nPY\n",
+        );
+    }
+    if corruption == Corruption::CodexPart {
+        wrapper.push_str(
+            "python3 - \"$CHARIOX_HANDOVER\" <<'PY'\nimport json, sys\npath = sys.argv[1]\n\
+             document = json.load(open(path))\nfor part in document['providers']:\n    \
+             if 'codex' in part['process']:\n        \
+             part['process']['codex']['turn']['next_request_id'] = 'corrupt'\n\
+             json.dump(document, open(path, 'w'))\nPY\n",
+        );
+    }
+    if let Some(capture) = &capture {
+        wrapper.push_str(&format!("cp \"$CHARIOX_HANDOVER\" {}\n", capture.display()));
+    }
+    wrapper.push_str(&format!("fi\nexec {} \"$@\"\n", real.display()));
+    install(
+        |staged| std::fs::write(staged, &wrapper).unwrap(),
+        installed,
+    );
+}
+
 struct Kernel {
     child: Child,
     scratch: PathBuf,
@@ -42,7 +114,7 @@ struct Kernel {
 impl Drop for Kernel {
     fn drop(&mut self) {
         let pid = self.child.id() as i32;
-        if pid > 1 {
+        if pid > 1 && self.child.try_wait().unwrap().is_none() {
             unsafe { libc::kill(pid, libc::SIGTERM) };
         }
         let deadline = Instant::now() + Duration::from_secs(10);
@@ -144,7 +216,13 @@ fn launch_kernel(
         .env("HOME", scratch.join("home"))
         .env("PATH", "/usr/bin:/bin")
         .env("SHELL", "/bin/sh")
-        .env("CHARIOX_HOME", scratch.join("home/.chariox"))
+        // The release-gate drill runs on a copy of a live kernel's state, which binds the
+        // absolute paths of its home: the drill mounts the copy at that path.
+        .env(
+            "CHARIOX_HOME",
+            std::env::var_os("CHARIOX_HOT_RELOAD_HOME")
+                .map_or_else(|| scratch.join("home/.chariox"), PathBuf::from),
+        )
         .env("CHARIOX_LOG_DIR", scratch.join("logs"))
         .env("CHARIOX_KERNEL_HOST", "127.0.0.1")
         .env("CHARIOX_KERNEL_PORT", port.to_string())
@@ -201,14 +279,16 @@ fn laptop_token(kernel: &Kernel) -> Option<String> {
             }
         })
     }
-    let path = find(
-        &kernel.scratch.join("home"),
-        &format!("{}.token", kernel.port),
-    )?;
+    let home = std::env::var_os("CHARIOX_HOT_RELOAD_HOME")
+        .map_or_else(|| kernel.scratch.join("home"), PathBuf::from);
+    let path = find(&home, &format!("{}.token", kernel.port))?;
     Some(std::fs::read_to_string(path).ok()?.trim().to_string())
 }
 
-async fn request(socket: &mut Socket, body: Value) -> Value {
+async fn request<S>(socket: &mut WebSocketStream<S>, body: Value) -> Value
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
     let id = format!("hot-reload-{:016x}", rand::random::<u64>());
     let frame = json!({"type": "request", "request_id": id, "command_id": id, "request": body});
     socket
@@ -465,6 +545,96 @@ fn a_reload_to_a_program_that_cannot_take_the_handover_changes_nothing() {
     });
 }
 
+/// TerminalScope replaced session-only persisted terminal records. A predecessor
+/// advertising their old format must be rejected before any PTY is handed over.
+#[test]
+fn a_reload_with_the_previous_terminal_record_format_keeps_scrollback_and_input() {
+    fn refusal_count(scratch: &Path) -> usize {
+        std::fs::read_dir(scratch.join("logs"))
+            .unwrap()
+            .flatten()
+            .filter_map(|entry| std::fs::read_to_string(entry.path()).ok())
+            .map(|log| {
+                log.matches("hot reload refused; the kernel keeps running")
+                    .count()
+            })
+            .sum()
+    }
+
+    let scratch = std::env::temp_dir().join(format!("hr-terminal-format-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    let kernel = start_kernel(&scratch);
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let mut socket = connect(&kernel, Duration::from_secs(60)).await;
+        let project = scratch.join("project").display().to_string();
+        let created = request(
+            &mut socket,
+            json!({"CreateSession": {"workspace_id": project, "worktree_id": project,
+                "alias": null, "slice_ref": null, "no_subscribe": true}}),
+        )
+        .await;
+        let session_id = created["SessionCreated"]["session"]["id"].as_str().unwrap();
+        let opened = terminal(
+            &mut socket,
+            session_id,
+            json!({"operation": "open", "cols": 80, "rows": 24,
+                "command": ["/bin/sh", "-c", "echo scrollback-before; read line; echo continued-$line"]}),
+        )
+        .await;
+        let terminal_id = opened["terminal"]["terminal_id"].as_str().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let page = terminal(&mut socket, session_id,
+                json!({"operation": "read_output", "terminal_id": terminal_id,
+                    "after_offset": 0, "wait_ms": 500})).await;
+            let output = base64::engine::general_purpose::STANDARD
+                .decode(page["output"]["data_base64"].as_str().unwrap()).unwrap();
+            if String::from_utf8_lossy(&output).contains("scrollback-before") { break; }
+            assert!(Instant::now() < deadline, "{page}");
+        }
+        let installed = scratch.join("bin/chariox-kernel");
+        // Both 13 on the owning branch and 14 on its reviewed union carried
+        // incompatible terminal records; later union handovers also used 15.
+        for format in [13, 14, 15] {
+            let refused_before = refusal_count(&scratch);
+            install(|staged| std::fs::write(staged,
+                format!("#!/bin/sh\n[ \"$1\" = --handover-format ] && echo {format} && exit 0\nexit 2\n")).unwrap(), &installed);
+            let pid = kernel.child.id() as i32;
+            assert!(pid > 1);
+            unsafe { libc::kill(pid, libc::SIGUSR2) };
+            let deadline = Instant::now() + Duration::from_secs(15);
+            loop {
+                if refusal_count(&scratch) > refused_before { break; }
+                assert!(Instant::now() < deadline, "format {format} was not refused");
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        }
+        let input = terminal(&mut socket, session_id,
+            json!({"operation": "input", "terminal_id": terminal_id,
+                "data_base64": base64::engine::general_purpose::STANDARD.encode("after\n")})).await;
+        assert!(input.get("input").is_some(), "{input}");
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let page = terminal(&mut socket, session_id,
+                json!({"operation": "read_output", "terminal_id": terminal_id,
+                    "after_offset": 0, "wait_ms": 500})).await;
+            let output = base64::engine::general_purpose::STANDARD
+                .decode(page["output"]["data_base64"].as_str().unwrap()).unwrap();
+            let text = String::from_utf8_lossy(&output);
+            if text.contains("continued-after") {
+                assert!(text.contains("scrollback-before"), "{text}");
+                assert_eq!(page["output"]["gap"], false, "{page}");
+                break;
+            }
+            assert!(Instant::now() < deadline, "{page}");
+        }
+    });
+}
+
 /// A managed kernel reads its token from a file its supervisor wrote and
 /// deleted it; the new program must still accept the same token.
 #[test]
@@ -580,8 +750,14 @@ fn a_reloaded_kernel_publishes_that_it_is_back_on_the_relay() {
     runtime.spawn(async move {
         while let Ok((stream, _)) = relay.accept().await {
             tokio::spawn(async move {
-                if let Ok(mut socket) = tokio_tungstenite::accept_async(stream).await {
-                    while let Some(Ok(_)) = socket.next().await {}
+                if let Ok(mut socket) = accept_as_relay(stream).await {
+                    while let Some(Ok(Message::Text(text))) = socket.next().await {
+                        if text.starts_with("{\"kind\":\"daemon_register\"") {
+                            let _ = socket
+                                .send(Message::Text(r#"{"kind":"daemon_registered"}"#.into()))
+                                .await;
+                        }
+                    }
                 }
             });
         }
@@ -660,7 +836,7 @@ fn a_hot_reload_tells_the_relay_it_is_a_reload() {
         while let Ok((stream, _)) = relay.accept().await {
             let recorded = recorded.clone();
             tokio::spawn(async move {
-                let Ok(mut socket) = tokio_tungstenite::accept_async(stream).await else {
+                let Ok(mut socket) = accept_as_relay(stream).await else {
                     return;
                 };
                 let index = {
@@ -671,6 +847,11 @@ fn a_hot_reload_tells_the_relay_it_is_a_reload() {
                 while let Some(Ok(message)) = socket.next().await {
                     if let Message::Text(text) = message {
                         if let Ok(value) = serde_json::from_str::<Value>(&text) {
+                            if value["kind"] == "daemon_register" {
+                                let _ = socket
+                                    .send(Message::Text(r#"{"kind":"daemon_registered"}"#.into()))
+                                    .await;
+                            }
                             recorded.lock().unwrap()[index].push(value);
                         }
                     }
@@ -939,10 +1120,10 @@ async fn terminal_that_left_a_job_running(
 async fn listed_job(socket: &mut Socket, session_id: &str, pid: i32) -> Option<Value> {
     let state = request(
         socket,
-        json!({"GetSessionState": {"session_id": session_id}}),
+        json!({"GetMachineRoomResources": {"session_id": session_id}}),
     )
     .await;
-    state["SessionState"]["processes"]
+    state["MachineRoomResources"]["processes"]
         .as_array()?
         .iter()
         .find(|row| row["pid"] == pid)
@@ -1458,6 +1639,9 @@ fi
 [[ " $* " == *" --no-session-persistence "* ]] && exit 0
 record="$CHARIOX_FAKE_CLAUDE_RECORD"
 echo "start $$ token=${CLAUDE_CODE_OAUTH_TOKEN:+set}" >> "$record/starts"
+# The tool servers the kernel names, with the token this process calls them with.
+prev=""
+for arg in "$@"; do [[ "$prev" == "--mcp-config" ]] && cp "$arg" "$record/mcp.json" 2>/dev/null; prev="$arg"; done
 session=11111111-2222-4333-8444-555555555555
 turn=0
 while IFS= read -r line; do
@@ -1466,6 +1650,15 @@ while IFS= read -r line; do
     uuid=$(printf '%s' "$line" | sed -n 's/.*"uuid":"\([^"]*\)".*/\1/p')
     echo "prompt $turn" >> "$record/prompts"
     printf '%s\n' "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"$session\",\"model\":\"claude-haiku-5-5\"}"
+    if [[ -e "$record/steer-tool" ]]; then
+        printf '%s\n' '{"type":"assistant","message":{"id":"tool-invocation","role":"assistant","content":[{"type":"tool_use","id":"original-run","name":"mcp__chariox__chariox_agents_run","input":{"workers":[{"name":"worker","brief":"report WORKER-DONE"}]}}]}}'
+        while IFS= read -r steering; do [[ "$steering" == *STEER-MARKER* ]] && break; done
+        steer_uuid=$(printf '%s' "$steering" | sed -n 's/.*"uuid":"\([^"]*\)".*/\1/p')
+        printf '%s\n' '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"original-run","content":[{"type":"text","text":"{\"workers\":[{\"name\":\"worker\",\"answer\":\"WORKER-DONE\"}]}"}]}]}}'
+        printf '%s\n' '{"type":"assistant","message":{"id":"final-answer","role":"assistant","content":[{"type":"text","text":"WORKER-DONE and STEER-MARKER received"}]}}'
+        printf '%s\n' "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"session_id\":\"$session\",\"result\":\"done\",\"user_message_uuids\":[\"$uuid\",\"$steer_uuid\"]}"
+        continue
+    fi
     # One message whose text block streams as deltas, as with --include-partial-messages.
     printf '%s\n' "{\"type\":\"stream_event\",\"session_id\":\"$session\",\"event\":{\"type\":\"message_start\",\"message\":{\"id\":\"msg-$turn\",\"role\":\"assistant\",\"model\":\"claude-haiku-5-5\"}}}"
     printf '%s\n' "{\"type\":\"stream_event\",\"session_id\":\"$session\",\"event\":{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}}"
@@ -1544,6 +1737,60 @@ impl Login {
     }
 }
 
+/// The Claude process calls the kernel's tools with the token its tool config named, a runtime
+/// tool and a Vault tool: they answer before the reload and after it, whether or not a
+/// recovered prompt has claimed the run yet.
+async fn run_calls_its_tools(record: &Path, when: &str) {
+    let config: Value =
+        serde_json::from_str(&std::fs::read_to_string(record.join("mcp.json")).unwrap()).unwrap();
+    let (url, authorization) = config["mcpServers"]
+        .as_object()
+        .unwrap()
+        .values()
+        .find_map(|server| {
+            Some((
+                server["url"].as_str()?.to_string(),
+                server["headers"]["Authorization"].as_str()?.to_string(),
+            ))
+        })
+        .expect("the run's tool config names the kernel's tool server");
+    for (id, tool) in [
+        (1, "chariox_list_extensions"),
+        (2, "chariox_list_credential_handles"),
+    ] {
+        let (url, authorization) = (url.clone(), authorization.clone());
+        let body = tokio::task::spawn_blocking(move || {
+            let answer = ureq::post(&url)
+                .set("Authorization", &authorization)
+                .set("Content-Type", "application/json")
+                .set("Accept", "application/json, text/event-stream")
+                .send_string(
+                    &json!({"jsonrpc": "2.0", "id": id, "method": "tools/call",
+                        "params": {"name": tool, "arguments": {}}})
+                    .to_string(),
+                );
+            match answer {
+                Ok(response) | Err(ureq::Error::Status(_, response)) => {
+                    response.into_string().unwrap_or_default()
+                }
+                Err(error) => error.to_string(),
+            }
+        })
+        .await
+        .unwrap();
+        for refused in [
+            "invalid runtime MCP auth token",
+            "Vault operations require one authenticated provider run",
+        ] {
+            assert!(
+                !body.contains(refused),
+                "{tool} {when}: the surviving run's token was refused: {body}"
+            );
+        }
+        assert!(body.contains("\"result\""), "{tool} {when}: {body}");
+    }
+}
+
 fn claude_turn_across_a_hot_reload(login: Login) {
     let scratch = std::env::temp_dir().join(format!("hr-claude-{}-{login:?}", std::process::id(),));
     let _ = std::fs::remove_dir_all(&scratch);
@@ -1609,7 +1856,7 @@ fn claude_turn_across_a_hot_reload(login: Login) {
         let spawned = request(
             &mut socket,
             json!({"SpawnAgent": {"session_id": session_id, "alias": "writer",
-                "provider": "claude", "model": "haiku", "effort": null,
+                "provider": "claude", "model": "claude-haiku-5-5", "effort": null,
                 "worktree_id": null, "no_subscribe": true}}),
         )
         .await;
@@ -1643,6 +1890,7 @@ fn claude_turn_across_a_hot_reload(login: Login) {
             );
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
+        run_calls_its_tools(&record, "before the reload").await;
         let installed = scratch.join("bin/chariox-kernel");
         install(
             |staged| {
@@ -1656,6 +1904,7 @@ fn claude_turn_across_a_hot_reload(login: Login) {
         closed_by_the_old_program(socket).await;
 
         let mut socket = connect(&kernel, Duration::from_secs(60)).await;
+        run_calls_its_tools(&record, "after the reload").await;
         std::fs::write(record.join("go"), "").unwrap();
         let deadline = Instant::now() + Duration::from_secs(60);
         loop {
@@ -1748,7 +1997,7 @@ fn a_hot_reload_keeps_a_job_an_ended_claude_process_left_and_it_stays_controllab
         let spawned = request(
             &mut socket,
             json!({"SpawnAgent": {"session_id": session_id, "alias": "builder",
-                "provider": "claude", "model": "haiku", "effort": null,
+                "provider": "claude", "model": "claude-haiku-5-5", "effort": null,
                 "worktree_id": null, "no_subscribe": true}}),
         )
         .await;
@@ -1851,26 +2100,47 @@ const FAKE_CODEX: &str = include_str!("hot_reload/fake_codex.py");
 /// stall longer than the swap itself, each once and in order.
 #[test]
 fn a_codex_item_keeps_streaming_across_a_hot_reload() {
-    codex_turn_across_a_hot_reload(false, false);
+    codex_turn_across_a_hot_reload(false, false, Corruption::None);
 }
 
 /// Two turns are handed over at once: the Codex item keeps streaming beside a
 /// Claude turn that is still running.
 #[test]
 fn a_codex_turn_continues_beside_a_running_claude_turn() {
-    codex_turn_across_a_hot_reload(false, true);
+    codex_turn_across_a_hot_reload(false, true, Corruption::None);
+}
+
+/// One agent's part of the handover cannot be read: that agent's turn ends as
+/// after a restart, with the reason in the log, and the other agent's turn
+/// keeps running in its own process.
+#[test]
+fn a_handover_part_that_cannot_be_read_ends_only_that_agent() {
+    codex_turn_across_a_hot_reload(false, true, Corruption::CodexPart);
+}
+
+/// A document no part of which can be read still leaves a kernel that serves on the
+/// listening sockets it inherited: the swap becomes a restart, never a dead kernel.
+#[test]
+fn a_handover_that_cannot_be_read_leaves_a_kernel_that_serves() {
+    codex_turn_across_a_hot_reload(false, true, Corruption::WholeDocument);
 }
 
 /// The turn may end while the kernel program is being replaced.
 #[test]
 fn a_hot_reload_keeps_a_codex_turn_that_ends_during_the_swap() {
-    codex_turn_across_a_hot_reload(true, false);
+    codex_turn_across_a_hot_reload(true, false, Corruption::None);
 }
 
-fn codex_turn_across_a_hot_reload(finish_in_gap: bool, beside_claude: bool) {
+fn codex_turn_across_a_hot_reload(
+    finish_in_gap: bool,
+    beside_claude: bool,
+    corruption: Corruption,
+) {
+    let corrupt_codex_part = corruption == Corruption::CodexPart;
     let scratch = std::env::temp_dir().join(format!(
-        "hr-codex-{}-{finish_in_gap}-{beside_claude}",
-        std::process::id()
+        "hr-codex-{}-{finish_in_gap}-{beside_claude}-{}",
+        std::process::id(),
+        corruption as u8
     ));
     let _ = std::fs::remove_dir_all(&scratch);
     let record = scratch.join("record");
@@ -1973,7 +2243,7 @@ fn codex_turn_across_a_hot_reload(finish_in_gap: bool, beside_claude: bool) {
             let spawned = request(
                 &mut socket,
                 json!({"SpawnAgent": {"session_id": session_id, "alias": "counter",
-                    "provider": "claude", "model": "haiku", "effort": null,
+                    "provider": "claude", "model": "claude-haiku-5-5", "effort": null,
                     "worktree_id": null, "no_subscribe": true}}),
             )
             .await;
@@ -2007,21 +2277,21 @@ fn codex_turn_across_a_hot_reload(finish_in_gap: bool, beside_claude: bool) {
 
         // Install the new program first: the upgrade then only signals.
         let installed = scratch.join("bin/chariox-kernel");
-        install(
-            |staged| {
-                std::fs::copy(&installed, staged).unwrap();
-            },
-            &installed,
-        );
+        install_next_program(&installed, corruption);
         // Upgrade while the item streams; watch what the session shows of it.
         let started = Instant::now();
         let mut shown = Vec::new();
         let deadline = Instant::now() + Duration::from_secs(60);
         while lines(&record.join("parts")).len() < 100 {
-            assert!(
-                Instant::now() < deadline,
-                "the turn did not start streaming"
-            );
+            if Instant::now() >= deadline {
+                let history = request(
+                    &mut socket,
+                    json!({"GetSessionHistoryOutline": {"session_id": session_id,
+                        "agent_ids": [agent_id], "include_prefetched_content": true}}),
+                )
+                .await;
+                panic!("the turn did not start streaming: {history}");
+            }
             note_shown_parts(&mut socket, &session_id, &agent_id, started, &mut shown).await;
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
@@ -2073,6 +2343,49 @@ fn codex_turn_across_a_hot_reload(finish_in_gap: bool, beside_claude: bool) {
             .as_str()
             .unwrap_or_else(|| panic!("{late}"))
             .to_string();
+        if corruption == Corruption::WholeDocument {
+            let deadline = Instant::now() + Duration::from_secs(60);
+            while !std::fs::read_dir(scratch.join("logs")).unwrap().any(|file| {
+                std::fs::read_to_string(file.unwrap().path())
+                    .unwrap()
+                    .contains("the handover could not be read")
+            }) {
+                assert!(Instant::now() < deadline, "no reason was logged for the handover");
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            return started_before_the_swap;
+        }
+        if corrupt_codex_part {
+            // The Codex part is dropped with its reason; Claude's turn is adopted.
+            let deadline = Instant::now() + Duration::from_secs(180);
+            let logged = |needle: &str| {
+                std::fs::read_dir(scratch.join("logs")).unwrap().any(|file| {
+                    std::fs::read_to_string(file.unwrap().path())
+                        .unwrap()
+                        .contains(needle)
+                })
+            };
+            while !logged("a handed-over part could not be read") {
+                assert!(Instant::now() < deadline, "no reason was logged for the part");
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            assert!(
+                !logged("continuing a handed-over Codex turn"),
+                "the damaged Codex part was adopted"
+            );
+            while !logged("continuing a handed-over Claude") {
+                assert!(Instant::now() < deadline, "the Claude turn was not adopted");
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            std::fs::write(claude_record.join("go"), "").unwrap();
+            let deadline = Instant::now() + Duration::from_secs(60);
+            while lines(&claude_record.join("parts")).last().map(String::as_str) != Some("result 1")
+            {
+                assert!(Instant::now() < deadline, "the Claude turn did not complete");
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            return started_before_the_swap;
+        }
         // The real Codex reconnects to the kernel's tools once the new
         // program has adopted its turn; the browser then focuses the pane
         // again. The tools it already listed must not change in between.
@@ -2194,6 +2507,7 @@ fn codex_turn_across_a_hot_reload(finish_in_gap: bool, beside_claude: bool) {
             );
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
+        let mut swap_stall = None;
         if !finish_in_gap {
             // The late viewer gets the parts live, not only once the turn ends.
             assert!(
@@ -2216,6 +2530,7 @@ fn codex_turn_across_a_hot_reload(finish_in_gap: bool, beside_claude: bool) {
                 stall <= swap + Duration::from_secs(1),
                 "the item stood still for {stall:?}; the swap took {swap:?}: {shown:?}"
             );
+            swap_stall = Some((swap, stall));
         }
         let history = request(
             &mut socket,
@@ -2257,8 +2572,58 @@ fn codex_turn_across_a_hot_reload(finish_in_gap: bool, beside_claude: bool) {
             );
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
+        // The Claude turn beside it was handed over too: it completes in the process
+        // that started it, with every part once.
+        let mut claude_measure = Value::Null;
+        if beside_claude {
+            let went = Instant::now();
+            std::fs::write(claude_record.join("go"), "").unwrap();
+            let deadline = Instant::now() + Duration::from_secs(60);
+            while lines(&claude_record.join("parts")).last().map(String::as_str) != Some("result 1")
+            {
+                assert!(Instant::now() < deadline, "the Claude turn did not complete");
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            let claude_parts = lines(&claude_record.join("parts"));
+            assert_eq!(
+                claude_parts.iter().filter(|line| line.starts_with("part ")).count(),
+                400,
+                "the Claude turn lost or repeated parts: {claude_parts:?}"
+            );
+            claude_measure = json!({
+                "process_starts": lines(&claude_record.join("starts")).len(),
+                "prompts": lines(&claude_record.join("prompts")).len(),
+                "parts": 400,
+                "turn_completed_after_release_ms": went.elapsed().as_millis() as u64,
+            });
+        }
+        // The drill reads this: per agent, what the swap cost.
+        if let Some(path) = std::env::var_os("CHARIOX_HOT_RELOAD_MEASURE") {
+            let (swap, stall) = swap_stall.unzip();
+            let measure = json!({
+                "codex": {
+                    "turn_completed": true,
+                    "parts_in_history": 450,
+                    "app_server_starts_after_swap": app_servers_beyond_usage_reads(&record)
+                        .len() - started_before_the_swap.len(),
+                    "swap_ms": swap.map(|d| d.as_millis() as u64),
+                    "longest_stall_ms": stall.map(|d| d.as_millis() as u64),
+                },
+                "claude": claude_measure,
+            });
+            std::fs::write(path, serde_json::to_vec_pretty(&measure).unwrap()).unwrap();
+        }
         started_before_the_swap
     });
+    if corruption == Corruption::WholeDocument {
+        return;
+    }
+    if corrupt_codex_part {
+        // Claude Code was not restarted: one process got its prompt once.
+        assert_eq!(lines(&claude_record.join("starts")).len(), 1);
+        assert_eq!(lines(&claude_record.join("prompts")), ["prompt 1"]);
+        return;
+    }
     // One app-server ran the whole turn, and it got the prompt once.
     assert_eq!(lines(&record.join("prompts")), ["prompt 1"]);
     // The new program starts no app-server but its usage timer's: one would
@@ -2340,6 +2705,171 @@ fn logged_after(scratch: &Path, message: &str, after_ms: u64) -> u64 {
 
 /// Notes when the session shows more parts of the streaming item.
 /// Calls the kernel's tools as the fake Codex agent (see fake_codex.py).
+/// A process an agent watches when the kernel hot-reloads still ends its wake:
+/// the new program supervises it again under the same wake id, so the owner
+/// hears the real exit code rather than `process_lost`.
+#[test]
+fn a_watched_process_still_wakes_its_agent_after_a_hot_reload() {
+    let scratch = std::env::temp_dir().join(format!("hr-watched-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    let record = scratch.join("record");
+    std::fs::create_dir_all(&record).unwrap();
+    std::fs::write(scratch.join("fake_codex.py"), FAKE_CODEX).unwrap();
+    let codex = scratch.join("codex");
+    {
+        let _files = PROGRAM_FILES.lock().unwrap_or_else(|e| e.into_inner());
+        std::fs::write(
+            &codex,
+            format!(
+                "#!/bin/sh\nexec python3 {} \"$@\"\n",
+                scratch.join("fake_codex.py").display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&codex, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .unwrap();
+    }
+    std::fs::create_dir_all(scratch.join("codex-home")).unwrap();
+    let env = vec![
+        ("CHARIOX_CODEX_BIN", codex.clone()),
+        ("CHARIOX_FAKE_CODEX_RECORD", record.clone()),
+        ("CODEX_HOME", scratch.join("codex-home")),
+        ("CHARIOX_MCP_PORT", free_port().to_string().into()),
+    ];
+    let kernel = start_laptop_kernel(&scratch, &env);
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let mut socket = connect(&kernel, Duration::from_secs(60)).await;
+        let project = scratch.join("project").display().to_string();
+        let created = request(
+            &mut socket,
+            json!({"CreateSession": {"workspace_id": project, "worktree_id": project,
+                "alias": null, "slice_ref": null, "no_subscribe": true}}),
+        )
+        .await;
+        let session_id = created["SessionCreated"]["session"]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let spawned = request(
+            &mut socket,
+            json!({"SpawnAgent": {"session_id": session_id, "alias": "writer",
+                "provider": "codex", "model": "gpt-6-luna", "effort": "low",
+                "worktree_id": null, "no_subscribe": true}}),
+        )
+        .await;
+        let agent_id = spawned["AgentSpawned"]["agent"]["id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{spawned}"))
+            .to_string();
+        let attached = request(
+            &mut socket,
+            json!({"AttachToSession": {"session_id": session_id,
+                "client_id": "hot-reload-test", "capability_level": "FullTerminal"}}),
+        )
+        .await;
+        let attachment_id = attached["SessionAttached"]["attachment"]["id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{attached}"))
+            .to_string();
+        request(
+            &mut socket,
+            json!({"SubmitPrompt": {"session_id": session_id, "attachment_id": attachment_id,
+                "target_agent_id": agent_id, "prompt": "write four hundred parts", "attachments": []}}),
+        )
+        .await;
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while lines(&record.join("parts")).len() < 100 {
+            assert!(Instant::now() < deadline, "the turn did not start streaming");
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        // The agent names its running turn in every Chariox tool call.
+        let state = request(
+            &mut socket,
+            json!({"GetSessionState": {"session_id": session_id}}),
+        )
+        .await;
+        let turn = state["SessionState"]["session"]["prompt_states"][&agent_id]["active_prompt"]
+            ["id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{state}"))
+            .to_string();
+        // The agent watches a process that outlives the swap and exits with 7.
+        let started = codex_tools(
+            &record,
+            "watch",
+            json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {"name": "chariox.events.process", "arguments": {
+                    "task_id": turn, "origin_prompt_id": turn,
+                    "label": "build", "argv": ["sh", "-c", "echo before; sleep 20; echo after; exit 7"]}}}),
+        )
+        .await;
+        let text = started["result"]["content"][0]["text"].as_str().unwrap_or_default();
+        let watched: Value = serde_json::from_str(text).unwrap_or_else(|_| panic!("{started}"));
+        let wake_id = watched["wake_id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("the process was not watched: {started}"))
+            .to_string();
+
+        let installed = scratch.join("bin/chariox-kernel");
+        install(
+            |staged| {
+                std::fs::copy(&installed, staged).unwrap();
+            },
+            &installed,
+        );
+        let pid = kernel.child.id() as i32;
+        std::fs::write(record.join("swap"), "").unwrap();
+        unsafe { libc::kill(pid, libc::SIGUSR2) };
+        closed_by_the_old_program(socket).await;
+
+        // The new program has adopted the agent's turn, which stays open until
+        // the watch has ended.
+        let deadline = Instant::now() + Duration::from_secs(180);
+        while !std::fs::read_dir(scratch.join("logs")).unwrap().any(|file| {
+            std::fs::read_to_string(file.unwrap().path())
+                .unwrap()
+                .contains("continuing a handed-over Codex turn")
+        }) {
+            assert!(Instant::now() < deadline, "the Codex turn was not adopted");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+
+        // The same wake ends with the process's own exit code.
+        let deadline = Instant::now() + Duration::from_secs(120);
+        let mut round = 0;
+        let wake = loop {
+            round += 1;
+            let listed = codex_tools(
+                &record,
+                &format!("wakes-{round}"),
+                json!({"jsonrpc": "2.0", "id": 100 + round, "method": "tools/call",
+                    "params": {"name": "chariox.events.wakes",
+                        "arguments": {"task_id": turn, "origin_prompt_id": turn}}}),
+            )
+            .await;
+            let text = listed["result"]["content"][0]["text"].as_str().unwrap_or_default();
+            let listed: Value = serde_json::from_str(text).unwrap_or_else(|_| panic!("{listed}"));
+            let wake = listed["wakes"]
+                .as_array()
+                .and_then(|wakes| wakes.iter().find(|w| w["id"] == wake_id.as_str()))
+                .cloned()
+                .unwrap_or_else(|| panic!("the watch is gone: {listed}"));
+            if wake["state"] != "running" && wake["state"] != "starting" {
+                break wake;
+            }
+            assert!(Instant::now() < deadline, "the watch never ended: {wake}");
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        };
+        assert_eq!(wake["state"], "exited", "{wake}");
+        assert_eq!(wake["exit_code"], 7, "{wake}");
+        std::fs::write(record.join("go"), "").unwrap();
+    });
+}
+
 async fn codex_tools(record: &Path, name: &str, body: Value) -> Value {
     std::fs::write(record.join(format!("mcp-{name}")), body.to_string()).unwrap();
     let out = record.join(format!("mcp-{name}.out"));
@@ -2373,4 +2903,106 @@ async fn note_shown_parts(
     if parts > 0 && shown.last().is_none_or(|(_, last)| parts > *last) {
         shown.push((started.elapsed(), parts));
     }
+}
+
+/// A stand-in relay's handshake: it offers a registration challenge as the relay does.
+// tungstenite's upgrade callback fixes the large `ErrorResponse` error type.
+#[allow(clippy::result_large_err)]
+async fn accept_as_relay(
+    stream: tokio::net::TcpStream,
+) -> Result<
+    tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
+    tokio_tungstenite::tungstenite::Error,
+> {
+    tokio_tungstenite::accept_hdr_async(
+        stream,
+        |_: &tokio_tungstenite::tungstenite::handshake::server::Request,
+         mut response: tokio_tungstenite::tungstenite::handshake::server::Response| {
+            response.headers_mut().insert(
+                chariox_relay::registration_proof::CHALLENGE_HEADER,
+                "stand-in-relay-challenge".parse().unwrap(),
+            );
+            Ok(response)
+        },
+    )
+    .await
+}
+
+async fn vault_is_unlocked(socket: &mut Socket) -> bool {
+    let status = request(socket, json!({"GetCredentialVaultStatus": null})).await;
+    status["CredentialVaultStatus"]["status"]["unlocked"]
+        .as_bool()
+        .unwrap_or_else(|| panic!("{status}"))
+}
+
+/// A hot reload is not the end of the kernel: a Vault unlocked until the kernel stops stays
+/// unlocked through it, and only a real stop locks it.
+#[test]
+fn a_vault_unlocked_until_the_kernel_stops_survives_a_hot_reload_and_a_real_stop_locks_it() {
+    let scratch = std::env::temp_dir().join(format!("hr-vault-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(scratch.join("home/.chariox")).unwrap();
+    std::fs::write(
+        scratch.join("home/.chariox/config.toml"),
+        format!(
+            "[credential_vault]\nbackend = \"chariox_encrypted\"\npath = \"{}\"\nservice = \"chariox\"\nunlock_policy = \"kernel_init\"\n",
+            scratch.join("vault/vault.json").display()
+        ),
+    )
+    .unwrap();
+    let passphrase = "hot reload passphrase";
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let mut kernel = start_laptop_kernel(&scratch, &[]);
+    runtime.block_on(async {
+        let mut socket = connect(&kernel, Duration::from_secs(60)).await;
+        request(
+            &mut socket,
+            json!({"CreateCredentialVault": {"origin": {"kind": "passphrase", "passphrase": passphrase}}}),
+        )
+        .await;
+        if !vault_is_unlocked(&mut socket).await {
+            request(
+                &mut socket,
+                json!({"UnlockCredentialVault": {"passphrase": passphrase,
+                    "duration": {"kind": "until_kernel_stops"}, "surface": "terminal"}}),
+            )
+            .await;
+        }
+        assert!(vault_is_unlocked(&mut socket).await, "the Vault did not unlock");
+        let installed = scratch.join("bin/chariox-kernel");
+        install(
+            |staged| {
+                std::fs::copy(&installed, staged).unwrap();
+            },
+            &installed,
+        );
+        let pid = kernel.child.id() as i32;
+        assert!(pid > 1);
+        unsafe { libc::kill(pid, libc::SIGUSR2) };
+        closed_by_the_old_program(socket).await;
+        let mut socket = connect(&kernel, Duration::from_secs(60)).await;
+        assert!(
+            vault_is_unlocked(&mut socket).await,
+            "a hot reload locked the Vault: it lives until the kernel stops"
+        );
+    });
+    // A real stop ends it: the next kernel starts with a locked Vault.
+    let pid = kernel.child.id() as i32;
+    unsafe { libc::kill(pid, libc::SIGTERM) };
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while kernel.child.try_wait().unwrap().is_none() {
+        assert!(Instant::now() < deadline, "the kernel did not stop");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    kernel = start_laptop_kernel(&scratch, &[]);
+    runtime.block_on(async {
+        let mut socket = connect(&kernel, Duration::from_secs(60)).await;
+        assert!(
+            !vault_is_unlocked(&mut socket).await,
+            "a real stop left the Vault unlocked"
+        );
+    });
 }

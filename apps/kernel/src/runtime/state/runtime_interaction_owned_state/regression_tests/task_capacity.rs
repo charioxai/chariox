@@ -286,6 +286,24 @@ async fn a12_owner_elevation_reserves_the_last_slot_and_keeps_the_global_bound()
         "owner elevation also obeys the hard32 bound"
     );
     assert_eq!(f.active_ids().len(), 32);
+    for index in [0, 8] {
+        f.state
+            .owned
+            .pending_interactions
+            .write()
+            .get_mut(&f.id(&format!("global-{index}")))
+            .unwrap()
+            .kernel_operation_deadline = Some(std::time::Instant::now());
+    }
+    let admitted = f.register("after-expiry");
+    assert!(
+        admitted.is_ok(),
+        "stale decisions filled the global bound: {admitted:?}"
+    );
+    assert_eq!(f.active_ids().len(), 31);
+    for index in [0, 8] {
+        assert_eq!(receivers[index].try_recv().unwrap().status, "timed_out");
+    }
     drop(receivers);
 }
 

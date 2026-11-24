@@ -222,8 +222,29 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// forwards the browser region's `done_text` with its interaction, and forwards the App account, event-routing and
 /// pause, and standing permission requests and the confirmation preview, and names the Room list subscription scope
 /// and events `room_list` / `room_list_changed` / `room_list_rows_changed`; it lets an agent's kernel read or set the responsible
-/// of a workflow on another kernel and lets the workflow's kernel ask for the agent's trigger.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 448;
+/// of a workflow on another kernel and lets the workflow's kernel ask for the agent's trigger; 449 carries the
+/// options a notification source declares and the options and `once` a subscription picks, lets a slice agent
+/// resolve a Vault value for its own workspace (`workspace` injection) and capture into, generate in, copy within
+/// and remove from the home Vault (`CaptureForHomeVault`, with `Prepare` and `Store`, and the home Vault tools of
+/// `InvokeHomeCredentialTool`), and has the relay admit a kernel registration only with the kernel identity key's
+/// signature over the connection's challenge (`DaemonRegister.proof`), and carries the confirmation card's `input`
+/// in `app_confirmation`; it carries `TrashMachineFiles` and `RestoreMachineTrash` (answered `MachineFilesTrashed` and
+/// `MachineTrashRestored`) between kernels of one owner, and `scope` on the terminal summary a worker answers a Room
+/// terminal request with (`session_id` stays for a Room's terminal), and the Skills v2 transfer manifest and leased
+/// skill delivery (Agent Move no longer lists skills and the per-agent skill grants are gone).
+/// The receiving agent’s deadline refusal is carried in the encrypted peer response.
+/// A peer spawn carries the starter's display name.
+/// Peer 450 includes kernels refused as too old on their machine entry, with the protocol each
+/// reported, so clients show them as Update needed.
+/// Peer 450 carries native Codex credentials in encrypted provider account copy packages.
+/// 450 carries the lean Room state and independently read Room history and machine samples.
+/// Peer 450 carries native background notification receipts on leased completions.
+/// Peer 450 carries the local 1013 mirror v2 header `focus_visible`.
+/// Peer 451 (local 1014, the Landing 13 union) carries the holding run of a workspace-claim wait in the workflow run
+/// outcome and the mirror v2 header's `page_wheel`, and requires the relay's registration acknowledgment before reporting
+/// the kernel online.
+/// Peer 451 carries the local 1014 terminal `stdin` of a program.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 451;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
 pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = RELAY_PEER_PROTOCOL_VERSION;
@@ -240,6 +261,9 @@ pub(crate) const ENSURE_REMOTE_PROVIDER_ACCOUNT_OPERATION: &str = "ensure remote
 /// agent's current prompt (already finished, or replaced by a later one).
 pub const LEASED_PROMPT_NOT_CURRENT_CODE: &str = "leased_prompt_not_current";
 pub const LEASED_PROMPT_RUN_CHANGED_CODE: &str = "leased_prompt_run_changed";
+/// The worker could not store or verify a transferred skill package; sending the
+/// same turn again cannot repair its disk or permissions.
+pub const SKILL_PACKAGE_STORE_FAILED_CODE: &str = "skill_package_store_failed";
 
 // MP-08/MP-09/MP-10/MP-11 A10: start and queries use the exact admitted lease.
 // Preserve the serialized peer action and its existing public Rust fields.
@@ -254,6 +278,8 @@ pub enum LeasedWatchedProcessAction {
         wake: crate::durable_state::agent_lifecycle::AgentWake,
         binding: crate::durable_state::agent_lifecycle::LeasedProcessBinding,
         cwd: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        job: Option<Box<crate::local::RunJobRequest>>,
     },
     Query {
         wake_id: String,
@@ -325,11 +351,16 @@ pub struct RelayManagedContextImportReceipt {
 pub enum RelayManagedDevelopmentContextImportReceipt {
     Empty,
     FromSource {
-        project_id: String,
-        destination_root: String,
-        primary_repository_id: String,
-        repositories: Vec<RelayManagedContextImportedRepository>,
+        projects: Vec<RelayManagedContextImportedProject>,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelayManagedContextImportedProject {
+    pub project_id: String,
+    pub destination_root: String,
+    pub primary_repository_id: String,
+    pub repositories: Vec<RelayManagedContextImportedRepository>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -390,6 +421,35 @@ pub struct RemoteSkillSyncContext {
     pub leased_agent_id: String,
 }
 
+/// Source-bound native selections of one leased turn, with the home catalog revision
+/// the worker's inventory binding (and so each selection's identity) was read at.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LeasedNativeSkills {
+    pub catalog_revision: u64,
+    pub selections: Vec<crate::skill::v2::SkillSelection>,
+}
+
+impl LeasedNativeSkills {
+    /// No selections and no home catalog revision binding the turn.
+    pub fn is_unbound(&self) -> bool {
+        self.selections.is_empty() && self.catalog_revision == 0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LeasedSkillNativeInventory {
+    pub entries: Vec<crate::skill::v2::NativeSkillEntry>,
+    pub revision: String,
+    /// The worker provider run the leased agent has when the home reads this
+    /// before a turn: the run that takes the turn. Absent from older workers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_run_id: Option<String>,
+    /// IDs of the native compactions the worker observed in that run's session.
+    /// The home owns the recovery: it records each ID once and reloads Skills.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub compaction_ids: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemoteProviderAccountSyncContext {
     pub home_kernel_id: String,
@@ -400,6 +460,7 @@ pub struct RemoteProviderAccountSyncContext {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemoteSkillMaterialization {
+    pub skill_id: String,
     pub name: String,
     pub version_hash: String,
     pub materialized_root: String,
@@ -540,9 +601,36 @@ impl std::fmt::Debug for RemoteRoomComputerObservationResult {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RemoteCredentialSecretInjection {
-    Browser { target_url: String },
+    Browser {
+        target_url: String,
+    },
     Computer,
     Pty,
+    /// A value for a file or a command in the leased worker's workspace.
+    Workspace {
+        target: crate::config::VaultUseTarget,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum HomeVaultCapture {
+    /// Before the worker runs its command or reads its file: the home answers a retry with the
+    /// committed entry, otherwise unlocks its Vault and keeps it so until the value arrives.
+    Prepare {
+        request_id: String,
+        host: String,
+        use_binding: crate::config::VaultUseBinding,
+    },
+    /// The value the worker captured, for the home to store in its Vault.
+    Store {
+        request_id: String,
+        host: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
+        use_binding: crate::config::VaultUseBinding,
+        secret: RemoteCredentialSecretInput,
+    },
 }
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -657,12 +745,6 @@ pub struct RequiredRemoteMcp {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RequiredRemoteSkill {
-    pub name: String,
-    pub version_hash: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemoteMcpAvailability {
     pub name: String,
     pub expected_hash: String,
@@ -707,6 +789,7 @@ pub struct LeasedSudoGrant {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LeasedPromptReceiptPhase {
+    WaitingForMemory,
     Active,
     Completed,
     SteerDispatching,
@@ -813,7 +896,7 @@ fn default_workspace_live_sync_invocation_attempt() -> u32 {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 #[allow(
     clippy::large_enum_variant,
     reason = "Preserve the existing RelayPeerRequest typed actor payload layout"
@@ -932,6 +1015,7 @@ pub enum RelayPeerRequest {
         protocol_version: u32,
         request_id: String,
         sender: PeerAgentStamp,
+        sender_name: String,
         room: String,
         provider: String,
         account_profile: Option<String>,
@@ -1133,6 +1217,15 @@ pub enum RelayPeerRequest {
         #[serde(default)]
         expect_revision: Option<String>,
     },
+    /// Moves these files and folders to this machine's own trash; the answer is `MachineFilesTrashed`.
+    TrashMachineFiles {
+        paths: Vec<String>,
+    },
+    /// Puts trashed items back at their original paths, never over something there; the answer is
+    /// `MachineTrashRestored`.
+    RestoreMachineTrash {
+        items: Vec<crate::local::TrashedKernelFile>,
+    },
     /// A file transfer whose destination is this machine, started by another kernel of the owner.
     StartFileTransfer {
         request: crate::local::StartFileTransferRequest,
@@ -1162,8 +1255,6 @@ pub enum RelayPeerRequest {
         provider_session_id: Option<String>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         required_mcps: Vec<RequiredRemoteMcp>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        required_skills: Option<Vec<RequiredRemoteSkill>>,
         #[serde(
             default,
             skip_serializing_if = "crate::extension::RemoteExtensionManifest::is_empty"
@@ -1207,8 +1298,6 @@ pub enum RelayPeerRequest {
         git_context: Option<RemoteGitTurnContext>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         required_mcps: Vec<RequiredRemoteMcp>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        required_skills: Option<Vec<RequiredRemoteSkill>>,
         #[serde(
             default,
             skip_serializing_if = "crate::extension::RemoteExtensionManifest::is_empty"
@@ -1216,6 +1305,10 @@ pub enum RelayPeerRequest {
         remote_extension_manifest: crate::extension::RemoteExtensionManifest,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         provider_launch_credential: Option<RemoteProviderLaunchCredential>,
+        /// Source-bound `From <Provider>` skills the home validated; the worker
+        /// applies its own harness invocation and never receives native packages.
+        #[serde(default, skip_serializing_if = "LeasedNativeSkills::is_unbound")]
+        native_skill_selections: LeasedNativeSkills,
     },
     /// A10: install or replace the worker fence for one exact leased home
     /// prompt's sudo window; `remaining_ms == 0` ends the window's fences.
@@ -1244,8 +1337,6 @@ pub enum RelayPeerRequest {
         hidden_system_context: String,
         #[serde(default)]
         attachments: Vec<RelayPromptAttachment>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        required_skills: Option<Vec<RequiredRemoteSkill>>,
     },
     DrainLeasedRuntimeProjection {
         leased_agent_id: String,
@@ -1352,6 +1443,12 @@ pub enum RelayPeerRequest {
         credential_id: String,
         injection: RemoteCredentialSecretInjection,
     },
+    /// A Vault capture on a leased worker: the worker runs the command or reads the file in its
+    /// workspace and the home kernel unlocks the Vault before and stores the value after.
+    CaptureForHomeVault {
+        context: RemoteExtensionInvocationContext,
+        capture: HomeVaultCapture,
+    },
     ApplyWorkspaceLiveSyncChange {
         context: RemoteWorkspaceLiveSyncApplyContext,
         change: crate::git_observer::WorkspaceLiveSyncChange,
@@ -1366,8 +1463,22 @@ pub enum RelayPeerRequest {
         login: Option<crate::session::RuntimeProviderLogin>,
     },
     EnsureRemoteSkillPackages {
+        execution_lease_id: String,
+        manifest: crate::skill::v2::SkillTransferManifest,
         context: RemoteSkillSyncContext,
         packages: Vec<CharioxSkillPackage>,
+        /// Names a `$name` typed in the worker's native composer may select, from
+        /// the packages above. Omitted when no transferred skill can be typed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        skill_names: Option<crate::skill::leased_names::LeasedSkillNames>,
+    },
+    /// MP-08 / MP-10 / MP-11: home asks the leased worker for its harness-native skills.
+    ReadLeasedSkillNativeInventory {
+        context: RemoteSkillSyncContext,
+        catalog_revision: u64,
+        refresh: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        details_for: Option<crate::skill::v2::SkillSelection>,
     },
     RequestProviderAccountCopy {
         request: crate::local::CopyProviderAccountToKernelRequest,
@@ -1659,6 +1770,14 @@ pub enum RelayPeerResponse {
         truncated: bool,
     },
     MachinePathDeleted,
+    MachineFilesTrashed {
+        trashed: Vec<crate::local::TrashedKernelFile>,
+        failed: Vec<crate::local::KernelFileFailure>,
+    },
+    MachineTrashRestored {
+        restored: Vec<String>,
+        failed: Vec<crate::local::KernelFileFailure>,
+    },
     MachineFilesWatched {
         created: bool,
     },
@@ -1742,8 +1861,6 @@ pub enum RelayPeerResponse {
     WorkspaceLiveSyncRuntimeToolFinalized,
     CapabilityRuntimeToolHandled {
         result: crate::transport::runtime_tools::RuntimeToolResult,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        skill_package: Option<CharioxSkillPackage>,
         #[serde(
             default,
             skip_serializing_if = "crate::extension::RemoteExtensionManifest::is_empty"
@@ -1780,6 +1897,10 @@ pub enum RelayPeerResponse {
         credential_id: String,
         secret_input: RemoteCredentialSecretInput,
     },
+    /// The home's answer to the first half of a capture: the entry a retry already committed.
+    HomeVaultCapturePrepared {
+        committed: Option<crate::transport::runtime_tools::RuntimeToolResult>,
+    },
     WorkspaceLiveSyncChangeApplied {
         target_result: crate::git_observer::WorkspaceLiveSyncTargetResult,
     },
@@ -1788,6 +1909,9 @@ pub enum RelayPeerResponse {
     },
     NativeInteractionUpdated {},
     RemoteSkillPackagesEnsured {
+        execution_lease_id: String,
+        context: RemoteSkillSyncContext,
+        manifest: crate::skill::v2::SkillTransferManifest,
         materialized: Vec<RemoteSkillMaterialization>,
     },
     ProviderAccountCopyFailed {
@@ -1795,6 +1919,12 @@ pub enum RelayPeerResponse {
     },
     ProviderAccountCopyInstalled {
         receipt: crate::provider_account_copy::ProviderAccountCopyReceipt,
+    },
+    LeasedSkillNativeInventory {
+        /// `None` until the leased provider has started on the worker.
+        inventory: Option<LeasedSkillNativeInventory>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        details: Option<crate::skill::v2::NativeSkillDetails>,
     },
     RemoteProviderAccountEnsured {
         provider: String,
@@ -1829,6 +1959,11 @@ pub struct RelayProjectedOutputChunk {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RelayProjectedCompletion {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub model_usage: Vec<crate::provider::ModelTurnUsage>,
+    /// Native background notifications consumed by this exact answering turn.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub background_notifications: Vec<crate::provider::ProviderBackgroundNotification>,
     pub message_id: String,
     pub completed_at_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1948,6 +2083,8 @@ mod tests {
     fn a_notification_end_is_told_by_its_id_whatever_prompt_the_drain_scopes_it_to() {
         let completion =
             |message_id: &str, home_prompt_id: Option<&str>| RelayProjectedCompletion {
+                model_usage: Vec::new(),
+                background_notifications: Vec::new(),
                 message_id: message_id.into(),
                 completed_at_ms: 1,
                 home_prompt_id: home_prompt_id.map(str::to_owned),
@@ -1970,6 +2107,8 @@ mod tests {
             crate::test_support::expected_relay_peer_protocol_version()
         );
         let completion = RelayProjectedCompletion {
+            model_usage: Vec::new(),
+            background_notifications: Vec::new(),
             failure: None,
             message_id: "assistant-msg-1".to_string(),
             completed_at_ms: 1_234,
@@ -2001,13 +2140,15 @@ mod tests {
         let hash = Sha256::digest(serialized.as_bytes());
         assert_eq!(
             format!("{hash:x}"),
-            "0d86c18bf510a18529d2304a1aa8c56035268d59f44f513f494856e9d77dc479",
+            "d0df0d2af63d62087d580760492db0cd6e113689fbf940e5bf08e63e4cfc37c3",
         );
     }
 
     #[test]
     fn leased_failure_without_termination_shape_is_versioned() {
         let completion = RelayProjectedCompletion {
+            model_usage: Vec::new(),
+            background_notifications: Vec::new(),
             message_id: "failed-turn".into(),
             completed_at_ms: 1234,
             home_prompt_id: Some("home-prompt".into()),
@@ -2015,6 +2156,7 @@ mod tests {
             failure: Some(crate::provider::TurnOutcome {
                 kind: crate::provider::TurnOutcomeKind::UsageLimit,
                 retryable: false,
+                answered_in_turn: None,
                 reason: "You've hit your usage limit.".into(),
             }),
         };
@@ -2060,6 +2202,8 @@ mod tests {
 
         for (provider_termination, category) in cases {
             let completion = RelayProjectedCompletion {
+                model_usage: Vec::new(),
+                background_notifications: Vec::new(),
                 failure: None,
                 message_id: "assistant-msg-1".to_string(),
                 completed_at_ms: provider_termination.timestamp_ms,
@@ -2181,6 +2325,10 @@ mod tests {
         );
 
         for (phase, phase_wire) in [
+            (
+                LeasedPromptReceiptPhase::WaitingForMemory,
+                "waiting_for_memory",
+            ),
             (
                 LeasedPromptReceiptPhase::SteerDispatching,
                 "steer_dispatching",
@@ -2547,6 +2695,7 @@ mod workflow_notification_shapes {
                     name: "Reviewer".into(),
                     display_name: "Reviewer-2".into(),
                     available: true,
+                    options: Vec::new(),
                 }],
             },
             RelayPeerResponse::WorkflowNotificationSubscribed { subscription: sub },
@@ -2623,6 +2772,37 @@ mod room_terminal_peer_shapes {
             serde_json::to_value(&response).unwrap(),
             "97df114510c195b53e132e9bc4bc8fb9cad7d9bfe806b33ad8530022e46a03c9",
         );
+    }
+
+    /// Peer 449: a worker's terminal summary carries `scope`; a Room's still shows `session_id`.
+    #[test]
+    fn a_worker_answers_a_listed_terminal_with_its_scope() {
+        let summary = serde_json::json!({
+            "terminal_id": "term-1", "scope": "room", "session_id": "room-1", "title": "Terminal 1",
+            "program": "/bin/bash", "working_directory": "/work", "cols": 80, "rows": 24,
+            "status": {"state": "running"}, "driver": {"state": "free"},
+            "opened_by": {"kind": "user"}, "user_interacted": true, "created_at_ms": 7, "output_offset": 12
+        });
+        let wire = serde_json::json!({"kind": "room_terminal", "result": {"result": "listed", "terminals": [summary]}});
+        let response: RelayPeerResponse = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&response).unwrap(), wire);
+        let RelayPeerResponse::RoomTerminal {
+            result: RoomTerminalResult::Listed { terminals },
+        } = response
+        else {
+            panic!("a list answers a list");
+        };
+        assert_eq!(
+            terminals[0].scope,
+            crate::room_terminal::TerminalScope::room("room-1")
+        );
+        // A summary from a worker that predates the scope is refused, not read as some Room's.
+        let mut old = wire;
+        old["result"]["terminals"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("scope");
+        assert!(serde_json::from_value::<RelayPeerResponse>(old).is_err());
     }
 
     #[test]

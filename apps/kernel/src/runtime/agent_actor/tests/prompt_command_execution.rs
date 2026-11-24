@@ -4,3 +4,4 @@ mod batch_submit;
 mod completion_and_cancel;
 mod queued_controls;
 mod single_submit;
+mod vault_locked_submit;

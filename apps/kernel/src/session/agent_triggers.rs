@@ -185,6 +185,7 @@ impl TriggerDelivery {
 pub struct ReplacedListener {
     prompt: String,
     enabled: bool,
+    busy_policy: AgentTriggerBusyPolicy,
 }
 
 impl ReplacedListener {
@@ -194,6 +195,10 @@ impl ReplacedListener {
 
     pub fn enabled(&self) -> bool {
         self.enabled
+    }
+
+    pub fn busy_policy(&self) -> AgentTriggerBusyPolicy {
+        self.busy_policy
     }
 }
 
@@ -324,6 +329,7 @@ impl AgentTrigger {
         subscription_id: String,
         display_name: String,
         prompt: String,
+        busy_policy: AgentTriggerBusyPolicy,
         now_ms: u64,
     ) -> Self {
         Self {
@@ -336,7 +342,7 @@ impl AgentTrigger {
                 display_name,
                 source_available: true,
             },
-            busy_policy: AgentTriggerBusyPolicy::Queue,
+            busy_policy,
             prompt,
             enabled: true,
             created_at_ms: now_ms,
@@ -398,6 +404,7 @@ impl AgentTrigger {
         ReplacedListener {
             prompt: self.prompt.clone(),
             enabled: self.enabled,
+            busy_policy: self.busy_policy,
         }
     }
 
@@ -539,6 +546,12 @@ impl AgentTrigger {
         self.coalesced = self.coalesced.saturating_add(1);
         self.last_outcome = Some(AgentTriggerOutcome::Coalesced);
         self.schedule_next_run(now_ms, 0);
+    }
+
+    /// An occurrence joined this trigger's prompt that already waits in the queue.
+    pub(crate) fn count_joined_occurrence(&mut self) {
+        self.coalesced = self.coalesced.saturating_add(1);
+        self.last_outcome = Some(AgentTriggerOutcome::Coalesced);
     }
 
     pub(crate) fn mark_failed(&mut self, now_ms: u64, error: String) {
@@ -689,4 +702,7 @@ pub struct AgentTriggerDispatch {
     /// The firing is a workflow's responsible agent's: its prompt is the kernel's own text, and
     /// the occurrence's output is not quoted into it.
     pub(crate) responsible: bool,
+    /// The notification occurrence this firing delivers; its prompt carries it so
+    /// later occurrences of the same trigger can join that prompt while it waits.
+    pub(crate) notification: Option<crate::session::QueuedNotification>,
 }

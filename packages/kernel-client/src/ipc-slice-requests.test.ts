@@ -89,12 +89,10 @@ test("slice create serializes exact multi-repository development selection", () 
       worktreeId: "/primary-worktree",
       workspaceMount: "/primary-worktree",
       developmentSetup: {
-        kind: "source_project",
-        projectId: "project-1",
-        repositories: [
+        kind: "source_projects", projects: [{ projectId: "project-1", repositories: [
           { role: "primary", workspaceId: "/primary", worktreeId: "/primary-worktree" },
           { role: "supporting", workspaceId: "/supporting", worktreeId: null },
-        ],
+        ] }],
       },
     }),
     {
@@ -107,12 +105,10 @@ test("slice create serializes exact multi-repository development selection", () 
         worktree_id: "/primary-worktree",
         workspace_mount: "/primary-worktree",
         development: {
-          kind: "source_project",
-          project_id: "project-1",
-          repositories: [
+          kind: "source_projects", projects: [{ project_id: "project-1", repositories: [
             { role: "primary", workspaceId: "/primary", worktreeId: "/primary-worktree" },
             { role: "supporting", workspaceId: "/supporting", worktreeId: null },
-          ],
+          ] }],
         },
         worker_kernel_ref: null,
         display_url: null,

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import test from "node:test"
 
-import type { WaitingRoomInventory } from "./waiting-room-inventory-api.js"
+import type { KernelInventory } from "./kernel-inventory-api.js"
 import {
   createWaitingRoomInventoryCache,
   waitingRoomInventoryCacheScopeKey,
@@ -153,7 +153,7 @@ function inventory(
   structuralVersion: string,
   activityRevision: string,
   sessionAlias = "session-a",
-): WaitingRoomInventory {
+): KernelInventory {
   return {
     schemaVersion: 13,
     inventoryVersion: `${structuralVersion}:${activityRevision}`,

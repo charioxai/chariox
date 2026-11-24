@@ -31,6 +31,7 @@ use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
 use chariox_relay::protocol::ClientTarget;
 
 mod agent_auth;
+mod agent_result;
 mod workspace_live_sync;
 use workspace_live_sync::*;
 mod workspace_live_sync_workspace_context;
@@ -52,9 +53,8 @@ mod context_handoff;
 mod failed_request_owned_state;
 mod native_prompt_handoff;
 use crate::local::SettingsApplies;
-use agent_self_settings_gate as agent_self_settings;
-pub(crate) use agent_settings_change::SettingsContext;
-use agent_settings_change::SettingsOrigin;
+pub(crate) use agent_model_choice::Source as ModelSource;
+pub(crate) use agent_settings_change::{SettingsContext, SettingsOrigin};
 use context_handoff::PendingAgentContextHandoff;
 pub(crate) use context_handoff::PendingAgentContextHandoffStore;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
@@ -121,6 +121,8 @@ mod environment_tools;
 mod file_copy_tool;
 mod file_watch_runtime;
 mod job_compute;
+#[cfg(test)]
+pub(super) use job_compute::stand_in_kernel;
 mod jobs;
 mod leased_agent_file_serve;
 mod machine_acquisition;
@@ -128,6 +130,9 @@ pub(crate) use machine_acquisition::Approval;
 mod machine_files_runtime;
 pub(crate) use file_watch_runtime::{FileWatchPermit, RemoteFileWatch};
 mod machine_files_tools;
+mod slice_home_pin;
+pub(super) use slice_home_pin::provisioned_slice_home;
+mod provider_login_vault;
 mod remote_jobs;
 mod sudo;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
@@ -137,13 +142,16 @@ mod user_app_view_restore;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod user_app_view_runtime;
 mod vault_command;
+pub(crate) use vault_command::HomeVaultCaptureAnswer;
 mod vault_generate;
 mod vault_use;
 mod visual;
 mod visual_preview;
+pub(crate) use agent_process_watch::{WatchedHandover, WatchedProcessTransfer};
 pub(crate) use card_action_state::APPROVE_CHOICE_ID;
 #[cfg(test)]
 pub(crate) use critical_approval_passkey::critical_approval_audit_payload;
+pub(crate) use jobs::LocalJobHandover;
 #[cfg(test)]
 pub(crate) use sudo::leased::LEASED_SUDO_PEER_PROTOCOL_VERSION;
 pub(crate) use sudo::SudoWindowProjection;
@@ -160,6 +168,7 @@ mod legacy_room_owner;
 mod metadata_utility_scratch;
 mod native_catalog_refresh;
 mod owner_context_review;
+mod owner_view;
 mod project_environment;
 mod project_environment_check;
 mod project_environment_draft;
@@ -218,6 +227,7 @@ mod room_exec_place_runtime_state;
 mod room_exec_runtime_state;
 mod room_screenshot;
 mod room_secret_observation;
+mod room_setup_git;
 mod room_setup_publish;
 mod room_setup_runtime;
 mod room_shared_display;
@@ -234,6 +244,10 @@ type UnlinkedKernels = (u64, BTreeSet<String>);
 #[derive(Clone)]
 pub(crate) struct KernelRuntimeState {
     external_command_authority: Option<ExternalCommandAuthority>,
+    skills_catalog_caller: Option<(
+        crate::runtime::command::KernelCommandSource,
+        crate::runtime::command::KernelCaller,
+    )>,
     room_provider_origin: Option<(String, String)>,
     room_request_origin: Option<(String, LocalDaemonRequest)>,
     /// MP-08 / MP-11: the transport admitted this command from a terminal
@@ -253,6 +267,7 @@ pub(crate) struct KernelRuntimeState {
     app: Arc<Mutex<DaemonApp>>,
     provider_runtime_lanes: ProviderRunOperationLanes,
     provider_history_appends: provider_history_runtime::ProviderHistoryAppends,
+    in_flight_reads: Arc<in_flight_reads::InFlightReads>,
     leased_agent_operations: leased_agent_operations::LeasedAgentOperations,
     detached_workflow_provider_launches: Arc<std::sync::Mutex<BTreeSet<String>>>,
     /// Recovery operations this kernel life dispatched. One from an earlier life has no provider
@@ -270,6 +285,7 @@ pub(crate) struct KernelRuntimeState {
     /// When Cloud's kernel directory was last read, and the kernels it listed as unlinked.
     unlinked_kernels: Arc<std::sync::Mutex<Option<UnlinkedKernels>>>,
     lifecycle_sweeps: lifecycle_sweep_flight::SweepFlight,
+    slice_auth_inspections: slice_auth_inspection::SliceAuthInspections,
     /// Parents holding a finished child's wake for the siblings still working.
     sibling_windows: child_finish_window::SiblingWindows,
     /// One peer outcome delivery pass at a time, apart from the lifecycle sweep.
@@ -309,6 +325,9 @@ type UncertainLeasedTasks = Arc<
 #[derive(Clone)]
 struct KernelRuntimeOwnedState {
     agent_deadline_edit: Arc<tokio::sync::Mutex<()>>,
+    /// Held across the worker requests of a rearm pass, and by every deadline edit before
+    /// `agent_deadline_edit`, so a worker never ends on the older of two values.
+    agent_deadline_rearm: Arc<tokio::sync::Mutex<()>>,
     app_control: crate::runtime::app_control::AppControlService,
     dev_app_bindings: Arc<app_dev_runtime::DevAppBindings>,
     critical_approval_passkeys: critical_approval_passkey::CriticalApprovalPasskeys,
@@ -393,6 +412,8 @@ struct KernelRuntimeOwnedState {
     operational_history_store: OperationalHistoryStore,
     transcript_history_append_lock: Arc<std::sync::Mutex<()>>,
     durable_state_store: DurableKernelStateStore,
+    /// The watcher runs of this kernel life.
+    watcher_runs: Arc<watchers::WatcherRuns>,
     managed_activity_transitions:
         managed_activity_persistence::ManagedActivityTransitionState,
     // Serializes local activity-bearing mutations with their durable observation. Callers must
@@ -427,6 +448,11 @@ struct KernelRuntimeOwnedState {
     pty_output_signal: crate::pty::PtyOutputSignal,
     terminal_stream: crate::terminal::TerminalStreamStore,
     runtime_projection_changes: Arc<RuntimeChangeSignal>,
+    skill_inventories: Arc<skills_native_inventory::SkillInventories>,
+    installed_skill_inventories: Arc<skills_installed_inventory::InstalledSkillInventories>,
+    settled_worker_runs: Arc<skills_settled_worker_runs::SettledWorkerRuns>,
+    owner_view: Arc<owner_view::OwnerView>,
+    person_inbox_changes: Arc<RuntimeChangeSignal>,
     workflow_design_events: WorkflowDesignEventStore,
     workspace_coordinator: crate::runtime::workspace_coordinator::WorkspaceCoordinator,
     workspace_live_sync_coordinator: Arc<Mutex<crate::io::ArtifactEditCoordinator>>,
@@ -446,8 +472,8 @@ struct KernelRuntimeOwnedState {
     background_holds: background_hold::BackgroundHolds,
     private_assessment_results: agent_assessment_result::AssessmentResults,
     private_work_results: agent_assessment_result::AssessmentResults,
-    /// The turn each native provider TUI run was last seen on, to settle it once it ends.
-    native_tui_turns: std::sync::Arc<
+    /// The turn each Claude native-bridge run was last seen on, to settle it once it ends.
+    native_bridge_turns: std::sync::Arc<
         std::sync::Mutex<std::collections::BTreeMap<String, crate::session::PromptQueueItem>>,
     >,
     private_assessment_dispatch: agent_assessment_result::PrivateAssessmentDispatch,
@@ -469,6 +495,7 @@ struct KernelRuntimeOwnedState {
         Arc<Mutex<BTreeMap<String, Vec<RemoteHomeExtensionInflightInvocation>>>>,
     remote_extension_manifest_retry_counts: Arc<Mutex<BTreeMap<String, u32>>>,
     agent_message_idempotency: Arc<Mutex<AgentMessageIdempotencyStore>>,
+    agent_run_waiters: agent_run_waiters::AgentRunWaiters,
     runtime_tool_call_activity: RuntimeToolCallActivity,
     next_provider_process_gc_at_ms: Arc<AtomicU64>,
     next_agent_lifecycle_sweep_ms: Arc<AtomicU64>,
@@ -568,7 +595,7 @@ mod agent_notification_app;
 mod agent_notification_expiry;
 mod agent_profile_compaction;
 mod agent_profile_owned_state;
-mod agent_self_settings_gate;
+mod agent_release_notes;
 mod agent_settings_change;
 mod agent_settings_swap_runtime;
 mod agent_trigger_gateway;
@@ -583,12 +610,16 @@ mod attachment_owned_state;
 mod browser_controller_action_cancellation_runtime_state;
 mod browser_controller_action_execution_runtime_state;
 mod browser_controller_compatibility_runtime_state;
+mod notification_subscriptions;
 mod owner_action_notifications;
 mod run_finished_notifications;
 mod usage_limit_interactions;
 mod usage_limit_runtime;
 mod usage_limit_stop_transitions;
 mod wake_driver;
+mod watchers;
+#[cfg(test)]
+mod watchers_tests;
 mod workflow_notification_source_probe;
 pub(crate) use browser_controller_action_execution_runtime_state::BrowserControllerActionExecution;
 mod browser_configuration_runtime_state;
@@ -608,6 +639,7 @@ pub(crate) use decision_holder::ChildDecisionStatus;
 use decision_holder::DecisionHolder;
 pub(in crate::runtime) use pending_runtime_state::PendingInteractionResolution;
 use pending_runtime_state::*;
+mod idle_provider_exit;
 mod local_prompt_dispatch_runtime;
 mod local_prompt_submission_owned_state;
 mod managed_activity_persistence;
@@ -621,6 +653,7 @@ mod active_prompt_steering;
 mod external_command_authority;
 mod gateway_requester;
 mod project_runtime_state;
+pub(crate) use project_runtime_state::{ManagedContextRegistrationFailure, RetainedProjects};
 mod prompt;
 mod prompt_activity_owned_state;
 mod prompt_cancellation_owned_state;
@@ -631,7 +664,6 @@ mod session_activity_owned_state;
 use external_command_authority::ExternalCommandAuthority;
 mod prompt_git_observer_runtime;
 mod prompt_queue_owned_state;
-mod prompt_skill_context_state;
 mod prompt_transcript_owned_state;
 mod provider;
 mod provider_account_admission;
@@ -658,6 +690,8 @@ pub(in crate::runtime) use provider_login_state::{
 };
 mod provider_history_runtime;
 mod provider_mcp_continuation_runtime;
+pub(crate) use provider_mcp_continuation_runtime::arms_catalog_reload;
+mod claude_trust_card;
 mod provider_mcp_task_continuation_runtime;
 mod provider_output_pump_runtime;
 mod provider_output_runtime;
@@ -672,6 +706,7 @@ mod provider_output_runtime_tests;
 mod provider_prompt_failure_runtime;
 mod provider_prompt_settlement_runtime;
 mod provider_substitute_runtime;
+mod provider_turn_admission;
 mod relay_peer_runtime_state;
 mod remote_completion_harvest;
 mod remote_native_provider_launch;
@@ -699,6 +734,7 @@ pub(crate) use runtime_interaction_owned_state::interaction_waits;
 mod browser_region_card;
 mod disk_pressure;
 mod disk_usage;
+mod in_flight_reads;
 mod owner_vault;
 mod process_wait_notices;
 mod process_waits;
@@ -724,6 +760,7 @@ mod vault_unlock_requests;
 pub(crate) use slice_runtime_state::SliceAgentRelaunchManifest;
 mod kernel_browser_audience;
 mod kernel_browser_command_error;
+mod kernel_browser_favicons;
 mod kernel_browser_find;
 mod kernel_browser_mirror;
 mod kernel_browser_qr;
@@ -743,6 +780,8 @@ mod dictation_runtime;
 mod file_copy_tool_tests;
 mod kernel_computer_runtime;
 #[cfg(test)]
+mod leased_agent_deadline_rearm_tests;
+#[cfg(test)]
 mod leased_agent_deadline_tests;
 mod leased_computer_runtime;
 #[cfg(test)]
@@ -752,12 +791,24 @@ mod leased_mid_turn_settings_tests;
 #[cfg(test)]
 mod leased_worker_route_tests;
 mod notes_runtime;
+mod provider_turn_adoption;
+mod skills_catalog_runtime;
+pub(crate) use skills_catalog_runtime::control_capabilities;
+mod skills_dispatch;
+mod skills_installed_inventory;
+mod skills_native_inventory;
+mod skills_remote;
+mod skills_settled_worker_runs;
+mod skills_subscription;
+mod skills_turn_authority;
 mod structured_provider_output_runtime;
 mod terminal_runtime_state;
 mod terminal_subscription_runtime;
 mod tool_dispatch;
 mod transport_runtime_state;
 mod user_domain_access_runtime;
+#[cfg(test)]
+mod vault_leased_run_tests;
 
 mod capability_grant_runtime;
 mod workflow;
@@ -806,6 +857,7 @@ mod workflow_request_runtime_state;
 mod workflow_resume_owned_state;
 mod workflow_run_request_runtime_state;
 mod workflow_scheduling_owned_state;
+mod workflow_start_alert;
 mod workflow_tool;
 mod workflow_turn_admin_owned_state;
 mod workflow_turn_prompt_owned_state;
@@ -1163,6 +1215,7 @@ impl KernelRuntimeState {
         let environment_operation_changes = crate::project_environment::OperationChanges::new();
         let mut runtime = Self {
             external_command_authority: None,
+            skills_catalog_caller: None,
             room_provider_origin: None,
             room_request_origin: None,
             terminal_caller: false,
@@ -1180,6 +1233,7 @@ impl KernelRuntimeState {
             app,
             provider_runtime_lanes,
             provider_history_appends: Default::default(),
+            in_flight_reads: Default::default(),
             leased_agent_operations: leased_agent_operations::LeasedAgentOperations::default(),
             detached_workflow_provider_launches: Arc::new(std::sync::Mutex::new(BTreeSet::new())),
             restart_recovery_dispatched: Arc::new(std::sync::Mutex::new(BTreeSet::new())),
@@ -1190,6 +1244,7 @@ impl KernelRuntimeState {
             created_peer_release: Default::default(),
             unlinked_kernels: Default::default(),
             lifecycle_sweeps: Default::default(),
+            slice_auth_inspections: Default::default(),
             sibling_windows: Default::default(),
             peer_outcome_deliveries: Default::default(),
             peer_outcomes_owed_now: Default::default(),
@@ -1205,6 +1260,7 @@ impl KernelRuntimeState {
             managed_work_activity: None,
             owned: KernelRuntimeOwnedState {
                 agent_deadline_edit: Arc::new(tokio::sync::Mutex::new(())),
+                agent_deadline_rearm: Arc::new(tokio::sync::Mutex::new(())),
                 provider_usage_refresher:
                     crate::runtime::provider_usage_refresh::ProviderUsageRefresher::for_kernel(
                         provider_account_profiles.clone(),
@@ -1301,6 +1357,7 @@ impl KernelRuntimeState {
                         durable_state_store.clone(),
                     ),
                 durable_state_store,
+                watcher_runs: Default::default(),
                 managed_activity_transitions,
                 managed_activity_mutation_lock,
                 managed_kernel_quiescence,
@@ -1325,6 +1382,11 @@ impl KernelRuntimeState {
                 pty_output_signal,
                 terminal_stream,
                 runtime_projection_changes: Arc::new(RuntimeChangeSignal::default()),
+                skill_inventories: Arc::default(),
+                installed_skill_inventories: Arc::default(),
+                settled_worker_runs: Arc::default(),
+                owner_view: Arc::new(owner_view::OwnerView::default()),
+                person_inbox_changes: Arc::new(RuntimeChangeSignal::default()),
                 workflow_design_events,
                 workspace_coordinator,
                 workspace_live_sync_coordinator: Arc::new(Mutex::new(
@@ -1345,7 +1407,7 @@ impl KernelRuntimeState {
                 private_assessment_results: Default::default(),
                 private_work_results: private_assessment_dispatch.work_results.clone(),
                 private_assessment_dispatch,
-                native_tui_turns: Default::default(),
+                native_bridge_turns: Default::default(),
                 metaagent_events,
                 metaagent_trace_subscriptions,
                 connector_adapter_processes: crate::connector::ConnectorAdapterProcessPool::default(
@@ -1367,6 +1429,7 @@ impl KernelRuntimeState {
                 agent_message_idempotency: Arc::new(Mutex::new(
                     AgentMessageIdempotencyStore::default(),
                 )),
+                agent_run_waiters: Default::default(),
                 runtime_tool_call_activity,
                 next_provider_process_gc_at_ms: Arc::new(AtomicU64::new(0)),
                 next_agent_lifecycle_sweep_ms: Arc::new(AtomicU64::new(0)),
@@ -1401,6 +1464,10 @@ impl KernelRuntimeState {
         runtime.register_terminal_wake_driver();
         runtime.register_job_wake_driver();
         runtime.register_interaction_wake_driver();
+        runtime
+            .owned
+            .provider_store
+            .set_skill_prompt_bridge(skills_dispatch::bridge(&runtime));
         runtime.owned.record_managed_activity_transition();
         runtime.recover_sudo_notices();
         // Access grants are process-bound and never survive a kernel restart.
@@ -1712,13 +1779,16 @@ mod agent_assessment_result;
 mod agent_delegation_runtime;
 pub(crate) use agent_assessment_result::PrivateAssessmentDispatch;
 mod agent_deadline_runtime;
+mod leased_agent_deadline_rearm;
 mod spawned_agent_facts;
 pub(crate) use spawned_agent_facts::SpawnedAgentFacts;
+mod agent_delivery_settlement;
 mod agent_goal_context;
 mod agent_goal_migration;
 mod agent_goal_native_approval;
 mod agent_goal_runtime;
 mod agent_inbox_delivery;
+mod agent_inbox_inline;
 mod agent_inbox_leased_steer;
 mod agent_inbox_sender;
 mod agent_inbox_wake_text;
@@ -1730,9 +1800,17 @@ mod agent_lifecycle_runtime;
 mod agent_membership_read_tests;
 mod agent_parent_runtime;
 mod agent_queued_messages;
+mod agent_run;
+#[cfg(test)]
+mod agent_run_test_support;
+mod agent_run_waiters;
+mod agent_spawn_prompt;
 mod agent_subtree_cascade;
+pub(crate) use agent_run::WorkerCaller;
+pub(crate) use agent_run_waiters::WorkerEnd;
 mod agent_task_completion;
 mod agent_tree_runtime;
+mod background_answer_turn;
 mod background_hold;
 mod child_finish_window;
 mod child_finished_event;
@@ -1773,12 +1851,16 @@ mod leased_task_connectivity;
 mod leased_worker_stop_obligation;
 mod lifecycle_sweep_flight;
 #[cfg(test)]
+mod lifecycle_sweep_load_tests;
+#[cfg(test)]
 mod peer_gone_tests;
 #[cfg(test)]
 mod pump_stall_tests;
 #[cfg(test)]
 mod resident_room_scan_tests;
 mod room_dispatch_obligation;
+mod slice_auth_inspection;
+mod supervision_step;
 mod task_work_flight;
 mod terminal_wake;
 mod terminal_wake_worker;

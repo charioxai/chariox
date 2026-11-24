@@ -134,6 +134,7 @@ fn daemon_registration(daemon_id: &str) -> DaemonRegistration {
         accepting_remote_leases: false,
         leased_agent_count: 0,
         local_session_count: 0,
+        local_protocol: Some(crate::protocol::MINIMUM_KERNEL_REGISTRATION_PROTOCOL),
     }
 }
 
@@ -1452,17 +1453,22 @@ async fn silent_peer_is_removed_within_original_heartbeat_bound() {
         .await
         .unwrap();
     });
-    let (mut client, _) =
-        tokio_tungstenite::connect_async(format!("ws://{address}/?chariox_transport=chunks-v2"))
-            .await
-            .unwrap();
+    let url = format!("ws://{address}/?chariox_transport=chunks-v2");
+    let (mut client, handshake) = tokio_tungstenite::connect_async(url.as_str())
+        .await
+        .unwrap();
     let mut registration = daemon_registration("silent-peer");
     registration.auth_token = "public-fixture".to_string();
+    registration.public_key = crate::server::tests::test_public_key("silent-peer");
     client
         .send(Message::Text(
-            serde_json::to_string(&RelayEnvelope::DaemonRegister { registration })
-                .unwrap()
-                .into(),
+            serde_json::to_string(&crate::server::tests::signed_register(
+                &url,
+                &handshake,
+                registration,
+            ))
+            .unwrap()
+            .into(),
         ))
         .await
         .unwrap();
@@ -1498,17 +1504,22 @@ async fn burst_of_small_frame_receipts_keeps_the_connection() {
         )
         .await
     });
-    let (mut client, _) =
-        tokio_tungstenite::connect_async(format!("ws://{address}/?chariox_transport=chunks-v2"))
-            .await
-            .unwrap();
+    let url = format!("ws://{address}/?chariox_transport=chunks-v2");
+    let (mut client, handshake) = tokio_tungstenite::connect_async(url.as_str())
+        .await
+        .unwrap();
     let mut registration = daemon_registration("burst-peer");
     registration.auth_token = "public-fixture".to_string();
+    registration.public_key = crate::server::tests::test_public_key("burst-peer");
     client
         .send(Message::Text(
-            serde_json::to_string(&RelayEnvelope::DaemonRegister { registration })
-                .unwrap()
-                .into(),
+            serde_json::to_string(&crate::server::tests::signed_register(
+                &url,
+                &handshake,
+                registration,
+            ))
+            .unwrap()
+            .into(),
         ))
         .await
         .unwrap();
@@ -1845,4 +1856,44 @@ async fn delivering_to_a_backlogged_receiver_drops_counts_and_closes_it_once() {
 
     drop(rx);
     assert_eq!(deliver(&receiver, &envelope), Delivery::ReceiverGone);
+}
+
+#[test]
+fn a_full_bulk_queue_returns_a_retryable_peer_reply_without_disconnect() {
+    let (receiver, mut replies) = RelaySender::detached_channel(4);
+    let mut payload = encrypted_payload();
+    // The envelope of a 4 MiB file slice fills most of one relay bulk queue.
+    payload.ciphertext = "x".repeat(7_457_000);
+    let reply = |request_id: &str| RelayEnvelope::DaemonPeerResponse {
+        request_id: request_id.into(),
+        from_daemon_id: "source".into(),
+        encrypted_response: Some(payload.clone()),
+        error: None,
+    };
+    assert_eq!(deliver(&receiver, &reply("first")), Delivery::Sent);
+    assert_eq!(
+        deliver(&receiver, &reply("second")),
+        Delivery::ReceiverBacklogged
+    );
+    assert!(!receiver.queue().backlog_closed());
+
+    let mut next = || {
+        let Message::Text(text) = replies.try_recv().unwrap() else {
+            panic!("expected a relay response");
+        };
+        serde_json::from_str::<RelayEnvelope>(&text).unwrap()
+    };
+    assert!(matches!(
+        next(),
+        RelayEnvelope::DaemonPeerResponse { request_id, encrypted_response: Some(_), error: None, .. }
+            if request_id == "first"
+    ));
+    assert!(matches!(
+        next(),
+        RelayEnvelope::DaemonPeerResponse { request_id, from_daemon_id, encrypted_response: None, error: Some(error) }
+            if request_id == "second" && from_daemon_id == "source"
+                && error.code == "target_backpressure" && error.retryable
+    ));
+    assert_eq!(deliver(&receiver, &reply("retry")), Delivery::Sent);
+    assert_eq!(receiver.queue().stats().dropped_replies, 1);
 }

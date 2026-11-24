@@ -193,17 +193,20 @@ impl Terminal {
             fired.extend(self.watches.on_output(&self.plain));
         }
         for mark in self.marks.feed(bytes) {
-            fired.extend(self.on_mark(mark));
+            fired.extend(self.on_mark(mark, now));
         }
         fired
     }
 
     pub(super) fn record_program_end(&mut self, end: ProgramEnd) {
-        self.outside_ends.push(end.clone());
+        // A kernel terminal has no Room whose agents could be told it finished.
+        if self.record.scope.room_id().is_some() {
+            self.outside_ends.push(end.clone());
+        }
         self.last_program_end = Some(end);
     }
 
-    fn on_mark(&mut self, mark: ShellMark) -> Fired {
+    fn on_mark(&mut self, mark: ShellMark, now: Instant) -> Fired {
         match mark {
             ShellMark::CommandStarted => {
                 if let Some(run_id) = &self.run_id {
@@ -221,18 +224,23 @@ impl Terminal {
                 if let Some(run_id) = &self.run_id {
                     crate::runtime::process_resources::line_finished_for_key(run_id, &jobs);
                 }
+                let initial_prompt = !self.mark_tracking;
                 self.mark_tracking = true;
                 self.first_prompt_deadline = None;
                 // The first prompt reports before any command has run.
                 if !self.command_in_flight && !self.program_running {
+                    if !initial_prompt {
+                        self.driver.finish_submission(now);
+                    }
                     return Fired::new();
                 }
                 self.command_in_flight = false;
+                self.driver.finish_submission(now);
                 let command = Some(self.commands_started);
                 self.record_program_end(ProgramEnd {
                     output_offset: self.log.end_offset(),
                     command,
-                    at: Instant::now(),
+                    at: now,
                     exit_code,
                     signal: None,
                 });
@@ -273,8 +281,16 @@ impl Terminal {
             return false;
         }
         match (&self.run_id, self.shell_pid) {
-            (Some(run_id), Some(shell_pid)) => {
-                pty.foreground_process_group(run_id).ok().flatten() == Some(shell_pid)
+            (Some(run_id), Some(leader)) => {
+                // An agent's shell runs inside the sandbox that leads its terminal.
+                let shell = match self.record.opened_by {
+                    super::TerminalActor::Agent(_) => u32::try_from(leader)
+                        .ok()
+                        .and_then(crate::provider::state_confinement::confined_program)
+                        .and_then(|pid| i32::try_from(pid).ok()),
+                    super::TerminalActor::User => Some(leader),
+                };
+                shell.is_some() && pty.foreground_process_group(run_id).ok().flatten() == shell
             }
             _ => true,
         }
@@ -294,6 +310,9 @@ impl Terminal {
     }
 
     pub(super) fn current_driver(&mut self, pty: &PtyManager) -> RoomTerminalDriver {
+        if !self.is_running() {
+            return RoomTerminalDriver::Free;
+        }
         let at_prompt = self.at_prompt(pty, Instant::now());
         self.driver.observe(at_prompt)
     }
@@ -398,7 +417,7 @@ impl Terminal {
         let record = &self.record;
         RoomTerminalSummary {
             terminal_id: record.terminal_id.clone(),
-            session_id: record.session_id.clone(),
+            scope: record.scope.clone(),
             title: record.title.clone(),
             program: record.program.clone(),
             working_directory: record.working_directory.clone(),

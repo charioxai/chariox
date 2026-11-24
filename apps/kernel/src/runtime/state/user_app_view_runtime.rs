@@ -39,8 +39,12 @@ impl KernelRuntimeState {
         command: &KernelCommand,
         request: &LocalDaemonRequest,
     ) -> Option<Result<LocalDaemonResponse, DaemonError>> {
-        // This is a human frontend channel, never an agent/host escalation.
-        if !command.is_terminal_caller() {
+        // This is a human frontend channel, never an agent/host escalation; an external agent
+        // only answers the person's cards outside any Room, under its grant's checks.
+        let for_person = matches!(request, LocalDaemonRequest::AnswerUserDomainInteraction(_))
+            && command.caller.connection_class
+                == Some(crate::local::KernelConnectionClass::ExternalAgent);
+        if !command.is_terminal_caller() && !for_person {
             return Some(Err(DaemonError::UserDomainRefused {
                 reason: crate::error::UserDomainRefusalReason::NotGranted,
             }));
@@ -74,7 +78,7 @@ impl KernelRuntimeState {
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let instances = self.app_control().user_views();
         let failed = crate::runtime::app_control::failed;
-        let mut response = match request {
+        let response = match request {
             LocalDaemonRequest::ClientAppView(request) => {
                 return Ok(
                     match self
@@ -209,41 +213,24 @@ impl KernelRuntimeState {
                         reason: crate::error::UserDomainRefusalReason::NotGranted,
                     });
                 }
-                self.answer_terminal_runtime_interaction(
-                    "",
-                    &request.interaction_id,
-                    &request.choice_id,
-                    None,
-                    Some(owner),
-                    request.passkey.as_ref(),
-                    request.passkey_remember_minutes,
-                    command.caller.connection_class,
-                )
-                .await?;
+                self.with_interaction_answerer(&command.caller)
+                    .answer_terminal_runtime_interaction(
+                        "",
+                        &request.interaction_id,
+                        &request.choice_id,
+                        None,
+                        Some(owner),
+                        request.passkey.as_ref(),
+                        request.passkey_remember_minutes,
+                        command.caller.connection_class,
+                    )
+                    .await?;
                 Ok(LocalDaemonResponse::UserDomainInteractionAnswered {
                     interaction_id: request.interaction_id.clone(),
                 })
             }
             _ => unreachable!(),
         }?;
-        let access: crate::local::UserDomainWindowAccess =
-            serde_json::from_value(self.user_domain_window_projection(owner)).map_err(|_| {
-                DaemonError::LocalTransport {
-                    operation: "user_domain_access",
-                    message: "MP-08: window projection unavailable".into(),
-                }
-            })?;
-        match &mut response {
-            LocalDaemonResponse::UserAppViewOpened { view, .. }
-            | LocalDaemonResponse::UserAppViewFrontend { view, .. } => view.access = Some(access),
-            LocalDaemonResponse::UserAppViewsListed { views }
-            | LocalDaemonResponse::UserAppViewsChanged { views, .. } => {
-                for view in views {
-                    view.access = Some(access.clone());
-                }
-            }
-            _ => {}
-        }
         Ok(response)
     }
 
@@ -391,7 +378,7 @@ impl KernelRuntimeState {
                 "App view closed",
             ));
         }
-        if let super::app_view_runtime::ViewCaller::Agent(agent) = &caller {
+        if let Some(agent) = caller.agent() {
             let user = self.provider_account_authority_owner_user_id(agent.owner_user_id());
             if !self
                 .user_domain_owner_aliases(&user)
@@ -400,27 +387,8 @@ impl KernelRuntimeState {
             {
                 return Err(super::app_view_runtime::agent_not_granted());
             }
-            let grant = self
-                .owned
-                .kernel_browser_host
-                .retain_resource_grant(
-                    &user,
-                    agent.id(),
-                    UserDomainResource::AppView {
-                        view_id: view_id.into(),
-                    },
-                )
-                .map_err(|_| {
-                    if agent.has_extension_grant(
-                        crate::extension::ExtensionKind::App,
-                        &binding.installation,
-                    ) {
-                        crate::runtime::app_view_authority::view_not_claimed()
-                    } else {
-                        super::app_view_runtime::agent_not_granted()
-                    }
-                })?;
-            tracked.retain_browser_grant(grant);
+            let fence = self.owned.kernel_browser_host.run_fence(&user, agent.id());
+            tracked.retain_run_fence(fence);
         }
         if method == "chariox.lease" {
             return Ok(

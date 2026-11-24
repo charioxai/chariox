@@ -11,6 +11,7 @@ use crate::local::{
     LocalDaemonResponse, PreflightProviderAccountPortabilityRequest,
     ProviderAccountTransferSelection,
 };
+use crate::managed_context::package::ManagedContextKernelSelection;
 use crate::runtime::command::KernelCommand;
 
 pub(crate) async fn execute_preflight(
@@ -37,8 +38,9 @@ pub(crate) async fn execute_preflight(
     Ok(LocalDaemonResponse::ProviderAccountPortabilityPreflightPassed {})
 }
 
-/// The owner's check of the selection; `true` when a Vault login is selected, which must be
-/// found unlocked before the launch goes on.
+/// The owner's check of the selection; `true` when the export reads the Vault, which must be
+/// found unlocked before the launch goes on: a selected Vault login, or a copy of this kernel,
+/// whose Vault travels sealed to the new machine.
 fn check_preflight(
     config: &DaemonConfig,
     profiles: &ProviderAccountProfileRegistry,
@@ -55,7 +57,12 @@ fn check_preflight(
         .as_ref()
         .map(|cloud| cloud.user_id.as_str())
         .unwrap_or(crate::session::DEFAULT_LOCAL_USER_ID);
-    preflight_selection(config, profiles, owner, &request.provider_accounts)
+    let carries_vault_login =
+        preflight_selection(config, profiles, owner, &request.provider_accounts)?;
+    Ok(
+        carries_vault_login
+            || request.kernel_context == ManagedContextKernelSelection::SourceKernel,
+    )
 }
 
 /// Whether every selected login can move. Answers `true` when one of them is a Vault credential,

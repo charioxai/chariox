@@ -79,6 +79,7 @@ impl Fixture {
         let app = DaemonApp::bootstrap(config).unwrap();
         let session = RuntimeSession::new(
             format!("vault-unlock-{:016x}", rand::random::<u64>()),
+            crate::session::ProjectId::test(),
             None,
             "workspace",
             "worktree",

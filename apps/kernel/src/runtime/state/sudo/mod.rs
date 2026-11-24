@@ -63,12 +63,16 @@ mod relaunch_tests;
 mod remote_command_tests;
 #[cfg(test)]
 mod resource_register_tests;
+#[cfg(all(test, unix))]
+mod slice_refusal_tests;
 #[cfg(test)]
 mod task_scope_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
 mod vault_command_tests;
+#[cfg(test)]
+mod vault_owner_kind_tests;
 #[cfg(test)]
 mod vault_tests;
 #[cfg(test)]

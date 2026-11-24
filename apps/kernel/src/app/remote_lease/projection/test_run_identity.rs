@@ -181,6 +181,8 @@ fn assert_home_run_identity(native: bool) {
                     vec![]
                 } else {
                     vec![RelayProjectedCompletion {
+                        model_usage: Vec::new(),
+                        background_notifications: Vec::new(),
                         failure: None,
                         message_id: "worker-completion".into(),
                         completed_at_ms: crate::session::unix_epoch_ms(),

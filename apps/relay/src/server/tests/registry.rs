@@ -164,15 +164,16 @@ async fn subject_revocation_evicts_old_kernel_and_machine_issued_client_only() {
     });
     let url = format!("ws://{}:{}", addr.ip(), addr.port());
 
-    let (mut old_socket, _) = connect_async_with_retry(&url)
+    let (mut old_socket, old_socket_handshake) = connect_async_with_retry(&url)
         .await
         .expect("old kernel should connect");
-    let (mut replacement_socket, _) = connect_async_with_retry(&url)
+    let (mut replacement_socket, replacement_socket_handshake) = connect_async_with_retry(&url)
         .await
         .expect("replacement kernel should connect");
-    for (socket, registration) in [
+    for (socket, handshake, registration) in [
         (
             &mut old_socket,
+            &old_socket_handshake,
             test_registration_with_token(
                 "kernel-old",
                 "machine-old",
@@ -183,6 +184,7 @@ async fn subject_revocation_evicts_old_kernel_and_machine_issued_client_only() {
         ),
         (
             &mut replacement_socket,
+            &replacement_socket_handshake,
             test_registration_with_token(
                 "kernel-replacement",
                 "machine-replacement",
@@ -194,7 +196,7 @@ async fn subject_revocation_evicts_old_kernel_and_machine_issued_client_only() {
     ] {
         socket
             .send(Message::Text(
-                serde_json::to_string(&RelayEnvelope::DaemonRegister { registration })
+                serde_json::to_string(&signed_register(&url, handshake, registration))
                     .expect("registration should serialize")
                     .into(),
             ))
@@ -648,4 +650,73 @@ fn unnamed_machine_label_is_friendly_and_does_not_depend_on_inventory_order() {
         label("stable-machine-id").as_deref(),
         Some("Linux computer")
     );
+}
+
+fn update_needed_kernel(
+    machine_id: &str,
+    refused_at: std::time::Instant,
+) -> crate::registry::UpdateNeededKernel {
+    crate::registry::UpdateNeededKernel {
+        machine_id: machine_id.to_string(),
+        machine_alias: Some("old-box".to_string()),
+        local_protocol: Some(1011),
+        refused_at,
+    }
+}
+
+// A stopped old kernel stops retrying: its entry leaves the machine list once it is older than
+// any retry, and the machine with it when it had no other kernel.
+#[test]
+fn an_update_needed_kernel_leaves_the_list_when_it_stops_retrying() {
+    let mut registry = RelayRegistry::default();
+    let now = std::time::Instant::now();
+    registry.record_update_needed_kernel(
+        DaemonKey::new("realm", "old-kernel"),
+        update_needed_kernel("old-machine", now),
+    );
+    let listed = registry.live_machines_in_realm_with_targets("realm", None);
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].machine_alias.as_deref(), Some("old-box"));
+    assert_eq!(listed[0].kernel_count, 0);
+    assert_eq!(
+        registry.live_machines_in_realm_with_targets("realm", Some(&["other".to_string()])),
+        Vec::new(),
+        "a client limited to other kernels does not see it"
+    );
+    assert_eq!(
+        registry.live_machines_in_realm_with_targets("other-realm", None),
+        Vec::new()
+    );
+
+    registry.record_update_needed_kernel(
+        DaemonKey::new("realm", "old-kernel"),
+        update_needed_kernel(
+            "old-machine",
+            now - crate::registry::UPDATE_NEEDED_KERNEL_TTL,
+        ),
+    );
+    assert_eq!(
+        registry.live_machines_in_realm_with_targets("realm", None),
+        Vec::new()
+    );
+}
+
+// The same kernel registered live: a refused attempt under its id says nothing about it.
+#[tokio::test]
+async fn a_live_kernel_is_never_listed_as_update_needed() {
+    let mut registry = RelayRegistry::default();
+    let key = insert_live_registration(
+        &mut registry,
+        "realm",
+        test_registration("live-kernel", "machine-1", "Linux", 1),
+        4100,
+    );
+    registry.record_update_needed_kernel(
+        key,
+        update_needed_kernel("machine-1", std::time::Instant::now()),
+    );
+    assert!(registry
+        .live_machines_in_realm_with_targets("realm", None)
+        .iter()
+        .all(|machine| machine.update_needed_kernels.is_empty()));
 }

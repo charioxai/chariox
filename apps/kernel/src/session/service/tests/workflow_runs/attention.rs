@@ -160,6 +160,49 @@ fn a_stopped_run_needs_no_one() {
 }
 
 #[test]
+fn workspace_claim_wait_names_the_current_holder_until_dispatch() {
+    let mut runs = Runs::new("review");
+    let run = runs.run();
+    let node = &run.node_runs()[0];
+    let session_id = &runs.session_id;
+
+    for holding_run_id in ["run-one", "run-two"] {
+        assert!(runs
+            .service
+            .block_workflow_node_on_workspace_claim(
+                session_id,
+                run.id(),
+                node.id(),
+                Some(holding_run_id)
+            )
+            .unwrap()
+            .is_some());
+        assert!(runs
+            .service
+            .block_workflow_node_on_workspace_claim(
+                session_id,
+                run.id(),
+                node.id(),
+                Some(holding_run_id)
+            )
+            .unwrap()
+            .is_none());
+        let waiting = runs.get(&run);
+        let detail = format!("waiting for the workspace, held by run {holding_run_id}");
+        assert_eq!(waiting.status_notice_suffix(), detail);
+        assert_eq!(
+            serde_json::to_value(&waiting).unwrap()["outcome"]["detail"],
+            detail
+        );
+    }
+
+    runs.service
+        .ready_workflow_node_after_workspace_claim(session_id, run.id(), node.id())
+        .unwrap();
+    assert!(runs.get(&run).outcome().is_none());
+}
+
+#[test]
 fn a_run_holding_a_node_on_a_named_thing_needs_attention_only_while_it_holds() {
     let mut runs = Runs::new("review");
     let run = runs.run();
@@ -178,6 +221,7 @@ fn a_run_holding_a_node_on_a_named_thing_needs_attention_only_while_it_holds() {
         Some(WorkflowRunOutcome::Waiting {
             on: WorkflowWaitingOn::ProviderProfileUsageExhausted,
             node_id: run.node_runs()[0].node_id().into(),
+            detail: None,
         })
     );
     assert!(held.attention());

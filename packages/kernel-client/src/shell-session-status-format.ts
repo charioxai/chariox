@@ -45,7 +45,7 @@ export function formatSessionRuntimeStatus(
     "authority: home owns sessions, prompts, and grants; workers execute leases and projected tools",
     `workspace: ${session.workspace_id}`,
     `worktree: ${session.worktree_id}`,
-    `attachments: ${session.attachment_ids.length}`,
+    `attachments: ${session.connected_cli_count}`,
     `focused agent: ${focusedAgent ? formatAgentLabel(focusedAgent) : "-"}`,
     `prompts: ${promptSummary}`,
     `agents: ${agentSummary}`,
@@ -226,7 +226,7 @@ function formatRemoteSummary(
 function formatRemoteExtensionSummary(session: RuntimeSession): string {
   const homeProxyAgents = session.agents.filter((agent) => (
     agent.remote_execution
-    && (agent.extension_grants ?? []).some((grant) => grant.kind !== "skill")
+    && (agent.extension_grants ?? []).length > 0
   ))
   const syncIssues = session.agents.filter((agent) => {
     const sync = agent.remote_extension_manifest_sync

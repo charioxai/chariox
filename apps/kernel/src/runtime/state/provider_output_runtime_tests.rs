@@ -9,6 +9,7 @@ use tokio::sync::Mutex;
 
 mod inert_pty;
 mod native_pty_projection;
+mod native_trust_card;
 use inert_pty::{spawn_inert_pty_for_run, InertPtyCleanup};
 
 async fn owned_runtime_state(app: &Arc<Mutex<DaemonApp>>) -> KernelRuntimeState {
@@ -156,7 +157,6 @@ mod background_hold;
 mod background_tool_settlement;
 mod browser_import_execution_gate;
 mod child_finished;
-mod child_limit_lifecycle;
 mod child_receipts;
 mod claude_plan;
 mod cleanup_liveness;
@@ -168,11 +168,13 @@ mod diagnostics_timeouts;
 mod external_queue;
 mod finished_child_cleanup;
 mod focus_recovery_tests;
+mod headless_turn_settlement;
 mod history_projection;
 mod inbox_sender;
 mod large_codex_resume;
 mod leased_background_hold;
 mod leased_folder;
+mod leased_model;
 mod leased_output;
 mod leased_refused_checkout;
 mod mcp_catalog_reload;
@@ -184,14 +186,50 @@ mod project_environment_shell;
 mod project_queued_environment;
 mod prompt_cancellation;
 mod prompt_parking;
+mod provider_turn_adoption;
 mod publication_settlement;
 mod pump_selection;
 mod quiet_drain_workflow;
+mod steered_prompt;
 mod structured_exit_diagnostic;
 mod structured_output;
 mod subtree_cascade;
 #[cfg(unix)]
 mod visual_tools;
+
+#[test]
+fn dev_stub_runtime_mcp_fixture_keeps_its_turn_open_between_requests() {
+    for (model, settles) in [("runtime-mcp-fixture", false), ("default", true)] {
+        let request = crate::provider::LaunchProviderRequest::new(
+            "session-1",
+            "dev-stub",
+            "dev-stub",
+            "default",
+            model,
+        )
+        .with_agent_id("agent-1");
+        let run = crate::provider::RuntimeProviderRun::new(
+            "provider-run-dev-stub",
+            &request,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+                process_label: "dev-stub-test".into(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: Vec::new(),
+                pty_env: Default::default(),
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: None,
+            },
+        );
+        assert_eq!(
+            provider_run_allows_quiet_pty_settlement(&run),
+            settles,
+            "{model}"
+        );
+    }
+}
 
 #[test]
 fn claude_native_runs_never_use_quiet_pty_settlement() {

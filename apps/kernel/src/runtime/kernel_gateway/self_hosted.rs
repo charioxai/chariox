@@ -23,6 +23,8 @@ const PROBE_DEADLINE: Duration = Duration::from_secs(5);
 
 /// What a paired kernel says about itself in its status answer.
 pub(super) struct TargetStatus {
+    /// The target's local protocol; a kernel too old to report it leaves `None`.
+    pub(super) protocol: Option<u32>,
     pub(super) capabilities: Vec<String>,
     pub(super) machine_alias: Option<String>,
 }
@@ -59,6 +61,9 @@ pub(super) async fn status_of(link: &Link) -> Result<TargetStatus, LinkFailure> 
             .filter(|value| !value.trim().is_empty())
     };
     Ok(TargetStatus {
+        protocol: status("local_daemon_protocol_version")
+            .and_then(|value| value.as_u64())
+            .and_then(|value| u32::try_from(value).ok()),
         capabilities: status("capabilities")
             .and_then(|value| serde_json::from_value(value).ok())
             .unwrap_or_default(),
@@ -83,6 +88,14 @@ impl KernelGateway {
         if let Some(target) = self.job_targets.get(name) {
             return Ok(target);
         }
+        self.resolve_enrolled(name).await
+    }
+
+    /// Resolves a machine in the owner's directory, excluding private offload workers.
+    pub(crate) async fn resolve_enrolled(
+        &self,
+        name: &str,
+    ) -> Result<RelayKernelPresence, GatewayError> {
         if !self.is_self_hosted() {
             return self.directory.resolve(name).await;
         }
@@ -100,9 +113,17 @@ impl KernelGateway {
                 .map(|target| self.probe(target)),
         )
         .await;
+        let now_ms = crate::session::unix_epoch_ms();
         Ok(names::grouped(
             probed
                 .iter()
+                .filter(|probed| {
+                    probed.status != GatewayKernelStatus::Offline
+                        || crate::runtime::machine_presence::still_reconnecting(
+                            probed.last_seen_ms,
+                            now_ms,
+                        )
+                })
                 .map(|probed| GatewayKernel {
                     name: names::display_name(&probed.presence),
                     label: names::label(&probed.presence),
@@ -193,6 +214,7 @@ mod tests {
                 leased_agent_count: 0,
                 local_session_count: 0,
                 public_key: format!("key-{kernel_id}"),
+                local_protocol: None,
             },
             relay_token: None,
             paired_at_ms: 1,
@@ -222,6 +244,7 @@ mod tests {
     fn a_kernel_that_refused_the_gateway_is_unpaired_not_offline() {
         let name = "b3".to_string();
         let answered = Ok(TargetStatus {
+            protocol: None,
             capabilities: Vec::new(),
             machine_alias: None,
         });
@@ -241,6 +264,7 @@ mod tests {
     fn the_names_a_kernel_gives_itself_replace_the_ids_the_link_carried() {
         let mut presence = paired("k-x", None, None).presence;
         TargetStatus {
+            protocol: None,
             capabilities: vec!["kernel_gateway_v1".into()],
             machine_alias: Some("b3".into()),
         }
@@ -250,6 +274,7 @@ mod tests {
         assert_eq!(presence.capabilities, ["kernel_gateway_v1"]);
         // A status that names nothing keeps what was learned before.
         TargetStatus {
+            protocol: None,
             capabilities: Vec::new(),
             machine_alias: None,
         }

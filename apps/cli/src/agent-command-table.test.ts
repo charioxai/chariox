@@ -20,7 +20,7 @@ test("sudo refusal and expiry have separate typed CLI outcomes", () => {
 
 test("the guide mentions exactly the commands and flags the parser knows", () => {
   const guide = guideText()
-  const names = [...guide.matchAll(/chariox ([a-z]+)(?: ([a-z]+))?/g)]
+  const names = [...guide.matchAll(/chariox ([a-z-]+)(?: ([a-z]+))?/g)]
     .map(([, first, second]) => COMMANDS.some(spec => spec.name === `${first} ${second}`) ? `${first} ${second}` : first)
   for (const name of names) assert.ok(COMMANDS.some(spec => spec.name === name), `guide mentions unknown command ${name}`)
   for (const spec of COMMANDS) assert.ok(names.includes(spec.name), `guide omits command ${spec.name}`)
@@ -66,11 +66,11 @@ test("one table maps every kernel error code to its exit code", () => {
   const expected: Record<number, string[]> = {
     2: ["usage", "file_path_invalid"],
     3: ["kernel_access_human_only", "kernel_access_ended", "kernel_access_not_covered", "kernel_access_already_granted", "command_id_required", "duplicate_command_conflict", "file_permission_denied"],
-    4: ["kernel_unknown", "kernel_ambiguous", "kernel_offline", "kernel_unreachable", "kernel_unpaired", "kernel_incompatible", "kernel_not_available"],
-    5: ["kernel_request_timeout", "kernel_connection_lost", "kernel_outcome_unknown", "kernel_access_unconfirmed"],
+    4: ["kernel_unknown", "kernel_ambiguous", "kernel_offline", "kernel_unreachable", "kernel_unpaired", "kernel_incompatible", "kernel_update_needed", "kernel_not_available"],
+    5: ["kernel_request_timeout", "kernel_connection_lost", "kernel_outcome_unknown", "kernel_access_unconfirmed", "steer_unconfirmed"],
   }
   for (const [exit, codes] of Object.entries(expected)) for (const code of codes) assert.equal(exitCodeFor(code), Number(exit), code)
-  for (const code of ["session_not_found", "kernel_response_too_large", "kernel_request_overloaded", "ledger_unavailable", "anything_else", "file_not_found", "file_exists", "file_hash_mismatch", "file_offset_mismatch", "file_io_failed"]) assert.equal(exitCodeFor(code), 1)
+  for (const code of ["session_not_found", "kernel_request_overloaded", "ledger_unavailable", "anything_else", "file_not_found", "file_exists", "file_hash_mismatch", "file_offset_mismatch", "file_io_failed"]) assert.equal(exitCodeFor(code), 1)
   assert.deepEqual(EXIT_CODES.map(entry => entry.exit), [0, 1, 2, 3, 4, 5, 6, 7])
 })
 

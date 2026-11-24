@@ -66,6 +66,14 @@ and off while the kernel runs.
    Compare that log with what the clients show: one admission, one wake, one
    interaction action and no extra provider turn or effect per occurrence.
    Reconnect a client and repeat. Remove the file to stop replaying.
+3. G04: write a delivery kind (`completion`, `wake_occurrence`,
+   `delivery_receipt`, `occurrence`, ...) into a file named `drop-ack`. The
+   next lifecycle write of that kind commits, its caller is told it failed (the
+   reply was lost after the commit) and the kernel removes the file and logs
+   `drop-ack.log`. Arm it before the delegate result, timer wake or provider
+   acceptance you want to cut off, let the retry or the sweep run, and check
+   that the receipts reconcile once, that no second turn or effect appears,
+   and that an uncertain effect is shown to the user within two minutes.
 
 ## MP-08 / MP-09 / MP-11: owned processes
 
@@ -234,3 +242,11 @@ and new work completes while the same question remains pending. Then the TUI
 `/agent delete` command removes the asking agent. The question must disappear
 with a final cancellation record and without applying its default. Read that
 record from the disposable ledger because deleted agents leave the UI projection.
+
+## MP-09: a task whose settlement does not end
+
+Set `CHARIOX_SWEEP_TASK_STALL_FILE` to an absolute lane-owned path outside the repository before
+starting the kernel. While that file lists an agent id (one per line), the lifecycle sweep's
+settlement of that agent's tasks does not end. Every other agent keeps its inbox delivery and its
+wake checks, no notice says wake delivery is degraded, and the log names the task that did not
+settle. Remove the file and the task settles once.

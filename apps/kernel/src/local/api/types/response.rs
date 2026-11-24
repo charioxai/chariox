@@ -3,6 +3,7 @@ use super::*;
 #[rustfmt::skip]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum LocalDaemonResponse {
+    AgentReleaseNotes { landing: u32, text: String },
     ControlPlane { result: ControlPlaneResponse },
     SessionProcessesStopped { result: crate::runtime::process_resources::ProcessControlResult },
     SessionProcessStartedNow { process_id: String },
@@ -22,9 +23,15 @@ pub enum LocalDaemonResponse {
     ProjectEnvironmentSaved { environment: ProjectEnvironmentView },
     ProjectEnvironmentConflict { environment: ProjectEnvironmentView },
     EnvironmentOperation { operation: EnvironmentOperationView },
+    SkillsV2 { result: crate::skill::v2::SkillsV2Response },
     WorkflowNotificationSourceRegistered { source: WorkflowNotificationSource },
     WorkflowNotificationAttached { subscription: WorkflowNotificationSubscription },
     WorkflowNotificationDetached { subscription_id: String },
+    Watcher { watcher: WatcherSummary },
+    /// `followers` are the caller's subscriptions to these watchers, on any kernel and in any Room.
+    Watchers { watchers: Vec<WatcherSummary>, followers: Vec<WorkflowNotificationSubscription> },
+    WatcherDryRun { result: WatcherDryRun },
+    WatcherRemoved { watcher_id: String },
     WorkflowNotifications { sources: Vec<WorkflowNotificationSourceSummary>, subscriptions: Vec<WorkflowNotificationSubscription>, listeners: Vec<WorkflowNotificationSubscription>, diagnostics: Vec<WorkflowNotificationDiagnostic> },
     KernelSudoRequested { agent_id: String },
     /// Protocol 929: the secret prompt is up; `link` opens it on the owner's page.
@@ -37,6 +44,7 @@ pub enum LocalDaemonResponse {
     /// Protocol 641: the grant now covers this process by name.
     KernelAccessCovered { grant_id: String, process: CoveredProcess, },
     KernelAccessGrantsListed { grants: Vec<KernelAccessGrant>, sudo_turns: Vec<KernelSudoTurn>, },
+    OwnerInteractionsListed { interactions: Vec<OwnerInteraction> },
     KernelAccessRevoked { revoked: usize, },
     /// Protocol 569: whether the target still knows the requester (false: it ended there).
     KernelSudoRequesterRenewed { renewed: bool, },
@@ -46,10 +54,22 @@ pub enum LocalDaemonResponse {
     /// Protocol 568: the gateway paired with a self-hosted kernel.
     GatewayKernelJoined { kernel: GatewayKernel, },
     GatewayKernelForgotten { kernel_id: String, },
+    /// A forwarded write succeeded and its complete reply exceeded the durable receipt limit.
+    GatewayWriteCompleted {
+        response_kind: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        session_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        exit_code: Option<i32>,
+    },
     /// Protocol 568: the machine file requests.
     KernelFileStat { stat: KernelFileStat, },
     KernelDirectoryListed { path: String, entries: Vec<KernelDirectoryEntry>, truncated: bool, },
     KernelFileChunk { path: String, offset: u64, data_base64: String, size: u64, eof: bool, },
+    /// Protocol 1012: what moved to the trash, and what could not (at least one item moved).
+    KernelFilesTrashed { trashed: Vec<TrashedKernelFile>, failed: Vec<KernelFileFailure>, },
+    /// Protocol 1012: what was put back (its original path), and what could not (at least one item came back).
+    KernelTrashRestored { restored: Vec<String>, failed: Vec<KernelFileFailure>, },
     KernelFileWritten { path: String, received: u64, complete: bool, sha256: Option<String>, },
     FileTransfer { job: FileTransferJob, },
     FileTransfers { jobs: Vec<FileTransferJob>, },
@@ -137,6 +157,7 @@ pub enum LocalDaemonResponse {
     ProviderRunsLaunchAccepted { provider_runs: Vec<ProviderRunBatchLaunchResult>, failures: Vec<BatchOperationFailure>, },
     ProjectsListed { projects: Vec<RuntimeProject>, },
     ProjectPinned { project: RuntimeProject, },
+    ProjectCreated { project: RuntimeProject, },
     ProjectRenamed { project: RuntimeProject, },
     ProjectWorkspacesUpdated { project: RuntimeProject, },
     ProjectArchived { project: RuntimeProject, sessions: Vec<RuntimeSession>, },
@@ -158,7 +179,14 @@ pub enum LocalDaemonResponse {
         agent_activity_revision: u64,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         jobs: Vec<JobView>,
-        /// The rows the live `session_processes_changed` feed shows.
+        /// Only processes owned by an agent visible in this Room.
+        processes: Vec<crate::runtime::process_resources::SessionProcess>,
+    },
+    FinishedRoomTasks {
+        tasks: Vec<crate::durable_state::agent_lifecycle::AgentTaskExecution>,
+        next_before: Option<i64>,
+    },
+    MachineRoomResources {
         processes: Vec<crate::runtime::process_resources::SessionProcess>,
         disk_usage: Vec<crate::runtime::disk_usage::DiskUsageEntry>,
     },
@@ -237,13 +265,6 @@ pub enum LocalDaemonResponse {
     Connector { connector: CharioxConnectorDefinition, },
     ConnectorsListed { connectors: Vec<CharioxConnectorDefinition>, },
     ConnectorTested { execution: ConnectorExecution, },
-    Skill { skill: CharioxSkillMetadata, },
-    SkillInstalled { skill: CharioxSkillMetadata, path: PathBuf, },
-    SkillUpserted { skill: CharioxSkillMetadata, path: PathBuf, },
-    SkillUpdated { skill: CharioxSkillMetadata, path: PathBuf, },
-    SkillUninstalled { skill: CharioxSkillMetadata, path: PathBuf, },
-    SkillsImported { outcome: SkillImportOutcome, },
-    SkillsListed { skills: Vec<CharioxSkillMetadata>, },
     RelayStatus { status: RelayStatus, },
     RelayConfigured { status: RelayStatus, },
     CloudRelayStatus { profile: Option<CloudRelayProfile>, },
@@ -290,7 +311,9 @@ pub enum LocalDaemonResponse {
     SliceStateReset { slice: SliceRecord, removed_state: Option<crate::slice::SliceSavedStateRecord>, },
     SliceBackupCreated { slice: SliceRecord, backup: crate::slice::SliceBackupRecord, instructions: String, },
     SliceBackupRestored { slice: SliceRecord, backup: crate::slice::SliceBackupRecord, },
-    RemoteMachinesListed { machines: Vec<RemoteMachineRecord>, },
+    /// `renewing`: the list is the last one while a renewal is still running (it follows as
+    /// `remote_machines_changed`).
+    RemoteMachinesListed { machines: Vec<RemoteMachineRecord>, offline_machines: Vec<OfflineMachineRecord>, #[serde(default, skip_serializing_if = "Option::is_none")] directory: Option<String>, #[serde(default, skip_serializing_if = "std::ops::Not::not")] renewing: bool, },
     RemoteMachineKernelsListed { machine_ref: String, kernels: Vec<RelayKernelPresence>, },
     /// A direct current relay registration observation. This does not prove
     /// historical heartbeat-ID absence or full MP-10 acceptance.
@@ -302,6 +325,22 @@ pub enum LocalDaemonResponse {
     },
     RoomListSessionsListed { page: RoomListSessionPage, },
     RoomListSnapshot { snapshot: RoomListSnapshot, },
+    OwnerViewStatus {
+        generation: String,
+        tab_id: Option<String>,
+        watchers: Vec<OwnerViewWatcher>,
+    },
+    PersonInbox {
+        cards: Vec<PersonInboxCard>,
+        mutes: Vec<PersonInboxOrigin>,
+    },
+    NotificationSubscriptions {
+        subscriptions: Vec<NotificationSubscriptionRow>,
+        responsibilities: Vec<PersonResponsibilityRow>,
+    },
+    /// A dry run: what the source's latest occurrence would do. Nothing was sent.
+    NotificationSubscriptionTested { result: String },
+    NotificationTrace { subscription_id: String, lines: Vec<NotificationTraceLine> },
     ExternalProviderSessionsListed { page: ExternalProviderSessionPage, },
     ExternalProviderSessionsRefreshed { page: ExternalProviderSessionPage, },
     ExternalProviderSessionImported {
@@ -318,10 +357,9 @@ pub enum LocalDaemonResponse {
     },
     WorkspaceDirectoriesSearched { directories: Vec<String>, #[serde(default)] workspace_git: Vec<WorkspaceDirectoryGitSummary>, },
     WorkspaceDirectoryCreated { directory: String, },
-    WorkspaceWorktreesListed { workspace_id: String, worktrees: Vec<WorkspaceWorktreeRecord>, },
+    WorkspaceWorktreesListed { workspace_id: String, worktrees: Vec<WorkspaceWorktreeRecord>, workspace_empty: bool, },
     WorkspaceWorktreeCreated { workspace_id: String, worktree: WorkspaceWorktreeRecord, },
     WorkspaceWorktreeDeleted { workspace_id: String, worktree_id: String, path: String, },
-    WorkspacePullRequestCreated { pull_request: WorkspacePullRequestRecord, },
     WorkspaceGitOverview { overview: WorkspaceGitOverview, },
     WorkspaceFilesListed { listing: WorkspaceRepoFileListing, },
     WorkspaceFileContent { content: WorkspaceFileContent, },
@@ -336,7 +374,7 @@ pub enum LocalDaemonResponse {
     WorkspaceCommitMessageGenerated { message: String, },
     WorkspaceGitActionCompleted { result: WorkspaceGitActionResult, },
     RemoteMachineApproved { machine: RemoteMachineRecord, },
-    RemoteMachineForgotten { machine: RemoteMachineRecord, },
+    RemoteMachineForgotten { machine_id: String, display_name: String, },
     PairingInviteCreated { invite: PairingInviteRecord, },
     PairingInviteJoined { pairing: PairingJoinRecord, },
     TerminalPairingLinkCreated { pairing: TerminalPairingLinkRecord, },
@@ -356,6 +394,7 @@ pub enum LocalDaemonResponse {
     ProviderLoginStarted { login: ProviderLoginStart, },
     ProviderLoginStatus { login: ProviderLoginStatus, },
     ProviderLoginInputSent { login_id: String, byte_count: usize, },
+    ProviderLoginVaultEntrySent { login_id: String, },
     ProviderLoginCancelled { login: ProviderLoginStatus, },
     ProviderLogoutStarted { logout: ProviderLoginStart, },
     ProviderLoggedOut { provider: String, account_profile: String, },
@@ -398,7 +437,9 @@ pub enum LocalDaemonResponse {
     RuntimeNotices { notices: Vec<RuntimeNoticeRecord>, },
     RoomPinned { session: RuntimeSession, },
     KernelAccessDecisionResponded { interaction_id: String, },
-    InteractionResponded { interaction_id: String, session: RuntimeSession, },
+    /// Protocol 1012: a small acknowledgement. The Room state follows on the event stream,
+    /// never in this reply (a large Room made it exceed the gateway's reply limit).
+    InteractionResponded { interaction_id: String, choice_id: String, outcome: InteractionOutcome, },
     DeploymentCredentialEnrollmentArmed {
         enrollment_id: String,
         profile_id: String,
@@ -412,46 +453,25 @@ pub enum LocalDaemonResponse {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         callback: Option<CredentialEnrollmentCallback>,
     },
-    PromptSubmitted {
-        outcome: PromptSubmissionOutcome,
-        session: RuntimeSession,
-        agent_activity: BTreeMap<String, crate::runtime::projection::AgentRuntimeActivity>,
-        #[serde(default)]
-        agent_activity_revision: u64,
-    },
+    PromptSubmitted { session_id: String, outcome: PromptSubmissionOutcome<PromptReceipt>, },
     PromptsSubmitted {
+        session_id: String,
         results: Vec<PromptBatchSubmissionResult>,
         failures: Vec<BatchOperationFailure>,
-        session: RuntimeSession,
-        agent_activity: BTreeMap<String, crate::runtime::projection::AgentRuntimeActivity>,
-        #[serde(default)]
-        agent_activity_revision: u64,
     },
-    PromptCompleted { completion: PromptCompletion, },
-    PromptCancelled { cancellation: PromptCancellation, },
+    PromptCompleted { completion: PromptCompletion<PromptReceipt>, },
+    PromptCancelled { cancellation: PromptCancellation<PromptReceipt>, },
     NothingToStop { session_id: String, agent_id: String, },
-    ActivePromptSteered { prompt: PromptQueueItem, },
-    QueuedPromptSteered {
-        prompt: PromptQueueItem,
-        session: RuntimeSession,
-        agent_activity: BTreeMap<String, crate::runtime::projection::AgentRuntimeActivity>,
-        #[serde(default)]
-        agent_activity_revision: u64,
+    ActivePromptSteered {
+        session_id: String,
+        agent_id: String,
+        active_prompt_id: String,
+        steer_id: String,
+        accepted_at_ms: u64,
     },
-    QueuedPromptCancelled {
-        prompt: PromptQueueItem,
-        session: RuntimeSession,
-        agent_activity: BTreeMap<String, crate::runtime::projection::AgentRuntimeActivity>,
-        #[serde(default)]
-        agent_activity_revision: u64,
-    },
-    QueuedPromptUpdated {
-        prompt: PromptQueueItem,
-        session: RuntimeSession,
-        agent_activity: BTreeMap<String, crate::runtime::projection::AgentRuntimeActivity>,
-        #[serde(default)]
-        agent_activity_revision: u64,
-    },
+    QueuedPromptSteered { session_id: String, prompt: PromptReceipt, },
+    QueuedPromptCancelled { session_id: String, prompt: PromptReceipt, },
+    QueuedPromptUpdated { session_id: String, prompt: PromptReceipt, },
     SessionConfigUpdated { config: SessionConfigState, session: RuntimeSession, },
     AgentConfigUpdated {
         agent: AgentInstance,

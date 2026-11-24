@@ -90,9 +90,9 @@ async fn assert_run_profile_reconciliation(field: &str, queued_work: Option<bool
             None,
             None,
             Vec::new(),
-            None,
             crate::extension::RemoteExtensionManifest::default(),
             None,
+            Default::default(),
         )
         .await;
     let mut app = app.lock().await;
@@ -175,9 +175,9 @@ async fn leased_prompt_admission_prevents_interleaved_profile_changes() {
         None,
         None,
         Vec::new(),
-        None,
         crate::extension::RemoteExtensionManifest::default(),
         None,
+        Default::default(),
     );
     tokio::pin!(submission);
     poll_fn(|cx| {
@@ -243,9 +243,9 @@ async fn cancelling_leased_prompt_admission_releases_profile_operations() {
         None,
         None,
         Vec::new(),
-        None,
         crate::extension::RemoteExtensionManifest::default(),
         None,
+        Default::default(),
     ));
     poll_fn(|cx| {
         assert!(submission.as_mut().poll(cx).is_pending());
@@ -325,9 +325,9 @@ async fn leased_prompt_reconciles_durable_home_profile_after_lost_ack_and_restar
             None,
             None,
             Vec::new(),
-            None,
             crate::extension::RemoteExtensionManifest::default(),
             None,
+            Default::default(),
         )
         .await
         .unwrap();
@@ -390,9 +390,9 @@ async fn failed_leased_prompt_admission_after_run_assignment_settles_its_receipt
             None,
             Some(git_context.clone()),
             Vec::new(),
-            None,
             crate::extension::RemoteExtensionManifest::default(),
             None,
+            Default::default(),
         )
     };
     let admission_error = submit().await.unwrap_err();
@@ -488,9 +488,9 @@ async fn assert_leased_claude_home_credential(environment_changed: bool) {
             None,
             None,
             Vec::new(),
-            None,
             crate::extension::RemoteExtensionManifest::default(),
             None,
+            Default::default(),
         )
     };
     // Without a live run, the worker still requires the home's credential.
@@ -774,9 +774,9 @@ async fn fresh_leased_prompt_receives_home_resume_state() {
             None,
             None,
             Vec::new(),
-            None,
             crate::extension::RemoteExtensionManifest::default(),
             None,
+            Default::default(),
         )
         .await
         .unwrap();

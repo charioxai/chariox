@@ -1,6 +1,5 @@
 //! Structured prompt submission and the detached handoff preparation continuation.
 use super::context_handoff::PendingAgentContextHandoff;
-use super::local_prompt_dispatch_runtime::join_hidden_context;
 use super::*;
 
 /// Whether a steering dispatch waits for the provider's receipt. A caller that reads "accepted" as "the provider holds it"
@@ -46,13 +45,16 @@ impl KernelRuntimeState {
                 .await;
             // Order the final ownership/cancellation check and Submit with Abort.
             // No lane is held while the brief utility runs.
-            let _permit = state
+            let permit = state
                 .provider_runtime_lanes
                 .acquire(&dispatch.provider_run_id)
                 .await;
             if !state.owned.handoff_brief_dispatch_is_current(&dispatch) {
+                drop(permit);
+                state.redispatch_if_brief_outlived_its_run(dispatch).await;
                 return;
             }
+            let _permit = permit;
             match state
                 .submit_structured_prompt_with_handoff(
                     &dispatch,
@@ -104,33 +106,39 @@ impl KernelRuntimeState {
                 operation: "submit prompt",
             });
         }
-        let prompt_with_handoff = match handoff {
-            Some(handoff) => {
-                let handoff = owned.revalidate_context_handoff(
+        let handoff = handoff
+            .map(|handoff| {
+                owned.revalidate_context_handoff(
                     handoff,
                     &dispatch.session_id,
                     &dispatch.agent_id,
                     &dispatch.prompt_id,
-                )?;
-                super::context_handoff::inject_protected_context_handoff(
-                    &dispatch.prompt,
-                    &handoff,
-                    |context| {
-                        owned
-                            .room_secret_observations
-                            .scrub(&dispatch.session_id, context)
-                    },
-                )?
-            }
+                )
+            })
+            .transpose()?;
+        let explicit_handoff = handoff.as_ref().filter(|handoff| !handoff.derived);
+        let prompt = match explicit_handoff {
+            Some(handoff) => super::context_handoff::inject_protected_context_handoff(
+                &dispatch.prompt,
+                handoff,
+                |context| {
+                    owned
+                        .room_secret_observations
+                        .scrub(&dispatch.session_id, context)
+                },
+            )?,
             None => dispatch.prompt.clone(),
         };
-        let granted_skill_context = owned.granted_skill_hidden_context(
-            &dispatch.session_id,
-            &dispatch.agent_id,
-            &prompt_with_handoff,
-        )?;
-        let hidden_system_context =
-            join_hidden_context(hidden_system_context, &granted_skill_context);
+        let render_handoff = |room| {
+            let text = handoff
+                .as_ref()
+                .map(|handoff| handoff.render_switch(room))
+                .unwrap_or_default();
+            owned
+                .room_secret_observations
+                .scrub(&dispatch.session_id, text)
+        };
+        let hidden_system_context = hidden_system_context.to_string();
         // Preparation can outlive a Room policy change. Protect every retained
         // input, including failed-request and skill context, at final admission.
         let (hidden_system_context, attachments) =
@@ -171,12 +179,16 @@ impl KernelRuntimeState {
                 .as_deref()
                 .unwrap_or(&dispatch.prompt_id),
             provider_run,
-            &prompt_with_handoff,
+            &prompt,
             &hidden_system_context,
             &attachments,
             mode.with_prompt_origin(dispatch.prompt_origin),
             private_assessment_evidence,
             dispatch.steering,
+            handoff
+                .as_ref()
+                .filter(|handoff| handoff.derived)
+                .map(|_| &render_handoff as &crate::provider::switch_turn::RenderHandoff<'_>),
         );
         let receipt = result?;
         // MP-08/MP-09/MP-10: a trigger's queued steer is recoverable until the
@@ -195,6 +207,9 @@ impl KernelRuntimeState {
                         }),
                     });
                 }
+                Ok(crate::provider::ProviderPromptSubmitReceipt::OpenCodeConflict) => {
+                    return Err(DaemonError::OpenCodeSteerConflict);
+                }
                 Ok(crate::provider::ProviderPromptSubmitReceipt::Uncertain) | Err(_) => {
                     return Err(DaemonError::ProviderPromptSteerUnconfirmed {
                         provider_run_id: dispatch.provider_run_id.clone(),
@@ -203,6 +218,46 @@ impl KernelRuntimeState {
             }
         }
         Ok(true)
+    }
+}
+
+impl KernelRuntimeState {
+    /// The run ended while its brief was prepared (its process exited, or it
+    /// was replaced) but the prompt is still the agent's to answer: dispatch it
+    /// again, which moves it to a fresh run, rather than leave it active with
+    /// nothing to deliver it.
+    async fn redispatch_if_brief_outlived_its_run(
+        &self,
+        dispatch: crate::app::KernelPromptDispatch,
+    ) {
+        let owned = &self.owned;
+        let prompt_still_active = owned
+            .ensure_prompt_dispatch_matches_active_prompt(&dispatch)
+            .unwrap_or(false)
+            && owned
+                .session_store
+                .get_session(&dispatch.session_id)
+                .is_ok_and(|session| {
+                    owned
+                        .prompt_state_owner
+                        .active_prompt_for_agent(&session, &dispatch.agent_id)
+                        .is_some_and(|prompt| {
+                            prompt.status() != crate::session::PromptStatus::Cancelling
+                        })
+                });
+        let run_ended = owned
+            .provider_store
+            .get_run(&dispatch.provider_run_id)
+            .is_ok_and(|run| run.state() == crate::provider::ProviderRunState::Ended);
+        if !(prompt_still_active && run_ended) {
+            return;
+        }
+        if let Err(error) = self
+            .enqueue_prompt_dispatch_after_liveness(&dispatch, owned)
+            .await
+        {
+            let _ = self.fail_prompt_dispatch(dispatch, error).await;
+        }
     }
 }
 

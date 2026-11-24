@@ -21,8 +21,7 @@ pub(crate) fn session_projection_events(
             crate::runtime::process_resources::same_to_clients(
                 &before.processes,
                 &snapshot.processes,
-            ) && before.disk_usage == snapshot.disk_usage
-                && before.jobs == snapshot.jobs
+            ) && before.jobs == snapshot.jobs
         })
     {
         return Vec::new();
@@ -59,7 +58,7 @@ pub(crate) fn session_projection_events(
     if !can_skip_session_snapshot(snapshot, previous, replaces_snapshot) {
         let full_snapshot = KernelEvent::SessionSnapshot {
             room_workflows: snapshot.room_workflows.clone(),
-            session: Box::new(snapshot.session.clone()),
+            session: Box::new(snapshot.session.clone().without_room_workflow_details()),
             provider_run: Box::new(
                 snapshot
                     .provider_run
@@ -108,19 +107,13 @@ pub(crate) fn session_projection_events_for_scope(
         })
         .map(|mut event| {
             if scope == Some("session_metadata") {
-                if let KernelEvent::SessionProcessesChanged {
-                    processes,
-                    disk_usage,
-                    ..
-                } = &mut event
-                {
+                if let KernelEvent::SessionProcessesChanged { processes, .. } = &mut event {
                     processes.retain(|process| {
                         !matches!(
                             process.state,
                             crate::runtime::process_resources::SessionProcessState::Running
                         )
                     });
-                    disk_usage.clear();
                 }
             }
             event
@@ -162,6 +155,7 @@ mod tests {
     fn snapshot() -> SessionSnapshotProjection {
         let session = crate::session::RuntimeSession::new(
             "session",
+            crate::session::ProjectId::test(),
             Some("before".into()),
             "workspace",
             "worktree",
@@ -171,7 +165,6 @@ mod tests {
         SessionSnapshotProjection {
             jobs: Vec::new(),
             processes: Vec::new(),
-            disk_usage: Vec::new(),
             room_workflows: crate::runtime::projection::RoomWorkflowInventory::project(
                 &session,
                 crate::session::DEFAULT_LOCAL_USER_ID,
@@ -213,6 +206,7 @@ mod tests {
             estimate_micros: None,
             deleted: false,
             result: None,
+            read_error: None,
         });
         assert!(matches!(
             session_projection_events(&after, Some(&before), false).as_slice(),
@@ -353,22 +347,12 @@ mod tests {
     fn initial_snapshot_precedes_its_resource_samples() {
         let mut current = snapshot();
         add_process(&mut current);
-        current
-            .disk_usage
-            .push(crate::runtime::disk_usage::DiskUsageEntry {
-                id: "workspace".into(),
-                path: Some("/work".into()),
-                used_bytes: Some(8192),
-                sampled_at_ms: 10,
-                owner: None,
-                process_id: None,
-            });
         let events = session_projection_events(&current, None, false);
         assert!(matches!(
             events.first(),
             Some(KernelEvent::SessionSnapshot { .. })
         ));
-        assert!(events.iter().skip(1).any(|event| matches!(event, KernelEvent::SessionProcessesChanged { disk_usage, .. } if !disk_usage.is_empty())));
+        assert!(events.iter().skip(1).any(|event| matches!(event, KernelEvent::SessionProcessesChanged { processes, .. } if !processes.is_empty())));
     }
 
     #[test]
@@ -517,6 +501,7 @@ mod tests {
             "subscription".into(),
             "source display".into(),
             "review source".into(),
+            crate::session::AgentTriggerBusyPolicy::Queue,
             1,
         );
         before.session.add_agent_trigger(trigger);
@@ -567,7 +552,7 @@ mod tests {
     }
 
     #[test]
-    fn metadata_keeps_admission_waits_while_health_keeps_samples() {
+    fn metadata_keeps_admission_waits() {
         let before = snapshot();
         let mut running = before.clone();
         add_process(&mut running);
@@ -578,16 +563,6 @@ mod tests {
             Some("session_metadata")
         )
         .is_empty());
-        assert!(matches!(
-            session_projection_events_for_scope(
-                &running,
-                Some(&before),
-                false,
-                Some("session_metadata_processes")
-            )
-            .as_slice(),
-            [KernelEvent::SessionProcessesChanged { .. }]
-        ));
         let mut held = running.clone();
         held.processes[0].state = crate::runtime::process_resources::SessionProcessState::Held(
             crate::runtime::process_resources::Waiting {
@@ -659,19 +634,16 @@ mod tests {
         add_process(&mut current);
         let events =
             session_projection_events_for_scope(&current, None, false, Some("session_metadata"));
-        assert!(events.iter().all(|event| !matches!(event, KernelEvent::SessionProcessesChanged { processes, disk_usage, .. } if !processes.is_empty() || !disk_usage.is_empty())));
-        let health = session_projection_events_for_scope(
-            &current,
-            None,
-            false,
-            Some("session_metadata_processes"),
-        );
-        assert!(health.iter().any(|event| matches!(event, KernelEvent::SessionProcessesChanged { processes, .. } if !processes.is_empty())));
+        assert!(events.iter().all(|event| !matches!(event, KernelEvent::SessionProcessesChanged { processes, .. } if !processes.is_empty())));
     }
 
     /// A snapshot holding one running process of `rss` bytes, sampled at `sampled_at_ms`.
-    fn sampled(rss: u64, sampled_at_ms: u64) -> SessionSnapshotProjection {
-        let mut snapshot = snapshot();
+    fn sampled(
+        before: &SessionSnapshotProjection,
+        rss: u64,
+        sampled_at_ms: u64,
+    ) -> SessionSnapshotProjection {
+        let mut snapshot = before.clone();
         add_process(&mut snapshot);
         let process = &mut snapshot.processes[0].process;
         process.resident_set_bytes = rss;
@@ -686,32 +658,35 @@ mod tests {
     // the 10.6 MB the Mac sent in 30 minutes) although only the sample time and age had moved.
     #[test]
     fn a_sample_that_only_moves_its_time_sends_nothing() {
-        let before = sampled(100 * MIB, 10_000);
-        let after = sampled(100 * MIB, 12_000);
+        let baseline = snapshot();
+        let before = sampled(&baseline, 100 * MIB, 10_000);
+        let after = sampled(&baseline, 100 * MIB, 12_000);
         assert!(session_projection_events(&after, Some(&before), false).is_empty());
     }
 
     #[test]
     fn resident_memory_is_sent_when_it_changes_by_a_meaningful_amount() {
-        let before = sampled(100 * MIB, 10_000);
-        let jitter = sampled(100 * MIB + 2 * MIB, 12_000);
+        let baseline = snapshot();
+        let before = sampled(&baseline, 100 * MIB, 10_000);
+        let jitter = sampled(&baseline, 100 * MIB + 2 * MIB, 12_000);
         assert!(session_projection_events(&jitter, Some(&before), false).is_empty());
-        let grown = sampled(100 * MIB + 6 * MIB, 12_000);
+        let grown = sampled(&baseline, 100 * MIB + 6 * MIB, 12_000);
         assert!(matches!(
             session_projection_events(&grown, Some(&before), false).as_slice(),
             [KernelEvent::SessionProcessesChanged { .. }]
         ));
         // A change counts from 1 MiB or 5 %, whichever is larger: 5 MiB at 100 MiB, 200 MiB at 4 GiB.
-        let large = sampled(4096 * MIB, 10_000);
-        let large_jitter = sampled(4096 * MIB + 10 * MIB, 12_000);
+        let large = sampled(&baseline, 4096 * MIB, 10_000);
+        let large_jitter = sampled(&baseline, 4096 * MIB + 10 * MIB, 12_000);
         assert!(session_projection_events(&large_jitter, Some(&large), false).is_empty());
     }
 
     // Clients drop rows they have not heard of for a while, so a quiet process is repeated now and then.
     #[test]
     fn a_quiet_process_is_repeated_so_clients_can_tell_a_live_feed() {
-        let before = sampled(100 * MIB, 10_000);
-        let later = sampled(100 * MIB, 10_000 + 31_000);
+        let baseline = snapshot();
+        let before = sampled(&baseline, 100 * MIB, 10_000);
+        let later = sampled(&baseline, 100 * MIB, 10_000 + 31_000);
         assert!(matches!(
             session_projection_events(&later, Some(&before), false).as_slice(),
             [KernelEvent::SessionProcessesChanged { .. }]
@@ -722,9 +697,10 @@ mod tests {
     // memory that grows 3 MiB per sample is sent once it has grown 5 MiB, not never.
     #[test]
     fn slow_memory_growth_is_measured_against_what_clients_hold() {
-        let held = sampled(100 * MIB, 10_000);
-        let step_one = sampled(100 * MIB + 3 * MIB, 12_000);
-        let step_two = sampled(100 * MIB + 6 * MIB, 14_000);
+        let baseline = snapshot();
+        let held = sampled(&baseline, 100 * MIB, 10_000);
+        let step_one = sampled(&baseline, 100 * MIB + 3 * MIB, 12_000);
+        let step_two = sampled(&baseline, 100 * MIB + 6 * MIB, 14_000);
         let same = |a: &SessionSnapshotProjection, b: &SessionSnapshotProjection| {
             crate::runtime::process_resources::same_to_clients(&a.processes, &b.processes)
         };

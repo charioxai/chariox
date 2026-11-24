@@ -251,8 +251,8 @@ impl KernelRuntimeOwnedState {
             .any(|text| !text.trim().is_empty())
     }
 
-    /// A Working turn whose prompt already ended but whose end never reached
-    /// the ledger. When its run answered, assess it like a normal turn end.
+    /// A Working turn whose end did not reach the ledger. A recorded
+    /// successful end also commits an accepted yield when the turn has no answer.
     pub(super) fn settle_answered_unsettled_turn(
         &self,
         task: &AgentTaskExecution,
@@ -260,14 +260,33 @@ impl KernelRuntimeOwnedState {
         let Some(run) = task.provider_run_id.as_deref() else {
             return Ok(None);
         };
-        let entries = self
-            .operational_history_store
-            .load_session_history_entries(&task.room_id, Some(&task.agent_id))?;
         // A leased task binds a projected run id; its history uses the worker's.
         let answer_run =
             super::agent_task_projection::task_answer_history_run(Some(run)).unwrap_or(run);
-        if !Self::entries_answer_prompt(&entries, &task.prompt_id, answer_run) {
-            return Ok(None);
+        let target = self.background_answer_target(task)?;
+        let completed_yield = target.is_none()
+            && task.wait.is_some()
+            && self
+                .operational_history_store
+                .load_prompt_settlement_event(&task.room_id, &task.agent_id, &task.prompt_id)?
+                .is_some_and(|event| {
+                    event.provider_run_id.as_deref() == Some(answer_run)
+                        && event
+                            .metadata
+                            .get(crate::history::PROMPT_SETTLEMENT_STATUS_METADATA_KEY)
+                            .and_then(serde_json::Value::as_str)
+                            == Some(
+                                crate::git_observer::CompletedTurnSettlementStatus::Completed
+                                    .as_str(),
+                            )
+                });
+        if target.is_none() && !completed_yield {
+            let entries = self
+                .operational_history_store
+                .load_session_history_entries(&task.room_id, Some(&task.agent_id))?;
+            if !Self::entries_answer_prompt(&entries, &task.prompt_id, answer_run) {
+                return Ok(None);
+            }
         }
         let prompt = crate::session::PromptQueueItem::new(
             task.prompt_id.clone(),
@@ -278,16 +297,42 @@ impl KernelRuntimeOwnedState {
         );
         // A task that still holds a pending continuation settles to itself;
         // that is no settlement, and the sweep must end it instead.
-        Ok(self
+        let cancelled = target
+            .as_ref()
+            .is_some_and(|(_, answer)| answer.state == ExecutionState::Cancelled);
+        let settlement = self
             .settle_agent_task_answered_by(
                 &task.room_id,
                 &task.agent_id,
                 &prompt,
                 run,
                 answer_run,
-                false,
+                cancelled,
             )?
-            .filter(|(settled, _)| settled.revision != task.revision))
+            .filter(|(settled, _)| settled.revision != task.revision);
+        if settlement.is_some() {
+            if let Some((receipt, answer)) = target {
+                let outcome = self.background_answer_outcome(receipt, &answer);
+                // Both live release and restart supervision publish this same durable outcome.
+                self.operational_history_store.record_prompt_settlement(
+                    self.config_projection
+                        .snapshot()
+                        .user_config
+                        .history
+                        .archive
+                        .mode
+                        == crate::config::HistoryArchiveMode::External,
+                    &task.room_id,
+                    &task.agent_id,
+                    &task.prompt_id,
+                    Some(run),
+                    crate::session::unix_epoch_ms(),
+                    outcome.settlement_status().as_str(),
+                    Some(&outcome),
+                );
+            }
+        }
+        Ok(settlement)
     }
 
     pub(super) fn settle_agent_task(
@@ -433,9 +478,18 @@ impl KernelRuntimeOwnedState {
             .operational_history_store
             .load_session_history_entries(room, Some(agent))?;
         // The answer of a native TUI turn is on the provider screen, not in the task projection.
-        let has_answer = self.provider_run_projection.get(run).is_some_and(|run| {
-            run.client_interface() == crate::provider::ProviderClientInterface::NativeTui
-        }) || Self::entries_answer_prompt(&entries, prompt.id(), answer_run);
+        let referenced_answer = self
+            .durable_state_store
+            .agent_turn_task(room, agent, prompt.id())?
+            .map(|task| self.background_answer_target(&task))
+            .transpose()?
+            .flatten()
+            .is_some();
+        let has_answer = referenced_answer
+            || self.provider_run_projection.get(run).is_some_and(|run| {
+                run.client_interface() == crate::provider::ProviderClientInterface::NativeTui
+            })
+            || Self::entries_answer_prompt(&entries, prompt.id(), answer_run);
         // Only a goal-check prompt evaluates a task; other turns do not read the agent's history.
         if !cancelled && ledger::goals::is_completion_check_prompt_id(prompt.id()) {
             if let Some(task) = self
@@ -558,13 +612,32 @@ impl KernelRuntimeState {
         let current = self
             .owned
             .prompt_state_owner
-            .active_prompt_for_agent(session, sender.id())
-            .ok_or_else(|| ledger::error("sender has no running turn"))?;
-        if current.id() != args.origin_prompt_id
-            || current.status() != crate::session::PromptStatus::Running
-        {
-            return Err(ledger::error("stale sender turn"));
-        }
+            .active_prompt_for_agent(session, sender.id());
+        let current = match current {
+            Some(current)
+                if current.id() == args.origin_prompt_id
+                    && current.status() == crate::session::PromptStatus::Running =>
+            {
+                current
+            }
+            other => {
+                let refusal = if other.is_none() {
+                    "sender has no running turn"
+                } else {
+                    "stale sender turn"
+                };
+                let tool_args = serde_json::json!({"origin_prompt_id": args.origin_prompt_id});
+                self.log_refused_turn_tool(
+                    session,
+                    sender.id(),
+                    None,
+                    "send_agent_message",
+                    &tool_args,
+                    refusal,
+                );
+                return Err(ledger::error(refusal));
+            }
+        };
         if let Some(kernel) = args.kernel.as_deref() {
             if let Some(kernel) = self.resolve_peer_kernel(kernel).await? {
                 return self
@@ -580,21 +653,6 @@ impl KernelRuntimeState {
         }
         if args.urgent {
             self.authorize_peer_control(sender, target, super::peer_rooms::PeerControl::Steer)?;
-        }
-        // Refuse here, while the sender can still react: a message the peer's account cannot
-        // start would otherwise stay durable and pending behind the sender's goal.
-        if let Err(error) =
-            self.owned
-                .require_agent_account_authenticated(target, None, "send agent message")
-        {
-            // The refusal is definite: a delegate that cannot start never completes, so nothing
-            // may keep the sender's turn waiting on it.
-            self.owned.settle_failed_delegate_start(
-                session.id(),
-                target.id(),
-                &error.to_string(),
-            )?;
-            return Err(error);
         }
         // Admission precedes resource lookup; another room reveals only its ordinary agents.
         // A key the sender chose names the message across turns, so it can promote the message by
@@ -626,13 +684,32 @@ impl KernelRuntimeState {
                 )
                 .await;
         }
+        self.owned
+            .ensure_agent_before_deadline(target_room, target.id())?;
+        // Refuse here, while the sender can still react: a message the peer's account cannot
+        // start would otherwise stay durable and pending behind the sender's goal.
+        if let Err(error) =
+            self.owned
+                .require_agent_account_authenticated(target, None, "send agent message")
+        {
+            // The refusal is definite: a delegate that cannot start never completes, so nothing
+            // may keep the sender's turn waiting on it.
+            self.owned.settle_failed_delegate_start(
+                session.id(),
+                target.id(),
+                &error.to_string(),
+            )?;
+            return Err(error);
+        }
         let mut event = ledger::occurrence(
             target_room,
             target.id(),
             sender.id(),
             &occurrence,
             "message",
-            serde_json::json!({"message":args.message,"sender_agent_id":sender.id(),"sender_room_id":session.id(),"sender_prompt_id":current.id(),"no_reply":!args.reply_requested,"attachments":args.attachments}),
+            serde_json::json!({"message":args.message,"sender_agent_id":sender.id(),"sender_room_id":session.id(),"sender_prompt_id":current.id(),
+                "cross_room_child": session.id() != target_room && target.parent_agent_id() == Some(sender.id()),
+                "no_reply":!args.reply_requested,"attachments":args.attachments}),
         );
         event.urgent = args.urgent;
         event.reply_requested = args.reply_requested;
@@ -693,30 +770,53 @@ impl KernelRuntimeState {
         // Only an urgent message acts on its recipient's turn; any other waits for the next one.
         if !event.urgent {
             self.publish_task_change(target_room);
-            return Ok(crate::transport::runtime_tools::RuntimeToolResult {
-                ok: true,
-                payload: serde_json::json!({"status":"queued","message_id":event.sequence.to_string(),"sequence":event.sequence,"urgent":false,"reply_requested":event.reply_requested,"note":super::agent_queued_messages::queued_note(target.alias().unwrap_or(target.agent_ref()))}),
-            });
+            let mut payload = serde_json::json!({"status":"queued","message_id":event.sequence.to_string(),"sequence":event.sequence,"urgent":false,"reply_requested":event.reply_requested,"note":super::agent_queued_messages::queued_note(target.alias().unwrap_or(target.agent_ref()))});
+            if let Some(note) =
+                self.held_for_stopped_agent_note(target_room, target.id(), event.sequence)?
+            {
+                payload["held"] = true.into();
+                payload["note"] = note.into();
+            }
+            return Ok(crate::transport::runtime_tools::RuntimeToolResult { ok: true, payload });
         }
-        if let Err(error) = Box::pin(self.deliver_agent_inbox(target_room, target.id())).await {
-            self.owned.record_notice_for_agent(
-                target_room,
-                None,
-                Some(target.id()),
-                self.owned
-                    .attachment_store
-                    .list_session_attachment_ids(target_room),
-                format!(
-                    "Event {} is durable and pending: {}",
-                    event.sequence,
-                    crate::secret_redaction::redact_secrets(&error.to_string())
-                ),
-            );
+        // The message is stored; the sender never waits for the receiver's provider to take it.
+        // The receiver reads it at its next possible point and a following sender gets the
+        // delivery event then.
+        self.spawn_agent_inbox_delivery(
+            target_room.to_owned(),
+            target.id().to_owned(),
+            event.sequence,
+        );
+        let mut payload = serde_json::json!({"status":"steering","message_id":event.sequence.to_string(),"sequence":event.sequence,"urgent":true,"reply_requested":event.reply_requested});
+        if let Some(note) =
+            self.held_for_stopped_agent_note(target_room, target.id(), event.sequence)?
+        {
+            payload["held"] = true.into();
+            payload["note"] = note.into();
         }
-        Ok(crate::transport::runtime_tools::RuntimeToolResult {
-            ok: true,
-            payload: serde_json::json!({"status":"durable","sequence":event.sequence,"urgent":true,"reply_requested":event.reply_requested}),
-        })
+        Ok(crate::transport::runtime_tools::RuntimeToolResult { ok: true, payload })
+    }
+    /// The stored message belongs to the receiver now: its delivery runs on the kernel's own account,
+    /// so a change to the sender (a new provider run, an archive) cannot fail a healthy receiver.
+    pub(super) fn spawn_agent_inbox_delivery(&self, room: String, agent: String, sequence: u64) {
+        let state = self.as_kernel();
+        tokio::spawn(async move {
+            if let Err(error) = Box::pin(state.deliver_agent_inbox(&room, &agent)).await {
+                state.owned.record_notice_for_agent(
+                    &room,
+                    None,
+                    Some(&agent),
+                    state
+                        .owned
+                        .attachment_store
+                        .list_session_attachment_ids(&room),
+                    format!(
+                        "Event {sequence} is durable and pending: {}",
+                        crate::secret_redaction::redact_secrets(&error.to_string())
+                    ),
+                );
+            }
+        });
     }
     /// A message or steer to an agent on another kernel lands there as a stamped inbox message.
     /// Nothing waits here for its answer: a reply comes back the same way, as a message.
@@ -761,11 +861,11 @@ impl KernelRuntimeState {
             },
         })
     }
-    /// Native TUI turns end at the provider Stop event, which completes the prompt without the
-    /// managed-provider settlement. Each output pass remembers the turn the TUI is on; once it is
-    /// no longer the active prompt, settle its task definitively. The person drives the provider
-    /// TUI, so there is no completion-check turn.
-    pub(super) async fn settle_finished_native_tui_turn(
+    /// Claude native-bridge turns (native TUI and headless) end at the provider Stop event, which
+    /// completes the prompt without the managed-provider settlement. Each output pass remembers
+    /// the turn the run is on; once it is no longer the active prompt, settle its task at once, so
+    /// the supervision sweep never finds a finished turn Working and ends it as interrupted.
+    pub(super) async fn settle_finished_native_bridge_turn(
         &self,
         session_id: &str,
         run: &crate::provider::RuntimeProviderRun,
@@ -783,7 +883,7 @@ impl KernelRuntimeState {
         let finished = {
             let mut turns = self
                 .owned
-                .native_tui_turns
+                .native_bridge_turns
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
             let previous = turns
@@ -817,7 +917,7 @@ impl KernelRuntimeState {
         if let Err(error) = settled {
             crate::logging::warn_with_fields(
                 "daemon.agent_lifecycle",
-                "native TUI task settlement retained for sweep",
+                "native bridge task settlement retained for sweep",
                 serde_json::json!({"error": crate::secret_redaction::redact_secrets(&error.to_string())}),
             );
         }
@@ -868,10 +968,6 @@ impl KernelRuntimeState {
         &self,
         task: &AgentTaskExecution,
     ) -> Result<(), DaemonError> {
-        let settlement = self.owned.settle_answered_unsettled_turn(task)?;
-        if settlement.is_none() {
-            self.owned.background_holds.release(&task.task_id);
-        }
         let source = crate::session::PromptQueueItem::new(
             task.prompt_id.clone(),
             "kernel-supervisor",
@@ -879,6 +975,10 @@ impl KernelRuntimeState {
             "",
             crate::session::PromptStatus::Completed,
         );
+        let settlement = self.owned.settle_answered_unsettled_turn(task)?;
+        if settlement.is_none() {
+            self.owned.background_holds.release(&task.task_id);
+        }
         self.finish_agent_task_settlement(settlement, &source).await
     }
     /// The provider's turn about an ended background call is the last part of the work of a child
@@ -933,6 +1033,52 @@ impl KernelRuntimeState {
             .await
     }
     /// `failure` is why the turn behind a task that ends cancelled failed.
+    /// A prompt steered into a running turn has no turn of its own: its task settles with the
+    /// task of the turn it was steered into, and its answer is that turn's reply after the steer.
+    /// Left Working, the sweep would find it without an executor and block it as interrupted.
+    async fn settle_prompts_steered_into(
+        &self,
+        task: &AgentTaskExecution,
+    ) -> Result<(), DaemonError> {
+        let Some(run) = task.provider_run_id.as_deref() else {
+            return Ok(());
+        };
+        let store = &self.owned.durable_state_store;
+        for prompt in store.prompts_steered_into(&task.room_id, &task.task_id)? {
+            let Some(steered) = store.agent_turn_task(&task.room_id, &task.agent_id, &prompt)?
+            else {
+                continue;
+            };
+            if steered.task_id == task.task_id || steered.state != ExecutionState::Working {
+                continue;
+            }
+            let source = crate::session::PromptQueueItem::new(
+                prompt,
+                "kernel-supervisor",
+                &task.agent_id,
+                "",
+                crate::session::PromptStatus::Completed,
+            );
+            let settlement = self.owned.settle_agent_task(
+                &task.room_id,
+                &task.agent_id,
+                &source,
+                run,
+                task.state == ExecutionState::Cancelled,
+            )?;
+            crate::logging::info_with_fields(
+                "runtime.agent_lifecycle",
+                "a prompt steered into a turn settled with that turn",
+                serde_json::json!({
+                    "room_id": task.room_id, "agent_id": task.agent_id,
+                    "task_id": steered.task_id, "steered_into_task_id": task.task_id,
+                    "state": settlement.as_ref().map(|(settled, _)| &settled.state),
+                }),
+            );
+            Box::pin(self.finish_agent_task_settlement(settlement, &source)).await?;
+        }
+        Ok(())
+    }
     pub(super) async fn finish_failed_agent_task_settlement(
         &self,
         settlement: Option<(AgentTaskExecution, bool)>,
@@ -942,6 +1088,9 @@ impl KernelRuntimeState {
         let Some((task, correction)) = settlement else {
             return Ok(());
         };
+        if task.state != ExecutionState::Working {
+            Box::pin(self.settle_prompts_steered_into(&task)).await?;
+        }
         match task.state {
             // The agent's turn ended (a blocked task waits for its owner, not for a decision to be
             // answered): the decisions it held move up, whatever else it has open.
@@ -959,6 +1108,20 @@ impl KernelRuntimeState {
         self.retract_stale_task_owner_interactions(&task.room_id)
             .await;
         let changed = self.owned.task_settlement_changed(&task);
+        if changed && task.state == ExecutionState::Blocked {
+            // Every card a task raises says, in the log, which task and why.
+            crate::logging::warn_with_fields(
+                "runtime.agent_lifecycle",
+                "a task is blocked for its owner",
+                serde_json::json!({
+                    "room_id": task.room_id, "agent_id": task.agent_id, "task_id": task.task_id,
+                    "prompt_id": task.prompt_id, "provider_run_id": task.provider_run_id,
+                    "blocked_revision": task.blocked_revision,
+                    "cause": crate::secret_redaction::redact_secrets(&task.reason),
+                    "turn_failure": failure.map(crate::provider::TurnOutcome::notice),
+                }),
+            );
+        }
         if changed {
             let name = self.agent_notice_name(&task.agent_id);
             let message = super::agent_task_projection::task_status_notice(&task, &name);
@@ -1047,6 +1210,24 @@ impl KernelRuntimeState {
             }
             self.publish_agent_task_completion(&task, failure, public_answer)
                 .await?;
+            if let Some(run) = task.provider_run_id.as_deref() {
+                for (held_id, _) in
+                    self.owned
+                        .background_holds
+                        .of_run(&task.room_id, &task.agent_id, run)
+                {
+                    let Some(held) = self.owned.durable_state_store.agent_task(&held_id)? else {
+                        continue;
+                    };
+                    if self
+                        .owned
+                        .background_answer_target(&held)?
+                        .is_some_and(|(_, answer)| answer.task_id == task.task_id)
+                    {
+                        Box::pin(self.release_held_task(&held)).await?;
+                    }
+                }
+            }
         }
         // A turn that leaves armed work is waiting. Ending that wait later must not resurrect
         // its output as a completion; a subsequent turn will record its own unread output.
@@ -1070,7 +1251,10 @@ impl KernelRuntimeState {
     }
     /// A task that needs its owner or stopped is said in a notice; any other change only refreshes the projection,
     /// so a client redraws the task's state without a status line about it.
-    fn record_task_transition_notices(&self, tasks: impl IntoIterator<Item = AgentTaskExecution>) {
+    pub(super) fn record_task_transition_notices(
+        &self,
+        tasks: impl IntoIterator<Item = AgentTaskExecution>,
+    ) {
         for task in tasks {
             let notice = match task.state {
                 ExecutionState::Blocked => format!(
@@ -1287,20 +1471,29 @@ impl KernelRuntimeState {
     pub(super) async fn sweep_agent_lifecycle(&self) -> Result<(), DaemonError> {
         #[cfg(test)]
         self.lifecycle_sweeps.record_run();
-        self.sweep_agent_lifecycle_at(crate::session::unix_epoch_ms())
-            .await
+        let swept = self
+            .sweep_agent_lifecycle_at(crate::session::unix_epoch_ms())
+            .await;
+        self.owned.agent_wakes.sweep_step.leave();
+        swept
     }
     async fn sweep_agent_lifecycle_at(&self, now: u64) -> Result<(), DaemonError> {
+        let step = &self.owned.agent_wakes.sweep_step;
+        step.enter("the lost-workspace check");
         Box::pin(self.end_turns_on_lost_workspace()).await;
         if !self.owned.config_projection.snapshot().room_agent_tools {
             return Ok(());
         }
+        // Before any task is judged: a delivery the kernel can settle is not unresolved work.
+        self.settle_interrupted_deliveries(now)?;
         if let Err(error) = self.offer_legacy_goal_adoption() {
             tracing::warn!(%error, "MP-08/MP-09/MP-10/MP-11 A12: legacy adoption offer unavailable; other goals continue");
         }
+        step.enter("the wake dead-man check");
         if let Err(error) = self.sweep_agent_wakes(now).await {
             tracing::warn!(%error, "MP-08/MP-09/MP-10/MP-11 A03: wake dead-man check retained");
         }
+        step.enter("peer follow settlement");
         if let Err(error) = self.settle_lost_peer_follows(now) {
             tracing::warn!(%error, "peer follows of gone agents retained for the next sweep");
         }
@@ -1344,320 +1537,33 @@ impl KernelRuntimeState {
             }
         }
         let tasks = self.owned.durable_state_store.agent_tasks_to_sweep()?;
+        step.enter("leased worker probes");
         Box::pin(self.check_leased_task_connections(&tasks, now)).await?;
+        step.enter("worker stop obligations");
         self.discharge_worker_stop_obligations(now).await?;
         let now = crate::session::unix_epoch_ms();
         let mut blocked = Vec::new();
+        let mut patience = super::task_work_flight::SWEEP_PATIENCE;
         for task in self.owned.durable_state_store.agent_tasks_to_sweep()? {
-            let Ok(session) = self.owned.session_store.get_session(&task.room_id) else {
-                continue;
-            };
-            self.reconcile_failed_workflow_tasks(&task)?;
-            if task.state == ExecutionState::Done
-                && !self
-                    .owned
-                    .durable_state_store
-                    .agent_task_terminal_recorded(&task)?
-                && self
-                    .owned
-                    .prompt_state_owner
-                    .active_prompt_for_agent(&session, &task.agent_id)
-                    .is_none()
-                && !self.owned.agent_task_resources_unsettled(&task)?
-            {
-                let answer = self.owned.public_agent_task_answer(&task)?;
-                self.publish_agent_task_completion(&task, None, answer)
-                    .await?;
-            }
-            if let Some(check) = ledger::completion::evaluation(&task).filter(|e| {
-                task.state == ExecutionState::Working
-                    && e.result.is_none()
-                    && e.prompt_id == task.pending_prompt_id.as_deref().unwrap_or(&task.prompt_id)
-                    && now >= e.deadline_ms
-            }) {
-                // Stopping the turn asks the worker, which may not answer: the check ends in its
-                // own work, and the sweep goes on with the other tasks.
-                let (task, prompt) = (task.clone(), check.prompt_id.clone());
-                self.spawn_task_work(
-                    format!("goal-check:{}", task.task_id),
-                    move |state| async move {
-                        if let CheckExpiry::Blocked(stopped) =
-                            state.expire_goal_check(&task, &prompt, now).await?
-                        {
-                            state.record_task_transition_notices([*stopped]);
-                        }
-                        Ok(())
-                    },
-                );
-                continue;
-            }
-            if task.state == ExecutionState::Cancelled
-                && !self
-                    .owned
-                    .durable_state_store
-                    .agent_task_terminal_recorded(&task)?
-            {
-                // The worker that holds the run may be gone: a cancellation that is not confirmed
-                // stays unsettled and is started again by the next sweep, apart from this one.
-                let cancelled = task.clone();
-                self.spawn_task_work(
-                    format!("cancel:{}", task.task_id),
-                    move |state| async move {
-                        Box::pin(state.cancel_agent_task_resources(&cancelled)).await
-                    },
-                );
-            }
-            if task.state != ExecutionState::Working {
-                // Stop's own cleanup may not have read the held run yet: the stop the worker
-                // is owed is stored before the record that names the run goes.
-                if task.state == ExecutionState::Cancelled {
-                    self.owe_held_run_a_stop(&task)?;
-                }
-                self.owned.background_holds.release(&task.task_id);
-            } else if self.owned.is_held_for_background_calls(&task.task_id) {
-                if self.owned.held_task_due(&task, now)? {
-                    Box::pin(self.release_held_task(&task)).await?;
-                }
-                continue;
-            }
-            for obligation in task.obligations.iter().filter(|o| o.status == "open") {
-                let Some(source) = obligation.resource_id.as_ref() else {
-                    continue;
-                };
-                // Deleting an agent that was never given work loses nothing.
-                if obligation.kind == "delegate"
-                    && obligation.completion_task_id.is_none()
-                    && self.owned.agent_store.get_agent(source).is_err()
-                {
-                    self.owned
-                        .durable_state_store
-                        .agent_lifecycle(Operation::ReleaseSpawn {
-                            room: task.room_id.clone(),
-                            source: source.clone(),
-                        })?;
-                    continue;
-                }
-                let outcome = match obligation.kind.as_str() {
-                    "delegate" => {
-                        let child_task = match &obligation.completion_task_id {
-                            Some(id) => self
-                                .owned
-                                .durable_state_store
-                                .agent_tasks(Some(&task.room_id), Some(source))?
-                                .into_iter()
-                                .find(|t| &t.task_id == id),
-                            None => None,
-                        };
-                        // Neither a provider failure nor a finished turn settles resources
-                        // still owned by the exact child task: Stop must still reach them.
-                        match child_task {
-                            Some(ref child)
-                                if matches!(
-                                    child.state,
-                                    ExecutionState::Done | ExecutionState::Cancelled
-                                ) && self.owned.agent_task_resources_unsettled(child)? =>
-                            {
-                                None
-                            }
-                            _ if !self.owned.agent_store.get_agent(source).is_ok_and(|agent| {
-                                agent.state() != crate::agent::AgentState::Error
-                            }) =>
-                            {
-                                Some(false)
-                            }
-                            Some(child) => match child.state {
-                                ExecutionState::Done => Some(true),
-                                ExecutionState::Cancelled => Some(false),
-                                _ => None,
-                            },
-                            None => None,
-                        }
-                    }
-                    _ if obligation.tracks_workflow_run()
-                        && self
-                            .owned
-                            .workflow_agent_tasks_unsettled(&task.room_id, source)? =>
-                    {
-                        None
-                    }
-                    _ if obligation.tracks_workflow_run() => self
-                        .owned
-                        .agent_workflow_obligation_outcome(&session, source)?,
-                    super::HANDOFF_OBLIGATION_KIND => {
-                        self.reconcile_handoff(&session, source).await
-                    }
-                    _ => None,
-                };
-                if let Some(success) = outcome {
-                    let terminal_task = if obligation.kind == "delegate" {
-                        self.owned
-                            .durable_state_store
-                            .agent_tasks(Some(&task.room_id), Some(source))?
-                            .into_iter()
-                            .find(|t| {
-                                obligation.completion_task_id.as_deref() == Some(t.task_id.as_str())
-                                    && matches!(
-                                        t.state,
-                                        ExecutionState::Done | ExecutionState::Cancelled
-                                    )
-                            })
-                    } else {
-                        None
-                    };
-                    let public_answer = terminal_task
-                        .as_ref()
-                        .map(|t| self.owned.public_agent_task_answer(t))
-                        .transpose()?
-                        .flatten();
-                    let workflow_source = if obligation.tracks_workflow_run() {
-                        self.owned.agent_workflow_source(&session, source)?
-                    } else {
-                        None
-                    };
-                    let public_answer = public_answer.or_else(|| {
-                        workflow_source
-                            .as_ref()
-                            .filter(|run| {
-                                matches!(
-                                    run.status(),
-                                    crate::session::WorkflowRunStatus::Failed
-                                        | crate::session::WorkflowRunStatus::Stopped
-                                )
-                            })
-                            .map(super::agent_workflow_tasks::workflow_failure_answer)
-                    });
-                    let gate_answer = if source.starts_with("gate_") {
-                        self.owned.durable_state_store.gate_task_entry(session.id(),source)?.map(|(entry,_)|serde_json::json!({"kind":"workflow_entry","entry_id":entry.entry_id,"disposition":entry.disposition,"reason":entry.failure,"workflow_run_id":workflow_source.as_ref().map(|run|run.id()),"workflow_run_status":workflow_source.as_ref().map(|run|run.status())}))
-                    } else {
-                        None
-                    };
-                    let public_answer = public_answer.or(gate_answer);
-                    let occurrence = terminal_task
-                        .as_ref()
-                        .map(|t| format!("task-terminal-{}", t.task_id))
-                        .unwrap_or_else(|| {
-                            if let Some(run) = workflow_source.as_ref() {
-                                format!(
-                                    "source-terminal-{source}-{}",
-                                    run.completed_at_ms().unwrap_or(0)
-                                )
-                            } else {
-                                if source.starts_with("gate_") {
-                                    format!("entry-terminal-{source}")
-                                } else {
-                                    format!("source-lost-{source}")
-                                }
-                            }
-                        });
-                    self.owned
-                        .durable_state_store
-                        .agent_lifecycle(Operation::SourceOutcome {
-                            now: crate::session::unix_epoch_ms(),
-                            public_answer,
-                            room: task.room_id.clone(),
-                            source: obligation.completion_source().unwrap_or(source).into(),
-                            occurrence,
-                            success,
-                        })?;
-                }
-            }
-            // A queue item is not a live executor. Recover the exact eligible
-            // head through normal provider/project admission; do not advance
-            // a different (possibly blocked) task on this task's authority.
-            // A leased agent's provider runs on its worker, where only the
-            // leased dispatch starts its queued prompts.
-            if task.state == ExecutionState::Working
-                && self
-                    .owned
-                    .agent_store
-                    .get_agent(&task.agent_id)
-                    .is_ok_and(|agent| agent.remote_execution().is_none())
-                && self
-                    .owned
-                    .prompt_state_owner
-                    .active_prompt_for_agent(&session, &task.agent_id)
-                    .is_none()
-                && self
-                    .owned
-                    .prompt_state_owner
-                    .peek_next_queued_prompt(&session, &task.agent_id)
-                    .is_some_and(|p| p.id() == task.prompt_id)
-                && Box::pin(
-                    self.advance_project_queued_prompt_after_settlement(
-                        &task.room_id,
-                        &task.agent_id,
-                    ),
-                )
+            step.enter(format!("task {} of agent {}", task.task_id, task.agent_id));
+            let key = format!("sweep-task:{}", task.task_id);
+            let (task_id, agent_id) = (task.task_id.clone(), task.agent_id.clone());
+            match self
+                .sweep_task_within(key, &mut patience, move |state| async move {
+                    state.sweep_task(task, now).await
+                })
                 .await
-                .is_some()
             {
-                continue;
-            }
-            let active = self
-                .owned
-                .prompt_state_owner
-                .active_prompt_for_agent(&session, &task.agent_id)
-                .is_some();
-            let queued = session
-                .queued_prompts_for_agent(&task.agent_id)
-                .is_some_and(|q| {
-                    q.iter().any(|p| {
-                        p.id() == task.prompt_id
-                            || task.pending_prompt_id.as_deref() == Some(p.id())
-                    })
-                });
-            if ledger::lacks_live_executor(&task, now, active, queued)
-                && !self
-                    .owned
-                    .durable_state_store
-                    .agent_has_live_wake_admission(&task, crate::session::unix_epoch_ms)?
-            {
-                // An assessment that already persisted its continuation only
-                // lacks the delivery: queue that exact intent, not a re-assessment.
-                if task.pending_prompt_id.is_some()
-                    && ledger::completion::evaluation(&task).is_some_and(|e| e.result.is_some())
-                {
-                    let source = crate::session::PromptQueueItem::new(
-                        task.prompt_id.clone(),
-                        "kernel-supervisor",
-                        &task.agent_id,
-                        "",
-                        crate::session::PromptStatus::Completed,
+                super::task_work_flight::TaskStep::Done(Err(error)) => return Err(error),
+                super::task_work_flight::TaskStep::Done(Ok(ended)) => blocked.extend(ended),
+                super::task_work_flight::TaskStep::Busy => {}
+                super::task_work_flight::TaskStep::TimedOut => {
+                    crate::logging::warn_with_fields(
+                        "runtime.agent_lifecycle",
+                        "supervision sweep moved on from a task that did not settle in time; the next sweep asks again",
+                        serde_json::json!({"task_id": task_id, "agent_id": agent_id,
+                            "step": step.current().map(|(name, _)| name)}),
                     );
-                    Box::pin(
-                        self.finish_agent_task_settlement(Some((task.clone(), true)), &source),
-                    )
-                    .await?;
-                    continue;
-                }
-                // A turn that answered but was never settled lands here: assess
-                // it instead of blocking an answered task.
-                match self.owned.settle_answered_unsettled_turn(&task) {
-                    Ok(Some(settlement)) => {
-                        tracing::warn!(task_id=%task.task_id, prompt_id=%task.prompt_id, provider_run_id=?task.provider_run_id,
-                            "MP-08/MP-09/MP-10/MP-11 A03: supervisor assessed an answered turn whose end was never settled");
-                        let source = crate::session::PromptQueueItem::new(
-                            task.prompt_id.clone(),
-                            "kernel-supervisor",
-                            &task.agent_id,
-                            "",
-                            crate::session::PromptStatus::Completed,
-                        );
-                        Box::pin(self.finish_agent_task_settlement(Some(settlement), &source))
-                            .await?;
-                        continue;
-                    }
-                    Ok(None) => {}
-                    Err(error) => {
-                        tracing::warn!(%error, "MP-08/MP-09/MP-10/MP-11 A03: unsettled turn assessment failed; blocking")
-                    }
-                }
-                if let Some(ended) = ledger::end_failed_turn(
-                    &self.owned.durable_state_store,
-                    &task,
-                    "Interrupted before it finished. Resume it to continue where it stopped, or cancel it.".into(),
-                )? {
-                    blocked.push(ended);
                 }
             }
         }
@@ -1666,6 +1572,7 @@ impl KernelRuntimeState {
         let mut busy_recipients = Vec::new();
         let mut vault_wait_recipients = Vec::new();
         let mut held_work = Vec::new();
+        step.enter("the ledger commit");
         for (room, agent) in self
             .owned
             .durable_state_store
@@ -1725,11 +1632,14 @@ impl KernelRuntimeState {
             if self.owned.session_store.get_session(&task.room_id).is_err() {
                 continue;
             }
-            if task.state == ExecutionState::Blocked
-                && self
-                    .ensure_task_owner_interaction(task.clone())
-                    .await
-                    .is_err()
+            if task.state != ExecutionState::Blocked {
+                continue;
+            }
+            step.enter(format!("the owner decision of task {}", task.task_id));
+            if self
+                .ensure_task_owner_interaction(task.clone())
+                .await
+                .is_err()
             {
                 tracing::warn!(room_id=%task.room_id, agent_id=%task.agent_id, "MP-08/MP-09/MP-10/MP-11 A02: owner projection unavailable; other recipients continue");
             }
@@ -1740,6 +1650,9 @@ impl KernelRuntimeState {
         }
         // A rejected cold submission withdraws its fresh task. The inbox still
         // owns the work and must retry even when this recipient has no tasks.
+        // A delivery submits or steers a turn and projects the whole Room, which
+        // grows with the Room: each recipient's runs in its own work, so a Room of
+        // many agents never holds this sweep past its cadence.
         for (room, agent) in self
             .owned
             .durable_state_store
@@ -1748,12 +1661,353 @@ impl KernelRuntimeState {
             if self.owned.session_store.get_session(&room).is_err() {
                 continue;
             }
-            if let Err(error) = Box::pin(self.deliver_agent_inbox(&room, &agent)).await {
-                tracing::warn!(%error, room_id=%room, agent_id=%agent, "MP-08/MP-10/MP-11 A02: recipient delivery retained; other recipients continue");
-            }
-            let _ = self.owned.session_snapshot(&room);
+            self.spawn_task_work(format!("inbox:{room}:{agent}"), move |state| async move {
+                let delivered = Box::pin(state.deliver_agent_inbox(&room, &agent)).await;
+                let _ = state.owned.session_snapshot(&room);
+                delivered
+            });
         }
         Ok(())
+    }
+    /// One task of the sweep: settles its turn, its obligations and its queue. Returns the task it ended as interrupted.
+    async fn sweep_task(
+        &self,
+        task: AgentTaskExecution,
+        now: u64,
+    ) -> Result<Option<AgentTaskExecution>, DaemonError> {
+        self.owned
+            .agent_wakes
+            .hold_while_task_stall_fault_names(&task.agent_id)
+            .await;
+        let Ok(session) = self.owned.session_store.get_session(&task.room_id) else {
+            return Ok(None);
+        };
+        self.reconcile_failed_workflow_tasks(&task)?;
+        if task.state == ExecutionState::Done
+            && !self
+                .owned
+                .durable_state_store
+                .agent_task_terminal_recorded(&task)?
+            && self
+                .owned
+                .prompt_state_owner
+                .active_prompt_for_agent(&session, &task.agent_id)
+                .is_none()
+            && !self.owned.agent_task_resources_unsettled(&task)?
+        {
+            let answer = self.owned.public_agent_task_answer(&task)?;
+            self.publish_agent_task_completion(&task, None, answer)
+                .await?;
+        }
+        if let Some(check) = ledger::completion::evaluation(&task).filter(|e| {
+            task.state == ExecutionState::Working
+                && e.result.is_none()
+                && e.prompt_id == task.pending_prompt_id.as_deref().unwrap_or(&task.prompt_id)
+                && now >= e.deadline_ms
+        }) {
+            // Stopping the turn asks the worker, which may not answer: the check ends in its
+            // own work, and the sweep goes on with the other tasks.
+            let (task, prompt) = (task.clone(), check.prompt_id.clone());
+            self.spawn_task_work(
+                format!("goal-check:{}", task.task_id),
+                move |state| async move {
+                    if let CheckExpiry::Blocked(stopped) =
+                        state.expire_goal_check(&task, &prompt, now).await?
+                    {
+                        state.record_task_transition_notices([*stopped]);
+                    }
+                    Ok(())
+                },
+            );
+            return Ok(None);
+        }
+        if task.state == ExecutionState::Cancelled
+            && !self
+                .owned
+                .durable_state_store
+                .agent_task_terminal_recorded(&task)?
+        {
+            // The worker that holds the run may be gone: a cancellation that is not confirmed
+            // stays unsettled and is started again by the next sweep, apart from this one.
+            let cancelled = task.clone();
+            self.spawn_task_work(
+                format!("cancel:{}", task.task_id),
+                move |state| async move {
+                    Box::pin(state.cancel_agent_task_resources(&cancelled)).await
+                },
+            );
+        }
+        if task.state != ExecutionState::Working {
+            // Stop's own cleanup may not have read the held run yet: the stop the worker
+            // is owed is stored before the record that names the run goes.
+            if task.state == ExecutionState::Cancelled {
+                self.owe_held_run_a_stop(&task)?;
+            }
+            self.owned.background_holds.release(&task.task_id);
+        } else if self.owned.is_held_for_background_calls(&task.task_id) {
+            if self.owned.held_task_due(&task, now)? {
+                Box::pin(self.release_held_task(&task)).await?;
+            }
+            return Ok(None);
+        }
+        for obligation in task.obligations.iter().filter(|o| o.status == "open") {
+            let Some(source) = obligation.resource_id.as_ref() else {
+                continue;
+            };
+            // Deleting an agent that was never given work loses nothing.
+            if obligation.kind == "delegate"
+                && obligation.completion_task_id.is_none()
+                && self.owned.agent_store.get_agent(source).is_err()
+            {
+                self.owned
+                    .durable_state_store
+                    .agent_lifecycle(Operation::ReleaseSpawn {
+                        room: task.room_id.clone(),
+                        source: source.clone(),
+                    })?;
+                continue;
+            }
+            let outcome = match obligation.kind.as_str() {
+                "delegate" => {
+                    let child_task = match &obligation.completion_task_id {
+                        Some(id) => self
+                            .owned
+                            .durable_state_store
+                            .agent_tasks(Some(&task.room_id), Some(source))?
+                            .into_iter()
+                            .find(|t| &t.task_id == id),
+                        None => None,
+                    };
+                    // Neither a provider failure nor a finished turn settles resources
+                    // still owned by the exact child task: Stop must still reach them.
+                    match child_task {
+                        Some(ref child)
+                            if matches!(
+                                child.state,
+                                ExecutionState::Done | ExecutionState::Cancelled
+                            ) && self.owned.agent_task_resources_unsettled(child)? =>
+                        {
+                            None
+                        }
+                        _ if !self.owned.agent_store.get_agent(source).is_ok_and(|agent| {
+                            agent.state() != crate::agent::AgentState::Error
+                        }) =>
+                        {
+                            Some(false)
+                        }
+                        Some(child) => match child.state {
+                            ExecutionState::Done => Some(true),
+                            ExecutionState::Cancelled => Some(false),
+                            _ => None,
+                        },
+                        None => None,
+                    }
+                }
+                _ if obligation.tracks_workflow_run()
+                    && self
+                        .owned
+                        .workflow_agent_tasks_unsettled(&task.room_id, source)? =>
+                {
+                    None
+                }
+                _ if obligation.tracks_workflow_run() => self
+                    .owned
+                    .agent_workflow_obligation_outcome(&session, source)?,
+                super::HANDOFF_OBLIGATION_KIND => self.reconcile_handoff(&session, source).await,
+                _ => None,
+            };
+            if let Some(success) = outcome {
+                let terminal_task = if obligation.kind == "delegate" {
+                    self.owned
+                        .durable_state_store
+                        .agent_tasks(Some(&task.room_id), Some(source))?
+                        .into_iter()
+                        .find(|t| {
+                            obligation.completion_task_id.as_deref() == Some(t.task_id.as_str())
+                                && matches!(
+                                    t.state,
+                                    ExecutionState::Done | ExecutionState::Cancelled
+                                )
+                        })
+                } else {
+                    None
+                };
+                let public_answer = terminal_task
+                    .as_ref()
+                    .map(|t| self.owned.public_agent_task_answer(t))
+                    .transpose()?
+                    .flatten();
+                let workflow_source = if obligation.tracks_workflow_run() {
+                    self.owned.agent_workflow_source(&session, source)?
+                } else {
+                    None
+                };
+                let public_answer = public_answer.or_else(|| {
+                    workflow_source
+                        .as_ref()
+                        .filter(|run| {
+                            matches!(
+                                run.status(),
+                                crate::session::WorkflowRunStatus::Failed
+                                    | crate::session::WorkflowRunStatus::Stopped
+                            )
+                        })
+                        .map(super::agent_workflow_tasks::workflow_failure_answer)
+                });
+                let gate_answer = if source.starts_with("gate_") {
+                    self.owned.durable_state_store.gate_task_entry(session.id(),source)?.map(|(entry,_)|serde_json::json!({"kind":"workflow_entry","entry_id":entry.entry_id,"disposition":entry.disposition,"reason":entry.failure,"workflow_run_id":workflow_source.as_ref().map(|run|run.id()),"workflow_run_status":workflow_source.as_ref().map(|run|run.status())}))
+                } else {
+                    None
+                };
+                let public_answer = public_answer.or(gate_answer);
+                let occurrence = terminal_task
+                    .as_ref()
+                    .map(|t| format!("task-terminal-{}", t.task_id))
+                    .unwrap_or_else(|| {
+                        if let Some(run) = workflow_source.as_ref() {
+                            format!(
+                                "source-terminal-{source}-{}",
+                                run.completed_at_ms().unwrap_or(0)
+                            )
+                        } else {
+                            if source.starts_with("gate_") {
+                                format!("entry-terminal-{source}")
+                            } else {
+                                format!("source-lost-{source}")
+                            }
+                        }
+                    });
+                self.owned
+                    .durable_state_store
+                    .agent_lifecycle(Operation::SourceOutcome {
+                        now: crate::session::unix_epoch_ms(),
+                        public_answer,
+                        room: task.room_id.clone(),
+                        source: obligation.completion_source().unwrap_or(source).into(),
+                        occurrence,
+                        success,
+                    })?;
+            }
+        }
+        // A queue item is not a live executor. Recover the exact eligible
+        // head through normal provider/project admission; do not advance
+        // a different (possibly blocked) task on this task's authority.
+        // A leased agent's provider runs on its worker, where only the
+        // leased dispatch starts its queued prompts.
+        if task.state == ExecutionState::Working
+            && self
+                .owned
+                .agent_store
+                .get_agent(&task.agent_id)
+                .is_ok_and(|agent| agent.remote_execution().is_none())
+            && self
+                .owned
+                .prompt_state_owner
+                .active_prompt_for_agent(&session, &task.agent_id)
+                .is_none()
+            && self
+                .owned
+                .prompt_state_owner
+                .peek_next_queued_prompt(&session, &task.agent_id)
+                .is_some_and(|p| p.id() == task.prompt_id)
+            && Box::pin(
+                self.advance_project_queued_prompt_after_settlement(&task.room_id, &task.agent_id),
+            )
+            .await
+            .is_some()
+        {
+            return Ok(None);
+        }
+        let active = self
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, &task.agent_id)
+            .is_some()
+            // Local completion clears the queue's active prompt before
+            // writing its outcome. The exact active turn spans that gap.
+            || (task.wait.is_some()
+                && task
+                    .provider_run_id
+                    .as_deref()
+                    .and_then(|run| self.owned.active_turns.get(run))
+                    .is_some_and(|turn| {
+                        turn.session_id == task.room_id
+                            && turn.agent_id == task.agent_id
+                            && turn.prompt_id == task.prompt_id
+                    }));
+        let queued = session
+            .queued_prompts_for_agent(&task.agent_id)
+            .is_some_and(|q| {
+                q.iter().any(|p| {
+                    p.id() == task.prompt_id || task.pending_prompt_id.as_deref() == Some(p.id())
+                })
+            });
+        if ledger::lacks_live_executor(&task, now, active, queued)
+            && !self
+                .owned
+                .durable_state_store
+                .agent_has_live_wake_admission(&task, crate::session::unix_epoch_ms)?
+        {
+            // An assessment that already persisted its continuation only
+            // lacks the delivery: queue that exact intent, not a re-assessment.
+            if task.pending_prompt_id.is_some()
+                && ledger::completion::evaluation(&task).is_some_and(|e| e.result.is_some())
+            {
+                let source = crate::session::PromptQueueItem::new(
+                    task.prompt_id.clone(),
+                    "kernel-supervisor",
+                    &task.agent_id,
+                    "",
+                    crate::session::PromptStatus::Completed,
+                );
+                Box::pin(self.finish_agent_task_settlement(Some((task.clone(), true)), &source))
+                    .await?;
+                return Ok(None);
+            }
+            // Recover an answer or a completed yield before interrupting the task.
+            match self.owned.settle_answered_unsettled_turn(&task) {
+                Ok(Some(settlement)) => {
+                    crate::logging::warn_with_fields(
+                        "runtime.agent_lifecycle",
+                        "supervision sweep recovered an unsettled turn with completion evidence",
+                        serde_json::json!({"room_id": task.room_id, "agent_id": task.agent_id, "task_id": task.task_id,
+                            "prompt_id": task.prompt_id, "provider_run_id": task.provider_run_id}),
+                    );
+                    let source = crate::session::PromptQueueItem::new(
+                        task.prompt_id.clone(),
+                        "kernel-supervisor",
+                        &task.agent_id,
+                        "",
+                        crate::session::PromptStatus::Completed,
+                    );
+                    Box::pin(self.finish_agent_task_settlement(Some(settlement), &source)).await?;
+                    return Ok(None);
+                }
+                Ok(None) => {}
+                Err(error) => crate::logging::warn_with_fields(
+                    "runtime.agent_lifecycle",
+                    "unsettled turn assessment failed; ending the turn as interrupted",
+                    serde_json::json!({"task_id": task.task_id, "prompt_id": task.prompt_id,
+                        "error": crate::secret_redaction::redact_secrets(&error.to_string())}),
+                ),
+            }
+            if let Some(ended) = ledger::end_failed_turn(
+                &self.owned.durable_state_store,
+                &task,
+                "Interrupted before it finished. Resume it to continue where it stopped, or cancel it.".into(),
+            )? {
+                // The sweep found no live executor for a Working turn and no answer to settle it with.
+                crate::logging::warn_with_fields(
+                    "runtime.agent_lifecycle",
+                    "supervision sweep ended a turn with no live executor as interrupted",
+                    serde_json::json!({"room_id": ended.room_id, "agent_id": ended.agent_id, "task_id": ended.task_id,
+                        "prompt_id": ended.prompt_id, "provider_run_id": ended.provider_run_id,
+                        "state": ended.state, "last_progress_at_ms": task.last_progress_at_ms}),
+                );
+                return Ok(Some(ended));
+            }
+        }
+        Ok(None)
     }
 }
 

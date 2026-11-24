@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { drillDockerLabels } from "../../../scripts/lib/drill-docker-owner.mjs"
 import assert from "node:assert/strict"
 import { execFile } from "node:child_process"
 import { randomUUID } from "node:crypto"
@@ -162,7 +163,7 @@ async function stopAndCheck() {
   await checkStopped()
 }
 async function create() {
-  await docker("run", "-d", "--init", "--name", id,
+  await docker("run", "-d", ...drillDockerLabels(import.meta.url), "--init", "--name", id,
     "--memory", "768m", "--memory-swap", "768m", "--cpus", "1", "--pids-limit", "1024",
     "--security-opt", `seccomp=${path.join(source, "chromium-seccomp.json")}`,
     "--mount", `type=bind,src=${repo},dst=/src,readonly`,

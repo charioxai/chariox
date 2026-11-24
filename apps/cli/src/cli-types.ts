@@ -18,7 +18,6 @@ import type {
   CharioxEnvironmentConfig as KernelCharioxEnvironmentConfig,
   CharioxMcpServerConfig as KernelCharioxMcpServerConfig,
   CharioxScriptMetadata as KernelCharioxScriptMetadata,
-  CharioxSkillMetadata as KernelCharioxSkillMetadata,
   CharioxUserConfig as KernelCharioxUserConfig,
   CharioxUserConfigPayload as KernelCharioxUserConfigPayload,
   CharioxUserConfigSchemaPayload as KernelCharioxUserConfigSchemaPayload,
@@ -94,8 +93,6 @@ import type {
   QueuedPromptSteeredPayload as KernelQueuedPromptSteeredPayload,
   QueuedPromptUpdatedPayload as KernelQueuedPromptUpdatedPayload,
   ReadDirectoryTreeResult as KernelReadDirectoryTreeResult,
-  SkillImportOutcome as KernelSkillImportOutcome,
-  SkillImportSkip as KernelSkillImportSkip,
   RoomListAgentSummary as KernelWaitingRoomPublicAgentSummary,
   RoomListGitCredentialSummary as KernelWaitingRoomGitCredentialSummary,
   RoomListItemActivitySummary as KernelWaitingRoomPublicItemActivitySummary,
@@ -150,7 +147,6 @@ export type McpImportSkip = KernelMcpImportSkip
 
 export type McpImportOutcome = KernelMcpImportOutcome
 
-export type CharioxSkillMetadata = KernelCharioxSkillMetadata
 
 export type CharioxEnvironmentConfig = KernelCharioxEnvironmentConfig
 
@@ -166,9 +162,7 @@ export type ExtensionKind = KernelExtensionKind
 
 export type ExtensionGrant = KernelExtensionGrant
 
-export type SkillImportSkip = KernelSkillImportSkip
 
-export type SkillImportOutcome = KernelSkillImportOutcome
 
 export type RuntimeSession = KernelRuntimeSession & {
   processes?: import("@chariox/kernel-client/kernel-events").SessionProcess[]
@@ -217,7 +211,8 @@ export type RoomListWorkflowEndpointSummary = KernelWaitingRoomPublicWorkflowEnd
 
 export type WaitingRoomRelayStatusView = KernelRelayStatus
 
-export type WaitingRoomRemoteMachineView = KernelRemoteMachineRecord
+/** The TUI shows a reconnecting machine as not online; machines gone longer never reach it. */
+export type WaitingRoomRemoteMachineView = Omit<KernelRemoteMachineRecord, "presence"> & { online: boolean }
 
 export type WaitingRoomRemoteKernelView = KernelRelayKernelPresence
 
@@ -525,6 +520,14 @@ export function normalizeRuntimeSessionWithAgentActivity(payload: {
       agent_activity_revision?: number | null | undefined
     },
   ) as unknown as RuntimeSession)
+}
+
+export function normalizeRoomState(payload: Parameters<typeof normalizeRuntimeSessionWithAgentActivity>[0]): RuntimeSession {
+  const session = normalizeRuntimeSessionWithAgentActivity(payload)
+  // Preserve omission so a lean Room update cannot clear separately loaded editor data.
+  if (payload.session.workflows === undefined) delete session.workflows
+  if (payload.session.workflow_runs === undefined) delete session.workflow_runs
+  return session
 }
 
 export function normalizeRuntimeSessions(sessions: RuntimeSession[]): RuntimeSession[] {

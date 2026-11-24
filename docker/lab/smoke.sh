@@ -6,9 +6,7 @@ if ! command -v docker >/dev/null 2>&1; then
   exit 127
 fi
 
-compose=(docker compose -f docker/lab/docker-compose.yml)
-
-"${compose[@]}" up -d --build relay worker-a worker-b
+"$(dirname "${BASH_SOURCE[0]}")/up.sh" --build
 
 for container in chariox-relay chariox-worker-a chariox-worker-b; do
   running="$(docker inspect -f '{{.State.Running}}' "$container")"

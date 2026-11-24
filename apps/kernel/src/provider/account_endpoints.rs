@@ -11,6 +11,8 @@ use crate::runtime::{child_shutdown, stall_watchdog};
 pub(super) struct ManagedAccountEndpoint {
     pub endpoint: String,
     pub child: Child,
+    credential_revision: Option<String>,
+    pending_login: std::sync::Weak<()>,
     #[cfg(target_os = "linux")]
     processes: crate::runtime::owned_process_signals::OwnedProcessHandles,
     #[cfg(target_os = "linux")]
@@ -37,6 +39,8 @@ impl ManagedAccountEndpoint {
         Self {
             endpoint,
             child,
+            credential_revision: None,
+            pending_login: Default::default(),
             #[cfg(target_os = "linux")]
             processes: Default::default(),
             #[cfg(target_os = "linux")]
@@ -97,8 +101,14 @@ type Reply<T> = SyncSender<Result<T, DaemonError>>;
 type Launch = Box<dyn FnOnce() -> Result<ManagedAccountEndpoint, DaemonError> + Send>;
 
 enum Command {
+    RetainLogin {
+        key: String,
+        reply: Reply<std::sync::Arc<()>>,
+    },
     Ensure {
         key: String,
+        scope: String,
+        credential_revision: Option<String>,
         healthy: fn(&str) -> bool,
         launch: Launch,
         timeout: Duration,
@@ -127,6 +137,9 @@ pub(super) struct AccountEndpoints {
 const REPLY_LIMIT: Duration = Duration::from_secs(30);
 
 impl AccountEndpoints {
+    pub fn retain_login(&self, key: String) -> Result<std::sync::Arc<()>, DaemonError> {
+        self.request(|reply| Command::RetainLogin { key, reply })
+    }
     pub fn new(name: &'static str) -> Self {
         let (sender, receiver) = mpsc::sync_channel(64);
         std::thread::Builder::new()
@@ -160,8 +173,22 @@ impl AccountEndpoints {
         timeout: Duration,
         launch: impl FnOnce() -> Result<ManagedAccountEndpoint, DaemonError> + Send + 'static,
     ) -> Result<String, DaemonError> {
+        self.ensure_scoped(key.clone(), key, None, healthy, timeout, launch)
+    }
+
+    pub fn ensure_scoped(
+        &self,
+        key: String,
+        scope: String,
+        credential_revision: Option<String>,
+        healthy: fn(&str) -> bool,
+        timeout: Duration,
+        launch: impl FnOnce() -> Result<ManagedAccountEndpoint, DaemonError> + Send + 'static,
+    ) -> Result<String, DaemonError> {
         self.request(|reply| Command::Ensure {
             key,
+            scope,
+            credential_revision,
             healthy,
             timeout,
             launch: Box::new(launch),
@@ -194,6 +221,7 @@ impl AccountEndpoints {
 
 fn supervise(name: &'static str, receiver: Receiver<Command>) {
     let mut endpoints = BTreeMap::<String, ManagedAccountEndpoint>::new();
+    let mut aliases = BTreeMap::<String, String>::new();
     let mut unreaped = VecDeque::<ManagedAccountEndpoint>::new();
     loop {
         // Retry one retained tree per iteration, so transient inspection or FD
@@ -207,32 +235,62 @@ fn supervise(name: &'static str, receiver: Receiver<Command>) {
             }
         }
         match receiver.recv_timeout(Duration::from_millis(250)) {
+            Ok(Command::RetainLogin { key, reply }) => {
+                let scope = aliases.get(&key).cloned().unwrap_or(key);
+                let result = endpoints
+                    .get_mut(&scope)
+                    .map(|endpoint| {
+                        let lease = std::sync::Arc::new(());
+                        endpoint.pending_login = std::sync::Arc::downgrade(&lease);
+                        lease
+                    })
+                    .ok_or_else(|| DaemonError::LocalTransport {
+                        operation: "retain_account_login",
+                        message: "The account helper stopped; start sign-in again".into(),
+                    });
+                let _ = reply.send(result);
+            }
             Ok(Command::Ensure {
                 key,
+                scope,
+                credential_revision,
                 healthy,
                 launch,
                 timeout,
                 reply,
             }) => {
-                let result = ensure(
-                    name,
-                    &mut endpoints,
-                    &mut unreaped,
-                    key,
-                    healthy,
-                    timeout,
-                    launch,
-                );
+                let previous = aliases.insert(key, scope.clone());
+                let result = (|| {
+                    if let Some(previous) = previous.filter(|previous| {
+                        previous != &scope && !aliases.values().any(|value| value == previous)
+                    }) {
+                        if let Some(endpoint) = endpoints.remove(&previous) {
+                            stop(name, endpoint, &mut unreaped)?;
+                        }
+                    }
+                    ensure(
+                        name,
+                        &mut endpoints,
+                        &mut unreaped,
+                        (scope, credential_revision),
+                        healthy,
+                        timeout,
+                        launch,
+                    )
+                })();
                 let _ = reply.send(result);
             }
             Ok(Command::Invalidate { key, reply }) => {
-                let result = match endpoints.remove(&key) {
+                let scope = aliases.get(&key).cloned().unwrap_or(key);
+                aliases.retain(|_, value| value != &scope);
+                let result = match endpoints.remove(&scope) {
                     Some(endpoint) => stop(name, endpoint, &mut unreaped),
                     None => Ok(()),
                 };
                 let _ = reply.send(result);
             }
             Ok(Command::Shutdown { reply }) => {
+                aliases.clear();
                 let mut result = Ok(());
                 for (_, endpoint) in std::mem::take(&mut endpoints) {
                     if let Err(error) = stop(name, endpoint, &mut unreaped) {
@@ -270,14 +328,20 @@ fn ensure(
     name: &'static str,
     endpoints: &mut BTreeMap<String, ManagedAccountEndpoint>,
     unreaped: &mut VecDeque<ManagedAccountEndpoint>,
-    key: String,
+    identity: (String, Option<String>),
     healthy: fn(&str) -> bool,
     timeout: Duration,
     launch: Launch,
 ) -> Result<String, DaemonError> {
+    let (key, credential_revision) = identity;
     let _watch = stall_watchdog::watch(name, "ensure");
     if let Some(endpoint) = endpoints.remove(&key) {
-        if healthy(&endpoint.endpoint) {
+        // A device challenge belongs to this helper. Let it finish before a
+        // file revision retires the helper; its completion is the login proof.
+        if (endpoint.credential_revision == credential_revision
+            || endpoint.pending_login.strong_count() > 0)
+            && healthy(&endpoint.endpoint)
+        {
             let address = endpoint.endpoint.clone();
             endpoints.insert(key, endpoint);
             return Ok(address);
@@ -285,6 +349,7 @@ fn ensure(
         stop(name, endpoint, unreaped)?;
     }
     let mut endpoint = launch()?;
+    endpoint.credential_revision = credential_revision;
     let diagnostic =
         super::startup_diagnostic::ProviderStartupDiagnostic::capture(&mut endpoint.child);
     let deadline = Instant::now() + timeout;

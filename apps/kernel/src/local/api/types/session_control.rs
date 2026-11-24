@@ -184,6 +184,17 @@ pub struct GetSessionStateRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListFinishedRoomTasksRequest {
+    pub session_id: String,
+    pub before: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GetMachineRoomResourcesRequest {
+    pub session_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UpdateMetaagentTaskRequest {
     pub session_id: String,
     pub metaagent_id: String,
@@ -220,6 +231,13 @@ pub struct ListSessionsRequest;
 pub struct ListProjectsRequest {
     #[serde(default)]
     pub include_archived: bool,
+}
+
+/// MP-08 / MP-10 / MP-11: local protocol 533 creates a named Project without folders.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CreateProjectRequest {
+    pub name: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

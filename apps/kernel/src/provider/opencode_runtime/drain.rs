@@ -105,7 +105,10 @@ pub(in crate::provider) fn drain_opencode_events(
                     .insert(info.id.clone(), info.parent_id.clone());
                 if info.session_id == state.session_id
                     && info.role == "assistant"
-                    && info.parent_id.as_deref() == drain_active_user_message_id.as_deref()
+                    && state.matches_prompt_parent(
+                        drain_active_user_message_id.as_deref(),
+                        info.parent_id.as_deref(),
+                    )
                 {
                     if let Some(message) = info.terminal_error_message() {
                         record_terminal_failure(
@@ -208,6 +211,7 @@ pub(in crate::provider) fn drain_opencode_events(
                                     state,
                                     &messages,
                                     drain_active_user_message_id.as_deref(),
+                                    false,
                                 )
                             })
                         else {
@@ -268,6 +272,7 @@ pub(in crate::provider) fn drain_opencode_events(
                                 state,
                                 &messages,
                                 drain_active_user_message_id.as_deref(),
+                                true,
                             ) {
                                 record_terminal_failure(
                                     state,
@@ -377,6 +382,7 @@ pub(in crate::provider) fn drain_opencode_events(
                         state,
                         &snapshot.messages,
                         drain_active_user_message_id.as_deref(),
+                        snapshot.status.kind == "idle",
                     );
                     if let Some(message) = snapshot_failure {
                         record_terminal_failure(
@@ -488,6 +494,7 @@ pub(in crate::provider) fn drain_opencode_events(
                     state,
                     &messages,
                     drain_active_user_message_id.as_deref(),
+                    true,
                 ) {
                     record_terminal_failure(
                         state,

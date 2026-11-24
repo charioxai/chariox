@@ -90,10 +90,18 @@ async fn a12_external_sudo_keeps_the_agent_decision_quota() {
             let Err(error) = f.state.request_kernel_sudo(&grant, request).await else {
                 panic!("an external requester cannot spend reserved owner capacity");
             };
+            let message = error.to_string();
             assert!(
-                error.to_string().contains("Kernel decision limit reached"),
-                "{error}"
+                message.contains("Kernel decision limit reached"),
+                "{message}"
             );
+            // The refusal names every card that holds the limit, so the caller can clear them.
+            for index in 0..cards {
+                assert!(
+                    message.contains(&format!("agent-cap-control-{index} (Agent decision)")),
+                    "{message}"
+                );
+            }
         } else {
             let state = f.state.clone();
             let pending =
@@ -270,7 +278,7 @@ pub(super) fn fixture_for_owner(
     owner: &str,
 ) -> Fixture {
     let worktree = crate::test_support::TestWorktree::new("sudo-turn");
-    let vault = worktree.path().join("test-vault.json");
+    let vault = worktree.path().join(".vault").join("test-vault.json");
     crate::secret::create_chariox_encrypted_vault_for_test(&vault, PASSKEY).unwrap();
     let mut config = crate::config::DaemonConfig::for_tests();
     config.user_config.providers.default = Some("dev-stub".into());
@@ -371,8 +379,15 @@ async fn sudo_room_tools_preserve_host_authority_and_revocation() {
         "room tools alone must not confer sudo authority"
     );
     let turn = running(&f);
-    let other =
-        crate::session::RuntimeSession::new("sudo-room-tools-other", None, "w", "wt", "m", "k");
+    let other = crate::session::RuntimeSession::new(
+        "sudo-room-tools-other",
+        crate::session::ProjectId::test(),
+        None,
+        "w",
+        "wt",
+        "m",
+        "k",
+    );
     f.state
         .owned
         .session_store
@@ -978,7 +993,7 @@ async fn sudo_rotation_cancels_authorized_queue_before_idle_dispatch() {
     f.state
         .change_vault_passphrase(
             "local",
-            &f._worktree.path().join("test-vault.json"),
+            &f._worktree.path().join(".vault/test-vault.json"),
             zeroize::Zeroizing::new(PASSKEY.into()),
             zeroize::Zeroizing::new("rotated sudo fixture".into()),
         )
@@ -1090,8 +1105,15 @@ async fn sudo_cached_mcp_catalog_never_grants_authority_without_the_live_turn() 
         .unwrap();
     assert!(result.ok);
     assert!(result.payload.get("SessionsListed").is_some());
-    let mut other =
-        crate::session::RuntimeSession::new("sudo-router-other", None, "w", "wt", "m", "k");
+    let mut other = crate::session::RuntimeSession::new(
+        "sudo-router-other",
+        crate::session::ProjectId::test(),
+        None,
+        "w",
+        "wt",
+        "m",
+        "k",
+    );
     other.set_alias(Some("sudo-other-alias".into()));
     f.state
         .owned
@@ -1132,7 +1154,7 @@ async fn sudo_cached_mcp_catalog_never_grants_authority_without_the_live_turn() 
             .authorize_sudo_request(
                 &turn.entry_id,
                 &LocalDaemonRequest::SetUserConfigValue(SetUserConfigValueRequest {
-                    path: "workflow.session_default_max_agents".into(),
+                    path: "workflow.max_queues_per_workflow".into(),
                     value: "16".into()
                 })
             )
@@ -1203,7 +1225,12 @@ async fn sudo_fresh_popup_starts_one_separate_turn_through_normal_admission() {
         panic!("sudo should start separately");
     };
     assert_ne!(started.id(), prompt.interaction_id);
-    assert_eq!(started.prompt(), "protected task");
+    let session = f.state.session_snapshot(&prompt.session_id).await.unwrap();
+    let active = session
+        .active_prompt_for_agent(started.target_agent_id())
+        .unwrap();
+    assert_eq!(active.id(), started.id());
+    assert_eq!(active.prompt(), "protected task");
     let events = f
         .state
         .owned
@@ -1667,7 +1694,15 @@ async fn external_sudo_cross_session_request_is_allowed_and_terminal_cannot_requ
         .request_kernel_sudo("missing", request.clone())
         .await
         .is_err());
-    let other = crate::session::RuntimeSession::new("ungranted", None, "w", "wt", "m", "k");
+    let other = crate::session::RuntimeSession::new(
+        "ungranted",
+        crate::session::ProjectId::test(),
+        None,
+        "w",
+        "wt",
+        "m",
+        "k",
+    );
     f.state.owned.session_store.write().restore_session(other);
     let grant = f.state.insert_access_grant_for_test("ungranted");
     assert!(f
@@ -1702,7 +1737,7 @@ async fn sudo_rotation_interrupts_running_turn_and_revokes_grant() {
     f.state
         .change_vault_passphrase(
             "local",
-            &f._worktree.path().join("test-vault.json"),
+            &f._worktree.path().join(".vault/test-vault.json"),
             zeroize::Zeroizing::new(PASSKEY.into()),
             zeroize::Zeroizing::new("rotated fixture".into()),
         )
@@ -2298,7 +2333,7 @@ async fn terminal_commands_use_only_the_exact_live_sudo_turn() {
             .is_err(),
         "terminal approval was bypassed after sudo ended"
     );
-    f.state.owned.room_terminals.end_session(&turn.session_id);
+    f.state.owned.room_terminals.end_scope(&turn.session_id[..]);
 }
 
 #[test]

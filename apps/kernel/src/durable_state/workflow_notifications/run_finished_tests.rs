@@ -30,6 +30,7 @@ fn run_source(f: &Fixture, w: &str) -> WorkflowNotificationSource {
                 name: naming::workflow_name(&workflow),
                 exit_ordinal: 0,
                 display_name: String::new(),
+                options: Vec::new(),
             },
             workflow_json: encode(&workflow).unwrap(),
         }))
@@ -339,6 +340,7 @@ fn the_person_is_alerted_once_for_a_run_that_needs_them_and_an_agent_responsible
                 name: "Agent needs your action".into(),
                 exit_ordinal: 0,
                 display_name: "Agent needs your action".into(),
+                options: Vec::new(),
             },
             workflow_json: String::new(),
         }))

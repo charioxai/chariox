@@ -516,13 +516,17 @@ fn summarize_metaagent_command_prompt_outcome(
 fn summarize_metaagent_command_prompt(
     prompt: &crate::session::PromptQueueItem,
 ) -> serde_json::Value {
-    serde_json::json!({
+    let mut summary = serde_json::json!({
         "id": prompt.id(),
         "target_agent_id": prompt.target_agent_id(),
         "status": prompt.status(),
         "workflow_run_id": prompt.workflow_run_id(),
         "workflow_node_run_id": prompt.workflow_node_run_id(),
-    })
+    });
+    if let Some(reason) = prompt.launch_wait() {
+        summary["launch_wait"] = serde_json::Value::String(reason.to_string());
+    }
+    summary
 }
 
 fn summarize_metaagent_command_agent_activity(
@@ -984,6 +988,7 @@ impl KernelRuntimeOwnedState {
             prompt.workflow_run_id(),
             prompt.workflow_node_run_id(),
             Some(prompt.created_at_ms()),
+            None,
         )?;
         let mut dispatches = WorkflowPromptDispatches::default();
         dispatches.local.push(crate::app::KernelPromptDispatch {

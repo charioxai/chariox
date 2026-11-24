@@ -156,3 +156,55 @@ fn concurrent_binary_admissions_cannot_overbook() {
         .collect::<Vec<_>>();
     assert_eq!(results.iter().filter(|r| r.is_ok()).count(), 1);
 }
+
+#[tokio::test]
+async fn job_admission_still_waits_for_managed_memory() {
+    let directory = TempDir::new();
+    let service = limited(2 * 1024 * 1024 * 1024, 1 << 40);
+    let busy = service
+        .inner
+        .admission
+        .reserve_with_memory(
+            "busy-command",
+            &["cat".into()],
+            directory.path(),
+            true,
+            service.inner.admission.capacity(),
+        )
+        .unwrap();
+    let id = service
+        .open_job_as(
+            "room",
+            "owner",
+            directory.path(),
+            &["/bin/true".into()],
+            &crate::local::JobNeeds {
+                memory_gib: Some(1),
+                cpus: None,
+            },
+            None,
+            Some("agent".into()),
+        )
+        .unwrap();
+    queued(&service, &id).await;
+    drop(busy);
+    let launched = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if service
+                .list("room")
+                .iter()
+                .any(|exec| exec.exec_id == id && exec.state == ExecState::Running)
+            {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    let observed = service.list("room");
+    service.close("room", &id).unwrap();
+    assert!(
+        launched.is_ok(),
+        "releasing managed memory admits the queued job: {observed:?}"
+    );
+}

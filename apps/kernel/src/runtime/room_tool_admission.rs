@@ -46,9 +46,6 @@ pub(crate) fn resolve_agent<'a>(
     Ok(target)
 }
 
-/// Bounds the walk up the parent edges so a corrupt cycle cannot loop.
-const TREE_WALK_LIMIT: usize = 16;
-
 /// A caller controls every agent below it, at any depth, and nothing else.
 /// Membership only: the permission level or mode of either agent never decides.
 pub(crate) fn in_subtree(
@@ -56,20 +53,12 @@ pub(crate) fn in_subtree(
     target: &AgentInstance,
     agents: &[AgentInstance],
 ) -> Result<(), DaemonError> {
-    if target.session_id() == actor.session_id() && target.id() != actor.id() {
-        let mut current = target;
-        for _ in 0..TREE_WALK_LIMIT {
-            let Some(parent_id) = current.parent_agent_id() else {
-                break;
-            };
-            if parent_id == actor.id() {
-                return Ok(());
-            }
-            let Some(parent) = agents.iter().find(|agent| agent.id() == parent_id) else {
-                break;
-            };
-            current = parent;
-        }
+    if target.session_id() == actor.session_id()
+        && crate::agent::authority_limit::ancestors(target, agents)
+            .iter()
+            .any(|parent| parent.id() == actor.id())
+    {
+        return Ok(());
     }
     Err(denied(
         "only the agents above an agent in this room can control it",
@@ -208,6 +197,9 @@ pub(crate) fn command(tokens: &[String]) -> Result<(), DaemonError> {
             Ok(())
         }
         Some("session") if tokens.get(1).map(String::as_str) == Some("overview") => Ok(()),
+        Some("kernel") if matches!(tokens, [_, verb] if verb == "status" || verb == "list-local") => {
+            Ok(())
+        }
         // What `--room` and `--slice` accept for the caller; the slice lifecycle stays out.
         Some("room")
             if matches!(

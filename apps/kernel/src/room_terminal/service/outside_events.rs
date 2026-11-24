@@ -84,7 +84,12 @@ fn completion(
     end: &super::super::terminal::ProgramEnd,
 ) -> crate::durable_state::agent_lifecycle::outside::TerminalCompletion {
     crate::durable_state::agent_lifecycle::outside::TerminalCompletion {
-        session: terminal.record.session_id.clone(),
+        session: terminal
+            .record
+            .scope
+            .room_id()
+            .expect("only a Room's terminal completes outside")
+            .to_string(),
         agent: match &terminal.record.opened_by {
             TerminalActor::Agent(id) => Some(id.clone()),
             _ => None,

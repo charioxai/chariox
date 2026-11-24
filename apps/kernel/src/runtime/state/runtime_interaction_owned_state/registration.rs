@@ -1,4 +1,11 @@
 use super::*;
+use crate::runtime::native_interaction_bridge::CodexApprovalRequest;
+
+enum InteractionSource<'a> {
+    Local,
+    CodexWorkspaceApproval(&'a CodexApprovalRequest),
+    Forwarded(&'a crate::transport::relay_peer::RemoteNativeInteractionContext),
+}
 
 impl KernelRuntimeOwnedState {
     pub(in crate::runtime::state) fn register_runtime_interaction(
@@ -10,6 +17,47 @@ impl KernelRuntimeOwnedState {
         forwarding: Option<&crate::transport::relay_peer::RemoteNativeInteractionContext>,
         terminal_credential_owner: Option<&str>,
     ) -> Result<(), DaemonError> {
+        self.register_interaction(
+            session_id,
+            interaction,
+            responder,
+            kernel_operation_owner,
+            terminal_credential_owner,
+            forwarding.map_or(InteractionSource::Local, InteractionSource::Forwarded),
+        )
+    }
+
+    pub(in crate::runtime::state) fn register_codex_workspace_approval(
+        &self,
+        session_id: &str,
+        interaction: crate::session::RuntimeInteraction,
+        responder: tokio::sync::oneshot::Sender<super::super::PendingInteractionResolution>,
+        request: &CodexApprovalRequest,
+    ) -> Result<(), DaemonError> {
+        self.register_interaction(
+            session_id,
+            interaction,
+            responder,
+            None,
+            None,
+            InteractionSource::CodexWorkspaceApproval(request),
+        )
+    }
+
+    fn register_interaction(
+        &self,
+        session_id: &str,
+        interaction: crate::session::RuntimeInteraction,
+        responder: tokio::sync::oneshot::Sender<super::super::PendingInteractionResolution>,
+        kernel_operation_owner: Option<&str>,
+        terminal_credential_owner: Option<&str>,
+        source: InteractionSource<'_>,
+    ) -> Result<(), DaemonError> {
+        let (forwarding, codex_approval) = match source {
+            InteractionSource::Forwarded(context) => (Some(context), None),
+            InteractionSource::CodexWorkspaceApproval(request) => (None, Some(request)),
+            InteractionSource::Local => (None, None),
+        };
         let _admission = self.begin_managed_activity_admission()?;
         self.sweep_stale_task_owner_interactions()?;
         let _mutation = self
@@ -18,6 +66,9 @@ impl KernelRuntimeOwnedState {
             .lock()
             .map_err(|_| interaction_error("Interaction store is unavailable"))?;
         self.pending_interactions.prune_abandoned_kernel_owners();
+        if kernel_operation_owner.is_some() {
+            self.reclaim_kernel_decisions_locked(false);
+        }
         if !interaction.valid_subject()
             || interaction.id().trim().is_empty()
             || interaction.id().len() > 128
@@ -114,6 +165,12 @@ impl KernelRuntimeOwnedState {
                 });
             }
         }
+        // The Vault unlock card belongs to the Room, not to the turn that first needed the
+        // Vault: it keeps waiting for the person after that turn ends.
+        let vault_unlock_card = interaction
+            .choices()
+            .iter()
+            .any(|choice| choice.vault_unlock().is_some());
         let activity_mutation = self.begin_managed_activity_mutation();
         let mut sessions = self.session_store.write();
         let mut session = sessions.get_session(session_id)?.clone();
@@ -121,9 +178,11 @@ impl KernelRuntimeOwnedState {
             owner != session.owner_user_id()
                 || kernel_operation_owner.is_some()
                 || interaction.agent_id().is_none()
-                || !interaction
-                    .timeout_sec()
-                    .is_some_and(|seconds| (1..=3600).contains(&seconds))
+                || !match interaction.timeout_sec() {
+                    Some(seconds) => (1..=3600).contains(&seconds),
+                    // The Vault unlock card waits for as long as the person needs.
+                    None => vault_unlock_card,
+                }
         }) {
             return Err(interaction_error("Invalid terminal credential prompt"));
         }
@@ -167,7 +226,7 @@ impl KernelRuntimeOwnedState {
             _ => {
                 return Err(interaction_error(
                     "Interaction subject does not match its registration authority",
-                ))
+                ));
             }
         }
         // MP-11: bind both review forms to the enrolled human, while leaving
@@ -260,7 +319,9 @@ impl KernelRuntimeOwnedState {
                 sessions.restore_session(session.clone());
             }
             drop(pending);
-            if let Err(error) = self.ensure_kernel_decision_capacity(owner, &interaction) {
+            if let Err(error) = self.ensure_kernel_decision_capacity(owner, &interaction, &|id| {
+                sessions.get_session(id).ok()
+            }) {
                 drop(sessions);
                 activity_mutation.record();
                 self.session_snapshot(session_id)?;
@@ -285,7 +346,7 @@ impl KernelRuntimeOwnedState {
             return Err(interaction_error(super::INTERACTION_ALREADY_PENDING));
         }
         let agent_lifetime = lifetime_agent.map(|agent_id| {
-            if interaction.asking_task_id().is_some() {
+            if interaction.asking_task_id().is_some() || vault_unlock_card {
                 return super::super::PendingAgentInteractionLifetime {
                     agent_id: agent_id.into(),
                     prompt_id: None,
@@ -390,6 +451,7 @@ impl KernelRuntimeOwnedState {
         )?;
         let mut pending = super::super::PendingInteraction {
             checking_answer: Default::default(),
+            codex_approval_transfer: codex_approval.map(|request| request.transfer.clone()),
             goal_approval: None,
             async_task_id: interaction.asking_task_id().map(str::to_owned),
             kernel_wide_interaction: None,
@@ -410,13 +472,26 @@ impl KernelRuntimeOwnedState {
             holder_tenure: 0,
             responder: std::sync::Arc::new(std::sync::Mutex::new(Some(responder))),
         };
-        pending.holder = self.decision_holder_at_raise(&session, &pending, &interaction);
-        // Registered again after a restart, a question keeps the holder it was handed to.
-        if let Some((holder, tenure)) =
-            self.restored_decision_holder(&session, &pending, &interaction)?
-        {
-            pending.holder = holder;
-            pending.holder_tenure = tenure;
+        let adopted = codex_approval.and_then(|request| request.adopted.as_ref());
+        if let Some(adopted) = adopted {
+            pending.holder = adopted
+                .holder_agent_id
+                .as_deref()
+                .filter(|holder| self.holder_may_answer(&sessions, &pending, &interaction, holder))
+                .map_or(super::super::DecisionHolder::User, |holder| {
+                    super::super::DecisionHolder::Agent(holder.to_string())
+                });
+            // The previous holder's delivery was closed at shutdown.
+            pending.holder_tenure = adopted.holder_tenure.saturating_add(1);
+        } else {
+            pending.holder = self.decision_holder_at_raise(&sessions, &pending, &interaction);
+            // Registered again after a restart, a question keeps the holder it was handed to.
+            if let Some((holder, tenure)) =
+                self.restored_decision_holder(&sessions, &pending, &interaction)?
+            {
+                pending.holder = holder;
+                pending.holder_tenure = tenure;
+            }
         }
         // The user sees a sub-agent's decision in its top parent's panel from the start, also while
         // a parent agent holds it: the first answer, the holder's or the user's, wins.
@@ -440,7 +515,11 @@ impl KernelRuntimeOwnedState {
             }
             return Ok(());
         }
-        if pending.terminal_credential_owner.is_none() && pending.kernel_operation_owner.is_none() {
+        if let Some(adopted) = adopted {
+            pending.goal_approval = adopted.goal.clone();
+        } else if pending.terminal_credential_owner.is_none()
+            && pending.kernel_operation_owner.is_none()
+        {
             pending.goal_approval = self.begin_goal_native_approval(
                 session_id,
                 &interaction,

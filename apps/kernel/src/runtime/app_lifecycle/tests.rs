@@ -111,6 +111,8 @@ fn make_control(
         fail_health: false,
         lifecycle: None,
         fail_migration: false,
+        prepare_delay: Duration::ZERO,
+        budget: None,
         stop_after_commit: false,
         observations: observations.clone(),
     });
@@ -171,6 +173,8 @@ impl AppLifecycleService {
             fail_health: false,
             lifecycle: Some(mode),
             fail_migration: false,
+            prepare_delay: Duration::ZERO,
+            budget: None,
             stop_after_commit: false,
             observations: observations.clone(),
         });
@@ -1245,5 +1249,21 @@ fn an_expired_operation_budget_reports_a_deadline_not_a_stop() {
     assert_eq!(
         LifecycleError::from(AppOperationStopped::Cancelled),
         LifecycleError::Stopped
+    );
+}
+
+#[test]
+fn an_expired_budget_names_the_step_it_ran_out_in() {
+    assert_eq!(
+        LifecycleError::Deadline.failure_code(Step::Prepare),
+        "app_lifecycle_deadline_prepare"
+    );
+    assert_eq!(
+        LifecycleError::Deadline.failure_code(Step::Commit),
+        "app_lifecycle_deadline_commit"
+    );
+    assert_eq!(
+        LifecycleError::Health.failure_code(Step::Commit),
+        "app_lifecycle_health"
     );
 }

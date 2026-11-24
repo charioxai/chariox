@@ -238,6 +238,8 @@ fn the_trigger_command_names_a_source_of_another_kernel_by_id_or_name_with_a_pro
                     agent_id: AGENT.into(),
                     source: crate::local::AgentTriggerSourceRequest::Notification {
                         source: chosen,
+                        options: Vec::new(),
+                        once: false,
                     },
                     busy_policy: None,
                     prompt,

@@ -10,6 +10,8 @@ use crate::provider::{LaunchProviderRequest, RuntimeProviderRun};
 use zeroize::{Zeroize, Zeroizing};
 
 pub(crate) const CLAUDE_MCP_CONFIG_PLACEHOLDER: &str = "chariox://claude-mcp-config";
+/// The name Claude Code knows the kernel's runtime tool server by.
+pub(crate) const CLAUDE_RUNTIME_MCP_SERVER: &str = "chariox";
 pub(crate) const CLAUDE_RUNTIME_FILES_PREFIX: &str = "chariox-claude-remote-native-";
 const CLAUDE_MCP_CONFIG_FILE_NAME: &str = "mcp-config.json";
 /// Claude Code's per-server `timeout` for the Chariox runtime MCP server, in
@@ -263,7 +265,7 @@ fn claude_mcp_config(
     }
     if let (Some(url), Some(token)) = (runtime_mcp_url, runtime_mcp_auth_token) {
         mcp_servers.insert(
-            "chariox".to_string(),
+            CLAUDE_RUNTIME_MCP_SERVER.to_string(),
             serde_json::json!({
                 "type": "http",
                 "url": url,

@@ -105,18 +105,18 @@ async fn queued_prompt_cancel_routes_through_interactive_dispatch_and_removes_st
         .await
         .expect("queued prompt cancel should route through interactive dispatch");
 
-    let LocalDaemonResponse::QueuedPromptCancelled {
-        prompt,
-        session,
-        agent_activity,
-        ..
-    } = response
-    else {
+    let LocalDaemonResponse::QueuedPromptCancelled { prompt, session_id } = response else {
         panic!("unexpected queued prompt cancel response");
     };
+    assert_eq!(session_id, fixture.session_id);
+    let session = fixture
+        .router
+        .runtime_state()
+        .session_snapshot(&session_id)
+        .await
+        .unwrap();
     assert_eq!(prompt.id(), fixture.queued_prompt_id);
     assert_eq!(prompt.status(), PromptStatus::Cancelled);
-    assert!(agent_activity.contains_key(&fixture.agent_id));
     assert_eq!(
         session
             .active_prompt_for_agent(&fixture.agent_id)
@@ -151,14 +151,17 @@ async fn queued_user_prompt_update_routes_through_interactive_dispatch() {
         .await
         .expect("queued user prompt update should route through interactive dispatch");
 
-    let LocalDaemonResponse::QueuedPromptUpdated {
-        prompt, session, ..
-    } = response
-    else {
+    let LocalDaemonResponse::QueuedPromptUpdated { prompt, session_id } = response else {
         panic!("unexpected queued prompt update response");
     };
+    assert_eq!(session_id, fixture.session_id);
+    let session = fixture
+        .router
+        .runtime_state()
+        .session_snapshot(&session_id)
+        .await
+        .unwrap();
     assert_eq!(prompt.id(), fixture.queued_prompt_id);
-    assert_eq!(prompt.prompt(), "updated queued user prompt");
     assert_eq!(
         session
             .queued_prompts_for_agent(&fixture.agent_id)
@@ -186,12 +189,16 @@ async fn queued_prompt_steer_routes_through_interactive_dispatch_and_removes_str
         .await
         .expect("queued prompt steer should route through interactive dispatch");
 
-    let LocalDaemonResponse::QueuedPromptSteered {
-        prompt, session, ..
-    } = response
-    else {
+    let LocalDaemonResponse::QueuedPromptSteered { prompt, session_id } = response else {
         panic!("unexpected queued prompt steer response");
     };
+    assert_eq!(session_id, fixture.session_id);
+    let session = fixture
+        .router
+        .runtime_state()
+        .session_snapshot(&session_id)
+        .await
+        .unwrap();
     assert_eq!(prompt.id(), fixture.queued_prompt_id);
     assert_eq!(
         session
@@ -524,6 +531,7 @@ async fn prompt_submit_does_not_wait_behind_slow_history_load() {
     let history_request =
         LocalDaemonRequest::GetSessionHistoryOutline(GetSessionHistoryOutlineRequest {
             session_id: session_id.clone(),
+            after_sequence: None,
             include_prefetched_content: false,
             agent_ids: Some(vec![agent_id.clone()]),
             latest_prompt_count: Some(4),

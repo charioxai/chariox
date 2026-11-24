@@ -554,7 +554,7 @@ fn mp08_browser_state_wait_unchanged_1008_snapshot() {
     let bytes = include_bytes!("browser-state-wait-unchanged-1008.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "08c7e272785607b72060650f9129cab8c72e3cdd0146aecd197c7bd815199eab"
+        "fd94d13a5127b04a6cc5fa847d5806c21f34dd9a293013db5676cb4b444d3267"
     );
     let snapshot: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(snapshot["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
@@ -604,7 +604,7 @@ fn mp08_mp10_mp11_mirror_completion_550_158_snapshot_hash() {
     let bytes = include_bytes!("browser-mirror2-completion-550.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "696f4ae9a66f34f1d23eb357453ee3460a2d60fd57b22cee53d45af7fbd8b3dd"
+        "f88b2268562a943420f6fb8d6a51ee13507210ff86987d4c9cd8dda68b5e651d"
     );
     let value: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(value["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
@@ -759,6 +759,27 @@ fn mp08_mp10_browser_header_937_shape_and_hash() {
     );
 }
 
+// MP-08/MP-10: protocol 1012 names each Tab's icon; a state wait sends only the icons the viewer lacks.
+#[test]
+fn mp08_mp10_browser_favicon_cache_1012_shape_and_hash() {
+    let bytes = include_bytes!("browser-favicon-cache-1012.json");
+    assert_eq!(
+        format!("{:x}", Sha256::digest(bytes)),
+        "9edad96efb0d47216683df15c480c88f1701f49ea78e8601df756dca398cf239"
+    );
+    let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    let request: LocalDaemonRequest = serde_json::from_value(fixture["request"].clone()).unwrap();
+    assert_eq!(serde_json::to_value(request).unwrap(), fixture["request"]);
+    let response: LocalDaemonResponse =
+        serde_json::from_value(fixture["response"].clone()).unwrap();
+    assert_eq!(serde_json::to_value(response).unwrap(), fixture["response"]);
+    assert_eq!(fixture["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
+    assert_eq!(
+        fixture["peer_protocol"],
+        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION
+    );
+}
+
 #[test]
 fn mp08_mp10_download_cancellation_937_shape() {
     let wire = serde_json::json!({"op":"cancel_download","tab_id":"t","generation":7,"download_id":"download-a"});
@@ -771,7 +792,7 @@ fn mp08_mp11_vault_fill_941_shape_and_hash() {
     let bytes = include_bytes!("kernel-browser-vault-fill-941.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "afdca920d7c0e4370b098293f2ad2a8ca57c5c4bb9120ce89a202e534e0172fd"
+        "df3d001cf4e8a20b02c626b35a9b5bbe80c2790a5fdfa06d233faea448e8794f"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     let request: LocalDaemonRequest = serde_json::from_value(fixture["request"].clone()).unwrap();

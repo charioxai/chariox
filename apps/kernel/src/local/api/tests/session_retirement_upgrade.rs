@@ -169,10 +169,11 @@ fn check_old_retirement_database(checkpoint: bool, retain_receipt: bool) {
             connection.execute("INSERT INTO durable_state_snapshots(sequence,timestamp_ms,payload_json) VALUES (?1,1,?2)",
                 rusqlite::params![sequence as i64,payload]).unwrap();
             // The ended Rooms now exist only in the old checkpoint; later
-            // restore/delete events must still supersede that checkpoint.
+            // restore/delete events must still supersede that checkpoint. The
+            // Skills home pin stays: this home's pin file names this journal.
             connection
                 .execute(
-                    "DELETE FROM durable_state_events WHERE sequence<=?1",
+                    "DELETE FROM durable_state_events WHERE sequence<=?1 AND kind!='skills.v2.home'",
                     [sequence as i64],
                 )
                 .unwrap();

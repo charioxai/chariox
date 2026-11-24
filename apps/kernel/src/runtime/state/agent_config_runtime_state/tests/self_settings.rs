@@ -1,107 +1,12 @@
-//! An agent that changes its own settings stays within what the person allowed.
+//! An agent that changes its own settings is not held back: the change applies at once, with no
+//! refusal and no card, and is recorded with who asked and why.
 
 use super::*;
-use crate::agent::AgentSelfSettings;
 
 const OWNER: &str = crate::session::DEFAULT_LOCAL_USER_ID;
 
-async fn allow(
-    runtime: &KernelRuntimeState,
-    session_id: &str,
-    agent_id: &str,
-    set: AgentSelfSettings,
-) {
+fn settings_event(runtime: &KernelRuntimeState) -> serde_json::Value {
     runtime
-        .update_agent_config_as(
-            session_id,
-            agent_id,
-            OWNER,
-            None,
-            None,
-            None,
-            None,
-            None,
-            Some(set),
-            SettingsContext::person(),
-        )
-        .await
-        .expect("the person sets what the agent may change");
-}
-
-async fn agent_changes_model(
-    runtime: &KernelRuntimeState,
-    session_id: &str,
-    agent_id: &str,
-    model: &str,
-) -> Result<crate::agent::AgentInstance, DaemonError> {
-    runtime
-        .update_agent_profile_as(
-            session_id,
-            agent_id,
-            OWNER,
-            None,
-            None,
-            Some(model.to_string()),
-            None,
-            SettingsContext::agent(agent_id, Some("needs more depth".to_string())),
-        )
-        .await
-        .map(|(agent, _)| agent)
-}
-
-/// The card the agent's call waits behind, once it is up.
-async fn waiting_card(
-    runtime: &KernelRuntimeState,
-    session_id: &str,
-    agent_id: &str,
-) -> (String, Vec<String>, String) {
-    for _ in 0..200 {
-        let session = runtime.owned.session_store.get_session(session_id).unwrap();
-        if let Some(card) = session
-            .active_interactions()
-            .iter()
-            .find(|card| card.related_agent_id() == Some(agent_id))
-        {
-            return (
-                card.id().to_string(),
-                card.choices()
-                    .iter()
-                    .map(|choice| choice.id().to_string())
-                    .collect(),
-                card.message().to_string(),
-            );
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-    }
-    panic!("the person's card never appeared");
-}
-
-#[tokio::test]
-async fn a_change_inside_the_allowed_set_applies_at_once_with_no_card() {
-    let (_app, runtime, session_id, agent_id) = agent_config_runtime().await;
-    allow(
-        &runtime,
-        &session_id,
-        &agent_id,
-        AgentSelfSettings {
-            models: vec!["sonnet".into()],
-            ..Default::default()
-        },
-    )
-    .await;
-
-    let agent = agent_changes_model(&runtime, &session_id, &agent_id, "sonnet")
-        .await
-        .expect("inside the set");
-
-    assert_eq!(agent.model(), Some("sonnet"));
-    let session = runtime
-        .owned
-        .session_store
-        .get_session(&session_id)
-        .unwrap();
-    assert!(session.active_interactions().is_empty());
-    let event = runtime
         .owned
         .durable_state_store
         .load_events_after(0)
@@ -109,7 +14,35 @@ async fn a_change_inside_the_allowed_set_applies_at_once_with_no_card() {
         .into_iter()
         .find(|event| event.kind == "agent.settings_changed")
         .expect("the change is recorded")
-        .payload;
+        .payload
+}
+
+fn assert_no_card(runtime: &KernelRuntimeState, session_id: &str) {
+    let session = runtime.owned.session_store.get_session(session_id).unwrap();
+    assert!(session.active_interactions().is_empty());
+}
+
+#[tokio::test]
+async fn an_agent_changing_its_own_model_applies_at_once_with_no_card() {
+    let (_app, runtime, session_id, agent_id) = agent_config_runtime().await;
+
+    let (agent, _) = runtime
+        .update_agent_profile_as(
+            &session_id,
+            &agent_id,
+            OWNER,
+            None,
+            None,
+            Some("sonnet".to_string()),
+            None,
+            SettingsContext::agent(&agent_id, Some("needs more depth".to_string())),
+        )
+        .await
+        .expect("an agent may change its own model");
+
+    assert_eq!(agent.model(), Some("sonnet"));
+    assert_no_card(&runtime, &session_id);
+    let event = settings_event(&runtime);
     assert_eq!(event["by"]["kind"], "agent");
     assert_eq!(event["by"]["agent_id"], agent_id);
     assert_eq!(event["reason"], "needs more depth");
@@ -117,87 +50,7 @@ async fn a_change_inside_the_allowed_set_applies_at_once_with_no_card() {
 }
 
 #[tokio::test]
-async fn a_change_outside_the_set_takes_one_card_and_allow_always_remembers_it() {
-    let (_app, runtime, session_id, agent_id) = agent_config_runtime().await;
-    let task = {
-        let (runtime, session_id, agent_id) =
-            (runtime.clone(), session_id.clone(), agent_id.clone());
-        tokio::spawn(
-            async move { agent_changes_model(&runtime, &session_id, &agent_id, "opus").await },
-        )
-    };
-
-    let (card, choices, message) = waiting_card(&runtime, &session_id, &agent_id).await;
-    assert_eq!(choices, ["allow_once", "allow_always", "deny"]);
-    assert!(
-        message.contains("wants to change its model to opus"),
-        "{message}"
-    );
-    assert!(message.contains("needs more depth"), "{message}");
-    assert_ne!(
-        runtime
-            .owned
-            .agent_store
-            .get_agent(&agent_id)
-            .unwrap()
-            .model(),
-        Some("opus"),
-        "nothing changes before the person answers"
-    );
-    runtime
-        .resolve_terminal_runtime_interaction(&session_id, &card, "allow_always", None, Some(OWNER))
-        .await
-        .unwrap();
-    let agent = task.await.unwrap().expect("allowed");
-
-    assert_eq!(agent.model(), Some("opus"));
-    assert!(agent
-        .self_settings()
-        .allows(crate::agent::SelfSettingKind::Model, "opus"));
-    // Standing permission: the same change needs no second card.
-    agent_changes_model(&runtime, &session_id, &agent_id, "sonnet-then")
-        .await
-        .ok();
-    let again = agent_changes_model(&runtime, &session_id, &agent_id, "opus").await;
-    assert!(again.is_ok());
-}
-
-#[tokio::test]
-async fn denying_the_card_leaves_the_agent_as_it_was_and_says_why() {
-    let (_app, runtime, session_id, agent_id) = agent_config_runtime().await;
-    let before = runtime.owned.agent_store.get_agent(&agent_id).unwrap();
-    let task = {
-        let (runtime, session_id, agent_id) =
-            (runtime.clone(), session_id.clone(), agent_id.clone());
-        tokio::spawn(
-            async move { agent_changes_model(&runtime, &session_id, &agent_id, "opus").await },
-        )
-    };
-
-    let (card, _, _) = waiting_card(&runtime, &session_id, &agent_id).await;
-    runtime
-        .resolve_terminal_runtime_interaction(&session_id, &card, "deny", None, Some(OWNER))
-        .await
-        .unwrap();
-
-    let error = task.await.unwrap().expect_err("denied");
-    assert!(
-        error.to_string().contains("did not allow this change"),
-        "{error}"
-    );
-    assert_eq!(
-        runtime
-            .owned
-            .agent_store
-            .get_agent(&agent_id)
-            .unwrap()
-            .model(),
-        before.model()
-    );
-}
-
-#[tokio::test]
-async fn a_higher_permission_level_takes_a_card_without_allow_always() {
+async fn an_agent_raising_its_own_permission_level_applies_at_once_with_no_card() {
     use crate::provider::AgentPermissionLevel::{Required, Yolo};
     let (_app, runtime, session_id, agent_id) = agent_config_runtime().await;
     runtime
@@ -213,44 +66,9 @@ async fn a_higher_permission_level_takes_a_card_without_allow_always() {
         )
         .await
         .unwrap();
-    let task = {
-        let (runtime, session_id, agent_id) =
-            (runtime.clone(), session_id.clone(), agent_id.clone());
-        tokio::spawn(async move {
-            runtime
-                .update_agent_config_as(
-                    &session_id,
-                    &agent_id,
-                    OWNER,
-                    None,
-                    Some(Some(Yolo)),
-                    None,
-                    None,
-                    None,
-                    None,
-                    SettingsContext::agent(&agent_id, None),
-                )
-                .await
-                .map(|(agent, _)| agent)
-        })
-    };
 
-    let (card, choices, _) = waiting_card(&runtime, &session_id, &agent_id).await;
-    assert_eq!(choices, ["allow_once", "deny"]);
-    runtime
-        .resolve_terminal_runtime_interaction(&session_id, &card, "allow_once", None, Some(OWNER))
-        .await
-        .unwrap();
-    let agent = task.await.unwrap().expect("allowed once");
-    assert_eq!(agent.permission_level_override(), Some(Yolo));
-}
-
-#[tokio::test]
-async fn lowering_its_own_permission_level_needs_no_card() {
-    use crate::provider::AgentPermissionLevel::{Required, Yolo};
-    let (_app, runtime, session_id, agent_id) = agent_config_runtime().await;
-    runtime
-        .update_agent_config(
+    let (agent, _) = runtime
+        .update_agent_config_as(
             &session_id,
             &agent_id,
             OWNER,
@@ -259,74 +77,167 @@ async fn lowering_its_own_permission_level_needs_no_card() {
             None,
             None,
             None,
+            SettingsContext::agent(&agent_id, None),
         )
         .await
-        .unwrap();
+        .expect("an agent may change its own permission level");
 
-    let agent = runtime
-        .update_agent_config_as(
+    assert_eq!(agent.permission_level_override(), Some(Yolo));
+    assert_no_card(&runtime, &session_id);
+}
+
+/// The room's first agent holds `Required`; its child asks for more than that.
+async fn capped_child() -> (
+    Arc<Mutex<DaemonApp>>,
+    KernelRuntimeState,
+    String,
+    String,
+    String,
+) {
+    use crate::provider::AgentPermissionLevel::Required;
+    let (app, runtime, session_id, parent_id) = agent_config_runtime().await;
+    runtime
+        .update_agent_config(
             &session_id,
-            &agent_id,
+            &parent_id,
             OWNER,
             None,
             Some(Some(Required)),
             None,
             None,
             None,
-            None,
-            SettingsContext::agent(&agent_id, None),
         )
         .await
-        .map(|(agent, _)| agent)
-        .expect("lowering is always allowed");
-
-    assert_eq!(agent.permission_level_override(), Some(Required));
+        .unwrap();
+    let child = {
+        let mut guard = app.lock().await;
+        crate::app::KernelSessionService::new(&mut guard)
+            .spawn_agent(
+                crate::agent::CreateAgentRequest::new(&session_id, "dev-stub")
+                    .with_parent_agent_id(parent_id.clone()),
+            )
+            .expect("child spawns")
+    };
+    (app, runtime, session_id, parent_id, child.id().to_string())
 }
 
-#[tokio::test]
-async fn an_agent_cannot_widen_what_it_may_change() {
-    let (_app, runtime, session_id, agent_id) = agent_config_runtime().await;
+fn effective_level(
+    runtime: &KernelRuntimeState,
+    session_id: &str,
+    agent_id: &str,
+) -> crate::provider::AgentPermissionLevel {
+    let session = runtime.owned.session_store.get_session(session_id).unwrap();
+    let agents = runtime.owned.agent_store.get_session_agents(session_id);
+    let agent = runtime.owned.agent_store.get_agent(agent_id).unwrap();
+    crate::session::effective_agent_execution_config_in_tree(&session, &agent, &agents)
+        .permission_level
+}
 
-    let error = runtime
+async fn raise_permission(
+    runtime: &KernelRuntimeState,
+    session_id: &str,
+    child_id: &str,
+    context: SettingsContext,
+) -> Result<(crate::agent::AgentInstance, SettingsApplies), DaemonError> {
+    runtime
         .update_agent_config_as(
-            &session_id,
-            &agent_id,
+            session_id,
+            child_id,
             OWNER,
             None,
+            Some(Some(crate::provider::AgentPermissionLevel::Yolo)),
             None,
             None,
             None,
-            None,
-            Some(AgentSelfSettings {
-                models: vec!["*".into()],
-                ..Default::default()
-            }),
-            SettingsContext::agent(&agent_id, None),
+            context,
         )
         .await
-        .expect_err("only the person sets it");
-
-    assert!(error.to_string().contains("only the person"), "{error}");
 }
 
 #[tokio::test]
-async fn an_agent_above_chooses_a_settings_without_the_set() {
-    let (_app, runtime, session_id, agent_id) = agent_config_runtime().await;
+async fn a_child_raising_its_permission_above_its_parent_is_refused_plainly() {
+    use crate::provider::AgentPermissionLevel::Required;
+    let (app, runtime, session_id, parent_id, child_id) = capped_child().await;
+    sync_active_prompt(&app, &session_id, &child_id).await;
 
-    let agent = runtime
+    let error = raise_permission(
+        &runtime,
+        &session_id,
+        &child_id,
+        SettingsContext::agent(&child_id, None),
+    )
+    .await
+    .expect_err("the cap refuses an agent's own raise");
+
+    let message = error.to_string();
+    assert!(
+        message.contains("limited by") && message.contains("to required"),
+        "{message}"
+    );
+    assert_eq!(effective_level(&runtime, &session_id, &child_id), Required);
+    let child = runtime.owned.agent_store.get_agent(&child_id).unwrap();
+    assert_eq!(child.permission_level_override(), None);
+    let parent = runtime.owned.agent_store.get_agent(&parent_id).unwrap();
+    assert!(
+        message.contains(parent.alias().unwrap_or_else(|| parent.agent_ref())),
+        "{message}"
+    );
+    assert!(
+        runtime
+            .owned
+            .terminal_stream
+            .notice_records()
+            .into_iter()
+            .any(|notice| notice.message.contains("limited by")),
+        "the pane shows the refusal"
+    );
+}
+
+#[tokio::test]
+async fn the_person_raising_a_childs_permission_above_its_parent_holds_after_the_turn() {
+    use crate::provider::AgentPermissionLevel::Yolo;
+    let (app, runtime, session_id, _parent_id, child_id) = capped_child().await;
+    sync_active_prompt(&app, &session_id, &child_id).await;
+
+    let (child, _) = raise_permission(&runtime, &session_id, &child_id, SettingsContext::person())
+        .await
+        .expect("the person's request is applied");
+
+    assert_eq!(child.permission_level_override(), Some(Yolo));
+    assert_eq!(effective_level(&runtime, &session_id, &child_id), Yolo);
+    // The turn ends; nothing writes the old limit back.
+    app.lock()
+        .await
+        .prompt_owner_sync_external_active_prompt(&session_id, &child_id, None)
+        .unwrap();
+    assert_eq!(effective_level(&runtime, &session_id, &child_id), Yolo);
+    let settings = settings_event(&runtime);
+    assert_eq!(settings["by"]["kind"], "person");
+    assert!(runtime
+        .owned
+        .terminal_stream
+        .notice_records()
+        .into_iter()
+        .any(|notice| notice.message.contains("by you")));
+}
+
+#[tokio::test]
+async fn a_capped_childs_model_change_is_never_capped() {
+    let (_app, runtime, session_id, _parent_id, child_id) = capped_child().await;
+
+    let (child, _) = runtime
         .update_agent_profile_as(
             &session_id,
-            &agent_id,
+            &child_id,
             OWNER,
             None,
             None,
-            Some("opus".to_string()),
+            Some("sonnet".to_string()),
             None,
-            SettingsContext::agent("an-agent-above", None),
+            SettingsContext::agent(&child_id, None),
         )
         .await
-        .map(|(agent, _)| agent)
-        .expect("the agents above an agent choose its settings, as when they start it");
+        .expect("only permissions are capped");
 
-    assert_eq!(agent.model(), Some("opus"));
+    assert_eq!(child.model(), Some("sonnet"));
 }

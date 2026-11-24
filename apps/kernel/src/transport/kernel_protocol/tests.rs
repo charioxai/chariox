@@ -676,6 +676,7 @@ fn runtime_interactions_only_changes_can_skip_session_snapshot() {
 fn session_snapshot_with_agent() -> SessionSnapshotProjection {
     let mut session = RuntimeSession::new(
         "session-a",
+        crate::session::ProjectId::test(),
         Some("Test".to_string()),
         "workspace-a",
         "worktree-a",
@@ -713,7 +714,6 @@ fn session_snapshot_with_agent() -> SessionSnapshotProjection {
     SessionSnapshotProjection {
         jobs: Vec::new(),
         processes: Vec::new(),
-        disk_usage: Vec::new(),
         room_workflows: crate::runtime::projection::RoomWorkflowInventory::project(
             &session,
             crate::session::DEFAULT_LOCAL_USER_ID,
@@ -729,6 +729,7 @@ fn session_snapshot_with_agent() -> SessionSnapshotProjection {
 fn session_snapshot_with_workflow_status(status: WorkflowRunStatus) -> SessionSnapshotProjection {
     let mut session = RuntimeSession::new(
         "session-a",
+        crate::session::ProjectId::test(),
         Some("Test".to_string()),
         "workspace-a",
         "worktree-a",
@@ -750,7 +751,6 @@ fn session_snapshot_with_workflow_status(status: WorkflowRunStatus) -> SessionSn
     SessionSnapshotProjection {
         jobs: Vec::new(),
         processes: Vec::new(),
-        disk_usage: Vec::new(),
         room_workflows: crate::runtime::projection::RoomWorkflowInventory::project(
             &session,
             crate::session::DEFAULT_LOCAL_USER_ID,
@@ -789,6 +789,7 @@ fn room_list_snapshot(
             configured: false,
             connected: false,
             relay_url: None,
+            registration_refused: None,
             relay_token_configured: false,
             daemon_id: "daemon-1".to_string(),
             machine_id: "machine-1".to_string(),
@@ -810,6 +811,7 @@ fn provider_account_profile() -> crate::account_profile::ProviderAccountProfile 
         origin: crate::account_profile::ProviderAccountProfileOrigin::Linked,
         is_default: false,
         auth_state: crate::account_profile::ProviderAccountAuthState::Authenticated,
+        auth_error: None,
         identity_summary: None,
         plan: Some("pro".to_string()),
         detected_provider_version: None,
@@ -910,8 +912,6 @@ fn user_domain_refusals_protocol_493_snapshot() {
         crate::test_support::expected_relay_peer_protocol_version()
     );
     let values = [
-        Reason::NotRequested,
-        Reason::NotFocusedAgent,
         Reason::ForeignOwner,
         Reason::StaleEpoch,
         Reason::StaleReference,
@@ -925,7 +925,7 @@ fn user_domain_refusals_protocol_493_snapshot() {
             "{:x}",
             Sha256::digest(include_bytes!("user-domain-refusals-443.json"))
         ),
-        "a97facd41c511caaf1fbbecfc7f33eacb76dd49800b09187968e88ee28a7eb52"
+        "ddf88cefe98db351420c1ccced8eb269a22f9fed69b3e6f27625b918bf728aeb"
     );
     let expected: serde_json::Value =
         serde_json::from_str(include_str!("user-domain-refusals-443.json")).unwrap();
@@ -1513,4 +1513,15 @@ fn touched_queue_announces_activity_before_its_complete_snapshot() {
         );
         assert!(events.iter().any(|event| matches!(event, KernelEvent::SessionSnapshot { session, .. } if session.queued_prompts().len() == 1)), "queue text must still reach every client");
     }
+}
+
+#[test]
+fn a_cloud_refusal_is_retryable_only_when_cloud_calls_it_transient() {
+    let refused = |code: &str| DaemonError::LocalTransport {
+        operation: "cloud relay request",
+        message: format!("cloud relay request failed with 429: cloud_api_code={code}: refused"),
+    };
+    assert!(!map_kernel_error(&refused("budget_exceeded")).retryable);
+    assert!(!map_kernel_error(&refused("invalid_request")).retryable);
+    assert!(map_kernel_error(&refused("capacity_exceeded")).retryable);
 }

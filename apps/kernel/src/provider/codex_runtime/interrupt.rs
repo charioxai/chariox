@@ -52,7 +52,10 @@ pub fn abort_codex_turn(
             }
             match client.read_notification(&mut state.socket, Duration::from_millis(1)) {
                 Ok(Some(notification)) => {
-                    let closed = matches!(notification, CodexNotification::Error { .. });
+                    let closed = matches!(
+                        notification,
+                        CodexNotification::Error { .. } | CodexNotification::StreamClosed { .. }
+                    );
                     state.buffered_notifications.push(notification);
                     if closed {
                         break;

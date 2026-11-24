@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawnOwned, signalOwnedProcessGroup, signalOwnedProcess } from "../../kernel/slice-linux-docker/owned-process-signals.mjs"
 
-import { createHash, createHmac } from "node:crypto"
+import { createHash, createHmac, generateKeyPairSync, sign } from "node:crypto"
 import { access, chmod, mkdir, writeFile } from "node:fs/promises"
 import { constants as fsConstants } from "node:fs"
 import net from "node:net"
@@ -174,6 +174,17 @@ export function claims({
   }
 }
 
+// Each drill kernel's identity key, which signs the challenge of every connection it registers on.
+const daemonKeys = new Map()
+function daemonKey(daemonId) {
+  if (!daemonKeys.has(daemonId)) daemonKeys.set(daemonId, generateKeyPairSync("ec", { namedCurve: "prime256v1" }))
+  return daemonKeys.get(daemonId)
+}
+
+function daemonPublicKey(daemonId) {
+  return daemonKey(daemonId).publicKey.export({ format: "der", type: "spki" }).subarray(-65).toString("base64")
+}
+
 export function daemonRegistration({ token, daemonId, machineId }) {
   return {
     kind: "daemon_register",
@@ -186,14 +197,25 @@ export function daemonRegistration({ token, daemonId, machineId }) {
       kernel_started_at_ms: Date.now(),
       daemon_alias: daemonId,
       kernel_alias: daemonId,
-      public_key: `${daemonId}-public-key`,
+      public_key: daemonPublicKey(daemonId),
       capabilities: ["kernel_ws"],
       available_providers: ["codex"],
       accepting_remote_leases: false,
       leased_agent_count: 0,
       local_session_count: 0,
+      local_protocol: 1012,
     },
   }
+}
+
+// The registration signed by its kernel's identity key for the challenge the relay offered `socket`.
+function provenRegistration(url, socket, envelope) {
+  const { registration } = envelope
+  const tokenFingerprint = createHash("sha256").update(registration.auth_token).digest("hex")
+  const message = JSON.stringify(["chariox-relay-registration-v1", new URL(url).host.toLowerCase(),
+    registration.daemon_id, tokenFingerprint, registrationChallenges.get(socket)])
+  const proof = sign("sha256", Buffer.from(message), { key: daemonKey(registration.daemon_id).privateKey, dsaEncoding: "ieee-p1363" })
+  return { ...envelope, proof: proof.toString("base64") }
 }
 
 function relayPublicKeyThumbprint(publicKey) {
@@ -211,9 +233,14 @@ async function freePort() {
   })
 }
 
+const registrationChallenges = new WeakMap()
+
 async function connect(url, sockets) {
   return await new Promise((resolve, reject) => {
     const socket = new WebSocketImpl(url)
+    socket.once("upgrade", (response) => {
+      registrationChallenges.set(socket, response.headers["x-chariox-registration-challenge"])
+    })
     const onError = (error) => reject(error)
     socket.once("error", onError)
     socket.once("open", () => {
@@ -283,7 +310,7 @@ async function expectRejected(url, sockets, payload, label) {
   const socket = await connect(url, sockets)
   try {
     const outcome = waitForRejection(socket, label)
-    await sendJson(socket, payload)
+    await sendJson(socket, payload.kind === "daemon_register" ? provenRegistration(url, socket, payload) : payload)
     await outcome
   } finally {
     socket.close()
@@ -530,7 +557,7 @@ async function main() {
       machineId: "machine-a",
       realm: "realm-a",
       actions: ["daemon_register", "daemon_heartbeat", "peer_request", "peer_event"],
-      publicKeyThumbprint: relayPublicKeyThumbprint("daemon-a-public-key"),
+      publicKeyThumbprint: relayPublicKeyThumbprint(daemonPublicKey("daemon-a")),
     }))
     const daemonBToken = signToken(claims({
       subject: "daemon-b",
@@ -538,7 +565,7 @@ async function main() {
       machineId: "machine-b",
       realm: "realm-b",
       actions: ["daemon_register"],
-      publicKeyThumbprint: relayPublicKeyThumbprint("daemon-b-public-key"),
+      publicKeyThumbprint: relayPublicKeyThumbprint(daemonPublicKey("daemon-b")),
     }))
     const clientAToken = signToken(claims({
       subject: "client-a",
@@ -554,9 +581,11 @@ async function main() {
     }))
 
     const daemonA = await connect(url, sockets)
-    await sendJson(daemonA, daemonRegistration({ token: daemonAToken, daemonId: "daemon-a", machineId: "machine-a" }))
+    await sendJson(daemonA, provenRegistration(url, daemonA,
+      daemonRegistration({ token: daemonAToken, daemonId: "daemon-a", machineId: "machine-a" })))
     const daemonB = await connect(url, sockets)
-    await sendJson(daemonB, daemonRegistration({ token: daemonBToken, daemonId: "daemon-b", machineId: "machine-b" }))
+    await sendJson(daemonB, provenRegistration(url, daemonB,
+      daemonRegistration({ token: daemonBToken, daemonId: "daemon-b", machineId: "machine-b" })))
     await sleep(100)
     requireCondition(daemonA.readyState === WebSocketImpl.OPEN, "daemon A registration was rejected")
     requireCondition(daemonB.readyState === WebSocketImpl.OPEN, "daemon B registration was rejected")

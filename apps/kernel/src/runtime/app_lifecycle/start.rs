@@ -19,6 +19,10 @@ pub(super) struct FixturePlatform {
     pub(super) fail_health: bool,
     pub(super) lifecycle: Option<chariox_app_runtime::worker_process::test_fixture::Mode>,
     pub(super) fail_migration: bool,
+    /// Stands in for a first compile of a large App, which has its own bound.
+    pub(super) prepare_delay: Duration,
+    /// Shortens the budget of the kernel-side steps.
+    pub(super) budget: Option<Duration>,
     /// The kernel stops right after an update commits, before activation.
     pub(super) stop_after_commit: bool,
     pub(super) observations:
@@ -51,7 +55,8 @@ pub(super) fn activate(
 ) -> Result<Started> {
     let _preparation = preparation;
     let _operation = operation;
-    let budget = context.control.budget();
+    context.control.enter(Step::Prepare);
+    let budget = context.budget();
     let started = register(
         context,
         admission.binding(),
@@ -69,6 +74,7 @@ pub(super) fn activate(
         .take_activation_budget()
         .map_err(|_| LifecycleError::Registration)?;
     let cancellation = context.control.clone();
+    context.control.enter(Step::Commit);
     let proof = context
         .store
         .confirm_app_activation(
@@ -301,6 +307,7 @@ fn spawn(
             StartKind::First { .. } => Mode::Health,
             StartKind::Active { .. } => Mode::Ready,
         });
+        std::thread::sleep(fixture.prepare_delay);
         let (process, observation) = fixture
             .native
             .spawn_for_generation_blocking(

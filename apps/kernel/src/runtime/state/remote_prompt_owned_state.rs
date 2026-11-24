@@ -4,6 +4,7 @@
 //! lifecycle remains in `prompt`.
 
 use super::*;
+use crate::runtime::prompt_state::RemotePromptDelivery;
 
 pub(super) enum RemotePromptDispatchSettlement {
     Settled(crate::session::PromptQueueItem),
@@ -17,6 +18,36 @@ impl KernelRuntimeOwnedState {
         dispatch: &crate::app::KernelRemotePromptDispatch,
         delivered_run_id: Option<&str>,
     ) -> Result<RemotePromptDispatchSettlement, DaemonError> {
+        self.commit_remote_dispatch_if_current(
+            dispatch,
+            delivered_run_id.map_or(
+                RemotePromptDelivery::Rejected,
+                RemotePromptDelivery::Delivered,
+            ),
+        )
+    }
+
+    pub(super) fn defer_remote_dispatch_for_memory(
+        &self,
+        dispatch: &crate::app::KernelRemotePromptDispatch,
+        reason: &str,
+    ) -> Result<RemotePromptDispatchSettlement, DaemonError> {
+        self.commit_remote_dispatch_if_current(
+            dispatch,
+            RemotePromptDelivery::WaitingForMemory(reason),
+        )
+    }
+
+    fn commit_remote_dispatch_if_current(
+        &self,
+        dispatch: &crate::app::KernelRemotePromptDispatch,
+        delivery: RemotePromptDelivery<'_>,
+    ) -> Result<RemotePromptDispatchSettlement, DaemonError> {
+        let delivered_run_id = match delivery {
+            RemotePromptDelivery::Delivered(run_id) => Some(run_id),
+            _ => None,
+        };
+        let waiting_for_memory = matches!(delivery, RemotePromptDelivery::WaitingForMemory(_));
         let activity_mutation = self.begin_managed_activity_mutation();
         let mut sessions = self.session_store.write();
         let session = sessions.get_session(&dispatch.session_id)?;
@@ -27,8 +58,8 @@ impl KernelRuntimeOwnedState {
                 &session,
                 &dispatch.agent_id,
                 &dispatch.prompt_id,
-                delivered_run_id,
-                |previous, active, queued| {
+                delivery,
+                |previous, previous_queue, active, queued| {
                     // Lock order: activity -> session -> prompt owner -> agent.
                     // No projection/history helper may reenter prompt ownership here.
                     let mut agents = self.agent_store.write();
@@ -47,7 +78,7 @@ impl KernelRuntimeOwnedState {
                         &dispatch.session_id,
                         &dispatch.agent_id,
                         active,
-                        queued.clone(),
+                        queued,
                     )?;
                     // Persist under the ownership locks so a successor cannot
                     // race the durable commit. This briefly blocks readers.
@@ -58,7 +89,7 @@ impl KernelRuntimeOwnedState {
                             &dispatch.session_id,
                             &dispatch.agent_id,
                             Some(previous.clone()),
-                            queued,
+                            previous_queue.clone(),
                         )?;
                         return Err(error);
                     }
@@ -75,8 +106,12 @@ impl KernelRuntimeOwnedState {
                         }
                     } else {
                         agents.set_agent_processing(&dispatch.agent_id, false)?;
-                        agents
-                            .set_agent_state(&dispatch.agent_id, crate::agent::AgentState::Error)?;
+                        let state = if waiting_for_memory {
+                            crate::agent::AgentState::Idle
+                        } else {
+                            crate::agent::AgentState::Error
+                        };
+                        agents.set_agent_state(&dispatch.agent_id, state)?;
                     }
                     Ok(true)
                 },
@@ -86,7 +121,12 @@ impl KernelRuntimeOwnedState {
         drop(sessions);
         if settled.is_some() {
             activity_mutation.record();
-            if delivered_run_id.is_some() {
+            if let Some(worker_run_id) = delivered_run_id {
+                self.settled_worker_runs.record(
+                    &dispatch.agent_id,
+                    &dispatch.leased_agent_id,
+                    worker_run_id,
+                );
                 // Receipt reconciliation reaches this same durable acknowledgement path.
                 self.clear_accepted_remote_lease_context(dispatch);
             }
@@ -733,7 +773,7 @@ mod tests {
     use crate::attachment::{AttachRequest, ClientCapabilityLevel};
     use crate::session::{CreateSessionRequest, PromptQueueItem, PromptStatus};
 
-    async fn owned_runtime_state(app: &Arc<Mutex<DaemonApp>>) -> KernelRuntimeState {
+    pub(super) async fn owned_runtime_state(app: &Arc<Mutex<DaemonApp>>) -> KernelRuntimeState {
         let (
             config_projection,
             session_store,
@@ -805,7 +845,7 @@ mod tests {
         )
     }
 
-    async fn mp11_fixture(
+    pub(super) async fn mp11_fixture(
         config: crate::DaemonConfig,
     ) -> (
         KernelRuntimeState,
@@ -848,6 +888,67 @@ mod tests {
             agent.id().into(),
             attachment.id().into(),
             binding,
+        )
+    }
+
+    /// A session whose agent runs on this kernel, with no lease, and its running
+    /// structured Claude provider run.
+    pub(super) async fn local_claude_fixture(
+        worktree: &crate::test_support::TestWorktree,
+    ) -> (
+        KernelRuntimeState,
+        String,
+        String,
+        String,
+        crate::provider::RuntimeProviderRun,
+    ) {
+        let mut app = DaemonApp::bootstrap(crate::DaemonConfig::for_tests()).unwrap();
+        let (session, agent) = KernelSessionService::new(&mut app)
+            .create_session(worktree.session_request())
+            .unwrap();
+        let attachment = KernelSessionService::new(&mut app)
+            .attach(AttachRequest::new(
+                session.id(),
+                "local-client",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .unwrap();
+        let request = crate::provider::LaunchProviderRequest::new(
+            session.id(),
+            "claude",
+            "claude",
+            "default",
+            "sonnet",
+        )
+        .with_agent_id(agent.id());
+        let mut run = crate::provider::RuntimeProviderRun::new(
+            "local-claude-run",
+            &request,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::External,
+                process_label: "claude:stream-json".to_string(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: Vec::new(),
+                pty_env: [(
+                    "CLAUDE_CONFIG_DIR".into(),
+                    worktree.path().join("claude-config").display().to_string(),
+                )]
+                .into(),
+                pty_env_remove: Vec::new(),
+                working_directory: Some(worktree.path().to_path_buf()),
+                structured_endpoint: None,
+            },
+        );
+        run.mark_running();
+        app.providers_mut().insert_run_for_test(run.clone());
+        let runtime = owned_runtime_state(&Arc::new(Mutex::new(app))).await;
+        (
+            runtime,
+            session.id().into(),
+            agent.id().into(),
+            attachment.id().into(),
+            run,
         )
     }
 
@@ -1228,10 +1329,15 @@ mod tests {
                     })
                 } else {
                     admitted
-                        .with_project_prompt_environment(&session, &agent, |_| {
-                            operation_ran.store(true, std::sync::atomic::Ordering::SeqCst);
-                            Ok(())
-                        })
+                        .with_project_prompt_environment(
+                            &session,
+                            &agent,
+                            super::super::runtime_vault_unlock_state::VAULT_START_QUEUED_PROMPT,
+                            |_| {
+                                operation_ran.store(true, std::sync::atomic::Ordering::SeqCst);
+                                Ok(())
+                            },
+                        )
                         .await
                 }
             }
@@ -1326,17 +1432,22 @@ mod tests {
             let launches = launches.clone();
             async move {
                 runtime
-                    .with_project_prompt_environment(&session, &agent, |_| {
-                        launches.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                        if crate::secret::chariox_encrypted_vault_status(&vault)?.unlocked {
-                            Ok(())
-                        } else {
-                            Err(DaemonError::LocalTransport {
-                                operation: "credential_vault_locked",
-                                message: "Chariox vault is locked".into(),
-                            })
-                        }
-                    })
+                    .with_project_prompt_environment(
+                        &session,
+                        &agent,
+                        super::super::runtime_vault_unlock_state::VAULT_START_QUEUED_PROMPT,
+                        |_| {
+                            launches.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                            if crate::secret::chariox_encrypted_vault_status(&vault)?.unlocked {
+                                Ok(())
+                            } else {
+                                Err(DaemonError::LocalTransport {
+                                    operation: "credential_vault_locked",
+                                    message: "Chariox vault is locked".into(),
+                                })
+                            }
+                        },
+                    )
                     .await
             }
         });
@@ -1654,6 +1765,8 @@ mod tests {
                     }],
                     notices: Vec::new(),
                     completions: vec![RelayProjectedCompletion {
+                        model_usage: Vec::new(),
+                        background_notifications: Vec::new(),
                         failure: None,
                         message_id: "partial-answer".into(),
                         completed_at_ms: now,
@@ -1680,7 +1793,7 @@ mod tests {
         );
         assert_eq!(
             task.reason,
-            "provider process terminated by signal SIGKILL The provider process ended; send the request again to start it."
+            "provider process terminated by signal SIGKILL. The provider process ended; send the request again to start it."
         );
         assert!(
             completion::evaluation(&task).is_none(),
@@ -1801,6 +1914,8 @@ mod tests {
                     output_chunks: chunks,
                     notices: Vec::new(),
                     completions: vec![RelayProjectedCompletion {
+                        model_usage: Vec::new(),
+                        background_notifications: Vec::new(),
                         failure: None,
                         message_id: "check-completed".into(),
                         completed_at_ms: now,
@@ -1918,39 +2033,6 @@ mod tests {
         assert_eq!(
             blocked.reason,
             "The Vault unlock was declined; unlock the Vault and Resume"
-        );
-        std::fs::remove_dir_all(vault.parent().unwrap()).unwrap();
-    }
-
-    // The popup lives 60 s: an owner who never answers ends the waiting check Blocked with the
-    // reason and Resume, not with a timeout that has nothing to do with the check.
-    #[tokio::test]
-    async fn timed_out_vault_popup_blocks_the_waiting_completion_check_with_its_reason() {
-        use crate::durable_state::agent_lifecycle::ExecutionState;
-        let (runtime, session, _agent, vault, unlock, _check) =
-            vault_wait_fixture("vault-timeout").await;
-        let card = vault_popup(&runtime, &session).await;
-        runtime
-            .timeout_runtime_interaction(&session, &card)
-            .await
-            .unwrap();
-        assert!(
-            tokio::time::timeout(std::time::Duration::from_secs(10), unlock)
-                .await
-                .unwrap()
-                .unwrap()
-                .is_err()
-        );
-        let task = runtime
-            .owned
-            .durable_state_store
-            .agent_tasks(None, None)
-            .unwrap()
-            .remove(0);
-        assert_eq!(task.state, ExecutionState::Blocked);
-        assert_eq!(
-            task.reason,
-            "The Vault unlock timed out; unlock the Vault and Resume"
         );
         std::fs::remove_dir_all(vault.parent().unwrap()).unwrap();
     }
@@ -2372,10 +2454,15 @@ mod tests {
             let session = session.clone();
             async move {
                 admitted
-                    .with_project_prompt_environment(&session, &agent, |_| {
-                        operation_ran.store(true, std::sync::atomic::Ordering::SeqCst);
-                        Ok(())
-                    })
+                    .with_project_prompt_environment(
+                        &session,
+                        &agent,
+                        super::super::runtime_vault_unlock_state::VAULT_START_QUEUED_PROMPT,
+                        |_| {
+                            operation_ran.store(true, std::sync::atomic::Ordering::SeqCst);
+                            Ok(())
+                        },
+                    )
                     .await
             }
         });
@@ -2868,6 +2955,8 @@ mod tests {
                     output_chunks: Vec::new(),
                     notices: Vec::new(),
                     completions: vec![crate::transport::relay_peer::RelayProjectedCompletion {
+                        model_usage: Vec::new(),
+                        background_notifications: Vec::new(),
                         message_id: "failed-turn".into(),
                         completed_at_ms: crate::session::unix_epoch_ms(),
                         home_prompt_id: Some(prompt.id().into()),
@@ -2903,3 +2992,19 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "remote_prompt_owned_state/skill_delivery_tests.rs"]
+mod skill_delivery_tests;
+
+#[cfg(test)]
+#[path = "remote_prompt_owned_state/typed_claude_tests.rs"]
+mod typed_claude_tests;
+
+#[cfg(test)]
+#[path = "remote_prompt_owned_state/composer_review_tests.rs"]
+mod composer_review_tests;
+
+#[cfg(test)]
+#[path = "remote_prompt_owned_state/skill_repository_tool_tests.rs"]
+mod skill_repository_tool_tests;

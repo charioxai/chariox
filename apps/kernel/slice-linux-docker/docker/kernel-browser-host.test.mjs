@@ -59,6 +59,7 @@ function fixture(root, { realCdp = false, personIdleMs, backgroundIdleMs, shownI
       if (method === 'DOM.querySelectorAll') return {nodeIds:[]};
       if (method === "Page.captureScreenshot") return { data: encodePng(1280*(connection.density??1),800*(connection.density??1),Buffer.alloc(1280*800*4*(connection.density??1)**2,255)) };
       const target = session?.replace("session-", "");
+      if (method === "Page.navigate" && pages.has(target)) { pages.set(target, { ...pages.get(target), url: params.url }); return { frameId: "frame" }; }
       if (method === "Page.getFrameTree") return { frameTree: { frame: { id: "frame", url: "about:blank", loaderId: pages.get(target)?.document_id ?? `doc-${target}` } } };
       if (method === "Page.createIsolatedWorld") return { executionContextId: 42 };
       if (method === "Runtime.evaluate" && params.expression.includes("'popup")) { const id = `target-${++next}`; pages.set(id, { url: "about:blank" }); fixture.popups.push(id); return { result: { value: true } }; }
@@ -1992,10 +1993,10 @@ test('MP-08/MP-10/MP-11 warm visible-page keys avoid duplicate loader queries in
  }finally{host.displays.delete(stream.subscription_id);connection.send=original;}
 }));
 
-// vidlat r34: a warm native key admits from the event-bound owner snapshot; coordinate input still reads live.
+// vidlat r34: a warm native key admits from the event-bound owner snapshot; coordinate input still reads its region live.
 function keyAdmission(host,tab,connection,{cachedActive}={}){
  const keys=[],reads={fresh:0,key:0,active:0};
- const source={native:true,attested:true,valid:()=>true,key:(...args)=>{keys.push(args);return true},click:()=>true,wheel:(...args)=>{keys.push(['wheel',...args]);return true},wake(){}};
+ const source={native:true,attested:true,valid:()=>true,key:(...args)=>{keys.push(args);return true},click:(...args)=>{keys.push(['click',...args]);return true},wheel:(...args)=>{keys.push(['wheel',...args]);return true},wake(){}};
  const stream={close:async()=>{},subscription_id:'key-admit',regionTarget:{kind:'visible_page'},tab_id:tab.tab_id,generation:host.generation,observed_by:'terminal:a',expires:Date.now()+60000,
   regionLease:{document_id:tab.document_id},regionWindow:{isCurrent:()=>true},regionSource:source,css_width:1280,css_height:712,
   regionCurrent:async()=>{reads.fresh++;return true},regionInputCurrent:async input=>{if(['key','scroll'].includes(input?.kind)){reads.key++;return true}reads.fresh++;return true}};
@@ -2034,7 +2035,7 @@ test('MP-08/MP-10/MP-11 a native key still refuses when the snapshot says anothe
   assert.deepEqual(f.keys,[]);
  }finally{f.restore();}
 }));
-test('MP-08/MP-10/MP-11 a native wheel notch is not native when the snapshot says another Tab is in front or its admission fails; clicks still read live',()=>using(async({host,connection})=>{
+test('MP-08/MP-10/MP-11 a native wheel notch is not native when the snapshot says another Tab is in front or its admission fails',()=>using(async({host,connection})=>{
  const {inputVisiblePage}=await import('./kernel-browser-page-display.mjs');
  const opened=await host.request({op:'open',url:'https://example.com/'}),tab=host.tabs.get(opened.tab_id),f=keyAdmission(host,tab,connection,{cachedActive:'another-target'});
  try{
@@ -2045,16 +2046,53 @@ test('MP-08/MP-10/MP-11 a native wheel notch is not native when the snapshot say
   assert.deepEqual(f.keys,[]);
  }finally{f.restore();}
 }));
-test('MP-08/MP-10/MP-11 a native key reads the active Tab live on a snapshot miss; coordinate input always does',()=>using(async({host,connection})=>{
+test('MP-08/MP-10/MP-11 a native key or click reads the active Tab live only on a snapshot miss; a click still reads its region live',()=>using(async({host,connection})=>{
  const {inputVisiblePage}=await import('./kernel-browser-page-display.mjs');
  const opened=await host.request({op:'open',url:'https://example.com/'}),tab=host.tabs.get(opened.tab_id),f=keyAdmission(host,tab,connection,{cachedActive:null});
  try{
   await inputVisiblePage(host,f.stream,keyCommand(host,tab),'terminal:a');
   assert.equal(f.reads.active,1,'a miss reads live');assert.equal(f.keys.length,1);
   f.reads.active=0;host.tabGroups.cachedActive=()=>tab.target_id;
+  let readsAtClick=null;const click=f.stream.regionSource.click;f.stream.regionSource.click=(...args)=>{readsAtClick=f.reads.active;return click(...args);};
   await inputVisiblePage(host,f.stream,keyCommand(host,tab,'click'),'terminal:a');
-  assert(f.reads.active>=1,'a click ignores the snapshot');assert(f.reads.fresh>0,'a click reads geometry live');
+  assert.deepEqual(f.keys.at(-1),['click',10,20],'the click is native');
+  assert.equal(readsAtClick,0,'a warm click takes the same owner snapshot as a key');assert(f.reads.fresh>0,'a click reads its region live');
  }finally{f.restore();}
+}));
+// Review #1016 P1: the snapshot replaces only the live front read; every other guard still refuses a native click.
+test('MP-08/MP-10/MP-11 a warm native click still refuses another Tab in front, a failed region read, a retired source, an agent and another viewer',()=>using(async({host,connection})=>{
+ const {inputVisiblePage}=await import('./kernel-browser-page-display.mjs');
+ const opened=await host.request({op:'open',url:'https://example.com/'}),tab=host.tabs.get(opened.tab_id),f=keyAdmission(host,tab,connection,{cachedActive:'another-target'});
+ const clicks=()=>f.keys.filter(k=>k[0]==='click');
+ try{
+  await inputVisiblePage(host,f.stream,keyCommand(host,tab,'click'),'terminal:a').catch(()=>{});
+  assert.deepEqual(clicks(),[],'no native click while the snapshot says another Tab is in front');
+  host.tabGroups.cachedActive=()=>tab.target_id;
+  f.stream.regionInputCurrent=async()=>false;
+  await assert.rejects(inputVisiblePage(host,f.stream,keyCommand(host,tab,'click'),'terminal:a'),{code:'user_domain_stale_reference'});
+  f.stream.regionInputCurrent=async()=>true;f.stream.regionSource.valid=()=>false;
+  await assert.rejects(inputVisiblePage(host,f.stream,keyCommand(host,tab,'click'),'terminal:a'),{code:'user_domain_stale_reference'},'a protection change retires the source');
+  f.stream.regionSource.valid=()=>true;
+  await host.handle({id:'agent-click',method:'host.browser',params:{...keyCommand(host,tab,'click'),_display_input:false,_agent_input:true,observed_by:'agent:a'}});
+  await host.handle({id:'other-click',method:'host.browser',params:{...keyCommand(host,tab,'click'),observed_by:'terminal:b'}});
+  assert.deepEqual(clicks(),[],'agents and viewers without this display lease never click natively');
+ }finally{f.restore();}
+}));
+test('MP-08/MP-10 a viewer input names its path: native, or the gate that left it to CDP',()=>using(async({host,connection})=>{
+ const {inputVisiblePage}=await import('./kernel-browser-page-display.mjs');
+ const opened=await host.request({op:'open',url:'https://example.com/'}),tab=host.tabs.get(opened.tab_id),f=keyAdmission(host,tab,connection);
+ const marks=[],timing=host.timing;host.timing=Object.assign(name=>{if(name.startsWith('input_path'))marks.push(name);},{event(){}});
+ try{
+  await inputVisiblePage(host,f.stream,keyCommand(host,tab,'click'),'terminal:a');
+  await inputVisiblePage(host,f.stream,keyCommand(host,tab),'terminal:a');
+  host.tabGroups.cachedActive=()=>'another-target';
+  await inputVisiblePage(host,f.stream,keyCommand(host,tab,'click'),'terminal:a').catch(()=>{});
+  host.tabGroups.cachedActive=()=>tab.target_id;f.stream.regionSource.click=()=>false;
+  await inputVisiblePage(host,f.stream,keyCommand(host,tab,'click'),'terminal:a').catch(()=>{});
+  f.stream.regionSource.click=()=>{throw Object.assign(Error('MP-11: native input reply lost'),{code:'native_input_uncertain'});};
+  await inputVisiblePage(host,f.stream,keyCommand(host,tab,'click'),'terminal:a');
+  assert.deepEqual(marks,['input_path native','input_path native','input_path cdp front','input_path cdp refused','input_path uncertain']);
+ }finally{host.timing=timing;f.restore();}
 }));
 
 // MP-08/MP-10/MP-11: failed extension startup and browser recovery release observers.
@@ -3095,7 +3133,12 @@ test('an agent opens its Tab behind the shown one; the person opens theirs in fr
   await host.request({ op: 'open', url: 'https://example.com/person' });
   await host.request({ op: 'open', url: 'https://example.com/agent', focused_agent: true });
   await host.request({ op: 'open', url: 'https://example.com/agent2', _agent_input: true });
-  const created = sent.filter(call => call.method === 'Target.createTarget' && call.params.url.includes('example.com')).map(call => [call.params.url, call.params.background === true]);
+  // A Tab is created blank and then navigated, so each URL goes to the target created just before it.
+  let background;
+  const created = sent.flatMap(call => {
+    if (call.method === 'Target.createTarget') background = call.params.background === true;
+    return call.method === 'Page.navigate' ? [[call.params.url, background]] : [];
+  });
   assert.deepEqual(created, [['https://example.com/person', false], ['https://example.com/agent', true], ['https://example.com/agent2', true]]);
 }));
 
@@ -3143,6 +3186,34 @@ test('an agent action on a Tab the person is typing in waits for the person to b
   assert.ok(keys() > afterPerson + 1);
 }, { personIdleMs: 150 }));
 
+// B3e: a hover is not the person acting. It never holds an agent back, and an agent acting in the Tab keeps the pointer.
+test('B3e: a person\'s hover move does not make an agent wait, and is dropped while an agent acts in the Tab', { timeout: 5000 }, () => using(async ({ host }) => {
+  const opened = await host.request({ op: 'open', url: 'https://example.com/' });
+  const tab = opened.tabs[0], base = { tab_id: tab.tab_id, generation: opened.generation, document_id: tab.document_id };
+  let resolved = 0; host.mirror.resolveInput = async () => { resolved++; return { perform: async () => {}, fenced: false }; };
+  const move = x => host.request({ op: 'input', ...base, input: { kind: 'mirror', action: { kind: 'move', node_id: 'n1', x, y: 1 } } });
+  await move(1);
+  assert.equal(resolved, 1, 'a quiet Tab hovers');
+  const startedAt = Date.now();
+  await host.request({ op: 'input', focused_agent: true, ...base, input: { kind: 'key', key: 'b' } });
+  assert.ok(Date.now() - startedAt < 1000, 'the agent did not wait for a hovering person');
+  await move(2);
+  assert.equal(resolved, 1, 'a hover while the agent acts in the Tab is dropped');
+}, { personIdleMs: 5000 }));
+// B3-perf: a viewer sends up to one move per frame; a move answers without the full post-input Tab observation (as a viewer's key).
+test('B3-perf: a hover move answers without a post-input Tab observation', { timeout: 5000 }, () => using(async ({ host }) => {
+  const opened = await host.request({ op: 'open', url: 'https://example.com/' });
+  const tab = opened.tabs[0], base = { tab_id: tab.tab_id, generation: opened.generation, document_id: tab.document_id };
+  host.mirror.resolveInput = async () => ({ perform: async () => {}, fenced: false });
+  const reconcile = host.reconcile.bind(host); let observations = 0;
+  host.reconcile = (...args) => { observations++; return reconcile(...args); };
+  const reads = () => observations;
+  for (const [action, observed] of [[{ kind: 'click', node_id: 'n1', x: 1, y: 1 }, true], [{ kind: 'move', node_id: 'n1', x: 1, y: 1 }, false]]) {
+    const before = reads();
+    await host.request({ op: 'input', ...base, input: { kind: 'mirror', action } });
+    assert.equal(reads() > before, observed, `${action.kind}: post-input observation`);
+  }
+}));
 test('an agent action on another Tab does not wait for the person', { timeout: 5000 }, () => using(async ({ host }) => {
   const first = await host.request({ op: 'open', url: 'https://example.com/a' });
   const second = await host.request({ op: 'open', url: 'https://example.com/b' });

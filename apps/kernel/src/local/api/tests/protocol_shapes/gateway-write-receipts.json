@@ -1,0 +1,10 @@
+[
+  {"PromptSubmitted": {
+    "session_id": "room",
+    "outcome": {"Started": {"prompt": {"id": "prompt", "target_agent_id": "agent", "status": "Running"}}}
+  }},
+  {"ActivePromptSteered": {"prompt": {"id": "prompt", "target_agent_id": "agent", "status": "Running"}}},
+  {"WorkflowCreated": {"session_id": "room", "workflow": {"id": "workflow", "alias": "build"}}},
+  {"ProjectRestored": {"project": {"id": "project"}, "session_ids": ["room"]}},
+  {"GatewayWriteCompleted": {"response_kind": "ShellCommandCompleted", "session_id": "room", "exit_code": 17}}
+]

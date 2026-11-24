@@ -118,7 +118,7 @@ async fn mp08_mp10_mp11_terminal_owner_attempt_allows_fresh_peer_binding() {
             "peer keys change independently of the selected Project plan"
         );
         let (_, permit) = store
-            .start(&old_plan.context_id, &old_plan.plan_digest)
+            .start(&old_plan.context_id, &old_plan.plan_digest, false)
             .unwrap();
         assert!(store.update(&old_plan.context_id, |status| {
             status.phase = phase;
@@ -138,7 +138,7 @@ async fn mp08_mp10_mp11_terminal_owner_attempt_allows_fresh_peer_binding() {
             assert_eq!(next.target, corrected.target);
             let next_plan = next.context_plan.package_binding();
             let (_, next_permit) = store
-                .start(&next_plan.context_id, &next_plan.plan_digest)
+                .start(&next_plan.context_id, &next_plan.plan_digest, false)
                 .unwrap();
             drop(next_permit);
             store.finish(&next_plan.context_id);

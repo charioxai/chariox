@@ -15,6 +15,29 @@ use super::{CodexClient, CodexNotification, CodexSocket};
 
 impl CodexClient {
     pub fn connect_initialized(&self) -> Result<CodexSocket, DaemonError> {
+        self.connect_initialized_with_info()
+            .map(|(socket, _)| socket)
+    }
+    // MP-08 / MP-10 / MP-11: identify the actual account-bound app-server,
+    // rather than probing an ambient CLI executable which may have changed.
+    pub(crate) fn native_skill_server_version(&self) -> Result<String, DaemonError> {
+        let (_, info) = self.connect_initialized_with_info()?;
+        info.get("userAgent")
+            .and_then(Value::as_str)
+            .filter(|value| {
+                !value.trim().is_empty()
+                    && value.len() <= 512
+                    && !value.chars().any(char::is_control)
+            })
+            .map(str::to_string)
+            .ok_or_else(|| {
+                self.protocol_error(
+                    "codex_skill_inventory_version",
+                    "app-server did not report a valid version identity".into(),
+                )
+            })
+    }
+    fn connect_initialized_with_info(&self) -> Result<(CodexSocket, Value), DaemonError> {
         let mut socket = connect_codex_socket(self.endpoint.as_str())
             .map_err(|error| self.protocol_error("codex_connect", error))?;
         set_socket_timeouts(
@@ -22,8 +45,38 @@ impl CodexClient {
             Some(Duration::from_secs(10)),
             Some(Duration::from_secs(10)),
         )?;
-        self.initialize_socket(&mut socket)?;
-        Ok(socket)
+        let info = self.initialize_socket(&mut socket)?;
+        Ok((socket, info))
+    }
+
+    pub(in crate::provider) fn workspace_sandbox_is_unavailable(
+        &self,
+        socket: &mut CodexSocket,
+        next_request_id: &mut u64,
+        cwd: &std::path::Path,
+    ) -> bool {
+        let result = self.send_request_buffering_notifications_with_timeout::<Value>(
+            socket,
+            next_request_id,
+            "command/exec",
+            json!({
+                "command": ["/bin/true"],
+                "cwd": cwd,
+                "sandboxPolicy": {"type":"workspaceWrite"},
+                "timeoutMs": 1000,
+                "outputBytesCap": 4096,
+            }),
+            &mut Vec::new(),
+            Duration::from_secs(3),
+        );
+        result.is_ok_and(|result| {
+            result["exitCode"].as_i64().is_some_and(|code| code != 0)
+                && result["stderr"].as_str().is_some_and(|stderr| {
+                    stderr.contains("bwrap:")
+                        && (stderr.contains("No permissions to create a new namespace")
+                            || stderr.contains("Operation not permitted"))
+                })
+        })
     }
 
     pub fn send_request<T: for<'de> Deserialize<'de>>(
@@ -161,6 +214,9 @@ impl CodexClient {
     ) -> Result<Option<CodexNotification>, DaemonError> {
         let deadline = Instant::now() + timeout;
         loop {
+            if self.has_workspace_approval_for_successor() {
+                return Ok(None);
+            }
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
                 return Ok(None);
@@ -171,9 +227,14 @@ impl CodexClient {
                         Message::Text(text) => text.to_string(),
                         Message::Binary(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
                         Message::Ping(_) | Message::Pong(_) | Message::Frame(_) => continue,
-                        Message::Close(_) => {
-                            return Ok(Some(CodexNotification::Error {
-                                message: "Codex app-server closed the websocket".to_string(),
+                        Message::Close(frame) => {
+                            let reason = frame
+                                .as_ref()
+                                .map(|frame| frame.reason.as_str())
+                                .filter(|reason| !reason.trim().is_empty())
+                                .unwrap_or("Codex closed its stream before the turn completed.");
+                            return Ok(Some(CodexNotification::StreamClosed {
+                                reason: reason.to_string(),
                             }));
                         }
                     };
@@ -229,7 +290,7 @@ impl CodexClient {
         }
     }
 
-    fn initialize_socket(&self, socket: &mut CodexSocket) -> Result<(), DaemonError> {
+    fn initialize_socket(&self, socket: &mut CodexSocket) -> Result<Value, DaemonError> {
         let initialize = json!({
             "jsonrpc": "2.0",
             "id": 0,
@@ -265,7 +326,7 @@ impl CodexClient {
         socket
             .send(Message::Text(initialized.to_string().into()))
             .map_err(|error| self.protocol_error("codex_initialized", error.to_string()))?;
-        Ok(())
+        Ok(message.result.expect("initialize result checked above"))
     }
 
     pub(super) fn read_next_message(

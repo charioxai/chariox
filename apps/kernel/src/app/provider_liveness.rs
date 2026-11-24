@@ -67,6 +67,7 @@ pub(crate) struct ProviderProcessExit {
     pub(crate) exit_code: Option<u32>,
     pub(crate) signal: Option<String>,
     pub(crate) terminal_diagnostic: Option<String>,
+    failure_diagnostic: Option<crate::provider::TurnOutcome>,
 }
 
 impl ProviderProcessExit {
@@ -77,13 +78,14 @@ impl ProviderProcessExit {
         if self.outside_ended {
             return crate::provider::ProviderRunTermination::outside_end(at_ms);
         }
-        match (self.exit_code, self.signal.as_deref()) {
+        let termination = match (self.exit_code, self.signal.as_deref()) {
             (_, Some(signal)) => crate::provider::ProviderRunTermination::signal(signal, at_ms),
             (Some(code), None) => {
                 crate::provider::ProviderRunTermination::process_exit(code, at_ms)
             }
             _ => crate::provider::ProviderRunTermination::unknown_process_exit(at_ms),
-        }
+        };
+        termination.with_process_failure(self.failure_diagnostic.as_ref())
     }
 }
 
@@ -95,17 +97,23 @@ impl ProviderRunLivenessProcesses {
         match app.pty.poll_process_state(provider_run_id) {
             Ok(PtyProcessState::Running) => Ok(None),
             Ok(PtyProcessState::Exited { exit_code, signal }) => {
-                let terminal_diagnostic = app
+                let terminal_output = app
                     .pty
                     .drain_output(provider_run_id)?
                     .into_iter()
                     .map(|chunk| String::from_utf8_lossy(&chunk.bytes).into_owned())
                     .collect::<String>();
                 let terminal_diagnostic =
-                    crate::provider::sanitize_provider_diagnostic(&terminal_diagnostic);
+                    crate::provider::sanitize_provider_diagnostic(&terminal_output);
                 // Output pumping can consume the last bytes before liveness
                 // observes exit. The PTY's bounded tail survives that drain.
-                let retained_tail = app.pty.exited_output_diagnostic(provider_run_id);
+                let tail = app
+                    .pty
+                    .exited_output_tail(provider_run_id)
+                    .unwrap_or_default();
+                let tail = String::from_utf8_lossy(&tail);
+                let retained_tail = crate::provider::sanitize_provider_diagnostic(&tail);
+                let retained_tail = (!retained_tail.is_empty()).then_some(retained_tail);
                 let mut exit = ProviderProcessExit {
                     memory_limit_bytes: app.pty.memory_limit_bytes(provider_run_id),
                     outside_ended: crate::runtime::process_resources::outside_ended_for_key(
@@ -116,6 +124,7 @@ impl ProviderRunLivenessProcesses {
                     terminal_diagnostic: (!terminal_diagnostic.is_empty())
                         .then_some(terminal_diagnostic)
                         .or_else(|| retained_tail.clone()),
+                    failure_diagnostic: None,
                 };
                 if let Ok(run) = app.providers.get_run(provider_run_id) {
                     let pending_delivery = run.agent_instance_id().is_some_and(|agent_id| {
@@ -151,6 +160,18 @@ impl ProviderRunLivenessProcesses {
                             .record_terminal_diagnostic(provider_run_id, message.clone())?;
                         app.update_provider_run_projection(diagnosed);
                         exit.terminal_diagnostic = Some(message);
+                    } else {
+                        exit.failure_diagnostic =
+                            crate::provider::provider_exit_error_message(&tail)
+                                .or_else(|| {
+                                    crate::provider::provider_exit_error_message(&terminal_output)
+                                })
+                                .map(|message| {
+                                    crate::provider::TurnOutcome::classify(
+                                        run.adapter_key(),
+                                        &message,
+                                    )
+                                });
                     }
                 }
                 Ok(Some(exit))
@@ -161,6 +182,7 @@ impl ProviderRunLivenessProcesses {
                 exit_code: None,
                 signal: None,
                 terminal_diagnostic: None,
+                failure_diagnostic: None,
             })),
             Err(error) => Err(error),
         }
@@ -258,9 +280,14 @@ impl ProviderRunLivenessSessionEffects {
         app: &mut DaemonApp,
         outcome: &ProviderRunLivenessOutcome,
     ) -> Result<ProviderRunExitSessionOutcome, DaemonError> {
-        let active_prompt_status = app
-            .prompt_owner_active_prompt_for_agent(&outcome.session_id, &outcome.agent_id)?
-            .and_then(|prompt| prompt.is_chariox_owned().then(|| prompt.status()));
+        // The run's end settles only the prompt that held it, never a newer one.
+        let active_prompt_status =
+            if app.provider_run_has_active_prompt(&outcome.session_id, &outcome.ended_run)? {
+                app.prompt_owner_active_prompt_for_agent(&outcome.session_id, &outcome.agent_id)?
+                    .and_then(|prompt| prompt.is_chariox_owned().then(|| prompt.status()))
+            } else {
+                None
+            };
         let had_active_prompt = active_prompt_status.is_some();
         let cancelled_prompt = active_prompt_status == Some(PromptStatus::Cancelling);
         let started_next_prompt = match ProviderRunExitPromptSettlement::from_active_prompt_status(

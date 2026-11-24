@@ -1,10 +1,11 @@
 import { LocalIpcError } from "@chariox/kernel-client/ipc"
-import { CommandFailure, exitCodeFor, familyUsageOf, guideText, parseArguments, usageOf, wantsHelp } from "./agent-command-table.js"
+import { CommandFailure, ONE_OFF_COMMAND_HINT, exitCodeFor, familyUsageOf, guideText, parseArguments, usageOf, wantsHelp } from "./agent-command-table.js"
 import { kernelUnixClient } from "./kernel-unix-client.js"
 import { FILES_VERBS, runFilesVerb, type SendRequest } from "./kernel-files.js"
 import { runTerminalVerb, TERMINAL_ATTACH_USAGE, TERMINAL_VERBS, waitMsOf, type TerminalFlags, type TerminalVerb } from "./terminal-verbs.js"
 
 import { runExec } from "./exec-command.js"
+import { readExecInput, runKernelExec } from "./kernel-exec.js"
 import { runExecPlace } from "./exec-place-command.js"
 
 import { EVENT_VERBS, eventTimeoutSeconds, runEventsVerb } from "./events-command.js"
@@ -155,8 +156,9 @@ export async function runKernelsCommand(argv: string[]): Promise<boolean> {
   if (command === undefined) return false
   // `chariox terminal --session ...` is the interactive attach for a person; a verb first is the agent's.
   const terminalVerb = command === "terminal" ? TERMINAL_VERBS.find(name => name === rest[0]) : undefined
-  const terminalFamily = command === "terminal" && (rest.length === 0 || rest[0] === "--help")
-  if (command !== "guide" && command !== "kernels" && command !== "request" && command !== "watch" && command !== "files" && command !== "events" && command !== "exec" && !terminalVerb && !terminalFamily) return false
+  // A bare `chariox terminal` is the attach to the kernel's own terminal (terminal-command.ts); only --help prints the usage.
+  const terminalFamily = command === "terminal" && rest[0] === "--help"
+  if (command !== "whats-new" && command !== "guide" && command !== "kernels" && command !== "request" && command !== "watch" && command !== "files" && command !== "events" && command !== "exec" && !terminalVerb && !terminalFamily) return false
   if (terminalFamily) {
     console.log(`${TERMINAL_ATTACH_USAGE}\n${familyUsageOf("terminal", TERMINAL_VERBS)}`)
     return true
@@ -201,14 +203,28 @@ export async function runKernelsCommand(argv: string[]): Promise<boolean> {
         runExecPlace({ session, execId: positionals[0]!, kernel: target, directory: flags.get("--directory") as string | undefined }, send))
       console.log(JSON.stringify(placed))
     } else if (command === "exec") {
-      if (positionals.length || program.length === 0 || Boolean(flags.get("--session")) === Boolean(flags.get("--workspace")) || (flags.has("--host-agent") && !flags.has("--session"))) {
-        throw new CommandFailure("usage", "Usage: chariox exec [--kernel NAME] (--session ROOM | --workspace PATH) [--host-agent AGENT] -- argv...")
+      const inRoom = flags.has("--session") || flags.has("--workspace")
+      if (positionals.length || program.length === 0 || (flags.has("--session") && flags.has("--workspace")) || (flags.has("--host-agent") && !flags.has("--session")) || (inRoom && flags.has("--directory"))) {
+        throw new CommandFailure("usage", "Usage: chariox exec [--kernel NAME] [--directory PATH] -- argv...   (a command on the kernel, no Room)\n       chariox exec [--kernel NAME] (--session ROOM | --workspace PATH) [--host-agent AGENT] -- argv...")
       }
       kernel = (flags.get("--kernel") as string | undefined) ?? null
+      if (!inRoom) {
+        const timeoutSeconds = parseTimeout(flags.get("--timeout"))
+        const stdin = await readExecInput(process.stdin, flags.get("--stdin-file") as string | undefined, timeoutSeconds)
+        process.exitCode = await withKernel({ socket, timeoutSeconds, kernel: kernel ?? undefined }, send =>
+          runKernelExec({ command: program, directory: flags.get("--directory") as string | undefined, timeoutSeconds, stdin, signals: process }, send, process.stdout))
+        return true
+      }
+      if (flags.has("--stdin-file")) throw new CommandFailure("usage", "--stdin-file is for a command on the kernel itself; with --session or --workspace the command's stdin is yours")
       process.exitCode = await withKernel({ socket, timeoutSeconds: DEFAULT_TIMEOUT_SECONDS, kernel: kernel ?? undefined }, send =>
         runExec({ session: flags.get("--session") as string | undefined, workspace: flags.get("--workspace") as string | undefined,
           hostAgent: flags.get("--host-agent") as string | undefined, command: program }, send,
           { stdin: process.stdin, stdout: process.stdout, stderr: process.stderr, signals: process }))
+    } else if (command === "whats-new") {
+      kernel = (flags.get("--kernel") as string | undefined) ?? null
+      const response = await sendRequest({ GetAgentReleaseNotes: {} }, { socket, kernel: kernel ?? undefined, timeoutSeconds: DEFAULT_TIMEOUT_SECONDS }) as { AgentReleaseNotes?: { text: string } }
+      if (!response.AgentReleaseNotes) throw new CommandFailure("kernel_not_available", "Update this kernel to read its agent release notes.")
+      process.stdout.write(response.AgentReleaseNotes.text)
     } else if (command === "guide") {
       console.log(guideText())
     } else if (command === "kernels") {
@@ -225,7 +241,7 @@ export async function runKernelsCommand(argv: string[]): Promise<boolean> {
     } else if (terminalVerb) {
       kernel = (flags.get("--kernel") as string | undefined) ?? null
       const terminalFlags: TerminalFlags = {
-        cols: flags.get("--cols"), rows: flags.get("--rows"), title: flags.get("--title"), session: flags.get("--session"),
+        cols: flags.get("--cols"), rows: flags.get("--rows"), title: flags.get("--title"), session: flags.get("--session"), directory: flags.get("--directory"),
         terminal: flags.get("--terminal"), since: flags.get("--since"), waitMs: flags.get("--wait-ms"), for: flags.get("--for"),
         timeout: flags.get("--timeout"), hostAgent: flags.get("--host-agent"), noEnter: flags.has("--no-enter"),
       }
@@ -238,6 +254,9 @@ export async function runKernelsCommand(argv: string[]): Promise<boolean> {
       const result = await withKernel({ socket, timeoutSeconds: Math.min(timeoutSeconds, 240 + DEFAULT_TIMEOUT_SECONDS), kernel: kernel ?? undefined }, send =>
         runTerminalVerb(terminalVerb as TerminalVerb, terminalVerb === "open" ? program : positionals, terminalFlags, send))
       console.log(JSON.stringify(result))
+      if (terminalVerb === "open" && program.length > 0 && !terminalFlags.session && !terminalFlags.directory) {
+        process.stderr.write(`${ONE_OFF_COMMAND_HINT}\n`)
+      }
     } else if (command === "files" && verb) {
       kernel = (flags.get("--kernel") as string | undefined) ?? null
       const timeoutSeconds = parseTimeout(flags.get("--timeout"))

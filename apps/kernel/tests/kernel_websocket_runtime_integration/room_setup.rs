@@ -34,6 +34,17 @@ async fn start_kernel() -> (
     let (port, listener) = reserved_kernel_listener();
     config.kernel_websocket_port = port;
     config.runtime_mcp_port = unused_tcp_port();
+    start_kernel_with_config(config, listener).await
+}
+
+async fn start_kernel_with_config(
+    config: DaemonConfig,
+    listener: std::net::TcpListener,
+) -> (
+    DaemonConfig,
+    oneshot::Sender<()>,
+    tokio::task::JoinHandle<Result<(), chariox_kernel::DaemonError>>,
+) {
     let app = DaemonApp::bootstrap(config.clone()).expect("daemon bootstrap should succeed");
     let (shutdown, shutdown_rx) = oneshot::channel::<()>();
     let server = tokio::spawn(async move {
@@ -74,20 +85,7 @@ async fn open_room(
     let session = response_variant(&created, "SessionCreated")["session"].clone();
     let session_id = session["id"].as_str().unwrap().to_string();
     let agent_id = session["agents"][0]["id"].as_str().unwrap().to_string();
-    let attached = send_request(
-        socket,
-        "attach-session",
-        LocalDaemonRequest::AttachToSession(AttachToSessionRequest {
-            session_id: session_id.clone(),
-            client_id: "room-setup-client".to_string(),
-            capability_level: ClientCapabilityLevel::FullTerminal,
-        }),
-    )
-    .await;
-    let attachment_id = response_variant(&attached, "SessionAttached")["attachment"]["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let attachment_id = attach_room(socket, &session_id).await;
     Room {
         session_id,
         agent_id,
@@ -96,10 +94,27 @@ async fn open_room(
     }
 }
 
+async fn attach_room(socket: &mut Socket, session_id: &str) -> String {
+    let attached = send_request(
+        socket,
+        &format!("attach-session-{}", rand::random::<u64>()),
+        LocalDaemonRequest::AttachToSession(AttachToSessionRequest {
+            session_id: session_id.to_string(),
+            client_id: "room-setup-client".to_string(),
+            capability_level: ClientCapabilityLevel::FullTerminal,
+        }),
+    )
+    .await;
+    response_variant(&attached, "SessionAttached")["attachment"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
 async fn launch_stub_provider(socket: &mut Socket, room: &Room) {
     let launched = send_request(
         socket,
-        "launch-provider",
+        &format!("launch-provider-{}", rand::random::<u64>()),
         LocalDaemonRequest::LaunchProviderRun(LaunchProviderRunRequest {
             session_id: room.session_id.clone(),
             agent_id: Some(room.agent_id.clone()),
@@ -150,7 +165,7 @@ async fn wait_for_state(
 async fn submit(socket: &mut Socket, room: &Room, prompt: &str) -> Value {
     let response = send_request(
         socket,
-        "submit-prompt",
+        &format!("submit-prompt-{}", rand::random::<u64>()),
         LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
             session_id: room.session_id.clone(),
             attachment_id: room.attachment_id.clone(),
@@ -340,7 +355,8 @@ fn the_suggested_name_is_what_the_next_room_gets() {
 
 #[test]
 fn a_failed_publish_never_holds_prompts_and_can_be_retried() {
-    crate::run_kernel_websocket_runtime_test(async {
+    let (saved, restore) = std::sync::mpsc::sync_channel(1);
+    crate::run_kernel_websocket_runtime_test(async move {
         // The stub provider answers no utility turns, so publishing fails the same way for
         // every provider that cannot run it.
         let workspace = ExecutionWorkspace::new();
@@ -365,8 +381,45 @@ fn a_failed_publish_never_holds_prompts_and_can_be_retried() {
             .unwrap();
         assert_eq!(message, "The agent could not start publishing");
 
+        // A new client (including a reloaded page) reads the same failure.
+        let mut other = connect_with_retry(&config.kernel_websocket_url()).await;
+        let reloaded = wait_for_state(&mut other, &room, "failure on another client", |session| {
+            session["room_setup"] == failed["room_setup"]
+        })
+        .await;
+        assert_eq!(reloaded["room_setup"], failed["room_setup"]);
+        drop(other);
+        drop(socket);
+        let _ = shutdown.send(());
+        server.await.unwrap().unwrap();
+
+        saved.send((config, room, failed, workspace)).unwrap();
+    });
+    // Dropping the old runtime ends all kernel tasks and releases database ownership,
+    // just as a process exit does. Restart against the same durable files.
+    let (config, room, failed, workspace) = restore.recv().unwrap();
+    crate::run_kernel_websocket_runtime_test(async move {
+        let _workspace = workspace;
+        let (port, listener) = reserved_kernel_listener();
+        let mut config = config;
+        config.kernel_websocket_port = port;
+        let (config, shutdown, server) = start_kernel_with_config(config, listener).await;
+        let mut socket = connect_with_retry(&config.kernel_websocket_url()).await;
+        let restored = send_request(
+            &mut socket,
+            "restored",
+            LocalDaemonRequest::GetSessionState(GetSessionStateRequest {
+                session_id: room.session_id.clone(),
+            }),
+        )
+        .await;
+        assert_eq!(
+            response_variant(&restored, "SessionState")["session"]["room_setup"],
+            failed["room_setup"],
+            "failed publish must survive a kernel restart"
+        );
+
         launch_stub_provider(&mut socket, &room).await;
-        assert!(submit(&mut socket, &room, "work goes on").await["Started"].is_object());
 
         let retried = send_request(
             &mut socket,
@@ -386,6 +439,191 @@ fn a_failed_publish_never_holds_prompts_and_can_be_retried() {
             session["room_setup"]["steps"][0]["state"] == "failed"
         })
         .await;
+        let _ = shutdown.send(());
+        server.await.unwrap().unwrap();
+    });
+}
+
+#[test]
+fn rejected_git_init_start_survives_restart() {
+    rejected_room_setup_progress_survives_restart("git_init", "running", false);
+}
+
+#[test]
+fn rejected_git_init_result_survives_restart() {
+    rejected_room_setup_progress_survives_restart("git_init", "done", false);
+}
+
+#[test]
+fn rejected_publish_start_survives_restart() {
+    rejected_room_setup_progress_survives_restart("publish", "running", false);
+}
+
+#[test]
+fn rejected_publish_result_survives_restart() {
+    rejected_room_setup_progress_survives_restart("publish", "failed", false);
+}
+
+#[test]
+fn rejected_recovery_write_leaves_room_available() {
+    rejected_room_setup_progress_survives_restart("publish", "failed", true);
+}
+
+fn rejected_room_setup_progress_survives_restart(
+    step: &'static str,
+    rejected_state: &'static str,
+    reject_marker: bool,
+) {
+    let (saved, restore) = std::sync::mpsc::sync_channel(1);
+    crate::run_kernel_websocket_runtime_test(async move {
+        let workspace = ExecutionWorkspace::directory("room-setup-rejected-progress");
+        let (config, shutdown, server) = start_kernel().await;
+        let injection = rusqlite::Connection::open(config.durable_state_path()).unwrap();
+        // Reject only this setup transition, after its initial pending state committed.
+        injection
+            .execute_batch(&format!(
+                "CREATE TRIGGER reject_setup_progress BEFORE INSERT ON durable_room_setups
+             WHEN NEW.state_json LIKE '%\"id\":\"{step}\",\"state\":\"{rejected_state}\"%'
+             BEGIN SELECT RAISE(FAIL, 'injected setup progress rejection'); END;"
+            ))
+            .unwrap();
+        if reject_marker {
+            injection
+                .execute_batch(
+                    "CREATE TRIGGER reject_setup_storage_marker
+                     BEFORE INSERT ON durable_room_setup_storage_failures
+                     BEGIN SELECT RAISE(FAIL, 'injected setup marker rejection'); END;",
+                )
+                .unwrap();
+        }
+        let mut socket = connect_with_retry(&config.kernel_websocket_url()).await;
+        let room = open_room(
+            &mut socket,
+            &workspace,
+            RoomSetupRequest {
+                git_init: step == "git_init",
+                publish: true,
+                ..Default::default()
+            },
+        )
+        .await;
+        let failed = wait_for_state(
+            &mut socket,
+            &room,
+            "rejected setup progress to fail",
+            |session| session["room_setup"]["steps"][0]["state"] == "failed",
+        )
+        .await;
+        assert_eq!(failed["room_setup"]["steps"][0]["id"], step);
+        let reason = failed["room_setup"]["steps"][0]["message"]
+            .as_str()
+            .unwrap();
+        assert!(reason.contains("storage"), "{reason}");
+        assert!(
+            reason.contains(if step == "publish" {
+                "retry"
+            } else {
+                "dismiss"
+            }),
+            "{reason}"
+        );
+        drop(socket);
+        let _ = shutdown.send(());
+        server.await.unwrap().unwrap();
+        saved.send((config, room, failed, workspace)).unwrap();
+    });
+
+    let (mut config, mut room, failed, _workspace) = restore.recv().unwrap();
+    let (saved_repair, restore_repair) = std::sync::mpsc::sync_channel(1);
+    crate::run_kernel_websocket_runtime_test(async move {
+        let (port, listener) = reserved_kernel_listener();
+        config.kernel_websocket_port = port;
+        let (config, shutdown, server) = start_kernel_with_config(config, listener).await;
+        let mut socket = connect_with_retry(&config.kernel_websocket_url()).await;
+        let restored = session_state(&mut socket, &room).await;
+        assert_eq!(restored["room_setup"], failed["room_setup"]);
+        assert_eq!(restored["agents"][0]["id"], room.agent_id);
+        room.attachment_id = attach_room(&mut socket, &room.session_id).await;
+        launch_stub_provider(&mut socket, &room).await;
+        let outcome = submit(
+            &mut socket,
+            &room,
+            "continue after restarting with a storage failure",
+        )
+        .await;
+        assert!(
+            outcome["Started"].is_object(),
+            "the recovered storage failure must release prompts: {outcome}"
+        );
+
+        let injection = rusqlite::Connection::open(config.durable_state_path()).unwrap();
+        injection
+            .execute_batch(
+                "DROP TRIGGER reject_setup_progress;
+                 DROP TRIGGER IF EXISTS reject_setup_storage_marker;",
+            )
+            .unwrap();
+        let recovered = if step == "publish" {
+            send_request(
+                &mut socket,
+                "retry-after-storage-repair",
+                LocalDaemonRequest::RetryRoomSetup(RetryRoomSetupRequest {
+                    session_id: room.session_id.clone(),
+                }),
+            )
+            .await
+        } else {
+            send_request(
+                &mut socket,
+                "dismiss-after-storage-repair",
+                LocalDaemonRequest::DismissRoomSetup(DismissRoomSetupRequest {
+                    session_id: room.session_id.clone(),
+                }),
+            )
+            .await
+        };
+        let updated = &response_variant(&recovered, "RoomSetupUpdated")["session"];
+        let repaired = if step == "publish" {
+            assert_eq!(updated["room_setup"]["steps"][0]["state"], "pending");
+            wait_for_state(
+                &mut socket,
+                &room,
+                "the publish retry to finish",
+                |session| session["room_setup"]["steps"][0]["state"] == "failed",
+            )
+            .await
+        } else {
+            assert!(updated["room_setup"].is_null());
+            updated.clone()
+        };
+        assert_ne!(repaired["room_setup"], failed["room_setup"]);
+        let storage_failed: bool = injection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM durable_room_setup_storage_failures WHERE session_id = ?1)",
+                [&room.session_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            !storage_failed,
+            "repair must clear the durable failure marker"
+        );
+        drop(socket);
+        let _ = shutdown.send(());
+        server.await.unwrap().unwrap();
+        saved_repair.send((config, room, repaired)).unwrap();
+    });
+
+    let (mut config, room, repaired) = restore_repair.recv().unwrap();
+    crate::run_kernel_websocket_runtime_test(async move {
+        let (port, listener) = reserved_kernel_listener();
+        config.kernel_websocket_port = port;
+        let (config, shutdown, server) = start_kernel_with_config(config, listener).await;
+        let mut socket = connect_with_retry(&config.kernel_websocket_url()).await;
+        let restored = session_state(&mut socket, &room).await;
+        assert_eq!(restored["room_setup"], repaired["room_setup"]);
+        assert_eq!(restored["agents"][0]["id"], room.agent_id);
+        drop(socket);
         let _ = shutdown.send(());
         server.await.unwrap().unwrap();
     });

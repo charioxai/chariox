@@ -16,7 +16,6 @@ impl KernelRuntimeState {
             Ok(AgentMoveRequirements {
                 agent_configuration_sha256: agent_configuration_sha256(agent)?,
                 extensions,
-                skills: app.required_remote_skills_for_native_provider_launch(agent)?,
             })
         })
         .await

@@ -1,7 +1,8 @@
 //! An agent always runs an explicit model and variant: the choice is made here, from the catalog
 //! of the agent's account, the same way New Room preselects one. A model the person (or the
-//! caller) named stays; a model the new account does not offer, or none at all, becomes that
-//! account's default; a variant the model does not support becomes its default variant.
+//! caller) names now must be one the account offers; a model the agent already runs stays; a
+//! model the new account does not offer, or none at all, becomes that account's default; a
+//! variant the model does not support becomes its default variant.
 
 use std::collections::BTreeSet;
 
@@ -13,11 +14,22 @@ const EFFORT_ORDER: [&str; 8] = [
 ];
 const PREFERRED_VARIANT: &str = "high";
 
+/// Where a requested model or variant comes from.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Source {
+    /// Not chosen by the caller: a model the account does not offer becomes its default.
+    Inherited,
+    /// Already in use (an alias, a withdrawn model, a Room default): it stays even when the
+    /// catalog does not list it.
+    Kept,
+    /// The caller asks for it now: a model must be offered, a variant is taken as named.
+    Named,
+}
+
 #[derive(Clone, Copy)]
 pub(super) struct Requested<'a> {
     pub value: Option<&'a str>,
-    /// The caller named it; it is kept even when the catalog does not list it.
-    pub explicit: bool,
+    pub source: Source,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -27,7 +39,14 @@ pub(super) struct AgentModelChoice {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub(super) struct NoModelOffered;
+pub(super) enum ModelRefusal {
+    NoModelOffered,
+    /// The caller named a model the account's catalog does not list.
+    NotOffered {
+        wanted: String,
+        available: Vec<String>,
+    },
+}
 
 struct Offered<'a> {
     id: String,
@@ -41,31 +60,38 @@ pub(super) fn choose(
     provider: &str,
     model: Requested<'_>,
     effort: Requested<'_>,
-) -> Result<AgentModelChoice, NoModelOffered> {
+) -> Result<AgentModelChoice, ModelRefusal> {
     let offered = offered_models(catalog, provider);
-    let wanted = model.value.map(str::trim).filter(|value| !value.is_empty());
-    let matched = wanted.and_then(|wanted| {
-        offered.iter().find(|entry| entry.id == wanted).or_else(|| {
-            (!wanted.contains('/'))
-                .then(|| offered.iter().find(|entry| entry.model.id == wanted))
-                .flatten()
-        })
-    });
+    // `default` asks for the account's own default model, whoever asks.
+    let wanted = model
+        .value
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && (*value != "default" || model.source == Source::Kept));
+    let matched = wanted.and_then(|wanted| resolve_name(&offered, provider, wanted));
     let entry = match (matched, wanted) {
         (Some(entry), _) => Some(entry),
-        (None, Some(_)) if model.explicit => None,
-        _ => Some(default_entry(catalog, &offered).ok_or(NoModelOffered)?),
+        (None, Some(_)) if model.source == Source::Named && offered.is_empty() => {
+            return Err(ModelRefusal::NoModelOffered);
+        }
+        (None, Some(wanted)) if model.source == Source::Named => {
+            return Err(ModelRefusal::NotOffered {
+                wanted: wanted.to_string(),
+                available: offered.iter().map(|entry| entry.id.clone()).collect(),
+            });
+        }
+        (None, Some(_)) if model.source != Source::Inherited => None,
+        _ => Some(default_entry(catalog, &offered).ok_or(ModelRefusal::NoModelOffered)?),
     };
     let model_id = match (entry, wanted) {
         (Some(entry), _) => entry.id.clone(),
         (None, Some(wanted)) => wanted.to_string(),
-        (None, None) => return Err(NoModelOffered),
+        (None, None) => return Err(ModelRefusal::NoModelOffered),
     };
     let requested_effort = effort
         .value
         .map(str::trim)
         .filter(|value| !value.is_empty());
-    let effort = match (requested_effort, effort.explicit, entry) {
+    let effort = match (requested_effort, effort.source != Source::Inherited, entry) {
         (Some(value), true, _) => Some(value.to_string()),
         // A model the catalog does not list has no variants to check against.
         (value, _, None) => value.map(str::to_string),
@@ -87,6 +113,48 @@ pub(super) fn choose(
         model: model_id,
         effort,
     })
+}
+
+/// Maps every name the provider's tool accepts to the one catalog entry it stands for: the id, the
+/// id behind a provider qualifier of the account's family (`claude/…`, `codex/…`), a
+/// name the catalog lists as an alias (`sonnet`), and an OpenCode model id without its provider.
+fn resolve_name<'a, 'b>(
+    offered: &'b [Offered<'a>],
+    provider: &str,
+    wanted: &str,
+) -> Option<&'b Offered<'a>> {
+    let unqualified = unqualified_name(provider, wanted);
+    let names = [Some(wanted), unqualified];
+    let exact = |name: &str| offered.iter().find(|entry| entry.id == name);
+    let alias = |name: &str| {
+        offered
+            .iter()
+            .find(|entry| entry.model.aliases.iter().any(|alias| alias == name))
+    };
+    names
+        .iter()
+        .flatten()
+        .find_map(|name| exact(name))
+        .or_else(|| names.iter().flatten().find_map(|name| alias(name)))
+        .or_else(|| {
+            let bare = unqualified.unwrap_or(wanted);
+            (!bare.contains('/'))
+                .then(|| offered.iter().find(|entry| entry.model.id == bare))
+                .flatten()
+        })
+}
+
+/// The name behind a provider qualifier: any provider of the account's family (`claude`,
+/// `claude-p`, `claude-headless`, `codex`). An OpenCode id keeps its provider, which is part of the
+/// model identity.
+fn unqualified_name<'a>(provider: &str, wanted: &'a str) -> Option<&'a str> {
+    let (qualifier, rest) = wanted.split_once('/')?;
+    let family = crate::provider::canonical_provider_family(provider);
+    (family.is_some()
+        && family != Some("opencode")
+        && crate::provider::canonical_provider_family(qualifier) == family
+        && !rest.is_empty())
+    .then_some(rest)
 }
 
 fn offered_models<'a>(catalog: &'a OpenCodeProviderCatalog, provider: &str) -> Vec<Offered<'a>> {
@@ -191,6 +259,7 @@ mod tests {
             id: id.to_string(),
             name: id.to_string(),
             status: "active".to_string(),
+            aliases: Vec::new(),
             limit: None,
             variants: variants
                 .iter()
@@ -235,22 +304,42 @@ mod tests {
         }
     }
 
+    fn with_aliases(
+        mut catalog: OpenCodeProviderCatalog,
+        model: &str,
+        aliases: &[&str],
+    ) -> OpenCodeProviderCatalog {
+        for provider in &mut catalog.all {
+            if let Some(entry) = provider.models.get_mut(model) {
+                entry.aliases = aliases.iter().map(|alias| alias.to_string()).collect();
+            }
+        }
+        catalog
+    }
+
     const NONE: Requested<'static> = Requested {
         value: None,
-        explicit: false,
+        source: Source::Inherited,
     };
 
     fn inherited(value: &str) -> Requested<'_> {
         Requested {
             value: Some(value),
-            explicit: false,
+            source: Source::Inherited,
         }
     }
 
-    fn explicit(value: &str) -> Requested<'_> {
+    fn kept(value: &str) -> Requested<'_> {
         Requested {
             value: Some(value),
-            explicit: true,
+            source: Source::Kept,
+        }
+    }
+
+    fn named(value: &str) -> Requested<'_> {
+        Requested {
+            value: Some(value),
+            source: Source::Named,
         }
     }
 
@@ -300,10 +389,88 @@ mod tests {
     }
 
     #[test]
-    fn an_explicit_model_and_variant_stay_even_when_unlisted() {
-        let choice = choose(&catalog(), "codex", explicit("future"), explicit("ultra")).unwrap();
+    fn a_kept_model_and_a_named_variant_stay_even_when_unlisted() {
+        let choice = choose(&catalog(), "codex", kept("future"), named("ultra")).unwrap();
         assert_eq!(choice.model, "future");
         assert_eq!(choice.effort.as_deref(), Some("ultra"));
+    }
+
+    #[test]
+    fn a_named_model_the_account_does_not_list_is_refused_with_the_offered_ones() {
+        assert_eq!(
+            choose(&catalog(), "claude-p", named("haiku-5-5"), NONE),
+            Err(ModelRefusal::NotOffered {
+                wanted: "haiku-5-5".to_string(),
+                available: vec!["claude-sonnet-5-5".to_string()],
+            })
+        );
+    }
+
+    #[test]
+    fn a_named_model_the_account_lists_is_chosen() {
+        let choice = choose(&catalog(), "claude-p", named("claude-sonnet-5-5"), NONE).unwrap();
+        assert_eq!(choice.model, "claude-sonnet-5-5");
+    }
+
+    #[test]
+    fn every_name_form_the_provider_accepts_resolves_to_the_catalog_id() {
+        let catalog = with_aliases(catalog(), "claude-sonnet-5-5", &["sonnet"]);
+        for wanted in [
+            "claude-sonnet-5-5",
+            "sonnet",
+            "claude/claude-sonnet-5-5",
+            "claude-p/claude-sonnet-5-5",
+            "claude-headless/claude-sonnet-5-5",
+            "claude/sonnet",
+            " sonnet ",
+        ] {
+            for provider in ["claude", "claude-p"] {
+                let choice = choose(&catalog, provider, named(wanted), NONE)
+                    .unwrap_or_else(|_| panic!("{provider} {wanted}"));
+                assert_eq!(choice.model, "claude-sonnet-5-5", "{provider} {wanted}");
+            }
+        }
+        let catalog = with_aliases(catalog, "gpt-6-luna", &["picker-luna"]);
+        for wanted in [
+            "gpt-6-luna",
+            "codex/gpt-6-luna",
+            "picker-luna",
+            "codex/picker-luna",
+        ] {
+            let choice = choose(&catalog, "codex", named(wanted), NONE).unwrap();
+            assert_eq!(choice.model, "gpt-6-luna", "{wanted}");
+        }
+        let choice = choose(&catalog, "opencode", named("opencode-go/kimi"), NONE).unwrap();
+        assert_eq!(choice.model, "opencode-go/kimi");
+        let choice = choose(&catalog, "opencode", named("kimi"), NONE).unwrap();
+        assert_eq!(choice.model, "opencode-go/kimi");
+    }
+
+    #[test]
+    fn a_qualifier_of_another_provider_or_an_unknown_alias_is_still_refused() {
+        let catalog = with_aliases(catalog(), "claude-sonnet-5-5", &["sonnet"]);
+        for (provider, wanted) in [
+            ("claude", "codex/claude-sonnet-5-5"),
+            ("claude", "claude/opus"),
+            ("claude", "gpt-6-luna"),
+            ("codex", "claude/gpt-6-luna"),
+            ("claude", "sonnet/"),
+        ] {
+            let Err(ModelRefusal::NotOffered {
+                wanted: refused, ..
+            }) = choose(&catalog, provider, named(wanted), NONE)
+            else {
+                panic!("{provider} {wanted} should be refused");
+            };
+            assert_eq!(refused, wanted);
+        }
+    }
+
+    #[test]
+    fn a_kept_alias_is_stored_as_the_id_it_stands_for() {
+        let catalog = with_aliases(catalog(), "claude-sonnet-5-5", &["sonnet"]);
+        let choice = choose(&catalog, "claude", kept("sonnet"), NONE).unwrap();
+        assert_eq!(choice.model, "claude-sonnet-5-5");
     }
 
     #[test]
@@ -324,7 +491,7 @@ mod tests {
     fn a_catalog_without_models_is_an_error() {
         assert_eq!(
             choose(&catalog(), "claude-headless", NONE, NONE),
-            Err(NoModelOffered)
+            Err(ModelRefusal::NoModelOffered)
         );
     }
 }

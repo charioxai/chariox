@@ -15,6 +15,30 @@ pub(crate) fn is_internal_recovery_prompt_attachment(attachment_id: &str) -> boo
     attachment_id.starts_with(KERNEL_RECOVERY_ATTACHMENT_PREFIX)
 }
 
+pub(super) fn restart_recovery_dispatch(
+    session_id: &str,
+    agent_id: &str,
+    provider_run_id: String,
+    prompt: &crate::session::PromptQueueItem,
+) -> crate::app::KernelPromptDispatch {
+    crate::app::KernelPromptDispatch {
+        session_id: session_id.to_string(),
+        provider_run_id,
+        agent_id: agent_id.to_string(),
+        prompt_id: prompt.id().to_string(),
+        target_active_prompt_id: None,
+        source_attachment_id: prompt.source_attachment_id().to_string(),
+        prompt: prompt.prompt().to_string(),
+        hidden_system_context: prompt.hidden_system_context().to_string(),
+        attachments: prompt.attachments().to_vec(),
+        prompt_origin: prompt.prompt_origin(),
+        external_provider: prompt.external_provider().map(str::to_string),
+        external_provider_session_id: prompt.external_provider_session_id().map(str::to_string),
+        external_provider_turn_id: prompt.external_provider_turn_id().map(str::to_string),
+        steering: false,
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct DurableRestartRecoverySummary {
     pub(crate) cancelled_local_prompts_finalized: usize,
@@ -67,6 +91,9 @@ const UNRECOVERABLE_PROMPT_REASON: &str = "The prompt could not be restored afte
 const UNRECOVERABLE_PROMPT_VAULT_REASON: &str =
     "The prompt could not be restored after the restart because the Chariox Vault stayed locked";
 const UNIDENTIFIED_PROMPT_REASON: &str = "The prompt could not be resumed after the restart: no provider session or transcript identified the interrupted turn";
+const UNTRACKED_PROVIDER_TURN_REASON: &str =
+    "The kernel restarted during a provider-started turn whose process was not handed over. Send the request again to continue the conversation";
+const NO_LIVE_RUN_REASON: &str = "The kernel restarted and no provider run took this turn over, so it was ended. Send the request again to continue";
 const UNANSWERABLE_PROMPT_REASON: &str = "The kernel restarted while this turn waited for an answer to a question, and that answer can no longer reach it. Send the request again to continue the conversation";
 const RESTART_RECOVERY_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(1);
 
@@ -77,6 +104,36 @@ impl Drop for DurableRestartRecoveryTask {
         // In particular, a publication which never activates must not retain
         // its runtime and exclusive state lease after the listener stops.
         self.0.abort();
+    }
+}
+
+impl KernelRuntimeOwnedState {
+    /// The target is still its agent's active turn, runs locally, and its agent
+    /// has no running provider run.
+    fn recovered_prompt_has_no_live_run(
+        &self,
+        (session_id, agent_id, prompt_id): &DurableRestartRecoveryTarget,
+    ) -> bool {
+        let Ok(session) = self.session_store.get_session(session_id) else {
+            return false;
+        };
+        let active = self
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, agent_id)
+            .is_some_and(|prompt| {
+                prompt.id() == prompt_id
+                    && prompt.status() != crate::session::PromptStatus::Cancelling
+            });
+        let local = self
+            .agent_store
+            .get_agent(agent_id)
+            .is_ok_and(|agent| agent.remote_execution().is_none());
+        active
+            && local
+            && !self
+                .provider_store
+                .get_run_for_agent(session_id, agent_id)
+                .is_some_and(|run| run.state() == crate::provider::ProviderRunState::Running)
     }
 }
 
@@ -101,7 +158,7 @@ impl KernelRuntimeState {
             .unwrap_or_else(|error| {
                 crate::logging::warn_with_fields(
                     "durable_state.recovery",
-                    "could not list unconfirmed leased inbox steers; the delivery sweep blocks them for the owner",
+                    "could not list unconfirmed leased inbox steers; their workers are not asked again until the next restart",
                     serde_json::json!({"error": error.to_string()}),
                 );
                 Vec::new()
@@ -179,6 +236,22 @@ impl KernelRuntimeState {
         #[cfg(unix)]
         crate::hot_reload::end_unclaimed_providers();
         self.end_background_provider_tools_left_by_restart();
+        // Recovery gave every turn it could continue a running provider. A turn
+        // still active without one would show as running while nothing works
+        // on it, and hold the prompts queued behind it.
+        let mut summary = summary;
+        let stranded = recovery_targets
+            .iter()
+            .filter(|target| self.owned.recovered_prompt_has_no_live_run(target))
+            .cloned()
+            .collect::<Vec<_>>();
+        self.end_prompts_interrupted_by_restart(
+            &mut summary,
+            stranded
+                .into_iter()
+                .map(|target| (target, NO_LIVE_RUN_REASON)),
+        )
+        .await;
         summary
     }
 
@@ -250,6 +323,9 @@ impl KernelRuntimeState {
                 "failed to end processes a dead kernel left behind",
                 serde_json::json!({ "error": error.to_string() }),
             ),
+        }
+        if let Err(error) = self.recover_child_completions().await {
+            tracing::warn!(%error, "could not recover pending worker answers");
         }
         let started = std::time::Instant::now();
         // The unlock is held across the next attempt so the redelivery never needs to prompt.
@@ -502,6 +578,9 @@ impl KernelRuntimeState {
     pub(crate) async fn recover_durable_runtime_after_restart(
         &self,
     ) -> DurableRestartRecoverySummary {
+        self.recover_child_completions()
+            .await
+            .expect("worker answer recovery");
         let recovery_targets = self.durable_restart_recovery_targets();
         let queued_recovery_targets = self.durable_restart_queued_recovery_targets();
         self.recover_durable_runtime_after_restart_targets(
@@ -588,7 +667,7 @@ impl KernelRuntimeState {
                                 session_id == session.id() && queued_agent_id == agent_id
                             },
                         );
-                        (!held && !publication)
+                        (!held && !publication && prompt.launch_wait().is_none())
                             .then(|| (session.id().to_string(), agent_id.to_string()))
                     })
                     .collect::<Vec<_>>()
@@ -819,6 +898,31 @@ impl KernelRuntimeState {
                     }
                     continue;
                 }
+                #[cfg(unix)]
+                if let Some(result) = self
+                    .resume_handed_over_goal_approval(session.id(), agent_id, &prompt)
+                    .await
+                {
+                    match result {
+                        Ok(()) => summary.uncertain_original_redispatched += 1,
+                        Err(error) => {
+                            summary.failed_reconciliations += 1;
+                            summary.failed_local_prompts.push((
+                                session.id().to_string(),
+                                agent_id.to_string(),
+                                prompt.id().to_string(),
+                            ));
+                            summary.note_vault_locked(session.id(), agent_id, &error);
+                            log_restart_recovery_failure(
+                                session.id(),
+                                agent_id,
+                                prompt.id(),
+                                &error,
+                            );
+                        }
+                    }
+                    continue;
+                }
                 if self.local_prompt_task_handed_off(session.id(), agent_id, &prompt) {
                     match self
                         .end_handed_off_local_prompt_after_restart(session.id(), agent_id, &prompt)
@@ -907,7 +1011,51 @@ impl KernelRuntimeState {
                             );
                         }
                     },
-                    None => summary.uncertain_local_prompts_preserved += 1,
+                    None => {
+                        #[cfg(unix)]
+                        let handed_over =
+                            crate::hot_reload::provider_handed_over(session.id(), agent_id);
+                        #[cfg(not(unix))]
+                        let handed_over = false;
+                        if handed_over {
+                            match self
+                                .redispatch_local_prompt(session.id(), agent_id, &prompt)
+                                .await
+                            {
+                                Ok(()) => summary.uncertain_original_redispatched += 1,
+                                Err(error) => {
+                                    summary.failed_reconciliations += 1;
+                                    summary.failed_local_prompts.push((
+                                        session.id().to_string(),
+                                        agent_id.to_string(),
+                                        prompt.id().to_string(),
+                                    ));
+                                    summary.note_vault_locked(session.id(), agent_id, &error);
+                                    log_restart_recovery_failure(
+                                        session.id(),
+                                        agent_id,
+                                        prompt.id(),
+                                        &error,
+                                    );
+                                }
+                            }
+                        } else {
+                            // An adopted notification has no kernel dispatch to recover. Its
+                            // old process cannot finish it after a cold restart.
+                            self.end_prompts_interrupted_by_restart(
+                                &mut summary,
+                                std::iter::once((
+                                    (
+                                        session.id().to_string(),
+                                        agent_id.to_string(),
+                                        prompt.id().to_string(),
+                                    ),
+                                    UNTRACKED_PROVIDER_TURN_REASON,
+                                )),
+                            )
+                            .await;
+                        }
+                    }
                 }
             }
         }
@@ -1026,6 +1174,12 @@ impl KernelRuntimeState {
         if agent.remote_execution().is_some() {
             return Ok(None);
         }
+        if self
+            .owned
+            .hold_queued_provider_turn(&session, agent_id, &prompt)?
+        {
+            return Ok(None);
+        }
 
         let fresh_context = self
             .owned
@@ -1098,7 +1252,7 @@ impl KernelRuntimeState {
                 crate::agent::ProviderResumeClearOutcome::Required => {
                     return Err(
                         crate::provider::NativeCheckpointFailure::ResumeFailed.into_daemon_error()
-                    )
+                    );
                 }
                 crate::agent::ProviderResumeClearOutcome::Cleared
                 | crate::agent::ProviderResumeClearOutcome::AlreadyAbsent => {}
@@ -1205,7 +1359,7 @@ impl KernelRuntimeState {
         Ok(cancellation.queue_head_deferred)
     }
 
-    async fn recover_local_prompt_provider(
+    pub(super) async fn recover_local_prompt_provider(
         &self,
         session_id: &str,
         agent_id: &str,
@@ -1286,7 +1440,7 @@ impl KernelRuntimeState {
         loop {
             match self.owned.provider_store.get_run(provider_run_id) {
                 Ok(run) if run.state() == crate::provider::ProviderRunState::Running => {
-                    return Ok(())
+                    return Ok(());
                 }
                 Ok(run) if run.state() != crate::provider::ProviderRunState::Ended => {}
                 _ => {
@@ -1295,7 +1449,7 @@ impl KernelRuntimeState {
                         message: format!(
                             "provider run `{provider_run_id}` ended before it was ready; change the settings and send the request again"
                         ),
-                    })
+                    });
                 }
             }
             if tokio::time::Instant::now() >= deadline {
@@ -1317,22 +1471,7 @@ impl KernelRuntimeState {
         let provider_run_id = self
             .recover_local_prompt_provider(session_id, agent_id, prompt)
             .await?;
-        let dispatch = crate::app::KernelPromptDispatch {
-            session_id: session_id.to_string(),
-            provider_run_id,
-            agent_id: agent_id.to_string(),
-            prompt_id: prompt.id().to_string(),
-            target_active_prompt_id: None,
-            source_attachment_id: prompt.source_attachment_id().to_string(),
-            prompt: prompt.prompt().to_string(),
-            hidden_system_context: prompt.hidden_system_context().to_string(),
-            attachments: prompt.attachments().to_vec(),
-            prompt_origin: prompt.prompt_origin(),
-            external_provider: prompt.external_provider().map(str::to_string),
-            external_provider_session_id: prompt.external_provider_session_id().map(str::to_string),
-            external_provider_turn_id: prompt.external_provider_turn_id().map(str::to_string),
-            steering: false,
-        };
+        let dispatch = restart_recovery_dispatch(session_id, agent_id, provider_run_id, prompt);
         self.enqueue_prompt_dispatch(&dispatch).await
     }
 
@@ -1466,6 +1605,11 @@ impl KernelRuntimeState {
                 return Ok(UncertainLocalRecoveryOutcome::ContinuationInFlight);
             }
         }
+        let command_interrupted = self.owned.end_foreground_provider_tools_left_by_restart(
+            session_id,
+            agent.id(),
+            &prompt,
+        )?;
         self.persist_recovered_provider_session(agent, adapter_key, &provider_session_id)?;
         self.dispatch_prompt_continuation(
             session_id,
@@ -1473,7 +1617,17 @@ impl KernelRuntimeState {
             &prompt,
             recovery_material.hidden_system_context,
             recovery_material.attachments,
-            provider_restart_continuation_prompt,
+            |operation_id| {
+                let mut continuation = provider_restart_continuation_prompt(operation_id);
+                if command_interrupted {
+                    continuation.push(' ');
+                    continuation.push_str(crate::app::FOREGROUND_COMMAND_RESTART_REASON);
+                    continuation.push_str(
+                        " Do not rerun it automatically. Report its interruption when you answer.",
+                    );
+                }
+                continuation
+            },
         )
         .await
         .map_err(|failure| failure.error)?;
@@ -3246,12 +3400,21 @@ mod tests {
         );
     }
 
-    /// A runtime whose active turn waits on a pending popup (ORCH-15).
-    async fn runtime_blocked_on_a_popup() -> (KernelRuntimeState, String, String, String) {
+    async fn runtime_blocked_on_native_interaction(
+        kind: crate::session::RuntimeInteractionKind,
+    ) -> (KernelRuntimeState, String, String, String) {
+        use crate::session::{
+            DurablePromptDeliveryPhase, NativeInteractionOrigin, RuntimeInteractionKind,
+        };
+
+        let phase = match kind {
+            RuntimeInteractionKind::Choice => DurablePromptDeliveryPhase::Accepted,
+            RuntimeInteractionKind::Permission => DurablePromptDeliveryPhase::Dispatching,
+        };
         let mut config = DaemonConfig::for_tests();
         config.room_agent_tools = true;
         let (runtime, session_id, agent_id, prompt_id) = runtime_with_active_prompt_config(
-            crate::session::DurablePromptDeliveryPhase::Accepted,
+            phase,
             std::env::current_dir()
                 .expect("test workspace should resolve")
                 .to_string_lossy()
@@ -3265,10 +3428,19 @@ mod tests {
             .expect("the agent has a run")
             .id()
             .to_owned();
+        let origin = match kind {
+            RuntimeInteractionKind::Choice => NativeInteractionOrigin::Prompt {
+                provider_run_id: run_id,
+                prompt_id: prompt_id.clone(),
+            },
+            RuntimeInteractionKind::Permission => NativeInteractionOrigin::ProviderStartup {
+                provider_run_id: run_id,
+            },
+        };
         let popup = crate::session::RuntimeInteraction::new(
             "popup-before-restart",
             agent_id.clone(),
-            crate::session::RuntimeInteractionKind::Choice,
+            kind,
             crate::session::RuntimeInteractionLevel::Info,
             Some("Which one?".into()),
             "Pick a branch",
@@ -3279,10 +3451,7 @@ mod tests {
             Some(280),
             None,
         )
-        .with_native_origin(Some(crate::session::NativeInteractionOrigin::Prompt {
-            provider_run_id: run_id,
-            prompt_id: prompt_id.clone(),
-        }));
+        .with_native_origin(Some(origin));
         let _pending = runtime
             .create_runtime_interaction(&session_id, popup)
             .await
@@ -3341,7 +3510,9 @@ mod tests {
     /// interrupted by the restart; the model is not resumed into a refusal nobody gave.
     #[tokio::test]
     async fn a_restart_with_a_pending_popup_ends_the_turn_as_interrupted_by_restart() {
-        let (runtime, session_id, agent_id, prompt_id) = runtime_blocked_on_a_popup().await;
+        let (runtime, session_id, agent_id, prompt_id) =
+            runtime_blocked_on_native_interaction(crate::session::RuntimeInteractionKind::Choice)
+                .await;
         assert_recovery_ends_the_turn_as_interrupted(&runtime, &session_id, &agent_id, &prompt_id)
             .await;
     }
@@ -3350,7 +3521,9 @@ mod tests {
     /// withdrawal itself leaves the mark that ends the turn as interrupted by the restart.
     #[tokio::test]
     async fn a_graceful_stop_with_a_pending_popup_ends_the_turn_as_interrupted_by_restart() {
-        let (runtime, session_id, agent_id, prompt_id) = runtime_blocked_on_a_popup().await;
+        let (runtime, session_id, agent_id, prompt_id) =
+            runtime_blocked_on_native_interaction(crate::session::RuntimeInteractionKind::Choice)
+                .await;
         runtime
             .owned
             .withdraw_agent_interactions_for_shutdown(&session_id)
@@ -3364,6 +3537,35 @@ mod tests {
                 .active_interaction_for_agent(&agent_id)
                 .is_none(),
             "the withdrawn popup is no card after the stop"
+        );
+        assert_recovery_ends_the_turn_as_interrupted(&runtime, &session_id, &agent_id, &prompt_id)
+            .await;
+    }
+
+    #[tokio::test]
+    async fn a_graceful_stop_with_a_pending_startup_permission_ends_the_turn_as_interrupted() {
+        let (runtime, session_id, agent_id, prompt_id) = runtime_blocked_on_native_interaction(
+            crate::session::RuntimeInteractionKind::Permission,
+        )
+        .await;
+        runtime
+            .owned
+            .withdraw_agent_interactions_for_shutdown(&session_id)
+            .expect("the stop withdraws the startup permission");
+        let session = runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .expect("session");
+        assert!(session.active_interaction_for_agent(&agent_id).is_none());
+        assert!(
+            runtime
+                .owned
+                .prompt_state_owner
+                .active_prompt_for_agent(&session, &agent_id)
+                .expect("the interrupted prompt is still active")
+                .question_wait_stopped(),
+            "the pending startup permission must leave a durable interruption mark"
         );
         assert_recovery_ends_the_turn_as_interrupted(&runtime, &session_id, &agent_id, &prompt_id)
             .await;
@@ -3409,6 +3611,7 @@ mod tests {
                             agent_id: Some(agent_id.clone()),
                         }],
                         sources: Vec::new(),
+                        like: None,
                     },
                 ),
             )
@@ -3521,11 +3724,13 @@ mod tests {
                 })
                 .unwrap();
             let crate::durable_state::agent_lifecycle::Outcome::Task(blocked) = store
-                .agent_lifecycle(crate::durable_state::agent_lifecycle::Operation::Block {
-                    task: task.clone(),
-                    prompt: task,
-                    reason: "Interrupted before it finished.".into(),
-                })
+                .agent_lifecycle(
+                    crate::durable_state::agent_lifecycle::Operation::BlockInterrupted {
+                        task: task.clone(),
+                        prompt: task,
+                        reason: "Interrupted before it finished.".into(),
+                    },
+                )
                 .unwrap()
             else {
                 panic!()
@@ -3748,6 +3953,62 @@ mod tests {
             task.reason.contains("could not be resumed"),
             "{}",
             task.reason
+        );
+    }
+
+    /// A turn recovery keeps (its provider has no transcript to identify it by)
+    /// but no provider run takes over is not left showing as running: once
+    /// recovery is done it ends as interrupted with its reason, so the prompts
+    /// queued behind it can start.
+    #[tokio::test]
+    async fn restart_recovery_ends_a_kept_turn_that_no_provider_run_took_over() {
+        let (runtime, session_id, agent_id, prompt_id) =
+            runtime_with_active_prompt(crate::session::DurablePromptDeliveryPhase::Dispatching);
+        runtime
+            .owned
+            .agent_store
+            .update_agent_profile(&agent_id, Some("unobserved-harness".into()), None, None)
+            .expect("agent provider should change");
+        // After a cold restart no provider process of the old kernel runs.
+        if let Some(run) = runtime
+            .owned
+            .provider_store
+            .get_run_for_agent(&session_id, &agent_id)
+        {
+            runtime
+                .owned
+                .provider_store
+                .terminate_run_provider_only(&session_id, run.id())
+                .expect("the old run should end");
+        }
+        let targets = runtime.durable_restart_recovery_targets();
+
+        let summary = runtime
+            .drive_durable_restart_recovery(
+                &targets,
+                &BTreeSet::new(),
+                std::time::Duration::from_millis(20),
+                std::time::Duration::from_millis(1),
+            )
+            .await;
+
+        assert_eq!(summary.uncertain_local_prompts_preserved, 1, "{summary:?}");
+        assert_eq!(
+            summary.unrecoverable_local_prompts_cancelled, 1,
+            "{summary:?}"
+        );
+        let session = runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .expect("session should load");
+        assert!(
+            runtime
+                .owned
+                .prompt_state_owner
+                .active_prompt_for_agent(&session, &agent_id)
+                .is_none_or(|prompt| prompt.id() != prompt_id),
+            "a turn no provider run took over must not stay active"
         );
     }
 
@@ -4487,11 +4748,11 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     impl FixtureProcess {
-        fn sleeping(owner: Option<u32>) -> Self {
+        fn sleeping(owner: Option<&str>) -> Self {
             let mut command = crate::process_spawn::command("sleep");
             command.arg("300");
             if let Some(owner) = owner {
-                command.env(crate::provider::PROVIDER_OWNER_PID_ENV, owner.to_string());
+                command.env(crate::provider::process_owner::OWNER_ENV, owner);
             }
             Self(command.spawn().expect("fixture process should start"))
         }
@@ -4530,20 +4791,22 @@ mod tests {
     #[tokio::test]
     async fn restart_recovery_ends_only_the_processes_a_dead_kernel_launched() {
         crate::test_support::isolated_env_test!();
-        let mut dead_kernel = crate::process_spawn::command("true")
-            .spawn()
-            .expect("fixture kernel should start");
-        let dead_kernel_pid = dead_kernel.id();
-        dead_kernel.wait().expect("fixture kernel should exit");
+        let mut dead_kernel = FixtureProcess::sleeping(None);
+        let dead_owner = crate::provider::process_owner::marker_for_pid(dead_kernel.id()).unwrap();
         // The interrupted turn's tool process, and a copy from a second tool call of the same run.
-        let mut tool = FixtureProcess::sleeping(Some(dead_kernel_pid));
-        let mut second_tool = FixtureProcess::sleeping(Some(dead_kernel_pid));
+        let mut tool = FixtureProcess::sleeping(Some(&dead_owner));
+        let mut second_tool = FixtureProcess::sleeping(Some(&dead_owner));
+        dead_kernel.0.kill().unwrap();
+        dead_kernel.0.wait().unwrap();
         // Another kernel that is still alive, and a tool process it launched.
         let live_kernel = FixtureProcess::sleeping(None);
-        let mut live_kernel_tool = FixtureProcess::sleeping(Some(live_kernel.id()));
+        let mut live_kernel_tool = FixtureProcess::sleeping(
+            crate::provider::process_owner::marker_for_pid(live_kernel.id()).as_deref(),
+        );
         // A process no kernel launched, and one this kernel launched in this life.
         let mut unrelated = FixtureProcess::sleeping(None);
-        let mut own_tool = FixtureProcess::sleeping(Some(std::process::id()));
+        let mut own_tool =
+            FixtureProcess::sleeping(crate::provider::process_owner::current_marker().as_deref());
         let (runtime, _session_id, _agent_id, _prompt_id) =
             runtime_with_active_prompt(crate::session::DurablePromptDeliveryPhase::Accepted);
         let targets = runtime.durable_restart_recovery_targets();

@@ -28,7 +28,7 @@ test("AO-UI-01 the stripe belongs to the room agent that has sub-agents, nothing
   assert.equal(controller.stripe("room"), null)
   await controller.refresh("room")
   assert.deepEqual(requests, [{ ListDescendants: { session_id: "s1", agent_id: "room" } }])
-  assert.equal(controller.stripe("room")!.text, "1 agent needs you · 2 running")
+  assert.equal(controller.stripe("room")!.text, "1 sub-agent needs you · 2 running")
   assert.equal(controller.stripe("another"), null)
   assert.equal(controller.stripe(null), null)
 })
@@ -71,12 +71,31 @@ test("AO-UI-03 a node finishing while its panel is focused keeps the panel and t
   assert.deepEqual(controller.panels().map(p => [p.id, p.word, p.dimmed]), [["a1", "running", false], ["a2", "done", true], ["a3", "waiting", false]])
 })
 
+test("the view moves to the live cross-Room child when the local child is deleted", () => {
+  const { controller } = make()
+  const local = node("local", "room", "running", 1)
+  const crossRoom = node("cross-room", "room", "running", 2, {
+    room_id: "destination", room_alias: "Research", started_by: "Planner",
+  })
+  controller.apply(tree(1, [local, crossRoom]))
+  controller.chooseRow("local")
+  assert.equal(controller.focusedPanelId, local.agent_id)
+
+  controller.apply(tree(2, [crossRoom]))
+
+  assert.equal(controller.viewOpen, true)
+  assert.equal(controller.focusedPanelId, crossRoom.agent_id)
+  assert.deepEqual(controller.panels().map(({ id, roomId, word }) => ({ id, roomId, word })), [
+    { id: crossRoom.agent_id, roomId: "destination", word: "running" },
+  ])
+})
+
 test("AO-UI-03 the last live sub-agent ending closes the view; the finished rows stay on the card", async () => {
   const { controller } = make({ room: three(1) })
   await controller.refresh("room"); controller.chooseRow("a1")
   controller.apply(tree(2, [node("a1", "room", "ended", 1), node("a2", "a1", "ended", 2), node("a3", "room", "idle", 3)]))
   assert.deepEqual([controller.viewOpen, controller.focusedPanelId], [false, null])
-  assert.equal(controller.stripe("room")!.text, "3 agents done")
+  assert.equal(controller.stripe("room")!.text, "3 sub-agents done")
   controller.openCard(); controller.chooseRow("a1")
   assert.deepEqual([controller.cardOpen, controller.viewOpen], [false, false], "with none live a row only closes the card")
 })
@@ -106,10 +125,10 @@ test("an older revision never replaces a newer one, and a failed read keeps the 
   const { controller, answers } = make({ room: three(5) })
   await controller.refresh("room")
   controller.apply(tree(4, []))
-  assert.equal(controller.stripe("room")!.text, "1 agent needs you · 2 running")
+  assert.equal(controller.stripe("room")!.text, "1 sub-agent needs you · 2 running")
   delete answers.room
   await controller.refresh("room")
-  assert.equal(controller.stripe("room")!.text, "1 agent needs you · 2 running")
+  assert.equal(controller.stripe("room")!.text, "1 sub-agent needs you · 2 running")
 })
 
 test("AO-UI-02 a root that leaves the room's agents loses its tree, its view and its revision", async () => {
@@ -121,7 +140,7 @@ test("AO-UI-02 a root that leaves the room's agents loses its tree, its view and
   assert.deepEqual(controller.lines().map(row => row.id), ["b1"])
   controller.retainRoots(["room", "other"])
   controller.apply(tree(1, [node("c1", "room", "running", 1)]))
-  assert.equal(controller.stripe("room")!.text, "1 agent running", "an agent that took the id again reads fresh, below the old revision")
+  assert.equal(controller.stripe("room")!.text, "1 sub-agent running", "an agent that took the id again reads fresh, below the old revision")
 })
 
 test("AO-UI-02 a read of a root that left the room while it was on its way is dropped", async () => {
@@ -176,7 +195,7 @@ for (const order of [["a", "b"], ["b", "a"]] as const) {
     for (const id of order) { gates.get(id)!(); await Promise.resolve(); await Promise.resolve() }
     await Promise.all(reads)
     assert.deepEqual(controller.lines().map(r => r.id), ["b1"], "the children of the focused agent show")
-    assert.equal(controller.stripe("b")!.text, "1 agent running")
+    assert.equal(controller.stripe("b")!.text, "1 sub-agent running")
   })
 }
 

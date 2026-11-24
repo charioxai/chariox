@@ -17,7 +17,7 @@ pub(crate) fn forgotten_machine_reason(machine_id: &str) -> String {
 pub(crate) fn ensure_worker_machine_trusted(
     binding: &crate::agent::RemoteAgentBinding,
 ) -> Result<(), DaemonError> {
-    if !crate::config::DaemonConfig::machine_forgotten(&binding.worker_machine_id) {
+    if !crate::config::DaemonConfig::worker_machine_revoked(&binding.worker_machine_id) {
         return Ok(());
     }
     Err(DaemonError::RelayTransport {

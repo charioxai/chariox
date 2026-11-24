@@ -262,7 +262,8 @@ impl KernelRuntimeOwnedState {
             ) {
                 // The async caller may have inspected a different head. Defer the
                 // exact workflow turn we would activate until its provider is prepared.
-                if next_prompt.workflow_run_id().is_some()
+                if self.hold_queued_provider_turn(&session, agent_id, next_prompt)?
+                    || next_prompt.workflow_run_id().is_some()
                     || crate::scheduler::runtime::is_workflow_prompt_attachment(
                         next_prompt.source_attachment_id(),
                     )
@@ -279,7 +280,11 @@ impl KernelRuntimeOwnedState {
                 }
                 let provider_run =
                     self.ensure_provider_run_in_session(session_id, provider_run_id)?;
-                if provider_run.state() == crate::provider::ProviderRunState::Running {
+                // The next turn has to select a provider after a deferred settings change.
+                if provider_run.state() == crate::provider::ProviderRunState::Running
+                    && !(provider_run.settings_stale()
+                        && provider_run.client_interface().is_chariox())
+                {
                     if let Ok(_admission) = self.begin_managed_activity_admission() {
                         let acquired_workflow_claim = match self
                             .ensure_workflow_prompt_workspace_claim(session_id, next_prompt)

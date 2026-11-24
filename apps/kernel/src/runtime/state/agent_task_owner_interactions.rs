@@ -2,30 +2,41 @@
 use super::*;
 use crate::durable_state::agent_lifecycle::{AgentTaskExecution, ExecutionState};
 
-/// The decision a blocked task raises: Resume or Cancel. It belongs to the owner but not to their terminal,
-/// so a holder or an agent driving the room may answer it like any routine question.
-pub(super) const BLOCKED_TASK_DECISION_PREFIX: &str = "task-blocked-";
-
-pub(super) fn is_blocked_task_decision(interaction_id: &str) -> bool {
-    interaction_id.starts_with(BLOCKED_TASK_DECISION_PREFIX)
-}
+pub(super) use crate::session::{is_blocked_task_decision, BLOCKED_TASK_DECISION_PREFIX};
 
 impl KernelRuntimeOwnedState {
-    /// A blocked task of a deleted agent has nobody left to resume: it raises no decision.
-    fn task_needs_owner_interaction(&self, task: &AgentTaskExecution) -> bool {
-        task.state == ExecutionState::Blocked
-            && !task.goal.as_ref().is_some_and(|goal| goal.paused)
+    /// A task-owner card needs a current blocker the owner can act on.
+    fn task_needs_owner_interaction(&self, task: &AgentTaskExecution) -> Result<bool, DaemonError> {
+        if task.state != ExecutionState::Blocked
+            || task.goal.as_ref().is_some_and(|goal| goal.paused)
             // A usage-limit stop has its own stripe and its own resume.
-            && !self.agent_store.get_agent(&task.agent_id).is_ok_and(|agent| {
+            || self.agent_store.get_agent(&task.agent_id).is_ok_and(|agent| {
                 agent.usage_limit_stop().is_some_and(|stop| {
                     stop.prompt_id == task.prompt_id
                         && !matches!(stop.state, crate::agent::UsageLimitStopState::Declined)
                 })
             })
-            && !self
+            || self.durable_state_store.agent_deletion_recorded(&task.agent_id)?
+        {
+            return Ok(false);
+        }
+        // A synthetic delivery task only represents a receipt that still needs
+        // reconciliation. A terminal receipt already told whoever was waiting.
+        let sequence = task
+            .task_id
+            .strip_prefix("delivery-")
+            .and_then(|id| id.parse().ok());
+        if let Some(sequence) = sequence {
+            return Ok(self
                 .durable_state_store
-                .agent_deletion_recorded(&task.agent_id)
-                .unwrap_or(false)
+                .agent_inbox_event(sequence)?
+                .is_some_and(|(event, _)| {
+                    event.room_id == task.room_id
+                        && event.agent_id == task.agent_id
+                        && event.state == "blocked"
+                }));
+        }
+        Ok(true)
     }
 
     /// Admission cannot wait for the asynchronous task pump to release ended decisions.
@@ -67,14 +78,12 @@ impl KernelRuntimeOwnedState {
                 .rsplit_once('-')
                 .and_then(|(task, revision)| Some((task, revision.parse::<u64>().ok()?)))
             {
-                Some((task, revision)) => self
-                    .durable_state_store
-                    .agent_task(task)?
-                    .filter(|task| task.room_id == room)
-                    .is_some_and(|task| {
-                        self.task_needs_owner_interaction(&task)
-                            && revision == task.blocked_revision
-                    }),
+                Some((task, revision)) => match self.durable_state_store.agent_task(task)? {
+                    Some(task) if task.room_id == room && revision == task.blocked_revision => {
+                        self.task_needs_owner_interaction(&task)?
+                    }
+                    _ => false,
+                },
                 None => false,
             };
             if !current {
@@ -118,6 +127,20 @@ impl KernelRuntimeState {
         &self,
         task: AgentTaskExecution,
     ) -> Result<(), DaemonError> {
+        // The sweep may have read its candidate before a reply or cancellation committed.
+        let Some(task) = self
+            .owned
+            .durable_state_store
+            .agent_task(&task.task_id)?
+            .filter(|current| {
+                current.state == ExecutionState::Blocked
+                    && current.blocked_revision == task.blocked_revision
+            })
+        else {
+            self.retract_stale_task_owner_interactions(&task.room_id)
+                .await;
+            return Ok(());
+        };
         if self.owned.goal_has_native_approval(&task) {
             return Ok(());
         }
@@ -128,7 +151,7 @@ impl KernelRuntimeState {
         if self.defer_task_for_human_control(&task).await {
             return Ok(());
         }
-        if !self.owned.task_needs_owner_interaction(&task) {
+        if !self.owned.task_needs_owner_interaction(&task)? {
             self.retract_stale_task_owner_interactions(&task.room_id)
                 .await;
             return Ok(());
@@ -138,19 +161,9 @@ impl KernelRuntimeState {
             task.task_id, task.blocked_revision
         );
         let session = self.owned.session_store.get_session(&task.room_id)?;
-        let browser_access = task.owner_action
-            == Some(crate::durable_state::agent_lifecycle::TaskOwnerAction::BrowserAccess)
-            && self
-                .owned
-                .agent_store
-                .get_agent(&task.agent_id)
-                .is_ok_and(|agent| agent.remote_execution().is_none());
         let question = task.owner_action
             == Some(crate::durable_state::agent_lifecycle::TaskOwnerAction::Question);
-        let message = if browser_access {
-            "Browser access ended. Allow this agent to use your browser tabs and continue?"
-                .to_owned()
-        } else if question {
+        let message = if question {
             // The agent's own words: the recovery steps below are for the agent, not the person.
             let agent = self.owned.agent_store.get_agent(&task.agent_id).ok();
             let reason = crate::terminal::public_task_failure_reason(&task.reason);
@@ -221,27 +234,19 @@ impl KernelRuntimeState {
             None,
         )];
         if !question {
+            let (id, label) = if crate::provider::switch_turn::needs_fresh_agent(&task.reason) {
+                ("start_fresh_agent", "Start a fresh agent")
+            } else {
+                ("resume", "Resume")
+            };
             choices.push(crate::session::RuntimeInteractionChoice::new(
-                if browser_access {
-                    "allow_browser"
-                } else {
-                    "resume"
-                },
-                if browser_access {
-                    "Allow browser"
-                } else {
-                    "Resume"
-                },
-                "resume",
-                None,
+                id, label, id, None,
             ));
         }
         let mut interaction = crate::session::RuntimeInteraction::for_kernel_operation(
             &id,
             &id,
-            if browser_access {
-                "Allow browser access"
-            } else if question {
+            if question {
                 "Question"
             } else {
                 "Agent needs your action"
@@ -281,8 +286,8 @@ impl KernelRuntimeState {
                 }
                 use super::agent_task_owner_resolution::OwnerTaskAction;
                 let action = match answer.choice_id.as_deref() {
-                    Some("allow_browser") => OwnerTaskAction::AllowBrowser,
                     Some("resume") => OwnerTaskAction::Resume,
+                    Some("start_fresh_agent") => OwnerTaskAction::StartFreshAgent,
                     Some("reply") => OwnerTaskAction::Reply(answer.reply.unwrap_or_default()),
                     _ => OwnerTaskAction::Cancel,
                 };
@@ -294,9 +299,10 @@ impl KernelRuntimeState {
     }
 
     /// A later turn of an agent replaces its interrupted attempts (a restart, a refused or
-    /// unacknowledged dispatch), not a goal or owned work. Every such attempt still waiting on the
-    /// owner is cancelled, however many turns ago it was interrupted, so no card stays open for
-    /// work the agent has moved past.
+    /// unacknowledged dispatch, a wake that never resumed them), not a goal or open work. Every such
+    /// attempt still waiting on the owner is cancelled with that reason, however many turns ago it
+    /// was interrupted, so no card stays open for work the agent has moved past. A task with a
+    /// live obligation or registration keeps its card and its real reason.
     pub(super) async fn retire_superseded_restart_task(
         &self,
         room: &str,
@@ -319,10 +325,7 @@ impl KernelRuntimeState {
             .filter(|task| {
                 task.prompt_id != prompt.id()
                     && task.state == ExecutionState::Blocked
-                    && task.goal.is_none()
-                    && task.obligations.is_empty()
-                    && task.wait.is_none()
-                    && task.pending_prompt_id.is_none()
+                    && !task.owns_unfinished_work()
             })
         {
             let crate::durable_state::agent_lifecycle::Outcome::Task(retired) =
@@ -330,6 +333,7 @@ impl KernelRuntimeState {
                     crate::durable_state::agent_lifecycle::Operation::RetireRestartFailure {
                         task: task.task_id,
                         revision: task.blocked_revision,
+                        later_prompt: prompt.id().to_owned(),
                         now: crate::session::unix_epoch_ms(),
                     },
                 )?

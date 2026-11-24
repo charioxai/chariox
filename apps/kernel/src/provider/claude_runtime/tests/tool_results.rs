@@ -154,6 +154,7 @@ fn quiet_active_claude_tool_survives_the_native_stall_guard() {
         },
     );
     let stale = Instant::now() - Duration::from_secs(61);
+    state.turn_watchdog.record_process_init();
     state.turn_watchdog.begin(stale);
     state.turn_watchdog.record_runtime_message(stale);
     handle_claude_tool_uses(run.id(), &mut state,

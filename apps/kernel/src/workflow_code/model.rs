@@ -6,6 +6,8 @@ pub struct WorkflowCodeCompileResult {
     pub validation: WorkflowCodeValidationReport,
     pub logs: String,
     #[serde(skip)]
+    pub(crate) source_sha256: String,
+    #[serde(skip)]
     pub source_spans: BTreeMap<String, WorkflowCodeSourceSpan>,
 }
 

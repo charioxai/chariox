@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use super::super::api::{
     GetProviderAuthStatusRequest, GetProviderCatalogRequest, LocalDaemonResponse,
-    LogoutProviderRequest, StartProviderLoginRequest,
+    LogoutProviderRequest,
 };
 use super::blocking::block_on_relay_query;
 
@@ -53,7 +53,7 @@ pub(crate) fn load_provider_catalog(
         crate::provider::claude_provider_catalog()
     };
     let mut catalogs = vec![claude_catalog];
-    if crate::provider::dev_stub_public_inventory_enabled() {
+    if crate::provider::dev_stub_enabled() {
         catalogs.push(dev_stub_provider_catalog());
     }
     let mut source_errors = Vec::new();
@@ -296,13 +296,18 @@ pub(crate) fn observe_provider_auth_status(
     let environment = registry.resolve_environment(owner_user_id, provider, &profile.profile_id)?;
     match crate::provider::canonical_provider_family(provider) {
         Some("codex") => {
+            let retained_login = codex_has_retained_login(&environment);
             let endpoint = crate::provider::ensure_codex_account_endpoint(
                 owner_user_id,
                 &profile.profile_id,
                 environment,
             )?;
             let client = CodexClient::new("provider-auth", &endpoint)?;
-            let status = client.auth_status(&profile.profile_id)?;
+            let status = explain_missing_codex_login(
+                client.auth_status(&profile.profile_id)?,
+                &profile,
+                retained_login,
+            );
             update_profile_auth_observation(registry, owner_user_id, &status)?;
             Ok(status)
         }
@@ -319,14 +324,11 @@ pub(crate) fn observe_provider_auth_status(
             Ok(status)
         }
         Some("opencode") => {
-            let status = opencode_auth_status(&profile.profile_id, &environment)?;
+            let go = opencode_go_usage(&environment, crate::session::unix_epoch_ms());
+            let services = observed_opencode_services(&environment, &go);
+            let status = opencode_auth_status(&profile.profile_id, &environment, &services)?;
             update_profile_auth_observation(registry, owner_user_id, &status)?;
-            registry.update_services(
-                owner_user_id,
-                "opencode",
-                &profile.profile_id,
-                inspect_opencode_services(&environment),
-            )?;
+            registry.update_services(owner_user_id, "opencode", &profile.profile_id, services)?;
             Ok(status)
         }
         _ => Err(unsupported_auth_provider(
@@ -367,11 +369,13 @@ fn saved_claude_token_observation(
     account_profile: &str,
 ) -> Result<Option<crate::account_profile::ProviderAccountProfile>, DaemonError> {
     let profile = registry.get(owner_user_id, provider, account_profile)?;
+    let source_profile_id =
+        registry.credential_source_profile_id(owner_user_id, provider, &profile.profile_id)?;
     if crate::provider::canonical_provider_family(provider) == Some("claude")
         && crate::provider::provider_account_credential_registered(
             owner_user_id,
             provider,
-            &profile.profile_id,
+            &source_profile_id,
         )?
     {
         return Ok(Some(profile));
@@ -424,8 +428,7 @@ fn refresh_provider_account_profile_observation(
     let profile = registry.get(owner_user_id, provider, account_profile)?;
     let environment = registry.resolve_environment(owner_user_id, provider, &profile.profile_id)?;
     let provider_family = crate::provider::canonical_provider_family(provider);
-    let opencode_services =
-        (provider_family == Some("opencode")).then(|| inspect_opencode_services(&environment));
+    let mut opencode_services = None;
     let (status, usage) = match provider_family {
         Some("codex") => {
             // The official app-server caches its login at startup. An explicit
@@ -439,16 +442,27 @@ fn refresh_provider_account_profile_observation(
                     &profile.profile_id,
                 );
             }
+            let retained_login = codex_has_retained_login(&environment);
             let endpoint = crate::provider::ensure_codex_account_endpoint(
                 owner_user_id,
                 &profile.profile_id,
                 environment,
             )?;
             let client = CodexClient::new("provider-account-refresh", endpoint)?;
-            (
+            let status = explain_missing_codex_login(
                 client.auth_status(&profile.profile_id)?,
-                client.usage_snapshot(&profile.profile_id)?,
-            )
+                &profile,
+                retained_login,
+            );
+            let usage = if status.auth_state == "authenticated" {
+                client.usage_snapshot(&profile.profile_id)?
+            } else {
+                crate::account_profile::ProviderAccountUsageSnapshot::unavailable(
+                    &profile.profile_id,
+                    "codex",
+                )
+            };
+            (status, usage)
         }
         Some("claude") => {
             let status = claude_profile_auth_status(
@@ -467,10 +481,17 @@ fn refresh_provider_account_profile_observation(
                 .reconciled_freshness(crate::session::unix_epoch_ms());
             (status, usage)
         }
-        Some("opencode") => (
-            opencode_auth_status(&profile.profile_id, &environment)?,
-            opencode_usage_snapshot(&profile.profile_id, &environment),
-        ),
+        Some("opencode") => {
+            let observed_at_ms = crate::session::unix_epoch_ms();
+            let go = opencode_go_usage(&environment, observed_at_ms);
+            let services = observed_opencode_services(&environment, &go);
+            let status = opencode_auth_status(&profile.profile_id, &environment, &services)?;
+            opencode_services = Some(services);
+            (
+                status,
+                opencode_usage_snapshot(&profile.profile_id, &environment, go, observed_at_ms),
+            )
+        }
         _ => {
             return Err(unsupported_auth_provider(
                 "refresh provider account",
@@ -505,10 +526,12 @@ fn claude_profile_auth_status(
     profile_environment: &BTreeMap<String, String>,
     config: &DaemonConfig,
 ) -> Result<ProviderAuthStatus, DaemonError> {
+    let source_profile_id =
+        registry.credential_source_profile_id(owner_user_id, provider, &profile.profile_id)?;
     if !crate::provider::provider_account_credential_registered(
         owner_user_id,
         provider,
-        &profile.profile_id,
+        &source_profile_id,
     )? {
         return claude_auth_status(provider, &profile.profile_id, profile_environment);
     }
@@ -530,7 +553,7 @@ fn claude_profile_auth_status(
         config,
         owner_user_id,
         provider,
-        &profile.profile_id,
+        &source_profile_id,
     )?;
     let executable = resolve_claude_executable()?;
     let mut environment = profile_environment.clone();
@@ -555,7 +578,7 @@ fn claude_profile_auth_status(
                 config,
                 owner_user_id,
                 provider,
-                &profile.profile_id,
+                &source_profile_id,
             )?;
             if current.iter().eq(secrets.iter()) {
                 checked.map_err(|error| error.into_daemon_error())
@@ -690,6 +713,7 @@ fn bounded_output(
 fn opencode_auth_status(
     account_profile: &str,
     environment: &BTreeMap<String, String>,
+    services: &[crate::account_profile::ProviderAccountService],
 ) -> Result<ProviderAuthStatus, DaemonError> {
     let executable = resolve_opencode_executable()?;
     // MP-08 / MP-10 / MP-11: auth list exits before background model refresh
@@ -718,15 +742,26 @@ fn opencode_auth_status(
         });
     }
     let credential_inspection = inspect_opencode_credentials(environment);
-    let has_credentials = credential_inspection == OpenCodeCredentialInspection::Valid;
+    use crate::account_profile::ProviderAccountAuthState;
+    let auth_state = if services
+        .iter()
+        .any(|service| service.auth_state == ProviderAccountAuthState::Authenticated)
+    {
+        "authenticated"
+    } else {
+        match services
+            .iter()
+            .find(|service| service.service_id == "opencode-go")
+            .map(|service| service.auth_state)
+        {
+            Some(ProviderAccountAuthState::Unknown) => "unknown",
+            Some(ProviderAccountAuthState::Error) => "error",
+            _ => "not_logged_in",
+        }
+    };
     Ok(ProviderAuthStatus {
         provider: "opencode".to_string(),
-        auth_state: if has_credentials {
-            "authenticated"
-        } else {
-            "not_logged_in"
-        }
-        .to_string(),
+        auth_state: auth_state.to_string(),
         account_profile: account_profile.to_string(),
         // A generic phrase is not an account identity. Treating it as one
         // would collapse distinct OpenCode profiles during duplicate checks.
@@ -747,13 +782,14 @@ fn opencode_auth_status(
 fn opencode_usage_snapshot(
     account_profile: &str,
     environment: &BTreeMap<String, String>,
+    go_usage: OpenCodeGoUsage,
+    observed_at_ms: u64,
 ) -> crate::account_profile::ProviderAccountUsageSnapshot {
     use crate::account_profile::{
         ProviderAccountUsageAvailability, ProviderAccountUsageMeter, ProviderAccountUsageMeterKind,
         ProviderAccountUsageMeterScope, ProviderAccountUsageMeterState,
         ProviderAccountUsageSnapshot,
     };
-    let observed_at_ms = crate::session::unix_epoch_ms();
     let mut meters = Vec::new();
     let local_stats = resolve_opencode_executable().ok().and_then(|executable| {
         let mut command = crate::provider::managed_isolated_utility_command(
@@ -817,7 +853,6 @@ fn opencode_usage_snapshot(
             observed_at_ms,
         });
     }
-    let go_usage = opencode_go_usage(environment, observed_at_ms);
     if let OpenCodeGoUsage::Available(go_meters) = &go_usage {
         let mut combined = go_meters.clone();
         combined.extend(meters);
@@ -841,17 +876,21 @@ fn opencode_usage_snapshot(
         source: match go_usage {
             OpenCodeGoUsage::Available(_) => "opencode.go_usage".to_string(),
             OpenCodeGoUsage::NotEntitled => "opencode.go_not_entitled".to_string(),
-            OpenCodeGoUsage::Unavailable => "opencode.local_stats".to_string(),
+            OpenCodeGoUsage::Rejected => "opencode.go_key_rejected".to_string(),
+            _ => "opencode.local_stats".to_string(),
         },
-        management_url: Some("https://opencode.ai/zen".to_string()),
+        management_url: None,
     }
 }
 
 #[derive(Debug, Clone, PartialEq)]
 enum OpenCodeGoUsage {
     Available(Vec<crate::account_profile::ProviderAccountUsageMeter>),
+    VerifiedWithoutMeters,
+    Rejected,
     NotEntitled,
     Unavailable,
+    MissingKey,
 }
 
 fn opencode_go_usage(
@@ -859,8 +898,14 @@ fn opencode_go_usage(
     observed_at_ms: u64,
 ) -> OpenCodeGoUsage {
     let Some(key) = opencode_provider_api_key(environment, "opencode-go") else {
-        return OpenCodeGoUsage::Unavailable;
+        return OpenCodeGoUsage::MissingKey;
     };
+    #[cfg(test)]
+    match std::env::var("CHARIOX_TEST_OPENCODE_GO_USAGE_STATUS").as_deref() {
+        Ok("200") => return OpenCodeGoUsage::VerifiedWithoutMeters,
+        Ok("401") => return OpenCodeGoUsage::Rejected,
+        _ => {}
+    }
     let response = crate::outbound_dial::agent_builder()
         .timeout(std::time::Duration::from_secs(10))
         .build()
@@ -876,9 +921,10 @@ fn opencode_go_usage(
         {
             Some(value) => opencode_go_usage_from_value(&value, observed_at_ms)
                 .map(OpenCodeGoUsage::Available)
-                .unwrap_or(OpenCodeGoUsage::Unavailable),
-            None => OpenCodeGoUsage::Unavailable,
+                .unwrap_or(OpenCodeGoUsage::VerifiedWithoutMeters),
+            None => OpenCodeGoUsage::VerifiedWithoutMeters,
         },
+        Err(ureq::Error::Status(401, _)) => OpenCodeGoUsage::Rejected,
         Err(ureq::Error::Status(403, response)) => {
             let body = response
                 .into_string()
@@ -948,6 +994,29 @@ fn inspect_opencode_credentials(
     } else {
         OpenCodeCredentialInspection::NotObserved
     }
+}
+
+fn observed_opencode_services(
+    environment: &BTreeMap<String, String>,
+    go: &OpenCodeGoUsage,
+) -> Vec<crate::account_profile::ProviderAccountService> {
+    use crate::account_profile::ProviderAccountAuthState;
+    let mut services = inspect_opencode_services(environment);
+    if let Some(go_service) = services
+        .iter_mut()
+        .find(|service| service.service_id == "opencode-go")
+    {
+        go_service.auth_state = match go {
+            OpenCodeGoUsage::Available(_) | OpenCodeGoUsage::VerifiedWithoutMeters => {
+                ProviderAccountAuthState::Authenticated
+            }
+            OpenCodeGoUsage::Rejected
+            | OpenCodeGoUsage::NotEntitled
+            | OpenCodeGoUsage::MissingKey => ProviderAccountAuthState::Error,
+            OpenCodeGoUsage::Unavailable => ProviderAccountAuthState::Unknown,
+        };
+    }
+    services
 }
 
 fn inspect_opencode_services(
@@ -1198,36 +1267,6 @@ fn claude_auth_status_from_value(
     }
 }
 
-pub(crate) fn start_provider_login_response(
-    registry: &crate::account_profile::ProviderAccountProfileRegistry,
-    owner_user_id: &str,
-    request: StartProviderLoginRequest,
-) -> Result<LocalDaemonResponse, DaemonError> {
-    let profile = registry.get(owner_user_id, &request.provider, &request.account_profile)?;
-    let environment =
-        registry.resolve_environment(owner_user_id, &request.provider, &profile.profile_id)?;
-    match crate::provider::canonical_provider_family(&request.provider) {
-        Some("codex") => {
-            let endpoint = crate::provider::ensure_codex_account_endpoint(
-                owner_user_id,
-                &profile.profile_id,
-                environment,
-            )?;
-            let client = CodexClient::new("provider-login", endpoint)?;
-            Ok(LocalDaemonResponse::ProviderLoginStarted {
-                login: client.start_login(&profile.profile_id)?,
-            })
-        }
-        _ => Err(DaemonError::LocalTransport {
-            operation: "start_provider_login",
-            message: format!(
-                "provider `{}` does not expose a structured login API",
-                request.provider
-            ),
-        }),
-    }
-}
-
 pub(crate) fn logout_provider_response(
     registry: &crate::account_profile::ProviderAccountProfileRegistry,
     owner_user_id: &str,
@@ -1287,6 +1326,27 @@ pub(crate) fn logout_provider_response(
             ),
         }),
     }
+}
+
+fn codex_has_retained_login(environment: &BTreeMap<String, String>) -> bool {
+    environment
+        .get("CODEX_HOME")
+        .is_some_and(|home| std::path::Path::new(home).join("auth.json").is_file())
+}
+
+fn explain_missing_codex_login(
+    mut status: ProviderAuthStatus,
+    profile: &crate::account_profile::ProviderAccountProfile,
+    retained_login: bool,
+) -> ProviderAuthStatus {
+    if status.auth_state == "not_logged_in"
+        && (retained_login
+            || profile.origin == crate::account_profile::ProviderAccountProfileOrigin::Linked)
+    {
+        status.auth_state = "error".into();
+        status.login_hint = Some(crate::account_profile::native_sign_in_advice(profile));
+    }
+    status
 }
 
 fn update_profile_auth_observation(
@@ -1502,9 +1562,7 @@ fn approved_live_remote_machines(
         .filter_map(|machine| {
             registry
                 .iter()
-                .find(|entry| {
-                    entry.machine_id == machine.machine_id && entry.approved && !entry.forgotten
-                })
+                .find(|entry| entry.machine_id == machine.machine_id && entry.approved)
                 .map(|_| machine.clone())
         })
         .collect()
@@ -2333,6 +2391,7 @@ exit 2
                 kernel_count: 1,
                 available_providers: vec!["codex".to_string()],
                 provider_accounts: Vec::new(),
+                update_needed_kernels: Vec::new(),
             },
             RelayMachinePresence {
                 machine_id: "machine-remote-a".to_string(),
@@ -2340,6 +2399,7 @@ exit 2
                 kernel_count: 1,
                 available_providers: vec!["codex".to_string(), "opencode".to_string()],
                 provider_accounts: Vec::new(),
+                update_needed_kernels: Vec::new(),
             },
             RelayMachinePresence {
                 machine_id: "machine-remote-b".to_string(),
@@ -2347,6 +2407,7 @@ exit 2
                 kernel_count: 1,
                 available_providers: vec!["codex".to_string()],
                 provider_accounts: Vec::new(),
+                update_needed_kernels: Vec::new(),
             },
         ];
 
@@ -2382,6 +2443,7 @@ exit 2
                 kernel_count: 1,
                 available_providers: vec!["codex".to_string()],
                 provider_accounts: Vec::new(),
+                update_needed_kernels: Vec::new(),
             },
             RelayMachinePresence {
                 machine_id: "machine-remote".to_string(),
@@ -2393,6 +2455,7 @@ exit 2
                     "dev-stub".to_string(),
                 ],
                 provider_accounts: Vec::new(),
+                update_needed_kernels: Vec::new(),
             },
         ];
 
@@ -2436,6 +2499,7 @@ exit 2
                             id: "gpt-5.2".to_string(),
                             name: "GPT-5.2".to_string(),
                             status: "active".to_string(),
+                            aliases: Vec::new(),
                             limit: None,
                             variants: Default::default(),
                         },
@@ -2451,6 +2515,7 @@ exit 2
                             id: "gpt-5.2".to_string(),
                             name: "GPT-5.2".to_string(),
                             status: "active".to_string(),
+                            aliases: Vec::new(),
                             limit: None,
                             variants: BTreeMap::from([("low".to_string(), json!({}))]),
                         },
@@ -2466,6 +2531,7 @@ exit 2
                             id: "deepseek-v4-pro".to_string(),
                             name: "DeepSeek V4 Pro".to_string(),
                             status: "active".to_string(),
+                            aliases: Vec::new(),
                             limit: None,
                             variants: BTreeMap::from([("high".to_string(), json!({}))]),
                         },
@@ -2519,6 +2585,7 @@ exit 2
             id: id.to_string(),
             name: id.to_string(),
             status: "active".to_string(),
+            aliases: Vec::new(),
             limit: None,
             variants: Default::default(),
         };

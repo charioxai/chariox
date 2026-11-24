@@ -29,7 +29,8 @@ struct Pending {
     reply: oneshot::Sender<Result<Message>>,
     deadline: Instant,
     live: Arc<FrameState>,
-    /// The caller the kernel named in this call's context.
+    /// The caller the kernel named in this call's context, with the call's
+    /// operation id.
     actor: Option<serde_json::Value>,
     _permit: OwnedSemaphorePermit,
 }

@@ -393,13 +393,14 @@ fn a_kernel_that_appears_in_the_inventory_is_reported_once() {
         leased_agent_count: 0,
         local_session_count: 0,
         public_key: String::new(),
+        local_protocol: None,
     };
-    projection.update(vec![], vec![presence("a")]);
+    projection.update(Default::default(), vec![presence("a")]);
     assert_eq!(projection.take_appeared_kernels(), vec!["a".to_string()]);
-    projection.update(vec![], vec![presence("a")]);
+    projection.update(Default::default(), vec![presence("a")]);
     assert!(projection.take_appeared_kernels().is_empty());
-    projection.update(vec![], vec![]);
-    projection.update(vec![], vec![presence("a"), presence("b")]);
+    projection.update(Default::default(), vec![]);
+    projection.update(Default::default(), vec![presence("a"), presence("b")]);
     assert_eq!(
         projection.take_appeared_kernels(),
         vec!["a".to_string(), "b".to_string()]

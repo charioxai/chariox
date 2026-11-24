@@ -16,7 +16,7 @@ const COPIED_KIND: &str = "vault_copy";
 
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-struct CopyArgs {
+pub(super) struct CopyArgs {
     request_id: String,
     from: String,
     use_binding: crate::config::VaultUseBinding,
@@ -47,32 +47,62 @@ fn copy_binding_schema() -> serde_json::Value {
     schema
 }
 
+/// Arguments the Vault tool and the home kernel both refuse the same way.
+pub(super) fn parse_copy_args(arguments: serde_json::Value) -> Result<CopyArgs, DaemonError> {
+    let args: CopyArgs = serde_json::from_value(arguments)
+        .map_err(|e| error(format!("invalid Vault copy arguments: {e}")))?;
+    if args.request_id.trim().is_empty() || args.request_id.len() > 128 {
+        return Err(error("request_id must be 1-128 characters"));
+    }
+    if args.label.as_ref().is_some_and(|label| label.len() > 200) {
+        return Err(error("label must be at most 200 characters"));
+    }
+    Ok(args)
+}
+
+/// Checks a destination against the workspace it names.
+type BindingCheck<'a> =
+    &'a (dyn Fn(&crate::config::VaultUseBinding) -> Result<(), DaemonError> + Sync);
+
 impl KernelRuntimeState {
     pub(crate) async fn vault_copy_for_use(
         &self,
         token: &str,
         arguments: serde_json::Value,
     ) -> Result<RuntimeToolResult, DaemonError> {
-        let context = self.vault_agent_context(token)?;
+        let context = self.vault_leased_context(token).await?;
         self.recheck_vault_command_context(&context)?;
-        let args: CopyArgs = serde_json::from_value(arguments)
-            .map_err(|e| error(format!("invalid Vault copy arguments: {e}")))?;
-        if args.request_id.trim().is_empty() || args.request_id.len() > 128 {
-            return Err(error("request_id must be 1-128 characters"));
-        }
-        if args.label.as_ref().is_some_and(|label| label.len() > 200) {
-            return Err(error("label must be at most 200 characters"));
+        let args = parse_copy_args(arguments.clone())?;
+        if let Some(home) = context.home.clone() {
+            // The destination is a place in this workspace; the home keeps the Vault.
+            validate_copy_binding(&context.run, &args.use_binding)?;
+            return self
+                .forward_vault_tool_to_home(home, VAULT_COPY_FOR_USE, arguments)
+                .await;
         }
         // The kernel owns settlement and commit even if the MCP waiter goes away.
         let state = self.clone();
-        tokio::spawn(async move { state.copy_once(context, args).await })
-            .await
-            .map_err(|_| error("the copy runner stopped unexpectedly"))?
+        tokio::spawn(async move {
+            state
+                .copy_in_vault(
+                    &context.actor(),
+                    &|| state.recheck_vault_command_context(&context),
+                    &|binding| validate_copy_binding(&context.run, binding),
+                    args,
+                )
+                .await
+        })
+        .await
+        .map_err(|_| error("the copy runner stopped unexpectedly"))?
     }
 
-    async fn copy_once(
+    /// Copies inside the Vault of this kernel: the owner's own, or the home's for an agent on
+    /// a leased worker, whose destination the worker already checked.
+    pub(super) async fn copy_in_vault(
         &self,
-        context: VaultAgentContext,
+        actor: &VaultActor,
+        recheck: VaultRecheck<'_>,
+        check_binding: BindingCheck<'_>,
         args: CopyArgs,
     ) -> Result<RuntimeToolResult, DaemonError> {
         args.use_binding.target.validate()?;
@@ -81,14 +111,14 @@ impl KernelRuntimeState {
                 return Err(error("a site copy needs an https origin"));
             }
         }
-        let handle = copied_handle(&context, &args.request_id);
+        let handle = copied_handle(actor, &args.request_id);
         let _claim = self.owned.vault_capture_claims.claim(&handle).await?;
-        self.recheck_vault_command_context(&context)?;
+        recheck()?;
         let registry = crate::credential::CharioxCredentialRegistry::user()?;
         if let Some(existing) = registry.get(&handle)? {
-            return committed(&existing, &context, &args.from, &args.use_binding);
+            return committed(&existing, actor, &args.from, &args.use_binding);
         }
-        validate_copy_binding(&context.run, &args.use_binding)?;
+        check_binding(&args.use_binding)?;
         let source = registry
             .get(&args.from)?
             .ok_or_else(|| error("no Vault entry has this credential_id"))?;
@@ -109,23 +139,16 @@ impl KernelRuntimeState {
             ));
         }
         let _unlock = self
-            .ensure_vault_unlocked_for_agent(&context.session_id, &context.agent_id, "vault_copy")
+            .ensure_vault_unlocked_for_agent(&actor.session_id, &actor.agent_id, "vault_copy")
             .await?;
-        self.recheck_vault_command_context(&context)?;
+        recheck()?;
         let value = self
             .home_runtime_secret_service()?
             .vault_secret_for_dictation(key)?
             .ok_or_else(|| error("this entry holds no value"))?;
         let now = crate::session::unix_epoch_ms();
         let (allowed_host, allowed_use, injection) = match &args.use_binding.target {
-            VaultUseTarget::Site { origin } => (
-                host_of(origin)?,
-                UserCredentialUse::Http,
-                UserCredentialInjectionConfig::Header {
-                    name: "Authorization".into(),
-                    value: "Bearer ${secret}".into(),
-                },
-            ),
+            VaultUseTarget::Site { origin } => site_bearer_use(origin)?,
             VaultUseTarget::File { .. } => (
                 source.allowed_hosts.first().cloned().unwrap_or_default(),
                 UserCredentialUse::File,
@@ -158,10 +181,10 @@ impl KernelRuntimeState {
                 payment_card: None,
                 use_binding: Some(args.use_binding.clone()),
                 created_by_kind: Some(COPIED_KIND.into()),
-                created_by_id: Some(context.agent_id.clone()),
-                session_id: Some(context.session_id.clone()),
+                created_by_id: Some(actor.agent_id.clone()),
+                session_id: Some(actor.session_id.clone()),
                 provider: None,
-                provider_run_id: Some(context.run.id().to_string()),
+                provider_run_id: Some(actor.provider_run_id.clone()),
                 vault_key: Some(handle.clone()),
                 created_at_ms: Some(now),
                 updated_at_ms: Some(now),
@@ -169,14 +192,14 @@ impl KernelRuntimeState {
             }),
         };
         let _mutation = self.vault_observation_mutation_guard().await;
-        self.recheck_vault_command_context(&context)?;
+        recheck()?;
         self.upsert_vault_credential_locked_for_agent(
             &self.home_runtime_secret_service()?,
             &registry,
             credential,
             &value,
             false,
-            Some(&context),
+            Some(recheck),
         )
         .await?;
         Ok(RuntimeToolResult {
@@ -184,6 +207,20 @@ impl KernelRuntimeState {
             payload: serde_json::json!({"credential_id": handle, "from": args.from, "created": true}),
         })
     }
+}
+
+/// An entry for one HTTPS API: it sends `Authorization: Bearer <value>` to exactly that origin.
+pub(in crate::runtime::state) fn site_bearer_use(
+    origin: &str,
+) -> Result<(String, UserCredentialUse, UserCredentialInjectionConfig), DaemonError> {
+    Ok((
+        host_of(origin)?,
+        UserCredentialUse::Http,
+        UserCredentialInjectionConfig::Header {
+            name: "Authorization".into(),
+            value: "Bearer ${secret}".into(),
+        },
+    ))
 }
 
 fn destination_word(target: &VaultUseTarget) -> String {
@@ -218,7 +255,7 @@ fn validate_copy_binding(
 /// A retry returns the committed handle only to the same agent, session, destination and source.
 fn committed(
     existing: &UserCredentialConfig,
-    turn: &VaultAgentContext,
+    turn: &VaultActor,
     from: &str,
     binding: &crate::config::VaultUseBinding,
 ) -> Result<RuntimeToolResult, DaemonError> {
@@ -244,7 +281,7 @@ fn committed(
 }
 
 /// Deterministic per request so a lost acknowledgement never stores a second value.
-fn copied_handle(turn: &VaultAgentContext, request_id: &str) -> String {
+fn copied_handle(turn: &VaultActor, request_id: &str) -> String {
     let digest = Sha256::digest(
         [
             COPIED_KIND,

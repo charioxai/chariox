@@ -3316,7 +3316,6 @@ session/owner.rs	240	rwlock?	restore_ephemeral_session				self.write().restore_e
 session/owner.rs	244	rwlock?	is_ephemeral_session				self.read().is_ephemeral_session(session_id)
 session/owner.rs	248	rwlock?	restore_session				self.write().restore_session(session)
 session/owner.rs	255	rwlock?	commit_publication_runtime_configuration				self.write()
-session/owner.rs	264	rwlock?	restore_session_with_default_project_name_hint				self.write()
 session/owner.rs	272	rwlock?	restore_ended_session				self.write()
 session/owner.rs	277	rwlock?	remove_restored_session				self.write().remove_restored_session(session_id)
 session/owner.rs	287	rwlock?	remove_restored_session				self.write()

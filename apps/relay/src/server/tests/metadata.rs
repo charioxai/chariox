@@ -29,11 +29,13 @@ async fn metadata_queries_return_live_machines_and_kernels() {
     });
 
     let url = format!("ws://{}:{}", addr.ip(), addr.port());
-    let (mut daemon_socket, _) = connect_async(&url)
+    let (mut daemon_socket, daemon_socket_handshake) = connect_async(&url)
         .await
         .expect("daemon should connect to relay");
-    let register = RelayEnvelope::DaemonRegister {
-        registration: DaemonRegistration {
+    let register = signed_register(
+        &url,
+        &daemon_socket_handshake,
+        DaemonRegistration {
             auth_token: "secret".to_string(),
             daemon_id: "daemon-1".to_string(),
             machine_id: "machine-1".to_string(),
@@ -42,15 +44,16 @@ async fn metadata_queries_return_live_machines_and_kernels() {
             kernel_started_at_ms: 10,
             daemon_alias: Some("mbp".to_string()),
             kernel_alias: Some("default".to_string()),
-            public_key: "public-key".to_string(),
+            public_key: test_public_key("daemon-1"),
             capabilities: vec!["kernel_ws".to_string()],
             available_providers: vec!["opencode".to_string(), "codex".to_string()],
             provider_accounts: Vec::new(),
             accepting_remote_leases: true,
             leased_agent_count: 2,
             local_session_count: 3,
+            local_protocol: Some(crate::protocol::MINIMUM_KERNEL_REGISTRATION_PROTOCOL),
         },
-    };
+    );
     daemon_socket
         .send(Message::Text(
             serde_json::to_string(&register)
@@ -173,7 +176,7 @@ async fn metadata_queries_return_live_machines_and_kernels() {
         } => {
             assert_eq!(request_id, "kernel-1");
             assert_eq!(kernel.kernel_id, "daemon-1");
-            assert_eq!(kernel.public_key, "public-key");
+            assert_eq!(kernel.public_key, test_public_key("daemon-1"));
         }
         other => panic!("unexpected kernel response envelope: {other:?}"),
     }
@@ -265,27 +268,25 @@ async fn scoped_tokens_route_and_list_only_within_their_realm() {
     });
 
     let url = format!("ws://{}:{}", addr.ip(), addr.port());
-    let (mut daemon_a, _) = connect_async_with_retry(&url)
+    let (mut daemon_a, daemon_a_handshake) = connect_async_with_retry(&url)
         .await
         .expect("daemon A should connect");
-    let (mut daemon_b, _) = connect_async_with_retry(&url)
+    let (mut daemon_b, daemon_b_handshake) = connect_async_with_retry(&url)
         .await
         .expect("daemon B should connect");
     let mut registration_a =
         test_registration_with_token("daemon-a", "machine-a", "Linux", 10, "daemon-a-token");
     registration_a.daemon_alias = Some("shared".to_string());
-    registration_a.public_key = "public-key-a".to_string();
     let mut registration_b =
         test_registration_with_token("daemon-b", "machine-b", "Linux", 10, "daemon-b-token");
     registration_b.daemon_alias = Some("shared".to_string());
-    registration_b.public_key = "public-key-b".to_string();
-    for (socket, registration) in [
-        (&mut daemon_a, registration_a),
-        (&mut daemon_b, registration_b),
+    for (socket, handshake, registration) in [
+        (&mut daemon_a, &daemon_a_handshake, registration_a),
+        (&mut daemon_b, &daemon_b_handshake, registration_b),
     ] {
         socket
             .send(Message::Text(
-                serde_json::to_string(&RelayEnvelope::DaemonRegister { registration })
+                serde_json::to_string(&signed_register(&url, handshake, registration))
                     .expect("register should serialize")
                     .into(),
             ))
@@ -350,7 +351,7 @@ async fn scoped_tokens_route_and_list_only_within_their_realm() {
     {
         RelayEnvelope::ClientConnected {
             daemon_public_key, ..
-        } => assert_eq!(daemon_public_key, "public-key-a"),
+        } => assert_eq!(daemon_public_key, test_public_key("daemon-a")),
         other => panic!("unexpected connect response envelope: {other:?}"),
     }
 
@@ -380,7 +381,7 @@ async fn scoped_tokens_route_and_list_only_within_their_realm() {
     {
         RelayEnvelope::ClientConnected {
             daemon_public_key, ..
-        } => assert_eq!(daemon_public_key, "public-key-b"),
+        } => assert_eq!(daemon_public_key, test_public_key("daemon-b")),
         other => panic!("unexpected connect response envelope: {other:?}"),
     }
 
@@ -440,20 +441,16 @@ async fn accepted_daemon_socket_is_closed_when_initial_token_expires() {
     });
 
     let url = format!("ws://{}:{}", addr.ip(), addr.port());
-    let (mut daemon_socket, _) = connect_async_with_retry(&url)
+    let (mut daemon_socket, daemon_socket_handshake) = connect_async_with_retry(&url)
         .await
         .expect("daemon should connect");
     daemon_socket
         .send(Message::Text(
-            serde_json::to_string(&RelayEnvelope::DaemonRegister {
-                registration: test_registration_with_token(
-                    "daemon-1",
-                    "machine-1",
-                    "Linux",
-                    10,
-                    "daemon-token",
-                ),
-            })
+            serde_json::to_string(&signed_register(
+                &url,
+                &daemon_socket_handshake,
+                test_registration_with_token("daemon-1", "machine-1", "Linux", 10, "daemon-token"),
+            ))
             .expect("register should serialize")
             .into(),
         ))
@@ -535,20 +532,16 @@ async fn accepted_client_socket_is_closed_when_initial_token_expires() {
     });
 
     let url = format!("ws://{}:{}", addr.ip(), addr.port());
-    let (mut daemon_socket, _) = connect_async_with_retry(&url)
+    let (mut daemon_socket, daemon_socket_handshake) = connect_async_with_retry(&url)
         .await
         .expect("daemon should connect");
     daemon_socket
         .send(Message::Text(
-            serde_json::to_string(&RelayEnvelope::DaemonRegister {
-                registration: test_registration_with_token(
-                    "daemon-1",
-                    "machine-1",
-                    "Linux",
-                    10,
-                    "daemon-token",
-                ),
-            })
+            serde_json::to_string(&signed_register(
+                &url,
+                &daemon_socket_handshake,
+                test_registration_with_token("daemon-1", "machine-1", "Linux", 10, "daemon-token"),
+            ))
             .expect("register should serialize")
             .into(),
         ))
@@ -582,7 +575,7 @@ async fn accepted_client_socket_is_closed_when_initial_token_expires() {
     {
         RelayEnvelope::ClientConnected {
             daemon_public_key, ..
-        } => assert_eq!(daemon_public_key, "public-key-daemon-1"),
+        } => assert_eq!(daemon_public_key, test_public_key("daemon-1")),
         other => panic!("unexpected connect response envelope: {other:?}"),
     }
 
@@ -655,20 +648,16 @@ async fn expired_token_is_rejected_for_new_client_connection() {
     });
 
     let url = format!("ws://{}:{}", addr.ip(), addr.port());
-    let (mut daemon_socket, _) = connect_async_with_retry(&url)
+    let (mut daemon_socket, daemon_socket_handshake) = connect_async_with_retry(&url)
         .await
         .expect("daemon should connect");
     daemon_socket
         .send(Message::Text(
-            serde_json::to_string(&RelayEnvelope::DaemonRegister {
-                registration: test_registration_with_token(
-                    "daemon-1",
-                    "machine-1",
-                    "Linux",
-                    10,
-                    "daemon-token",
-                ),
-            })
+            serde_json::to_string(&signed_register(
+                &url,
+                &daemon_socket_handshake,
+                test_registration_with_token("daemon-1", "machine-1", "Linux", 10, "daemon-token"),
+            ))
             .expect("register should serialize")
             .into(),
         ))

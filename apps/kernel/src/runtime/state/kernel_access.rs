@@ -603,7 +603,13 @@ impl KernelRuntimeState {
         peer: &ProcessIdentity,
         request: &RequestKernelAccessRequest,
     ) -> Result<AccessSubmission, DaemonError> {
-        if process::inspect(std::process::id()).is_ok_and(|(kernel, _)| kernel.contains(peer)) {
+        // The kernel launched every agent's provider; only a sub-agent has a parent to ask. A
+        // room agent's request goes to the person like an outside agent's.
+        if process::inspect(std::process::id()).is_ok_and(|(kernel, _)| kernel.contains(peer))
+            && !self
+                .agent_of_peer(peer)
+                .is_some_and(|agent| !agent.is_sub_agent())
+        {
             return Err(Refusal::SubAgent.error());
         }
         let holder = self.access_holder(peer, request.holder_pid)?;
@@ -779,12 +785,19 @@ impl KernelRuntimeState {
                     .find(|(known, _)| known == &holder)
                     .map(|(_, reason)| reason.clone())
             });
+        // The follow count reads the grant again under this lock: let go of it first.
+        drop(state);
         let (state, reason) = match (grant.is_some(), pending, ended) {
             (true, _, _) => (KernelAccessHolderState::Granted, None),
             (false, true, _) => (KernelAccessHolderState::Pending, None),
             (false, false, Some(reason)) => (KernelAccessHolderState::Ended, Some(reason)),
             (false, false, None) => (KernelAccessHolderState::NotRequested, None),
         };
+        let follows = grant
+            .as_ref()
+            .map(|grant| self.outside_follow_count(&grant.grant_id))
+            .transpose()?
+            .map(|count| count as u32);
         Ok(KernelAccessStatus {
             state,
             holder_pid: holder.pid,
@@ -792,6 +805,7 @@ impl KernelRuntimeState {
                 .provider_harness,
             holder_executable: holder.executable,
             grant,
+            follows,
             reason,
         })
     }
@@ -983,6 +997,7 @@ impl KernelRuntimeState {
 }
 
 mod cover;
+mod delegate;
 mod policy;
 pub(crate) mod reach;
 #[cfg(test)]

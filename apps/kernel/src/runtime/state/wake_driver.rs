@@ -45,6 +45,9 @@ pub(crate) trait WakeDriver: Send + Sync {
     fn arm(&self, wake: &AgentWake) -> Result<(), DaemonError>;
     fn cancel(&self, wake: &AgentWake) -> Result<Cancel, DaemonError>;
     fn recover(&self, wake: &AgentWake) -> Recovery;
+    /// After a restart: finishes work the driver still owes for sources that already ended, which
+    /// `recover` never sees because it is given only the wakes still active.
+    fn reconcile_ended(&self) {}
     /// Read by the 30 s lifecycle sweep for every running wake of this kind.
     fn liveness(&self, wake: &AgentWake) -> Liveness;
 }
@@ -72,6 +75,18 @@ impl WakeDrivers {
             .expect("wake drivers lock")
             .insert(kind, driver);
         assert!(previous.is_none(), "wake driver `{kind}` registered twice");
+    }
+    pub(super) fn reconcile_ended(&self) {
+        let drivers: Vec<_> = self
+            .drivers
+            .read()
+            .expect("wake drivers lock")
+            .values()
+            .filter_map(Weak::upgrade)
+            .collect();
+        for driver in drivers {
+            driver.reconcile_ended();
+        }
     }
     pub(super) fn get(&self, kind: &str) -> Result<Arc<dyn WakeDriver>, DaemonError> {
         self.drivers
@@ -203,19 +218,20 @@ impl WakeSink {
             ));
         }
         let wake = self.own_wake(&occurrence.wake_id)?;
-        let Outcome::Wakes(changed) =
-            self.state
-                .owned
-                .durable_state_store
-                .agent_lifecycle(Operation::WakeOccurred {
-                    id: wake.id.clone(),
-                    occurrence: occurrence.occurrence_id,
-                    kind: occurrence.kind,
-                    payload: occurrence.payload,
-                    summary: occurrence.summary,
-                    end: occurrence.end,
-                    now: crate::session::unix_epoch_ms(),
-                })?
+        let Outcome::Wakes(changed) = self
+            .state
+            .owned
+            .durable_state_store
+            .agent_lifecycle(Operation::WakeOccurred {
+                id: wake.id.clone(),
+                occurrence: occurrence.occurrence_id,
+                kind: occurrence.kind,
+                payload: occurrence.payload,
+                summary: occurrence.summary,
+                end: occurrence.end,
+                now: crate::session::unix_epoch_ms(),
+            })
+            .inspect_err(|_| self.state.deliver_committed_wake(&wake))?
         else {
             return Err(crate::durable_state::agent_lifecycle::error(
                 "wake occurrence outcome mismatch",

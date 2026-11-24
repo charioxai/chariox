@@ -16,6 +16,7 @@ async fn offload_job_with_remote_jobs_off_runs_a_heavy_job_locally_and_never_cal
         .set_remote_job_policy(
             &task.room_id,
             Some(&task.agent_id),
+            false,
             &task.owner_user_id,
             Some(crate::local::OffloadPolicy::AlwaysHeavy),
         )
@@ -49,7 +50,7 @@ async fn offload_job_with_remote_jobs_off_refuses_to_move_a_queued_job_to_a_mach
         ..crate::runtime::command::KernelCaller::default()
     };
     let error = state
-        .run_session_process_remotely(&task.room_id, &owner, "job-queued")
+        .run_session_process_remotely(&task.room_id, &owner, "job-queued", None)
         .await
         .unwrap_err();
     assert!(error.to_string().contains("switched off"), "{error}");

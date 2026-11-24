@@ -35,6 +35,7 @@ fn local_daemon_protocol_fresh_relay_kernel_observation_shape_is_versioned() {
             leased_agent_count: 1,
             local_session_count: 2,
             public_key: "fixture-public-key".to_string(),
+            local_protocol: Some(1012),
         }],
     };
     assert_eq!(
@@ -56,7 +57,8 @@ fn local_daemon_protocol_fresh_relay_kernel_observation_shape_is_versioned() {
                     "accepting_remote_leases": true,
                     "leased_agent_count": 1,
                     "local_session_count": 2,
-                    "public_key": "fixture-public-key"
+                    "public_key": "fixture-public-key",
+                    "local_protocol": 1012
                 }]
             }
         })

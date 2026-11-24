@@ -48,6 +48,10 @@ struct BrokerConnection {
 static BROKER: OnceLock<Mutex<Option<BrokerConnection>>> = OnceLock::new();
 #[cfg(unix)]
 static BROKER_CONFIGURED: OnceLock<bool> = OnceLock::new();
+/// Set at start when the managed bootstrap that started this kernel found no
+/// slice broker on its machine: the installed release has no slice service.
+#[cfg(unix)]
+static SLICE_SERVICE_MISSING: OnceLock<bool> = OnceLock::new();
 /// The descriptor of the connection the supervisor handed this program
 /// (`CHARIOX_SLICE_DOCKER_BROKER_FD`); after a hot reload the environment
 /// names the same number again.
@@ -88,6 +92,11 @@ enum BrokerRequest<'a> {
         path: Option<&'a str>,
     },
     HomeArchiveVerify {
+        scope: &'a str,
+        id: &'a str,
+        path: &'a str,
+    },
+    HomeArchiveQuarantine {
         scope: &'a str,
         id: &'a str,
         path: &'a str,
@@ -178,6 +187,7 @@ pub fn initialize() {
             || inherited_fd.is_some()
             || std::env::var_os(BROKER_REQUIRED_ENV).is_some();
         let _ = BROKER_CONFIGURED.set(configured);
+        let _ = SLICE_SERVICE_MISSING.set(slice_service_missing_from_env());
         std::env::remove_var(BROKER_SOCKET_ENV);
         std::env::remove_var(BROKER_FD_ENV);
         std::env::remove_var(BROKER_REQUIRED_ENV);
@@ -402,6 +412,27 @@ fn broker_is_configured() -> bool {
 
 pub(super) fn configured() -> bool {
     broker_is_configured()
+}
+
+/// The managed bootstrap hands a kernel a broker connection when its machine
+/// runs the slice broker, and only the requirement when it found none.
+#[cfg(unix)]
+fn slice_service_missing_from_env() -> bool {
+    std::env::var_os(BROKER_REQUIRED_ENV).is_some()
+        && std::env::var_os(BROKER_SOCKET_ENV).is_none()
+        && std::env::var_os(BROKER_FD_ENV).is_none()
+}
+
+pub(super) fn slice_service_missing() -> bool {
+    #[cfg(unix)]
+    {
+        SLICE_SERVICE_MISSING
+            .get()
+            .copied()
+            .unwrap_or_else(slice_service_missing_from_env)
+    }
+    #[cfg(not(unix))]
+    false
 }
 
 pub(super) fn provider_auth_protected(container: &str) -> io::Result<bool> {
@@ -683,6 +714,45 @@ pub(super) fn verify_home_archive(
             ));
         }
         Ok(Some((verified.size_bytes, verified.sha256)))
+    }
+    #[cfg(not(unix))]
+    unreachable!()
+}
+
+/// Asks the broker to move a managed archive that fails its integrity check aside. It proves the
+/// corruption itself and refuses an intact archive, so the kernel may ask after any failed verify.
+/// Returns where the generation now is, or `None` when no broker owns the archive.
+pub(super) fn quarantine_home_archive(
+    scope: &str,
+    id: &str,
+    path: &std::path::Path,
+) -> io::Result<Option<std::path::PathBuf>> {
+    if !broker_is_configured() {
+        return Ok(None);
+    }
+    #[cfg(unix)]
+    {
+        let path = path.to_str().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "managed home archive path is not UTF-8",
+            )
+        })?;
+        let output = execute(&BrokerRequest::HomeArchiveQuarantine { scope, id, path })?;
+        if !output.status.success() {
+            return Err(io::Error::other(format!(
+                "managed home archive quarantine failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            )));
+        }
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Quarantined {
+            path: std::path::PathBuf,
+        }
+        let quarantined: Quarantined = serde_json::from_slice(&output.stdout)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        Ok(Some(quarantined.path))
     }
     #[cfg(not(unix))]
     unreachable!()

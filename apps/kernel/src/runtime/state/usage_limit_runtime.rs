@@ -18,7 +18,14 @@ pub(crate) const RESUME_STAGGER_MS: u64 = 20_000;
 
 pub(super) fn clock(at_ms: u64) -> String {
     chrono::DateTime::<chrono::Utc>::from_timestamp_millis(at_ms as i64)
-        .map(|time| time.format("%H:%M UTC").to_string())
+        .map(|time| {
+            let format = if time.date_naive() == chrono::Utc::now().date_naive() {
+                "%H:%M UTC"
+            } else {
+                "%b %-d %H:%M UTC"
+            };
+            time.format(format).to_string()
+        })
         .unwrap_or_default()
 }
 
@@ -43,6 +50,56 @@ fn refused(message: impl Into<String>) -> DaemonError {
     DaemonError::LocalTransport {
         operation: "usage limit",
         message: message.into(),
+    }
+}
+
+impl KernelRuntimeOwnedState {
+    /// A delivery acknowledgement identifies the account that actually took the prompt.
+    /// Write the stop's end before completion can make the turn invisible to the scheduler.
+    pub(super) fn settle_usage_limit_on_delivery(
+        &self,
+        agent_id: &str,
+        prompt_id: &str,
+        run: &crate::provider::RuntimeProviderRun,
+    ) -> Result<(), DaemonError> {
+        let agent = self.agent_store.get_agent(agent_id)?;
+        let Some(stop) = agent.usage_limit_stop() else {
+            return Ok(());
+        };
+        let account_label = self.account_label(&agent, run.account_profile());
+        let event = StopEvent::Continued {
+            account_profile: run.account_profile(),
+            account_label: &account_label,
+        };
+        let changed = self.agent_store.change_usage_limit_stop_durably(
+            &self.durable_state_store,
+            agent_id,
+            |current| {
+                let held = current
+                    .usage_limit_stop()
+                    .filter(|held| *held == stop && held.prompt_id != prompt_id)?;
+                transition(Some(held), &event)
+            },
+        )?;
+        if let Some(updated) = changed {
+            self.notice_usage_limit_stop(&updated, &event_notice(&event, None));
+            self.close_usage_limit_decision(&updated, stop)?;
+            let _ = self.session_snapshot(agent.session_id());
+        }
+        Ok(())
+    }
+
+    fn notice_usage_limit_stop(&self, agent: &crate::agent::AgentInstance, notice: &str) {
+        if !notice.is_empty() {
+            self.record_notice_for_agent(
+                agent.session_id(),
+                None,
+                Some(agent.id()),
+                self.attachment_store
+                    .list_session_attachment_ids(agent.session_id()),
+                notice,
+            );
+        }
     }
 }
 
@@ -157,16 +214,25 @@ impl KernelRuntimeState {
         event: &StopEvent<'_>,
     ) -> Result<Option<AppliedStop>, DaemonError> {
         let mut before = None;
-        let changed = self
-            .owned
-            .agent_store
-            .change_usage_limit_stop(agent_id, |held| {
+        let changed = self.owned.agent_store.change_usage_limit_stop_durably(
+            &self.owned.durable_state_store,
+            agent_id,
+            |current| {
+                if let StopEvent::Hit { origin, .. } = event {
+                    if !current
+                        .matches_usage_limit_profile(&origin.provider, &origin.account_profile)
+                    {
+                        return None;
+                    }
+                }
+                let held = current.usage_limit_stop();
                 let next = transition(held, event);
                 if next.is_some() {
                     before = held.cloned();
                 }
                 next
-            })?;
+            },
+        )?;
         let Some(agent) = changed else {
             return Ok(None);
         };
@@ -182,19 +248,7 @@ impl KernelRuntimeState {
         notice: &str,
     ) -> Result<(), DaemonError> {
         let owned = &self.owned;
-        if !notice.is_empty() {
-            owned.record_notice_for_agent(
-                updated.session_id(),
-                None,
-                Some(updated.id()),
-                owned
-                    .attachment_store
-                    .list_session_attachment_ids(updated.session_id()),
-                notice,
-            );
-        }
-        self.append_agent_durable_event("agent.updated", updated, None)
-            .await?;
+        owned.notice_usage_limit_stop(updated, notice);
         let _ = owned.session_snapshot(updated.session_id());
         self.sync_usage_limit_interaction(updated).await
     }
@@ -640,14 +694,18 @@ impl KernelRuntimeState {
                 ) {
                     return Err(refused("this stop is already going on"));
                 }
-                self.update_agent_profile(
+                self.update_agent_profile_with_selections(
                     session_id,
                     agent_id,
                     caller_user_id,
-                    None,
-                    Some(account_profile),
-                    None,
-                    None,
+                    super::agent_profile_owned_state::AgentProfileSelections {
+                        provider: None,
+                        account_profile: Some(account_profile),
+                        model: None,
+                        effort: None,
+                        continue_limit: Some(stop),
+                    },
+                    super::SettingsContext::person(),
                 )
                 .await?;
                 let agent = owned.agent_store.get_agent(agent_id)?;
@@ -691,6 +749,9 @@ pub(super) struct AppliedStop {
 
 /// The line the session gets when `event` moved the stop to `stop`; empty for a move that is not news.
 fn event_notice(event: &StopEvent<'_>, stop: Option<&UsageLimitStop>) -> String {
+    if let StopEvent::Continued { account_label, .. } = event {
+        return format!("Continued on {account_label}.");
+    }
     let Some(stop) = stop else {
         return String::new();
     };

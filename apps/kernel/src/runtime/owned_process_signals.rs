@@ -1,4 +1,7 @@
 //! Signals require a retained PID/start witness, including every group member.
+#[cfg(all(test, target_os = "linux"))]
+#[path = "owned_process_signals_pinned_tests.rs"]
+mod pinned_tests;
 #[cfg(target_os = "macos")]
 use crate::runtime::bounded_process::BoundedCommandExt as _;
 use std::{collections::BTreeMap, io, process::Child};
@@ -18,40 +21,109 @@ pub(crate) struct OwnedProcessSignals {
     root: u32,
     exclusive_session: Option<u32>,
     owned: BTreeMap<u32, String>,
+    claim: Claim,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub(crate) struct ProcessWitness {
+    root: u32,
+    exclusive_session: Option<u32>,
+    owned: BTreeMap<u32, String>,
+    marker: Option<Vec<u8>>,
+}
+
+impl ProcessWitness {
+    pub(crate) fn pid(&self) -> u32 {
+        self.root
+    }
+
+    pub(crate) fn into_signals(self) -> OwnedProcessSignals {
+        OwnedProcessSignals {
+            root: self.root,
+            exclusive_session: self.exclusive_session,
+            owned: self.owned,
+            claim: Claim {
+                marker: self.marker,
+                unmarked: Default::default(),
+            },
+        }
+    }
+}
+
+/// The launch claim the spawner put in the root's environment (`CLAIM_VARIABLE`). Every
+/// descendant inherits it, so a job that left the tree (its own session, its parent gone)
+/// before anything looked at the tree is still found and ended. The spawner passes it in:
+/// the root may already be gone, and its environment then proves nothing.
+#[derive(Default)]
+struct Claim {
+    marker: Option<Vec<u8>>,
+    /// Processes already read without the marker, by the birth they had then.
+    unmarked: std::collections::BTreeSet<(u32, String)>,
 }
 
 impl OwnedProcessSignals {
+    pub(crate) fn witness(&self) -> ProcessWitness {
+        ProcessWitness {
+            root: self.root,
+            exclusive_session: self.exclusive_session,
+            owned: self.owned.clone(),
+            marker: self.claim.marker.clone(),
+        }
+    }
+
     pub(crate) fn for_child(child: &Child) -> io::Result<Self> {
-        Self::capture(child, false)
+        Self::capture(child, false, None)
     }
 
     /// Only for a child launched with a successful setsid pre_exec hook.
     /// Retain that launch witness even after macOS clears the exited leader's session flag.
     pub(crate) fn for_session_child(child: &Child) -> io::Result<Self> {
-        Self::capture(child, true)
+        Self::capture(child, true, None)
+    }
+
+    /// `for_session_child` for a child launched with `claim` in `CLAIM_VARIABLE`.
+    #[cfg(all(test, target_os = "linux"))]
+    pub(crate) fn for_claimed_session_child(child: &Child, claim: &str) -> io::Result<Self> {
+        Self::capture(child, true, Some(claim))
     }
 
     /// A process this kernel did not just spawn (an orphan found by scanning).
     /// Its identity is only as good as the moment of this snapshot.
     pub(crate) fn for_pid(pid: u32) -> io::Result<Self> {
-        Self::capture_pid(pid, false)
+        Self::capture_pid(pid, false, None)
     }
 
-    fn capture(child: &Child, launched_exclusive_session: bool) -> io::Result<Self> {
-        Self::capture_pid(child.id(), launched_exclusive_session)
+    fn capture(
+        child: &Child,
+        launched_exclusive_session: bool,
+        claim: Option<&str>,
+    ) -> io::Result<Self> {
+        Self::capture_pid(child.id(), launched_exclusive_session, claim)
     }
 
-    /// The caller launched this async child with a successful setsid hook.
-    pub(crate) fn for_tokio_session_child(child: &tokio::process::Child) -> io::Result<Self> {
+    /// The caller launched this async child with a successful setsid hook and `claim` in
+    /// `CLAIM_VARIABLE`.
+    pub(crate) fn for_claimed_tokio_session_child(
+        child: &tokio::process::Child,
+        claim: &str,
+    ) -> io::Result<Self> {
         Self::capture_pid(
             child
                 .id()
                 .ok_or_else(|| io::Error::other("child already reaped"))?,
             true,
+            Some(claim),
         )
     }
 
-    fn capture_pid(pid: u32, launched_exclusive_session: bool) -> io::Result<Self> {
+    fn capture_pid(
+        pid: u32,
+        launched_exclusive_session: bool,
+        claim: Option<&str>,
+    ) -> io::Result<Self> {
+        if claim.is_some_and(str::is_empty) {
+            return Err(io::Error::other("the launch claim is missing"));
+        }
         let rows = snapshot()?;
         if pid <= 1 || pid > i32::MAX as u32 {
             return Err(io::Error::other("invalid child PID"));
@@ -73,6 +145,10 @@ impl OwnedProcessSignals {
             exclusive_session: (launched_exclusive_session || identity.session == pid)
                 .then_some(pid),
             owned: BTreeMap::from([(pid, identity.start.clone())]),
+            claim: Claim {
+                marker: claim.map(|claim| format!("{CLAIM_VARIABLE}={claim}").into_bytes()),
+                unmarked: Default::default(),
+            },
         };
         guard.refresh_from(&rows);
         Ok(guard)
@@ -83,6 +159,45 @@ impl OwnedProcessSignals {
     }
 
     fn refresh_from(&mut self, rows: &[ProcessIdentity]) {
+        loop {
+            self.refresh_related(rows);
+            if !self.refresh_claimed(rows) {
+                break;
+            }
+        }
+    }
+
+    /// Adds the processes that carry the launch claim; true when one was new.
+    fn refresh_claimed(&mut self, rows: &[ProcessIdentity]) -> bool {
+        let Some(marker) = self.claim.marker.clone() else {
+            return false;
+        };
+        let mut added = false;
+        for row in rows {
+            let key = (row.pid, row.start.clone());
+            if row.pid <= 1
+                || row.start.is_empty()
+                || self.owned.contains_key(&row.pid)
+                || self.claim.unmarked.contains(&key)
+            {
+                continue;
+            }
+            match read_environment(row.pid) {
+                Ok(Some(bytes)) if bytes.split(|byte| *byte == 0).any(|entry| entry == marker) => {
+                    self.owned.insert(row.pid, row.start.clone());
+                    added = true;
+                }
+                Ok(_) => {
+                    self.claim.unmarked.insert(key);
+                }
+                // A process that cannot be read now is asked again next time.
+                Err(_) => {}
+            }
+        }
+        added
+    }
+
+    fn refresh_related(&mut self, rows: &[ProcessIdentity]) {
         loop {
             let added: Vec<_> = rows
                 .iter()
@@ -139,7 +254,7 @@ impl OwnedProcessSignals {
     }
 
     pub(crate) fn kill_owned_processes(&mut self) -> io::Result<()> {
-        self.kill_owned_with(snapshot, send_signal)
+        self.kill_owned_with(snapshot, send_process_signal)
     }
 
     #[cfg(unix)]
@@ -147,11 +262,11 @@ impl OwnedProcessSignals {
         let rows = snapshot()?;
         self.refresh_from(&rows);
         for pid in self.parents_first(&rows) {
-            if snapshot()?
+            if let Some(row) = snapshot()?
                 .iter()
-                .any(|row| row.pid == pid && self.matches(row))
+                .find(|row| row.pid == pid && self.matches(row))
             {
-                send_signal_with(pid as i32, signal)?;
+                send_process_signal_with(row, signal)?;
             }
         }
         Ok(())
@@ -164,7 +279,7 @@ impl OwnedProcessSignals {
     fn kill_owned_with(
         &mut self,
         mut inspect: impl FnMut() -> io::Result<Vec<ProcessIdentity>>,
-        mut send: impl FnMut(i32, Signal) -> io::Result<()>,
+        mut send: impl FnMut(&ProcessIdentity, Signal) -> io::Result<()>,
     ) -> io::Result<()> {
         let mut stopped = std::collections::BTreeSet::new();
         loop {
@@ -221,23 +336,7 @@ impl OwnedProcessSignals {
             if !self.matches(row) || handles.0.contains_key(&row.pid) {
                 continue;
             }
-            if row.pid <= 1 || row.pid > i32::MAX as u32 {
-                return Err(io::Error::other("invalid child PID"));
-            }
-            let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, row.pid, 0) };
-            if fd < 0 {
-                let error = io::Error::last_os_error();
-                if error.raw_os_error() == Some(libc::ESRCH) {
-                    continue;
-                }
-                return Err(error);
-            }
-            use std::os::fd::FromRawFd;
-            let handle = unsafe { std::os::fd::OwnedFd::from_raw_fd(fd as i32) };
-            if snapshot()?
-                .iter()
-                .any(|current| current.pid == row.pid && self.matches(current))
-            {
+            if let Some(handle) = pin_process(row)? {
                 // Publish each verified handle immediately. A subsequent pin
                 // failure must retain both old and newly acquired ownership.
                 handles.0.insert(row.pid, handle);
@@ -274,19 +373,19 @@ impl OwnedProcessSignals {
         order.into_iter().map(|(_, pid)| pid).collect()
     }
 
-    /// Rechecks the birth immediately before its individual signal.
+    /// Carries the verified birth to the signal seam, where Linux pins it before sending.
     fn signal_current(
         &self,
         pid: u32,
         signal: Signal,
         inspect: &mut impl FnMut() -> io::Result<Vec<ProcessIdentity>>,
-        send: &mut impl FnMut(i32, Signal) -> io::Result<()>,
+        send: &mut impl FnMut(&ProcessIdentity, Signal) -> io::Result<()>,
     ) -> io::Result<()> {
-        if inspect()?
+        if let Some(row) = inspect()?
             .iter()
-            .any(|row| row.pid == pid && self.matches(row))
+            .find(|row| row.pid == pid && self.matches(row))
         {
-            send(pid as i32, signal)?;
+            send(row, signal)?;
         }
         Ok(())
     }
@@ -303,7 +402,13 @@ impl OwnedProcessSignals {
     /// in its environment. Ok(true): nothing of it is left. Ok(false): its members were just
     /// signalled; ask again. An error means some member could not be inspected, so it may live.
     pub(crate) fn end_claimed_tree(claim: &str, leader: Option<(u32, &str)>) -> io::Result<bool> {
-        Self::end_claimed_tree_with(claim, leader, snapshot, read_environment, send_signal)
+        Self::end_claimed_tree_with(
+            claim,
+            leader,
+            snapshot,
+            read_environment,
+            send_process_signal,
+        )
     }
 
     fn end_claimed_tree_with(
@@ -311,7 +416,7 @@ impl OwnedProcessSignals {
         leader: Option<(u32, &str)>,
         mut inspect: impl FnMut() -> io::Result<Vec<ProcessIdentity>>,
         environment: impl Fn(u32) -> io::Result<Option<Vec<u8>>>,
-        send: impl FnMut(i32, Signal) -> io::Result<()>,
+        send: impl FnMut(&ProcessIdentity, Signal) -> io::Result<()>,
     ) -> io::Result<bool> {
         if claim.is_empty() {
             return Err(io::Error::other("the launch claim is missing"));
@@ -360,6 +465,7 @@ impl OwnedProcessSignals {
                 .filter(|leader| leader.session == leader.pid)
                 .map(|leader| leader.pid),
             owned,
+            claim: Claim::default(),
         };
         guard.kill_owned_with(inspect, send)?;
         Ok(false)
@@ -373,7 +479,7 @@ impl OwnedProcessSignals {
         if !self.matches(row) {
             return Err(io::Error::other("child PID was reused"));
         }
-        send_signal(self.root as i32, Signal::Kill)?;
+        send_process_signal(row, Signal::Kill)?;
         Ok(true)
     }
 }
@@ -390,21 +496,7 @@ impl OwnedProcessHandles {
             if *pid <= 1 {
                 return Err(io::Error::other("reserved child signal target"));
             }
-            let result = unsafe {
-                libc::syscall(
-                    libc::SYS_pidfd_send_signal,
-                    handle.as_raw_fd(),
-                    signal,
-                    std::ptr::null::<libc::siginfo_t>(),
-                    0,
-                )
-            };
-            if result < 0 {
-                let error = io::Error::last_os_error();
-                if error.raw_os_error() != Some(libc::ESRCH) {
-                    return Err(error);
-                }
-            }
+            send_handle_signal(handle.as_raw_fd(), signal)?;
         }
         Ok(())
     }
@@ -422,7 +514,86 @@ impl OwnedProcessHandles {
     }
 }
 
-/// Names the run a process belongs to; every descendant inherits it.
+#[cfg(target_os = "linux")]
+fn pin_process(row: &ProcessIdentity) -> io::Result<Option<std::os::fd::OwnedFd>> {
+    use std::os::fd::FromRawFd;
+    if row.pid <= 1 || row.pid > i32::MAX as u32 || row.start.is_empty() {
+        return Err(io::Error::other("invalid process birth witness"));
+    }
+    let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, row.pid, 0) };
+    if fd < 0 {
+        let error = io::Error::last_os_error();
+        return if error.raw_os_error() == Some(libc::ESRCH) {
+            Ok(None)
+        } else {
+            Err(error)
+        };
+    }
+    let handle = unsafe { std::os::fd::OwnedFd::from_raw_fd(fd as i32) };
+    // Match the birth after opening. The verified handle keeps this target
+    // stable if it exits and its numeric PID is reused before signal delivery.
+    if witnessed_exit(&row.start, witnessed_row(row.pid)?)? {
+        return Ok(None);
+    }
+    Ok(Some(handle))
+}
+
+#[cfg(target_os = "linux")]
+fn send_handle_signal(fd: std::os::fd::RawFd, signal: i32) -> io::Result<()> {
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_pidfd_send_signal,
+            fd,
+            signal,
+            std::ptr::null::<libc::siginfo_t>(),
+            0,
+        )
+    };
+    if result >= 0 {
+        return Ok(());
+    }
+    let error = io::Error::last_os_error();
+    if error.raw_os_error() == Some(libc::ESRCH) {
+        Ok(())
+    } else {
+        Err(error)
+    }
+}
+
+fn send_process_signal(row: &ProcessIdentity, signal: Signal) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        send_process_signal_with(
+            row,
+            match signal {
+                Signal::Stop => libc::SIGSTOP,
+                Signal::Kill => libc::SIGKILL,
+            },
+        )
+    }
+    #[cfg(not(unix))]
+    {
+        send_signal(row.pid as i32, signal)
+    }
+}
+
+#[cfg(unix)]
+fn send_process_signal_with(row: &ProcessIdentity, signal: i32) -> io::Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::fd::AsRawFd;
+        if let Some(handle) = pin_process(row)? {
+            send_handle_signal(handle.as_raw_fd(), signal)?;
+        }
+        Ok(())
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        send_signal_with(row.pid as i32, signal)
+    }
+}
+
+/// Names the run or command a process belongs to; every descendant inherits it.
 pub(crate) const CLAIM_VARIABLE: &str = "CHARIOX_SETUP_CLAIM";
 
 /// Ok(None): the process cannot be read (another user's or hidden), so it proves nothing.
@@ -641,6 +812,101 @@ fn witnessed_row(pid: u32) -> io::Result<Option<ProcessIdentity>> {
         Ok(bytes) => linux_row(pid, Ok(bytes)),
         Err(error) if matches!(error.raw_os_error(), Some(libc::ENOENT | libc::ESRCH)) => Ok(None),
         Err(error) => Err(error),
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn linux_start(pid: u32) -> io::Result<Option<String>> {
+    let Some(row) = witnessed_row(pid)? else {
+        return Ok(None);
+    };
+    if row.start.is_empty() {
+        return Err(io::Error::other("process start identity unavailable"));
+    }
+    Ok((!row.exited).then_some(row.start))
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn linux_ancestors() -> io::Result<std::collections::BTreeSet<u32>> {
+    let mut ancestors = std::collections::BTreeSet::new();
+    let mut pid = std::process::id();
+    while pid > 1 && ancestors.insert(pid) {
+        let Some(row) = witnessed_row(pid)? else {
+            break;
+        };
+        pid = row.parent;
+    }
+    Ok(ancestors)
+}
+
+/// A stopped process pinned to its recorded birth. Each orphan must carry its
+/// own launch witness, because a descendant can belong to another kernel.
+#[cfg(target_os = "linux")]
+pub(crate) struct FrozenLinuxProcess {
+    pid: u32,
+    start: String,
+    handle: std::os::fd::OwnedFd,
+}
+
+#[cfg(target_os = "linux")]
+impl FrozenLinuxProcess {
+    pub(crate) fn stop(pid: u32, start: &str) -> io::Result<Option<Self>> {
+        use std::os::fd::AsRawFd as _;
+        let Some(row) = witnessed_row(pid)? else {
+            return Ok(None);
+        };
+        if row.start != start || row.exited {
+            return Ok(None);
+        }
+        let Some(handle) = pin_process(&row)? else {
+            return Ok(None);
+        };
+        send_handle_signal(handle.as_raw_fd(), libc::SIGSTOP)?;
+        Ok(Some(Self {
+            pid,
+            start: start.to_owned(),
+            handle,
+        }))
+    }
+
+    pub(crate) fn is_quiescent(&self, namespace: &std::path::Path) -> io::Result<bool> {
+        if witnessed_exit(&self.start, witnessed_row(self.pid)?)? {
+            return Ok(true);
+        }
+        let root = std::path::PathBuf::from(format!("/proc/{}", self.pid));
+        let result = (|| {
+            if std::fs::read_link(root.join("ns/pid"))? != namespace {
+                return Err(io::Error::other("stopped process changed PID namespace"));
+            }
+            for task in std::fs::read_dir(root.join("task"))? {
+                let stat = match std::fs::read(task?.path().join("stat")) {
+                    Ok(stat) => stat,
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                    Err(error) => return Err(error),
+                };
+                let state = stat
+                    .iter()
+                    .rposition(|byte| *byte == b')')
+                    .and_then(|end| stat.get(end + 2));
+                if !matches!(state, Some(b'T' | b't' | b'Z' | b'X')) {
+                    return Ok(false);
+                }
+            }
+            Ok(true)
+        })();
+        // A process can exit while the namespace and threads are being read.
+        if witnessed_exit(&self.start, witnessed_row(self.pid)?)? {
+            return Ok(true);
+        }
+        result
+    }
+
+    pub(crate) fn kill(self) -> io::Result<()> {
+        use std::os::fd::AsRawFd as _;
+        let fd = self.handle.as_raw_fd();
+        send_handle_signal(fd, libc::SIGKILL)?;
+        // A pending SIGKILL prevents the stopped task running user code.
+        send_handle_signal(fd, libc::SIGCONT)
     }
 }
 
@@ -887,6 +1153,7 @@ mod tests {
         assert!(hidden.start.is_empty());
         assert_eq!(hidden.group, unsafe { libc::getpgrp() } as u32);
         let mut guard = OwnedProcessSignals {
+            claim: Claim::default(),
             root: hidden.group,
             exclusive_session: None,
             owned: BTreeMap::from([(hidden.group, "root".into())]),
@@ -911,6 +1178,7 @@ mod tests {
         orphan.session = macos_session_id(42, 0, |_| Ok(41)).unwrap();
         let rows = [leader, orphan];
         let mut guard = OwnedProcessSignals {
+            claim: Claim::default(),
             root: 41,
             exclusive_session: Some(41), // retained setsid launch witness
             owned: BTreeMap::from([(41, rows[0].start.clone())]),
@@ -929,6 +1197,7 @@ mod tests {
             ))
             .is_err());
         let mut lost = OwnedProcessSignals {
+            claim: Claim::default(),
             root: 41,
             exclusive_session: Some(41),
             owned: BTreeMap::from([(41, rows[0].start.clone())]),
@@ -950,6 +1219,7 @@ mod tests {
     #[test]
     fn mp11_review_failed_group_cleanup_signals_only_current_owned_births() {
         let mut guard = OwnedProcessSignals {
+            claim: Claim::default(),
             root: 41,
             exclusive_session: None,
             owned: BTreeMap::from([
@@ -972,7 +1242,7 @@ mod tests {
             .kill_owned_with(
                 || Ok(rows.clone()),
                 |pid, signal| {
-                    signalled.push((pid, signal));
+                    signalled.push((pid.pid as i32, signal));
                     Ok(())
                 },
             )
@@ -1003,7 +1273,7 @@ mod tests {
             || Ok(rows.clone()),
             environment,
             |pid, signal| {
-                sent.push((pid, signal));
+                sent.push((pid.pid as i32, signal));
                 Ok(())
             },
         )
@@ -1055,9 +1325,9 @@ mod tests {
                 || Ok(alive.borrow().clone()),
                 unreadable,
                 |pid, signal| {
-                    sent.borrow_mut().push((pid, signal));
+                    sent.borrow_mut().push((pid.pid as i32, signal));
                     if signal == Signal::Kill {
-                        alive.borrow_mut().retain(|row| row.pid as i32 != pid);
+                        alive.borrow_mut().retain(|row| row.pid != pid.pid);
                     }
                     Ok(())
                 },
@@ -1161,6 +1431,7 @@ mod tests {
         for root in [0, 1, u32::MAX] {
             let rows = [row(root, 9, root, "birth")];
             let mut guard = OwnedProcessSignals {
+                claim: Claim::default(),
                 root,
                 exclusive_session: None,
                 owned: BTreeMap::from([(root, "birth".into())]),
@@ -1179,6 +1450,7 @@ mod tests {
             row(99, 1, 99, "foreign"),
         ];
         let mut guard = OwnedProcessSignals {
+            claim: Claim::default(),
             root: 41,
             exclusive_session: None,
             owned: BTreeMap::from([(41, "root".into())]),
@@ -1194,7 +1466,7 @@ mod tests {
             .kill_owned_with(
                 || Ok(rows.clone()),
                 |pid, signal| {
-                    sent.push((pid, signal));
+                    sent.push((pid.pid as i32, signal));
                     Ok(())
                 },
             )
@@ -1209,6 +1481,7 @@ mod tests {
     #[test]
     fn mp11_signal_guard_refuses_reused_and_foreign_members() {
         let mut guard = OwnedProcessSignals {
+            claim: Claim::default(),
             root: 41,
             exclusive_session: None,
             owned: BTreeMap::from([(41, "original".into())]),

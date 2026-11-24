@@ -6,6 +6,7 @@ pub(crate) mod managed_work;
 mod output_log;
 mod owner;
 mod plain_text;
+mod program_input;
 mod pump;
 mod screen;
 mod service;
@@ -38,8 +39,10 @@ pub(crate) fn refused_for_test(message: &str) -> crate::error::DaemonError {
 }
 
 pub use events::{CompletionEvents, WatchOwner};
+pub use program_input::{ProgramInput, MAX_INLINE_INPUT_BYTES};
 #[cfg(unix)]
 pub use service::TerminalHandover;
 pub(crate) use service::KERNEL_SECRET_ENVIRONMENT;
 pub use service::{OpenRoomTerminal, RoomTerminalService, MAX_WAIT};
+pub(crate) use shell::kernel_user_home;
 pub use types::*;

@@ -1,0 +1,29 @@
+{
+  "protocol_version": 1014,
+  "relay_peer_protocol_version": 451,
+  "shapes": [
+    {
+      "ListFinishedRoomTasks": {
+        "session_id": "room",
+        "before": 42
+      }
+    },
+    {
+      "FinishedRoomTasks": {
+        "tasks": [],
+        "next_before": null
+      }
+    },
+    {
+      "GetMachineRoomResources": {
+        "session_id": "room"
+      }
+    },
+    {
+      "MachineRoomResources": {
+        "processes": [],
+        "disk_usage": []
+      }
+    }
+  ]
+}

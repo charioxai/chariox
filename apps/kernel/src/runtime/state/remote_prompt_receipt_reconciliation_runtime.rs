@@ -13,6 +13,7 @@ pub(super) enum RemotePromptReceiptAction {
     AssociateActiveRun(String),
     DrainCompletedProjection(String),
     RejectUnadmitted,
+    WaitForMemory,
 }
 
 pub(super) fn remote_prompt_receipt_action(
@@ -64,10 +65,23 @@ pub(super) fn remote_prompt_receipt_action(
         {
             Ok(RemotePromptReceiptAction::RejectUnadmitted)
         }
+        crate::transport::relay_peer::LeasedPromptReceiptPhase::WaitingForMemory
+            if !expected_execution_lease_id.trim().is_empty()
+                && receipt.target_home_prompt_id.is_none()
+                && receipt.worker_provider_run_id.is_empty()
+                && receipt.execution_lease_id.as_deref() == Some(expected_execution_lease_id) =>
+        {
+            Ok(RemotePromptReceiptAction::WaitForMemory)
+        }
+        crate::transport::relay_peer::LeasedPromptReceiptPhase::WaitingForMemory => {
+            Err("worker memory receipt has a different execution lease or names a provider turn")
+        }
         crate::transport::relay_peer::LeasedPromptReceiptPhase::SteerDispatching
             if receipt.target_home_prompt_id.is_none() =>
         {
-            Err("worker admission of the exact prompt is still Dispatching with no accepted or rejected outcome")
+            Err(
+                "worker admission of the exact prompt is still Dispatching with no accepted or rejected outcome",
+            )
         }
         crate::transport::relay_peer::LeasedPromptReceiptPhase::SteerDispatching
         | crate::transport::relay_peer::LeasedPromptReceiptPhase::SteerAccepted
@@ -124,7 +138,7 @@ impl KernelRuntimeState {
         let binding_before = match self.remote_prompt_receipt_binding(dispatch) {
             Ok(binding) => binding,
             Err(detail) => {
-                return Err(self.hold_remote_prompt_receipt_reconciliation(dispatch, detail))
+                return Err(self.hold_remote_prompt_receipt_reconciliation(dispatch, detail));
             }
         };
         let receipt = match query_remote_prompt_worker_receipt(self, dispatch).await {
@@ -155,13 +169,13 @@ impl KernelRuntimeState {
         ) {
             Ok(action) => action,
             Err(detail) => {
-                return Err(self.hold_remote_prompt_receipt_reconciliation(dispatch, detail))
+                return Err(self.hold_remote_prompt_receipt_reconciliation(dispatch, detail));
             }
         };
         let binding_after = match self.remote_prompt_receipt_binding(dispatch) {
             Ok(binding) => binding,
             Err(detail) => {
-                return Err(self.hold_remote_prompt_receipt_reconciliation(dispatch, detail))
+                return Err(self.hold_remote_prompt_receipt_reconciliation(dispatch, detail));
             }
         };
         if !same_remote_prompt_worker_binding(&binding_before, &binding_after)
@@ -182,11 +196,17 @@ impl KernelRuntimeState {
                 ),
             });
         }
+        if action == RemotePromptReceiptAction::WaitForMemory {
+            return Err(super::provider_turn_admission::provider_memory_wait_error(
+                "Waiting for memory on the worker".into(),
+            ));
+        }
         let completed = remote_prompt_receipt_action_requires_projection(&action);
         let worker_provider_run_id = match action {
             RemotePromptReceiptAction::AssociateActiveRun(provider_run_id) => provider_run_id,
             RemotePromptReceiptAction::DrainCompletedProjection(provider_run_id) => provider_run_id,
-            RemotePromptReceiptAction::RejectUnadmitted => unreachable!(),
+            RemotePromptReceiptAction::RejectUnadmitted
+            | RemotePromptReceiptAction::WaitForMemory => unreachable!(),
         };
         if let Err(error) = self
             .owned

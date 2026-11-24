@@ -30,6 +30,7 @@ pub fn drain_codex_events(
             terminal_failure: None,
             notices: Vec::new(),
             resolved_usage: None,
+            model_usage: Vec::new(),
             account_rate_limits: Vec::new(),
         });
     }
@@ -40,12 +41,14 @@ pub fn drain_codex_events(
         .with_native_approval_context(
             state.native_approval_origin.clone(),
             state.active_turn_id.clone(),
-        );
+        )
+        .with_unavailable_workspace_sandbox(state.unavailable_workspace_sandbox.clone());
     let client = if state.read_only_discovery_permissions() || run.read_only_discovery() {
         client.with_read_only_discovery_permissions()
     } else {
         client
     };
+    client.resume_workspace_approval(&mut state.socket)?;
     let client = if state.metadata_only_discovery || run.metadata_only_discovery() {
         client.with_metadata_only_discovery()
     } else {
@@ -57,6 +60,8 @@ pub fn drain_codex_events(
     let mut prompt_completed = false;
     let mut terminal_failure = None;
     let mut resolved_usage = None;
+    let mut model_usage = None;
+    let thread_id = state.thread_id().to_string();
     let mut account_rate_limits = Vec::new();
 
     // MP-08 / MP-10: a queued abort shares this actor with output polls.
@@ -84,6 +89,33 @@ pub fn drain_codex_events(
             account_rate_limits.push(rate_limits);
             continue;
         }
+        if let crate::provider::CodexNotification::TokenUsageUpdated {
+            thread_id: observed_thread,
+            ..
+        } = &notification
+        {
+            if observed_thread != &thread_id {
+                continue;
+            }
+            if let Some(tokens) = state.usage_tracker.observe(
+                &notification,
+                &thread_id,
+                state.active_turn_id.as_deref(),
+            ) {
+                let model = state
+                    .selected_model
+                    .as_deref()
+                    .unwrap_or_else(|| run.model());
+                model_usage = Some(crate::provider::ModelTurnUsage {
+                    model: model.trim_start_matches("codex/").to_string(),
+                    tokens,
+                });
+            }
+        }
+        let stream_closed = matches!(
+            notification,
+            crate::provider::CodexNotification::StreamClosed { .. }
+        );
         apply_notification_with_manifest(
             notification,
             &mut state.active_turn_id,
@@ -99,6 +131,12 @@ pub fn drain_codex_events(
             run.remote_extension_manifest(),
             run.working_directory().map(PathBuf::as_path),
         );
+        // A terminal error already ended this turn. A subsequent read can
+        // fail on a closed socket and discard the error we just received.
+        if stream_closed || (prompt_completed && terminal_failure.is_some()) {
+            drained_to_quiet = true;
+            break;
+        }
         // MP-08/MP-10/MP-11: a fresh utility owns one turn, with no successor.
         // Its exact terminal packet settles it before any later socket close
         // can discard the accepted result. Ordinary conversation drains still
@@ -128,6 +166,7 @@ pub fn drain_codex_events(
             .map(|notification| state.buffered_notifications.push(notification))
             .is_none();
     }
+    let approval_waits_for_successor = client.has_workspace_approval_for_successor();
     // Reconcile once when a turn starts, then only when provider evidence asks
     // for completion recovery. This keeps long healthy managed turns from
     // repeatedly reloading their growing rollout. Pending terminal and legacy
@@ -147,7 +186,11 @@ pub fn drain_codex_events(
     );
     // MP-08 / MP-10 / MP-11: Fresh utility threads settle from notifications;
     // ephemeral discovery threads also have no durable history to reconcile.
-    if authoritative_backfill_due && !state.ephemeral && !state.notification_only {
+    if authoritative_backfill_due
+        && !state.ephemeral
+        && !state.notification_only
+        && !approval_waits_for_successor
+    {
         backfill_completed_turn(
             &client,
             state,
@@ -164,7 +207,7 @@ pub fn drain_codex_events(
             state.authoritative_backfill_gate.reset();
         }
     }
-    if drained_to_quiet && !prompt_completed {
+    if drained_to_quiet && !prompt_completed && !approval_waits_for_successor {
         maybe_finalize_terminal_signal(
             &mut state.active_turn_id,
             &mut state.turn_tracker,
@@ -188,6 +231,7 @@ pub fn drain_codex_events(
         terminal_failure,
         notices,
         resolved_usage,
+        model_usage: model_usage.into_iter().collect(),
         account_rate_limits,
     })
 }
@@ -247,6 +291,67 @@ mod tests {
 
     use super::super::state::CodexRuntimeState;
     use super::drain_codex_events;
+
+    #[test]
+    fn provider_failure_reason_distinguishes_stream_close_from_a_completed_turn() {
+        for completed in [false, true] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let endpoint = format!("ws://{}", listener.local_addr().unwrap());
+            let (sent_tx, sent_rx) = mpsc::channel();
+            let server = thread::spawn(move || {
+                let (stream, _) = listener.accept().unwrap();
+                let mut socket = accept(stream).unwrap();
+                if completed {
+                    socket
+                        .send(Message::Text(
+                            json!({"method": "turn/completed",
+                        "params": {"turn": {"id":"turn","status":"completed"}}})
+                            .to_string()
+                            .into(),
+                        ))
+                        .unwrap();
+                }
+                socket.send(Message::Close(Some(tokio_tungstenite::tungstenite::protocol::CloseFrame {
+                    code: tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode::Normal,
+                    reason: "Upstream closed the response.".into(),
+                }))).unwrap();
+                sent_tx.send(()).unwrap();
+            });
+            let (socket, _) = connect(&endpoint).unwrap();
+            sent_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            let run = RuntimeProviderRun::new(
+                "run",
+                &LaunchProviderRequest::new("session", "codex", "codex", "default", "default"),
+                ProviderLaunchResult {
+                    endpoint_mode: AgentEndpointMode::Managed,
+                    process_label: "stream-close fixture".into(),
+                    pty_target: None,
+                    pty_program: None,
+                    pty_args: vec![],
+                    pty_env: BTreeMap::new(),
+                    pty_env_remove: vec![],
+                    working_directory: None,
+                    structured_endpoint: Some(endpoint.clone()),
+                },
+            );
+            let mut state = CodexRuntimeState::new(endpoint, "thread".into(), socket, 1);
+            state.ephemeral = true;
+            state.active_turn_id = Some("turn".into());
+            let poll = drain_codex_events(&run, &mut state, None).unwrap();
+            assert!(poll.prompt_completed);
+            if completed {
+                assert!(poll.terminal_failure.is_none());
+            } else {
+                let failure = crate::provider::TurnOutcome::classify(
+                    "codex",
+                    &poll.terminal_failure.unwrap(),
+                );
+                assert_eq!(failure.kind.label(), "stream ended early");
+                assert_eq!(failure.reason, "Upstream closed the response.");
+            }
+            server.join().unwrap();
+        }
+    }
 
     #[test]
     fn provusage_codex_wire_updates_keep_distinct_limits_in_one_poll() {

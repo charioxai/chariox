@@ -13,6 +13,17 @@ pub(in crate::runtime::state) fn blocking_popup_timeout_seconds(requested: Optio
         .min(BLOCKING_POPUP_MAX_SECONDS)
 }
 
+/// A later prompt can continue the same task, so scope retries to its asking turn.
+fn keyed_interaction_id(session_id: &str, agent_id: &str, prompt_id: &str, key: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(
+        serde_json::to_vec(&(session_id, agent_id, prompt_id, key)).expect("identities serialize"),
+    );
+    let mut id = [0u8; 16];
+    id.copy_from_slice(&digest[..16]);
+    format!("interaction-{:032x}", u128::from_be_bytes(id))
+}
+
 fn popup_error(message: &str) -> DaemonError {
     DaemonError::LocalTransport {
         operation: "runtime_tool_request_popup",
@@ -83,7 +94,7 @@ impl KernelRuntimeState {
             let current = self
                 .owned
                 .provider_store
-                .get_run_for_agent(
+                .get_tool_run_for_agent(
                     provider_run.session_id(),
                     provider_run
                         .agent_instance_id()
@@ -125,6 +136,45 @@ impl KernelRuntimeState {
         if args.timeout_sec == Some(0) {
             return Err(popup_error("timeout_sec must be at least 1"));
         }
+        if let Some(key) = args.idempotency_key.as_deref() {
+            if key.is_empty() {
+                return Err(popup_error("idempotency_key must not be empty"));
+            }
+            if args.wait != Some(false) {
+                return Err(popup_error("idempotency_key needs wait:false"));
+            }
+        }
+        let asking_task = (args.wait == Some(false))
+            .then(|| self.asking_task_for_turn(session_id, agent_id))
+            .transpose()?;
+        let keyed_id = if let (Some(task), Some(key)) =
+            (asking_task.as_ref(), args.idempotency_key.as_deref())
+        {
+            let id = keyed_interaction_id(session_id, agent_id, &task.prompt_id, key);
+            if let Some(wake) = self
+                .owned
+                .durable_state_store
+                .agent_wake(&id)?
+                .filter(|wake| {
+                    wake.kind == super::super::interaction_wake::KIND
+                        && wake.task_id == task.task_id
+                        && wake.room_id == session_id
+                        && wake.agent_id == agent_id
+                })
+            {
+                return Ok(crate::transport::runtime_tools::RuntimeToolResult {
+                    ok: true,
+                    payload: serde_json::json!({
+                        "interaction_id": id,
+                        "registration_id": wake.registration_id,
+                        "deduplicated": true,
+                    }),
+                });
+            }
+            Some(id)
+        } else {
+            None
+        };
         if args.action.is_some() {
             return Err(popup_error(
                 "an action card must be raised by a local agent's own provider run",
@@ -228,7 +278,8 @@ impl KernelRuntimeState {
             Some(until) => Some(self.card_condition_wake(session_id, agent_id, &until.wake_id)?),
             None => None,
         };
-        let interaction_id = format!("interaction-{:032x}", rand::random::<u128>());
+        let interaction_id =
+            keyed_id.unwrap_or_else(|| format!("interaction-{:032x}", rand::random::<u128>()));
         let view = if let Some(view) = args.view.as_ref() {
             if let Some(run) = provider_run {
                 self.user_domain_agent_authority(run)?;
@@ -268,13 +319,22 @@ impl KernelRuntimeState {
         if let Some(view) = view {
             interaction = interaction.with_view(view);
         }
-        if args.wait == Some(false) {
+        if let Some(task) = asking_task {
             let interaction_id = interaction.id().to_owned();
-            let result = self.arm_interaction_wake(session_id, agent_id, interaction)?;
+            let result = self.arm_interaction_wake_for_task(&task, interaction)?;
             self.resume_browser_region_cards();
             // Its holder is told as for a question that blocks the turn.
             self.announce_child_decision(session_id, &interaction_id)
                 .await?;
+            if let Ok(session) = self.owned.session_store.get_session(session_id) {
+                if let Some(ask) = session
+                    .active_interactions()
+                    .iter()
+                    .find(|ask| ask.id() == interaction_id)
+                {
+                    self.owned.alert_owner_of_ask(session_id, ask);
+                }
+            }
             return Ok(result);
         }
         let provider_run =

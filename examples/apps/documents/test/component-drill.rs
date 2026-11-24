@@ -18,6 +18,9 @@ use wasmtime::component::{
 use wasmtime::{Config, Engine, Store, StoreContextMut};
 use wasmtime_wasi::{FsPerms, WasiCtx, WasiCtxView, WasiView};
 
+#[path = "../../../../packages/app-sdk-tools/tests/support/catalog_path.rs"]
+mod catalog_path;
+
 wasmtime::component::bindgen!({
     path: "../app-wit/wit",
     inline: r#"package chariox:documents-drill;
@@ -1178,5 +1181,89 @@ async fn the_owner_chooses_files_to_import_and_is_offered_a_copy_to_export() -> 
     .await;
     assert_eq!(snapshot["snapshotId"], "snap-1");
     assert_eq!(store.data().snapshots, ["before-cleanup"]);
+    Ok(())
+}
+
+/// The kernel refuses a call or a result over 512 KiB. A document that the App accepts must therefore
+/// pass that check in every tool that carries it, with the draft tools' envelope too, and a document
+/// whose JSON text is too big for it (a small file of quotes doubles in size) is refused by the App
+/// with its own reason, not accepted and then stranded.
+#[tokio::test(flavor = "current_thread")]
+async fn a_near_limit_document_and_its_draft_pass_the_catalog_and_a_bigger_one_is_refused(
+) -> wasmtime::Result<()> {
+    let (_root, mut store, app) = runtime("catalog_budget").await?;
+    let mut catalog = catalog_path::Catalog::new(include_bytes!("../schemas/tools.json"));
+    // Through the catalog as the kernel does it: the input before the call, the result after it.
+    async fn through(
+        catalog: &mut catalog_path::Catalog,
+        store: &mut Store<Host>,
+        app: &Drill,
+        tool: &str,
+        input: Value,
+    ) -> Result<Value, AppError> {
+        let result = call(store, app, tool, input.clone()).await?;
+        Ok(catalog
+            .call(tool, &input, &result)
+            .unwrap_or_else(|e| panic!("{tool}: {e:?}")))
+    }
+    let near = "x".repeat(504 * 1024 - 2);
+    let created = through(
+        &mut catalog,
+        &mut store,
+        &app,
+        "create_document",
+        json!({"title": "Near the limit", "folder": "f".repeat(200), "content": near}),
+    )
+    .await
+    .unwrap();
+    let id = created["id"].as_str().unwrap().to_owned();
+    let editor = "e".repeat(32);
+    through(
+        &mut catalog,
+        &mut store,
+        &app,
+        "save_draft",
+        json!({"editor": editor, "id": id, "base_revision": 1, "title": "t".repeat(200),
+            "folder": "f".repeat(200), "content": near}),
+    )
+    .await
+    .unwrap();
+    let claimed = through(
+        &mut catalog,
+        &mut store,
+        &app,
+        "claim_draft",
+        json!({"editor": "w".repeat(32)}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        claimed["draft"]["content"].as_str().unwrap().len(),
+        near.len()
+    );
+    // 300 KiB of quotes is 600 KiB of JSON: the App refuses it, for the reason, in every tool.
+    let quotes = "\"".repeat(300 * 1024);
+    for (tool, input) in [
+        (
+            "create_document",
+            json!({"title": "Quotes", "content": quotes}),
+        ),
+        (
+            "update_document",
+            json!({"id": id, "expected_revision": 1, "content": quotes}),
+        ),
+        (
+            "save_draft",
+            json!({"editor": editor, "id": id, "base_revision": 1, "content": quotes}),
+        ),
+    ] {
+        let refused = call(&mut store, &app, tool, input).await.unwrap_err();
+        assert_eq!(refused.code, "LIMIT_EXCEEDED", "{tool}");
+        assert!(
+            refused.message.contains("504 KiB"),
+            "{tool}: {}",
+            refused.message
+        );
+    }
     Ok(())
 }

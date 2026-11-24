@@ -11,6 +11,8 @@ mod agent_messaging;
 mod agent_peek;
 pub(super) use agent_messaging::resolve_session_agent;
 mod agent_process_permission;
+mod agent_subscription_listing;
+mod agent_wake_listing;
 pub(super) mod agent_wakes;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod app;
@@ -42,15 +44,17 @@ mod home_extension_execution_policy;
 mod home_mcp_proxy_executor;
 mod home_room_browser_runtime;
 mod home_script_executor;
+mod list_page;
 mod local_mcp_call_audit;
 mod meta;
 mod permission_prompt;
 mod recall;
 mod remote_capability_sync;
 mod remote_extension_control_plane;
+mod session_agent_listing;
 pub(in crate::runtime::state) use remote_extension_control_plane::OWNER_DECISION_FORWARD_TIMEOUT;
 mod script;
-mod skill_package_response;
+mod skills;
 mod slice;
 mod terminal;
 pub(super) use slice::{
@@ -63,6 +67,7 @@ pub(super) use slice::{
 mod worker_home_credential_client;
 mod worker_home_extension_client;
 mod worker_home_relay_client;
+pub(super) use worker_home_relay_client::send_worker_home_request;
 mod worker_home_room_browser_client;
 mod workflow_authenticated;
 mod workflow_forwarding;
@@ -232,9 +237,20 @@ impl KernelRuntimeState {
             specs.push(super::vault_command::remove_capture_spec());
             specs.extend(super::resource_register::specs());
             specs.push(super::agent_auth::spec());
+            specs.push(crate::transport::runtime_tools::RuntimeToolSpec {
+                name: crate::agent_release_notes::TOOL.into(),
+                description: "Read what changed for agents in this kernel’s latest Chariox landing.".into(),
+                input_schema: serde_json::json!({"type":"object","properties":{},"additionalProperties":false}),
+            });
             specs.push(super::file_copy_tool::file_copy_spec());
             specs.extend(super::machine_files_tools::files_tool_specs());
             specs.extend(super::machine_acquisition::machine_tool_specs());
+        }
+        if matches!(provider_runs.as_slice(), [run] if self.agent_result_available(run)) {
+            specs.push(super::agent_result::spec());
+        }
+        if provider_runs.len() == 1 && self.skills_v2_runtime_available() {
+            specs.extend(crate::transport::runtime_tools::skill_runtime_tool_specs());
         }
         if self.meta_runtime_tool_specs_enabled_for_auth_token(auth_token) {
             let room_tools = self.room_agent_tools_enabled();
@@ -245,9 +261,14 @@ impl KernelRuntimeState {
                         room_tools
                             || (spec.name
                                 != crate::transport::runtime_tools::META_HISTORY_SEARCH_TOOL
-                                && !spec.name.starts_with("chariox.notification_"))
+                                && !crate::transport::runtime_tools::is_notification_tool(
+                                    &spec.name,
+                                ))
                     }),
             );
+            if room_tools {
+                specs.extend(crate::transport::runtime_tools::agent_run_tool_specs());
+            }
             specs.extend(crate::transport::runtime_tools::agent_messaging_runtime_tool_specs());
             specs.extend(crate::transport::runtime_tools::agent_peek_runtime_tool_specs());
             specs.extend(
@@ -287,6 +308,7 @@ impl KernelRuntimeState {
             if self.room_agent_tools_enabled() {
                 specs.extend(crate::transport::runtime_tools::room_runtime_tool_specs());
                 specs.extend(crate::transport::runtime_tools::agent_event_tool_specs());
+                specs.extend(crate::transport::runtime_tools::agent_run_tool_specs());
             }
             specs.extend(crate::transport::runtime_tools::agent_messaging_runtime_tool_specs());
             specs.extend(crate::transport::runtime_tools::agent_peek_runtime_tool_specs());
@@ -467,6 +489,9 @@ impl KernelRuntimeState {
         if super::machine_files_tools::is_files_tool(tool_name) {
             return Box::pin(self.files_tool(auth_token, tool_name, arguments)).await;
         }
+        if super::agent_result::is_result_tool(tool_name) {
+            return Box::pin(self.agent_result_tool(auth_token, arguments)).await;
+        }
         if super::file_copy_tool::is_file_copy_tool(tool_name) {
             return Box::pin(self.file_copy_tool(auth_token, arguments)).await;
         }
@@ -510,6 +535,9 @@ impl KernelRuntimeState {
                         crate::transport::runtime_tools::canonical_extension_tool_name(tool_name)
                     })
                     .or_else(|| {
+                        crate::transport::runtime_tools::canonical_skill_tool_name(tool_name)
+                    })
+                    .or_else(|| {
                         crate::transport::runtime_tools::canonical_recall_tool_name(tool_name)
                     })
                     .or_else(|| {
@@ -541,6 +569,27 @@ impl KernelRuntimeState {
                 provider_runs.iter().map(|run| run.id().to_string()),
                 owned.provider_output_deadlines.clone(),
             );
+            if matches!(
+                tool_name,
+                crate::agent_release_notes::TOOL
+                    | "chariox_whats_new"
+                    | "mcp__chariox__chariox_whats_new"
+            ) {
+                unambiguous_runtime_tool_provider_run(&provider_runs, tool_name)?;
+                if arguments.as_object().is_none_or(|args| !args.is_empty()) {
+                    return Err(DaemonError::LocalTransport {
+                        operation: "agent_release_notes.read",
+                        message: "Read the release note with an empty arguments object.".into(),
+                    });
+                }
+                return Ok(crate::transport::runtime_tools::RuntimeToolResult {
+                    ok: true,
+                    payload: serde_json::json!({
+                        "landing": crate::agent_release_notes::LANDING,
+                        "text": crate::agent_release_notes::NOTE,
+                    }),
+                });
+            }
             if canonical_tool_name == crate::transport::runtime_tools::PERMISSION_PROMPT_TOOL {
                 let run =
                     unambiguous_runtime_tool_provider_run(&provider_runs, canonical_tool_name)?;
@@ -682,7 +731,8 @@ impl KernelRuntimeState {
             }
             if matches!(
                 canonical_tool_name,
-                crate::transport::runtime_tools::LIST_SESSION_AGENTS_TOOL
+                crate::transport::runtime_tools::OWNER_VIEW_TOOL
+                    | crate::transport::runtime_tools::LIST_SESSION_AGENTS_TOOL
                     | crate::transport::runtime_tools::GET_SESSION_AGENT_TOOL
                     | crate::transport::runtime_tools::PEEK_AGENT_TOOL
                     | crate::transport::runtime_tools::READ_AGENT_ENTRY_TOOL
@@ -691,11 +741,13 @@ impl KernelRuntimeState {
                     | crate::transport::runtime_tools::LIST_EXTENSIONS_TOOL
                     | crate::transport::runtime_tools::REQUEST_EXTENSION_TOOL
                     | crate::transport::runtime_tools::REGISTER_MCP_TOOL
-                    | crate::transport::runtime_tools::REGISTER_SKILL_PATH_TOOL
                     | crate::transport::runtime_tools::REGISTER_ENVIRONMENT_TOOL
                     | crate::transport::runtime_tools::REGISTER_SCRIPT_PATH_TOOL
                     | crate::transport::runtime_tools::REGISTER_CONNECTOR_PATH_TOOL
                     | crate::transport::runtime_tools::REGISTER_CONNECTOR_ADAPTER_PATH_TOOL
+                    | crate::transport::runtime_tools::LIST_SKILLS_TOOL
+                    | crate::transport::runtime_tools::LOAD_SKILL_TOOL
+                    | crate::transport::runtime_tools::MANAGE_SKILLS_TOOL
             ) {
                 if let Some(result) =
                     Box::pin(self.try_dispatch_remote_capability_runtime_tool_call(
@@ -1041,7 +1093,8 @@ fn unambiguous_runtime_tool_provider_run<'a>(
 fn is_metaagent_direct_runtime_tool_allowed(tool_name: &str, slice_available: bool) -> bool {
     matches!(
         tool_name,
-        crate::transport::runtime_tools::LIST_SESSION_AGENTS_TOOL
+        crate::transport::runtime_tools::OWNER_VIEW_TOOL
+            | crate::transport::runtime_tools::LIST_SESSION_AGENTS_TOOL
             | crate::transport::runtime_tools::GET_SESSION_AGENT_TOOL
             | crate::transport::runtime_tools::PEEK_AGENT_TOOL
             | crate::transport::runtime_tools::READ_AGENT_ENTRY_TOOL
@@ -1050,6 +1103,9 @@ fn is_metaagent_direct_runtime_tool_allowed(tool_name: &str, slice_available: bo
             | crate::transport::runtime_tools::READ_ARTIFACT_TOOL
             | crate::transport::runtime_tools::SEARCH_RECALL_TOOL
             | crate::transport::runtime_tools::QUERY_RECALL_TOOL
+            | crate::transport::runtime_tools::LIST_SKILLS_TOOL
+            | crate::transport::runtime_tools::LOAD_SKILL_TOOL
+            | crate::transport::runtime_tools::MANAGE_SKILLS_TOOL
     ) || (slice_available
         && crate::transport::runtime_tools::canonical_slice_tool_name(tool_name).is_some())
 }

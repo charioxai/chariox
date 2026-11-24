@@ -2,10 +2,10 @@ use super::*;
 
 const SAFE_DIAGNOSTIC_CONTEXT: &str = "safe-codex-startup-context";
 const SYNTHETIC_API_KEY: &str = "sk-synthetic-structured-exit-secret";
-const SYNTHETIC_TOKEN: &str = "synthetic-structured-exit-token";
+const SYNTHETIC_TOKEN: &str = "ghp_notarealstructuredexitfixturetoken1234";
 
 #[tokio::test]
-async fn managed_structured_codex_exit_preserves_redacted_diagnostic_without_replay() {
+async fn provider_failure_reason_from_managed_cli_stderr_is_redacted_and_not_replayed() {
     let mut app =
         DaemonApp::bootstrap(crate::DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
@@ -40,7 +40,7 @@ async fn managed_structured_codex_exit_preserves_redacted_diagnostic_without_rep
             pty_args: vec![
                 "-lc".to_string(),
                 format!(
-                    "printf '%s\\n' 'Codex startup diagnostic: {SAFE_DIAGNOSTIC_CONTEXT} api_key={SYNTHETIC_API_KEY} token={SYNTHETIC_TOKEN}' >&2; sleep 0.1; exit 1"
+                    "printf '%s\\n' 'Error: unsupported model {SAFE_DIAGNOSTIC_CONTEXT} api_key={SYNTHETIC_API_KEY} token={SYNTHETIC_TOKEN}' >&2; sleep 0.1; exit 1"
                 ),
             ],
             pty_env: std::collections::BTreeMap::new(),
@@ -155,6 +155,22 @@ async fn managed_structured_codex_exit_preserves_redacted_diagnostic_without_rep
         crate::provider::ProviderRunTerminationCategory::ProcessExit
     );
     assert_eq!(termination.reason, "provider process exited with status 1");
+    let outcome = termination
+        .failure
+        .as_ref()
+        .expect("the provider failure is typed");
+    assert_eq!(outcome.kind.label(), "model refused");
+    assert!(
+        outcome.reason.contains("CLI exited with status 1"),
+        "{outcome:?}"
+    );
+    assert!(
+        outcome.reason.contains(SAFE_DIAGNOSTIC_CONTEXT),
+        "{outcome:?}"
+    );
+    assert!(outcome.reason.contains("[redacted]"), "{outcome:?}");
+    assert!(!outcome.reason.contains(SYNTHETIC_API_KEY));
+    assert!(!outcome.reason.contains(SYNTHETIC_TOKEN));
 
     let terminal_records = runtime
         .owned
@@ -178,7 +194,7 @@ async fn managed_structured_codex_exit_preserves_redacted_diagnostic_without_rep
     assert!(!failed.failed_requests()[0].reason.contains(SYNTHETIC_TOKEN));
     let terminal_error = String::from_utf8_lossy(&terminal_errors[0].bytes);
     assert!(
-        !terminal_error.contains(SAFE_DIAGNOSTIC_CONTEXT),
+        terminal_error.contains(SAFE_DIAGNOSTIC_CONTEXT),
         "{terminal_error}"
     );
     assert!(
@@ -226,7 +242,7 @@ async fn managed_structured_codex_exit_preserves_redacted_diagnostic_without_rep
         .as_deref()
         .expect("provider error history should have content");
     assert!(
-        !provider_error.contains(SAFE_DIAGNOSTIC_CONTEXT),
+        provider_error.contains(SAFE_DIAGNOSTIC_CONTEXT),
         "{provider_error}"
     );
     assert!(

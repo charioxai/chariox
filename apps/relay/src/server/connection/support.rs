@@ -1373,20 +1373,110 @@ pub(super) fn send_envelope(
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum Delivery {
     Sent,
-    /// The receiver is too far behind. The message was dropped and the receiver is being
+    /// The receiver's queue refused the message. It receives a retryable peer reply or is
     /// told to reconnect; the sender's own connection is not affected.
     ReceiverBacklogged,
     ReceiverGone,
 }
 
+#[derive(Default)]
+struct SerializedSize(usize);
+
+impl std::io::Write for SerializedSize {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0 += bytes.len();
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 /// Hands `envelope` to `receiver` on behalf of a different connection (its sender). A
 /// receiver's backlog or departure is reported here and never ends the sender's connection.
 pub(super) fn deliver(receiver: &RelaySender, envelope: &RelayEnvelope) -> Delivery {
-    let payload = serde_json::to_string(envelope).expect("a relay envelope is always valid JSON");
-    match receiver.try_send(Message::Text(payload.into())) {
+    let peer_reply = match envelope {
+        RelayEnvelope::DaemonPeerResponse {
+            request_id,
+            from_daemon_id,
+            encrypted_response: Some(response),
+            ..
+        } => Some(EncryptedPeerReply {
+            request_id,
+            from_daemon_id,
+            ciphertext_len: response.ciphertext.len(),
+        }),
+        _ => None,
+    };
+    deliver_serialized(receiver, envelope, peer_reply)
+}
+
+pub(super) struct EncryptedPeerReply<'a> {
+    pub(super) request_id: &'a str,
+    pub(super) from_daemon_id: &'a str,
+    pub(super) ciphertext_len: usize,
+}
+
+pub(super) fn deliver_serialized(
+    receiver: &RelaySender,
+    envelope: &impl serde::Serialize,
+    peer_reply: Option<EncryptedPeerReply<'_>>,
+) -> Delivery {
+    let to_message = || {
+        let payload =
+            serde_json::to_string(envelope).expect("a relay envelope is always valid JSON");
+        Message::Text(payload.into())
+    };
+    let queued = if let Some(reply) = peer_reply
+        .as_ref()
+        .filter(|reply| reply.ciphertext_len > crate::frame_transport::CHUNK_BYTES)
+    {
+        receiver
+            .check_peer_reply_size(reply.ciphertext_len)
+            .and_then(|()| {
+                let mut size = SerializedSize::default();
+                serde_json::to_writer(&mut size, envelope)
+                    .expect("counting JSON bytes cannot fail");
+                receiver.try_send_peer_reply(size.0, envelope)
+            })
+    } else {
+        receiver.try_send(to_message())
+    };
+    finish_delivery(receiver, queued, peer_reply)
+}
+
+pub(super) fn finish_delivery(
+    receiver: &RelaySender,
+    queued: Result<(), SendRefused>,
+    peer_reply: Option<EncryptedPeerReply<'_>>,
+) -> Delivery {
+    match queued {
         Ok(()) => Delivery::Sent,
         Err(SendRefused::Backlogged) => {
             receiver.record_dropped_reply();
+            // Bulk replies can exhaust the byte budget while the receiver can still accept
+            // control traffic. Fail only this request so a retry can use the same connection.
+            if let Some(EncryptedPeerReply {
+                request_id,
+                from_daemon_id,
+                ..
+            }) = peer_reply
+            {
+                let refusal = RelayEnvelope::DaemonPeerResponse {
+                    request_id: request_id.to_owned(),
+                    from_daemon_id: from_daemon_id.to_owned(),
+                    encrypted_response: None,
+                    error: Some(relay_error(
+                        "target_backpressure",
+                        "the relay queue carrying the peer reply is full",
+                        true,
+                    )),
+                };
+                if send_envelope(receiver, &refusal).is_ok() {
+                    return Delivery::ReceiverBacklogged;
+                }
+            }
             receiver.close_backlogged();
             Delivery::ReceiverBacklogged
         }
@@ -1475,14 +1565,28 @@ pub(super) fn validate_daemon_registration_identity(
     identity: &VerifiedRelayIdentity,
     registration: &DaemonRegistration,
 ) -> Result<(), &'static str> {
+    validate_registration_identity(
+        identity,
+        &registration.daemon_id,
+        &registration.machine_id,
+        &registration.public_key,
+    )
+}
+
+/// The token names this kernel, its machine and its key.
+pub(super) fn validate_registration_identity(
+    identity: &VerifiedRelayIdentity,
+    daemon_id: &str,
+    machine_id: &str,
+    public_key: &str,
+) -> Result<(), &'static str> {
     if identity.token_id.is_none() {
         return Ok(());
     }
     let subject_matches = match identity.subject_kind {
-        RelaySubjectKind::Kernel => registration_daemon_is_exact_kernel_or_temporary_peer(
-            &registration.daemon_id,
-            &identity.subject,
-        ),
+        RelaySubjectKind::Kernel => {
+            registration_daemon_is_exact_kernel_or_temporary_peer(daemon_id, &identity.subject)
+        }
         // A machine identity does not name a canonical kernel registration.
         // Hosted kernels and slice workers register with their KERNEL token.
         RelaySubjectKind::Machine => false,
@@ -1495,13 +1599,13 @@ pub(super) fn validate_daemon_registration_identity(
     if identity
         .machine_id
         .as_deref()
-        .is_some_and(|machine_id| machine_id != registration.machine_id)
+        .is_some_and(|claimed| claimed != machine_id)
     {
         return Err("relay token machine does not match daemon registration");
     }
     if let Some(expected_thumbprint) = identity.public_key_thumbprint.as_deref() {
         use sha2::{Digest, Sha256};
-        let actual = Sha256::digest(registration.public_key.as_bytes())
+        let actual = Sha256::digest(public_key.as_bytes())
             .iter()
             .map(|byte| format!("{byte:02x}"))
             .collect::<String>();
@@ -1510,6 +1614,19 @@ pub(super) fn validate_daemon_registration_identity(
         }
     }
     Ok(())
+}
+
+pub(super) fn verify_registration_proof(
+    challenge: Option<String>,
+    dialed_address: Option<&str>,
+    registration: &DaemonRegistration,
+    proof: &str,
+) -> Result<(), &'static str> {
+    let challenge =
+        challenge.ok_or("relay connection already registered; reconnect to register again")?;
+    let dialed_address =
+        dialed_address.ok_or("relay connection named no host; dial the relay by its URL")?;
+    crate::registration_proof::verify(dialed_address, registration, &challenge, proof)
 }
 
 pub(super) fn relay_log(level: &str, event: &str, fields: Value) {

@@ -1,7 +1,7 @@
 //! Validate launcher syntax before a build, logger or runtime can be started.
 
 pub const USAGE: &str = "usage: chariox-cli [options]
-       chariox-cli access|sudo|guide|kernels|request|events|watch|files|terminal|exec|app|context|logs|codex|claude|opencode|publication|deployments|deployed|cloud [args]
+       chariox-cli access|sudo|guide|kernels|request|events|notifications|watch|files|terminal|exec|app|context|logs|codex|claude|opencode|publication|deployments|deployed|cloud [args]
        chariox-cli serve <package> <port> [options]
 
 Options:
@@ -41,6 +41,7 @@ pub fn help_requested(args: &[String]) -> Result<bool, String> {
                 | "kernels"
                 | "request"
                 | "events"
+                | "notifications"
                 | "watch"
                 | "files"
                 | "terminal"

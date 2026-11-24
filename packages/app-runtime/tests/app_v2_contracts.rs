@@ -208,6 +208,26 @@ fn event_routing_is_authority_the_owner_approves_again_when_it_grows() {
 }
 
 #[test]
+fn workspace_access_is_authority_named_by_its_credential() {
+    let shipped = |credential: &str| -> AuthoritySet {
+        let capabilities: Capabilities = word(&json!({"workspace": {"credential": credential}}));
+        AuthoritySet::of(&capabilities, &[])
+    };
+    assert_eq!(
+        shipped("github").atoms().collect::<Vec<_>>(),
+        ["workspace:github"]
+    );
+    assert!(matches!(
+        approval_requirement(Some(&shipped("github")), &shipped("other")),
+        ApprovalRequirement::Prompt { .. }
+    ));
+    assert!(matches!(
+        approval_requirement(Some(&shipped("github")), &shipped("github")),
+        ApprovalRequirement::Reuse
+    ));
+}
+
+#[test]
 fn aot_key_vectors() {
     check_vectors("aot-key.json", |_, input| {
         let entry: AotCacheKey = word(&input["entry"]);

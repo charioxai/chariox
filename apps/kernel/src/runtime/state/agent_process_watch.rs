@@ -2,17 +2,20 @@
 //! The kernel starts argv (no shell) in the agent's workspace, owns the
 //! isolated process session, drains bounded sanitized output and reports exit or one
 //! output match. It never attaches to an arbitrary PID.
-use super::agent_process_group::signal_session;
-use super::agent_process_output::{drain, room_protector, Output, Signal};
+use super::agent_process_group::{signal_session, Leader};
+use super::agent_process_output::{drain, room_protector, Output, OutputSnapshot, Signal};
 use super::*;
 use crate::durable_state::agent_lifecycle::{AgentWake, Operation};
 use crate::runtime::bounded_process::BoundedChildExt as _;
 use std::collections::HashMap;
-use std::io::Read;
+use std::os::fd::OwnedFd;
 use std::os::unix::process::ExitStatusExt;
 use std::process::{Child, Command, Stdio};
 
+mod handover;
 mod run;
+use handover::Origin;
+pub(crate) use handover::{WatchedHandover, WatchedProcessTransfer};
 pub(super) use run::{KernelCommand, KernelCommandExit, KernelCommandOutput};
 
 const ENV_ALLOW: &[&str] = &[
@@ -35,7 +38,7 @@ const ENV_ALLOW: &[&str] = &[
 ];
 
 struct OwnedChild {
-    child: Child,
+    child: Leader,
     birth: u64,
     wake: String,
     /// Set once the leader is reaped after every session member settled.
@@ -45,21 +48,26 @@ struct OwnedChild {
     lost: bool,
     /// Counted under the agent's share of the memory ceiling and listed in Health.
     resources: Option<crate::runtime::process_resources::ProcessDomain>,
+    /// What the next program needs to supervise it again after a hot reload.
+    origin: Origin,
+    /// Copies of the output pipes' read ends: they cross a hot reload.
+    pipes: Vec<OwnedFd>,
+    /// Set when a hot reload asks supervision to stop without an outcome.
+    handing_over: bool,
+    /// What the output showed when supervision stopped for a hot reload.
+    handed_over: Option<OutputSnapshot>,
 }
 
 impl OwnedChild {
     fn new(mut child: Child, wake: &str) -> std::io::Result<Self> {
         match super::agent_process_group::birth(child.id()) {
-            Ok(birth) => Ok(Self {
-                child,
+            Ok(birth) => Ok(Self::of(
+                Leader::Spawned(child),
                 birth,
-                wake: wake.into(),
-                status: None,
-                leader_status: None,
-                settle_failures: 0,
-                lost: false,
-                resources: None,
-            }),
+                wake,
+                Origin::default(),
+                Vec::new(),
+            )),
             Err(error) => {
                 // The freshly spawned positive child handle is owned even
                 // when group inspection failed. Do not signal a group.
@@ -69,6 +77,26 @@ impl OwnedChild {
                 }
                 Err(error)
             }
+        }
+    }
+    /// The child of the previous program, which a hot reload handed over.
+    fn adopted(pid: u32, birth: u64, wake: &str, origin: Origin, pipes: Vec<OwnedFd>) -> Self {
+        Self::of(Leader::Adopted(pid), birth, wake, origin, pipes)
+    }
+    fn of(child: Leader, birth: u64, wake: &str, origin: Origin, pipes: Vec<OwnedFd>) -> Self {
+        Self {
+            child,
+            birth,
+            wake: wake.into(),
+            status: None,
+            leader_status: None,
+            settle_failures: 0,
+            lost: false,
+            resources: None,
+            origin,
+            pipes,
+            handing_over: false,
+            handed_over: None,
         }
     }
     fn fail_settlement(&mut self) {
@@ -285,20 +313,151 @@ fn spawn_owned_session(mut command: Command) -> std::io::Result<Child> {
     crate::process_spawn::spawn_command(command)
 }
 
-/// argv of a kernel-launched command: no shell, bounded, no control characters.
-pub(super) fn command_argv(value: &serde_json::Value) -> Result<Vec<String>, DaemonError> {
+/// Counts the process under its agent's share of the memory ceiling and lists
+/// it in Health. Without monitoring it still runs: the loss is logged.
+fn watch_resources(
+    resources: crate::runtime::process_resources::PreparedDomain,
+    pid: u32,
+    wake: &str,
+    origin: &Origin,
+) -> Option<crate::runtime::process_resources::ProcessDomain> {
+    match resources.start(pid) {
+        Ok(domain) => {
+            domain.bind_key(wake);
+            if let Some(agent) = &origin.agent {
+                domain.list_as(
+                    &origin.session_id,
+                    crate::runtime::process_resources::SessionProcessOwner::Agent(agent.clone()),
+                );
+            }
+            Some(domain)
+        }
+        Err(error) => {
+            crate::logging::error_with_fields(
+                "agent_process_watch.resources",
+                "watched process resource monitoring could not start",
+                serde_json::json!({"error": error.to_string()}),
+            );
+            None
+        }
+    }
+}
+
+/// Supervises one owned session on its own thread until it settles: reaps
+/// the leader, drains the output and sends the outcome. A hot reload stops
+/// it early, without an outcome, for the next program to take over.
+fn supervise(
+    owned: Owned,
+    readers: Vec<std::thread::JoinHandle<()>>,
+    output: Arc<Output>,
+    sender: tokio::sync::mpsc::UnboundedSender<Signal>,
+) {
+    std::thread::spawn(move || {
+        let mut alerted = false;
+        let mut signalled = None;
+        let code = loop {
+            if owned.lock().is_ok_and(|c| c.handing_over) {
+                // The pipes stay open in the copies the next program reads.
+                output.stop();
+                for reader in readers {
+                    let _ = reader.join();
+                }
+                if let Ok(mut child) = owned.lock() {
+                    child.handed_over = Some(output.snapshot());
+                }
+                return;
+            }
+            match owned.lock().map(|mut c| c.poll()) {
+                Ok(Ok(Some(status))) => {
+                    // Every watched process is launched through `command`, so
+                    // its leader is the sandbox that confines it.
+                    signalled =
+                        crate::provider::state_confinement::confined_program_signal(&status);
+                    break Some(
+                        status
+                            .code()
+                            .or_else(|| status.signal().map(|s| 128 + s))
+                            .unwrap_or(-1),
+                    );
+                }
+                Ok(Ok(None)) => std::thread::sleep(Duration::from_millis(200)),
+                // A failed ownership check cannot establish physical
+                // settlement. Keep supervision and the obligation live.
+                _ => {
+                    if owned.lock().map_or(true, |mut c| {
+                        if c.lost {
+                            let _ = c.child.try_wait();
+                            true
+                        } else {
+                            false
+                        }
+                    }) {
+                        break None;
+                    }
+                    if !alerted {
+                        let _ = sender.send(Signal::SupervisionFailed);
+                        alerted = true;
+                    }
+                    std::thread::sleep(Duration::from_millis(200));
+                }
+            }
+        };
+        // A detached grandchild may keep a pipe open; bound the drain.
+        let deadline = Instant::now() + Duration::from_secs(1);
+        for reader in &readers {
+            while !reader.is_finished() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
+        output.stop();
+        for reader in readers {
+            let _ = reader.join();
+        }
+        // The stopped command may have been the root itself, which the
+        // controller cannot tell through its own stream.
+        let resources = owned.lock().ok();
+        let domain = resources
+            .as_ref()
+            .and_then(|child| child.resources.as_ref());
+        if let Some(notice) = domain.and_then(|domain| domain.memory_stop_notice()) {
+            output.push(notice.trim_end().to_owned());
+        } else if let Some(kill) = domain.and_then(|domain| domain.oom_kill()) {
+            output.push(kill.notice());
+        } else if let Some(signal) = signalled {
+            output.push(crate::runtime::process_resources::signal_notice(signal));
+        }
+        drop(resources);
+        let _ = sender.send(match code {
+                Some(code) => Signal::Exited(code, output.text()),
+                None => Signal::Lost("process_lost: physical settlement could not be confirmed after bounded retries; survivors may still be running and require operator cleanup".into()),
+            });
+    });
+}
+
+/// Bounded argv passed directly to the executable.
+pub(super) fn command_argv(
+    value: &serde_json::Value,
+    multiline_arguments: bool,
+) -> Result<Vec<String>, DaemonError> {
     serde_json::from_value(value.clone())
         .ok()
         .filter(|a: &Vec<String>| {
             !a.is_empty()
                 && a.len() <= 64
                 && !a[0].is_empty()
-                && a.iter()
-                    .all(|s| s.len() <= 4_096 && !s.chars().any(char::is_control))
+                && a.iter().enumerate().all(|(index, arg)| {
+                    arg.len() <= 4_096
+                        && !arg.chars().any(|ch| {
+                            ch.is_control()
+                                && !(multiline_arguments
+                                    && index != 0
+                                    && matches!(ch, '\n' | '\r' | '\t'))
+                        })
+                })
         })
         .ok_or_else(|| {
             crate::durable_state::agent_lifecycle::error(
-                "argv of 1-64 arguments required (no shell; control characters are refused)",
+                "provide 1–64 argv strings, each at most 4096 bytes, with a nonempty executable and no unsupported control characters",
             )
         })
 }
@@ -431,63 +590,50 @@ impl KernelRuntimeState {
                 ));
             }
         }
-        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+        let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
         let output = Arc::new(Output::default());
-        let protection = self.owned.room_secret_observations.clone();
-        let room = wake.room_id.clone();
-        let protect = room_protector(
-            protection,
-            if store.leased_process_receipt(&wake.id)?.is_some() {
+        let origin = Origin {
+            unit: run.agent_instance_id().unwrap_or(run.id()).to_string(),
+            session_id: run.session_id().to_string(),
+            agent: run.agent_instance_id().map(str::to_string),
+            protect_room: if store.leased_process_receipt(&wake.id)?.is_some() {
                 run.session_id().to_string()
             } else {
-                room
+                wake.room_id.clone()
             },
-        );
-        let readers = [
-            child
-                .stdout
-                .take()
-                .map(|s| Box::new(s) as Box<dyn Read + Send>),
-            child
-                .stderr
-                .take()
-                .map(|s| Box::new(s) as Box<dyn Read + Send>),
+        };
+        let streams: Vec<OwnedFd> = [
+            child.stdout.take().map(OwnedFd::from),
+            child.stderr.take().map(OwnedFd::from),
         ]
         .into_iter()
         .flatten()
-        .map(|stream| {
-            let (output, pattern, sender) =
-                (output.clone(), wake.match_text.clone(), sender.clone());
-            let protect = protect.clone();
-            std::thread::spawn(move || drain(stream, output, pattern, sender, protect))
-        })
-        .collect::<Vec<_>>();
+        .collect();
+        // A hot reload hands these over: the readers' own descriptors close
+        // with them.
+        let Ok(kept) = streams
+            .iter()
+            .map(OwnedFd::try_clone)
+            .collect::<std::io::Result<Vec<_>>>()
+        else {
+            if child.id() > 1 {
+                let _ = child.kill();
+                let _ = child.bounded_wait();
+            }
+            self.settle_failed_process_launch(&wake, "output setup failed; launch stopped".into());
+            return Err(crate::durable_state::agent_lifecycle::error(
+                "watched process output setup failed",
+            ));
+        };
+        let readers =
+            self.drain_streams(streams, &origin, wake.match_text.clone(), &output, &sender);
         let pid = child.id();
         let owned: Owned = Arc::new(std::sync::Mutex::new(
             match OwnedChild::new(child, &wake.id) {
                 Ok(mut child) => {
-                    child.resources = match resources.start(pid) {
-                        Ok(domain) => {
-                            domain.bind_key(&wake.id);
-                            if let Some(agent) = run.agent_instance_id() {
-                                domain.list_as(
-                                    run.session_id(),
-                                    crate::runtime::process_resources::SessionProcessOwner::Agent(
-                                        agent.to_string(),
-                                    ),
-                                );
-                            }
-                            Some(domain)
-                        }
-                        Err(error) => {
-                            crate::logging::error_with_fields(
-                                "agent_process_watch.resources",
-                                "watched process resource monitoring could not start",
-                                serde_json::json!({"error": error.to_string()}),
-                            );
-                            None
-                        }
-                    };
+                    child.origin = origin.clone();
+                    child.pipes = kept;
+                    child.resources = watch_resources(resources, pid, &wake.id, &origin);
                     child
                 }
                 Err(_) => {
@@ -514,69 +660,64 @@ impl KernelRuntimeState {
         if started.is_err() {
             self.owned.agent_wakes.processes.terminate(&wake.id);
         }
-        std::thread::spawn(move || {
-            let mut alerted = false;
-            let code = loop {
-                match owned.lock().map(|mut c| c.poll()) {
-                    Ok(Ok(Some(status))) => {
-                        break Some(
-                            status
-                                .code()
-                                .or_else(|| status.signal().map(|s| 128 + s))
-                                .unwrap_or(-1),
-                        );
-                    }
-                    Ok(Ok(None)) => std::thread::sleep(Duration::from_millis(200)),
-                    // A failed ownership check cannot establish physical
-                    // settlement. Keep supervision and the obligation live.
-                    _ => {
-                        if owned.lock().map_or(true, |mut c| {
-                            if c.lost {
-                                let _ = c.child.try_wait();
-                                true
-                            } else {
-                                false
-                            }
-                        }) {
-                            break None;
-                        }
-                        if !alerted {
-                            let _ = sender.send(Signal::SupervisionFailed);
-                            alerted = true;
-                        }
-                        std::thread::sleep(Duration::from_millis(200));
-                    }
-                }
-            };
-            // A detached grandchild may keep a pipe open; bound the drain.
-            let deadline = Instant::now() + Duration::from_secs(1);
-            for reader in &readers {
-                while !reader.is_finished() && Instant::now() < deadline {
-                    std::thread::sleep(Duration::from_millis(20));
-                }
-            }
-            output.stop();
-            for reader in readers {
-                let _ = reader.join();
-            }
-            // The stopped command may have been the root itself, which the
-            // controller cannot tell through its own stream.
-            if let Some(notice) = owned
-                .lock()
-                .ok()
-                .and_then(|child| child.resources.as_ref()?.memory_stop_notice())
-            {
-                output.push(notice.trim_end().to_owned());
-            }
-            let _ = sender.send(match code {
-                Some(code) => Signal::Exited(code, output.text()),
-                None => Signal::Lost("process_lost: physical settlement could not be confirmed after bounded retries; survivors may still be running and require operator cleanup".into()),
-            });
-        });
+        supervise(owned.clone(), readers, output, sender);
+        self.deliver_process_signals(
+            wake.id.clone(),
+            wake.room_id.clone(),
+            wake.agent_id.clone(),
+            receiver,
+        );
+        started?;
+        let started = self
+            .owned
+            .durable_state_store
+            .agent_wakes(Some(&wake.room_id), Some(&wake.agent_id))?
+            .into_iter()
+            .find(|w| w.id == wake.id)
+            .unwrap_or(wake);
+        Ok(started)
+    }
+    /// One reader thread per output pipe, scrubbed by the room's secrets.
+    fn drain_streams(
+        &self,
+        streams: Vec<OwnedFd>,
+        origin: &Origin,
+        pattern: Option<String>,
+        output: &Arc<Output>,
+        sender: &tokio::sync::mpsc::UnboundedSender<Signal>,
+    ) -> Vec<std::thread::JoinHandle<()>> {
+        let protect = room_protector(
+            self.owned.room_secret_observations.clone(),
+            origin.protect_room.clone(),
+        );
+        streams
+            .into_iter()
+            .map(|stream| {
+                let (output, pattern, sender) = (output.clone(), pattern.clone(), sender.clone());
+                let protect = protect.clone();
+                std::thread::spawn(move || {
+                    drain(
+                        std::fs::File::from(stream),
+                        output,
+                        pattern,
+                        sender,
+                        protect,
+                    )
+                })
+            })
+            .collect()
+    }
+
+    /// Turns one watched process's signals into durable outcomes and wakes,
+    /// until it exits.
+    fn deliver_process_signals(
+        &self,
+        id: String,
+        notice_room: String,
+        notice_agent: String,
+        mut receiver: tokio::sync::mpsc::UnboundedReceiver<Signal>,
+    ) {
         let state = self.clone();
-        let id = wake.id.clone();
-        let notice_room = wake.room_id.clone();
-        let notice_agent = wake.agent_id.clone();
         tokio::spawn(async move {
             while let Some(signal) = receiver.recv().await {
                 if state.owned.agent_wakes.processes.stopping() {
@@ -654,15 +795,6 @@ impl KernelRuntimeState {
                 }
             }
         });
-        started?;
-        let started = self
-            .owned
-            .durable_state_store
-            .agent_wakes(Some(&wake.room_id), Some(&wake.agent_id))?
-            .into_iter()
-            .find(|w| w.id == wake.id)
-            .unwrap_or(wake);
-        Ok(started)
     }
     pub(super) fn settle_failed_process_launch(&self, wake: &AgentWake, tail: String) {
         let state = self.clone();
@@ -948,7 +1080,8 @@ mod tests {
         let owned: Owned = Arc::new(std::sync::Mutex::new(
             OwnedChild::new(child, &wake).unwrap(),
         ));
-        assert_eq!(marked_count_for_test(&wake), 3);
+        // The sandbox that keeps the kernel's state away, the command and its two descendants.
+        assert_eq!(marked_count_for_test(&wake), 4);
         assert!(signal_owned_session(&owned, libc::SIGTERM));
         let deadline = Instant::now() + Duration::from_secs(5);
         while owned.lock().unwrap().poll().ok().flatten().is_none() {
@@ -1214,14 +1347,37 @@ mod tests {
         );
     }
 
-    /// A watched command the memory controller stops reaches the agent with
-    /// the reason, not as a bare exit 137.
+    /// A yielded agent with one watched process per entry of `argvs`.
     #[cfg(target_os = "linux")]
-    #[tokio::test]
-    async fn a_watched_command_stopped_for_memory_delivers_the_reason() {
-        crate::test_support::isolated_env_test!();
-        std::env::set_var("CHARIOX_PROCESS_MEMORY_LIMIT_MIB", "64");
-        let worktree = crate::test_support::TestWorktree::new("memory-reason");
+    pub(super) struct YieldedWatches {
+        _worktree: crate::test_support::TestWorktree,
+        pub(super) room: String,
+        pub(super) agent: String,
+        pub(super) state: KernelRuntimeState,
+        pub(super) wakes: Vec<AgentWake>,
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(super) async fn yield_on_watches(argvs: Vec<Vec<String>>) -> YieldedWatches {
+        yield_on_watches_with(argvs, WatchRig::default()).await
+    }
+
+    /// How the watches of a rig are armed.
+    #[cfg(target_os = "linux")]
+    #[derive(Default)]
+    pub(super) struct WatchRig {
+        pub(super) match_text: Option<&'static str>,
+        /// A worker's leased process: its wake lives in a receipt, not in the
+        /// wake ledger, and no agent yields on it here.
+        pub(super) leased: bool,
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(super) async fn yield_on_watches_with(
+        argvs: Vec<Vec<String>>,
+        rig: WatchRig,
+    ) -> YieldedWatches {
+        let worktree = crate::test_support::TestWorktree::new("watched-tail");
         let mut app =
             crate::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
         let (room, agent) = crate::app::KernelSessionService::new(&mut app)
@@ -1234,17 +1390,11 @@ mod tests {
                 owner: room.owner_user_id().into(),
                 room: room.id().into(),
                 agent: agent.id().into(),
-                prompt: "memory-turn".into(),
+                prompt: "tail-turn".into(),
                 run: Some("run".into()),
                 now,
             })
             .unwrap();
-        let grow =
-            "import time\nb=[]\nwhile True:\n b.append(bytearray(8*1048576)); time.sleep(0.1)";
-        let argv = vec!["python3".to_string(), "-c".into(), grow.into()];
-        let wake: AgentWake = serde_json::from_value(serde_json::json!({
-            "id":w(), "task_id":"memory-turn", "room_id":room.id(), "agent_id":agent.id(), "registration_id":format!("completion-{}", w()), "kind":"process", "label":"allocator", "state":"starting", "created_at_ms":now, "verified_at_ms":null, "next_due_ms":null, "interval_ms":null, "command":argv, "match_text":null, "matched_at_ms":null, "pid":null, "exit_code":null, "fire_count":0, "missed_fires":0, "last_fired_at_ms":null, "last_sequence":null, "last_delivery":null, "last_delivered_at_ms":null, "last_acknowledged_at_ms":null, "alerted_sequence":null
-        })).unwrap();
         let router = crate::runtime::router::CommandRouter::with_interactive_capacity_from_app(
             Arc::new(tokio::sync::Mutex::new(app)),
             1,
@@ -1256,23 +1406,68 @@ mod tests {
             Some(agent.id().to_string()),
             "codex".into(),
         );
-        state
-            .start_agent_process(
-                wake.clone(),
-                wake.command.clone(),
-                worktree.path().to_path_buf(),
-                "memory-turn",
-                "memory-turn",
-                &run,
-            )
-            .await
-            .unwrap();
+        let mut wakes = Vec::new();
+        for (n, argv) in argvs.into_iter().enumerate() {
+            let wake: AgentWake = serde_json::from_value(serde_json::json!({
+                "id":format!("{}-{n}", w()), "task_id":"tail-turn", "room_id":room.id(), "agent_id":agent.id(), "registration_id":format!("completion-{}-{n}", w()), "kind":"process", "label":format!("watched-{n}"), "state":"starting", "created_at_ms":now, "verified_at_ms":null, "next_due_ms":null, "interval_ms":null, "command":argv, "match_text":rig.match_text, "matched_at_ms":null, "pid":null, "exit_code":null, "fire_count":0, "missed_fires":0, "last_fired_at_ms":null, "last_sequence":null, "last_delivery":null, "last_delivered_at_ms":null, "last_acknowledged_at_ms":null, "alerted_sequence":null
+            })).unwrap();
+            if rig.leased {
+                let receipt = crate::durable_state::agent_lifecycle::LeasedProcessReceipt {
+                    job: None,
+                    binding: crate::durable_state::agent_lifecycle::LeasedProcessBinding {
+                        worker_kernel_id: "worker".into(),
+                        worker_machine_id: "machine".into(),
+                        execution_lease_id: "lease".into(),
+                        leased_agent_id: "leased".into(),
+                        home_prompt_id: "tail-turn".into(),
+                        worker_provider_run_id: "run".into(),
+                    },
+                    command_digest: String::new(),
+                    worker_boot_id: "boot".into(),
+                    process_start_ticks: None,
+                    matched_line: None,
+                    output_tail: String::new(),
+                    revision: 1,
+                    backing_room: room.id().into(),
+                    backing_agent: agent.id().into(),
+                    wake: wake.clone(),
+                };
+                store
+                    .agent_lifecycle(Operation::LeasedProcess(
+                        crate::durable_state::agent_lifecycle::LeasedProcessMutation::Intent(
+                            receipt,
+                        ),
+                    ))
+                    .unwrap();
+            }
+            state
+                .start_agent_process(
+                    wake.clone(),
+                    wake.command.clone(),
+                    worktree.path().to_path_buf(),
+                    "tail-turn",
+                    "tail-turn",
+                    &run,
+                )
+                .await
+                .unwrap();
+            wakes.push(wake);
+        }
         let store = &state.owned.durable_state_store;
+        if rig.leased {
+            return YieldedWatches {
+                room: room.id().into(),
+                agent: agent.id().into(),
+                _worktree: worktree,
+                state,
+                wakes,
+            };
+        }
         store
             .agent_lifecycle(Operation::Yield {
-                task: "memory-turn".into(),
-                prompt: "memory-turn".into(),
-                registrations: vec![wake.registration_id.clone()],
+                task: "tail-turn".into(),
+                prompt: "tail-turn".into(),
+                registrations: wakes.iter().map(|w| w.registration_id.clone()).collect(),
                 cursor: 0,
                 deadline: Some(now + 60_000),
                 reason: "watch".into(),
@@ -1283,47 +1478,150 @@ mod tests {
             .agent_lifecycle(Operation::Settle {
                 room: room.id().into(),
                 agent: agent.id().into(),
-                prompt: "memory-turn".into(),
+                prompt: "tail-turn".into(),
                 run: "run".into(),
                 has_answer: true,
                 cancelled: false,
                 now,
             })
             .unwrap();
-        let deadline = Instant::now() + Duration::from_secs(30);
-        let tail = loop {
-            let exited = store
-                .agent_inbox(room.id(), agent.id(), 0)
-                .unwrap()
-                .into_iter()
-                .find(|event| event.payload["public_answer"].get("output_tail").is_some());
-            if let Some(event) = exited {
-                break event.payload["public_answer"]["output_tail"]
-                    .as_str()
-                    .unwrap_or_default()
-                    .to_owned();
+        YieldedWatches {
+            room: room.id().into(),
+            agent: agent.id().into(),
+            _worktree: worktree,
+            state,
+            wakes,
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    impl YieldedWatches {
+        /// The first inbox event of the agent that `pick` returns, within 30 s.
+        pub(super) async fn inbox_event<T>(
+            &self,
+            pick: impl Fn(&crate::durable_state::agent_lifecycle::InboxEvent) -> Option<T>,
+        ) -> T {
+            let store = &self.state.owned.durable_state_store;
+            let deadline = Instant::now() + Duration::from_secs(30);
+            loop {
+                // The scheduler loop is not running in this rig.
+                self.state.deliver_process_waits();
+                let events = store.agent_inbox(&self.room, &self.agent, 0).unwrap();
+                if let Some(found) = events.iter().find_map(&pick) {
+                    return found;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "the agent was never told: {:?} {:?}",
+                    store
+                        .agent_wakes(Some(&self.room), Some(&self.agent))
+                        .unwrap()
+                        .into_iter()
+                        .map(|w| (w.state, w.exit_code))
+                        .collect::<Vec<_>>(),
+                    events.into_iter().map(|e| e.kind).collect::<Vec<_>>()
+                );
+                tokio::time::sleep(Duration::from_millis(100)).await;
             }
-            assert!(
-                Instant::now() < deadline,
-                "the allocator was never stopped: {:?} {:?}",
-                store
-                    .agent_wakes(Some(room.id()), Some(agent.id()))
-                    .unwrap()
-                    .into_iter()
-                    .map(|w| (w.state, w.exit_code))
-                    .collect::<Vec<_>>(),
-                store
-                    .agent_inbox(room.id(), agent.id(), 0)
-                    .unwrap()
-                    .into_iter()
-                    .map(|e| e.kind)
-                    .collect::<Vec<_>>()
-            );
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        };
+        }
+    }
+
+    /// Runs `argv` as a watched process of a yielded agent and returns the
+    /// output tail its end delivers to the inbox.
+    #[cfg(target_os = "linux")]
+    async fn tail_of_watched_end(argv: Vec<String>) -> String {
+        yield_on_watches(vec![argv])
+            .await
+            .inbox_event(|event| {
+                event.payload["public_answer"]["output_tail"]
+                    .as_str()
+                    .map(str::to_owned)
+            })
+            .await
+    }
+
+    /// A watched command the memory controller stops reaches the agent with
+    /// the reason, not as a bare exit 137.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_watched_command_stopped_for_memory_delivers_the_reason() {
+        crate::test_support::isolated_env_test!();
+        std::env::set_var("CHARIOX_PROCESS_MEMORY_LIMIT_MIB", "64");
+        let grow =
+            "import time\nb=[]\nwhile True:\n b.append(bytearray(8*1048576)); time.sleep(0.1)";
+        let tail = tail_of_watched_end(vec!["python3".to_string(), "-c".into(), grow.into()]).await;
         std::env::remove_var("CHARIOX_PROCESS_MEMORY_LIMIT_MIB");
         assert!(
             tail.contains("stopped this command at its owner-set memory cap of 64 MiB"),
+            "the agent was not told why: {tail:?}"
+        );
+    }
+
+    /// A cgroup OOM kill (no kernel policy involved) reads as the memory
+    /// controller's work, not as `kill -9`.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    #[ignore = "sets memory.max on a cgroup unit: run with --ignored inside a throwaway delegated cgroup"]
+    async fn a_watched_process_killed_by_the_memory_controller_delivers_the_reason() {
+        crate::test_support::isolated_env_test!();
+        let script = "unit=$(dirname /sys/fs/cgroup$(sed -n 's/^0:://p' /proc/self/cgroup)); \
+            echo 0 > $unit/memory.swap.max; echo 134217728 > $unit/memory.max; \
+            exec python3 -c 'import time; b=bytearray(512*1024*1024); time.sleep(30)'";
+        let tail = tail_of_watched_end(vec!["bash".into(), "-c".into(), script.into()]).await;
+        assert!(
+            tail.contains("killed: out of memory"),
+            "the agent was not told why: {tail:?}"
+        );
+    }
+
+    /// The av7 stall: the agent waits for a file that a process of its own
+    /// would have written, and the memory controller killed that process.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    #[ignore = "sets memory.max on a cgroup unit: run with --ignored inside a throwaway delegated cgroup"]
+    async fn an_agent_waiting_on_a_file_is_woken_when_its_own_process_is_oom_killed() {
+        crate::test_support::isolated_env_test!();
+        let waiting = vec![
+            "bash".into(),
+            "-c".into(),
+            "until [ -f never-written ]; do sleep 0.2; done".into(),
+        ];
+        let script = "unit=$(dirname /sys/fs/cgroup$(sed -n 's/^0:://p' /proc/self/cgroup)); \
+            echo 0 > $unit/memory.swap.max; echo 134217728 > $unit/memory.max; \
+            exec python3 -c 'import time; b=bytearray(512*1024*1024); time.sleep(30)'";
+        let producer = vec!["bash".into(), "-c".into(), script.into()];
+        let rig = yield_on_watches(vec![waiting.clone(), producer]).await;
+        let told = rig
+            .inbox_event(|event| {
+                (event.kind == "scope_process_killed")
+                    .then(|| event.payload.to_string())
+                    .filter(|payload| payload.contains(&rig.wakes[0].id))
+            })
+            .await;
+        assert!(told.contains("killed: out of memory"), "{told}");
+        let waiting_wake = rig
+            .state
+            .owned
+            .durable_state_store
+            .agent_wakes(Some(&rig.room), Some(&rig.agent))
+            .unwrap()
+            .into_iter()
+            .find(|wake| wake.id == rig.wakes[0].id)
+            .unwrap();
+        assert_eq!(
+            waiting_wake.state, "running",
+            "the wait itself is not ended"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_signalled_watched_process_names_the_signal() {
+        crate::test_support::isolated_env_test!();
+        let tail =
+            tail_of_watched_end(vec!["bash".into(), "-c".into(), "kill -TERM $$".into()]).await;
+        assert!(
+            tail.contains("killed by signal 15 (SIGTERM)"),
             "the agent was not told why: {tail:?}"
         );
     }
@@ -1339,13 +1637,20 @@ mod tests {
     #[test]
     fn a03_terminate_settles_the_owned_group_only_while_unreaped() {
         let processes = WatchedProcesses::default();
-        let child = spawn(
+        let mut child = spawn(
             &w(),
-            &["sleep".into(), "30".into()],
+            &["sh".into(), "-c".into(), "echo ready; exec sleep 30".into()],
             &std::env::temp_dir(),
             &BTreeMap::new(),
             &[],
             &super::tests::test_resources(),
+        )
+        .unwrap();
+        // Asked once it runs: a SIGTERM that arrives while the sandbox is still
+        // starting its program is dropped, and the SIGKILL after the grace ends it.
+        std::io::BufRead::read_line(
+            &mut std::io::BufReader::new(child.stdout.take().unwrap()),
+            &mut String::new(),
         )
         .unwrap();
         let owned: Owned = Arc::new(std::sync::Mutex::new(OwnedChild::new(child, &w()).unwrap()));
@@ -1359,7 +1664,11 @@ mod tests {
             assert!(Instant::now() < deadline, "terminated session must settle");
             std::thread::sleep(Duration::from_millis(20));
         };
-        assert_eq!(status.signal(), Some(libc::SIGTERM));
+        assert_eq!(
+            crate::provider::state_confinement::confined_program_signal(&status),
+            Some(libc::SIGTERM),
+            "the program ends by the SIGTERM, not the SIGKILL that follows"
+        );
         assert!(
             !processes.terminate(&w()),
             "a reaped leader is never signalled"
@@ -1564,7 +1873,7 @@ mod security_tests {
         let mut owned = OwnedChild::new(child, &wake).unwrap();
         let mut line = String::new();
         std::io::BufRead::read_line(
-            &mut std::io::BufReader::new(owned.child.stdout.take().unwrap()),
+            &mut std::io::BufReader::new(owned.child.stdout().unwrap()),
             &mut line,
         )
         .unwrap();

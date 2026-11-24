@@ -147,7 +147,7 @@ export class PortableEncoder {
             }
             this.pending.resolve({stripes:reply.stripes,...(reply.packet?{packet:reply.packet}:{})});
           }else if(this.pending?.hash){
-            if(!/^[a-f0-9]{64}$/.test(reply.signature)||!Number.isInteger(reply.width)||!Number.isInteger(reply.height)||reply.width<1||reply.height<1||reply.width>2560||reply.height>1600)return fail();
+            if(!/^[a-f0-9]{64}$/.test(reply.signature)||!Number.isInteger(reply.width)||!Number.isInteger(reply.height)||reply.width<1||reply.height<1||reply.width>2560||reply.height>2560||reply.width*reply.height>2560*1600)return fail();
             this.pending.resolve(reply);
           }else{
             if(typeof reply.data_base64!=='string'||reply.data_base64.length>4*1024*1024)return fail();

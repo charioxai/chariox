@@ -11,9 +11,12 @@ mod credentials;
 mod payment_card;
 pub(crate) use payment_card::PaymentCard;
 pub use payment_card::{PaymentCardField, PaymentCardSummary};
+pub(crate) mod vault_kind;
 pub(crate) mod vault_use;
 pub use vault_use::{VaultUseBinding, VaultUseTarget, VaultValueKind};
+mod daemon_config_lock;
 mod env_loader;
+pub(crate) use env_loader::kernel_listen_address;
 mod identity;
 mod kernel_access;
 mod kernel_cloud_state;
@@ -26,12 +29,15 @@ mod provider;
 mod publication_state;
 mod relay_peer_keys;
 mod relay_profile;
+pub(crate) use persisted_daemon::CloudKernelRemoval;
 mod room_environment;
 mod secret_link;
+mod skills;
 mod slices;
+pub use skills::{SkillMetadataBudgetPercent, UserSkillsConfig};
 mod socket_path;
 mod storage;
-pub(crate) use paths::{default_state_dir, kernel_state_roots};
+pub(crate) use paths::{default_config_dir, default_state_dir, kernel_state_roots};
 pub(crate) use socket_path::validate_local_socket_path;
 mod resource_protection;
 mod totp;
@@ -165,6 +171,9 @@ pub struct DaemonConfig {
     pub managed_slice_relay_recovery_token: Option<String>,
     pub managed_slice_relay_owner_public_key: Option<String>,
     pub cloud_relay: Option<PersistedCloudRelayProfile>,
+    // Enrollment identity remains visible when a private relay suppresses the Cloud profile.
+    persisted_cloud_kernel_id: Option<String>,
+    pub(crate) former_cloud_kernel_id: Option<String>,
     pub relay_public_key: String,
     pub relay_private_key: String,
     pub relay_heartbeat_ms: u64,
@@ -296,6 +305,8 @@ impl DaemonConfig {
             managed_slice_relay_recovery_token: None,
             managed_slice_relay_owner_public_key: None,
             cloud_relay: None,
+            persisted_cloud_kernel_id: None,
+            former_cloud_kernel_id: None,
             relay_public_key,
             relay_private_key,
             relay_heartbeat_ms: DEFAULT_RELAY_HEARTBEAT_MS,
@@ -340,8 +351,9 @@ impl DaemonConfig {
         let state_dir = state_root.path();
         let path_string = |path: PathBuf| path.display().to_string();
         config.session_history_root_default = state_dir.join("session-history");
-        config.user_config.history.operational.path =
-            Some(path_string(state_dir.join("operational-history.db")));
+        config.user_config.history.operational.path = Some(path_string(
+            state_dir.join("operational-history").join("operational.db"),
+        ));
         config.user_config.artifacts.operational.root =
             Some(path_string(state_dir.join("operational-artifacts")));
         config.user_config.artifacts.operational.index_path =
@@ -379,6 +391,15 @@ impl DaemonConfig {
 
     pub fn kernel_websocket_url(&self) -> String {
         format!("{}/kernel", self.kernel_websocket_origin())
+    }
+
+    pub(crate) fn agent_cli_endpoint(&self) -> String {
+        let host = if self.kernel_websocket_host.contains(':') {
+            "[::1]"
+        } else {
+            "127.0.0.1"
+        };
+        format!("ws://{host}:{}", self.kernel_websocket_port)
     }
 
     /// The endpoint kernel clients connect to: without a path, which is what a
@@ -435,14 +456,6 @@ impl DaemonConfig {
             .workflow
             .max_queues_per_workflow
             .unwrap_or(crate::session::DEFAULT_WORKFLOW_CODE_MAX_QUEUES) as usize
-    }
-
-    pub fn session_default_max_agents(&self) -> i32 {
-        self.user_config
-            .workflow
-            .session_default_max_agents
-            .unwrap_or(crate::session::DEFAULT_SESSION_MAX_AGENTS as u32)
-            .min(i32::MAX as u32) as i32
     }
 
     pub fn workflow_code_limits(&self) -> WorkflowCodeLimitsConfig {
@@ -516,6 +529,8 @@ pub struct CharioxUserConfig {
     #[serde(default)]
     pub slices: UserSlicesConfig,
     #[serde(default)]
+    pub skills: UserSkillsConfig,
+    #[serde(default)]
     pub ui: UserUiConfig,
     #[serde(default)]
     pub relay: UserRelayConfig,
@@ -544,6 +559,7 @@ impl Default for CharioxUserConfig {
             artifacts: UserArtifactsConfig::default(),
             state: UserStateConfig::default(),
             slices: UserSlicesConfig::default(),
+            skills: UserSkillsConfig::default(),
             ui: UserUiConfig::default(),
             relay: UserRelayConfig::default(),
             kernel: UserKernelConfig::default(),
@@ -673,8 +689,6 @@ pub struct UserKernelConfig {
 pub struct UserWorkflowConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_queues_per_workflow: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub session_default_max_agents: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub code: Option<UserWorkflowCodeConfig>,
 }

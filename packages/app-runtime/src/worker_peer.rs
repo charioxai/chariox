@@ -170,7 +170,9 @@ pub struct BrokerRequest {
     pub cancellation: BrokerCancellation,
     /// The kernel's own caller `actor` of each call the worker was handling
     /// when it sent this request, never a request field: whom the App was
-    /// working for, for a trusted prompt such as a validation.
+    /// working for, for a trusted prompt such as a validation. Each carries
+    /// that call's `operation_id`, so the kernel can tell which of an agent's
+    /// calls a person approved.
     pub callers: Vec<serde_json::Value>,
     /// Methods of the supervisor calls the worker had received and not yet
     /// answered when this request arrived, distinct and sorted. This is the

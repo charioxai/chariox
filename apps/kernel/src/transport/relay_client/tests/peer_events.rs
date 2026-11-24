@@ -154,6 +154,8 @@ async fn incoming_peer_events_project_runtime_to_the_home_session() {
         }],
         notices: vec!["remote notice".to_string()],
         completions: vec![crate::transport::relay_peer::RelayProjectedCompletion {
+            model_usage: Vec::new(),
+            background_notifications: Vec::new(),
             failure: None,
             message_id: "assistant-msg-1".to_string(),
             completed_at_ms: 1234,

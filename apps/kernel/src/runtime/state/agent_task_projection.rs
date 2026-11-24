@@ -17,6 +17,9 @@ pub(super) fn artifact_progress_task(
             && !ledger::goals::is_check(t, prompt)
     })
 }
+/// The excerpt of a task's answer an inbox event carries.
+const EVENT_ANSWER_CHARS: usize = 1_024;
+
 impl KernelRuntimeOwnedState {
     pub(super) fn record_agent_artifact_progress(
         &self,
@@ -72,10 +75,23 @@ impl KernelRuntimeOwnedState {
         task: &AgentTaskExecution,
         failure: Option<&crate::provider::TurnOutcome>,
     ) -> Result<Option<serde_json::Value>, DaemonError> {
+        self.public_agent_task_answer_within(task, failure, EVENT_ANSWER_CHARS)
+    }
+
+    /// The same answer with the caller's own bound on the excerpt.
+    pub(super) fn public_agent_task_answer_within(
+        &self,
+        task: &AgentTaskExecution,
+        failure: Option<&crate::provider::TurnOutcome>,
+        excerpt_chars: usize,
+    ) -> Result<Option<serde_json::Value>, DaemonError> {
         if task.state == ExecutionState::Cancelled {
             return self.failed_task_answer(task, failure);
         }
         if task.state != ExecutionState::Done {
+            return Ok(None);
+        }
+        if self.background_answer_target(task)?.is_some() {
             return Ok(None);
         }
         if let Some(goal) = &task.goal {
@@ -99,7 +115,7 @@ impl KernelRuntimeOwnedState {
             task_answer_history_run(task.provider_run_id.as_deref()),
         )
         .concat();
-        let excerpt = answer_tail(output.trim(), 1_024);
+        let excerpt = answer_tail(output.trim(), excerpt_chars);
         let answer = serde_json::json!({"agent_id":task.agent_id,"task_id":task.task_id,"prompt_id":task.prompt_id,"excerpt":excerpt});
         let mut answer = self.answer_with_running_background_note(task, Some(answer))?;
         if let Some(answer) = answer.as_mut() {
@@ -270,19 +286,55 @@ pub(super) fn task_public_outputs<'a>(
         .collect()
 }
 
+/// The history of `prompt`'s turns, boundaries excluded: from its own boundary (or, for a prompt
+/// steered into another turn, from where it was steered in), and from each boundary where a
+/// provider's own turn resumed it, up to the next prompt's boundary. Steering stays inside the
+/// turn it steered. Empty when the prompt has no boundary.
+pub(super) fn prompt_turn_entries<'a>(
+    entries: &'a [crate::history::SessionHistoryEntry],
+    prompt: &str,
+) -> Vec<&'a crate::history::SessionHistoryEntry> {
+    use crate::history::SessionHistoryEntryKind as Kind;
+    let own = format!("prompt:{prompt}");
+    let steered = crate::history::steering_prompt_merge_key(prompt);
+    let resumed = crate::history::resumed_prompt_merge_key(prompt);
+    let mut started = false;
+    let mut inside = false;
+    let mut turn = Vec::new();
+    for entry in entries {
+        if entry.kind == Kind::UserPrompt {
+            if entry.is_external_recovery_envelope() {
+                continue;
+            }
+            let key = entry.merge_key.as_deref();
+            if key == Some(own.as_str())
+                || key == Some(steered.as_str())
+                || (started && key == Some(resumed.as_str()))
+            {
+                started = true;
+                inside = true;
+                continue;
+            }
+            if !key.is_some_and(|key| {
+                key.starts_with(crate::history::STEERING_PROMPT_MERGE_KEY_PREFIX)
+            }) {
+                inside = false;
+                continue;
+            }
+        }
+        if inside {
+            turn.push(entry);
+        }
+    }
+    turn
+}
+
 pub(super) fn task_public_output_entries<'a>(
     entries: &'a [crate::history::SessionHistoryEntry],
     prompt: &str,
     run: Option<&str>,
 ) -> Vec<&'a crate::history::SessionHistoryEntry> {
     use crate::history::SessionHistoryEntryKind as Kind;
-    let key = format!("prompt:{prompt}");
-    let Some(start) = entries
-        .iter()
-        .position(|e| e.kind == Kind::UserPrompt && e.merge_key.as_deref() == Some(&key))
-    else {
-        return vec![];
-    };
     // MP-08 / MP-09 / MP-10 / MP-11 A12: an official-provider history
     // import can replay a previous item under the current reused run. Prefer
     // its managed stream receipt, wherever its original prompt boundary was.
@@ -292,15 +344,8 @@ pub(super) fn task_public_output_entries<'a>(
         .filter(|e| e.kind == Kind::ProviderOutput && !e.is_external_provider_observed())
         .filter_map(|e| e.merge_key.as_deref())
         .collect::<std::collections::HashSet<_>>();
-    entries
-        .iter()
-        .skip(start + 1)
-        .take_while(|e| {
-            e.kind != Kind::UserPrompt
-                || e.merge_key.as_deref().is_some_and(|key| {
-                    key.starts_with(crate::history::STEERING_PROMPT_MERGE_KEY_PREFIX)
-                })
-        })
+    prompt_turn_entries(entries, prompt)
+        .into_iter()
         .filter(|e| {
             e.kind == Kind::ProviderOutput
                 && run.is_some()

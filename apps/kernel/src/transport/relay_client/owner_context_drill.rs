@@ -17,21 +17,21 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-struct Cleanup(PathBuf);
+pub(super) struct Cleanup(pub(super) PathBuf);
 impl Drop for Cleanup {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
     }
 }
 
-struct EncryptedPeer<'a> {
-    harness: ManagedPeerRequestHarness<'a>,
-    source: &'a DaemonConfig,
-    identity: RelayCallerIdentity,
-    target_public_key: String,
-    disconnect_after_chunk: AtomicBool,
-    publication_interrupted: AtomicBool,
-    interrupt_import: Option<(
+pub(super) struct EncryptedPeer<'a> {
+    pub(super) harness: ManagedPeerRequestHarness<'a>,
+    pub(super) source: &'a DaemonConfig,
+    pub(super) identity: RelayCallerIdentity,
+    pub(super) target_public_key: String,
+    pub(super) disconnect_after_chunk: AtomicBool,
+    pub(super) publication_interrupted: AtomicBool,
+    pub(super) interrupt_import: Option<(
         &'a DaemonConfig,
         &'a crate::managed_context::transfer::ManagedContextTransferStore,
     )>,
@@ -173,7 +173,7 @@ fn interrupt_after_kernel_publication(
     Ok(())
 }
 
-fn enrolled_profile(config: &DaemonConfig, api_url: &str) -> PersistedCloudRelayProfile {
+pub(super) fn enrolled_profile(config: &DaemonConfig, api_url: &str) -> PersistedCloudRelayProfile {
     PersistedCloudRelayProfile {
         kernel_id: Some(config.daemon_id.clone()),
         kernel_credential: Some("synthetic-owner-kernel-credential".into()),
@@ -187,7 +187,7 @@ fn enrolled_profile(config: &DaemonConfig, api_url: &str) -> PersistedCloudRelay
     }
 }
 
-async fn target_router(
+pub(super) async fn target_router(
     config: DaemonConfig,
 ) -> (
     Arc<CommandRouter>,
@@ -290,8 +290,11 @@ async fn owner_managed_context_encrypted_peer_drill_inner() {
     target.user_config_path = root.join("target-config.toml");
     let target_config_canary = b"# MP-08/MP-11: target runtime configuration is preserved.\n";
     std::fs::write(&target.user_config_path, target_config_canary).unwrap();
-    target.user_config.history.operational.path =
-        Some(root.join("target-operational.db").display().to_string());
+    target.user_config.history.operational.path = Some(
+        root.join("target-home/.chariox/target-operational.db")
+            .display()
+            .to_string(),
+    );
     target.user_config.artifacts.operational.root =
         Some(root.join("target-artifacts").display().to_string());
     target.user_config.artifacts.operational.index_path =
@@ -313,18 +316,33 @@ async fn owner_managed_context_encrypted_peer_drill_inner() {
         context_selection: OwnerManagedContextSelection {
             event_connections: Default::default(),
             kernel_context: OwnerManagedKernelSelection::SourceKernelWithoutCredentials,
-            development_setup: OwnerManagedDevelopmentSelection::SourceProject {
-                project_id: "owner-project".into(),
-                repositories: vec![OwnerManagedRepositorySelection {
-                    role: DevelopmentRepositoryRole::Primary,
-                    workspace_id: root.join("project").display().to_string(),
-                    worktree_id: None,
-                }],
+            // Two ticked Projects travel together; each lands in its own folder.
+            development_setup: OwnerManagedDevelopmentSelection::SourceProjects {
+                projects: [
+                    ("owner-project", "project"),
+                    ("owner-project-two", "project-two"),
+                ]
+                .into_iter()
+                .map(|(project_id, folder)| OwnerManagedSourceProject {
+                    project_id: project_id.into(),
+                    repositories: vec![OwnerManagedRepositorySelection {
+                        role: DevelopmentRepositoryRole::Primary,
+                        workspace_id: root.join(folder).display().to_string(),
+                        worktree_id: None,
+                    }],
+                })
+                .collect(),
             },
         },
     };
     std::fs::create_dir_all(root.join("project")).unwrap();
     std::fs::write(root.join("project/README.md"), b"Copied project content\n").unwrap();
+    std::fs::create_dir_all(root.join("project-two")).unwrap();
+    std::fs::write(
+        root.join("project-two/README.md"),
+        b"Second project content\n",
+    )
+    .unwrap();
     let context_plan =
         crate::managed_bootstrap::ManagedKernelContextPlan::for_owner_managed(&source, &selection)
             .unwrap();
@@ -407,23 +425,33 @@ async fn owner_managed_context_encrypted_peer_drill_inner() {
             stream.write_all(response).await.unwrap();
         }
     });
-    let development = export_development_context(DevelopmentContextExportRequest {
-        project_id: "owner-project".into(),
-        repositories: vec![DevelopmentRepositorySelection {
-            workspace_id: root.join("project").display().to_string(),
-            worktree_id: None,
-            worktree_path: root.join("project"),
-            role: DevelopmentRepositoryRole::Primary,
-        }],
-        archive_path: root.join("development.tar.gz"),
-    })
-    .unwrap();
-    crate::managed_context::credential_free::validate_development_archive(
-        &development.archive_path,
-        "owner-project",
-        None,
-    )
-    .unwrap();
+    let mut development_archives = Vec::new();
+    for (project_id, folder) in [
+        ("owner-project", "project"),
+        ("owner-project-two", "project-two"),
+    ] {
+        let development = export_development_context(DevelopmentContextExportRequest {
+            project_id: project_id.into(),
+            repositories: vec![DevelopmentRepositorySelection {
+                workspace_id: root.join(folder).display().to_string(),
+                worktree_id: None,
+                worktree_path: root.join(folder),
+                role: DevelopmentRepositoryRole::Primary,
+            }],
+            archive_path: root.join(format!("{folder}.tar.gz")),
+        })
+        .unwrap();
+        crate::managed_context::credential_free::validate_development_archive(
+            &development.archive_path,
+            project_id,
+            None,
+        )
+        .unwrap();
+        development_archives.push(ManagedContextPackageDevelopmentArchive {
+            archive_path: development.archive_path,
+            archive_sha256: development.archive_sha256,
+        });
+    }
     let snapshot = export_kernel_context_without_credentials(KernelContextExportRequest {
         context_id: plan.context_id.clone(),
         source_kernel_id: source.daemon_id.clone(),
@@ -441,8 +469,7 @@ async fn owner_managed_context_encrypted_peer_drill_inner() {
         target_kernel_id: target.daemon_id.clone(),
         target_key_thumbprint: selection.target.key_thumbprint.clone(),
         development: ManagedContextPackageDevelopment::FromSource {
-            archive_path: development.archive_path,
-            archive_sha256: development.archive_sha256,
+            archives: development_archives,
         },
         kernel_context: ManagedContextPackageKernel::FromKernel(Box::new(snapshot)),
         provider_accounts: ManagedContextPackageProviderAccounts::None,
@@ -738,15 +765,42 @@ async fn owner_managed_context_encrypted_peer_drill_inner() {
     };
     assert!(launch.environment_id.is_empty());
     assert_eq!(launch.destination, plan.destination);
-    let crate::local::ManagedContextDevelopmentLaunchTarget::FromSource { repositories, .. } =
+    let crate::local::ManagedContextDevelopmentLaunchTarget::FromSource { projects } =
         launch.development
     else {
         panic!("project not imported")
     };
-    assert_eq!(
-        std::fs::read(PathBuf::from(&repositories[0].workspace_path).join("README.md")).unwrap(),
-        b"Copied project content\n"
-    );
+    assert_eq!(projects.len(), 2);
+    assert_ne!(projects[0].destination_root, projects[1].destination_root);
+    let runtime = router.runtime_state();
+    let registered = runtime.list_projects("owner-user", false).await;
+    for ((project, original), expected) in projects
+        .iter()
+        .zip(["owner-project", "owner-project-two"])
+        .zip([
+            b"Copied project content\n".as_slice(),
+            b"Second project content\n",
+        ])
+    {
+        assert_ne!(project.project_id, original);
+        let origin = crate::session::ProjectCopyOrigin {
+            kernel_id: source.daemon_id.clone(),
+            project_id: original.into(),
+        };
+        assert_eq!(project.copy_origin.as_ref(), Some(&origin));
+        assert_eq!(
+            registered
+                .iter()
+                .find(|copy| copy.id() == project.project_id)
+                .and_then(crate::session::RuntimeProject::copy_origin),
+            Some(&origin),
+        );
+        assert_eq!(
+            std::fs::read(PathBuf::from(&project.repositories[0].workspace_path).join("README.md"))
+                .unwrap(),
+            expected
+        );
+    }
     for (path, expected) in [
         (".codex/auth.json", b"target-provider-canary".as_slice()),
         (".git-credentials", b"target-git-canary"),

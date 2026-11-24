@@ -174,6 +174,7 @@ fn a_prompt_commit_decodes_its_queue_once() {
     let mut connection = Connection::open(&store.path).unwrap();
     let mut session = crate::session::RuntimeSession::new(
         "room",
+        crate::session::ProjectId::test(),
         None,
         "workspace",
         "worktree",

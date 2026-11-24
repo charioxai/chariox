@@ -1719,7 +1719,7 @@ async fn inbox_wake_recovers_original_notes_in_hidden_provider_context() {
         .await
         .unwrap();
     let event = store.agent_inbox(&room, &agent, 0).unwrap().remove(0);
-    assert_eq!(event.state, "accepted");
+    assert_eq!(event.state, "handled");
     let session = runtime.owned.session_store.get_session(&room).unwrap();
     let prompt = session
         .active_prompt_for_agent(&agent)

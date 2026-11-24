@@ -1,6 +1,6 @@
 {
-  "local": 1063,
-  "relayPeer": 448,
+  "local": 1014,
+  "relayPeer": 451,
   "requests": [
     {
       "StartManagedContextTransfer": {
@@ -16,13 +16,17 @@
           "contextSelection": {
             "kernelContext": "source_kernel_without_credentials",
             "developmentSetup": {
-              "kind": "source_project",
-              "projectId": "project",
-              "repositories": [
+              "kind": "source_projects",
+              "projects": [
                 {
-                  "role": "primary",
-                  "workspaceId": "workspace",
-                  "worktreeId": null
+                  "projectId": "project",
+                  "repositories": [
+                    {
+                      "role": "primary",
+                      "workspaceId": "workspace",
+                      "worktreeId": null
+                    }
+                  ]
                 }
               ]
             }
@@ -162,6 +166,11 @@
       "kind": "delegate_gone",
       "delegate_id": "helper",
       "reason": "source_lost"
+    },
+    {
+      "kind": "no_answer",
+      "agent_id": "peer",
+      "reason": "No answer to this request. It arrived during another task."
     }
   ]
 }

@@ -12,34 +12,38 @@ impl KernelRuntimeOwnedState {
                 return;
             };
             self.pending_interactions.prune_abandoned_kernel_owners();
-        }
-        let candidates = self
-            .pending_interactions
-            .write()
-            .iter()
-            .filter(|(_, pending)| pending.belongs_to(&self.session_store))
-            .filter(|(_, pending)| pending.kernel_operation_owner.is_some())
-            // MP-11 A07: a hand-off survives shutdown as safe metadata; the
-            // agent sweep re-arms it with a revalidated target on restart.
-            .filter(|(id, _)| !(shutdown && super::super::is_handoff_interaction_id(id)))
-            .filter(|(_, pending)| {
-                shutdown
-                    || pending
-                        .kernel_operation_deadline
-                        .is_some_and(|deadline| std::time::Instant::now() >= deadline)
-                    || pending.nobody_waits()
-            })
-            .take(32)
-            .map(|(id, pending)| (id.clone(), pending.clone()))
-            .collect::<Vec<_>>();
-        for (id, pending) in candidates {
-            let _ = self.timeout_runtime_interaction_if_current(
-                &pending.session_id,
-                &id,
-                Some(&pending),
-            );
+            self.reclaim_kernel_decisions_locked(shutdown);
         }
         self.remove_orphaned_kernel_operation_interactions(shutdown);
+    }
+
+    /// Run under the decision mutation lock before counting slots or rejecting a request.
+    pub(super) fn reclaim_kernel_decisions_locked(&self, shutdown: bool) {
+        let now = std::time::Instant::now();
+        for (id, pending) in self.pending_kernel_decisions() {
+            // The agent sweep re-arms handoffs from their safe metadata after restart.
+            if shutdown && super::super::is_handoff_interaction_id(&id) {
+                continue;
+            }
+            let backing_card = self.kernel_operation_card(&id, &pending, &|session_id| {
+                self.session_store.get_session(session_id).ok()
+            });
+            let result = if backing_card.is_none() || !self.agent_interaction_is_live(&pending) {
+                self.withdraw_agent_interaction_locked(&id, &pending)
+            } else if shutdown || !pending.decision_still_waits(now) {
+                self.settle_runtime_interaction_locked(
+                    &pending.session_id,
+                    &id,
+                    Some(&pending),
+                    Settlement::TimedOut,
+                )
+            } else {
+                continue;
+            };
+            if let Err(error) = result {
+                tracing::warn!(%error, "kernel decision withdrawal will be retried");
+            }
+        }
     }
 
     /// A kernel-operation decision or vault prompt persisted in a session

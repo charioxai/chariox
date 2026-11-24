@@ -980,14 +980,17 @@ async fn attach_and_detach_use_owned_runtime_state_without_app_lock() {
     let app = Arc::new(Mutex::new(
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
     ));
-    let (session_id, terminal_stream) = {
+    let (session_id, terminal_stream, session_projection) = {
         let mut app_locked = app.lock().await;
         let (session, _agent) = crate::app::KernelSessionService::new(&mut app_locked)
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should be created");
-        (session.id().to_string(), app_locked.terminal_stream_store())
+        (
+            session.id().to_string(),
+            app_locked.terminal_stream_store(),
+            app_locked.session_state_projection_store(),
+        )
     };
-    let session_projection = SessionStateProjectionStore::default();
     let runtime = SessionRuntime::with_queue_limit_and_focus_projection(
         owned_runtime_state(&app).await,
         1,
@@ -1016,12 +1019,10 @@ async fn attach_and_detach_use_owned_runtime_state_without_app_lock() {
         panic!("unexpected attach response");
     };
     assert_eq!(attachment.session_id(), session_id);
-    assert!(
-        session_projection
-            .get(&session_id)
-            .is_some_and(|session| session.has_attachment(attachment.id())),
-        "attach should refresh session projection"
-    );
+    let before_detach = session_projection.get(&session_id).unwrap();
+    assert!(before_detach.has_attachment(attachment.id()));
+    tokio::task::yield_now().await;
+    KernelRuntimeState::take_session_snapshot_builds();
 
     let detach_request = LocalDaemonRequest::DetachFromSession(DetachFromSessionRequest {
         attachment_id: attachment.id().to_string(),
@@ -1039,6 +1040,10 @@ async fn attach_and_detach_use_owned_runtime_state_without_app_lock() {
         detach_response,
         LocalDaemonResponse::SessionDetached { .. }
     ));
+    assert_eq!(KernelRuntimeState::take_session_snapshot_builds(), 0);
+    // A Room read that began before detach may publish after it finishes.
+    session_projection.update_list(vec![before_detach.clone()]);
+    session_projection.update(before_detach);
     assert!(
         session_projection
             .get(&session_id)
@@ -1299,10 +1304,11 @@ async fn owned_multi_agent_reattach_resumes_focused_run_before_focus_cycle() {
     }
 
     state
-        .attach(
-            AttachRequest::new(&session_id, "client-b", ClientCapabilityLevel::FullTerminal),
-            true,
-        )
+        .attach(AttachRequest::new(
+            &session_id,
+            "client-b",
+            ClientCapabilityLevel::FullTerminal,
+        ))
         .await
         .expect("reattach should resume the focused provider run");
     {
@@ -1326,7 +1332,7 @@ async fn owned_multi_agent_reattach_resumes_focused_run_before_focus_cycle() {
     }
 
     let cycled = state
-        .cycle_agent_focus(&session_id, DEFAULT_LOCAL_USER_ID, true)
+        .cycle_agent_focus(&session_id, DEFAULT_LOCAL_USER_ID)
         .await
         .expect("cycling focus after reattach should not park an already parked run")
         .expect("another agent should be focused");

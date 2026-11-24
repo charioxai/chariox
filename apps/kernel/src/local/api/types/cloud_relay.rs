@@ -156,11 +156,31 @@ pub struct RelayStatus {
     pub capabilities: Vec<String>,
     pub configured: bool,
     pub connected: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registration_refused: Option<RelayRegistrationRefusal>,
     pub relay_url: Option<String>,
     pub relay_token_configured: bool,
     pub daemon_id: String,
     pub machine_id: String,
     pub machine_alias: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelayRegistrationRefusal {
+    pub reason: String,
+    pub next_step: String,
+    pub since_ms: u64,
+    /// No retry is scheduled while the kernel waits for replacement credentials.
+    pub next_retry_at_ms: Option<u64>,
+}
+
+impl RelayRegistrationRefusal {
+    pub(crate) fn owner_message(&self) -> String {
+        format!(
+            "Relay not registered: {}. Next step: {}.",
+            self.reason, self.next_step
+        )
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -170,6 +190,14 @@ pub struct KernelRuntimeProcessIdentity {
     pub start_time_ticks: String,
 }
 
+/// MP-08 / MP-10 / MP-11: wire allocation alone does not enable Skills v2.
+/// Add this to advertised capabilities only once list/load/dispatch are wired.
+pub const SKILLS_V2_RUNTIME_CAPABILITY: &str = "skills_v2_runtime";
+
+/// MP-08 / MP-10 / MP-11: local 581 adds `resolve_repository_update`. A kernel on 571 can
+/// advertise `skills_v2_runtime` and still reject that request, so clients gate on this one.
+pub const SKILLS_REPOSITORY_UPDATE_CAPABILITY: &str = "skills_repository_update_v581";
+
 /// Shared by direct kernel status and relay discovery. These advertise support,
 /// not authorization; every operation still checks its caller and home binding.
 pub const RUNTIME_CONTROL_CAPABILITIES: &[&str] = &[
@@ -178,6 +206,7 @@ pub const RUNTIME_CONTROL_CAPABILITIES: &[&str] = &[
     "owner_managed_context_transfer_v1",
     "kernel_gateway_v1",
     "room_terminal_v1",
+    "kernel_terminal_v1",
     "room_exec_v1",
     "agent_deadline_v1",
     "outside_steer_events_v1",

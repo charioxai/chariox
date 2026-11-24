@@ -248,6 +248,38 @@ test("terminal send --wait-ms keeps its request open for the whole wait, whateve
   assert.equal(JSON.parse(printed.at(-1)!).text, "done\r\n")
 })
 
+test("workspace exec uses the Room id from the direct or forwarded create receipt", async () => {
+  const room = "room-for-exec"
+  const kernel = await startFakeKernel((socket, frame) => {
+    if ("RelayStatus" in frame.request) return replyWith(socket, frame, relayStatus(["kernel_gateway_v1", "room_exec_v1"]))
+    if ("CreateSession" in frame.request) {
+      return replyWith(socket, frame, { response: { SessionCreated: frame.kernel
+        ? { session_id: room }
+        : { session: { id: room } }
+      } })
+    }
+    if ("EndSession" in frame.request) return replyWith(socket, frame, { response: { SessionEnded: {} } })
+    const request = frame.request.RoomTerminal as { session_id: string; operation: { operation: string } }
+    if (!request || request.session_id !== room) return replyWith(socket, frame, refusal("unexpected_exec_room"))
+    const op = request.operation.operation
+    const result = op === "exec_open" ? { result: "exec_opened", exec_id: "exec-room" }
+      : op === "exec_read" ? { result: "exec_output", output: { chunks: [], next_cursor: 0, outcome: { kind: "exited", code: 0 } } }
+      : { result: "exec_closed" }
+    replyWith(socket, frame, { response: { RoomTerminal: { result } } })
+  })
+  const sink = () => new Writable({ write(_chunk, _encoding, done) { done() } })
+  try {
+    for (const target of [undefined, "b3"]) {
+      const exit = await withKernel({ socket: kernel.path, kernel: target, timeoutSeconds: 5 }, send => runExec(
+        { workspace: "/work", command: ["true"] }, send,
+        { stdin: Readable.from([]), stdout: sink(), stderr: sink() },
+      ))
+      assert.equal(exit, 0)
+    }
+    assert.deepEqual(kernel.frames.filter(frame => "CreateSession" in frame.request).map(frame => frame.kernel), [undefined, "b3"])
+  } finally { await kernel.close() }
+})
+
 for (const ended of [false, true]) test(`exec real socket loss preserves resume details and probes access (ended=${ended})`, async () => {
   let dropped = false
   const kernel = await startFakeKernel((socket, frame) => {
@@ -276,6 +308,10 @@ for (const ended of [false, true]) test(`exec real socket loss preserves resume 
 })
 
 // `--help` is a success path: the usage on stdout, exit 0, for every command, without needing a kernel.
+test("a bare `chariox terminal` is not usage: it reaches the attach to the kernel's own terminal", async () => {
+  assert.equal(await runKernelsCommand(["terminal"]), false)
+})
+
 test("--help answers with usage and exit 0 for every agent command; bare terminal shows both families", async () => {
   const printed: string[] = []
   const log = console.log
@@ -289,8 +325,7 @@ test("--help answers with usage and exit 0 for every agent command; bare termina
       [["request", "--help"], /Usage: chariox request/],
       [["kernels", "--help"], /Usage: chariox kernels/],
       [["terminal", "open", "--help"], /Usage: chariox terminal open/],
-      [["terminal", "--help"], /chariox terminal --session[^]*chariox terminal open\|/],
-      [["terminal"], /chariox terminal --session[^]*chariox terminal open\|/],
+      [["terminal", "--help"], /chariox terminal \[--session[^]*chariox terminal open\|/],
     ] as const) {
       printed.length = 0
       process.exitCode = undefined

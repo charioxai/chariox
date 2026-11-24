@@ -293,7 +293,7 @@ impl KernelRuntimeOwnedState {
         &self,
         session_id: &str,
     ) -> Result<(), DaemonError> {
-        self.mark_turns_waiting_on_a_question(session_id)?;
+        self.mark_turns_waiting_on_native_decisions(session_id)?;
         self.withdraw_agent_interactions_for(
             session_id,
             None,
@@ -301,32 +301,48 @@ impl KernelRuntimeOwnedState {
         )
     }
 
-    /// The card is withdrawn with the process, so the turn that waited on it keeps a durable
-    /// mark: restart recovery must not resume it into an answer nobody gave. Runs before the
-    /// withdrawal, which holds the interaction store.
-    fn mark_turns_waiting_on_a_question(&self, session_id: &str) -> Result<(), DaemonError> {
+    /// A turn keeps a durable mark when its question or startup permission loses its responder.
+    /// Record it before withdrawing the card so restart recovery can settle the interrupted turn.
+    fn mark_turns_waiting_on_native_decisions(&self, session_id: &str) -> Result<(), DaemonError> {
+        use crate::session::{NativeInteractionOrigin, RuntimeInteractionKind};
+
         let session = self.session_store.get_session(session_id)?;
         let waiting = session
             .active_interactions()
             .iter()
-            .filter(|interaction| {
-                interaction.kind() == crate::session::RuntimeInteractionKind::Choice
-            })
             .filter(|interaction| {
                 self.pending_interactions
                     .write()
                     .get(interaction.id())
                     .is_some_and(|pending| pending.async_task_id.is_none())
             })
-            .filter_map(
-                |interaction| match (interaction.agent_id(), interaction.native_origin()) {
+            .filter_map(|interaction| {
+                let agent_id = interaction.agent_id()?;
+                let prompt_id = match (interaction.kind(), interaction.native_origin()?) {
                     (
-                        Some(agent_id),
-                        Some(crate::session::NativeInteractionOrigin::Prompt { prompt_id, .. }),
-                    ) => Some((agent_id.to_string(), prompt_id.clone())),
-                    _ => None,
-                },
-            )
+                        RuntimeInteractionKind::Choice,
+                        NativeInteractionOrigin::Prompt { prompt_id, .. },
+                    ) => prompt_id.clone(),
+                    (
+                        RuntimeInteractionKind::Permission,
+                        NativeInteractionOrigin::ProviderStartup { provider_run_id },
+                    ) => {
+                        // Startup permissions belong to the run. Only a prompt waiting
+                        // for delivery on that run was interrupted by this card.
+                        self.prompt_state_owner
+                            .active_prompt_for_agent(&session, agent_id)
+                            .filter(|prompt| {
+                                prompt.delivery_pending()
+                                    && prompt.durable_delivery_provider_run_id()
+                                        == Some(provider_run_id.as_str())
+                            })?
+                            .id()
+                            .to_string()
+                    }
+                    _ => return None,
+                };
+                Some((agent_id.to_string(), prompt_id))
+            })
             .collect::<Vec<_>>();
         for (agent_id, prompt_id) in waiting {
             if !self
@@ -378,7 +394,10 @@ impl KernelRuntimeOwnedState {
             .map(|(id, pending)| (id.clone(), pending.clone()))
             .collect::<Vec<_>>();
         for (id, pending) in candidates {
-            self.withdraw_agent_interaction_locked(&id, &pending)?;
+            let handing_over = matches!(reason, InteractionWithdrawal::KernelShutdown)
+                && pending.codex_approval_transfer.is_some()
+                && crate::hot_reload::handing_over();
+            self.withdraw_agent_interaction(&id, &pending, handing_over)?;
         }
         Ok(())
     }
@@ -388,6 +407,15 @@ impl KernelRuntimeOwnedState {
         &self,
         id: &str,
         pending: &super::super::PendingInteraction,
+    ) -> Result<(), DaemonError> {
+        self.withdraw_agent_interaction(id, pending, false)
+    }
+
+    fn withdraw_agent_interaction(
+        &self,
+        id: &str,
+        pending: &super::super::PendingInteraction,
+        handing_over: bool,
     ) -> Result<(), DaemonError> {
         if pending.async_task_id.is_some() {
             self.durable_state_store.agent_lifecycle(
@@ -416,7 +444,7 @@ impl KernelRuntimeOwnedState {
             sessions.restore_session(session);
         }
         self.pending_interactions.write().remove(id);
-        self.withdraw_settled_child_decision(&pending.session_id, id, pending);
+        self.withdraw_settled_child_decision(id, pending);
         drop(sessions);
         if pending.passkey_prompt.is_some() {
             self.close_withdrawn_passkey_prompt(&pending.session_id, id);
@@ -428,6 +456,24 @@ impl KernelRuntimeOwnedState {
             .expect("pending interaction responder mutex poisoned")
             .take()
         {
+            if let Some(transfer) = pending
+                .codex_approval_transfer
+                .as_ref()
+                .filter(|_| handing_over)
+            {
+                let holder_agent_id = match &pending.holder {
+                    super::super::DecisionHolder::User => None,
+                    super::super::DecisionHolder::Agent(holder) => Some(holder.clone()),
+                };
+                *transfer
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                    Some(crate::provider::CodexApprovalHandover {
+                        holder_agent_id,
+                        holder_tenure: pending.holder_tenure,
+                        goal: pending.goal_approval.clone(),
+                    });
+            }
             let _ = sender.send(super::super::PendingInteractionResolution {
                 status: "timed_out",
                 choice_id: None,
@@ -437,13 +483,15 @@ impl KernelRuntimeOwnedState {
         self.terminal_stream
             .notify_terminal_projection_change(&pending.session_id);
         if self.session_store.get_session(&pending.session_id).is_ok() {
-            self.record_notice_for_agent(
-                &pending.session_id,
-                None,
-                pending.agent_lifetime.as_ref().map(|l| l.agent_id.as_str()),
-                self.attachment_store.list_session_attachment_ids(&pending.session_id),
-                format!("Approval `{id}` withdrawn because its turn or agent ended, or its caller closed. Late answers are refused."),
-            );
+            if !handing_over {
+                self.record_notice_for_agent(
+                    &pending.session_id,
+                    None,
+                    pending.agent_lifetime.as_ref().map(|l| l.agent_id.as_str()),
+                    self.attachment_store.list_session_attachment_ids(&pending.session_id),
+                    format!("Approval `{id}` withdrawn because its turn or agent ended, or its caller closed. Late answers are refused."),
+                );
+            }
             self.session_snapshot(&pending.session_id)?;
         }
         Ok(())

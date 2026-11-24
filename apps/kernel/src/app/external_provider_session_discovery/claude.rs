@@ -197,6 +197,16 @@ pub(super) fn claude_observed_turns_from_value(value: &Value) -> Vec<ObservedExt
     match record_type {
         Some("user") => claude_user_observed_turns(value, observed_at_ms),
         Some("assistant") => claude_assistant_observed_turns(value, observed_at_ms),
+        Some("system")
+            if value.get("subtype").and_then(Value::as_str) == Some("compact_boundary") =>
+        {
+            vec![ObservedExternalProviderTurn {
+                role: ObservedExternalProviderTurnRole::Compaction,
+                text: String::new(),
+                provider_turn_id: claude_compaction_turn_id(value, observed_at_ms),
+                observed_at_ms,
+            }]
+        }
         Some("mode" | "permission-mode" | "queue-operation" | "ai-title" | "last-prompt") => {
             vec![ObservedExternalProviderTurn {
                 role: ObservedExternalProviderTurnRole::Status,
@@ -496,6 +506,14 @@ pub(super) fn claude_tool_result_text(item: &Value) -> Option<String> {
         },
         "output": content,
     })))
+}
+
+/// One Claude compaction has one ID, read from its transcript record or its stream message.
+pub(crate) fn claude_compaction_turn_id(
+    value: &Value,
+    observed_at_ms: Option<u64>,
+) -> Option<String> {
+    claude_record_turn_id(value, "compact_boundary", observed_at_ms)
 }
 
 pub(super) fn claude_record_turn_id(

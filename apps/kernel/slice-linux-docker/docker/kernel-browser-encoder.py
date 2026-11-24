@@ -112,7 +112,7 @@ def main():
             regions=request.get('protected_regions',[])
             if 'raw' in request:
                 raw=request['raw'];w=raw['width'];h=raw['height'];size=w*h*4
-                if not (1<=w<=2560 and 1<=h<=1600) or raw['format']!='bgr0' or raw['length']!=size:raise ValueError('raw bound')
+                if not (1<=w<=2560 and 1<=h<=2560 and w*h<=2560*1600) or raw['format']!='bgr0' or raw['length']!=size:raise ValueError('raw bound')
                 if raw.get('shared'):
                     shared=raw['shared']
                     if shared.get('length')!=size:raise ValueError('shared size')
@@ -139,7 +139,7 @@ def main():
                 png = base64.b64decode(request['png'], validate=True)
                 if len(png) > 4 * 1024 * 1024:raise ValueError('frame bound')
                 with av.open(io.BytesIO(png)) as source:frame = next(source.decode(video=0))
-            if request.get('operation')!='stripes' and (frame.width > 2560 or frame.height > 1600):
+            if request.get('operation')!='stripes' and (frame.width > 2560 or frame.height > 2560 or frame.width * frame.height > 2560 * 1600):
                 raise ValueError('geometry bound')
             if request.get('operation')=='stripes':
                 import importlib.util

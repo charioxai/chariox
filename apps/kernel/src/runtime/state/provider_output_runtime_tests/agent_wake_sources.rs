@@ -11,7 +11,12 @@ use crate::runtime::state::wake_driver::{
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex as StdMutex;
 
+mod accepted_yield;
 mod assessment_inbox;
+#[cfg(unix)]
+mod handed_over_run;
+mod mcp_paging;
+mod watch_open;
 
 const KIND: &str = "test-source";
 
@@ -71,6 +76,8 @@ struct Fixture {
     driver: Arc<TestDriver>,
     room: String,
     agent: String,
+    /// The agent that spawned `agent`, when it is a sub-agent.
+    parent: Option<String>,
     run: String,
     prompt_id: String,
     app: Arc<Mutex<DaemonApp>>,
@@ -142,6 +149,7 @@ async fn fixture(name: &str, running_prompt: bool) -> Fixture {
         driver,
         room: session.id().into(),
         agent: agent.id().into(),
+        parent: None,
         run: run.id().into(),
         prompt_id,
         _pty: InertPtyCleanup {
@@ -276,6 +284,12 @@ fn a_fixture_kernel_ends_with_its_test() {
     );
 }
 
+/// A wake that carried the event's text settles it on receipt, so "delivered" is any state past
+/// the submission.
+fn is_delivered(state: &str) -> bool {
+    matches!(state, "accepted" | "acknowledged" | "handled")
+}
+
 #[tokio::test]
 async fn ev13_driver_occurrence_wakes_the_waiting_task_once() {
     let f = fixture("ev13-driver-occurrence", false).await;
@@ -300,7 +314,7 @@ async fn ev13_driver_occurrence_wakes_the_waiting_task_once() {
     let events = tokio::time::timeout(std::time::Duration::from_secs(10), async {
         loop {
             let events = f.store().agent_inbox(&f.room, &f.agent, 0).unwrap();
-            if events.iter().all(|e| e.state == "accepted") && !events.is_empty() {
+            if events.iter().all(|e| is_delivered(&e.state)) && !events.is_empty() {
                 return events;
             }
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -332,7 +346,7 @@ async fn ev13_driver_occurrence_wakes_the_waiting_task_once() {
         )
     });
     assert_eq!(events.len(), 1, "a replayed occurrence is one admission");
-    assert_eq!(events[0].state, "accepted");
+    assert!(is_delivered(&events[0].state), "{:?}", events[0]);
     let woken = f.task(&task.task_id);
     assert_eq!(woken.state, ExecutionState::Working);
     assert_eq!(woken.prompt_id, events[0].prompt_id.clone().unwrap());
@@ -408,7 +422,6 @@ async fn delayed_leased_steer_ack_keeps_the_original_receipt_deadline_while_the_
             None,
             Some(context),
             Vec::new(),
-            None,
             crate::extension::RemoteExtensionManifest::default(),
         )
         .unwrap();
@@ -483,7 +496,6 @@ async fn delayed_leased_steer_ack_keeps_the_original_receipt_deadline_while_the_
             "PCD11_STEER_WRITTEN_ONCE",
             "",
             Vec::new(),
-            None,
         )
         .await
         .unwrap();
@@ -545,10 +557,14 @@ async fn delayed_leased_steer_ack_keeps_the_original_receipt_deadline_while_the_
         .unwrap()
         .remove(0);
     assert_eq!(
-        timed_out.state, "blocked",
+        timed_out.state, "submitting",
+        "the sweep asks no owner: the exact worker receipt settles a leased steer"
+    );
+    assert_eq!(
+        timed_out.attempted_at_ms,
+        Some(at),
         "an active leased turn must not renew an already-sent receipt window"
     );
-    assert_eq!(timed_out.attempted_at_ms, Some(at));
     home.runtime
         .record_agent_delivery_receipt(&home.room, &home.agent, event.sequence, "accepted")
         .unwrap();
@@ -560,7 +576,6 @@ async fn delayed_leased_steer_ack_keeps_the_original_receipt_deadline_while_the_
             "PCD11_STEER_WRITTEN_ONCE",
             "",
             Vec::new(),
-            None,
         )
         .await
         .unwrap();
@@ -583,17 +598,10 @@ async fn delayed_leased_steer_ack_keeps_the_original_receipt_deadline_while_the_
 #[tokio::test]
 async fn declined_vault_start_blocks_the_wake_with_its_reason_and_resume_retries_the_answer_once() {
     crate::test_support::isolated_env_test!();
-    refused_vault_wake_start(false).await;
+    refused_vault_wake_start().await;
 }
 
-#[tokio::test]
-async fn timed_out_vault_start_blocks_the_wake_with_its_reason_and_resume_retries_the_answer_once()
-{
-    crate::test_support::isolated_env_test!();
-    refused_vault_wake_start(true).await;
-}
-
-async fn refused_vault_wake_start(timed_out: bool) {
+async fn refused_vault_wake_start() {
     let _env = crate::env_lock::lock();
     let private = crate::test_support::TestWorktree::new("pcd11-vault-refused-state");
     std::env::set_var("CHARIOX_HOME", private.path());
@@ -753,17 +761,10 @@ async fn refused_vault_wake_start(timed_out: bool) {
         "submitting",
         "a visible owner wait is not unconfirmed provider I/O"
     );
-    if timed_out {
-        f.runtime
-            .timeout_runtime_interaction(&f.room, &card)
-            .await
-            .unwrap();
-    } else {
-        f.runtime
-            .owned
-            .resolve_runtime_interaction(&f.room, &card, "cancel", None, Some(&owner), true)
-            .unwrap();
-    }
+    f.runtime
+        .owned
+        .resolve_runtime_interaction(&f.room, &card, "cancel", None, Some(&owner), true)
+        .unwrap();
     assert!(
         tokio::time::timeout(std::time::Duration::from_secs(10), delivery)
             .await
@@ -774,11 +775,7 @@ async fn refused_vault_wake_start(timed_out: bool) {
     let blocked = f.task(&task.task_id);
     assert_eq!(blocked.state, ExecutionState::Blocked);
     assert!(
-        blocked.reason.contains(if timed_out {
-            "Vault unlock timed out"
-        } else {
-            "Vault unlock was declined"
-        }),
+        blocked.reason.contains("Vault unlock was declined"),
         "{}",
         blocked.reason
     );
@@ -848,7 +845,7 @@ async fn refused_vault_wake_start(timed_out: bool) {
     assert_eq!(retried.len(), 1);
     assert_eq!(retried[0].sequence, original.sequence);
     assert_eq!(
-        retried[0].state, "accepted",
+        retried[0].state, "handled",
         "explicit Resume delivers the original answer once"
     );
     assert_eq!(retried[0].payload, original.payload);
@@ -1013,9 +1010,10 @@ async fn refused_wake_after_dispatch_admission_is_retried_by_the_sweep() {
 
     spawn_inert_pty_for_run(&mut *f.app.lock().await, &f.run);
     f.runtime.sweep_agent_lifecycle().await.unwrap();
+    f.runtime.task_work_settled().await;
     let events = f.store().agent_inbox(&f.room, &f.agent, 0).unwrap();
     assert_eq!(events.len(), 1, "retry the original occurrence");
-    assert_eq!(events[0].state, "accepted");
+    assert_eq!(events[0].state, "acknowledged");
     assert!(events[0].submit_epoch.is_some());
     let retried = f.task(&task.task_id);
     assert_eq!(retried.state, ExecutionState::Working);
@@ -1158,6 +1156,7 @@ async fn agent_deadline_stops_an_active_turn_and_fences_later_admission() {
                         agent_id: Some(f.agent.clone()),
                     }],
                     sources: Vec::new(),
+                    like: None,
                 },
             ),
         )
@@ -1390,6 +1389,74 @@ async fn a_fresh_kernel_with_a_scheduled_timer_raises_no_false_stall_alert() {
 }
 
 #[tokio::test]
+async fn committed_timer_delivers_when_its_writer_ack_is_lost() {
+    committed_wake_delivers_after_lost_ack("wake_intent").await;
+}
+
+#[tokio::test]
+async fn committed_driver_wake_delivers_when_its_writer_ack_is_lost() {
+    committed_wake_delivers_after_lost_ack("wake_occurrence").await;
+}
+
+async fn committed_wake_delivers_after_lost_ack(operation: &str) {
+    use crate::durable_state::agent_lifecycle::faults::TestFaultDir;
+    let faults = crate::test_support::TestTempDir::new("wake-ack");
+    let f = {
+        let _faults = TestFaultDir::set(faults.path());
+        fixture("wake-ack-delivery", false).await
+    };
+    let task = f.begin("waiting-turn");
+    let scheduler = if operation == "wake_intent" {
+        let mut timer = f.wake(&task, "wake-ack");
+        timer.kind = "timer".into();
+        timer.next_due_ms = Some(crate::session::unix_epoch_ms() + 1_000);
+        let registration = timer.registration_id.clone();
+        f.store()
+            .agent_lifecycle(Operation::CreateWake {
+                task: task.task_id.clone(),
+                prompt: task.prompt_id.clone(),
+                wake: timer,
+            })
+            .unwrap();
+        f.wait_on(&task, &registration);
+        std::fs::write(faults.path().join("drop-ack"), operation).unwrap();
+        let runtime = f.runtime.clone();
+        Some(tokio::spawn(async move {
+            runtime.run_agent_wake_scheduler().await
+        }))
+    } else {
+        let wake = f.arm(&task, "wake-ack").unwrap();
+        f.wait_on(&task, &wake.registration_id);
+        std::fs::write(faults.path().join("drop-ack"), operation).unwrap();
+        f.runtime
+            .wake_sink(KIND)
+            .occurred(f.occurrence(&wake.id, "exit", Some(WakeEnd::Succeeded)))
+            .unwrap_err();
+        None
+    };
+    let received = tokio::time::timeout(Duration::from_secs(4), async {
+        loop {
+            let wake = f.store().agent_wake("wake-ack").unwrap().unwrap();
+            if wake.last_delivered_at_ms.is_some() {
+                break wake;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    if let Some(scheduler) = scheduler {
+        scheduler.abort();
+    }
+    assert!(faults.path().join("drop-ack.log").exists(), "{operation}");
+    assert_eq!(
+        received
+            .expect("a committed wake delivers without a sweep")
+            .fire_count,
+        1
+    );
+}
+
+#[tokio::test]
 async fn ev13_lost_source_raises_a_visible_alert_and_one_event() {
     let f = fixture("ev13-lost-source", false).await;
     let task = f.begin("turn-1");
@@ -1432,6 +1499,161 @@ async fn call(
     f.runtime
         .dispatch_authenticated_runtime_tool_call(token, tool, args)
         .await
+}
+
+/// A provider may pass a call its schema refuses: the kernel names the missing argument instead of
+/// reading it as empty.
+#[tokio::test]
+async fn an_event_tool_call_missing_a_required_argument_is_refused_naming_it() {
+    let f = fixture("event-tools-missing-argument", true).await;
+    let task = f.begin(&f.prompt_id);
+    let token = {
+        let app = f.app.lock().await;
+        app.providers
+            .get_run(&f.run)
+            .unwrap()
+            .runtime_mcp_auth_token()
+            .expect("runtime MCP auth")
+            .to_string()
+    };
+    let timer = call(
+        &f,
+        &token,
+        "chariox.events.timer",
+        &task,
+        serde_json::json!({"label":"check in","delay_ms":60_000}),
+    )
+    .await
+    .unwrap()
+    .payload;
+    let registration = timer["registration_id"].as_str().unwrap().to_string();
+
+    let refused = call(
+        &f,
+        &token,
+        "mcp__chariox__chariox_events_yield",
+        &task,
+        serde_json::json!({"registration_ids":[registration]}),
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+    assert!(
+        refused.contains("`inbox_cursor`") && refused.contains("`reason`"),
+        "{refused}"
+    );
+    assert!(
+        f.store()
+            .agent_tasks(Some(&f.room), Some(&f.agent))
+            .unwrap()
+            .iter()
+            .all(|t| t.wait.is_none()),
+        "a refused call accepts no wait"
+    );
+    let refused = call(
+        &f,
+        &token,
+        "chariox.events.timer",
+        &task,
+        serde_json::json!({"label":"no delay"}),
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+    assert!(refused.contains("`delay_ms`"), "{refused}");
+}
+
+#[tokio::test]
+async fn wake_listing_filters_armed_sources_and_pages_retained_receipts() {
+    let f = fixture("wake-listing-page", true).await;
+    let task = f.begin(&f.prompt_id);
+    let token = {
+        let app = f.app.lock().await;
+        app.providers
+            .get_run(&f.run)
+            .unwrap()
+            .runtime_mcp_auth_token()
+            .unwrap()
+            .to_string()
+    };
+    for index in 0..200 {
+        let id = format!("settled-{index}");
+        f.arm(&task, &id).unwrap();
+        f.driver
+            .sink
+            .occurred(f.occurrence(&id, "exit", Some(WakeEnd::Succeeded)))
+            .unwrap();
+        let wake = f.store().agent_wake(&id).unwrap().unwrap();
+        f.store()
+            .agent_lifecycle(Operation::Ack {
+                room: f.room.clone(),
+                agent: f.agent.clone(),
+                sequence: wake.last_sequence.unwrap(),
+                handled: true,
+                now: crate::session::unix_epoch_ms(),
+            })
+            .unwrap();
+    }
+    let mut large_wake = f.wake(&task, "armed-first");
+    large_wake.command = vec!["x".repeat(4_096); 5];
+    f.runtime.arm_wake_source(&task, &large_wake).unwrap();
+    f.arm(&task, "armed-second").unwrap();
+
+    let armed = call(
+        &f,
+        &token,
+        "chariox.events.wakes",
+        &task,
+        serde_json::json!({"armed_only": true}),
+    )
+    .await
+    .unwrap()
+    .payload;
+    let armed_ids: Vec<_> = armed["wakes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|wake| wake["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(armed_ids, ["armed-first", "armed-second"]);
+    assert_eq!(armed["wakes"][0]["details_omitted"], true);
+    assert_eq!(armed["receipts"], serde_json::json!([]));
+    assert!(armed["next_after"].is_null());
+    assert!(armed.to_string().len() < 4_096);
+
+    let mut after = serde_json::Value::Null;
+    let mut wakes = std::collections::BTreeSet::new();
+    let mut receipts = std::collections::BTreeSet::new();
+    for _ in 0..100 {
+        let page = call(
+            &f,
+            &token,
+            "chariox.events.wakes",
+            &task,
+            serde_json::json!({"after": after, "limit": 7}),
+        )
+        .await
+        .unwrap()
+        .payload;
+        let page_wakes = page["wakes"].as_array().unwrap();
+        let page_receipts = page["receipts"].as_array().unwrap();
+        assert!(page_wakes.len() + page_receipts.len() <= 7);
+        assert!(page.to_string().len() < 20_480);
+        for wake in page_wakes {
+            assert!(wakes.insert(wake["id"].as_str().unwrap().to_string()));
+        }
+        for receipt in page_receipts {
+            assert!(receipts.insert(receipt["sequence"].as_u64().unwrap()));
+        }
+        after = page["next_after"].clone();
+        if after.is_null() {
+            break;
+        }
+    }
+    assert!(after.is_null(), "all retained pages were read");
+    assert_eq!(wakes.len(), 66);
+    // The completed wakes and their receipts are pruned together.
+    assert_eq!(receipts.len(), 64);
 }
 
 #[tokio::test]
@@ -1579,6 +1801,73 @@ async fn event_tools_arm_wait_and_cancel_through_the_runtime_mcp_entry() {
     scheduler.abort();
 }
 
+/// A refused yield names its actual cause: a wait on a live timer without a reason says the
+/// reason is missing, not that the sources are dead or the deadline is past.
+#[tokio::test]
+async fn a_refused_yield_names_the_missing_part_instead_of_blaming_live_sources() {
+    let f = fixture("yield-refusal-cause", true).await;
+    let task = f.begin(&f.prompt_id);
+    let token = {
+        let app = f.app.lock().await;
+        app.providers
+            .get_run(&f.run)
+            .unwrap()
+            .runtime_mcp_auth_token()
+            .expect("runtime MCP auth")
+            .to_string()
+    };
+    let scheduler = {
+        let runtime = f.runtime.clone();
+        tokio::spawn(async move { runtime.run_agent_wake_scheduler().await })
+    };
+    let timer = call(
+        &f,
+        &token,
+        "chariox.events.timer",
+        &task,
+        serde_json::json!({"label":"check in","delay_ms":3_600_000}),
+    )
+    .await
+    .unwrap()
+    .payload;
+    let registration = timer["registration_id"].as_str().unwrap().to_string();
+    let now = crate::session::unix_epoch_ms();
+    for (args, cause) in [
+        // A missing argument is refused by the tool's schema check, which names it.
+        (
+            serde_json::json!({"registration_ids":[registration],"inbox_cursor":0}),
+            "missing its required argument `reason`",
+        ),
+        (
+            serde_json::json!({"registration_ids":[registration],"inbox_cursor":0,"deadline_ms":now + 60_000,"reason":"  "}),
+            "reason required",
+        ),
+        (
+            serde_json::json!({"registration_ids":[],"inbox_cursor":0,"reason":"nothing named"}),
+            "registration_ids is empty",
+        ),
+    ] {
+        let refused = call(&f, &token, "chariox.events.yield", &task, args.clone())
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            refused.contains(cause) && !refused.contains("named live sources"),
+            "{args}: {refused}"
+        );
+    }
+    call(
+        &f,
+        &token,
+        "chariox.events.yield",
+        &task,
+        serde_json::json!({"registration_ids":[registration],"inbox_cursor":0,"reason":"waiting for the check-in"}),
+    )
+    .await
+    .unwrap();
+    scheduler.abort();
+}
+
 /// An agent may always end its turn: a yield that leaves a timer out is accepted, lists the
 /// open timer in its result, and cancels the timers named in `cancel` in the same call.
 #[tokio::test]
@@ -1668,6 +1957,171 @@ async fn a_turn_reusing_an_earlier_waiting_tasks_ids_is_told_its_own() {
         "{refusal}"
     );
     assert_eq!(f.task(&earlier.task_id).state, ExecutionState::Waiting);
+}
+
+#[tokio::test]
+async fn waitprior_mixed_yield_names_the_exact_retry() {
+    let f = fixture("waitprior-mixed", true).await;
+    let earlier = f.begin("earlier-turn");
+    let earlier_watch = f.arm(&earlier, "earlier-source").unwrap();
+    f.wait_on(&earlier, &earlier_watch.registration_id);
+    let original = f.task(&earlier.task_id);
+    let task = f.begin(&f.prompt_id);
+    let token = runtime_token(&f).await;
+    let current = f.arm(&task, "current-source").unwrap();
+
+    let listed = call(
+        &f,
+        &token,
+        "chariox.events.subscriptions",
+        &task,
+        serde_json::json!({}),
+    )
+    .await
+    .unwrap()
+    .payload;
+    assert_eq!(
+        listed["other_tasks"][0]["id"],
+        earlier_watch.registration_id
+    );
+    assert_eq!(listed["registrations"][0]["id"], current.registration_id);
+
+    let refused = call(
+        &f,
+        &token,
+        "chariox.events.yield",
+        &task,
+        serde_json::json!({
+            "registration_ids":[earlier_watch.registration_id,current.registration_id],
+            "inbox_cursor":0,"reason":"wait for both"
+        }),
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+    assert!(
+        refused.contains(&earlier_watch.registration_id),
+        "{refused}"
+    );
+    assert!(refused.contains(&earlier.task_id), "{refused}");
+    assert!(
+        refused.contains(&format!(
+            "Retry with registration_ids [\"{}\"]",
+            current.registration_id
+        )),
+        "{refused}"
+    );
+    assert_eq!(f.task(&earlier.task_id), original);
+    assert!(f.task(&task.task_id).wait.is_none());
+    call(
+        &f,
+        &token,
+        "chariox.events.yield",
+        &task,
+        serde_json::json!({
+            "registration_ids":[current.registration_id],"inbox_cursor":0,"reason":"wait for mine"
+        }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(f.task(&earlier.task_id), original);
+}
+
+#[tokio::test]
+async fn waitprior_adopts_two_retained_watches_and_keeps_one_receipt_each() {
+    let f = fixture("waitprior-adoption", true).await;
+    let now = crate::session::unix_epoch_ms();
+    let mut retained = Vec::new();
+    for id in ["first", "second"] {
+        let earlier = f.begin(id);
+        let mut wake = f.wake(&earlier, id);
+        wake.kind = "process".into();
+        f.store()
+            .agent_lifecycle(Operation::ArmWake {
+                task: earlier.task_id.clone(),
+                prompt: earlier.prompt_id.clone(),
+                wake: Box::new(wake.clone()),
+            })
+            .unwrap();
+        f.store()
+            .agent_lifecycle(Operation::ProcessStarted {
+                id: id.into(),
+                pid: 42,
+                now,
+            })
+            .unwrap();
+        f.store()
+            .agent_lifecycle(Operation::Settle {
+                room: f.room.clone(),
+                agent: f.agent.clone(),
+                prompt: earlier.prompt_id.clone(),
+                run: f.run.clone(),
+                has_answer: true,
+                cancelled: false,
+                now,
+            })
+            .unwrap();
+        assert_eq!(f.task(&earlier.task_id).state, ExecutionState::Done);
+        retained.push(wake);
+    }
+    let task = f.begin(&f.prompt_id);
+    let token = runtime_token(&f).await;
+    let current = f.arm(&task, "current-source").unwrap();
+    let registrations = [
+        &retained[0].registration_id,
+        &current.registration_id,
+        &retained[1].registration_id,
+    ];
+    let listed = call(
+        &f,
+        &token,
+        "chariox.events.subscriptions",
+        &task,
+        serde_json::json!({}),
+    )
+    .await
+    .unwrap()
+    .payload;
+    assert_eq!(listed["other_tasks"].as_array().unwrap().len(), 2);
+    call(
+        &f,
+        &token,
+        "chariox.events.yield",
+        &task,
+        serde_json::json!({
+            "registration_ids":registrations, "inbox_cursor":0,"reason":"wait for all three"
+        }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        f.task(&task.task_id).wait.unwrap().registration_ids.len(),
+        3
+    );
+    for wake in &retained {
+        let earlier = f.task(&wake.task_id);
+        assert!(earlier.wait.is_none() && earlier.obligations.is_empty());
+        assert_eq!(earlier.reason, format!("adopted by task {}", task.task_id));
+        assert_eq!(
+            f.store().agent_wake(&wake.id).unwrap().unwrap().task_id,
+            task.task_id
+        );
+        for _ in 0..2 {
+            f.store()
+                .agent_lifecycle(Operation::ProcessExited {
+                    id: wake.id.clone(),
+                    exit_code: Some(0),
+                    tail: String::new(),
+                    now,
+                })
+                .unwrap();
+        }
+    }
+    let inbox = f.store().agent_inbox(&f.room, &f.agent, 0).unwrap();
+    assert_eq!(inbox.len(), 2);
+    assert!(inbox
+        .iter()
+        .all(|event| event.payload["task_id"] == task.task_id));
 }
 
 #[tokio::test]
@@ -1910,6 +2364,50 @@ async fn a_stalled_sweep_does_not_wake_a_live_wait_early() {
     assert_eq!(early, 0, "no deadline has passed");
 }
 
+/// A sweep pass held past the dead-man tolerance is reported with the step it waits on, so the
+/// person sees what holds supervision instead of only when it was last seen.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_stalled_sweep_is_reported_with_the_step_it_waits_on() {
+    let f = fixture("stalled-sweep-report", false).await;
+    let task = f.begin("turn-1");
+    let wake = f.arm(&task, "wake-a").unwrap();
+    f.wait_on(&task, &wake.registration_id);
+    let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel(1);
+    let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+    *f.driver.stall.lock().unwrap() = Some((entered_tx, release_rx));
+    let runtime = f.runtime.clone();
+    let stalled = tokio::spawn(async move { runtime.sweep_agent_lifecycle().await });
+    tokio::task::spawn_blocking(move || {
+        entered_rx.recv_timeout(std::time::Duration::from_secs(20))
+    })
+    .await
+    .unwrap()
+    .expect("the sweep probes the source");
+    // The pass has been held for longer than the dead-man tolerance.
+    f.runtime.agent_wakes_last_swept_for_test(
+        crate::session::unix_epoch_ms() - 4 * crate::durable_state::agent_lifecycle::SWEEP_MS,
+    );
+    let scheduler = {
+        let runtime = f.runtime.clone();
+        tokio::spawn(async move { runtime.run_agent_wake_scheduler().await })
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while !f.notices().contains("Kernel supervision sweep stalled")
+        && std::time::Instant::now() < deadline
+    {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    scheduler.abort();
+    release_tx.send(()).unwrap();
+    stalled.await.unwrap().unwrap();
+    assert!(
+        f.notices()
+            .contains("its pass waits on the wake dead-man check since"),
+        "{}",
+        f.notices()
+    );
+}
+
 async fn runtime_token(f: &Fixture) -> String {
     let app = f.app.lock().await;
     app.providers
@@ -1925,8 +2423,9 @@ fn open_terminal(f: &Fixture, command: &str) -> String {
         .owned
         .room_terminals
         .open(crate::room_terminal::OpenRoomTerminal {
+            stdin: None,
             project_environment: Default::default(),
-            session_id: f.room.clone(),
+            scope: crate::room_terminal::TerminalScope::room(f.room.clone()),
             working_directory: f.runtime.room_project_directory(&f.room).unwrap(),
             cols: 100,
             rows: 30,
@@ -1943,6 +2442,9 @@ fn open_terminal(f: &Fixture, command: &str) -> String {
 /// Delivering the wake turn is the ledger's and is covered by the driver tests above.
 #[tokio::test]
 async fn terminal_finish_reports_once_to_the_waiting_agent_with_exit_code_and_screen() {
+    if !crate::test_support::has_user_namespaces() {
+        return;
+    }
     let f = fixture("terminal-wake-finish", true).await;
     let task = f.begin(&f.prompt_id);
     let token = runtime_token(&f).await;
@@ -1989,6 +2491,9 @@ async fn terminal_finish_reports_once_to_the_waiting_agent_with_exit_code_and_sc
 /// write must not discard the occurrence: it is retried until it commits.
 #[tokio::test]
 async fn a_rejected_terminal_occurrence_is_retried_until_the_ledger_commits() {
+    if !crate::test_support::has_user_namespaces() {
+        return;
+    }
     let f = fixture("terminal-wake-retry", true).await;
     let received = f._worktree.path().join("provider-input");
     {
@@ -2068,7 +2573,13 @@ async fn a_rejected_terminal_occurrence_is_retried_until_the_ledger_commits() {
         loop {
             let input = std::fs::read_to_string(&received).unwrap();
             let events = f.store().agent_inbox(&f.room, &f.agent, 0).unwrap();
-            if input.contains("Inbox: at least 1 new event") && events[0].state == "accepted" {
+            // The wake quotes the event (the label the terminal was armed with), so the agent
+            // needs no inbox read, and the kernel closes the event once the turn took it.
+            if input.contains("> {")
+                && input.contains("\"label\":\"build\"")
+                && events[0].state == "handled"
+            {
+                assert!(!input.contains("chariox.events.inbox"), "{input}");
                 assert_eq!(events.len(), 1, "exactly one delivered occurrence");
                 let woken = f.task(&task.task_id);
                 assert_eq!(woken.state, ExecutionState::Working);
@@ -2136,291 +2647,6 @@ async fn dropping_the_runtime_frees_the_terminal_wake_driver() {
 
 #[path = "async_popup.rs"]
 mod async_popup;
-
-async fn run_token(f: &Fixture) -> String {
-    f.app
-        .lock()
-        .await
-        .providers
-        .get_run(&f.run)
-        .unwrap()
-        .runtime_mcp_auth_token()
-        .unwrap()
-        .to_owned()
-}
-
-/// A browser that failed to start is not a permission question: the "allow browser access" card
-/// is refused until a start succeeds again, with what to do instead.
-#[tokio::test]
-async fn blocked_for_browser_access_is_refused_after_a_failed_browser_start() {
-    let f = fixture("owner-browser-card-start-failed", true).await;
-    let task = f.begin(&f.prompt_id);
-    let token = run_token(&f).await;
-    let host = &f.runtime.owned.kernel_browser_host;
-    host.set_focus("local", Some(&f.agent));
-    host.load("local", &f.agent).unwrap();
-    let root = std::env::temp_dir().join(format!(
-        "chariox-start-failed-{:032x}",
-        rand::random::<u128>()
-    ));
-    std::fs::create_dir(&root).unwrap();
-    let broken = root.join("broken.sh");
-    std::fs::write(&broken, "exit 1\n").unwrap();
-    host.install_fixture_backend("local", &broken, &root);
-    let admission = host.admit("local", &f.agent).unwrap();
-    host.protected_request_admitted(
-        "local",
-        Some(&admission),
-        "host.browser",
-        serde_json::json!({"op":"start"}),
-        serde_json::Value::Null,
-    )
-    .expect_err("the controller never comes up");
-    assert!(host.start_failed("local"));
-    let args = serde_json::json!({
-        "reason":"The browser did not start.", "owner_action":"browser_access"
-    });
-    let error = call(&f, &token, "chariox.events.blocked", &task, args.clone())
-        .await
-        .unwrap_err()
-        .to_string();
-    assert!(
-        error.contains("did not start") && error.contains("start once more"),
-        "{error}"
-    );
-    let session = f.runtime.owned.session_store.get_session(&f.room).unwrap();
-    assert!(
-        session.active_interactions().is_empty(),
-        "no card for a browser that failed to start"
-    );
-    assert!(!matches!(
-        f.task(&task.task_id).state,
-        ExecutionState::Blocked
-    ));
-    // The same words without owner_action stay an ordinary block.
-    call(
-        &f,
-        &token,
-        "chariox.events.blocked",
-        &task,
-        serde_json::json!({"reason":"The browser did not start."}),
-    )
-    .await
-    .unwrap();
-    // A start that works clears the failure: the card is a question about access again.
-    f.runtime
-        .install_unstarted_kernel_browser_fixture("local", &root);
-    host.protected_request_admitted(
-        "local",
-        Some(&host.admit("local", &f.agent).unwrap()),
-        "host.browser",
-        serde_json::json!({"op":"start"}),
-        serde_json::Value::Null,
-    )
-    .unwrap();
-    assert!(!host.start_failed("local"));
-    std::fs::remove_dir_all(root).unwrap();
-}
-
-/// The controller stays alive while Chrome fails to start; the explicit `start` the refusal asks
-/// for is the retry, and it must clear the failure on that same controller.
-#[tokio::test]
-async fn an_explicit_start_on_the_live_controller_clears_a_failed_start() {
-    let f = fixture("owner-browser-card-live-retry", true).await;
-    let task = f.begin(&f.prompt_id);
-    let token = run_token(&f).await;
-    let host = &f.runtime.owned.kernel_browser_host;
-    host.set_focus("local", Some(&f.agent));
-    host.load("local", &f.agent).unwrap();
-    let root = std::env::temp_dir().join(format!(
-        "chariox-start-live-retry-{:032x}",
-        rand::random::<u128>()
-    ));
-    std::fs::create_dir(&root).unwrap();
-    f.runtime
-        .install_unstarted_kernel_browser_fixture("local", &root);
-    let script = root.join("MD5-controller.sh");
-    let source = std::fs::read_to_string(&script).unwrap();
-    let healthy = r#"*'"op":"start"'*) printf 'start\n' >> "$1/starts"; "#;
-    assert!(source.contains(healthy));
-    // The controller answers every request; only Chrome's start fails while the flag file exists.
-    let failing = r#"*'"op":"start"'*) if test -e "$1/chrome-down"; then printf '{"id":%s,"ok":false,"error":{"code":"browser_start_failed","message":"chrome did not start"}}\n' "$id"; continue; fi; printf 'start\n' >> "$1/starts"; "#;
-    std::fs::write(&script, source.replace(healthy, failing)).unwrap();
-    std::fs::write(root.join("chrome-down"), "").unwrap();
-    // The first agent read launches the controller; its implicit start then fails.
-    let read = || {
-        host.protected_request_admitted(
-            "local",
-            Some(&host.admit("local", &f.agent).unwrap()),
-            "host.browser",
-            serde_json::json!({"op":"state"}),
-            serde_json::Value::Null,
-        )
-    };
-    read().expect_err("Chrome does not start");
-    assert!(host.start_failed("local"));
-    let args = serde_json::json!({
-        "reason":"I need the signed-in tab.", "owner_action":"browser_access"
-    });
-    let refusal = call(&f, &token, "chariox.events.blocked", &task, args.clone())
-        .await
-        .unwrap_err()
-        .to_string();
-    assert!(refusal.contains("start once more"), "{refusal}");
-    // An explicit start that fails again keeps the failure on the live controller.
-    let start = || {
-        host.protected_request_admitted(
-            "local",
-            Some(&host.admit("local", &f.agent).unwrap()),
-            "host.browser",
-            serde_json::json!({"op":"start"}),
-            serde_json::Value::Null,
-        )
-    };
-    start().expect_err("Chrome is still down");
-    assert!(host.start_failed("local"));
-    // The retry the refusal asked for succeeds on the same controller.
-    std::fs::remove_file(root.join("chrome-down")).unwrap();
-    start().unwrap();
-    assert!(
-        !host.start_failed("local"),
-        "a successful start clears the failure"
-    );
-    call(&f, &token, "chariox.events.blocked", &task, args)
-        .await
-        .expect("the owner can approve the signed-in tab again");
-    let session = f.runtime.owned.session_store.get_session(&f.room).unwrap();
-    assert!(session
-        .active_interactions()
-        .last()
-        .unwrap()
-        .choices()
-        .iter()
-        .any(|choice| choice.id() == "allow_browser"));
-    std::fs::remove_dir_all(root).unwrap();
-}
-
-/// A loaded grant that does not hold the tab the task needs is a missing resource, not a browser
-/// that failed to start: the owner can still approve it.
-#[tokio::test]
-async fn blocked_for_browser_access_is_offered_when_a_loaded_grant_lacks_the_tab() {
-    let f = fixture("owner-browser-card-partial", true).await;
-    let task = f.begin(&f.prompt_id);
-    let token = run_token(&f).await;
-    let host = &f.runtime.owned.kernel_browser_host;
-    host.request_grant(
-        "local",
-        &f.agent,
-        &f.prompt_id,
-        Duration::from_secs(600),
-        None,
-        &f.room,
-    )
-    .unwrap();
-    let admission = host.admit("local", &f.agent).unwrap();
-    let tab = crate::local::UserDomainResource::BrowserTab {
-        tab_id: "existing-signed-in-tab".into(),
-    };
-    let refusal = host
-        .claim_resource(Some(&admission), tab, false)
-        .unwrap_err();
-    assert!(refusal.contains("not_focused_agent"), "{refusal}");
-    call(
-        &f,
-        &token,
-        "chariox.events.blocked",
-        &task,
-        serde_json::json!({
-            "reason":"I need the signed-in tab.", "owner_action":"browser_access"
-        }),
-    )
-    .await
-    .expect("the owner can approve the missing tab");
-    assert!(matches!(
-        f.task(&task.task_id).state,
-        ExecutionState::Blocked
-    ));
-    let session = f.runtime.owned.session_store.get_session(&f.room).unwrap();
-    assert!(session
-        .active_interactions()
-        .last()
-        .unwrap()
-        .choices()
-        .iter()
-        .any(|choice| choice.id() == "allow_browser"));
-}
-
-#[tokio::test]
-async fn owner_browser_decision_restores_access_and_rejects_stale_answers() {
-    for stale in [false, true] {
-        let f = fixture("owner-browser-decision", true).await;
-        let task = f.begin(&f.prompt_id);
-        let token = f
-            .app
-            .lock()
-            .await
-            .providers
-            .get_run(&f.run)
-            .unwrap()
-            .runtime_mcp_auth_token()
-            .unwrap()
-            .to_owned();
-        call(&f, &token, "chariox.events.blocked", &task, serde_json::json!({
-            "reason":"Browser access ended. Please allow browser access.", "owner_action":"browser_access"
-        })).await.unwrap();
-        let blocked = f.task(&task.task_id);
-        f.runtime
-            .ensure_task_owner_interaction(blocked.clone())
-            .await
-            .unwrap();
-        let session = f.runtime.owned.session_store.get_session(&f.room).unwrap();
-        let card = session.active_interactions().last().unwrap();
-        assert!(
-            card.choices()
-                .iter()
-                .any(|choice| choice.id() == "allow_browser"),
-            "a browser refusal offers an approval that restores access in place"
-        );
-        assert!(!card.message().contains("chariox.") && !card.message().contains("user_domain"));
-        assert_eq!(card.timeout_sec(), None);
-        assert!(!f
-            .runtime
-            .owned
-            .kernel_browser_host
-            .has_grant("local", &f.agent));
-        if stale {
-            f.store()
-                .agent_lifecycle(Operation::OwnerResponse {
-                    task: task.task_id.clone(),
-                    revision: blocked.blocked_revision,
-                    resume: false,
-                    now: crate::session::unix_epoch_ms(),
-                })
-                .unwrap();
-        }
-        f.runtime
-            .owned
-            .resolve_attributed_terminal_runtime_interaction(
-                &f.room,
-                card.id(),
-                "allow_browser",
-                None,
-                Some("local"),
-                true,
-                Some(crate::local::KernelConnectionClass::Terminal),
-                None,
-            )
-            .unwrap();
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        assert_eq!(
-            f.runtime
-                .owned
-                .kernel_browser_host
-                .has_grant("local", &f.agent),
-            !stale
-        );
-    }
-}
 
 /// needsui: an agent's own question reaches the owner as a question with a reply box, not as a generic
 /// "Agent needs your action" with Resume; the reply resumes the task.
@@ -2600,8 +2826,10 @@ async fn an_answer_given_before_the_turn_settles_is_delivered_when_it_settles() 
     );
 }
 
+/// A turn the kernel started (a wake, not the owner's prompt) loads the kernel browser at once:
+/// its task keeps working and no card asks the owner.
 #[tokio::test]
-async fn owner_browser_reload_after_a_wake_offers_approval_in_place() {
+async fn a_wake_turn_loads_the_kernel_browser_without_a_card() {
     let f = fixture("browser-owner-after-wake", true).await;
     let task = f.begin(&f.prompt_id);
     let token = {
@@ -2627,33 +2855,26 @@ async fn owner_browser_reload_after_a_wake_offers_approval_in_place() {
             .unwrap()
             .to_owned()
     };
-    let result = f
+    let loaded = f
         .runtime
         .dispatch_authenticated_runtime_tool_call(
             &token,
             "chariox.load_kernel_browser",
             serde_json::json!({}),
         )
-        .await;
-    assert!(
-        result.is_ok(),
-        "a retained task asks for browser approval instead of failing again: {result:?}"
-    );
-    assert_eq!(
-        f.task(&task.task_id).owner_action,
-        Some(crate::durable_state::agent_lifecycle::TaskOwnerAction::BrowserAccess)
-    );
-    assert_eq!(f.task(&task.task_id).state, ExecutionState::Blocked);
-    assert!(!f
+        .await
+        .expect("an agent always has the kernel browser");
+    assert_eq!(loaded.payload["loaded"], "chariox.kernel_browser");
+    let task = f.task(&task.task_id);
+    assert_eq!(task.state, ExecutionState::Working);
+    assert_eq!(task.owner_action, None);
+    assert!(f
         .runtime
         .owned
         .kernel_browser_host
-        .has_grant("local", &f.agent));
+        .is_loaded("local", &f.agent));
     let session = f.runtime.owned.session_store.get_session(&f.room).unwrap();
-    assert!(session.active_interactions().iter().any(|card| card
-        .choices()
-        .iter()
-        .any(|choice| choice.id() == "allow_browser")));
+    assert!(session.active_interactions().is_empty());
 }
 
 impl Fixture {
@@ -2752,6 +2973,113 @@ async fn a_yield_writes_one_wait_row_and_the_wake_updates_it_in_place() {
     assert_eq!(row["woken_by"]["kind"], "output_matched", "{row}");
     let started = row["started_at_ms"].as_u64().unwrap();
     assert!(row["finished_at_ms"].as_u64().unwrap() >= started, "{row}");
+}
+
+#[tokio::test]
+async fn sweep_commits_the_yield_of_a_completed_turn_that_did_not_answer() {
+    let f = fixture("sweep-completed-yield", true).await;
+    let Outcome::Task(task) = f
+        .store()
+        .agent_lifecycle(Operation::Begin {
+            owner: "local".into(),
+            room: f.room.clone(),
+            agent: f.agent.clone(),
+            prompt: f.prompt_id.clone(),
+            run: Some(f.run.clone()),
+            now: 1,
+        })
+        .unwrap()
+    else {
+        panic!("begin returns the task");
+    };
+    let wake = f.arm(&task, "sweep-yield-source").unwrap();
+    f.store()
+        .agent_lifecycle(Operation::Yield {
+            task: task.task_id.clone(),
+            prompt: task.prompt_id.clone(),
+            registrations: vec![wake.registration_id],
+            cursor: 0,
+            deadline: None,
+            reason: "Wait for the test source".into(),
+            now: crate::session::unix_epoch_ms(),
+        })
+        .unwrap();
+    // The provider can end without an answer after accepting a yield. The sweep
+    // may see this prompt completion before the task ledger commits the wait.
+    f.runtime
+        .owned
+        .complete_local_prompt_without_advance(&f.room, &f.agent, Some(&f.run))
+        .unwrap();
+    f.runtime.sweep_agent_lifecycle().await.unwrap();
+
+    let waiting = f.task(&task.task_id);
+    assert_eq!(waiting.state, ExecutionState::Waiting, "{}", waiting.reason);
+    assert_eq!(f.wake_state(&wake.id), "running");
+}
+
+#[tokio::test]
+async fn sweep_keeps_a_yield_while_its_provider_turn_is_still_settling() {
+    let f = fixture("sweep-yield-settling", true).await;
+    let Outcome::Task(task) = f
+        .store()
+        .agent_lifecycle(Operation::Begin {
+            owner: "local".into(),
+            room: f.room.clone(),
+            agent: f.agent.clone(),
+            prompt: f.prompt_id.clone(),
+            run: Some(f.run.clone()),
+            now: 1,
+        })
+        .unwrap()
+    else {
+        panic!("begin returns the task");
+    };
+    let wake = f.arm(&task, "settling-yield-source").unwrap();
+    f.store()
+        .agent_lifecycle(Operation::Yield {
+            task: task.task_id.clone(),
+            prompt: task.prompt_id.clone(),
+            registrations: vec![wake.registration_id],
+            cursor: 0,
+            deadline: None,
+            reason: "Wait for the test source".into(),
+            now: crate::session::unix_epoch_ms(),
+        })
+        .unwrap();
+    f.runtime.start_active_turn_with_trace_id(
+        &f.room,
+        &f.agent,
+        &f.prompt_id,
+        &f.run,
+        &f.prompt_id,
+    );
+    let session = f.runtime.owned.session_store.get_session(&f.room).unwrap();
+    // Pause the ordinary completion path between removing its prompt and
+    // recording the completed outcome. The provider turn still owns settlement.
+    let completed = f
+        .runtime
+        .owned
+        .prompt_state_owner
+        .complete_active_prompt_if_matches(&session, &f.agent, Some(&f.prompt_id))
+        .unwrap();
+    f.runtime.sweep_agent_lifecycle().await.unwrap();
+    let settling = f.task(&task.task_id);
+    assert_eq!(
+        settling.state,
+        ExecutionState::Working,
+        "{}",
+        settling.reason
+    );
+    assert!(settling.wait.is_some());
+
+    let settled = f
+        .runtime
+        .owned
+        .settle_agent_task(&f.room, &f.agent, &completed, &f.run, false)
+        .unwrap();
+    f.runtime.owned.clear_prompt_activity(&f.run);
+    assert_eq!(settled.unwrap().0.state, ExecutionState::Waiting);
+    assert_eq!(f.wake_state(&wake.id), "running");
 }
 
 // A wait the owner stops does not stay a running row in the transcript: the same row says it was cancelled.
@@ -2941,7 +3269,7 @@ async fn an_event_that_names_no_task_still_ends_the_wait_row_of_the_agent_it_wak
                 .agent_inbox(&f.room, &f.agent, 0)
                 .unwrap()
                 .into_iter()
-                .any(|e| e.sequence == event.sequence && e.state == "accepted");
+                .any(|e| e.sequence == event.sequence && is_delivered(&e.state));
             if delivered {
                 return;
             }
@@ -3040,7 +3368,7 @@ impl Fixture {
         event.sequence
     }
 
-    async fn until_inbox_event(&self, sequence: u64, state: &str) {
+    async fn until_delivered(&self, sequence: u64) {
         tokio::time::timeout(std::time::Duration::from_secs(10), async {
             loop {
                 let reached = self
@@ -3048,7 +3376,7 @@ impl Fixture {
                     .agent_inbox(&self.room, &self.agent, 0)
                     .unwrap()
                     .into_iter()
-                    .any(|e| e.sequence == sequence && e.state == state);
+                    .any(|e| e.sequence == sequence && is_delivered(&e.state));
                 if reached {
                     return;
                 }
@@ -3056,7 +3384,7 @@ impl Fixture {
             }
         })
         .await
-        .unwrap_or_else(|_| panic!("the event reaches {state}"));
+        .unwrap_or_else(|_| panic!("the event is delivered"));
     }
 }
 
@@ -3081,7 +3409,7 @@ async fn a_message_does_not_end_the_wait_row_of_a_task_that_keeps_waiting() {
         true,
     );
     f.runtime.sweep_agent_lifecycle_for_test().await.unwrap();
-    f.until_inbox_event(sequence, "accepted").await;
+    f.until_delivered(sequence).await;
 
     assert_eq!(f.task(&task.task_id).state, ExecutionState::Waiting);
     let rows = f.wait_rows();
@@ -3151,7 +3479,7 @@ async fn a_wake_between_settlement_and_its_finish_leaves_no_running_wait_row() {
         serde_json::json!({"task_id": task.task_id}),
     );
     f.runtime.sweep_agent_lifecycle_for_test().await.unwrap();
-    f.until_inbox_event(sequence, "accepted").await;
+    f.until_delivered(sequence).await;
     assert_eq!(f.task(&task.task_id).state, ExecutionState::Working);
 
     f.runtime

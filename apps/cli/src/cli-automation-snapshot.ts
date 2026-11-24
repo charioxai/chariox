@@ -24,7 +24,7 @@ import type { ThemeRegistry } from "./theme-registry.js"
 import type {
   RemoteKernelView,
   RemoteMachineView,
-} from "./waiting-room-inventory-api.js"
+} from "./kernel-inventory-api.js"
 import { waitingRoomRows } from "./waiting-room-rows.js"
 import type { WaitingRoomState, WaitingRoomTargetState } from "./waiting-room-types.js"
 import {

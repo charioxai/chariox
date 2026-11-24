@@ -200,6 +200,7 @@ Remote-agent note:
 - a home kernel remains the only session authority even when some agents execute on remote machines
 - worker kernels host leased execution for those remote agents but do not become session authorities
 - remote jobs (`chariox.jobs.run` placed on a rented worker machine) are off unless the kernel starts with `CHARIOX_REMOTE_JOBS=1`; off, every job runs on the local queue and recovery ends a leftover remote job record without touching its worker
+- a job may name a machine the agent already holds (`machine` on `chariox.jobs.run`, the `allocation_ref` of `chariox.machines.acquire`): it runs through that machine's own kernel, never allocates or releases a machine, and removes its uploaded workspace once its files are home; a machine that is not held, released or unreachable is refused up front; it does not need `CHARIOX_REMOTE_JOBS`, which governs only placing jobs on worker machines; the kernel saves where the workspace goes before uploading and the job's result before removing it, and a restart or a later `chariox.jobs.status` finishes a removal that did not complete
 - from the user point of view, a remote agent should behave the same way as a local agent after placement, with machine placement shown as metadata rather than as a separate runtime mode
 - home-owned active extensions and vault credentials for remote agents preserve that authority split: the home kernel owns grant/revoke and credential policy, reconstructs the current tool definition before every forwarded extension invocation, executes scripts/connectors/MCP proxy calls and vault operations on the home machine, and records durable audit events where applicable. The worker kernel only projects approved manifests to the provider runtime, forwards calls with invocation metadata, requests scoped credential injection material for worker-local targets, and sends best-effort cancellation for in-flight calls when a leased prompt is cancelled. Computer credential calls forward only the credential handle to home; home admits the redacted Room Action and sends the one-operation secret input through the existing encrypted Room controller route. An unattended remote Claude launch is the narrow provider-launch exception: home resolves the selected profile's vaulted setup token only when the worker needs a run, sends it in the encrypted lease request, and the worker moves it directly into a zeroizing `CLAUDE_CODE_OAUTH_TOKEN` launch environment. Neither kernel persists it, and no `.credentials.json` replica is created.
 
@@ -263,6 +264,38 @@ so large provider tool output cannot retain and repeatedly copy the full stream.
 ### 3.3.1.1 Kernel Runtime and Workflow Details
 
 Detailed target-kernel implementation model, workflow model, workflow messaging, endpoint/run-output behavior, publication runtime behavior, agent binding rules, and observability baseline now live in [ARCHITECTURE_KERNEL_RUNTIME_WORKFLOW.md](ARCHITECTURE_KERNEL_RUNTIME_WORKFLOW.md). Keep this main architecture file focused on top-level component boundaries and authority rules.
+
+### 3.3.2 Hot reload
+
+A hot reload (SIGUSR2) replaces the kernel program in place and keeps its PID. It is a program
+update, not the end of the kernel: **everything that lives "until the kernel stops" survives it.**
+Only a real stop or restart ends it. This covers:
+
+- the Vault unlock: a Vault unlocked until the kernel stops stays unlocked; one with its own
+  deadline keeps that deadline (a single-use unlock stays single-use); a locked Vault stays locked;
+- the provider runs whose turns are handed over, with their ids and runtime tool tokens: a
+  surviving process keeps calling its Vault and runtime tools (timers, waits, subscriptions,
+  events) with the token it has, from the first moment of the new program, before any recovered
+  prompt claims the run. The handover carries the run's identity (who it is for, its token),
+  never what a launch carried (environment, arguments, credentials; those travel in memory);
+- the timers, waits and subscriptions the kernel owns (durable state), running terminals, jobs
+  that ended workloads left running, attachments and the listening sockets.
+
+Not carried, as after any restart: processes the kernel does not own (idle provider processes),
+live watched-process wakes (`chariox.events.process` ends with `process_lost`; the owner re-arms).
+A handover whose program prints a `--handover-format` other than this program's number or the next
+one is refused and nothing changes.
+
+The handover document is read part by part. A running agent turn, terminal, attachment or job whose
+part cannot be read ends as after a restart, with its reason in the log, and every other part is
+handed on: one agent's damaged part never costs the others their turns. A change to a handover
+shape that the previous release cannot read bumps `HANDOVER_FORMAT` by one and the release that
+bumps it keeps reading the previous format (`PREVIOUS_HANDOVER_FORMAT`); a field added with a serde
+default needs no bump. The fixtures in `apps/kernel/tests/fixtures/hot_reload/` are documents the
+previous release's kernel wrote with a Claude turn and a Codex turn running; a unit test reads them
+whole, so a required field added without a default fails the build. At each release, replace them
+with the release's own (`apps/kernel/tests/fixtures/hot_reload/README.md`).
+A change that would end something at a reload that a restart keeps alive is a bug in the handover.
 
 ### 3.4 Relay Server
 
@@ -387,6 +420,34 @@ registers durable dispatch intent before effects. Receipt failures preserve
 already admitted work and identify it to callers; known rejections are
 recorded separately. Obligation settlement, waits and recovery remain the
 following lifecycle PR's responsibility.
+
+### 3.6.2 Agents never reach the kernel's state
+
+Every process the kernel starts for an agent (provider runs, kernel jobs and
+watched commands, terminals an agent opens) runs where the kernel's secrets
+are out of reach: its state folder (database, relay credential, every
+provider profile), Vault, credentials, machine identity, relay pairing and
+history. Secrets live in folders of their own and exactly those folders are
+covered, matched by path component, so a folder that only shares a name prefix
+with one, or a file beside one, stays the agent's to read and write. A Vault or
+history database configured outside the kernel home must sit in a folder of its
+own; the kernel refuses to start otherwise and says where to move it. On Linux
+a Bubblewrap mount namespace covers each secret folder with an empty read-only
+one, so reading a secret fails, a write into the folder fails instead of
+vanishing, and a secret the kernel replaces or creates later stays hidden; on
+macOS a Seatbelt profile denies them. Files the kernel hands an agent to read, such as
+a workflow node's instruction file, live outside the secrets. What the launch names as the agent's
+own stays reachable: its working folder, its provider profile, its scratch
+folder and program, and, read-only, the kernel registry and local sign-in
+token the chariox CLI uses. Bubblewrap stays the process the kernel holds,
+and `setpriv` (util-linux) ties the program's life to it, so stopping the
+sandbox stops the program. Bubblewrap ignores the signals that ask a
+program to stop (Ctrl-C, Ctrl-\, hang-up, SIGTERM), which `env` (coreutils
+8.31 or later) gives back to the program, so a Stop or a stop request reaches
+the program, not its sandbox; SIGKILL ends both. A kernel that cannot confine
+(no `bwrap`, `setpriv` or `env`, or user namespaces denied to them) refuses
+to start the process with a message that says how to fix it; nothing runs
+unconfined. A person's own terminal is not confined.
 
 ### 3.7 Workspace Coordination
 
@@ -808,7 +869,7 @@ The kernel owns prompt assembly. Clients, workflow schedulers, provider adapters
 The prompt assembly boundary produces a `PromptEnvelope` with these conceptual fields:
 
 - `visible_user_prompt`: the human or endpoint prompt that should appear in Chariox prompt history and prompt input surfaces
-- `hidden_system_context`: Chariox runtime instructions, workflow-level prompt, node-level instructions, granted MCP/skill summaries, runtime continuation instructions, and utility-specific instructions
+- `hidden_system_context`: Chariox runtime instructions, workflow-level prompt, node-level instructions, granted MCP summaries and state-aware Skills v2 metadata, runtime continuation instructions, and utility-specific instructions
 - `attachments`: structured attachments, unchanged from the prompt submission path
 - `manifest`: prompt template ids, template versions or content hashes, assembly conditions, and the provider injection channel used for the turn
 
@@ -917,7 +978,7 @@ a kernel-owned remote-rendered PTY because Claude Code's public integration
 surface is terminal-first rather than a separable app-server protocol.
 Claude hidden prompt context for native TUI runs is delivered through Claude
 Code's `UserPromptSubmit` hook `additionalContext` response. Local launchers and
-worker kernels answer a scoped hook context request with the same granted-skill
+worker kernels answer a scoped hook context request with the same state-aware Skills v2
 prompt context used by normal Chariox provider runs, while keeping that context
 out of visible PTY input and native TUI transcript rendering.
 
@@ -932,6 +993,16 @@ Slice-backed native TUI mode is the same composition with a home-managed slice
 as the worker execution environment. Provider TUIs still attach to the home
 kernel session; `slice_ref` only selects where provider execution runs. Native
 TUI clients must not attach directly to a slice kernel for the product path.
+
+MP-08 / MP-10 / MP-11: the home Skills v2 catalog resolves instruction scope,
+state, explicit selection and immutable revision for local, leased, slice, BYOC
+and managed native TUI execution. Standard workers receive the same verified
+Auto/Manual package set as slices through the existing lease transport. Off
+stops future delivery; native sources remain independent. Exact, confirmed
+harness duplicates have one delivery and one picker row; differing content
+surfaces a conflict and Chariox selection retains the home revision. MCP
+placement and agent grants retain their existing behavior. Compaction/reset
+regenerates current instruction context before the next task continues.
 
 ### 5.3.3 OpenCode Structured Adapter
 

@@ -1,0 +1,24 @@
+{
+  "local": 1014,
+  "response": {
+    "ProviderAccountProfile": {
+      "profile": {
+        "owner_user_id": "local",
+        "provider": "codex",
+        "profile_id": "copy-1",
+        "label": "Copied account",
+        "origin": "chariox_created",
+        "is_default": false,
+        "auth_state": "expired",
+        "auth_error": "Sign in again on this machine",
+        "usage": {
+          "profile_id": "copy-1",
+          "provider": "codex",
+          "availability": "unavailable",
+          "source": "provider_not_observed",
+          "management_url": "https://chatgpt.com/codex/settings/usage"
+        }
+      }
+    }
+  }
+}

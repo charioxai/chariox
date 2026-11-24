@@ -342,6 +342,7 @@ mod tests {
                 .start(
                     &context_id,
                     &ticket.context_plan.package_binding().plan_digest,
+                    false,
                 )
                 .expect("ordinary completions and cancellations cannot consume lifetime capacity");
             write_owner_metadata(&store, &context_id);
@@ -361,7 +362,7 @@ mod tests {
         }
         let reopened = ManagedContextOutboundOperationStore::open(root.clone()).unwrap();
         assert!(reopened
-            .start("context-after-reopen", "sha256:next")
+            .start("context-after-reopen", "sha256:next", false)
             .is_ok());
         assert!(
             reopened.get("context-retention-0000").is_none(),
@@ -398,7 +399,11 @@ mod tests {
                 &format!("project-{id}"),
             );
             let (_, permit) = store
-                .start(id, &ticket.context_plan.package_binding().plan_digest)
+                .start(
+                    id,
+                    &ticket.context_plan.package_binding().plan_digest,
+                    false,
+                )
                 .unwrap();
             write_owner_metadata_for_ticket(&store, ticket);
             assert!(store.update(id, |status| {
@@ -411,7 +416,7 @@ mod tests {
         // Before expiration this owner's metadata quota is actually full.
         crate::config::write_private_file(&root.join(".operations/unknown.json"), b"{}").unwrap();
         assert!(store
-            .start("context-before-expiration", "sha256:next")
+            .start("context-before-expiration", "sha256:next", false)
             .is_err());
         // Only the oldest are past the recovery window; the last stays viable.
         let (viable, expired) = ids.split_last().unwrap();
@@ -437,7 +442,8 @@ mod tests {
         assert!(reopened
             .start(
                 "context-after-reopen",
-                &next.context_plan.package_binding().plan_digest
+                &next.context_plan.package_binding().plan_digest,
+                false
             )
             .unwrap()
             .1
@@ -459,7 +465,11 @@ mod tests {
         for id in [active, viable] {
             let ticket = super::super::tests::persisted_test_ticket(id);
             let (_, permit) = store
-                .start(id, &ticket.context_plan.package_binding().plan_digest)
+                .start(
+                    id,
+                    &ticket.context_plan.package_binding().plan_digest,
+                    false,
+                )
                 .unwrap();
             write_owner_metadata(&store, id);
             let mut status = store.get(id).unwrap();
@@ -544,7 +554,11 @@ mod tests {
         ] {
             let ticket = super::super::tests::persisted_test_ticket(id);
             let (_, permit) = store
-                .start(id, &ticket.context_plan.package_binding().plan_digest)
+                .start(
+                    id,
+                    &ticket.context_plan.package_binding().plan_digest,
+                    false,
+                )
                 .unwrap();
             write_owner_metadata(&store, id);
             let mut status = store.get(id).unwrap();
@@ -585,7 +599,8 @@ mod tests {
                 &super::super::tests::persisted_test_ticket("context-retry")
                     .context_plan
                     .package_binding()
-                    .plan_digest
+                    .plan_digest,
+                false
             )
             .unwrap()
             .1
@@ -603,7 +618,7 @@ mod tests {
         let id = "context-retiring";
         let ticket = super::super::tests::persisted_test_ticket(id);
         let digest = ticket.context_plan.package_binding().plan_digest;
-        let (_, permit) = store.start(id, &digest).unwrap();
+        let (_, permit) = store.start(id, &digest, false).unwrap();
         write_owner_metadata(&store, id);
         assert!(store.update(id, |status| status.phase =
             ManagedContextOutboundOperationPhase::Completed));
@@ -639,7 +654,7 @@ mod tests {
             .context_plan
             .package_binding()
             .plan_digest;
-        let (_, permit) = store.start(first, &digest).unwrap();
+        let (_, permit) = store.start(first, &digest, false).unwrap();
         write_owner_metadata(&store, first);
         assert!(store.update(first, |status| status.phase =
             ManagedContextOutboundOperationPhase::Completed));
@@ -653,7 +668,7 @@ mod tests {
         );
         drop(permit);
         store.finish(first);
-        let (_, second_permit) = store.start(second, &digest).unwrap();
+        let (_, second_permit) = store.start(second, &digest, false).unwrap();
         write_owner_metadata(&store, second);
         // Model a shared plan index already rebound while an old receipt remains.
         crate::config::write_private_file(
@@ -695,7 +710,7 @@ mod tests {
             .context_plan
             .package_binding()
             .plan_digest;
-        let (_, permit) = store.start(id, &digest).unwrap();
+        let (_, permit) = store.start(id, &digest, false).unwrap();
         write_owner_metadata(&store, id);
         let mut old = store.get(id).unwrap();
         old.phase = ManagedContextOutboundOperationPhase::Completed;
@@ -775,7 +790,7 @@ mod tests {
         let held = (0..2)
             .map(|index| {
                 store
-                    .start(&format!("context-held-{index}"), "sha256:held")
+                    .start(&format!("context-held-{index}"), "sha256:held", false)
                     .unwrap()
                     .1
                     .unwrap()
@@ -791,7 +806,7 @@ mod tests {
                 .expect("distinct rejected selections must not fill durable capacity");
             let plan = ticket.context_plan.package_binding();
             let error = store
-                .start(&plan.context_id, &plan.plan_digest)
+                .start(&plan.context_id, &plan.plan_digest, false)
                 .unwrap_err();
             assert!(error.to_string().contains("concurrency limit"));
             assert!(store.get(&plan.context_id).is_none());
@@ -809,7 +824,7 @@ mod tests {
             .unwrap();
         let plan = ticket.context_plan.package_binding();
         let (_, permit) = reopened
-            .start(&plan.context_id, &plan.plan_digest)
+            .start(&plan.context_id, &plan.plan_digest, false)
             .expect("fresh copy admitted after released slots and reopen");
         assert!(permit.is_some());
         drop(permit);
@@ -891,20 +906,24 @@ mod tests {
         assert_eq!(session.owner_user_id(), "owner");
         let mut project_selection = selection.clone();
         project_selection.context_selection.development_setup =
-            OwnerManagedDevelopmentSelection::SourceProject {
-                project_id: session.project_id().to_string(),
-                repositories: vec![OwnerManagedRepositorySelection {
+            OwnerManagedDevelopmentSelection::SourceProjects {
+                projects: vec![
+                    crate::managed_context::owner_managed::OwnerManagedSourceProject {
+                        project_id: session.project_id().to_string(),
+                        repositories: vec![OwnerManagedRepositorySelection {
                     role: crate::managed_context::development::DevelopmentRepositoryRole::Primary,
                     workspace_id: session.workspace_id().to_string(),
                     worktree_id: None,
                 }],
+                    },
+                ],
             };
         let project_ticket = store
             .prepare_owner_ticket(&config, &runtime, project_selection)
             .expect("MP-08 enrolled runtime owner Project must be admitted");
         let project_plan = project_ticket.context_plan.package_binding();
         let (_, project_permit) = store
-            .start(&project_plan.context_id, &project_plan.plan_digest)
+            .start(&project_plan.context_id, &project_plan.plan_digest, false)
             .unwrap();
         assert!(project_permit.is_some());
         drop(project_permit);
@@ -925,14 +944,18 @@ mod tests {
             };
             let mut selection = selection.clone();
             selection.context_selection.development_setup =
-                OwnerManagedDevelopmentSelection::SourceProject {
-                    project_id: session.project_id().to_string(),
-                    repositories: vec![OwnerManagedRepositorySelection {
+                OwnerManagedDevelopmentSelection::SourceProjects {
+                    projects: vec![
+                        crate::managed_context::owner_managed::OwnerManagedSourceProject {
+                            project_id: session.project_id().to_string(),
+                            repositories: vec![OwnerManagedRepositorySelection {
                         role:
                             crate::managed_context::development::DevelopmentRepositoryRole::Primary,
                         workspace_id: session.workspace_id().to_string(),
                         worktree_id: None,
                     }],
+                        },
+                    ],
                 };
             assert_eq!(
                 store
@@ -954,7 +977,8 @@ mod tests {
         assert!(store
             .start(
                 &failed_context,
-                &ticket.context_plan.package_binding().plan_digest
+                &ticket.context_plan.package_binding().plan_digest,
+                false
             )
             .is_err());
         assert!(store.get(&failed_context).is_none());
@@ -993,7 +1017,9 @@ mod tests {
             }
             assert!(store.get(&plan.context_id).is_none());
         }
-        let (_, permit) = store.start(&plan.context_id, &plan.plan_digest).unwrap();
+        let (_, permit) = store
+            .start(&plan.context_id, &plan.plan_digest, false)
+            .unwrap();
         drop(permit);
         let reopened = ManagedContextOutboundOperationStore::open(root.join("outbound")).unwrap();
         assert_eq!(
@@ -1021,9 +1047,13 @@ mod tests {
             .is_err());
         let mut unavailable = selection.clone();
         unavailable.context_selection.development_setup =
-            OwnerManagedDevelopmentSelection::SourceProject {
-                project_id: "missing-project".into(),
-                repositories: vec![],
+            OwnerManagedDevelopmentSelection::SourceProjects {
+                projects: vec![
+                    crate::managed_context::owner_managed::OwnerManagedSourceProject {
+                        project_id: "missing-project".into(),
+                        repositories: vec![],
+                    },
+                ],
             };
         assert!(reopened
             .prepare_owner_ticket(&config, &runtime, unavailable)
@@ -1034,7 +1064,7 @@ mod tests {
         let held = (0..2)
             .map(|index| {
                 reopened
-                    .start(&format!("context-slot-{index}"), "sha256:slot")
+                    .start(&format!("context-slot-{index}"), "sha256:slot", false)
                     .unwrap()
                     .1
                     .expect("occupy a transfer slot")
@@ -1047,7 +1077,9 @@ mod tests {
                 .prepare_owner_ticket(&config, &runtime, busy.clone())
                 .unwrap();
             let plan = ticket.context_plan.package_binding();
-            assert!(reopened.start(&plan.context_id, &plan.plan_digest).is_err());
+            assert!(reopened
+                .start(&plan.context_id, &plan.plan_digest, false)
+                .is_err());
             assert!(!root
                 .join("outbound/.operations")
                 .join(format!("{}-owner.json", plan.context_id))
@@ -1082,7 +1114,9 @@ mod tests {
             .prepare_owner_ticket(&config, &runtime, busy)
             .unwrap();
         let plan = ticket.context_plan.package_binding();
-        assert!(reopened.start(&plan.context_id, &plan.plan_digest).is_ok());
+        assert!(reopened
+            .start(&plan.context_id, &plan.plan_digest, false)
+            .is_ok());
         drop(router);
         fs::remove_dir_all(root).unwrap();
     }

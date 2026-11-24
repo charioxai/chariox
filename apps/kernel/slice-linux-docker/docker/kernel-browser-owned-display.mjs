@@ -15,7 +15,7 @@ export class OwnedDisplay {
   const field=b=>{const n=Buffer.alloc(2);n.writeUInt16BE(b.length);return Buffer.concat([n,b])};
   // FamilyWild entry; cookie file and isolated Unix socket stay private to this kernel.
   await writeFile(auth,Buffer.concat([Buffer.from([255,255]),field(Buffer.alloc(0)),field(Buffer.alloc(0)),field(Buffer.from('MIT-MAGIC-COOKIE-1')),field(randomBytes(16))]),{mode:0o600});
-  const child=spawn('/usr/bin/Xvfb',['-displayfd','3','-screen','0','2560x1800x24','-nolisten','tcp','-auth',auth],{stdio:['ignore','ignore','ignore','pipe']});this.child=child;
+  const child=spawn('/usr/bin/Xvfb',['-displayfd','3','-screen','0','2560x2816x24','-nolisten','tcp','-auth',auth],{stdio:['ignore','ignore','ignore','pipe']});this.child=child;
   let failed=false;child.on('error',()=>failed=true);let text='';child.stdio[3]?.on('data',b=>{if(text.length<64)text+=b});
   try{
    for(let n=0;n<100;n++){

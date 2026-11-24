@@ -51,15 +51,19 @@ impl KernelRuntimeState {
         Ok(policy)
     }
 
-    pub(super) async fn refresh_kernel_browser_audience(
+    pub(crate) async fn refresh_kernel_browser_audience(
         &self,
         attachment: &crate::attachment::RuntimeAttachment,
     ) -> Result<(), DaemonError> {
-        let session = self
+        let Some(session_owner) = self
             .owned
             .session_store
-            .get_session(attachment.session_id())?;
-        let user = self.provider_account_authority_owner_user_id(session.owner_user_id());
+            .session_owner_user_id(attachment.session_id())
+        else {
+            // The Room can close while its detached client refreshes the audience.
+            return Ok(());
+        };
+        let user = self.provider_account_authority_owner_user_id(&session_owner);
         if self.provider_account_authority_owner_user_id(attachment.owner_user_id()) == user {
             return Ok(());
         }

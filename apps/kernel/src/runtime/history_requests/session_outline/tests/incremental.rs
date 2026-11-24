@@ -91,6 +91,31 @@ fn a_second_outline_read_of_a_growing_reply_decodes_only_the_new_rows() {
 }
 
 #[test]
+fn an_outline_read_builds_one_entry_per_streamed_fragment() {
+    let builds_for = |fragments: u64| {
+        let (_dir, path) = store_path();
+        let store = OperationalHistoryStore::open(path).expect("open history");
+        let events = std::iter::once(prompt(10, 5_000))
+            .chain(
+                (0..fragments).map(|index| fragment(11 + index, 5_001 + index, "streamed words ")),
+            )
+            .collect::<Vec<_>>();
+        store.append_many(&events).expect("append the reply");
+        let builds =
+            || crate::history::session_history_entry_builds::BUILDS.with(|count| count.get());
+        let before = builds();
+        outline(&store, 1);
+        builds() - before
+    };
+
+    let added = builds_for(300) - builds_for(100);
+    assert!(
+        added <= 200,
+        "200 more fragments built {added} more entries; checks must read fields"
+    );
+}
+
+#[test]
 fn an_incremental_outline_equals_the_full_one_after_every_change() {
     let (_dir, path) = store_path();
     let store = OperationalHistoryStore::open(path.clone()).expect("open history");
@@ -190,4 +215,136 @@ fn an_outline_read_after_the_database_was_reclaimed_loads_the_range_again() {
         grown == full_outline(&path, 1),
         "the cached outline differs from the full one after the database was reclaimed"
     );
+}
+
+async fn read_delta_page(
+    store: &OperationalHistoryStore,
+    cursors: serde_json::Value,
+) -> serde_json::Value {
+    let request = serde_json::from_value(serde_json::json!({
+        "session_id": "session-1",
+        "agent_ids": ["agent-1"],
+        "after_sequence": cursors,
+    }))
+    .unwrap();
+    let response = execute_session_history_outline_request(store.clone(), request)
+        .await
+        .unwrap();
+    serde_json::to_value(response).unwrap()["SessionHistoryOutline"]["agents"][0].clone()
+}
+
+#[tokio::test]
+async fn outline_delta_sends_replacements_and_recovers_from_a_stale_cursor() {
+    let (_dir, path) = store_path();
+    let store = OperationalHistoryStore::open(path).expect("open history");
+    store
+        .append_many(&[prompt(10, 5_000), fragment(11, 5_001, "working")])
+        .unwrap();
+
+    let full = read_delta_page(&store, serde_json::json!({})).await;
+    assert_eq!(full["turns"][0]["summary"]["entry"]["text"], "working");
+    let before = &full["delta_cursor"];
+    assert_eq!(before["after_sequence"], 11);
+
+    let mut settled = fragment_entry("settled");
+    settled.timestamp_ms = 5_001;
+    let replacement = store
+        .replace_transcript_by_merge_key(
+            "session-1",
+            Some("agent-1"),
+            "message-1",
+            &settled,
+            context(),
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(replacement.sequence, 11);
+    let delta = read_delta_page(&store, serde_json::json!({"agent-1": before})).await;
+    assert_eq!(delta["turns"], serde_json::json!([]));
+    assert!(delta["turn_deltas"][0]["header"].is_number());
+    assert_eq!(
+        delta["turn_deltas"][0]["summary"]["entry"]["text"],
+        "settled"
+    );
+    assert_eq!(delta["delta_cursor"]["after_sequence"], 11);
+
+    let stale = read_delta_page(
+        &store,
+        serde_json::json!({
+            "agent-1": {"after_sequence": 11, "revision": "expired"}
+        }),
+    )
+    .await;
+    assert!(stale.get("turn_deltas").is_none());
+    assert_eq!(stale["turns"][0]["summary"]["entry"]["text"], "settled");
+
+    let unchanged = read_delta_page(
+        &store,
+        serde_json::json!({
+            "agent-1": stale["delta_cursor"]
+        }),
+    )
+    .await;
+    assert!(unchanged["turn_deltas"][0]["summary"].is_number());
+
+    store.append(&fragment(12, 5_002, " now")).unwrap();
+    let grown = read_delta_page(
+        &store,
+        serde_json::json!({
+            "agent-1": stale["delta_cursor"]
+        }),
+    )
+    .await;
+    assert_eq!(grown["delta_cursor"]["after_sequence"], 12);
+    assert_eq!(
+        grown["turn_deltas"][0]["summary"]["suffix"]["entry"]["text"],
+        " now"
+    );
+}
+
+#[tokio::test]
+async fn outline_delta_includes_a_blob_whose_display_metadata_did_not_change() {
+    let (_dir, path) = store_path();
+    let store = OperationalHistoryStore::open(path).expect("open history");
+    let tool = |output| {
+        let mut entry = SessionHistoryEntry::provider_output(
+            "session-1",
+            RUN,
+            Some("agent-1"),
+            TerminalOutputKind::ProviderTool,
+            Some("call-1".to_string()),
+            format!(r#"{{"id":"call-1","tool":"bash","status":"completed","output":"{output}"}}"#),
+        );
+        entry.timestamp_ms = 5_001;
+        entry
+    };
+    store
+        .append_many(&[
+            prompt(10, 5_000),
+            HistoryEvent::transcript(11, &tool("yes"), context()),
+        ])
+        .unwrap();
+    let full = read_delta_page(&store, serde_json::json!({})).await;
+    let original = &full["turns"][0]["blobs"][0];
+    assert!(!original.is_null());
+    store
+        .replace_transcript_by_merge_key(
+            "session-1",
+            Some("agent-1"),
+            "call-1",
+            &tool("new"),
+            context(),
+        )
+        .unwrap()
+        .expect("tool replaced in place");
+    let delta = read_delta_page(
+        &store,
+        serde_json::json!({ "agent-1": full["delta_cursor"] }),
+    )
+    .await;
+    let updated = &delta["turn_deltas"][0]["blobs"][0];
+    assert_eq!(updated["blob_id"], original["blob_id"]);
+    assert_eq!(updated["preview"], original["preview"]);
+    assert_eq!(updated["total_chars"], original["total_chars"]);
+    assert_ne!(updated["revision"], original["revision"]);
 }

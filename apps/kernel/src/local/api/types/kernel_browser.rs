@@ -34,6 +34,9 @@ pub enum KernelBrowserCommand {
         #[serde(default)]
         after: String,
         wait_ms: u32,
+        /// Protocol 1012: the `favicon_hash` values whose PNG the viewer holds (<= 128); such an icon is named, not sent.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        known_favicons: Vec<String>,
     },
     SubscribeGrants {
         after: u64,
@@ -361,7 +364,19 @@ pub enum KernelBrowserMirrorAction {
         x: Option<f64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         y: Option<f64>,
+        /// B4: a right click reaches the page (mousedown 2, contextmenu, mouseup); absent means the primary button.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        button: Option<KernelBrowserButton>,
     },
+    /// B3: the pointer over the page with no button held (hover menus, tooltips, mouseenter/leave). A move the
+    /// kernel cannot place (a node off its viewport, a changed target) is dropped: it has no outcome to report.
+    Move {
+        node_id: String,
+        x: f64,
+        y: f64,
+    },
+    /// B3: the viewer's pointer left the page: the kernel's mouse leaves it too (mouseout/leave, :hover ends).
+    Leave {},
     Focus {
         node_id: String,
     },

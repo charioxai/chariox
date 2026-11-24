@@ -37,7 +37,7 @@ pub(super) struct EndedProviderTurn<'a> {
 }
 
 impl KernelRuntimeOwnedState {
-    fn restore_workflow_run_after_failed_completion(
+    pub(super) fn restore_workflow_run_after_failed_transition(
         &self,
         session_id: &str,
         workflow_run: crate::session::WorkflowRun,
@@ -59,7 +59,7 @@ impl KernelRuntimeOwnedState {
         if let Err(error) = restore {
             crate::logging::error_with_fields(
                 "daemon.workflow",
-                "failed to restore workflow completion after durable append failure",
+                "failed to restore workflow run after durable append failure",
                 serde_json::json!({
                     "session_id": session_id,
                     "error": error.to_string(),
@@ -373,7 +373,7 @@ impl KernelRuntimeOwnedState {
                     workflow_node_run_id,
                 );
                 if let Err(error) = failed {
-                    self.restore_workflow_run_after_failed_completion(
+                    self.restore_workflow_run_after_failed_transition(
                         session_id,
                         workflow_run_before,
                     );
@@ -388,7 +388,7 @@ impl KernelRuntimeOwnedState {
                     prompt_agent_id,
                     activity_mutation,
                     || {
-                        self.restore_workflow_run_after_failed_completion(
+                        self.restore_workflow_run_after_failed_transition(
                             session_id,
                             workflow_run_before.clone(),
                         );
@@ -430,7 +430,7 @@ impl KernelRuntimeOwnedState {
         let update = match completion_result {
             Ok(update) => update,
             Err(error) => {
-                self.restore_workflow_run_after_failed_completion(session_id, workflow_run_before);
+                self.restore_workflow_run_after_failed_transition(session_id, workflow_run_before);
                 rollback_prompt
                     .take()
                     .expect("provider prompt rollback should run once")();
@@ -544,7 +544,7 @@ impl KernelRuntimeOwnedState {
                     workflow_node_run_id,
                 );
             if let Err(error) = validated {
-                self.restore_workflow_run_after_failed_completion(session_id, workflow_run_before);
+                self.restore_workflow_run_after_failed_transition(session_id, workflow_run_before);
                 rollback_prompt
                     .take()
                     .expect("provider prompt rollback should run once")();
@@ -557,7 +557,7 @@ impl KernelRuntimeOwnedState {
             prompt_agent_id,
             activity_mutation,
             || {
-                self.restore_workflow_run_after_failed_completion(session_id, workflow_run_before);
+                self.restore_workflow_run_after_failed_transition(session_id, workflow_run_before);
                 rollback_prompt
                     .take()
                     .expect("provider prompt rollback should run once")();
@@ -589,14 +589,14 @@ impl KernelRuntimeOwnedState {
         // shared-agent node. Retrying is safe in either case: conflicting work remains queued,
         // while claims released by this completion immediately unblock eligible nodes.
         dispatches.extend(self.workflow_retry_blocked_claims());
-        let state_suffix = match update.workflow_run.status() {
-            crate::session::WorkflowRunStatus::Waiting => "waiting for downstream handoffs",
-            crate::session::WorkflowRunStatus::Completing => "is completing",
-            crate::session::WorkflowRunStatus::Completed => "completed",
-            crate::session::WorkflowRunStatus::Failed => "failed",
-            crate::session::WorkflowRunStatus::Stopped => "stopped",
-            _ => "updated",
-        };
+        let state_suffix = self
+            .session_store
+            .read()
+            .resolve_workflow_run_ref(session_id, workflow_run_id)
+            .map_or_else(
+                |_| update.workflow_run.status_notice_suffix(),
+                |run| run.status_notice_suffix(),
+            );
         self.record_notice(
             session_id,
             None,
@@ -710,6 +710,7 @@ mod lock_order_tests {
             .session_store
             .restore_session(RuntimeSession::new(
                 "session-1",
+                crate::session::ProjectId::test(),
                 None,
                 "workspace",
                 "worktree",

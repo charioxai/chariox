@@ -1,6 +1,6 @@
 {
-  "local_protocol": 1063,
-  "peer_protocol": 448,
+  "local_protocol": 1014,
+  "peer_protocol": 451,
   "abort": {
     "MoveAgentToLocal": {
       "session_id": "room",
@@ -165,8 +165,7 @@
       },
       "requirements": {
         "agent_configuration_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
-        "extensions": {},
-        "skills": []
+        "extensions": {}
       }
     },
     {

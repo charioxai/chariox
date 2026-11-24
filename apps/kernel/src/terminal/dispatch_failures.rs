@@ -58,12 +58,6 @@ fn operation_failure_summary(operation: &str) -> &'static str {
 /// Public projection of older durable failures; retain private ledger diagnostics.
 pub(crate) fn public_task_failure_reason(reason: &str) -> String {
     let lower = reason.to_ascii_lowercase();
-    if lower.contains("user_domain_not_granted")
-        || lower.contains("chariox.load_kernel_browser")
-        || lower.contains("grant state changed")
-    {
-        return "Browser access ended. Allow browser access to continue.".into();
-    }
     if ["retained obligations", "attributed result", "condition_met"]
         .iter()
         .any(|word| lower.contains(word))
@@ -75,13 +69,6 @@ pub(crate) fn public_task_failure_reason(reason: &str) -> String {
     }
     if lower.contains("repeated invalid turn end") {
         return "Its turn ended before its work was done. Resume to continue, or Cancel.".into();
-    }
-    if lower.contains("unconfirmed delivery") {
-        return "A message to it may not have arrived. Check its last turn, then Resume or Cancel."
-            .into();
-    }
-    if lower.contains("owner must reconcile") {
-        return "Its work was interrupted. Check its last turn, then Resume or Cancel.".into();
     }
     if reason.contains("Provider prompt dispatch failed: provider protocol `") {
         if let Some((_, operation)) = reason.split_once("provider protocol `") {
@@ -101,13 +88,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn owner_task_failure_uses_plain_browser_and_waiting_words() {
-        assert_eq!(
-            public_task_failure_reason(
-                "chariox.load_kernel_browser failed: user_domain_not_granted"
-            ),
-            "Browser access ended. Allow browser access to continue."
-        );
+    fn owner_task_failure_uses_plain_waiting_words() {
         assert_eq!(
             public_task_failure_reason(
                 "Waiting for an attributed result and condition_met receipt; retained obligations"
@@ -121,26 +102,10 @@ mod tests {
     /// what happened and what Resume and Cancel do.
     #[test]
     fn a_blocked_task_card_reads_in_plain_words() {
-        for (reason, plain) in [
-            (
-                "Repeated invalid turn end; owner must resume or cancel",
-                "Its turn ended before its work was done. Resume to continue, or Cancel.",
-            ),
-            (
-                "Unconfirmed delivery 7 prevents this task's wake; owner must reconcile the original attempt or cancel, then explicitly resume",
-                "A message to it may not have arrived. Check its last turn, then Resume or Cancel.",
-            ),
-            (
-                "Unconfirmed delivery 7: owner must reconcile the original attempt",
-                "A message to it may not have arrived. Check its last turn, then Resume or Cancel.",
-            ),
-            (
-                "Recovered legacy dispatch obligation; owner must reconcile its exact resource and resume or cancel",
-                "Its work was interrupted. Check its last turn, then Resume or Cancel.",
-            ),
-        ] {
-            assert_eq!(public_task_failure_reason(reason), plain);
-        }
+        assert_eq!(
+            public_task_failure_reason("Repeated invalid turn end; owner must resume or cancel"),
+            "Its turn ended before its work was done. Resume to continue, or Cancel."
+        );
     }
 
     #[test]
@@ -150,7 +115,7 @@ mod tests {
         };
         assert_eq!(
             user_facing_dispatch_failure(&error),
-            "The provider is at capacity. Try again in a moment or choose another model."
+            "Selected model is at capacity. Please try a different model. Try again in a moment or choose another model."
         );
     }
 

@@ -519,6 +519,14 @@ const ASSETS: &[(&str, &[u8])] = &[
         include_bytes!("../../slice-linux-docker/docker/browser-page-permission-shim.mjs"),
     ),
     (
+        "browser-page-fonts.mjs",
+        include_bytes!("../../slice-linux-docker/docker/browser-page-fonts.mjs"),
+    ),
+    (
+        "browser-page-font-recorder.mjs",
+        include_bytes!("../../slice-linux-docker/docker/browser-page-font-recorder.mjs"),
+    ),
+    (
         "browser-controller-dialogs.mjs",
         include_bytes!("../../slice-linux-docker/docker/browser-controller-dialogs.mjs"),
     ),

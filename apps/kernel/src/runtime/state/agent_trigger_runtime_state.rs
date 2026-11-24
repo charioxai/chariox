@@ -297,6 +297,7 @@ impl KernelRuntimeState {
             prompt: delivery.prompt().to_string(),
             busy_policy: delivery.busy_policy(),
             responsible: false,
+            notification: None,
         };
         self.deliver_agent_trigger_prompt(
             &dispatch,
@@ -609,6 +610,10 @@ impl KernelRuntimeState {
             Some(payload) if dispatch.responsible => {
                 super::workflow_responsible_prompt::responsible_prompt(&dispatch.prompt, payload)
             }
+            // A notification's occurrence is in the agent's inbox; the prompt names it in one line.
+            Some(_) if dispatch.input_kind == crate::session::TriggerInputKind::Notification => {
+                dispatch.prompt.clone()
+            }
             Some(payload) => {
                 // JSON escaping prevents external text from closing the data block.
                 let payload = payload
@@ -643,6 +648,10 @@ impl KernelRuntimeState {
             scheduled_context,
             &scheduled_manifest_entry,
         ));
+        let prompt = match &dispatch.notification {
+            Some(notification) => prompt.with_queued_notification(notification.clone()),
+            None => prompt,
+        };
         let prompt = if origin == crate::session::PromptOrigin::Notification {
             if let Some(payload) = &dispatch.payload {
                 use sha2::{Digest, Sha256};
@@ -1322,7 +1331,12 @@ pub(super) mod tests {
         let path = std::path::PathBuf::from(config.user_config.state.path.clone().unwrap());
         {
             let store = crate::durable_state::DurableKernelStateStore::open(path).unwrap();
-            for event in &events[..cut] {
+            // The Skills home pin names the journal it was written to; this copy lives at a
+            // new path, so the restarted kernel pins its own journal instead.
+            for event in events[..cut]
+                .iter()
+                .filter(|event| event.kind != "skills.v2.home")
+            {
                 store
                     .append_event(&event.kind, event.subject_id.clone(), event.payload.clone())
                     .unwrap();

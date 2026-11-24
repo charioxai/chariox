@@ -25,6 +25,7 @@ impl OpenCodeClient {
         execution_mode: AgentExecutionMode,
         disable_native_writes: bool,
         allow_native_bash: bool,
+        steering: bool,
     ) -> Result<(), DaemonError> {
         let mut parts = Vec::new();
         if !prompt.is_empty() {
@@ -82,7 +83,11 @@ impl OpenCodeClient {
             body["tools"] = serde_json::Value::Object(tools);
         }
 
-        self.send_prompt_request(&format!("/session/{session_id}/prompt_async"), &body)
+        self.send_prompt_request(
+            &format!("/session/{session_id}/prompt_async"),
+            &body,
+            steering,
+        )
     }
 }
 

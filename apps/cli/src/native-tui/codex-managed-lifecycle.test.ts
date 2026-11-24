@@ -81,7 +81,7 @@ async function fixture(t: TestContext, mode: "interrupt" | "cold" | "ended" | "s
     managed.send(JSON.stringify({ id, method, params }))
     await received
   }
-  const agent = { id: "agent", session_id: "session", alias: "fixture" }
+  const agent = { id: "agent", session_id: "session", alias: "fixture", model: "fixture" }
   const run = { id: "run", session_id: "session", agent_instance_id: "agent", provider: "codex", structured_endpoint: endpoint, provider_session_id: null }
   t.mock.method(LocalIpcClient.prototype, "send", async (request: Record<string, Record<string, unknown>>) => {
     const [kind, payload] = Object.entries(request)[0]!
@@ -93,6 +93,11 @@ async function fixture(t: TestContext, mode: "interrupt" | "cold" | "ended" | "s
         polls += 1
         if (mode === "cold" && polls === 2) await startServer()
         return { ProviderRun: { provider_run: { ...run, provider_session_id: running || compacted ? "managed-thread" : null, state: mode === "ended" ? "Ended" : mode === "cold" && polls < 2 ? "Starting" : "Running" } } }
+      case "SkillsV2":
+        if (payload.action === "catalog") return { SkillsV2: { result: {
+          kind: "catalog", revision: 1, skills: [], packages: [], native: [], metadata_budget_percent: 1,
+        } } }
+        throw new Error("unexpected v2 submission in an ordinary native turn")
       case "SubmitPrompt":
         assert.equal(payload.target_agent_id, "agent")
         await managedRequest("turn/start", { threadId: "managed-thread", input: [{ type: "text", text: payload.prompt }] })
@@ -103,10 +108,10 @@ async function fixture(t: TestContext, mode: "interrupt" | "cold" | "ended" | "s
       case "SteerActivePrompt":
         assert.deepEqual(payload, {
           session_id: "session", attachment_id: "attachment", target_agent_id: "agent",
-          expected_active_prompt_id: "home-prompt", prompt: "change direction", attachments: [],
+          expected_active_prompt_id: "home-prompt", require_exact_turn: true, prompt: "change direction", attachments: [],
         })
         await managedRequest("turn/steer", { threadId: "managed-thread", expectedTurnId: "managed-turn", input: [{ type: "text", text: payload.prompt }] })
-        return { ActivePromptSteered: { prompt: { id: "home-steer" } } }
+        return { ActivePromptSteered: { steer_id: "home-steer" } }
       case "CancelActivePrompt":
         assert.deepEqual(payload, { session_id: "session", attachment_id: "attachment", target_agent_id: "agent", expected_prompt_id: "home-prompt" })
         await managedRequest("turn/interrupt", { threadId: "managed-thread", turnId: "managed-turn" })

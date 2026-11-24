@@ -25,6 +25,7 @@ fn extension_entry(extension: ProjectEnvironmentExtension) -> ExtensionEntry {
 /// A project-file entry is present while its declaring file still declares it in this checkout (Git carries the file,
 /// so a clone has it); a registration is present while this kernel holds it.
 fn extension_views(
+    registrations: &UserRegistrations,
     kind: EnvironmentEntryKind,
     checkout: &Path,
     entries: &[ExtensionEntry],
@@ -34,7 +35,7 @@ fn extension_views(
         .map(|entry| {
             let here = match entry.file_path() {
                 Some(path) => declared_in(checkout, path).contains(&entry.name),
-                None => UserRegistrations.has(kind, &entry.name),
+                None => registrations.has(kind, &entry.name),
             };
             ProjectEnvironmentExtensionView {
                 name: entry.name.clone(),
@@ -139,6 +140,7 @@ impl KernelRuntimeState {
             ..Default::default()
         });
         let presence = secret_presence(&config, project.id(), &record.secrets)?;
+        let registrations = self.user_registrations(project.id());
         let setup_state = if exists {
             self.owned.project_environment_setups.state_for(
                 project.id(),
@@ -172,8 +174,18 @@ impl KernelRuntimeState {
                     ProjectEnvironmentFileView::new(path.clone(), file_presence(&checkout, path))
                 })
                 .collect(),
-            mcps: extension_views(EnvironmentEntryKind::Mcp, &checkout, &record.mcps),
-            skills: extension_views(EnvironmentEntryKind::Skill, &checkout, &record.skills),
+            mcps: extension_views(
+                &registrations,
+                EnvironmentEntryKind::Mcp,
+                &checkout,
+                &record.mcps,
+            ),
+            skills: extension_views(
+                &registrations,
+                EnvironmentEntryKind::Skill,
+                &checkout,
+                &record.skills,
+            ),
             changed_at_ms: record.changed_at_ms,
             machine_label: Self::machine_label(&config),
             checkout_path: checkout.to_string_lossy().into_owned(),
@@ -390,11 +402,13 @@ impl KernelRuntimeState {
         Ok(())
     }
 
-    // Idle prompt admission refreshes through normal activation.
+    // Idle prompt admission refreshes through normal activation; `vault_use` is how long it waits
+    // on the Vault unlock card (see `with_project_prompt_environment`).
     pub(super) async fn refresh_project_prompt_provider(
         &self,
         session_id: &str,
         agent_id: &str,
+        vault_use: &'static str,
     ) -> Result<(), DaemonError> {
         let session = self.owned.session_store.get_session(session_id)?;
         let agent = self.owned.agent_store.get_agent(agent_id)?;
@@ -424,7 +438,7 @@ impl KernelRuntimeState {
         {
             return Ok(());
         }
-        self.with_project_prompt_environment(session_id, agent_id, |app| {
+        self.with_project_prompt_environment(session_id, agent_id, vault_use, |app| {
             app.ensure_prompt_provider_run_for_agent(session_id, agent_id)
                 .map(|_| ())
         })
@@ -434,11 +448,15 @@ impl KernelRuntimeState {
     // Keep an Always-policy unlock alive through resolution, replacement and queue activation;
     // failures leave the unactivated queue intact. A launch that turns out to need the locked
     // Vault (a Claude token, no Project Secret to unlock for up front) asks the owner and runs
-    // once more, so a queued prompt never waits on a popup nobody was shown.
+    // once more, so a queued prompt never waits on a popup nobody was shown. `vault_use` says
+    // how long the caller waits on the unlock card: a submit opens it and goes on
+    // (`VAULT_ADMIT_PROMPT`), a queued prompt's start waits until it ends
+    // (`VAULT_START_QUEUED_PROMPT`).
     pub(super) async fn with_project_prompt_environment<T>(
         &self,
         session_id: &str,
         agent_id: &str,
+        vault_use: &'static str,
         mut operation: impl FnMut(&mut DaemonApp) -> Result<T, DaemonError>,
     ) -> Result<T, DaemonError> {
         let session = self.owned.session_store.get_session(session_id)?;
@@ -448,12 +466,8 @@ impl KernelRuntimeState {
             .is_some_and(|record| !record.secrets.is_empty());
         let _vault = if has_secrets {
             Some(
-                self.ensure_vault_unlocked_for_agent(
-                    session_id,
-                    agent_id,
-                    "prepare Project environment",
-                )
-                .await?,
+                self.ensure_vault_unlocked_for_agent(session_id, agent_id, vault_use)
+                    .await?,
             )
         } else {
             None
@@ -463,7 +477,7 @@ impl KernelRuntimeState {
                 if _vault.is_none() && crate::secret::is_chariox_vault_locked_error(&error) =>
             {
                 let _vault = self
-                    .ensure_vault_unlocked_for_agent(session_id, agent_id, "launch provider run")
+                    .ensure_vault_unlocked_for_agent(session_id, agent_id, vault_use)
                     .await?;
                 self.with_authorized_app_side_effect(operation).await
             }

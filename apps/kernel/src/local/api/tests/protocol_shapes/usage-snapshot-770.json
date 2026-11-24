@@ -1,6 +1,6 @@
 {
-  "local_protocol": 1008,
-  "peer_protocol": 447,
+  "local_protocol": 1013,
+  "peer_protocol": 450,
   "requests": [
     {
       "GetProviderUsageSnapshot": {}
@@ -43,6 +43,26 @@
             "used_tokens": 500,
             "limit_tokens": 2000
           },
+          "models": [
+            {
+              "provider": "codex",
+              "model": "gpt-6.2-sol",
+              "input_tokens": 100,
+              "output_tokens": 50,
+              "cached_input_tokens": 40,
+              "cache_write_input_tokens": 0,
+              "api_equivalent_nanodollars": "624000"
+            },
+            {
+              "provider": "codex",
+              "model": "unpriced-model",
+              "input_tokens": 80,
+              "output_tokens": 30,
+              "cached_input_tokens": 0,
+              "cache_write_input_tokens": 0,
+              "api_equivalent_nanodollars": null
+            }
+          ],
           "route": {
             "target": "Review intake",
             "target_kernel_id": "worker",

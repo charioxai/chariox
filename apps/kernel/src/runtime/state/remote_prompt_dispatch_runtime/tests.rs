@@ -385,7 +385,7 @@ async fn accept_claim_test_prompt(
             .await
             .unwrap_or_else(|_| panic!("{stage}: relay did not accept peer socket"))
             .unwrap_or_else(|error| panic!("{stage}: relay listener failed: {error}"));
-    let mut peer = accept_async(stream)
+    let mut peer = crate::transport::relay_socket_connect::accept_as_relay(stream)
         .await
         .unwrap_or_else(|error| panic!("{stage}: relay peer upgrade failed: {error}"));
     let registration = receive_claim_test_envelope_with_diagnostics(
@@ -400,7 +400,7 @@ async fn accept_claim_test_prompt(
     )
     .await;
     match registration {
-        RelayEnvelope::DaemonRegister { registration } => {
+        RelayEnvelope::DaemonRegister { registration, .. } => {
             assert_eq!(
                 registration.auth_token, home_relay_token,
                 "{stage}: temporary peer registration should use the configured relay token"
@@ -529,7 +529,7 @@ async fn assert_no_duplicate_claim_submission(
         let Ok(Ok((stream, _))) = tokio::time::timeout(remaining, listener.accept()).await else {
             return;
         };
-        let mut socket = accept_async(stream)
+        let mut socket = crate::transport::relay_socket_connect::accept_as_relay(stream)
             .await
             .expect("temporary relay should upgrade observation connection");
         match receive_claim_test_envelope(&mut socket, "post-success observation frame").await {
@@ -692,7 +692,7 @@ async fn receive_fake_worker_peer_request(
         .await
         .expect("fake relay should accept temporary peer connection")
         .expect("fake relay peer listener should accept");
-    let mut socket = accept_async(stream)
+    let mut socket = crate::transport::relay_socket_connect::accept_as_relay(stream)
         .await
         .expect("fake relay should upgrade peer connection");
     assert!(matches!(
@@ -1096,6 +1096,8 @@ mod receipt_reconciliation {
                         output_chunks: Vec::new(),
                         notices: Vec::new(),
                         completions: vec![crate::transport::relay_peer::RelayProjectedCompletion {
+                            model_usage: Vec::new(),
+                            background_notifications: Vec::new(),
                             failure: None,
                             message_id: "cancel-claimed-completion".to_string(),
                             completed_at_ms: 1,
@@ -1516,6 +1518,8 @@ mod receipt_reconciliation {
                         output_chunks: Vec::new(),
                         notices: Vec::new(),
                         completions: vec![crate::transport::relay_peer::RelayProjectedCompletion {
+                            model_usage: Vec::new(),
+                            background_notifications: Vec::new(),
                             failure: None,
                             message_id: "completed-receipt-assistant-message".to_string(),
                             completed_at_ms: 1,
@@ -1582,6 +1586,93 @@ mod receipt_reconciliation {
         assert_eq!(
             settlements, 1,
             "home settlement should be durable exactly once"
+        );
+    }
+
+    #[tokio::test]
+    async fn waiting_worker_receipt_requeues_exact_prompt_after_home_restart() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let relay_url = format!("ws://{}", listener.local_addr().unwrap());
+        let fixture = make_receipt_reconciliation_fixture(&relay_url, "memory").await;
+        let worker_id = fixture.worker_id.clone();
+        let worker_machine_id = fixture.worker_machine_id.clone();
+        let worker_public_key = fixture.worker_public_key.clone();
+        let worker_private_key = fixture.worker_private_key.clone();
+        let home_public_key = fixture.home_public_key.clone();
+        let leased_agent_id = fixture.leased_agent_id.clone();
+        let prompt_id = fixture.dispatch.prompt_id.clone();
+        let server = tokio::spawn(async move {
+            let request = receive_fake_worker_peer_request(
+                &listener,
+                &worker_id,
+                &worker_machine_id,
+                &worker_public_key,
+                &worker_private_key,
+                None,
+            )
+            .await;
+            assert!(matches!(
+                &request.request,
+                RelayPeerRequest::GetLeasedPromptReceipt {
+                    leased_agent_id: queried_agent_id,
+                    home_prompt_id,
+                } if queried_agent_id == &leased_agent_id && home_prompt_id == &prompt_id
+            ));
+            send_fake_worker_peer_response(
+                request,
+                &worker_id,
+                &worker_private_key,
+                &home_public_key,
+                RelayPeerResponse::LeasedPromptReceiptQueried {
+                    receipt: Some(crate::transport::relay_peer::LeasedPromptReceipt {
+                        home_prompt_id: prompt_id,
+                        worker_provider_run_id: String::new(),
+                        phase: crate::transport::relay_peer::LeasedPromptReceiptPhase::WaitingForMemory,
+                        target_home_prompt_id: None,
+                        execution_lease_id: Some("lease-receipt-memory".into()),
+                    }),
+                },
+            )
+            .await;
+        });
+
+        assert!(fixture
+            .runtime
+            .recover_remote_prompt_after_kernel_restart(
+                &fixture.session_id,
+                &fixture.agent_id,
+                Some(crate::session::DurablePromptDeliveryPhase::Dispatching),
+                None,
+            )
+            .await
+            .unwrap());
+        server.await.unwrap();
+
+        let owned = &fixture.runtime.owned;
+        let session = owned
+            .session_store
+            .get_session(&fixture.session_id)
+            .unwrap();
+        let restored = crate::runtime::prompt_state::PromptStateOwner::default();
+        restored.restore_session_state(&session);
+        let (active, queued) = restored.state_parts(&session, &fixture.agent_id);
+        assert!(active.is_none());
+        assert_eq!(queued[0].id(), fixture.dispatch.prompt_id);
+        assert_eq!(
+            queued[0].launch_wait(),
+            Some("Waiting for memory on the worker")
+        );
+        assert!(!queued[0].durable_delivery_reconciliation_pending());
+        assert_eq!(queued[1].id(), fixture.successor_prompt_id);
+        assert_eq!(
+            owned
+                .advance_next_queued_remote_prompt_dispatch(&fixture.session_id, &fixture.agent_id)
+                .unwrap()
+                .unwrap()
+                .remote_dispatch
+                .unwrap()
+                .prompt_id,
+            fixture.dispatch.prompt_id
         );
     }
 
@@ -2296,6 +2387,8 @@ mod receipt_reconciliation {
             output_chunks: Vec::new(),
             notices: Vec::new(),
             completions: vec![crate::transport::relay_peer::RelayProjectedCompletion {
+                model_usage: Vec::new(),
+                background_notifications: Vec::new(),
                 failure: None,
                 message_id: "assistant-message-1".to_string(),
                 completed_at_ms: 1,
@@ -2317,6 +2410,8 @@ mod receipt_reconciliation {
             output_chunks: Vec::new(),
             notices: Vec::new(),
             completions: vec![crate::transport::relay_peer::RelayProjectedCompletion {
+                model_usage: Vec::new(),
+                background_notifications: Vec::new(),
                 failure: None,
                 message_id: "assistant-message-other".to_string(),
                 completed_at_ms: 2,
@@ -2646,6 +2741,8 @@ fn completed_worker_projection(
         output_chunks: Vec::new(),
         notices: Vec::new(),
         completions: vec![crate::transport::relay_peer::RelayProjectedCompletion {
+            model_usage: Vec::new(),
+            background_notifications: Vec::new(),
             failure: None,
             message_id: "assistant-completed".to_string(),
             completed_at_ms: crate::session::unix_epoch_ms(),
@@ -2711,7 +2808,6 @@ fn actual_worker_output_then_completion(
                 prompt_summary: "remote prompt".to_string(),
             }),
             Vec::new(),
-            None,
             crate::extension::RemoteExtensionManifest::default(),
         )
         .expect("worker prompt should submit");
@@ -2884,7 +2980,6 @@ fn worker_after_login_recovery(
                 prompt_summary: "remote prompt".to_string(),
             }),
             Vec::new(),
-            None,
             crate::extension::RemoteExtensionManifest::default(),
         )
         .expect("worker prompt should submit");
@@ -3470,6 +3565,8 @@ mod projection_drain {
                 "run-next",
                 &ended_event(vec![
                     crate::transport::relay_peer::RelayProjectedCompletion {
+                        model_usage: Vec::new(),
+                        background_notifications: Vec::new(),
                         failure: None,
                         message_id: "completion-final".to_string(),
                         completed_at_ms: 1,
@@ -6235,6 +6332,8 @@ mod projection_acknowledgement {
                 notices: Vec::new(),
                 completions: if completed {
                     vec![crate::transport::relay_peer::RelayProjectedCompletion {
+                        model_usage: Vec::new(),
+                        background_notifications: Vec::new(),
                         message_id: "ack-cancel-completion".to_string(),
                         completed_at_ms: 1,
                         home_prompt_id: Some(fixture.dispatch.prompt_id.clone()),

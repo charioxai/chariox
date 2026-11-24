@@ -1,9 +1,10 @@
 //! Local 1011: a Room's session carries the messages other agents queued for an agent's next turn,
 //! and the person cancels or sends one with the queued-prompt requests, by its `agent-message-<n>` id.
+//! Local 1012: a queued message shows a `preview` and `truncated` instead of its whole `prompt`.
 use super::*;
 
 #[test]
-fn queued_agent_messages_protocol_1011_shape_and_hash() {
+fn queued_agent_messages_protocol_1012_shape_and_hash() {
     assert_eq!(
         LOCAL_DAEMON_PROTOCOL_VERSION,
         crate::test_support::expected_local_protocol_version()
@@ -12,10 +13,12 @@ fn queued_agent_messages_protocol_1011_shape_and_hash() {
         "id": "agent-message-7",
         "agent_id": "agent-1",
         "sender": "worker-1",
-        "prompt": "parser.rs is mine for the hour"
+        "preview": "parser.rs is mine for the hour",
+        "truncated": false
     }]);
     let mut session = crate::session::RuntimeSession::new(
         "session-1",
+        crate::session::ProjectId::test(),
         None,
         "workspace-1",
         "worktree-1",
@@ -47,6 +50,6 @@ fn queued_agent_messages_protocol_1011_shape_and_hash() {
             "{:x}",
             Sha256::digest(serde_json::to_string(&snapshot).unwrap().as_bytes())
         ),
-        "8a0008493ad48f6d648fd765c8cf57a85705f684a6bfd729a87b5c0fc99f837d"
+        "ffceda983139b2ead44406d81bbaec1df710591f81b07266ae4c0839e51e561b"
     );
 }

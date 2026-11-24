@@ -26,6 +26,13 @@ import {
   reconcileAgentRuntimeLastCompletedTurn,
 } from "./agent-activity.js"
 
+test("a stopped deadline overrides the previous error for agent activity", () => {
+  const activity = projectAgentRuntimeActivity({ status: "ended_deadline" }, { previousError: true })
+  assert.equal(agentRuntimeActivityProjectionResolvedStatus(activity), "ended_deadline")
+  assert.equal(activity.error, false)
+  assert.equal(activity.busy, false)
+})
+
 test("legacy processing helper preserves old agent busy fallback semantics", () => {
   assert.equal(agentLegacyProcessingStateIsBusy(null), false)
   assert.equal(agentLegacyProcessingStateIsBusy(undefined), false)

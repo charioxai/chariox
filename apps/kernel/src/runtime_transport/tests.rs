@@ -1,6 +1,8 @@
 use super::*;
 
 #[cfg(unix)]
+mod agent_cli;
+#[cfg(unix)]
 mod kernel_browser_terminals;
 mod session_feed_events;
 mod task_subscriptions;
@@ -318,6 +320,7 @@ async fn connection_closing_for_backpressure_admits_no_more_requests() {
             close_requested: &Arc::new(AtomicBool::new(true)),
             connection_class: KernelConnectionClass::Unauthenticated,
             peer: None,
+            agent_run_id: None,
             bound_grant: &Arc::default(),
         },
         &payload,
@@ -825,7 +828,7 @@ async fn laptop_kernel_websocket_enforces_local_tokens() {
 async fn kernel_websocket_credentials_attribute_critical_approval_audits_to_their_class() {
     const PASSKEY: &str = "correct horse battery";
     let root = RuntimeTransportTempDir::new("connection-class");
-    let vault = root.path().join("vault.json");
+    let vault = root.path().join("vault").join("vault.json");
     crate::secret::create_chariox_encrypted_vault_for_test(&vault, PASSKEY)
         .expect("test vault should be created");
 
@@ -950,6 +953,7 @@ impl ClassAuditKernel {
         let app = DaemonApp::bootstrap(config).expect("daemon should boot");
         let mut session = crate::session::RuntimeSession::new(
             format!("class-audit-{:016x}", rand::random::<u64>()),
+            crate::session::ProjectId::test(),
             None,
             "workspace",
             "worktree",
@@ -2284,6 +2288,7 @@ async fn dispatch_transport_test_request_on_connection(
             close_requested: &Arc::new(AtomicBool::new(false)),
             connection_class,
             peer: None,
+            agent_run_id: None,
             bound_grant: &Arc::default(),
         },
         &payload,

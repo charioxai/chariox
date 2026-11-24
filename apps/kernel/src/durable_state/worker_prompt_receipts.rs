@@ -10,6 +10,7 @@ const EVENT_KIND: &str = "remote_lease.prompt_admission_receipt";
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum WorkerPromptReceiptPhase {
+    WaitingForMemory,
     Dispatching,
     Accepted,
     Rejected,
@@ -163,8 +164,13 @@ fn receipt_record_has_identity(record: &WorkerPromptReceiptRecord) -> bool {
             .worker_provider_run_id
             .as_deref()
             .is_none_or(|run_id| !run_id.trim().is_empty())
-        && (receipt.phase != WorkerPromptReceiptPhase::Accepted
-            || receipt.worker_provider_run_id.is_some())
+        && match receipt.phase {
+            WorkerPromptReceiptPhase::WaitingForMemory => {
+                receipt.worker_provider_run_id.is_none() && record.backing_prompt_id.is_none()
+            }
+            WorkerPromptReceiptPhase::Accepted => receipt.worker_provider_run_id.is_some(),
+            WorkerPromptReceiptPhase::Dispatching | WorkerPromptReceiptPhase::Rejected => true,
+        }
 }
 
 fn validate_receipt_transition(
@@ -190,20 +196,19 @@ fn validate_receipt_transition(
         ));
     }
 
-    if previous.receipt.phase != WorkerPromptReceiptPhase::Dispatching {
-        if previous == next {
-            return Ok(());
-        }
-        return Err(receipt_transition_error(
-            "worker prompt receipt cannot change a settled outcome",
-        ));
+    if previous == next {
+        return Ok(());
     }
-
-    let allowed_phase = next.receipt.phase == WorkerPromptReceiptPhase::Dispatching
-        || matches!(
+    let allowed_phase = match previous.receipt.phase {
+        WorkerPromptReceiptPhase::WaitingForMemory => matches!(
             next.receipt.phase,
-            WorkerPromptReceiptPhase::Accepted | WorkerPromptReceiptPhase::Rejected
-        );
+            WorkerPromptReceiptPhase::Dispatching | WorkerPromptReceiptPhase::Rejected
+        ),
+        WorkerPromptReceiptPhase::Dispatching => {
+            next.receipt.phase != WorkerPromptReceiptPhase::WaitingForMemory
+        }
+        WorkerPromptReceiptPhase::Accepted | WorkerPromptReceiptPhase::Rejected => false,
+    };
     let run_identity_is_monotonic = match (
         previous.receipt.worker_provider_run_id.as_deref(),
         next.receipt.worker_provider_run_id.as_deref(),
@@ -266,9 +271,22 @@ mod tests {
             .expect("durable state should open");
         let mut store = WorkerPromptReceiptStore::restore(durable.clone())
             .expect("empty receipt state should restore");
+        let waiting = receipt(WorkerPromptReceiptPhase::WaitingForMemory);
+        store
+            .persist(waiting.clone())
+            .expect("memory wait should persist before worker admission");
+        drop(store);
+        drop(durable);
+
+        let durable = crate::durable_state::DurableKernelStateStore::open(path.clone())
+            .expect("durable state should reopen while waiting");
+        let mut store = WorkerPromptReceiptStore::restore(durable.clone())
+            .expect("memory wait should restore without a worker run");
+        assert_eq!(store.get("leased-agent-1", "home-prompt-1"), Some(&waiting));
         store
             .persist(receipt(WorkerPromptReceiptPhase::Dispatching))
             .expect("dispatching receipt should persist");
+        assert!(store.persist(waiting).is_err());
         let mut accepted = receipt(WorkerPromptReceiptPhase::Accepted);
         accepted.receipt.worker_provider_run_id = Some("worker-run-1".to_string());
         accepted.backing_prompt_id = Some("worker-prompt-1".into());

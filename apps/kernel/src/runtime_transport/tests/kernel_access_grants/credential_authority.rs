@@ -46,7 +46,7 @@ async fn kernel_access_external_holder_cannot_manage_vault_or_choose_new_passkey
     let mut kernel = Kernel::start().await;
     let mut holder = Client::start(&kernel.root);
     grant(&mut kernel, &mut holder).await;
-    let before = std::fs::read(kernel.root.join("vault.json")).unwrap();
+    let before = std::fs::read(kernel.root.join("vault/vault.json")).unwrap();
     kernel.control("vault-manage").await;
     kernel.control("vault-check").await;
     let status = std::fs::read(kernel.root.join("vault-status")).unwrap();
@@ -93,7 +93,7 @@ async fn kernel_access_external_holder_cannot_manage_vault_or_choose_new_passkey
     assert_eq!(wait_file(&kernel, "vault-result").await, b"cancelled");
     kernel.control("vault-check").await;
     assert!(status == std::fs::read(kernel.root.join("vault-status")).unwrap());
-    assert!(before == std::fs::read(kernel.root.join("vault.json")).unwrap());
+    assert!(before == std::fs::read(kernel.root.join("vault/vault.json")).unwrap());
     assert!(
         holder.request(serde_json::json!({"GetSessionState":{"session_id":SESSION}}))["error"]
             .is_null()
@@ -175,5 +175,36 @@ async fn kernel_access_revocation_stops_waiting_and_deferred_provider_launches()
             .unwrap()
             .contains("grant revoked or expired")),
         "{result}"
+    );
+}
+
+#[tokio::test]
+async fn a_grant_holders_answer_to_a_card_returns_a_small_acknowledgement_not_the_room() {
+    let mut kernel = Kernel::start().await;
+    let mut holder = Client::start(&kernel.root);
+    grant(&mut kernel, &mut holder).await;
+    kernel.control("large-room").await;
+    kernel.control("agent-question").await;
+    let room = holder.request(serde_json::json!({"GetSessionState":{"session_id":SESSION}}));
+    assert!(
+        room.to_string().len() > 600_000,
+        "the Room must be larger than any reply the gateway keeps: {} bytes",
+        room.to_string().len()
+    );
+    let reply = holder.request(answer("routine-access-question", "continue", None));
+    assert_eq!(
+        reply["response"],
+        serde_json::json!({"InteractionResponded":{
+            "interaction_id":"routine-access-question","choice_id":"continue","outcome":"answered",
+        }}),
+        "{reply}"
+    );
+    assert!(reply.to_string().len() < 1024, "{reply}");
+    assert!(
+        kernel
+            .request(answer("routine-access-question", "continue", None))
+            .await["error"]
+            .is_object(),
+        "the answer closed the card"
     );
 }

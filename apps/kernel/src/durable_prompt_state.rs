@@ -100,6 +100,7 @@ mod tests {
     fn durable_prompt_event_round_trips_private_delivery_state() {
         let mut session = RuntimeSession::new(
             "session-1",
+            crate::session::ProjectId::test(),
             None,
             "workspace-1",
             "worktree-1",

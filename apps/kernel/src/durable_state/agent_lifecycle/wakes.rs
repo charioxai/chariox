@@ -26,11 +26,22 @@ const LEDGER_KINDS: &[&str] = &[
 const SUMMARY_LIMIT: usize = 512;
 const DETAIL_LIMIT: usize = 8_192;
 
+#[cfg(test)]
+thread_local! {
+    static WAITING_WAKE_STEPS: std::cell::Cell<i32> = const { std::cell::Cell::new(0) };
+    static WAKE_READ_SORTS: std::cell::Cell<i32> = const { std::cell::Cell::new(0) };
+}
+
 pub(super) fn initialize(db: &Connection) -> Result<(), DaemonError> {
     super::wake_receipts::initialize(db)?;
     db.execute_batch("CREATE TABLE IF NOT EXISTS agent_wakes(id TEXT PRIMARY KEY,task_id TEXT NOT NULL,room_id TEXT NOT NULL,agent_id TEXT NOT NULL,payload TEXT NOT NULL);
     CREATE INDEX IF NOT EXISTS agent_wakes_recipient ON agent_wakes(room_id,agent_id);
-    CREATE INDEX IF NOT EXISTS agent_wakes_state ON agent_wakes(json_extract(payload,'$.state'));")
+    CREATE INDEX IF NOT EXISTS agent_wakes_room ON agent_wakes(room_id);
+    CREATE INDEX IF NOT EXISTS agent_wakes_room_armed ON agent_wakes(room_id)
+        WHERE json_extract(payload,'$.state') IN ('scheduled','starting','running','cancelling');
+    CREATE INDEX IF NOT EXISTS agent_wakes_state ON agent_wakes(json_extract(payload,'$.state'));
+    CREATE INDEX IF NOT EXISTS agent_wakes_live_task ON agent_wakes(task_id)
+        WHERE json_extract(payload,'$.state') IN ('scheduled','starting','running');")
         .map_err(sql)
 }
 
@@ -54,30 +65,136 @@ fn retain_finished(tx: &Transaction<'_>, room: &str, agent: &str) -> Result<(), 
 }
 
 impl DurableKernelStateStore {
+    /// Liveness needs only live sources of waiting tasks. Finished commands can
+    /// carry large arguments and stay retained after their agents have left.
+    pub(crate) fn agent_waiting_wakes(&self, room: &str) -> Result<Vec<AgentWake>, DaemonError> {
+        let payloads = {
+            let db = self.lock_connection("agent.lifecycle.waiting_wakes")?;
+            // Choosing the room index scans retained payloads before the task join.
+            let mut q = db.prepare_cached(
+                "SELECT payload FROM agent_wakes INDEXED BY agent_wakes_live_task \
+                 WHERE task_id IN (SELECT task_id FROM agent_tasks WHERE room_id=?1 AND state='waiting') \
+                 AND room_id=?1 AND json_extract(payload,'$.state') IN ('scheduled','starting','running') \
+                 ORDER BY rowid",
+            ).map_err(sql)?;
+            let rows = q
+                .query_map([room], |row| row.get::<_, String>(0))
+                .map_err(sql)?;
+            let payloads = rows.collect::<Result<Vec<_>, _>>().map_err(sql)?;
+            #[cfg(test)]
+            WAITING_WAKE_STEPS
+                .with(|steps| steps.set(q.get_status(rusqlite::StatementStatus::VmStep)));
+            payloads
+        };
+        // Parsing belongs to this reader, outside the shared connection lock.
+        payloads
+            .into_iter()
+            .map(|payload| decode(&payload))
+            .collect()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn last_waiting_wake_read_steps_for_test() -> i32 {
+        WAITING_WAKE_STEPS.with(std::cell::Cell::get)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn last_wake_read_sorts_for_test() -> i32 {
+        WAKE_READ_SORTS.with(std::cell::Cell::get)
+    }
+
+    /// Select the existing visible history window before copying or decoding commands.
+    pub(crate) fn agent_visible_wakes(
+        &self,
+        room: &str,
+        agent: Option<&str>,
+        now: u64,
+    ) -> Result<Vec<AgentWake>, DaemonError> {
+        Ok(self
+            .agent_visible_wake_rows(room, agent, now, 0, -1, false)?
+            .into_iter()
+            .map(|(_, wake)| wake)
+            .collect())
+    }
+
+    pub(crate) fn agent_visible_wake_rows(
+        &self,
+        room: &str,
+        agent: Option<&str>,
+        now: u64,
+        after: i64,
+        limit: i64,
+        armed_only: bool,
+    ) -> Result<Vec<(i64, AgentWake)>, DaemonError> {
+        let filter = if agent.is_some() {
+            "room_id=?1 AND agent_id=?2"
+        } else {
+            "room_id=?1"
+        };
+        let now = sql_integer(now)?;
+        let payloads = {
+            let db = self.lock_connection("agent.lifecycle.visible_wakes")?;
+            let mut query = db.prepare_cached(&format!(
+                "WITH finished AS (
+                    SELECT rowid FROM agent_wakes WHERE {filter}
+                    AND NOT ?6
+                    AND json_extract(payload,'$.state') NOT IN ('scheduled','starting','running','cancelling')
+                    AND coalesce(json_extract(payload,'$.last_fired_at_ms'),json_extract(payload,'$.created_at_ms')) > ?3-86400000
+                    ORDER BY rowid DESC LIMIT 64
+                ), visible AS (
+                    SELECT rowid FROM agent_wakes INDEXED BY agent_wakes_room_armed WHERE {filter}
+                    AND json_extract(payload,'$.state') IN ('scheduled','starting','running','cancelling')
+                    UNION ALL SELECT rowid FROM finished
+                ) SELECT rowid, payload FROM agent_wakes
+                WHERE rowid > ?4 AND rowid IN (SELECT rowid FROM visible)
+                ORDER BY rowid LIMIT ?5"
+            )).map_err(sql)?;
+            let rows = query
+                .query_map(params![room, agent, now, after, limit, armed_only], |row| {
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+                })
+                .map_err(sql)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(sql)?
+        };
+        payloads
+            .into_iter()
+            .map(|(row, payload)| Ok((row, decode(&payload)?)))
+            .collect()
+    }
+
     pub(crate) fn agent_wakes(
         &self,
         room: Option<&str>,
         agent: Option<&str>,
     ) -> Result<Vec<AgentWake>, DaemonError> {
-        // Literal filters, as for tasks, so the (room, agent) index serves a Room's read.
+        // Literal filters keep each scope on its ordered index.
         let (filter, values) = match (room, agent) {
             (Some(room), Some(agent)) => ("room_id=?1 AND agent_id=?2", vec![room, agent]),
             (Some(room), None) => ("room_id=?1", vec![room]),
             (None, Some(agent)) => ("agent_id=?1", vec![agent]),
             (None, None) => ("1", vec![]),
         };
-        let db = self.lock_connection("agent.lifecycle.wakes")?;
-        let mut q = db
-            .prepare_cached(&format!(
-                "SELECT payload FROM agent_wakes WHERE {filter} ORDER BY rowid"
-            ))
-            .map_err(sql)?;
-        let rows = q
-            .query_map(rusqlite::params_from_iter(values), |r| {
-                r.get::<_, String>(0)
-            })
-            .map_err(sql)?;
-        rows.map(|row| decode(&row.map_err(sql)?)).collect()
+        let payloads = {
+            let db = self.lock_connection("agent.lifecycle.wakes")?;
+            let mut q = db
+                .prepare_cached(&format!(
+                    "SELECT payload FROM agent_wakes WHERE {filter} ORDER BY rowid"
+                ))
+                .map_err(sql)?;
+            let rows = q
+                .query_map(rusqlite::params_from_iter(values), |r| {
+                    r.get::<_, String>(0)
+                })
+                .map_err(sql)?;
+            let payloads = rows.collect::<Result<Vec<_>, _>>().map_err(sql)?;
+            #[cfg(test)]
+            WAKE_READ_SORTS.with(|sorts| sorts.set(q.get_status(rusqlite::StatementStatus::Sort)));
+            payloads
+        };
+        payloads
+            .into_iter()
+            .map(|payload| decode(&payload))
+            .collect()
     }
     pub(crate) fn agent_wake(&self, id: &str) -> Result<Option<AgentWake>, DaemonError> {
         let db = self.lock_connection("agent.lifecycle.wake")?;
@@ -202,6 +319,54 @@ pub(super) fn question_deadline(
 
 fn save_wake(tx: &Transaction<'_>, wake: &AgentWake) -> Result<(), DaemonError> {
     tx.execute("INSERT INTO agent_wakes VALUES(?1,?2,?3,?4,?5) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload",params![wake.id,wake.task_id,wake.room_id,wake.agent_id,encode(wake)?]).map_err(sql)?;
+    Ok(())
+}
+
+pub(super) fn adopt(
+    tx: &Transaction<'_>,
+    holder: &AgentTaskExecution,
+    task: &AgentTaskExecution,
+    registration: &Registration,
+) -> Result<(), DaemonError> {
+    if registration.obligation_id.as_deref() != Some(registration.source_id.as_str())
+        || registration.id != format!("completion-{}", registration.source_id)
+    {
+        return Ok(());
+    }
+    let payload: Option<String> = tx
+        .query_row(
+            "SELECT payload FROM agent_wakes WHERE id=?1",
+            [&registration.source_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(sql)?;
+    let Some(payload) = payload else {
+        return Ok(());
+    };
+    let mut wake: AgentWake = decode(&payload)?;
+    if wake.id != registration.source_id
+        || wake.task_id != holder.task_id
+        || wake.room_id != holder.room_id
+        || wake.agent_id != holder.agent_id
+        || wake.registration_id != registration.id
+    {
+        return Err(error("wake binding does not match its registration"));
+    }
+    if terminal(&wake) || wake.state == "cancelling" {
+        return Err(error(format!(
+            "Registration `{}` in task `{}` is ending. Read its outcome in chariox.events.inbox and retry with any remaining live registrations.",
+            registration.id, holder.task_id,
+        )));
+    }
+    // A leased worker still returns the immutable identity of its original launch.
+    super::leased_processes::retain_launch_task(tx, &wake)?;
+    wake.task_id.clone_from(&task.task_id);
+    tx.execute(
+        "UPDATE agent_wakes SET task_id=?2,payload=?3 WHERE id=?1",
+        params![wake.id, wake.task_id, encode(&wake)?],
+    )
+    .map_err(sql)?;
     Ok(())
 }
 
@@ -815,10 +980,11 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 )));
             }
             if !terminal(&wake) && wake.state != "cancelling" {
-                // A watched process settles on its physical exit; any other source settles now,
-                // while the obligation is open, so its source receipt survives even when the
-                // agent unsubscribed from it.
-                let physical = wake.kind == "process" && wake.state != "scheduled";
+                // A watched process or placed job settles once its supervisor confirms exit.
+                let physical = wake.state != "scheduled"
+                    && (wake.kind == "process"
+                        || (wake.kind == "job"
+                            && super::leased_processes::read_wake_binding(tx, &id)?.is_some()));
                 if physical {
                     wake.state = "cancelling".into();
                     save_wake(tx, &wake)?;

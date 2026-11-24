@@ -35,6 +35,10 @@ pub struct OpenCodeProviderModel {
     pub limit: Option<OpenCodeProviderModelLimit>,
     #[serde(default)]
     pub variants: BTreeMap<String, serde_json::Value>,
+    /// Other names the provider's own tool accepts for this model (Claude's `sonnet`, Codex's
+    /// picker id), as its catalog lists them. A name the person types resolves to `id`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aliases: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

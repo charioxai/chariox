@@ -5,7 +5,7 @@ use super::*;
 use crate::local::{
     LocalDaemonResponse, RoomTerminalOperation, RoomTerminalRequest, RoomTerminalResult,
 };
-use crate::room_terminal::{OpenRoomTerminal, TerminalActor, MAX_WAIT};
+use crate::room_terminal::{OpenRoomTerminal, TerminalActor, TerminalScope, MAX_WAIT};
 use crate::runtime::command::{KernelCaller, KernelCallerKind};
 use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
 
@@ -122,7 +122,7 @@ impl KernelRuntimeState {
         Ok(())
     }
 
-    /// Run one operation on this kernel's terminal service.
+    /// Run one operation on a Room's terminals on this kernel.
     pub(crate) async fn run_room_terminal_operation(
         &self,
         session_id: &str,
@@ -130,9 +130,33 @@ impl KernelRuntimeState {
         actor: TerminalActor,
         operation: RoomTerminalOperation,
     ) -> Result<RoomTerminalResult, DaemonError> {
+        self.run_terminal_operation(
+            &TerminalScope::room(session_id),
+            working_directory,
+            actor,
+            operation,
+        )
+        .await
+    }
+
+    /// Run one operation on the terminals of `scope` on this kernel's terminal service. The
+    /// caller has already decided who may reach the scope.
+    pub(crate) async fn run_terminal_operation(
+        &self,
+        scope: &TerminalScope,
+        working_directory: PathBuf,
+        actor: TerminalActor,
+        operation: RoomTerminalOperation,
+    ) -> Result<RoomTerminalResult, DaemonError> {
         let service = &self.owned.room_terminals;
         Ok(match operation {
             operation if operation.is_exec() => {
+                let Some(session_id) = scope.room_id() else {
+                    return Err(refused(
+                        "commands with their own stdout and stderr belong to a Room: open a terminal on the kernel, or use a Room"
+                            .to_string(),
+                    ));
+                };
                 self.run_room_exec_operation(session_id, &working_directory, actor, operation)
                     .await?
             }
@@ -141,33 +165,42 @@ impl KernelRuntimeState {
                 rows,
                 title,
                 command,
+                stdin,
             } => {
-                self.ensure_room_running(session_id)?;
-                let project_environment = self.project_environment_for_terminal(session_id)?;
+                let project_environment = match scope.room_id() {
+                    Some(session_id) => {
+                        self.ensure_room_running(session_id)?;
+                        self.project_environment_for_terminal(session_id)?
+                    }
+                    None => Default::default(),
+                };
                 let terminal = service.open(OpenRoomTerminal {
-                    session_id: session_id.to_string(),
+                    scope: scope.clone(),
                     working_directory,
                     cols,
                     rows,
                     title,
                     opened_by: actor,
                     command,
+                    stdin,
                     project_environment,
                 })?;
                 // A Room that ended while this opened has already swept its
                 // terminals: ending is recorded before the sweep, so an open
                 // that raced it sees the end here and removes its own shell.
-                if let Err(ended) = self.ensure_room_running(session_id) {
-                    service.end_session(session_id);
-                    return Err(ended);
+                if let Some(session_id) = scope.room_id() {
+                    if let Err(ended) = self.ensure_room_running(session_id) {
+                        service.end_scope(session_id);
+                        return Err(ended);
+                    }
                 }
                 RoomTerminalResult::Opened { terminal }
             }
             RoomTerminalOperation::List => RoomTerminalResult::Listed {
-                terminals: service.list(session_id),
+                terminals: service.list(scope),
             },
             RoomTerminalOperation::Snapshot { terminal_id } => RoomTerminalResult::Snapshot {
-                snapshot: service.snapshot(session_id, &terminal_id)?,
+                snapshot: service.snapshot(scope, &terminal_id)?,
             },
             RoomTerminalOperation::Input {
                 terminal_id,
@@ -177,9 +210,7 @@ impl KernelRuntimeState {
                     .decode(data_base64)
                     .map_err(|_| refused("terminal input is not valid base64".to_string()))?;
                 RoomTerminalResult::Input {
-                    input: service
-                        .input(session_id, &terminal_id, &actor, &input)
-                        .await?,
+                    input: service.input(scope, &terminal_id, &actor, &input).await?,
                 }
             }
             RoomTerminalOperation::Resize {
@@ -187,7 +218,7 @@ impl KernelRuntimeState {
                 cols,
                 rows,
             } => RoomTerminalResult::Resized {
-                terminal: service.resize(session_id, &terminal_id, cols, rows)?,
+                terminal: service.resize(scope, &terminal_id, cols, rows)?,
             },
             RoomTerminalOperation::ReadOutput {
                 terminal_id,
@@ -196,7 +227,7 @@ impl KernelRuntimeState {
             } => RoomTerminalResult::Output {
                 output: service
                     .read_output(
-                        session_id,
+                        scope,
                         &terminal_id,
                         after_offset,
                         Duration::from_millis(wait_ms),
@@ -211,7 +242,7 @@ impl KernelRuntimeState {
             } => RoomTerminalResult::Waited {
                 waited: service
                     .wait(
-                        session_id,
+                        scope,
                         &terminal_id,
                         &actor.to_string(),
                         watches,
@@ -221,7 +252,7 @@ impl KernelRuntimeState {
                     .await?,
             },
             RoomTerminalOperation::Close { terminal_id } => {
-                service.close(session_id, &terminal_id, &actor)?;
+                service.close(scope, &terminal_id, &actor)?;
                 RoomTerminalResult::Closed
             }
             _ => unreachable!("exec operations handled above"),
@@ -309,9 +340,66 @@ impl KernelRuntimeState {
             .await
     }
 
+    /// THE ONE AUTHORIZATION POINT for the kernel's own terminals: it decides who may list,
+    /// open, attach (snapshot, read, subscribe), type into, resize and close one. Admitted: a
+    /// client of this kernel's owner, which includes an external agent working under the
+    /// owner's kernel-access grant (the grant gate before the router already refuses a Room
+    /// agent's `reach:` grant and every other holder). Everyone else, a Room guest or member
+    /// included, is refused. The terminal model, its storage and its transport carry no
+    /// owner-only assumption; when the focused agent may operate here, only this changes.
+    pub(crate) fn authorize_kernel_terminal(
+        &self,
+        caller: &KernelCaller,
+    ) -> Result<TerminalActor, DaemonError> {
+        let user_id = caller
+            .user_id
+            .as_deref()
+            .unwrap_or(crate::session::DEFAULT_LOCAL_USER_ID);
+        let client = matches!(
+            caller.caller_kind,
+            KernelCallerKind::LocalClient | KernelCallerKind::RemoteClient
+        );
+        if client && self.is_gateway_owner(user_id) {
+            return Ok(TerminalActor::User);
+        }
+        Err(refused(
+            "only this kernel's owner, or an agent the owner granted access to this kernel, can use its terminals"
+                .to_string(),
+        ))
+    }
+
+    /// Terminals of this kernel itself, with no Room. Authorized by `authorize_kernel_terminal`.
+    pub(crate) async fn kernel_terminal_for_client(
+        &self,
+        caller: &KernelCaller,
+        request: crate::local::KernelTerminalRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let actor = self.authorize_kernel_terminal(caller)?;
+        if request.directory.is_some()
+            && !matches!(request.operation, RoomTerminalOperation::Open { .. })
+        {
+            return Err(refused(
+                "a folder is chosen when a terminal is opened, not afterwards".to_string(),
+            ));
+        }
+        let working_directory = match request.directory {
+            Some(directory) => PathBuf::from(directory),
+            None => crate::room_terminal::kernel_user_home()?,
+        };
+        let result = self
+            .run_terminal_operation(
+                &TerminalScope::Kernel,
+                working_directory,
+                actor,
+                request.operation,
+            )
+            .await?;
+        Ok(LocalDaemonResponse::RoomTerminal { result })
+    }
+
     pub(crate) fn end_room_terminals(&self, session_id: &str) {
         self.owned.room_execs.end_session(session_id);
-        self.owned.room_terminals.end_session(session_id);
+        self.owned.room_terminals.end_scope(session_id);
         crate::runtime::process_resources::end_owner(Some(session_id), None);
         crate::agent_temp::clear_room(session_id);
     }

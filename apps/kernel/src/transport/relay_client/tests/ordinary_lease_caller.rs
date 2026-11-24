@@ -35,6 +35,7 @@ fn assert_unauthorized(result: Result<RelayPeerResponse, crate::error::DaemonErr
 
 #[test]
 fn ordinary_lease_caller_binding_survives_restart_and_rejects_spoofs() {
+    crate::test_support::isolated_env_test!();
     run_async_with_large_test_stack(
         "ordinary-lease-caller-binding",
         ordinary_lease_caller_binding_survives_restart_and_rejects_spoofs_async,
@@ -208,7 +209,6 @@ async fn ordinary_lease_caller_binding_survives_restart_and_rejects_spoofs_async
                     prompt_summary: "restart receipt fixture".to_string(),
                 }),
                 Vec::new(),
-                None,
                 crate::extension::RemoteExtensionManifest::default(),
             )
             .expect("worker should start the exact target home prompt")
@@ -238,7 +238,6 @@ async fn ordinary_lease_caller_binding_survives_restart_and_rejects_spoofs_async
                 prompt: "accepted queued steer\n".to_string(),
                 hidden_system_context: String::new(),
                 attachments: Vec::new(),
-                required_skills: None,
             },
         )
         .await
@@ -365,7 +364,6 @@ async fn ordinary_lease_caller_binding_survives_restart_and_rejects_spoofs_async
                 prompt: "untrusted steer must not be accepted".to_string(),
                 hidden_system_context: String::new(),
                 attachments: Vec::new(),
-                required_skills: None,
             },
         )
         .await,
@@ -476,7 +474,6 @@ async fn ordinary_lease_caller_binding_survives_restart_and_rejects_spoofs_async
                 prompt: "different encryption key must not steer".to_string(),
                 hidden_system_context: String::new(),
                 attachments: Vec::new(),
-                required_skills: None,
             },
         )
         .await,

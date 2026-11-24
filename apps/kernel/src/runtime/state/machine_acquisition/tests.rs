@@ -103,8 +103,8 @@ async fn offload_automatic_setting_off_awaits_one_human_decision_before_returnin
         passkey_remember_minutes: None,
     };
     assert!(
-        state.interaction_requires_terminal(&answer),
-        "an agent cannot approve its own rental"
+        !state.interaction_person_only(&answer),
+        "an external agent approves a rental for the person"
     );
     let owner = state
         .owned
@@ -136,7 +136,85 @@ async fn offload_automatic_setting_off_awaits_one_human_decision_before_returnin
         .unwrap();
     let error = gate.await.unwrap().unwrap_err().to_string();
     assert!(error.contains("denied"));
-    assert!(error.contains("nothing was allocated or charged"));
+    assert!(error.contains("it was not sent to the service"));
+}
+
+#[tokio::test]
+async fn machine_acquisition_reclaims_stale_owner_decisions_before_admission() {
+    let (state, command, request, caps, _workspace) = fixture(false);
+    let room = command.session_id.clone().unwrap();
+    let owner = state
+        .owned
+        .session_store
+        .get_session(&room)
+        .unwrap()
+        .owner_user_id()
+        .to_owned();
+    let mut expired = Vec::new();
+    let mut abandoned = Vec::new();
+    for index in 0..8 {
+        let id = format!("{room}-stale-{index}");
+        let interaction = RuntimeInteraction::for_kernel_operation(
+            &id,
+            &id,
+            "Unrelated action",
+            "Review this action",
+            vec![RuntimeInteractionChoice::new("deny", "Deny", "deny", None)],
+        )
+        .with_timeout_sec(300);
+        let receiver = state
+            .create_kernel_operation_interaction("", &owner, interaction)
+            .await
+            .unwrap();
+        if index < 4 {
+            expired.push((id, receiver));
+        } else {
+            abandoned.push(receiver);
+        }
+    }
+    for (id, _) in &expired {
+        state
+            .owned
+            .pending_interactions
+            .write()
+            .get_mut(id)
+            .unwrap()
+            .kernel_operation_deadline = Some(std::time::Instant::now());
+    }
+    drop(abandoned);
+
+    let gate_state = state.clone();
+    let mut gate = tokio::spawn(async move {
+        gate_state
+            .approve_machine_acquisition(&command, &request, Some(&caps))
+            .await
+    });
+    let card = tokio::select! {
+        result = &mut gate => panic!("machine approval ended without a card: {result:?}"),
+        card = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let session = state.owned.session_store.get_session(&room).unwrap();
+                if let Some(card) = session.active_interactions().first() {
+                    break card.id().to_owned();
+                }
+                tokio::task::yield_now().await;
+            }
+        }) => card.expect("machine approval card is missing"),
+    };
+    assert_eq!(state.list_owner_interactions(&owner).len(), 1);
+    for (_, mut receiver) in expired {
+        assert_eq!(receiver.try_recv().unwrap().status, "timed_out");
+    }
+    state
+        .resolve_terminal_runtime_interaction(&room, &card, "deny", None, Some(&owner))
+        .await
+        .unwrap();
+    assert!(gate
+        .await
+        .unwrap()
+        .unwrap_err()
+        .to_string()
+        .contains("denied"));
 }
 
 #[tokio::test]
@@ -275,10 +353,10 @@ async fn offload_manual_machine_request_uses_the_same_owner_gate_and_service_min
         .unwrap()
         .unwrap_err()
         .to_string()
-        .contains("nothing was allocated or charged"));
+        .contains("it was not sent to the service"));
 }
 
-fn option(class_id: &str, region: &str, available: bool) -> MachineOption {
+pub(super) fn option(class_id: &str, region: &str, available: bool) -> MachineOption {
     MachineOption {
         class_id: class_id.into(),
         region: region.into(),
@@ -386,4 +464,29 @@ async fn the_owner_is_asked_about_a_named_option_even_when_it_is_no_longer_liste
     .unwrap();
     assert!(message.contains("Acquire gone in auto"), "{message}");
     gate.abort();
+}
+
+#[test]
+fn the_service_request_id_is_scoped_to_the_kernel_and_agent() {
+    let id = super::choice::service_request_id("kernel", "agent", "R1");
+    assert!(id.len() <= 128, "{id}");
+    assert!(id
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'));
+    assert_eq!(
+        id,
+        super::choice::service_request_id("kernel", "agent", "R1")
+    );
+    assert_ne!(
+        id,
+        super::choice::service_request_id("kernel", "other", "R1")
+    );
+    assert_ne!(
+        id,
+        super::choice::service_request_id("other", "agent", "R1")
+    );
+    assert_ne!(
+        id,
+        super::choice::service_request_id("kernel", "agent", "r1")
+    );
 }

@@ -90,6 +90,25 @@ runtime_source_revision() {
   ) | python3 "$SCRIPT_DIR/slice-command-guard.py" digest-paths "$REPO_ROOT"
 }
 
+DRILL_LABELS=()
+if [[ -n "${CHARIOX_SLICE_DRILL_RUN:-}" ]]; then
+  if [[ ! "$CHARIOX_SLICE_DRILL_RUN" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,179}$ \
+    || ! "${CHARIOX_SLICE_DRILL_HARNESS:-}" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,179}$ \
+    || ! "${CHARIOX_SLICE_DRILL_STARTED:-}" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]{1,3})?Z$ \
+    || ! "${CHARIOX_SLICE_DRILL_PROCESS:-}" =~ ^([a-f0-9-]{36}/[0-9]+/[1-9][0-9]*/[0-9]+)?$ ]]; then
+    printf '[slice-linux] invalid drill ownership labels\n' >&2
+    exit 1
+  fi
+  DRILL_LABELS=(
+    --label "io.chariox.drill.run=$CHARIOX_SLICE_DRILL_RUN"
+    --label "io.chariox.drill.started=$CHARIOX_SLICE_DRILL_STARTED"
+    --label "io.chariox.drill.harness=$CHARIOX_SLICE_DRILL_HARNESS"
+  )
+  if [[ -n "${CHARIOX_SLICE_DRILL_PROCESS:-}" ]]; then
+    DRILL_LABELS+=(--label "io.chariox.drill.process=$CHARIOX_SLICE_DRILL_PROCESS")
+  fi
+fi
+
 SLICE_NAME="${CHARIOX_SLICE_NAME:-chariox-slice-linux}"
 SLICE_HOSTNAME="${CHARIOX_SLICE_HOSTNAME:-$SLICE_NAME}"
 SLICE_ID="${CHARIOX_SLICE_ID:-slice-linux}"
@@ -352,7 +371,7 @@ restore_saved_home_volume() {
   helper="${SLICE_NAME}-home-restore-$$"
   log "restoring saved home archive $SLICE_SAVED_HOME_ARCHIVE into volume $SLICE_HOME_VOLUME"
   run_with_timeout 30 docker rm -f "$helper" >/dev/null 2>&1 || true
-  if run_with_timeout 60 docker create --name "$helper" --user root \
+  if run_with_timeout 60 docker create "${DRILL_LABELS[@]}" --name "$helper" --user root \
     --memory 512m --cpus 1 --pids-limit 64 --network none \
     --label "io.chariox.home-restore-helper=$helper" \
     -v "$SLICE_HOME_VOLUME:/home-dst" \
@@ -392,6 +411,7 @@ restore_saved_home_volume() {
 prepare_home_volume() {
   local inspect_output inspect_status=0
   local -a quota_labels=(
+    "${DRILL_LABELS[@]}"
     --label "io.chariox.slice.id=$SLICE_ID"
     --label "io.chariox.slice.owner-kernel-id=$SLICE_OWNER_KERNEL_ID"
     --label "io.chariox.slice.owner-machine-id=$SLICE_OWNER_MACHINE_ID"
@@ -470,7 +490,7 @@ configure_chromium_browser_policy() {
     for dir in /etc/chromium/policies/managed /etc/chromium-browser/policies/managed; do
       mkdir -p \"\$dir\"
       cat > \"\$dir/chariox-slice.json\" <<'JSON'
-{\"BrowserSignin\":0}
+{\"BrowserSignin\":0,\"PasswordManagerEnabled\":false,\"AutofillAddressEnabled\":false,\"AutofillCreditCardEnabled\":false}
 JSON
       chmod 0644 \"\$dir/chariox-slice.json\"
     done
@@ -1018,7 +1038,7 @@ refresh_saved_state_runtime() {
   local runtime_dir
   runtime_dir="$(mktemp -d "${TMPDIR:-/tmp}/chariox-slice-runtime.XXXXXX")"
   run_with_timeout 30 docker rm -f "$helper" >/dev/null 2>&1 || true
-  if ! run_with_timeout 60 docker create --name "$helper" "$SLICE_BASE_IMAGE" sleep infinity >/dev/null \
+  if ! run_with_timeout 60 docker create "${DRILL_LABELS[@]}" --name "$helper" "$SLICE_BASE_IMAGE" sleep infinity >/dev/null \
     || ! run_with_timeout 60 docker cp "$helper:/opt/chariox-slice/bin/." "$runtime_dir/" \
     || ! run_with_timeout 60 docker cp "$runtime_dir/." "$SLICE_NAME:/opt/chariox-slice/bin/"; then
     run_with_timeout 30 docker rm -f "$helper" >/dev/null 2>&1 || true
@@ -1111,12 +1131,13 @@ ensure_container() {
       if docker volume inspect "$SLICE_WORKSPACE_SOURCE" >/dev/null 2>&1; then
         require_owned_workspace_volume
       else
-        docker volume create --label "org.chariox.local.owner-slice=$SLICE_ID" \
+        docker volume create "${DRILL_LABELS[@]}" --label "org.chariox.local.owner-slice=$SLICE_ID" \
           --label "org.chariox.local.owner-uid=$SLICE_WORKSPACE_OWNER" "$SLICE_WORKSPACE_SOURCE" >/dev/null \
           || fail "owned workspace creation failed"
       fi
     fi
     local docker_create_args=(
+      "${DRILL_LABELS[@]}"
       --init
       --name "$SLICE_NAME"
       --hostname "$SLICE_HOSTNAME"
@@ -1529,40 +1550,6 @@ copy_provider_auth_file() {
   run_with_file_stdin_timeout 90 "$source_path" docker exec -i -u slice "$SLICE_NAME" \
     bash -lc "node -e $auth_program_q import $target_q"
   log "imported $label auth into $target_path"
-}
-
-trust_claude_slice_workspace() {
-  if ! run_with_timeout 30 docker exec -e "CHARIOX_SLICE_TRUST_WORKSPACE=$SLICE_WORKSPACE" -u slice "$SLICE_NAME" bash -lc "node <<'NODE'
-const fs = require('fs')
-const file = '/home/slice/.claude.json'
-let data = {}
-try {
-  data = JSON.parse(fs.readFileSync(file, 'utf8'))
-} catch {
-  data = {}
-}
-const projects = data.projects && typeof data.projects === 'object' ? data.projects : {}
-const template = Object.values(projects).find((value) =>
-  value && typeof value === 'object' && Object.prototype.hasOwnProperty.call(value, 'hasTrustDialogAccepted')
-) || {}
-for (const workspace of new Set(['/workspace', process.env.CHARIOX_SLICE_TRUST_WORKSPACE].filter(Boolean))) {
-  projects[workspace] = {
-    ...template,
-    allowedTools: Array.isArray(template.allowedTools) ? template.allowedTools : [],
-    hasTrustDialogAccepted: true,
-    projectOnboardingSeenCount: Math.max(Number(template.projectOnboardingSeenCount) || 0, 1),
-  }
-}
-data.projects = projects
-data.hasCompletedOnboarding = true
-fs.writeFileSync(file, JSON.stringify(data, null, 2))
-fs.chmodSync(file, 0o600)
-NODE"
-  then
-    log "Claude workspace trust update unavailable; continuing"
-    return 0
-  fi
-  log "marked /workspace and $SLICE_WORKSPACE as trusted for Claude Code"
 }
 
 import_provider_auth() {

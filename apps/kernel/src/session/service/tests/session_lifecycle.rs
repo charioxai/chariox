@@ -7,15 +7,6 @@ use crate::session::{
 };
 use std::collections::BTreeSet;
 
-fn without_serialized_project_id(session: RuntimeSession) -> RuntimeSession {
-    let mut session_json = serde_json::to_value(&session).expect("session should encode");
-    session_json
-        .as_object_mut()
-        .expect("session should encode as an object")
-        .remove("project_id");
-    serde_json::from_value(session_json).expect("session should decode")
-}
-
 #[test]
 fn creates_gets_and_lists_sessions() {
     let mut service = SessionService::new(&test_config());
@@ -32,10 +23,6 @@ fn creates_gets_and_lists_sessions() {
     assert_eq!(created.host_daemon_id(), "daemon-test");
     assert_eq!(created.status(), SessionStatus::Created);
     assert!(created.active_provider_run_id().is_none());
-    assert_eq!(
-        created.max_agents(),
-        crate::session::DEFAULT_SESSION_MAX_AGENTS
-    );
     assert!(created.attachment_ids().is_empty());
     assert!(created.active_prompt().is_none());
     assert!(created.queued_prompts().is_empty());
@@ -53,19 +40,6 @@ fn creates_gets_and_lists_sessions() {
         .expect("lookup should succeed");
     assert_eq!(fetched, created);
     assert_eq!(service.list_sessions(), vec![created]);
-}
-
-#[test]
-fn create_session_uses_configured_default_agent_cap() {
-    let mut config = test_config();
-    config.user_config.workflow.session_default_max_agents = Some(2048);
-    let mut service = SessionService::new(&config);
-
-    let created = service
-        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
-        .expect("session should be created");
-
-    assert_eq!(created.max_agents(), 2048);
 }
 
 #[test]
@@ -191,7 +165,7 @@ fn hidden_sessions_do_not_get_default_aliases() {
     let hidden = service
         .create_session(CreateSessionRequest::new("/repo", "worktree-1").with_hidden(true))
         .expect("hidden session should be created");
-    assert_eq!(hidden.project_id(), "");
+    assert!(hidden.project().is_hidden_scope());
     assert!(service
         .list_projects(DEFAULT_LOCAL_USER_ID, true)
         .is_empty());
@@ -217,6 +191,7 @@ fn restoring_hidden_session_keeps_its_project_without_making_it_visible() {
 
     let mut hidden = RuntimeSession::new(
         "hidden-runtime",
+        crate::session::ProjectId::new(project.id()).unwrap(),
         None,
         "/repo",
         "worktree-hidden",
@@ -224,7 +199,6 @@ fn restoring_hidden_session_keeps_its_project_without_making_it_visible() {
         "daemon-test",
     );
     hidden.set_hidden(true);
-    assert!(hidden.assign_project_id(project.id()));
 
     let mut restored = SessionService::new(&test_config());
     restored.restore_projects(vec![project.clone()]);
@@ -253,6 +227,7 @@ fn default_alias_counts_existing_unaliased_sessions_and_skips_conflicts() {
         .expect("hidden session should not count");
     service.restore_session(RuntimeSession::new(
         "legacy-session",
+        crate::session::ProjectId::test(),
         None,
         "/repo".to_string(),
         "worktree-legacy".to_string(),
@@ -520,25 +495,6 @@ fn visible_session_project_assignment_survives_release_builds() {
             .expect("session project should exist")
             .workspace_id(),
         created.workspace_id()
-    );
-
-    let legacy = RuntimeSession::new(
-        "legacy-session",
-        Some("legacy".to_string()),
-        "workspace-2",
-        "worktree-2",
-        "machine-test",
-        "daemon-test",
-    );
-    let restored = service.restore_session(without_serialized_project_id(legacy));
-
-    assert!(!restored.project_id().is_empty());
-    assert_eq!(
-        service
-            .get_project(restored.project_id())
-            .expect("restored session project should exist")
-            .workspace_id(),
-        restored.workspace_id()
     );
 }
 
@@ -1360,10 +1316,10 @@ fn prompt_queue_starts_then_queues_then_advances() {
         .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
         .expect("session should be created");
     service
-        .add_attachment_to_session(created.id(), "attachment-1")
+        .add_attachment_to_session(created.id(), "attachment-1", DEFAULT_LOCAL_USER_ID)
         .expect("attachment should be added");
     service
-        .add_attachment_to_session(created.id(), "attachment-2")
+        .add_attachment_to_session(created.id(), "attachment-2", DEFAULT_LOCAL_USER_ID)
         .expect("attachment should be added");
 
     let (_, first) = service
@@ -1438,10 +1394,10 @@ fn activating_expected_queued_prompt_validates_queue_front() {
         .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
         .expect("session should be created");
     service
-        .add_attachment_to_session(created.id(), "attachment-1")
+        .add_attachment_to_session(created.id(), "attachment-1", DEFAULT_LOCAL_USER_ID)
         .expect("attachment should be added");
     service
-        .add_attachment_to_session(created.id(), "attachment-2")
+        .add_attachment_to_session(created.id(), "attachment-2", DEFAULT_LOCAL_USER_ID)
         .expect("attachment should be added");
     service
         .submit_prompt(
@@ -1497,7 +1453,7 @@ fn config_updates_are_versioned() {
         .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
         .expect("session should be created");
     service
-        .add_attachment_to_session(created.id(), "attachment-1")
+        .add_attachment_to_session(created.id(), "attachment-1", DEFAULT_LOCAL_USER_ID)
         .expect("attachment should be added");
 
     let mut changes = BTreeMap::new();
@@ -1521,7 +1477,7 @@ fn config_update_idle_admission_is_not_owned_by_session_service() {
         .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
         .expect("session should be created");
     service
-        .add_attachment_to_session(created.id(), "attachment-1")
+        .add_attachment_to_session(created.id(), "attachment-1", DEFAULT_LOCAL_USER_ID)
         .expect("attachment should be added");
     service
         .submit_prompt(
@@ -1547,7 +1503,7 @@ fn detaching_an_attachment_keeps_its_active_prompt_running() {
         .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
         .expect("session should be created");
     service
-        .add_attachment_to_session(created.id(), "attachment-1")
+        .add_attachment_to_session(created.id(), "attachment-1", DEFAULT_LOCAL_USER_ID)
         .expect("attachment should be added");
 
     let (_, outcome) = service
@@ -1564,12 +1520,9 @@ fn detaching_an_attachment_keeps_its_active_prompt_running() {
         other => panic!("expected running prompt, got {other:?}"),
     };
 
-    let (session, effect) = service
+    let session = service
         .remove_attachment_from_session(created.id(), "attachment-1")
         .expect("detach should succeed");
-
-    assert!(!effect.removed_active_prompt);
-    assert_eq!(effect.removed_queued_prompt_count, 0);
     assert!(session.attachment_ids().is_empty());
     assert_eq!(
         session.active_prompt().map(|prompt| prompt.id()),
@@ -1585,7 +1538,7 @@ fn detaching_an_attachment_keeps_its_queued_prompts() {
         .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
         .expect("session should be created");
     service
-        .add_attachment_to_session(created.id(), "attachment-1")
+        .add_attachment_to_session(created.id(), "attachment-1", DEFAULT_LOCAL_USER_ID)
         .expect("attachment should be added");
 
     let (_, active) = service
@@ -1612,45 +1565,12 @@ fn detaching_an_attachment_keeps_its_queued_prompts() {
         other => panic!("expected queued prompt, got {other:?}"),
     };
 
-    let (session, effect) = service
+    let session = service
         .remove_attachment_from_session(created.id(), "attachment-1")
         .expect("detach should succeed");
-
-    assert_eq!(effect.removed_queued_prompt_count, 0);
     assert_eq!(session.queued_prompts().len(), 1);
     assert_eq!(session.queued_prompts()[0].id(), queued_prompt_id);
     assert_eq!(session.queued_prompts()[0].prompt(), "queued prompt");
-}
-
-#[test]
-fn legacy_session_project_migration_uses_repo_label_hint_and_is_restart_stable() {
-    let legacy = RuntimeSession::new(
-        "legacy-session",
-        Some("legacy".to_string()),
-        "/workspace/chariox",
-        "/workspace/chariox",
-        "machine-test",
-        "daemon-test",
-    );
-    let legacy = without_serialized_project_id(legacy);
-
-    let mut first_service = SessionService::new(&test_config());
-    let migrated = first_service
-        .restore_session_with_default_project_name_hint(legacy, Some("mgutierrez09/chariox"));
-    let project = first_service
-        .get_project(migrated.project_id())
-        .expect("migrated default project should exist");
-    assert_eq!(project.name(), "mgutierrez09/chariox");
-    assert_eq!(project.kind(), RuntimeProjectKind::Default);
-
-    let mut restarted_service = SessionService::new(&test_config());
-    restarted_service.restore_projects(first_service.durable_projects());
-    let restored = restarted_service.restore_session(migrated);
-    let restored_project = restarted_service
-        .get_project(restored.project_id())
-        .expect("default project should survive restart");
-    assert_eq!(restored_project.id(), project.id());
-    assert_eq!(restored_project.name(), "mgutierrez09/chariox");
 }
 
 #[test]
@@ -1823,8 +1743,9 @@ fn project_workspace_updates_validate_membership_and_preserve_order() {
 
     let empty = service
         .update_project_workspaces(session.project_id(), Vec::new(), DEFAULT_LOCAL_USER_ID)
-        .expect_err("empty Projects should be rejected");
-    assert!(empty.to_string().contains("between 1 and 32 Workspaces"));
+        .expect("MP-08 / MP-10 / MP-11: a named Project may have no folders");
+    assert!(empty.workspace_ids().is_empty());
+    assert_eq!(empty.workspace_id(), "");
 
     let too_many = service
         .update_project_workspaces(
@@ -1833,7 +1754,7 @@ fn project_workspace_updates_validate_membership_and_preserve_order() {
             DEFAULT_LOCAL_USER_ID,
         )
         .expect_err("oversized Projects should be rejected");
-    assert!(too_many.to_string().contains("between 1 and 32 Workspaces"));
+    assert!(too_many.to_string().contains("at most 32 Workspaces"));
 
     let reduced = service
         .update_project_workspaces(
@@ -1988,15 +1909,15 @@ fn legacy_duplicate_project_names_keep_the_most_populated_project_canonical() {
         ("main-session-2", &main_project),
         ("worktree-session", &worktree_project),
     ] {
-        let mut session = RuntimeSession::new(
+        let session = RuntimeSession::new(
             session_id,
+            crate::session::ProjectId::new(project.id()).unwrap(),
             Some(session_id.to_string()),
             project.workspace_id(),
             project.workspace_id(),
             "machine-test",
             "daemon-test",
         );
-        assert!(session.assign_project_id(project.id()));
         service.restore_session(session);
     }
 
@@ -2060,7 +1981,7 @@ fn borrowed_session_scans_preserve_durable_and_retry_scope() {
 }
 
 #[test]
-fn kernel_restart_reconciliation_clears_agent_decisions_without_authorizing_them() {
+fn card_rules_cold_restart_discards_saved_task_and_agent_cards() {
     use crate::session::{RuntimeInteraction, RuntimeInteractionChoice};
     let mut service = SessionService::new(&test_config());
     let mut session = service
@@ -2089,9 +2010,23 @@ fn kernel_restart_reconciliation_clears_agent_decisions_without_authorizing_them
     );
     session.add_active_interaction(decision.clone());
     session.add_active_interaction(agent_approval);
+    for (id, title) in [
+        ("task-blocked-old-attempt-2", "Agent needs your action"),
+        ("task-blocked-answered-question-3", "Question"),
+    ] {
+        session.add_active_interaction(RuntimeInteraction::for_kernel_operation(
+            id,
+            id,
+            title,
+            "Saved without a live responder",
+            vec![RuntimeInteractionChoice::new(
+                "cancel", "Dismiss", "cancel", None,
+            )],
+        ));
+    }
     let persisted = serde_json::to_value(&session).expect("persist actual session shape");
     let mut restored: RuntimeSession = serde_json::from_value(persisted).expect("restore session");
-    assert_eq!(restored.active_interactions().len(), 2);
+    assert_eq!(restored.active_interactions().len(), 4);
     let reconciliation = restored.reconcile_after_kernel_restart();
     assert!(
         restored.active_interaction_for_agent("agent-1").is_none(),
@@ -2211,4 +2146,39 @@ fn mp08_owner19_automatic_assignment_keeps_workspace_membership_bound() {
             .len(),
         32
     );
+}
+
+#[test]
+fn every_session_created_through_create_session_has_a_project_id() {
+    let mut service = SessionService::new(&test_config());
+    let visible = service
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("visible Room should be created");
+    let hidden = service
+        .create_session(CreateSessionRequest::new("workspace-2", "worktree-2").with_hidden(true))
+        .expect("hidden backing Room should be created");
+
+    assert!(!visible.project_id().is_empty());
+    assert!(
+        !hidden.project_id().is_empty(),
+        "a hidden backing Room is created with its own scope id, not an empty one"
+    );
+    assert_ne!(visible.project_id(), hidden.project_id());
+}
+
+#[test]
+fn a_stored_session_needs_a_non_empty_project_id() {
+    let mut service = SessionService::new(&test_config());
+    let created = service
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    let stored = serde_json::to_value(&created).expect("session should encode");
+
+    let mut missing = stored.clone();
+    missing.as_object_mut().unwrap().remove("project_id");
+    let mut empty = stored;
+    empty["project_id"] = serde_json::json!("");
+
+    assert!(serde_json::from_value::<RuntimeSession>(missing).is_err());
+    assert!(serde_json::from_value::<RuntimeSession>(empty).is_err());
 }

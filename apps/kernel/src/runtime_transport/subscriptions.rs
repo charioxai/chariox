@@ -8,7 +8,7 @@ use tokio::time::{sleep, timeout};
 
 #[cfg(test)]
 use crate::error::DaemonError;
-use crate::local::{RelayStatus, RemoteMachineRecord};
+use crate::local::{RelayStatus, RemoteMachineInventory};
 use crate::runtime::event_log::{LoggedEvent, ReplayGap, ReplayOutcome};
 use crate::runtime::projection::SessionSnapshotProjection;
 use crate::runtime::router::CommandRouter;
@@ -58,6 +58,8 @@ pub(super) async fn run_subscription_loop(
     }
     let mut previous_catalog_revision = None;
     let mut previous_snapshot: Option<SessionSnapshotProjection> = None;
+    // MP-08 / MP-10 / MP-11: reconnect rebuilds this disposable journal cursor.
+    let mut skill_cursor = crate::skill::watch::SkillWatchCursor::default();
     let mut last_workflow_design_sequence = 0_u64;
     let mut last_snapshot_projection_sequence: Option<u64> = None;
     let mut next_snapshot_reconciliation_at = Instant::now();
@@ -113,6 +115,7 @@ pub(super) async fn run_subscription_loop(
         let session_projection_change_sequence =
             router.session_projection_session_change_sequence(&subscription.session_id);
         let workflow_design_change_sequence = router.workflow_design_change_sequence();
+        let skill_change_sequence = router.room_list_change_sequence();
         let now = Instant::now();
         let should_check_snapshot = previous_snapshot.is_none()
             || last_snapshot_projection_sequence != Some(session_projection_change_sequence)
@@ -202,6 +205,45 @@ pub(super) async fn run_subscription_loop(
                 {
                     agent_turns.mark_changed(agent_id);
                 }
+                // The ordinary watch has admitted the live attachment. Project
+                // and user membership are rechecked inside the scoped read.
+                match router
+                    .runtime_state()
+                    .skill_subscription_events(
+                        &subscription.session_id,
+                        &subscription.attachment_id,
+                        skill_cursor.clone(),
+                    )
+                    .await
+                {
+                    Ok((next, changes)) => {
+                        for change in changes {
+                            if !emit_kernel_event(
+                                &runtime,
+                                &outgoing_tx,
+                                &close_tx,
+                                &close_requested,
+                                KernelEvent::SkillsChanged {
+                                    session_id: subscription.session_id.clone(),
+                                    change,
+                                },
+                                Some(&event_stream_id),
+                                Some(&subscription.session_id),
+                                Some(&subscription.attachment_id),
+                            )
+                            .await
+                            {
+                                return;
+                            }
+                        }
+                        skill_cursor = next;
+                    }
+                    Err(error) => crate::logging::warn_with_fields(
+                        "skills.v2.watch",
+                        "Skills event projection requires retry",
+                        serde_json::json!({"session_id": subscription.session_id, "error": error.to_string()}),
+                    ),
+                }
                 if !records.is_empty()
                     && !emit_kernel_event(
                         &runtime,
@@ -286,7 +328,7 @@ pub(super) async fn run_subscription_loop(
                         &close_requested,
                         KernelEvent::WorkflowRunUpdated {
                             session_id: subscription.session_id.clone(),
-                            workflow_run,
+                            workflow_run: Box::new(workflow_run),
                         },
                         Some(&event_stream_id),
                         Some(&subscription.session_id),
@@ -420,6 +462,7 @@ pub(super) async fn run_subscription_loop(
                         workflow_design_change_sequence
                     ) => {}
                     _ = router.wait_for_client_catalog_change_after(client_catalog_sequence) => {}
+                    _ = router.wait_for_room_list_change_after(skill_change_sequence) => {}
                     _ = passkey_prompts.changed(&router) => {}
                     _ = home_audit.changed() => {}
                 }
@@ -865,7 +908,7 @@ pub(super) async fn emit_replay_gap_snapshot(
                 close_requested,
                 KernelEvent::SessionSnapshot {
                     room_workflows: projection.room_workflows,
-                    session: Box::new(projection.session),
+                    session: Box::new(projection.session.without_room_workflow_details()),
                     provider_run: Box::new(
                         projection
                             .provider_run
@@ -906,7 +949,9 @@ async fn run_room_list_subscription_loop(
     let mut previous_catalog_revision = None;
     let mut room_list_event_projection = RoomListEventProjection::default();
     let mut previous_relay_status: Option<RelayStatus> = None;
-    let mut previous_remote_machines: Option<Vec<RemoteMachineRecord>> = None;
+    let mut previous_remote_machines: Option<RemoteMachineInventory> = None;
+    // This client follows the machine list: the relay connector keeps it fresh meanwhile.
+    let _remote_machines_watch = router.watch_remote_machines();
     let mut previous_provider_catalog = None;
     let mut previous_slices = None;
     let mut inventory_dirty = true;
@@ -1048,15 +1093,19 @@ async fn run_room_list_subscription_loop(
                 advance_subscription_deadline(next_relay_status_at, heartbeat_interval);
         }
         if tick.is_multiple_of(RELAY_DISCOVERY_INTERVAL_TICKS) {
-            let machines = router.transport_remote_machines_snapshot();
-            if previous_remote_machines.as_ref() != Some(&machines) {
-                previous_remote_machines = Some(machines.clone());
+            let inventory = router.transport_remote_machines_snapshot();
+            if previous_remote_machines.as_ref() != Some(&inventory) {
+                previous_remote_machines = Some(inventory.clone());
                 if !emit_kernel_event(
                     &runtime,
                     &outgoing_tx,
                     &close_tx,
                     &close_requested,
-                    KernelEvent::RemoteMachinesChanged { machines },
+                    KernelEvent::RemoteMachinesChanged {
+                        machines: inventory.machines,
+                        offline_machines: inventory.offline_machines,
+                        directory: inventory.directory,
+                    },
                     Some(ROOM_LIST_SUBSCRIPTION_SCOPE),
                     None,
                     None,

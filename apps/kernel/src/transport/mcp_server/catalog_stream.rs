@@ -1,6 +1,7 @@
 //! Standard MCP notifications on the existing authenticated HTTP endpoint.
 use super::*;
 use crate::runtime::runtime_tool_catalog::CatalogWatch;
+use futures_util::StreamExt as _;
 use std::{sync::Weak, time::Duration};
 
 struct Stream {
@@ -68,7 +69,8 @@ pub(super) fn open(
                 }
             }
         },
-    );
+    )
+    .fuse();
     Response::builder()
         .status(StatusCode::OK)
         .header(CONTENT_TYPE, "text/event-stream")

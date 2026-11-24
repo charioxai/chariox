@@ -101,6 +101,12 @@ pub(super) async fn submit_remote_prompt_to_worker_with_binding_refresh(
                 return Ok(provider_run_id);
             }
             RemotePromptSubmissionOutcome::RejectedBeforeAdmission(error)
+                if super::provider_turn_admission::provider_memory_wait_reason(&error)
+                    .is_some() =>
+            {
+                return Err(error);
+            }
+            RemotePromptSubmissionOutcome::RejectedBeforeAdmission(error)
                 if provider_launch_credential.is_none()
                     && !provider_credential_retry_used
                     && remote_prompt_error_requires_provider_launch_credential(&error) =>
@@ -196,9 +202,13 @@ pub(super) async fn submit_remote_prompt_to_worker_with_binding_refresh(
                 let detail = if persist_remote_prompt_reconciliation_pending(state, dispatch, true)
                     .is_ok()
                 {
-                    format!("the request may have reached the worker, but no submission acknowledgement was recorded (submission result: {error})")
+                    format!(
+                        "the request may have reached the worker, but no submission acknowledgement was recorded (submission result: {error})"
+                    )
                 } else {
-                    format!("the request may have reached the worker, but no submission acknowledgement was recorded (submission result: {error}) and the reconciliation marker could not be persisted; the already-durable Dispatching phase still blocks restart replay")
+                    format!(
+                        "the request may have reached the worker, but no submission acknowledgement was recorded (submission result: {error}) and the reconciliation marker could not be persisted; the already-durable Dispatching phase still blocks restart replay"
+                    )
                 };
                 state.report_remote_prompt_reconciliation_pending(dispatch, &detail);
                 crate::logging::warn_with_fields(
@@ -717,16 +727,17 @@ pub(super) fn remote_prompt_error_is_known_pre_admission_rejection(error: &Daemo
     matches!(
         *operation,
         "read relay peer response" | "read temporary relay peer response"
-    ) && matches!(
-        code.as_str(),
-        crate::transport::relay_peer::REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE
-            | crate::transport::relay_peer::REMOTE_PROVIDER_ACCOUNT_UNUSABLE_CODE
-            | "leased_agent_not_found"
-            | "execution_lease_not_found"
-            | "target_not_connected"
-            | "target_not_allowed"
-            | "action_not_allowed"
-    )
+    ) && (super::provider_turn_admission::provider_memory_wait_reason(error).is_some()
+        || matches!(
+            code.as_str(),
+            crate::transport::relay_peer::REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE
+                | crate::transport::relay_peer::REMOTE_PROVIDER_ACCOUNT_UNUSABLE_CODE
+                | "leased_agent_not_found"
+                | "execution_lease_not_found"
+                | "target_not_connected"
+                | "target_not_allowed"
+                | "action_not_allowed"
+        ))
 }
 
 pub(super) fn remote_prompt_error_is_definitely_pre_send_after_transport_start(
@@ -867,7 +878,13 @@ impl KernelRuntimeState {
         let prompt_id = dispatch.prompt_id.clone();
         let closure_prompt_id = prompt_id.clone();
         let expected_leased_agent_id = dispatch.leased_agent_id.clone();
-        let mut hidden_system_context = dispatch.hidden_system_context.clone();
+        let mut hidden_system_context = self.owned.context_with_agent_release_note(
+            &dispatch.agent_id,
+            &dispatch.prompt_id,
+            dispatch.prompt_origin,
+            false,
+            dispatch.hidden_system_context.clone(),
+        );
         match self.owned.agent_task_context_hint(
             &dispatch.session_id,
             &dispatch.agent_id,
@@ -883,7 +900,7 @@ impl KernelRuntimeState {
                 return RemotePromptSubmissionAttempt {
                     result: Err(error),
                     request_transport_started: false,
-                }
+                };
             }
         }
         // A10: an elevated leased turn's worker fence lands before its prompt.
@@ -893,6 +910,8 @@ impl KernelRuntimeState {
                 request_transport_started: false,
             };
         }
+        let skill_session_id = dispatch.session_id.clone();
+        let skill_prompt_id = dispatch.prompt_id.clone();
         let workflow_context = dispatch.workflow_context.clone();
         let git_context = remote_git_turn_context(dispatch);
         let callback_state = self.clone();
@@ -936,14 +955,6 @@ impl KernelRuntimeState {
                 } else {
                     callback_state.required_remote_mcps_for_agent(&agent)?
                 };
-                let required_skills = if native_provider_run {
-                    Some(
-                        callback_state
-                            .required_remote_skills_for_native_provider_launch(&agent)?,
-                    )
-                } else {
-                    None
-                };
                 let mut config = callback_state.config_snapshot().await;
                 if let (Some(relay_url), Some(relay_token)) = (
                     remote_execution.relay_url.clone(),
@@ -973,6 +984,60 @@ impl KernelRuntimeState {
                 )?;
                 let response_timeout = super::leased_profile_transition_runtime::worker_profile_response_timeout(
                     crate::transport::relay_client::LEASED_PROMPT_SUBMIT_RESPONSE_TIMEOUT, agent.provider());
+                // MP-08 / MP-10: the home delivers its own catalog revision; the worker
+                // never resolves skills itself and a failed transfer refuses the turn.
+                let (native, worker_run) = if super::skills_dispatch::remote_turn_needs_native_inventory(
+                    &callback_state,
+                    &skill_session_id,
+                    agent.id(),
+                    &skill_prompt_id,
+                )? {
+                    callback_state.remote_dispatch_native_entries(&agent).await?
+                } else {
+                    (vec![], super::skills_dispatch::ReportedWorkerRun::Unknown)
+                };
+                let (hidden_system_context, native_skill_selections) = match super::skills_dispatch::prepare_remote_turn(
+                    &callback_state,
+                    &skill_session_id,
+                    agent.id(),
+                    &skill_prompt_id,
+                    &remote_execution.leased_agent_id,
+                    &native,
+                    &worker_run,
+                )? {
+                    Some(turn) => {
+                        let native_skill_selections = crate::transport::relay_peer::LeasedNativeSkills {
+                            catalog_revision: turn.catalog_revision,
+                            selections: turn.native_selections.clone(),
+                        };
+                        let context = crate::transport::relay_peer::RemoteSkillSyncContext {
+                            home_kernel_id: config.daemon_id.clone(),
+                            home_session_id: skill_session_id.clone(),
+                            home_agent_id: agent.id().to_string(),
+                            leased_agent_id: remote_execution.leased_agent_id.clone(),
+                        };
+                        let materialized = callback_state
+                            .ensure_remote_skill_set(&config, &remote_execution, &context, &turn.set)
+                            .await?;
+                        super::skills_dispatch::bind_remote_roots(
+                            &callback_state,
+                            &skill_session_id,
+                            agent.id(),
+                            &skill_prompt_id,
+                            &materialized,
+                        )?;
+                        let skills = turn.hidden_context(&materialized)?;
+                        let hidden = if skills.is_empty() {
+                            hidden_system_context
+                        } else if hidden_system_context.is_empty() {
+                            skills
+                        } else {
+                            format!("{skills}\n{hidden_system_context}")
+                        };
+                        (hidden, native_skill_selections)
+                    }
+                    None => (hidden_system_context, Default::default()),
+                };
                 let request = RelayPeerRequest::SubmitLeasedPrompt {
                     leased_agent_id: remote_execution.leased_agent_id,
                     expected_profile:
@@ -984,9 +1049,9 @@ impl KernelRuntimeState {
                     workflow_context,
                     git_context: Some(git_context),
                     required_mcps,
-                    required_skills,
                     remote_extension_manifest: manifest,
                     provider_launch_credential,
+                    native_skill_selections,
                 };
                 mark_transport_started.store(true, Ordering::Relaxed);
                 #[cfg(test)]

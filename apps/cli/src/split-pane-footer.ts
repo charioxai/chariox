@@ -13,6 +13,7 @@ export type SplitPaneFooterAgent = {
   role?: "standard" | "meta" | string
   meta_mode?: { activated_at_ms?: number; task_id?: string | null } | null
   alias: string | null
+  parent_agent_id?: { started_by?: string } | null
   provider: string
   account_profile?: string | null
   model: string | null
@@ -105,7 +106,9 @@ export function formatSplitPaneFooterParts(
   return compactParts([
     {
       kind: "agent",
-      text: aliasLabel,
+      text: agent.parent_agent_id?.started_by
+        ? `${aliasLabel} · Started by ${agent.parent_agent_id.started_by}`
+        : aliasLabel,
       tone: toneForAgent(aliasLabel),
     },
     agent.meta_mode ? { kind: "role" as const, text: "Meta mode", tone: "accent" as const } : null,

@@ -95,6 +95,24 @@ impl AgentRuntime {
             command,
             request,
             PromptSubmitResponseMode::Full,
+            Vec::new(),
+        )
+        .await
+    }
+
+    /// MP-08 / MP-10 / MP-11: same ordinary lane, attachment checks and
+    /// durable command identity; only source-bound private metadata is added.
+    pub(crate) async fn dispatch_prompt_submit_with_skills(
+        &self,
+        command: &crate::runtime::command::KernelCommand,
+        request: crate::local::SubmitPromptRequest,
+        selections: Vec<crate::skill::v2::SkillSelection>,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        self.dispatch_prompt_submit_with_response_mode(
+            command,
+            request,
+            PromptSubmitResponseMode::Full,
+            selections,
         )
         .await
     }
@@ -104,7 +122,12 @@ impl AgentRuntime {
         command: &crate::runtime::command::KernelCommand,
         mut request: crate::local::SubmitPromptRequest,
         response_mode: PromptSubmitResponseMode,
+        skill_selections: Vec<crate::skill::v2::SkillSelection>,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        if !skill_selections.is_empty() && !command.is_terminal_caller() {
+            return Err(DaemonError::LocalTransport {operation:"skills.v2.submit",
+                message:"explicit skill selections require an authenticated user terminal; agents use Auto discovery and load_skill".into()});
+        }
         let caller_user_id = command_agent_actor_user_id(command);
         let alias_route = parse_prompt_agent_alias_route(&request.prompt)
             .map(|route| (route.alias.to_string(), route.prompt.to_string()));
@@ -151,6 +174,8 @@ impl AgentRuntime {
             command,
             AgentCommand::SubmitPrompt {
                 request,
+                skill_selections,
+                user_skill_syntax: command.is_terminal_caller(),
                 trace_id: command_trace.trace_id().to_string(),
                 operation_id: command.durable_operation_id(None),
                 operation_fingerprint: command.durable_request_fingerprint(),
@@ -166,25 +191,21 @@ impl AgentRuntime {
         request: crate::local::SubmitPromptsRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         if request.prompts.is_empty() {
-            let session = self.store.session_snapshot(&request.session_id).await?;
+            self.store.session_snapshot(&request.session_id).await?;
             return Ok(LocalDaemonResponse::PromptsSubmitted {
+                session_id: request.session_id,
                 results: Vec::new(),
                 failures: Vec::new(),
-                agent_activity: self.store.agent_activity_for_session(&session).await,
-                agent_activity_revision: self.session_projection.change_sequence(),
-                session,
             });
         }
         if let Some(failures) =
             prompt_batch_preflight_failures(&request.session_id, &request.prompts)
         {
-            let session = self.store.session_snapshot(&request.session_id).await?;
+            self.store.session_snapshot(&request.session_id).await?;
             return Ok(LocalDaemonResponse::PromptsSubmitted {
+                session_id: request.session_id,
                 results: Vec::new(),
                 failures,
-                agent_activity: self.store.agent_activity_for_session(&session).await,
-                agent_activity_revision: self.session_projection.change_sequence(),
-                session,
             });
         }
         let caller_user_id = command_agent_actor_user_id(command);
@@ -197,13 +218,11 @@ impl AgentRuntime {
             )
             .await;
         if !authorization_failures.is_empty() {
-            let session = self.store.session_snapshot(&request.session_id).await?;
+            self.store.session_snapshot(&request.session_id).await?;
             return Ok(LocalDaemonResponse::PromptsSubmitted {
+                session_id: request.session_id,
                 results: Vec::new(),
                 failures: authorization_failures,
-                agent_activity: self.store.agent_activity_for_session(&session).await,
-                agent_activity_revision: self.session_projection.change_sequence(),
-                session,
             });
         }
 
@@ -227,6 +246,8 @@ impl AgentRuntime {
                             &command,
                             AgentCommand::SubmitPrompt {
                                 request: submit_request,
+                                skill_selections: Vec::new(),
+                                user_skill_syntax: command.is_terminal_caller(),
                                 trace_id: command_trace.trace_id().to_string(),
                                 operation_id,
                                 operation_fingerprint,
@@ -266,7 +287,6 @@ impl AgentRuntime {
             }
         }
 
-        let mut response_session = None;
         for session_id in prompt_session_ids {
             let session = self.store.session_snapshot(&session_id).await?;
             publish_session_runtime_projection(
@@ -274,30 +294,12 @@ impl AgentRuntime {
                 &self.agent_runtime_projection,
                 &session,
             );
-            if session_id == response_session_id {
-                response_session = Some(session);
-            }
         }
-        let session = match response_session {
-            Some(session) => session,
-            None => {
-                let session = self.store.session_snapshot(&response_session_id).await?;
-                publish_session_runtime_projection(
-                    &self.session_projection,
-                    &self.agent_runtime_projection,
-                    &session,
-                );
-                session
-            }
-        };
-        let agent_activity = self.store.agent_activity_for_session_sync(&session);
 
         Ok(LocalDaemonResponse::PromptsSubmitted {
+            session_id: response_session_id,
             results,
             failures,
-            session,
-            agent_activity,
-            agent_activity_revision: self.session_projection.change_sequence(),
         })
     }
 
@@ -379,11 +381,17 @@ impl AgentRuntime {
                 "steer active prompt",
             )
             .await?;
+        let command_trace = CommandTrace::from_command(command);
         self.dispatch_to_agent(
             request.target_agent_id.clone(),
-            CommandTrace::from_command(command),
+            command_trace.clone(),
             command,
-            AgentCommand::SteerActivePrompt { request },
+            AgentCommand::SteerActivePrompt {
+                request,
+                trace_id: command_trace.trace_id().to_string(),
+                operation_id: command.durable_operation_id(None),
+                operation_fingerprint: command.durable_request_fingerprint(),
+            },
         )
         .await
     }
@@ -625,10 +633,9 @@ impl AgentRuntimeStore {
         session_id: &str,
         agent_id: &str,
         caller_user_id: &str,
-        terminal_caller: bool,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
         self.state
-            .focus_agent(session_id, agent_id, caller_user_id, terminal_caller)
+            .focus_agent(session_id, agent_id, caller_user_id)
             .await
     }
 
@@ -738,20 +745,6 @@ impl AgentRuntimeStore {
         session_id: &str,
     ) -> Result<crate::session::RuntimeSession, DaemonError> {
         self.state.session_snapshot(session_id).await
-    }
-
-    async fn agent_activity_for_session(
-        &self,
-        session: &crate::session::RuntimeSession,
-    ) -> std::collections::BTreeMap<String, crate::runtime::projection::AgentRuntimeActivity> {
-        self.state.agent_activity_for_session(session)
-    }
-
-    fn agent_activity_for_session_sync(
-        &self,
-        session: &crate::session::RuntimeSession,
-    ) -> std::collections::BTreeMap<String, crate::runtime::projection::AgentRuntimeActivity> {
-        self.state.agent_activity_for_session(session)
     }
 
     fn prompt_command_service(

@@ -152,7 +152,7 @@ export function roomListSessionActivityWorkLabel(
   const activePrompts = activity?.active_prompt_count ?? 0
   const queuedPrompts = activity?.queued_prompt_count ?? 0
   return [
-    workingAgents > 0 ? `${workingAgents} working` : "",
+    workingAgents > 0 ? `${workingAgents} top-level ${workingAgents === 1 ? "agent" : "agents"} working` : "",
     activePrompts > 0 ? `${activePrompts} active prompt${activePrompts === 1 ? "" : "s"}` : "",
     queuedPrompts > 0 ? `${queuedPrompts} queued prompt${queuedPrompts === 1 ? "" : "s"}` : "",
   ].filter(Boolean).join(", ") || fallback

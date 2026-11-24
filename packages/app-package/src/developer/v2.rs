@@ -24,7 +24,9 @@ pub(super) fn generate_manifest(
         publisher: options.publisher,
         app_contract_version: v2::APP_CONTRACT_VERSION_V2,
         resource_policy: crate::RESOURCE_POLICY.into(),
-        world: if options.capabilities.event_routing.is_some() {
+        world: if options.capabilities.event_routing.is_some()
+            || options.capabilities.workspace.is_some()
+        {
             v2::APP_WORLD_1_1
         } else {
             v2::APP_WORLD
@@ -73,6 +75,7 @@ fn policy(publisher: TrustedPublisher, limits: &Limits) -> PolicyV2 {
             RequiredFeature::DirectedEvents,
             RequiredFeature::CredentialedHttp,
             RequiredFeature::EventRouting,
+            RequiredFeature::Workspace,
         ]),
         vec![
             SupportedWorld {

@@ -218,6 +218,24 @@ impl KernelRuntimeState {
         let lease_id = lease_id.to_string();
         let provider = provider.to_string();
         let account_profile = account_profile.to_string();
+        // The worker runs the agent, so the model is chosen from the worker's own catalog: home's
+        // catalog can lack the provider or list other models.
+        let lease_owner = self
+            .with_app_side_effect({
+                let lease_id = lease_id.clone();
+                move |app| RemoteLeaseRuntime::new(app).execution_lease_owner(&lease_id)
+            })
+            .await?;
+        let (model, effort) = self
+            .resolve_new_agent_selection(
+                &lease_owner,
+                &provider,
+                Some(&account_profile),
+                model,
+                super::ModelSource::Named,
+                effort,
+            )
+            .await?;
         self.with_app_side_effect(move |app| {
             let mut runtime = RemoteLeaseRuntime::new(app);
             // Resolve the folder first: a worker with nowhere to put it refuses before the
@@ -494,7 +512,6 @@ impl KernelRuntimeState {
         structured_endpoint: Option<String>,
         provider_session_id: Option<String>,
         required_mcps: Vec<RequiredRemoteMcp>,
-        required_skills: Option<Vec<crate::transport::relay_peer::RequiredRemoteSkill>>,
         remote_extension_manifest: crate::extension::RemoteExtensionManifest,
         provider_launch_credential: Option<
             crate::transport::relay_peer::RemoteProviderLaunchCredential,
@@ -520,7 +537,6 @@ impl KernelRuntimeState {
                     structured_endpoint,
                     provider_session_id,
                     required_mcps,
-                    required_skills,
                     remote_extension_manifest,
                 )
             })
@@ -669,11 +685,11 @@ impl KernelRuntimeState {
         workflow_context: Option<RemoteWorkflowTurnContext>,
         git_context: Option<RemoteGitTurnContext>,
         required_mcps: Vec<RequiredRemoteMcp>,
-        required_skills: Option<Vec<crate::transport::relay_peer::RequiredRemoteSkill>>,
         remote_extension_manifest: crate::extension::RemoteExtensionManifest,
         provider_launch_credential: Option<
             crate::transport::relay_peer::RemoteProviderLaunchCredential,
         >,
+        native_skill_selections: crate::transport::relay_peer::LeasedNativeSkills,
     ) -> Result<(String, crate::session::PromptSubmissionOutcome), DaemonError> {
         let _operation = self.leased_agent_operations.lock(leased_agent_id).await;
         let leased_agent_id = leased_agent_id.to_string();
@@ -728,10 +744,14 @@ impl KernelRuntimeState {
             }
             result => result?,
         };
-        let new_receipt = home_prompt_id.is_some() && existing_receipt.is_none();
+        let replaying_receipt = existing_receipt
+            .as_ref()
+            .is_some_and(|receipt| receipt.receipt.phase == WorkerPromptReceiptPhase::Accepted);
+        let new_receipt = home_prompt_id.is_some() && !replaying_receipt;
         if let Some(receipt) = existing_receipt.as_ref() {
             match receipt.receipt.phase {
-                WorkerPromptReceiptPhase::Accepted => {}
+                WorkerPromptReceiptPhase::Accepted | WorkerPromptReceiptPhase::WaitingForMemory => {
+                }
                 WorkerPromptReceiptPhase::Dispatching => {
                     return Err(DaemonError::LocalTransport {
                         operation: "submit remote leased prompt",
@@ -746,6 +766,22 @@ impl KernelRuntimeState {
                             .to_string(),
                     });
                 }
+            }
+        }
+
+        if !replaying_receipt {
+            if let Some(reason) = self.owned.prompt_state_owner.provider_launch_wait() {
+                if let Some(home_prompt_id) = home_prompt_id.clone() {
+                    let leased_agent_id = leased_agent_id.clone();
+                    self.with_app_side_effect(move |app| {
+                        RemoteLeaseRuntime::new(app)
+                            .wait_for_leased_prompt_memory(&leased_agent_id, &home_prompt_id)
+                    })
+                    .await?;
+                }
+                return Err(super::provider_turn_admission::provider_memory_wait_error(
+                    reason,
+                ));
             }
         }
 
@@ -802,7 +838,7 @@ impl KernelRuntimeState {
         if let Some(replayed) = profile_replay {
             return Ok(replayed);
         }
-        if existing_receipt.is_some() {
+        if replaying_receipt {
             return Err(DaemonError::LocalTransport {
                 operation: "submit remote leased prompt",
                 message: "accepted worker receipt cannot replay from current live state"
@@ -829,8 +865,8 @@ impl KernelRuntimeState {
                     workflow_context,
                     git_context,
                     required_mcps,
-                    required_skills,
                     remote_extension_manifest,
+                    native_skill_selections,
                 )
             })
             .await
@@ -1040,7 +1076,6 @@ impl KernelRuntimeState {
         prompt: &str,
         hidden_system_context: &str,
         attachments: Vec<RelayPromptAttachment>,
-        required_skills: Option<Vec<crate::transport::relay_peer::RequiredRemoteSkill>>,
     ) -> Result<(String, bool), DaemonError> {
         let leased_agent_id = leased_agent_id.to_string();
         let steer_id = steer_id.to_string();
@@ -1070,7 +1105,6 @@ impl KernelRuntimeState {
                         &prompt,
                         &hidden_system_context,
                         attachments.clone(),
-                        required_skills.clone(),
                     )
                 })
                 .await;
@@ -1189,13 +1223,22 @@ impl KernelRuntimeState {
     pub(crate) async fn ensure_relay_remote_skill_packages(
         &self,
         context: RemoteSkillSyncContext,
+        execution_lease_id: String,
+        manifest: crate::skill::v2::SkillTransferManifest,
         packages: Vec<CharioxSkillPackage>,
+        skill_names: Option<crate::skill::leased_names::LeasedSkillNames>,
     ) -> Result<Vec<RemoteSkillMaterialization>, DaemonError> {
         let leased_agent_id = context.leased_agent_id.clone();
         self.with_app_side_effect(move |app| {
             let mut runtime = RemoteLeaseRuntime::new(app);
             runtime.consume_leased_agent_authorization(&leased_agent_id)?;
-            runtime.ensure_remote_skill_packages(context, packages)
+            runtime.ensure_remote_skill_packages(
+                context,
+                execution_lease_id,
+                manifest,
+                packages,
+                skill_names,
+            )
         })
         .await
     }
@@ -1236,7 +1279,7 @@ impl KernelRuntimeState {
         // The account is worker-owned; never acknowledge it for a stale lease.
         self.with_app_side_effect(|app| {
             RemoteLeaseRuntime::new(app)
-                .validate_remote_provider_account_context(&context, &profile.owner_user_id)
+                .validate_remote_provider_account_result(&context, &profile.owner_user_id)
         })
         .await?;
         Ok(profile)
@@ -1439,6 +1482,16 @@ impl KernelRuntimeState {
             ..
         } = &event;
         let worker_provider_run_id = worker_provider_run_id.clone();
+        let background_notifications = completions
+            .iter()
+            .filter(|completion| !completion.is_notification_end())
+            .filter_map(|completion| {
+                completion
+                    .home_prompt_id
+                    .as_ref()
+                    .map(|prompt| (prompt.clone(), completion.background_notifications.clone()))
+            })
+            .collect::<Vec<_>>();
 
         let provider_auth_observation = provider_run.as_ref().and_then(|run| {
             remote_provider_auth_observation(
@@ -1468,6 +1521,25 @@ impl KernelRuntimeState {
             .ok()
             .and_then(|agent| agent.remote_execution().map(|r| r.leased_agent_id.clone()))
         {
+            let projected_run = crate::provider::projected_leased_provider_run_id(
+                &leased_agent_id,
+                &worker_provider_run_id,
+            );
+            // Only a completion accepted for this home prompt can carry its native consumption.
+            for completion in &outcome.completions {
+                let notifications = background_notifications
+                    .iter()
+                    .filter(|(prompt, _)| prompt == completion.completed.id())
+                    .flat_map(|(_, notifications)| notifications.iter().cloned())
+                    .collect::<Vec<_>>();
+                self.owned.record_background_answer_turn(
+                    &session_id,
+                    &agent_id,
+                    &projected_run,
+                    &completion.completed,
+                    &notifications,
+                )?;
+            }
             self.settle_held_tasks_after_projection(
                 &session_id,
                 &agent_id,

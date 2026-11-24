@@ -24,7 +24,7 @@ export type LegacyAgentProcessingInput = {
   readonly state?: string | null
 }
 
-export type AgentRuntimeActivityStatus = "idle" | "working" | "error"
+export type AgentRuntimeActivityStatus = "idle" | "working" | "error" | "ended_deadline"
 export type AgentRuntimePromptStatus =
   | "none"
   | "queued"
@@ -154,6 +154,9 @@ export function agentRuntimeActivityResolvedStatus(
 export function agentRuntimeActivityProjectionResolvedStatus(
   projection: AgentRuntimeActivityProjection,
 ): AgentRuntimeActivityStatus {
+  if (projection.status === "ended_deadline") {
+    return "ended_deadline"
+  }
   if (projection.error || projection.status === "error") {
     return "error"
   }
@@ -193,9 +196,9 @@ export function projectAgentRuntimeActivity(
   )
   const queuedPromptCount = projectedQueuedPromptCount.value
     ?? (agentRuntimePromptStatusIsQueued(promptStatus) ? 1 : 0)
-  const error = readBooleanField(activityRecord, "error")
+  const error = status !== "ended_deadline" && (readBooleanField(activityRecord, "error")
     ?? readBooleanField(value, "error")
-    ?? (status ? status === "error" : options.previousError ?? false)
+    ?? (status ? status === "error" : options.previousError ?? false))
   const unreadIdleOutput = readBooleanField(activityRecord, "unread_idle_output")
     ?? readBooleanField(value, "unread_idle_output")
     ?? false
@@ -249,6 +252,8 @@ export function normalizeAgentRuntimeActivityProjectionStatus(
       return "working"
     case "error":
       return "error"
+    case "ended_deadline":
+      return "ended_deadline"
     case "focused":
     case "idle":
       return "idle"

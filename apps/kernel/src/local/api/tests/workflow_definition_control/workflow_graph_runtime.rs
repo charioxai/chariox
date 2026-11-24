@@ -15,6 +15,8 @@ fn local_request_api_manages_workflows_endpoints_and_graph_edits() {
 
     let agent = match harness
         .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            initial_task: None,
+            peer_spawn: None,
             max_context_tokens: None,
             no_subscribe: false,
             account_profile: None,
@@ -123,6 +125,8 @@ fn local_request_api_manages_workflows_endpoints_and_graph_edits() {
 
     let spawned = match harness
         .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            initial_task: None,
+            peer_spawn: None,
             max_context_tokens: None,
             no_subscribe: false,
             account_profile: None,
@@ -351,6 +355,8 @@ fn local_request_api_materializes_workflow_publication_as_hidden_runtime_session
     };
     let source_agent = match harness
         .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            initial_task: None,
+            peer_spawn: None,
             max_context_tokens: None,
             no_subscribe: false,
             account_profile: None,
@@ -497,7 +503,7 @@ fn local_request_api_materializes_workflow_publication_as_hidden_runtime_session
         _ => panic!("unexpected local response"),
     };
     assert!(materialized.is_hidden());
-    assert_eq!(materialized.project_id(), "");
+    assert!(materialized.project().is_hidden_scope());
     assert_eq!(materialized.owner_user_id(), runtime_owner_user_id);
     assert!(materialized.has_member(runtime_owner_user_id));
     assert_ne!(materialized.id(), source_session.id());

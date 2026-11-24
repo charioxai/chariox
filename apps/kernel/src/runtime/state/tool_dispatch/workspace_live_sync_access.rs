@@ -93,12 +93,11 @@ impl KernelRuntimeState {
     ) -> Result<crate::provider::AgentPermissionLevel, DaemonError> {
         let agent = self.owned.agent_store.get_agent(agent_id)?;
         let session = self.owned.session_store.get_session(session_id)?;
-        Ok(crate::session::effective_agent_execution_config_in_tree(
-            &session,
-            &agent,
-            &self.owned.agent_store.get_session_agents(session_id),
-        )
-        .permission_level)
+        Ok(self
+            .owned
+            .agent_store
+            .effective_execution_config(&session, &agent, &self.owned.session_store)
+            .permission_level)
     }
 }
 

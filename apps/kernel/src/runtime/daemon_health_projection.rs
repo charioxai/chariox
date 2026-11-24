@@ -1,4 +1,5 @@
 mod bounds;
+mod build_toolchain;
 mod cache;
 pub(crate) use cache::DaemonHealthCache;
 
@@ -111,6 +112,7 @@ pub(crate) async fn build_daemon_health_projection(
         .durable_state_store()
         .writer_health_snapshot();
     projection.request_timings = input.request_metrics.snapshot();
+    projection.build_toolchain_version = build_toolchain::installed_version();
     bounds::bound(projection)
 }
 

@@ -593,7 +593,6 @@ fn slice_lifecycle_health_reports_partial_provider_auth_coverage() {
 fn remote_extension_sync_health_counts_only_home_proxy_grants() {
     let mut synced = remote_agent("agent-synced");
     synced.grant_extension(ExtensionGrant::new(ExtensionKind::Mcp, "filesystem"));
-    synced.grant_extension(ExtensionGrant::new(ExtensionKind::Skill, "review"));
     synced.set_remote_extension_manifest_sync(Some(RemoteExtensionManifestSyncStatus::synced(
         "hash-synced".to_string(),
     )));
@@ -619,12 +618,11 @@ fn remote_extension_sync_health_counts_only_home_proxy_grants() {
     let mut missing = remote_agent("agent-missing");
     missing.grant_extension(ExtensionGrant::new(ExtensionKind::Mcp, "github"));
 
-    let mut skill_only = remote_agent("agent-skill");
-    skill_only.grant_extension(ExtensionGrant::new(ExtensionKind::Skill, "docs"));
+    let no_grants = remote_agent("agent-no-grants");
 
     let local = local_agent("agent-local");
     let snapshot = RemoteExtensionSyncHealthSnapshot::from_agents(&[
-        synced, failed, stale, missing, skill_only, local,
+        synced, failed, stale, missing, no_grants, local,
     ]);
 
     assert_eq!(snapshot.remote_agents, 5);
@@ -820,6 +818,7 @@ fn slice_record(
         session_id: Some("session-1".to_string()),
         session_ids: vec!["session-1".to_string()],
         agent_ids: vec!["agent-1".to_string()],
+        delete_when_unused: false,
         backend: crate::slice::SliceBackendKind::LocalDocker,
         os: "linux".to_string(),
         display_mode: crate::slice::SliceDisplayMode::Headless,

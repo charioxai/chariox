@@ -632,6 +632,7 @@ impl KernelRuntimeState {
                 subscription_id.clone(),
                 display_name.clone(),
                 Some(listener.prompt().to_owned()),
+                listener.busy_policy(),
             )?;
             store.update_agent_trigger(
                 agent_room_id,

@@ -54,10 +54,11 @@ export function queuedJobRate(estimate: NonNullable<SessionProcess["estimate"]>)
 
 /** Progress and rates come from the home kernel, including confirmed deletion. */
 export function remoteJobLinesForAgent(jobs: readonly JobView[] | undefined, agentId: string | null | undefined, now = Date.now()): string[] {
-  return (jobs ?? []).filter(job => job.agent_id === agentId && job.placement === "remote").flatMap(job => {
+  return (jobs ?? []).filter(job => job.agent_id === agentId && (job.placement === "remote" || Boolean(job.read_error))).flatMap(job => {
+    if (job.read_error) return [[job.command, job.read_error].join(" · ")]
     const result = job.result
     if (result && !job.machine_label) {
-      const reason = result.output_tail.trim() || result.outcome.replaceAll("_", " ")
+      const reason = (result.reason ?? "").trim() || result.outcome.replaceAll("_", " ")
       return [["Remote request refused", job.command, reason].join(" · ")]
     }
     const machine = job.machine_label ?? result?.ran_on.machine, address = job.address ?? result?.ran_on.ip
@@ -76,7 +77,7 @@ export function remoteJobLinesForAgent(jobs: readonly JobView[] | undefined, age
       const seconds = Math.floor((result?.duration_ms ?? Math.max(0, now - job.started_at_ms)) / 1000)
       parts.push(`${Math.floor(seconds / 60)}m ${seconds % 60}s`)
     }
-    if (result) parts.push(result.exit_code !== null ? `exit ${result.exit_code}` : result.outcome.replaceAll("_", " "), `${result.files_back.length} ${result.files_back.length === 1 ? "file" : "files"} back`, ...result.conflicts.length ? [`${result.conflicts.length} conflicts`] : [])
+    if (result) parts.push(result.exit_code !== null ? `exit ${result.exit_code}` : result.outcome.replaceAll("_", " "), `${result.files_back_count} ${result.files_back_count === 1 ? "file" : "files"} back`, ...result.conflicts_count ? [`${result.conflicts_count} conflicts`] : [])
     if (job.class_id) parts.push(job.class_id)
     if (job.rate_per_minute) {
       const estimate = { ...job.rate_per_minute, kind: "per_minute" as const, memory_mib: 0 }

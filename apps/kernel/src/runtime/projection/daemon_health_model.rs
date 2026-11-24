@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 
 use super::ProjectionMetadata;
 use crate::agent::{AgentInstance, AgentState};
-use crate::extension::{ExtensionKind, RemoteExtensionManifestSyncState};
+use crate::extension::RemoteExtensionManifestSyncState;
 use crate::runtime::capability_executor::CapabilityExecutorHealthSnapshot;
 use crate::runtime::process_health::KernelProcessHealthSnapshot;
 use crate::runtime::workspace_coordinator::WorkspaceOperationClaimSnapshot;
@@ -633,7 +633,6 @@ impl RemoteExtensionSyncHealthSnapshot {
             let home_proxy_grants = agent
                 .extension_grants()
                 .iter()
-                .filter(|grant| grant.kind != ExtensionKind::Skill)
                 .map(|grant| format!("{}:{}", grant.kind.as_str(), grant.name))
                 .collect::<Vec<_>>();
             let home_proxy_grant_count = home_proxy_grants.len();
@@ -753,6 +752,8 @@ pub struct DaemonHealthProjection {
     #[serde(default)]
     pub app_lock: crate::runtime::app_lock::AppLockHealthSnapshot,
     pub durable_writer: crate::durable_state::DurableWriterHealthSnapshot,
+    /// The home-only build toolchain prepared on this kernel's machine.
+    pub build_toolchain_version: Option<String>,
 }
 
 impl DaemonHealthProjection {
@@ -814,6 +815,7 @@ impl DaemonHealthProjection {
             sample_counts: Default::default(),
             app_lock: crate::runtime::app_lock::AppLockHealthSnapshot::default(),
             durable_writer: Default::default(),
+            build_toolchain_version: None,
         }
     }
 }

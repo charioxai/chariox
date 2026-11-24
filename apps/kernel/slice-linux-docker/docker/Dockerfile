@@ -277,6 +277,8 @@ COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-app-confi
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-events.mjs /opt/chariox-slice/browser-controller-events.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-page-permissions.mjs \
      apps/kernel/slice-linux-docker/docker/browser-page-permission-shim.mjs \
+     apps/kernel/slice-linux-docker/docker/browser-page-fonts.mjs \
+     apps/kernel/slice-linux-docker/docker/browser-page-font-recorder.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-downloads.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-upload.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-node-ref.mjs \

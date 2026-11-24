@@ -200,6 +200,11 @@ impl CommandRouter {
             LocalDaemonRequest::RoomTerminal(request) => {
                 boxed_handler(|| async move { self.room_terminal(&command.caller, request).await })
             }
+            LocalDaemonRequest::KernelTerminal(request) => boxed_handler(|| async move {
+                self.runtime_state
+                    .kernel_terminal_for_client(&command.caller, request)
+                    .await
+            }),
             LocalDaemonRequest::RoomBrowserArtifact(request) => boxed_handler(|| async move {
                 let result = self
                     .runtime_state
@@ -371,14 +376,7 @@ impl CommandRouter {
             | LocalDaemonRequest::RemoveConnector(_)
             | LocalDaemonRequest::GetConnector(_)
             | LocalDaemonRequest::ListConnectors(_)
-            | LocalDaemonRequest::TestConnector(_)
-            | LocalDaemonRequest::UpsertSkill(_)
-            | LocalDaemonRequest::InstallSkill(_)
-            | LocalDaemonRequest::UpdateSkill(_)
-            | LocalDaemonRequest::UninstallSkill(_)
-            | LocalDaemonRequest::ImportSkills(_)
-            | LocalDaemonRequest::GetSkill(_)
-            | LocalDaemonRequest::ListSkills(_)) => boxed_handler(|| async move {
+            | LocalDaemonRequest::TestConnector(_)) => boxed_handler(|| async move {
                 let credential_vault = self
                     .config_projection
                     .snapshot()
@@ -503,6 +501,69 @@ impl CommandRouter {
                         .read_agent_trigger_http_options(request, &caller)
                 })
             }
+            LocalDaemonRequest::OwnerView(request) => {
+                boxed_handler(
+                    || async move { self.runtime_state.owner_view_request(&command, request) },
+                )
+            }
+            LocalDaemonRequest::GetPersonInbox(_) => boxed_handler(|| async move {
+                crate::runtime::person_inbox::execute_person_inbox_request(
+                    &self.runtime_state,
+                    &command.caller,
+                )
+            }),
+            LocalDaemonRequest::SetInboxCardState(request) => boxed_handler(|| async move {
+                crate::runtime::person_inbox::execute_set_inbox_card_state(
+                    &self.runtime_state,
+                    request,
+                    &command.caller,
+                )
+            }),
+            LocalDaemonRequest::SetInboxMute(request) => boxed_handler(|| async move {
+                crate::runtime::person_inbox::execute_set_inbox_mute(
+                    &self.runtime_state,
+                    request,
+                    &command.caller,
+                )
+            }),
+            LocalDaemonRequest::ListNotificationSubscriptions(_) => boxed_handler(|| async move {
+                self.runtime_state
+                    .list_notification_subscriptions(&command_caller_user_id(&command))
+            }),
+            LocalDaemonRequest::UpdateNotificationSubscription(request) => {
+                boxed_handler(|| async move {
+                    self.runtime_state
+                        .update_notification_subscription(
+                            request,
+                            &command_caller_user_id(&command),
+                        )
+                        .await
+                })
+            }
+            LocalDaemonRequest::RemoveNotificationSubscription(request) => {
+                boxed_handler(|| async move {
+                    self.runtime_state
+                        .remove_notification_subscription(
+                            &request.subscription_id,
+                            &command_caller_user_id(&command),
+                        )
+                        .await
+                })
+            }
+            LocalDaemonRequest::TestNotificationSubscription(request) => {
+                boxed_handler(|| async move {
+                    self.runtime_state.test_notification_subscription(
+                        &request.subscription_id,
+                        &command_caller_user_id(&command),
+                    )
+                })
+            }
+            LocalDaemonRequest::ReadNotificationTrace(request) => boxed_handler(|| async move {
+                self.runtime_state.read_notification_trace(
+                    &request.subscription_id,
+                    &command_caller_user_id(&command),
+                )
+            }),
             request @ (LocalDaemonRequest::GetRoomListSnapshot(_)
             | LocalDaemonRequest::ListRoomListSessions(_)) => boxed_handler(|| async move {
                 let caller_user_id = command_caller_user_id(&command);
@@ -581,22 +642,17 @@ impl CommandRouter {
             | LocalDaemonRequest::ListWorkspaceWorktrees(_)
             | LocalDaemonRequest::CreateWorkspaceWorktree(_)
             | LocalDaemonRequest::DeleteWorkspaceWorktree(_)
-            | LocalDaemonRequest::CreateWorkspacePullRequest(_)
             | LocalDaemonRequest::GetWorkspaceGitOverview(_)
             | LocalDaemonRequest::ListWorkspaceFiles(_)
             | LocalDaemonRequest::GetWorkspaceFileContent(_)
-            | LocalDaemonRequest::CommitWorkspaceChanges(_)
-            | LocalDaemonRequest::PushWorkspaceBranch(_)
-            | LocalDaemonRequest::CommitAndPushWorkspaceChanges(_)) => {
-                boxed_handler(|| async move {
-                    execute_workspace_command_request(
-                        &self.runtime_state,
-                        &self.session_projection,
-                        request,
-                    )
-                    .await
-                })
-            }
+            | LocalDaemonRequest::CommitWorkspaceChanges(_)) => boxed_handler(|| async move {
+                execute_workspace_command_request(
+                    &self.runtime_state,
+                    &self.session_projection,
+                    request,
+                )
+                .await
+            }),
             request @ (LocalDaemonRequest::RunAgentUtility(_)
             | LocalDaemonRequest::GenerateWorkspaceCommitMessage(_)) => {
                 boxed_handler(|| async move {
@@ -659,6 +715,7 @@ impl CommandRouter {
             | LocalDaemonRequest::StartProviderLogin(_)
             | LocalDaemonRequest::GetProviderLoginStatus(_)
             | LocalDaemonRequest::SendProviderLoginInput(_)
+            | LocalDaemonRequest::SendProviderLoginVaultEntry(_)
             | LocalDaemonRequest::CancelProviderLogin(_)) => boxed_handler(|| async move {
                 execute_provider_auth_request(&self.runtime_state, &command, request).await
             }),
@@ -751,6 +808,7 @@ impl CommandRouter {
                 let result = self.runtime_state.remote_job_policy(
                     &request.session_id,
                     request.agent_id.as_deref(),
+                    request.project,
                     &caller,
                 )?;
                 Ok(LocalDaemonResponse::RemoteJobPolicy { result })
@@ -760,6 +818,7 @@ impl CommandRouter {
                 let result = self.runtime_state.set_remote_job_policy(
                     &request.session_id,
                     request.agent_id.as_deref(),
+                    request.project,
                     &caller,
                     request.policy,
                 )?;
@@ -774,6 +833,7 @@ impl CommandRouter {
                             &request.session_id,
                             &command.caller,
                             &request.process_id,
+                            request.kernel.as_deref(),
                         )
                         .await?;
                     Ok(LocalDaemonResponse::SessionProcessRemoteStarted {
@@ -879,6 +939,14 @@ impl CommandRouter {
                     request,
                 )
                 .await
+            }),
+            LocalDaemonRequest::SkillsV2(request) => boxed_handler(|| async move {
+                let caller = crate::runtime::session_membership::command_session_user_id(&command)
+                    .ok_or_else(|| DaemonError::LocalTransport {
+                        operation: "skills.v2.authorize",
+                        message: "an authenticated user identity is required for Skills".into(),
+                    })?;
+                self.dispatch_skills_v2(&command, request, &caller).await
             }),
             LocalDaemonRequest::SubmitPrompt(request) => boxed_handler(|| async move {
                 self.agent_runtime

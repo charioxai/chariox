@@ -1,6 +1,7 @@
 //! One owner decision before an agent can start charged work, unless the owner allowed it without
 //! asking within limits (`without_asking`).
 use super::*;
+use crate::durable_state::acquire_choices::AcquireOption;
 use crate::local::{ControlPlaneRequest, MachineAllocationCapability};
 use crate::runtime::command::KernelCommand;
 use crate::session::{RuntimeInteraction, RuntimeInteractionChoice, RuntimeInteractionChoiceStyle};
@@ -152,7 +153,7 @@ impl KernelRuntimeState {
             _ => {
                 return Err(acquisition_error(
                     "capacity_unavailable",
-                    "The connected service has no machine offer; nothing was allocated",
+                    "The connected service has no machine offer, so this try was not sent",
                 ))
             }
         };
@@ -256,8 +257,8 @@ pub(crate) fn machine_tool_specs() -> Vec<crate::transport::runtime_tools::Runti
     let schema = |properties, required| serde_json::json!({"type":"object","properties":properties,"required":required,"additionalProperties":false});
     [
         ("chariox.machines.options", "List the machines you can acquire now, as the connected service offers them: class_id, region, size, rate per minute in the account's currency and whether it is in stock. Pick one for chariox.machines.acquire. An option that is not available cannot be acquired.", schema(serde_json::json!({}),serde_json::json!([]))),
-        ("chariox.machines.acquire", "Acquire a machine through Chariox for work you need to run elsewhere. Pass class_id (and region when the class is offered in several) from chariox.machines.options to acquire exactly that option; without class_id the service's default option is acquired. Nothing else is acquired in place of an option that is not available. The kernel asks the owner first unless the owner lets agents acquire machines without asking: within the owner's limits (allowed classes, machines at the same time, daily spending) it goes ahead with no card and the Room records its class, rate and cost; outside them the owner's card says why, and the call waits up to 5 minutes for the owner's answer. Service limits always apply. Returns allocation_ref, the machine type and service terms; poll status until access is available, then reach the returned kernel with Room commands. Release it when finished. Reuse request_id for a retry.", schema(serde_json::json!({"request_id":{"type":"string"},"class_id":{"type":"string"},"region":{"type":"string"}}),serde_json::json!([]))),
-        ("chariox.machines.status", "Read a allocation's state and its verified target kernel. Use the allocation_ref returned by acquire. The machine remains charged until deletion is confirmed.", schema(serde_json::json!({"allocation_ref":{"type":"string"}}),serde_json::json!(["allocation_ref"]))),
+        ("chariox.machines.acquire", "Acquire a machine through Chariox for work you need to run elsewhere. Pass class_id (and region when the class is offered in several) from chariox.machines.options to acquire exactly that option; without class_id the first option in stock is acquired. A named option that is out of stock is refused with the options in stock, never replaced. The kernel asks the owner first unless the owner lets agents acquire machines without asking: within the owner's limits (allowed classes, machines at the same time, daily spending) it goes ahead with no card and the Room records its class, rate and cost; outside them the owner's card says why, and the call waits up to 5 minutes for the owner's answer. Service limits and the daily spend cap always apply. Returns allocation_ref, the machine type and service terms; poll status until access is available, then reach the returned kernel with Room commands. Release it when finished. Reuse request_id for a retry, after a lost response, a timeout or a refusal: it is safe, keeps the option the first try chose and returns the allocation the service accepted. Use a new request_id only when a refusal says the service closed the old one: nothing was allocated under it then, and nothing ever will be.", schema(serde_json::json!({"request_id":{"type":"string"},"class_id":{"type":"string"},"region":{"type":"string"}}),serde_json::json!([]))),
+        ("chariox.machines.status", "Read an allocation's state, its verified target kernel and the installed build toolchain version when the target answers. Use the allocation_ref returned by acquire. The machine remains charged until deletion is confirmed.", schema(serde_json::json!({"allocation_ref":{"type":"string"}}),serde_json::json!(["allocation_ref"]))),
         ("chariox.machines.release", "Delete an acquired machine when its work is finished. Returns the allocation state; poll status until deleted to confirm the allocation has ended.", schema(serde_json::json!({"allocation_ref":{"type":"string"}}),serde_json::json!(["allocation_ref"]))),
     ].into_iter().map(|(name,description,input_schema)|RuntimeToolSpec{name:name.into(),description:description.into(),input_schema}).collect()
 }
@@ -324,32 +325,64 @@ impl KernelRuntimeState {
             "chariox.machines.acquire" => {
                 let request_id = args
                     .request_id
+                    .clone()
                     .unwrap_or_else(|| format!("machine-{:032x}", rand::random::<u128>()));
-                let result = self
+                let option = self.acquire_option(
+                    &reach.agent_id,
+                    &request_id,
+                    &capability,
+                    args.class_id.clone(),
+                    args.region.clone(),
+                )?;
+                let service_request_id = choice::service_request_id(
+                    &self.owned.config_projection.snapshot().daemon_id,
+                    &reach.agent_id,
+                    &request_id,
+                );
+                let result = match self
                     .job_control_plane(
                         &origin,
                         &ControlPlaneRequest::Acquire {
                             capability_revision: capability.revision.clone(),
-                            request_id: request_id.clone(),
-                            class_id: args.class_id.clone(),
-                            region: args.region.clone(),
+                            request_id: service_request_id.clone(),
+                            class_id: option.class_id().map(str::to_owned),
+                            region: option.region().map(str::to_owned),
                         },
-                        &format!("machine:{request_id}:acquire"),
+                        &format!("machine:{service_request_id}:acquire"),
                     )
-                    .await?;
+                    .await
+                {
+                    Ok(result) => result,
+                    Err(error) => {
+                        self.close_acquire_option(&reach.agent_id, &request_id, &option, &error)?;
+                        return Err(choice::acquire_refusal(
+                            error,
+                            &capability,
+                            &option,
+                            &request_id,
+                        ));
+                    }
+                };
+                let crate::local::ControlPlaneResponse::Machine { allocation_ref, .. } = &result
+                else {
+                    return Err(acquisition_error(
+                        "invalid_response",
+                        "The service returned no allocation",
+                    ));
+                };
+                self.accept_acquire_option(&reach.agent_id, &request_id, &option, allocation_ref)?;
                 // The service decides whether the choice can be acquired, and replays a retry of one it accepted.
-                match args.class_id {
-                    Some(class_id) => {
+                match option {
+                    AcquireOption::Named { class_id, region } => {
                         let option = capability.offers.iter().find(|option| {
                             option.class_id == class_id
-                                && args
-                                    .region
+                                && region
                                     .as_ref()
                                     .is_none_or(|region| &option.region == region)
                         });
                         serde_json::json!({"allocation":result,"option":option,"estimate":{"kind":"unknown","reason":"No duration was specified; the total depends on when the machine is deleted"}})
                     }
-                    None => {
+                    AcquireOption::ServiceDefault => {
                         serde_json::json!({"allocation":result,"offer":capability.offer,"estimate":{"kind":"unknown","reason":"No duration was specified; the total depends on when the machine is deleted"}})
                     }
                 }
@@ -358,15 +391,29 @@ impl KernelRuntimeState {
                 let allocation_ref = args.allocation_ref.ok_or_else(|| {
                     acquisition_error("invalid_request", "allocation_ref is required")
                 })?;
-                serde_json::to_value(
-                    self.job_control_plane(
+                let status = self
+                    .job_control_plane(
                         &origin,
                         &ControlPlaneRequest::Get { allocation_ref },
                         "machines:status",
                     )
-                    .await?,
-                )
-                .map_err(|e| acquisition_error("invalid_response", &e.to_string()))?
+                    .await?;
+                let mut result = serde_json::to_value(&status)
+                    .map_err(|error| acquisition_error("invalid_response", &error.to_string()))?;
+                let ready_target = match status {
+                    crate::local::ControlPlaneResponse::Machine {
+                        state,
+                        kernel_target,
+                        ..
+                    } if state == "ready" => kernel_target,
+                    _ => None,
+                };
+                if let Some(target) = ready_target {
+                    result["build_toolchain"] = self
+                        .target_build_toolchain(&target.kernel_id, &origin.harness)
+                        .await;
+                }
+                result
             }
             "chariox.machines.release" => {
                 let allocation_ref = args.allocation_ref.ok_or_else(|| {
@@ -406,7 +453,7 @@ impl KernelRuntimeState {
                 return Err(acquisition_error(
                     "invalid_request",
                     "Unknown machine action",
-                ))
+                ));
             }
         };
         Ok(crate::transport::runtime_tools::RuntimeToolResult {
@@ -416,8 +463,12 @@ impl KernelRuntimeState {
     }
 }
 
+mod build_toolchain;
+mod choice;
 #[cfg(test)]
 mod tests;
 pub(crate) mod without_asking;
 #[cfg(test)]
 mod without_asking_tests;
+#[cfg(test)]
+mod tool_tests;

@@ -7,6 +7,9 @@ export type SubAgentWord = "running" | "waiting" | "needs you" | "done"
 export interface SubAgentRow {
   readonly id: string
   readonly name: string
+  readonly roomId?: string
+  readonly roomName?: string
+  readonly startedBy?: string
   readonly word: SubAgentWord
   /** Finished: shown dimmed until the parent's task ends and the kernel drops it. */
   readonly dimmed: boolean
@@ -44,6 +47,8 @@ export function subAgentRows(tree: AgentTree): readonly SubAgentRow[] {
     return {
       id: node.agent_id,
       name: node.alias ?? node.agent_id,
+      ...(node.room_id ? { roomId: node.room_id, roomName: node.room_alias } : {}),
+      ...(node.started_by ? { startedBy: node.started_by } : {}),
       word: base === "waiting" && node.needs_user === true ? "needs you" : base,
       dimmed: base === "done",
       depth,
@@ -67,7 +72,7 @@ export function subAgentPanels(tree: AgentTree): SubAgentPanel[] {
   return all(subAgentRows(tree)).map(({ children: _children, word, ...row }) => ({ ...row, word: word === "needs you" ? "waiting" : word }))
 }
 
-/** "6 agents running"; with waits, "1 agent needs you · 2 running · 1 waiting · 1 done". */
+/** "6 sub-agents running"; with waits, "1 sub-agent needs you · 2 running · 1 waiting · 1 done". */
 export function subAgentStripe(tree: AgentTree | null): SubAgentStripe | null {
   if (!tree || tree.nodes.length === 0) return null
   const words = tree.nodes.map(wordOf)
@@ -81,7 +86,7 @@ export function subAgentStripe(tree: AgentTree | null): SubAgentStripe | null {
     [words.filter(word => word === "done").length, "done"],
   ]
   const text = parts.filter(([n]) => n > 0)
-    .map(([n, word], index) => index === 0 ? `${n} ${n === 1 ? "agent" : "agents"} ${word === "needs you" && n > 1 ? "need you" : word}` : `${n} ${word}`)
+    .map(([n, word], index) => index === 0 ? `${n} ${n === 1 ? "sub-agent" : "sub-agents"} ${word === "needs you" && n > 1 ? "need you" : word}` : `${n} ${word}`)
     .join(" · ")
   return { text, needsYou: needsYou > 0 }
 }

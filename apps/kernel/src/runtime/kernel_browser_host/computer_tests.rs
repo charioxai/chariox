@@ -1,43 +1,19 @@
-//! MP-08 / MP-11: fail-first desktop grants and Browser/Computer arbitration.
+//! MP-08 / MP-11: desktop admission fences and Browser/Computer arbitration.
 use super::*;
 use serde_json::json;
 #[test]
-fn mp11_desktop_grant_is_explicit_retained_scoped_and_epoch_fenced() {
+fn mp11_a_computer_admission_is_fenced_by_its_run_and_never_revived() {
     let root = std::env::temp_dir().join(format!("culinux-grants-{:032x}", rand::random::<u128>()));
     let host = KernelBrowserHost::new(root);
-    host.set_focus("alice", Some("a"));
-    host.load_for("alice", "a", KernelBrowserCapability::Computer)
-        .unwrap();
+    host.load_for("alice", "a", KernelBrowserCapability::Computer);
     let admission = host
         .admit_for("alice", "a", KernelBrowserCapability::Computer)
         .unwrap();
     let ended_run = admission.clone().with_authority(|| false);
     assert!(host.check_admission(Some(&ended_run)).is_err());
-    let desktop = UserDomainResource::Desktop {
-        surface_id: "owned".into(),
-    };
-    host.claim_resource(Some(&admission), desktop.clone(), false)
-        .unwrap();
-    host.set_focus("alice", Some("b"));
-    host.claim_resource(Some(&admission), desktop, false)
-        .unwrap();
-    assert!(host
-        .claim_resource(
-            Some(&admission),
-            UserDomainResource::Desktop {
-                surface_id: "other".into()
-            },
-            false
-        )
-        .is_err());
-    assert!(host
-        .admit_for("bob", "a", KernelBrowserCapability::Computer)
-        .is_err());
-    host.revoke_grants("alice", Some("a"));
+    host.revoke_agent("a");
     assert!(host.check_admission(Some(&admission)).is_err());
-    host.set_focus("alice", Some("a"));
-    host.load_for("alice", "a", KernelBrowserCapability::Computer)
-        .unwrap();
+    host.load_for("alice", "a", KernelBrowserCapability::Computer);
     assert!(host.check_admission(Some(&admission)).is_err());
 }
 #[test]
@@ -404,9 +380,7 @@ done
         json!({"op":"release","surface_id":"s","generation":"g"}),
     )
     .unwrap();
-    host.set_focus("alice", Some("agent"));
-    host.load_for("alice", "agent", KernelBrowserCapability::Computer)
-        .unwrap();
+    host.load_for("alice", "agent", KernelBrowserCapability::Computer);
     let agent = host
         .admit_for("alice", "agent", KernelBrowserCapability::Computer)
         .unwrap();

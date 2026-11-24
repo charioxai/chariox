@@ -23,6 +23,8 @@ mod paired;
 mod requester_watch;
 mod self_hosted;
 mod subscription;
+mod update_needed;
+pub(crate) mod write_receipt;
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -39,7 +41,7 @@ use crate::runtime::projection::{
 use crate::runtime::state::KernelRuntimeState;
 
 use directory::{is_gateway_ready, Directory};
-pub(crate) use error::{is_public_code, GatewayError};
+pub(crate) use error::GatewayError;
 #[cfg(test)]
 pub(crate) use events::Added;
 pub(crate) use forward::{forward_audited, forward_with_retry};
@@ -197,6 +199,16 @@ impl KernelGateway {
         origin: &Origin,
         command_id: &str,
     ) -> Result<(), GatewayError> {
+        #[cfg(test)]
+        if let Some(kernel) = crate::runtime::state::stand_in_kernel(&target.kernel_id) {
+            return kernel
+                .send(
+                    command_id.to_owned(),
+                    &LocalDaemonRequest::GetDaemonHealth(crate::local::GetDaemonHealthRequest),
+                )
+                .await
+                .map(|_| ());
+        }
         self.send(
             &target.kernel_id,
             origin,
@@ -285,9 +297,13 @@ impl KernelGateway {
         }
         let gateway_ready = is_gateway_ready(&kernel);
         if let Some(detail) = directory::incompatibility(&kernel, request) {
-            return Err(GatewayError::Incompatible {
+            let refusal = GatewayError::Incompatible {
                 name: target.into(),
                 detail,
+            };
+            return Err(match self.link_for(target, &kernel).await {
+                Ok(link) => update_needed::after_refusal(target, &link, refusal).await,
+                Err(_) => refusal,
             });
         }
         let mut envelope = serde_json::json!({"command_id": command_id, "request": request});
@@ -338,7 +354,7 @@ impl KernelGateway {
                         return Err(revoked);
                     }
                 }
-                Err(error)
+                Err(update_needed::after_refusal(target, &link, error).await)
             }
         }
     }
@@ -812,6 +828,7 @@ mod machine_binding_tests {
             leased_agent_count: 0,
             local_session_count: 0,
             public_key: "public-key".into(),
+            local_protocol: None,
         };
         let expected = crate::local::ControlPlaneMachineTarget {
             kernel_id: kernel.kernel_id.clone(),

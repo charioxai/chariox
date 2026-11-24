@@ -1,9 +1,9 @@
-//! Each agent's scratch folder: one short, kernel-owned path per Room and agent
-//! inside the kernel's home (`<home>/t/<room>/<agent>`), set as TMPDIR, TMP and
-//! TEMP of everything the kernel starts for the agent. The folder is cleared by
-//! inactivity, item by item, and never while a process has the item open or
-//! works inside it. The kernel only deletes here, never in a workspace.
-use std::collections::BTreeSet;
+//! Each agent has a short private scratch path, scoped to its kernel and Room.
+//! Its contents are trimmed when idle. The agent's process namespace exposes
+//! its own folder, and ending the agent or Room removes the folder.
+use crate::error::DaemonError;
+use sha2::{Digest, Sha256};
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
@@ -13,7 +13,9 @@ const IDLE_SECONDS_ENV: &str = "CHARIOX_TEMP_IDLE_SECONDS";
 const DEFAULT_IDLE: Duration = Duration::from_secs(3600);
 /// Entries looked at to decide an item is idle; a bigger tree counts as busy.
 const SCAN_LIMIT: usize = 100_000;
-const ID_LENGTH: usize = 8;
+const ID_LENGTH: usize = 12;
+const ROOT_ID_LENGTH: usize = 16;
+const TEMP_VARIABLES: [&str; 3] = ["TMPDIR", "TMP", "TEMP"];
 
 pub(crate) fn idle_window() -> Duration {
     std::env::var(IDLE_SECONDS_ENV)
@@ -23,28 +25,45 @@ pub(crate) fn idle_window() -> Duration {
 }
 
 pub(crate) fn root() -> Option<PathBuf> {
-    crate::credential::chariox_home().map(|home| home.join("t"))
+    let home = crate::credential::chariox_home()?;
+    let home = home.canonicalize().unwrap_or(home);
+    let (host, port) = crate::config::kernel_listen_address();
+    let parent = temp_parent(&home);
+    Some(short_root(&parent, &home, &host, port))
 }
 
-/// A short stable name for an id: the characters of its unique part, so a
-/// socket inside the folder stays well under the 107-byte path limit and the
-/// path survives a restart without a table.
-fn short(id: &str) -> String {
-    id.trim_start_matches("agent-")
-        .chars()
-        .filter(char::is_ascii_alphanumeric)
-        .take(ID_LENGTH)
-        .collect()
+#[cfg(test)]
+fn temp_parent(home: &Path) -> PathBuf {
+    // Unit-test homes own their scratch and remove it with the test fixture.
+    home.to_path_buf()
+}
+
+#[cfg(not(test))]
+fn temp_parent(_home: &Path) -> PathBuf {
+    #[cfg(target_os = "macos")]
+    return PathBuf::from("/private/tmp");
+    #[cfg(all(unix, not(target_os = "macos")))]
+    return PathBuf::from("/tmp");
+    #[cfg(not(unix))]
+    std::env::temp_dir()
+}
+
+fn short_root(parent: &Path, home: &Path, host: &str, port: u16) -> PathBuf {
+    let key = Sha256::new()
+        .chain_update(home.as_os_str().as_encoded_bytes())
+        .chain_update([0])
+        .chain_update(host)
+        .chain_update(port.to_be_bytes())
+        .finalize();
+    parent.join(format!("cx-{}", &format!("{key:x}")[..ROOT_ID_LENGTH]))
 }
 
 pub(crate) fn room_dir(root: &Path, session_id: &str) -> PathBuf {
-    // Timestamp Room IDs vary in their low bits; a prefix merges nearby Rooms.
-    root.join(
-        session_id
-            .chars()
-            .filter(char::is_ascii_alphanumeric)
-            .collect::<String>(),
-    )
+    root.join(short_name(session_id))
+}
+
+fn short_name(id: &str) -> String {
+    format!("{:x}", Sha256::digest(id.as_bytes()))[..ID_LENGTH].to_owned()
 }
 
 pub(crate) fn dir(session_id: &str, agent_id: &str) -> Option<PathBuf> {
@@ -52,64 +71,155 @@ pub(crate) fn dir(session_id: &str, agent_id: &str) -> Option<PathBuf> {
 }
 
 fn dir_in(root: &Path, session_id: &str, agent_id: &str) -> PathBuf {
-    room_dir(root, session_id).join(short(agent_id))
+    room_dir(root, session_id).join(short_name(agent_id))
 }
 
-/// TMPDIR, TMP and TEMP for the agent, with its folder created (private).
-/// Without a home to put it in, the agent keeps the system temp folder.
-pub(crate) fn environment(session_id: &str, agent_id: &str) -> Vec<(&'static str, String)> {
-    root().map_or_else(Vec::new, |root| environment_in(&root, session_id, agent_id))
-}
-
-fn environment_in(root: &Path, session_id: &str, agent_id: &str) -> Vec<(&'static str, String)> {
-    let dir = dir_in(root, session_id, agent_id);
-    if let Err(error) = create_private(&dir) {
-        crate::logging::warn_with_fields(
-            "agent_temp.create",
-            "the agent's temp folder could not be created; it keeps the system temp folder",
-            serde_json::json!({"path": dir.display().to_string(), "error": error.to_string()}),
-        );
-        return Vec::new();
+/// Every directory leading to the agent path is private when it first exists.
+/// Reused paths must be owned directories, so a precreated link is never followed.
+fn private_directory(path: &Path) -> std::io::Result<()> {
+    let mut builder = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt as _;
+        builder.mode(0o700);
     }
-    let path = dir.display().to_string();
-    ["TMPDIR", "TMP", "TEMP"]
+    match builder.create(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            check_private_directory(path)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn check_private_directory(path: &Path) -> std::io::Result<()> {
+    let metadata = std::fs::symlink_metadata(path)?;
+    #[cfg(unix)]
+    let private = {
+        use std::os::unix::fs::MetadataExt as _;
+        metadata.uid() == unsafe { libc::geteuid() } && metadata.mode() & 0o777 == 0o700
+    };
+    #[cfg(not(unix))]
+    let private = true;
+    if private && metadata.is_dir() {
+        Ok(())
+    } else {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "expected an owned private directory",
+        ))
+    }
+}
+
+pub(crate) fn private_root() -> Option<PathBuf> {
+    root().filter(|path| check_private_directory(path).is_ok())
+}
+
+#[cfg(test)]
+pub(crate) fn environment(session_id: &str, agent_id: &str) -> Vec<(&'static str, String)> {
+    let root = root().unwrap();
+    let directory = create_agent_directory(&root, session_id, agent_id).unwrap();
+    TEMP_VARIABLES
         .into_iter()
-        .map(|name| (name, path.clone()))
+        .map(|name| (name, directory.display().to_string()))
         .collect()
 }
 
-fn create_private(dir: &Path) -> std::io::Result<()> {
-    std::fs::create_dir_all(dir)?;
-    #[cfg(unix)]
+/// Add the default scratch path to this launch, and return the directory that
+/// a managed launch needs to mount after it covers the shared temp directory.
+pub(crate) fn attach_environment(
+    session_id: &str,
+    agent_id: Option<&str>,
+    environment: &mut BTreeMap<String, String>,
+) -> Result<Option<PathBuf>, DaemonError> {
+    let Some(agent_id) = agent_id else {
+        return Ok(None);
+    };
+    if TEMP_VARIABLES
+        .iter()
+        .all(|name| environment.contains_key(*name))
     {
-        use std::os::unix::fs::PermissionsExt;
-        for level in dir.ancestors().take(2) {
-            std::fs::set_permissions(level, std::fs::Permissions::from_mode(0o700))?;
+        return Ok(None);
+    }
+    let Some(root) = root() else {
+        return Ok(None);
+    };
+    let directory = create_agent_directory(&root, session_id, agent_id)?;
+    let path = directory.display().to_string();
+    for name in TEMP_VARIABLES {
+        environment
+            .entry(name.to_string())
+            .or_insert_with(|| path.clone());
+    }
+    crate::logging::info_with_fields(
+        "agent_temp.create",
+        "agent temporary directory ready",
+        serde_json::json!({"session_id": session_id, "agent_id": agent_id, "path": path, "path_bytes": path.len()}),
+    );
+    Ok(Some(directory))
+}
+
+fn create_agent_directory(
+    root: &Path,
+    session_id: &str,
+    agent_id: &str,
+) -> Result<PathBuf, DaemonError> {
+    let directory = dir_in(root, session_id, agent_id);
+    for path in [
+        root,
+        directory.parent().expect("agent room directory"),
+        &directory,
+    ] {
+        private_directory(path).map_err(|error| DaemonError::LocalTransport {
+            operation: "create agent temporary directory",
+            message: format!("Could not use {} ({error}). Restore the kernel's private temporary directory and retry.", path.display()),
+        })?;
+    }
+    Ok(directory)
+}
+
+pub(crate) fn clear_after_restart() {
+    // A successful in-place replacement adopts the old provider processes and
+    // their mounts. Only a cold start owns the previous process's scratch.
+    #[cfg(unix)]
+    if crate::hot_reload::has_received_handover() {
+        return;
+    }
+    if let Some(root) = private_root() {
+        clear_directory(&root);
+    }
+}
+
+pub(crate) fn clear_agent(session_id: &str, agent_id: &str) {
+    if let Some(root) = private_root() {
+        let room = room_dir(&root, session_id);
+        if check_private_directory(&room).is_ok() {
+            clear_directory(&dir_in(&root, session_id, agent_id));
         }
     }
-    Ok(())
 }
 
 /// A Room that ended or was archived leaves nothing in its temp folders.
 pub(crate) fn clear_room(session_id: &str) {
-    if let Some(root) = root() {
+    if let Some(root) = private_root() {
         clear_room_in(&root, session_id);
     }
 }
 
 fn clear_room_in(root: &Path, session_id: &str) {
-    let room = room_dir(root, session_id);
-    if room == root || !room.starts_with(root) {
+    clear_directory(&room_dir(root, session_id));
+}
+
+fn clear_directory(path: &Path) {
+    let Err(error) = std::fs::remove_dir_all(path) else {
         return;
-    }
-    if let Err(error) = std::fs::remove_dir_all(&room) {
-        if error.kind() != std::io::ErrorKind::NotFound {
-            crate::logging::warn_with_fields(
-                "agent_temp.clear_room",
-                "the ended Room's temp folder was not cleared",
-                serde_json::json!({"path": room.display().to_string(), "error": error.to_string()}),
-            );
-        }
+    };
+    if error.kind() != std::io::ErrorKind::NotFound {
+        crate::logging::warn_with_fields(
+            "agent_temp.clear",
+            "the temporary directory was not cleared",
+            serde_json::json!({"path": path.display().to_string(), "error": error.to_string()}),
+        );
     }
 }
 

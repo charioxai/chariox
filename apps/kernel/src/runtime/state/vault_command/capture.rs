@@ -3,6 +3,7 @@
 //! and the agent receives only the handle and its own label.
 use super::*;
 use crate::config::{UserCredentialConfig, UserCredentialMetadataConfig};
+use crate::runtime::state::runtime_vault_unlock_state::VaultUnlockGuard;
 use crate::transport::runtime_tools::{RuntimeToolResult, RuntimeToolSpec};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
@@ -12,9 +13,16 @@ pub(super) const CAPTURED_KIND: &str = "vault_capture";
 const VALUE_LIMIT: usize = 16 * 1024;
 
 #[derive(Clone, Default)]
-pub(in crate::runtime::state) struct CaptureClaims(
-    Arc<std::sync::Mutex<BTreeMap<String, std::sync::Weak<tokio::sync::Mutex<()>>>>>,
-);
+pub(in crate::runtime::state) struct CaptureClaims {
+    claims: Arc<std::sync::Mutex<BTreeMap<String, std::sync::Weak<tokio::sync::Mutex<()>>>>>,
+    /// The unlock of a capture whose command runs on a leased worker, kept until the worker
+    /// sends the value, so "ask every time" asks once and a value a service shows once is not lost.
+    /// The id names the hold its expiry belongs to.
+    unlocks: Arc<std::sync::Mutex<BTreeMap<String, (u64, VaultUnlockGuard)>>>,
+}
+
+/// How long a worker's capture command may run, with room for the transfer back.
+const CAPTURE_UNLOCK_HOLD: Duration = Duration::from_secs(MAX_TIMEOUT_SECONDS + 60);
 
 impl CaptureClaims {
     pub(super) async fn claim(
@@ -23,7 +31,7 @@ impl CaptureClaims {
     ) -> Result<tokio::sync::OwnedMutexGuard<()>, DaemonError> {
         let claim = {
             let mut claims = self
-                .0
+                .claims
                 .lock()
                 .map_err(|_| error("Vault capture claims unavailable"))?;
             claims.retain(|_, claim| claim.strong_count() > 0);
@@ -37,11 +45,34 @@ impl CaptureClaims {
         };
         Ok(claim.lock_owned().await)
     }
+
+    /// Callers hold the handle's claim and took any earlier hold, so nothing is replaced.
+    fn hold_unlock(&self, handle: &str, unlock: VaultUnlockGuard) {
+        let id = rand::random::<u64>();
+        if let Ok(mut unlocks) = self.unlocks.lock() {
+            unlocks.insert(handle.to_owned(), (id, unlock));
+        }
+        let (unlocks, handle) = (self.unlocks.clone(), handle.to_owned());
+        tokio::spawn(async move {
+            tokio::time::sleep(CAPTURE_UNLOCK_HOLD).await;
+            // A retry holds the unlock anew; only this hold's own expiry ends it.
+            let lapsed = unlocks.lock().ok().and_then(|mut unlocks| {
+                let held = unlocks.get(&handle).is_some_and(|(held, _)| *held == id);
+                held.then(|| unlocks.remove(&handle)).flatten()
+            });
+            drop(lapsed);
+        });
+    }
+
+    fn take_unlock(&self, handle: &str) -> Option<VaultUnlockGuard> {
+        let (_, unlock) = self.unlocks.lock().ok()?.remove(handle)?;
+        Some(unlock)
+    }
 }
 
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-struct CaptureArgs {
+pub(super) struct CaptureArgs {
     request_id: String,
     argv: serde_json::Value,
     #[serde(default)]
@@ -59,7 +90,7 @@ struct CaptureArgs {
 #[derive(serde::Deserialize, Default)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub(super) enum Extract {
-    /// The whole output or file, trimmed.
+    /// The whole output or file (see `stored_text`).
     #[default]
     #[serde(alias = "whole")]
     Stdout,
@@ -80,7 +111,7 @@ fn first_group() -> usize {
 pub(crate) fn capture_command_spec() -> RuntimeToolSpec {
     RuntimeToolSpec {
         name: VAULT_CAPTURE_COMMAND.into(),
-        description: "run one command (argv, no shell) in your workspace and store a secret it prints on stdout in the owner's Vault. You never see the value or the command's output: the result is an opaque credential_id with your label. extract picks the value: {\"kind\":\"stdout\"} (whole stdout, trimmed; the default), {\"kind\":\"json\",\"pointer\":\"/data/api_key\"} (JSON Pointer into stdout), or {\"kind\":\"regex\",\"pattern\":\"token: (\\\\S+)\",\"group\":1}. host names the source service. use_binding declares the one destination: a command environment name and origin, command stdin origin, or absolute workspace file path. Use it only at that destination with chariox.vault.use_env or chariox.vault.write_file. Retrying with the same request_id returns the same credential without running the command again.".into(),
+        description: "run one command (argv, no shell) in your workspace and store a secret it prints on stdout in the owner's Vault. You never see the value or the command's output: the result is an opaque credential_id with your label. extract picks the value: {\"kind\":\"stdout\"} (whole stdout, the default), {\"kind\":\"json\",\"pointer\":\"/data/api_key\"} (JSON Pointer into stdout), or {\"kind\":\"regex\",\"pattern\":\"token: (\\\\S+)\",\"group\":1}. host names the source service. use_binding declares the one destination: a command environment name and origin, command stdin origin, or absolute workspace file path. Use it only at that destination with chariox.vault.use_env or chariox.vault.write_file. Retrying with the same request_id returns the same credential without running the command again.".into(),
         input_schema: serde_json::json!({"type":"object","required":["request_id","argv","host","use_binding"],"properties":{
             "use_binding": capture_binding_schema(),
             "request_id":{"type":"string","minLength":1,"maxLength":128},
@@ -112,22 +143,31 @@ pub(in crate::runtime::state) fn capture_binding_schema() -> serde_json::Value {
     }})
 }
 
+/// What the capture tools refuse alike on the worker and at the home.
+pub(super) fn check_capture_request(
+    request_id: &str,
+    label: Option<&str>,
+) -> Result<(), DaemonError> {
+    if request_id.trim().is_empty() || request_id.len() > 128 {
+        return Err(error("request_id must be 1-128 characters"));
+    }
+    if label.is_some_and(|label| label.len() > 200) {
+        return Err(error("label must be at most 200 characters"));
+    }
+    Ok(())
+}
+
 impl KernelRuntimeState {
     pub(crate) async fn vault_capture_command(
         &self,
         token: &str,
         arguments: serde_json::Value,
     ) -> Result<RuntimeToolResult, DaemonError> {
-        let context = self.vault_agent_context(token)?;
+        let context = self.vault_leased_context(token).await?;
         self.recheck_vault_command_context(&context)?;
         let args: CaptureArgs = serde_json::from_value(arguments)
             .map_err(|e| error(format!("invalid Vault capture arguments: {e}")))?;
-        if args.request_id.trim().is_empty() || args.request_id.len() > 128 {
-            return Err(error("request_id must be 1-128 characters"));
-        }
-        if args.label.as_ref().is_some_and(|label| label.len() > 200) {
-            return Err(error("label must be at most 200 characters"));
-        }
+        check_capture_request(&args.request_id, args.label.as_deref())?;
         // The kernel owns settlement and commit even if the MCP waiter goes away.
         let state = self.clone();
         tokio::spawn(async move { state.capture_command_once(context, args).await })
@@ -142,25 +182,38 @@ impl KernelRuntimeState {
     ) -> Result<RuntimeToolResult, DaemonError> {
         args.use_binding.target.validate()?;
         let host = service_host(&args.host)?;
-        let argv = super::super::agent_process_watch::command_argv(&args.argv)?;
+        let argv = super::super::agent_process_watch::command_argv(&args.argv, false)?;
         let pattern = extract_pattern(&args.extract)?;
         let timeout = command_timeout(args.timeout_seconds)?;
-        let turn = &context;
-        let handle = captured_handle(turn, &args.request_id);
+        let actor = context.actor();
+        let handle = captured_handle(&actor, &args.request_id);
         let _claim = self.owned.vault_capture_claims.claim(&handle).await?;
         self.recheck_vault_command_context(&context)?;
-        let registry = crate::credential::CharioxCredentialRegistry::user()?;
-        if let Some(existing) = registry.get(&handle)? {
-            return committed(&existing, turn, &host, &args.use_binding);
-        }
-        validate_capture_binding(&context.run, &args.use_binding)?;
+        let recheck = || self.recheck_vault_command_context(&context);
+        let _unlock = match &context.home {
+            // The home keeps the Vault: it answers a retry and unlocks before the command runs.
+            Some(home) => {
+                if let Some(committed) = self
+                    .prepare_home_vault_capture(home, &args.request_id, &host, &args.use_binding)
+                    .await?
+                {
+                    return Ok(committed);
+                }
+                validate_capture_binding(&context.run, &args.use_binding)?;
+                None
+            }
+            None => {
+                let registry = crate::credential::CharioxCredentialRegistry::user()?;
+                if let Some(existing) = registry.get(&handle)? {
+                    return committed(&existing, &actor, &host, &args.use_binding);
+                }
+                validate_capture_binding(&context.run, &args.use_binding)?;
+                Some(self.capture_unlock(&actor).await?)
+            }
+        };
         let cwd =
             super::super::agent_process_watch::workspace_cwd(&context.run, args.cwd.as_deref())?;
-        // Unlock before running: a key a service shows once must not be lost.
-        let _unlock = self
-            .ensure_vault_unlocked_for_agent(&turn.session_id, &turn.agent_id, "vault_capture")
-            .await?;
-        self.recheck_vault_command_context(&context)?;
+        recheck()?;
         let output = run_command(
             self,
             context.clone(),
@@ -200,29 +253,133 @@ impl KernelRuntimeState {
             ));
         }
         let secret = extract(&output.stdout, &args.extract, pattern.as_ref())?;
-        self.store_captured(
+        self.store_capture(
             &context,
-            &registry,
             Captured {
                 handle,
                 host,
                 label: args.label,
                 use_binding: args.use_binding,
+                request_id: args.request_id,
             },
             &secret,
         )
         .await
     }
 
+    /// Unlock before running: a key a service shows once must not be lost.
+    pub(super) async fn capture_unlock(
+        &self,
+        actor: &VaultActor,
+    ) -> Result<VaultUnlockGuard, DaemonError> {
+        let unlock = self
+            .ensure_vault_unlocked_for_agent(&actor.session_id, &actor.agent_id, "vault_capture")
+            .await?;
+        unlock.keep_open_for(CAPTURE_UNLOCK_HOLD)?;
+        Ok(unlock)
+    }
+
+    /// Stores a captured value where the Vault is: here, or at the home for an agent on a
+    /// leased worker.
+    pub(in crate::runtime::state) async fn store_capture(
+        &self,
+        context: &VaultAgentContext,
+        captured: Captured,
+        secret: &str,
+    ) -> Result<RuntimeToolResult, DaemonError> {
+        match &context.home {
+            Some(home) => self.store_home_vault_capture(home, captured, secret).await,
+            None => {
+                let registry = crate::credential::CharioxCredentialRegistry::user()?;
+                self.store_captured(
+                    &context.actor(),
+                    &|| self.recheck_vault_command_context(context),
+                    &registry,
+                    captured,
+                    secret,
+                )
+                .await
+            }
+        }
+    }
+
+    /// The home half of a capture on a leased worker, before the worker runs its command:
+    /// the committed handle of a retry, or else the Vault unlocked and kept so for the store.
+    pub(super) async fn prepare_capture_in_vault(
+        &self,
+        actor: &VaultActor,
+        recheck: VaultRecheck<'_>,
+        request_id: &str,
+        host: &str,
+        use_binding: &crate::config::VaultUseBinding,
+    ) -> Result<Option<RuntimeToolResult>, DaemonError> {
+        let handle = captured_handle(actor, request_id);
+        let _claim = self.owned.vault_capture_claims.claim(&handle).await?;
+        let registry = crate::credential::CharioxCredentialRegistry::user()?;
+        if let Some(existing) = registry.get(&handle)? {
+            return committed(&existing, actor, host, use_binding).map(Some);
+        }
+        // A retry after a failed command keeps the unlock the first attempt held: a fresh
+        // guard on the still open Vault does not lock, and replacing the held one would lock now.
+        let unlock = match self
+            .owned
+            .vault_capture_claims
+            .take_unlock(&handle)
+            .filter(VaultUnlockGuard::still_unlocked)
+        {
+            Some(held) => {
+                held.keep_open_for(CAPTURE_UNLOCK_HOLD)?;
+                held
+            }
+            None => self.capture_unlock(actor).await?,
+        };
+        recheck()?;
+        self.owned.vault_capture_claims.hold_unlock(&handle, unlock);
+        Ok(None)
+    }
+
+    /// The home half of a capture on a leased worker, once the worker has the value.
+    pub(super) async fn store_capture_in_vault(
+        &self,
+        actor: &VaultActor,
+        recheck: VaultRecheck<'_>,
+        captured: Captured,
+        secret: &str,
+    ) -> Result<RuntimeToolResult, DaemonError> {
+        let _claim = self
+            .owned
+            .vault_capture_claims
+            .claim(&captured.handle)
+            .await?;
+        recheck()?;
+        let registry = crate::credential::CharioxCredentialRegistry::user()?;
+        if let Some(existing) = registry.get(&captured.handle)? {
+            return committed(&existing, actor, &captured.host, &captured.use_binding);
+        }
+        let _unlock = match self
+            .owned
+            .vault_capture_claims
+            .take_unlock(&captured.handle)
+            .filter(VaultUnlockGuard::still_unlocked)
+        {
+            Some(unlock) => unlock,
+            None => self.capture_unlock(actor).await?,
+        };
+        recheck()?;
+        self.store_captured(actor, recheck, &registry, captured, secret)
+            .await
+    }
+
     /// Stores a captured value for kernel-local use (command env/stdin and files).
     pub(in crate::runtime::state) async fn store_captured(
         &self,
-        context: &VaultAgentContext,
+        actor: &VaultActor,
+        recheck: VaultRecheck<'_>,
         registry: &crate::credential::CharioxCredentialRegistry,
         captured: Captured,
         secret: &str,
     ) -> Result<RuntimeToolResult, DaemonError> {
-        let turn = &context;
+        let turn = actor;
         let now = crate::session::unix_epoch_ms();
         let credential = UserCredentialConfig {
             id: captured.handle.clone(),
@@ -250,7 +407,7 @@ impl KernelRuntimeState {
                 created_by_id: Some(turn.agent_id.clone()),
                 session_id: Some(turn.session_id.clone()),
                 provider: None,
-                provider_run_id: Some(turn.run.id().to_string()),
+                provider_run_id: Some(turn.provider_run_id.clone()),
                 vault_key: Some(captured.handle.clone()),
                 created_at_ms: Some(now),
                 updated_at_ms: Some(now),
@@ -258,14 +415,14 @@ impl KernelRuntimeState {
             }),
         };
         let _mutation = self.vault_observation_mutation_guard().await;
-        self.recheck_vault_command_context(context)?;
+        recheck()?;
         self.upsert_vault_credential_locked_for_agent(
             &self.home_runtime_secret_service()?,
             registry,
             credential,
             secret,
             false,
-            Some(context),
+            Some(recheck),
         )
         .await?;
         Ok(RuntimeToolResult {
@@ -277,10 +434,12 @@ impl KernelRuntimeState {
 }
 
 pub(in crate::runtime::state) struct Captured {
+    /// The handle in the kernel the Vault is at; a leased run's home derives its own from `request_id`.
     pub(in crate::runtime::state) handle: String,
     pub(in crate::runtime::state) host: String,
     pub(in crate::runtime::state) label: Option<String>,
     pub(in crate::runtime::state) use_binding: crate::config::VaultUseBinding,
+    pub(in crate::runtime::state) request_id: String,
 }
 
 pub(super) fn extract_pattern(how: &Extract) -> Result<Option<regex::Regex>, DaemonError> {
@@ -300,7 +459,7 @@ pub(super) fn extract_pattern(how: &Extract) -> Result<Option<regex::Regex>, Dae
 /// A retry returns the committed handle only to the same agent, session and host.
 pub(in crate::runtime::state) fn committed(
     existing: &UserCredentialConfig,
-    turn: &VaultAgentContext,
+    turn: &VaultActor,
     host: &str,
     binding: &crate::config::VaultUseBinding,
 ) -> Result<RuntimeToolResult, DaemonError> {
@@ -323,7 +482,7 @@ pub(in crate::runtime::state) fn committed(
 }
 
 /// Deterministic per request so a lost acknowledgement never stores a second value.
-pub(super) fn captured_handle(turn: &VaultAgentContext, request_id: &str) -> String {
+pub(super) fn captured_handle(turn: &VaultActor, request_id: &str) -> String {
     let digest = Sha256::digest(
         [
             CAPTURED_KIND,
@@ -363,12 +522,12 @@ pub(super) fn extract(
     let text = std::str::from_utf8(stdout)
         .map_err(|_| error("the output is not UTF-8 text; nothing was stored"))?;
     let value = match how {
-        Extract::Stdout => Zeroizing::new(text.trim().to_string()),
+        Extract::Stdout => stored_text(text),
         Extract::Json { pointer } => {
             let json: serde_json::Value = serde_json::from_str(text)
                 .map_err(|_| error("the output is not JSON; nothing was stored"))?;
             match json.pointer(pointer) {
-                Some(serde_json::Value::String(value)) => Zeroizing::new(value.trim().to_string()),
+                Some(serde_json::Value::String(value)) => stored_text(value),
                 Some(serde_json::Value::Number(value)) => Zeroizing::new(value.to_string()),
                 Some(_) => return Err(error(
                     "the JSON pointer names an object, array, boolean or null; nothing was stored",
@@ -384,12 +543,7 @@ pub(super) fn extract(
             let captures = pattern
                 .and_then(|p| p.captures(text))
                 .ok_or_else(|| error("the pattern matched nothing; nothing was stored"))?;
-            Zeroizing::new(
-                captures
-                    .get(*group)
-                    .map(|m| m.as_str().trim().to_string())
-                    .unwrap_or_default(),
-            )
+            stored_text(captures.get(*group).map_or("", |m| m.as_str()))
         }
     };
     if value.is_empty() {
@@ -401,6 +555,21 @@ pub(super) fn extract(
         ));
     }
     Ok(value)
+}
+
+/// A one-line value (a token printed with `echo`) loses its surrounding whitespace and line
+/// ending. A multi-line value (a private key, a certificate) is a text file whose final line
+/// ending belongs to it: OpenSSH refuses a key without it, so it is stored exactly.
+pub(super) fn stored_text(value: &str) -> Zeroizing<String> {
+    let trimmed = value.trim();
+    Zeroizing::new(
+        if trimmed.contains('\n') {
+            value
+        } else {
+            trimmed
+        }
+        .to_string(),
+    )
 }
 
 /// The tail of a failed command's stderr, sanitized; stdout is never shown.

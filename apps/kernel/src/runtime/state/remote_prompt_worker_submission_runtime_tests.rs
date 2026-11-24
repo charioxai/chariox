@@ -1285,7 +1285,7 @@ async fn remote_workflow_submit_rejects_missing_or_locked_vault_before_transport
             .expect_err("rejected vault unlock must stop before relay transport");
         assert!(
             crate::secret::is_chariox_vault_locked_error(&error)
-                || error.to_string().contains("vault unlock was cancelled")
+                || error.to_string().contains("Vault unlock was cancelled")
                 || error.to_string().contains("remote Claude launch requires"),
             "missing or locked vault should reject before sending: {error}"
         );
@@ -1373,8 +1373,8 @@ async fn leased_prompt_uses_shared_handoff_dispatch_before_provider_submission()
             None,
             None,
             Vec::new(),
-            None,
             crate::extension::RemoteExtensionManifest::default(),
+            Default::default(),
         )
         .expect("prepare ready worker");
     if let crate::app::PreparedLeasedProviderRun::LaunchRequired(request) = prepared.provider_run {
@@ -1399,9 +1399,9 @@ async fn leased_prompt_uses_shared_handoff_dispatch_before_provider_submission()
             None,
             None,
             Vec::new(),
-            None,
             crate::extension::RemoteExtensionManifest::default(),
             None,
+            Default::default(),
         )
         .await
         .expect("worker submission");

@@ -94,6 +94,8 @@ fn kernel_websocket_state_and_cancel_ack_while_structured_provider_io_is_slow() 
             &mut socket,
             "spawn-second-agent",
             LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+                initial_task: None,
+                peer_spawn: None,
                 max_context_tokens: None,
                 no_subscribe: false,
                 session_id: session_id.clone(),

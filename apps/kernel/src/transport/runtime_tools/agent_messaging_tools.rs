@@ -37,17 +37,33 @@ pub struct GetSessionAgentArgs {
 pub fn agent_messaging_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
     vec![
         RuntimeToolSpec {
-            name: LIST_SESSION_AGENTS_TOOL.to_string(),
-            description: "List the agents in the current Chariox session with their stable ids, unique aliases, provider configuration, runtime availability, queue depth, extension capabilities, and local or remote placement. Use this before addressing another agent.".to_string(),
+            name: OWNER_VIEW_TOOL.to_string(),
+            description: "Watch the owner's hosted Web Navigator and Settings. The owner sees who is watching and can end the view. Use watch to attach, read for the latest presentation, and leave to detach.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
-                "properties": {},
+                "required": ["operation"],
+                "properties": { "operation": { "enum": ["watch", "read", "leave"] } },
+                "additionalProperties": false
+            }),
+        },
+        RuntimeToolSpec {
+            name: LIST_SESSION_AGENTS_TOOL.to_string(),
+            description: "List Room agents (alias, state, queue) and tasks newest first. Use include_history for finished tasks and settled obligations. Use task_id for a task's obligations. Resume a list with next_*_cursor as *_cursor.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "agents_cursor": {"type":"string","maxLength":512},
+                    "tasks_cursor": {"type":"integer","minimum":1},
+                    "include_history": {"type":"boolean","default":false},
+                    "task_id": {"type":"string"},
+                    "obligations_cursor": {"type":"integer","minimum":1}
+                },
                 "additionalProperties": false
             }),
         },
         RuntimeToolSpec {
             name: GET_SESSION_AGENT_TOOL.to_string(),
-            description: "Read the safe configuration and current runtime status of one existing agent in the current Chariox session. Address the target by its unique alias, agent ref, or agent id. Provider credentials and resume state are never returned.".to_string(),
+            description: "Read the safe configuration and current runtime status of one existing agent in the current Chariox session. Includes job summaries for yourself and your same-owner direct children. Address the target by its unique alias, agent ref, or agent id. Provider credentials and resume state are never returned.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["agent"],
@@ -62,7 +78,7 @@ pub fn agent_messaging_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: SEND_AGENT_MESSAGE_TOOL.to_string(),
-            description: "Send a visible, human-readable message to another existing agent in the current Chariox session. Include the origin_prompt_id supplied in this turn's hidden context. Address the target by its unique alias, agent ref, or agent id. Keep message as natural-language text instead of serializing an envelope as JSON; send images and files through attachments. Messages enter the durable event inbox. A message waits in the receiver's queue and is delivered in its next turn, whatever starts that turn, unless you set urgent to true, which steers the running turn or starts one if the receiver is idle. A queued message can be promoted to urgent with chariox.promote_agent_message, or by sending it again with the same idempotency_key and urgent true. No reply is requested unless reply_requested is true; never send a courtesy reply. Explicitly stopped receivers remain stopped with pending events. This tool never creates agents. Use chariox.list_session_agents first when the target is not already known.".to_string(),
+            description: "Send a visible, human-readable message to another existing agent in the current Chariox session. Include the origin_prompt_id supplied in this turn's hidden context. Address the target by its unique alias, agent ref, or agent id. Keep message as natural-language text instead of serializing an envelope as JSON; send images and files through attachments. Messages enter the durable event inbox. Without urgent, it is delivered in the receiver's next turn, whatever starts that turn. A queued message can be promoted to urgent with chariox.promote_agent_message, or by sending it again with the same idempotency_key and urgent true. No reply is requested unless reply_requested is true; never send a courtesy reply. Explicitly stopped receivers remain stopped with pending events. This tool never creates agents. Use chariox.list_session_agents first when the target is not already known.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["agent", "message", "origin_prompt_id"],
@@ -114,7 +130,7 @@ pub fn agent_messaging_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                             "additionalProperties": false
                         }
                     },
-                    "urgent": { "type": "boolean", "default": false, "description": "Steer the receiver's running turn, or start a turn if it is idle. When false, the message is queued for the receiver's next turn and never starts or steers one." },
+                    "urgent": { "type": "boolean", "default": false, "description": "Steer the receiver's running turn, or start one if it is idle. When false, the message queues for the next turn and never starts or steers one." },
                     "reply_requested": { "type": "boolean", "default": false, "description": "Request one correlated reply. Default messages require no courtesy response." },
                     "idempotency_key": {
                         "type": "string",
@@ -144,6 +160,9 @@ pub fn agent_messaging_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
 
 pub fn canonical_agent_messaging_tool_name(tool_name: &str) -> Option<&'static str> {
     match tool_name {
+        OWNER_VIEW_TOOL | "chariox_owner_view" | "mcp__chariox__chariox_owner_view" => {
+            Some(OWNER_VIEW_TOOL)
+        }
         LIST_SESSION_AGENTS_TOOL
         | "chariox_list_session_agents"
         | "mcp__chariox__list_session_agents"

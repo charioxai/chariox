@@ -1,6 +1,7 @@
 // MD-2: Linux host policy. The renderer sandbox is never disabled.
 import { spawnSync } from "node:child_process";
 import { accessSync, constants, readdirSync, statSync } from "node:fs";
+import { browserConfinementFailure, browserUserFailure } from "./linux-browser-user.mjs";
 // install-root.sh installs the pinned Chromium (deploy/local-linux/kernel-browser-chromium.lock.json)
 // read-only under /usr/lib/chariox; the kernel prefers it over a system browser.
 export const pinnedChromium = "/usr/lib/chariox/browser/chromium/155.0.8059.79/chrome-linux64/chrome";
@@ -71,9 +72,13 @@ export function policyLaunch(layer, temporary, binary, args, uid = process.getui
 
 // Root owns the policy mount, then irrevocably drops to the browser account.
 // Chromium creates its normal renderer sandbox; no sandbox-disabling switch.
-export function rootPolicyNamespaceAvailable(user, run = spawnSync, launcher = namespaceLauncher()) {
+export function requireRootPolicyNamespace(user, run = spawnSync, launcher = namespaceLauncher()) {
   const target = user.command('/bin/true',[]);
-  return run(launcher,['--mount','--propagation','private','--',target.binary,...target.args],{stdio:'ignore',timeout:5000}).status === 0;
+  const probe=run(launcher,['--mount','--propagation','private','--',target.binary,...target.args],{stdio:['ignore','ignore','pipe'],encoding:'utf8',maxBuffer:8192,timeout:5000});
+  if(probe.error?.code==='ENOENT')throw browserUserFailure('launcher');
+  if(probe.status===0)return;
+  if(/operation not permitted|permission denied/i.test(probe.stderr??''))throw browserConfinementFailure('namespaceCapability');
+  throw browserUserFailure('probe');
 }
 export function rootPolicyLaunch(layer, temporary, binary, args, user, workspace, launcher = namespaceLauncher(), storage) {
   requireStorageRoot(storage);

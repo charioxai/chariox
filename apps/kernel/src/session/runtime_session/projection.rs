@@ -5,7 +5,12 @@ use crate::session::CollaborationLevel;
 
 pub(super) fn redacted_for_user(mut session: RuntimeSession, user_id: &str) -> RuntimeSession {
     // A4: sub-agents are hidden before anything is counted or redacted (redaction clears the edge).
-    session.agents.retain(|agent| !agent.is_sub_agent());
+    session.agents.retain(|agent| agent.is_room_agent());
+    session.agents = session
+        .agents
+        .into_iter()
+        .map(crate::agent::AgentInstance::without_inactive_usage_limit_stop)
+        .collect();
     // MP-08 / MP-10 / MP-11: private runs need participant ownership, too.
     session.workflow_runs = session
         .visible_workflow_runs_for_user(user_id, None)
@@ -73,6 +78,13 @@ pub(super) fn redacted_for_user(mut session: RuntimeSession, user_id: &str) -> R
             })
             .collect();
     }
+    if user_id != session.owner_user_id() {
+        for agent in &mut session.agents {
+            if agent.parent_room_id().is_some() {
+                agent.set_parent_agent(None);
+            }
+        }
+    }
     if session
         .focused_agent_id
         .as_ref()
@@ -99,7 +111,7 @@ pub(super) fn redacted_for_user(mut session: RuntimeSession, user_id: &str) -> R
     session
         .agent_wakes
         .retain(|wake| visible_agent_ids.contains(&wake.agent_id));
-    // A queued message carries the sender's prompt text for the recipient agent.
+    // A queued message carries the start of the sender's text for the recipient agent.
     session
         .queued_agent_messages
         .retain(|message| visible_agent_ids.contains(&message.agent_id));

@@ -27,6 +27,7 @@ fn router_fixture_with_owner(
     let app = crate::app::DaemonApp::bootstrap(config).unwrap();
     let mut session = RuntimeSession::new(
         format!("am7-{:016x}", rand::random::<u64>()),
+        crate::session::ProjectId::test(),
         None,
         "workspace",
         "worktree",
@@ -359,10 +360,11 @@ async fn mp08_mp10_mp11_a07_current_dispatch_fence_rejects_cancel_expiry_and_sou
             })
             .unwrap();
         let host = &state.owned.kernel_browser_host;
-        host.set_focus(DEFAULT_LOCAL_USER_ID, Some(&h.agent_id));
-        host.load(DEFAULT_LOCAL_USER_ID, &h.agent_id).unwrap();
-        store.append_event("handoff.binding", Some(RuntimeHandoff::interaction_id(&h.obligation_id)),
-            json!({"source_grant_identity":host.grant_identity(&host.admit(DEFAULT_LOCAL_USER_ID, &h.agent_id).unwrap()).unwrap()})).unwrap();
+        host.load_for(
+            DEFAULT_LOCAL_USER_ID,
+            &h.agent_id,
+            crate::runtime::kernel_browser_host::KernelBrowserCapability::Browser,
+        );
         let source = host.admit(DEFAULT_LOCAL_USER_ID, &h.agent_id).unwrap();
         let terminal = host.admit_terminal(DEFAULT_LOCAL_USER_ID, Default::default());
         if fault == "expiry" {
@@ -386,9 +388,12 @@ async fn mp08_mp10_mp11_a07_current_dispatch_fence_rejects_cancel_expiry_and_sou
             }
             "expiry" => tokio::time::sleep(std::time::Duration::from_millis(1_100)).await,
             _ => {
-                host.revoke_grants(DEFAULT_LOCAL_USER_ID, Some(&h.agent_id));
-                host.set_focus(DEFAULT_LOCAL_USER_ID, Some(&h.agent_id));
-                host.load(DEFAULT_LOCAL_USER_ID, &h.agent_id).unwrap();
+                host.revoke_agent(&h.agent_id);
+                host.load_for(
+                    DEFAULT_LOCAL_USER_ID,
+                    &h.agent_id,
+                    crate::runtime::kernel_browser_host::KernelBrowserCapability::Browser,
+                );
                 assert!(
                     host.admit(DEFAULT_LOCAL_USER_ID, &h.agent_id).is_ok(),
                     "new authority is valid"
@@ -403,62 +408,17 @@ async fn mp08_mp10_mp11_a07_current_dispatch_fence_rejects_cancel_expiry_and_sou
 }
 
 #[tokio::test]
-async fn mp08_mp10_mp11_a07_local_and_hosted_owner_aliases_pending_source_regrant_is_fenced() {
-    use crate::durable_state::agent_lifecycle::Operation;
-    let (state, room) = fixture_with_owner(Some("cloud-owner"), DEFAULT_LOCAL_USER_ID);
-    let mut h = handoff();
-    h.task_id = "pending-source-task".into();
-    let user = state.provider_account_authority_owner_user_id(DEFAULT_LOCAL_USER_ID);
-    let store = &state.owned.durable_state_store;
-    store
-        .agent_lifecycle(Operation::Begin {
-            owner: DEFAULT_LOCAL_USER_ID.into(),
-            room: room.clone(),
-            agent: h.agent_id.clone(),
-            prompt: h.task_id.clone(),
-            run: Some("run".into()),
-            now: crate::session::unix_epoch_ms(),
-        })
-        .unwrap();
-    store
-        .agent_lifecycle(Operation::RegisterObligation {
-            owner: DEFAULT_LOCAL_USER_ID.into(),
-            room,
-            agent: h.agent_id.clone(),
-            prompt: h.task_id.clone(),
-            run: Some("run".into()),
-            id: h.obligation_id.clone(),
-            kind: "hand_off".into(),
-            resource: None,
-            now: crate::session::unix_epoch_ms(),
-        })
-        .unwrap();
-    let host = &state.owned.kernel_browser_host;
-    host.set_focus(&user, Some(&h.agent_id));
-    host.load(&user, &h.agent_id).unwrap();
-    store.append_event("handoff.binding", Some(RuntimeHandoff::interaction_id(&h.obligation_id)),
-        json!({"source_grant_identity":host.grant_identity(&host.admit(&user, &h.agent_id).unwrap()).unwrap()})).unwrap();
-    host.revoke_grants(&user, Some(&h.agent_id));
-    host.set_focus(&user, Some(&h.agent_id));
-    host.load(&user, &h.agent_id).unwrap();
-    let fresh = host.admit(&user, &h.agent_id).unwrap();
-    let terminal = host.admit_terminal(&user, Default::default());
-    let admission = state.handoff_action_admission(terminal, fresh, &h);
-    assert!(
-        host.check_admission(Some(&admission)).is_err(),
-        "a fresh grant cannot authorize a hand-off requested before revocation"
-    );
-}
-
-#[tokio::test]
 async fn mp08_mp10_mp11_a07_local_and_hosted_owner_aliases_models_cannot_bypass_pending_owner_step()
 {
     let (state, room) = fixture();
     let h = handoff();
     register(&state, &room, &h).await;
     let host = &state.owned.kernel_browser_host;
-    host.set_focus(DEFAULT_LOCAL_USER_ID, Some(&h.agent_id));
-    host.load(DEFAULT_LOCAL_USER_ID, &h.agent_id).unwrap();
+    host.load_for(
+        DEFAULT_LOCAL_USER_ID,
+        &h.agent_id,
+        crate::runtime::kernel_browser_host::KernelBrowserCapability::Browser,
+    );
     let admission = host.admit(DEFAULT_LOCAL_USER_ID, &h.agent_id).unwrap();
     let error = state
         .kernel_browser_operation_admitted(
@@ -490,8 +450,11 @@ async fn mp08_mp10_mp11_a07_local_and_hosted_owner_aliases_resize_cannot_bypass_
     let h = handoff();
     register(&state, &room, &h).await;
     let host = &state.owned.kernel_browser_host;
-    host.set_focus(DEFAULT_LOCAL_USER_ID, Some(&h.agent_id));
-    host.load(DEFAULT_LOCAL_USER_ID, &h.agent_id).unwrap();
+    host.load_for(
+        DEFAULT_LOCAL_USER_ID,
+        &h.agent_id,
+        crate::runtime::kernel_browser_host::KernelBrowserCapability::Browser,
+    );
     let admission = host.admit(DEFAULT_LOCAL_USER_ID, &h.agent_id).unwrap();
     let error = state
         .kernel_browser_operation_admitted(

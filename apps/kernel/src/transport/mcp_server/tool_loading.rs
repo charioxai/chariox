@@ -5,7 +5,7 @@
 //! documented `anthropic/alwaysLoad` tool metadata; every other tool costs a
 //! name until the agent asks for it.
 use crate::transport::runtime_tools::{
-    RuntimeToolSpec, ACK_WORKFLOW_TURN_TOOL, PERMISSION_PROMPT_TOOL,
+    RuntimeToolSpec, ACK_WORKFLOW_TURN_TOOL, AGENTS_RUN_TOOL, PERMISSION_PROMPT_TOOL,
     READ_WORKFLOW_TURN_CONTEXT_TOOL, VALIDATE_AND_SUBMIT_INTERMEDIATE_WORKFLOW_RUN_OUTPUT_TOOL,
     VALIDATE_AND_SUBMIT_WORKFLOW_RUN_OUTPUT_TOOL, VALIDATE_WORKFLOW_HANDOFF_TOOL,
     WORKFLOW_CONSOLE_CLEAR_TOOL, WORKFLOW_CONSOLE_READ_TOOL, WORKFLOW_CONSOLE_WRITE_TOOL,
@@ -13,11 +13,12 @@ use crate::transport::runtime_tools::{
 
 pub(super) const ALWAYS_LOAD_META_KEY: &str = "anthropic/alwaysLoad";
 
-/// What an agent needs when a wake reaches it (inbox, acknowledge) and what
-/// Claude Code needs to run a permission prompt. Every other tool is used by a
-/// minority of runs: loaded on demand it costs a name, loaded upfront it costs
-/// its schema on every call.
-const AGENT_UPFRONT_TOOLS: [&str; 3] = [
+/// What an agent needs when a wake reaches it (inbox, acknowledge), the one call that
+/// delegates work and answers in place, and what Claude Code needs to run a permission
+/// prompt. Every other tool is used by a minority of runs: loaded on demand it costs a name,
+/// loaded upfront it costs its schema on every call.
+const AGENT_UPFRONT_TOOLS: [&str; 4] = [
+    AGENTS_RUN_TOOL,
     "chariox.events.ack",
     "chariox.events.inbox",
     PERMISSION_PROMPT_TOOL,
@@ -46,11 +47,11 @@ const WORKFLOW_TURN_UPFRONT_TOOLS: [&str; 8] = [
 
 /// Shown to Claude Code at session start, before any tool is loaded: it says
 /// that more tools exist and how to load them.
-const CLAUDE_SERVER_INSTRUCTIONS: &str = "Chariox runtime tools: only chariox.events.inbox and .ack are loaded. Load any other (for example chariox.events.yield, chariox.vault.use_env, chariox.send_agent_message) with ToolSearch before use, by purpose or `select:mcp__chariox__chariox_<name with dots as underscores>`, several per call.";
+const CLAUDE_SERVER_INSTRUCTIONS: &str = "Chariox runtime tools: chariox.agents.run (delegate to sub-agents and get their answers in one call), chariox.events.inbox and .ack are loaded. Load any other (for example chariox.events.yield, chariox.vault.use_env, chariox.send_agent_message) with ToolSearch before use, by purpose or `select:mcp__chariox__chariox_<name with dots as underscores>`, several per call.";
 
 /// A tool listed under both `chariox.<name>` and a bare `<name>` is one tool
-/// with two names. Claude Code is told only the canonical one: every extra name
-/// costs the deferred tool list about 16 tokens.
+/// with two names. Every provider is told only the canonical one: an extra name
+/// costs a deferred tool list about 16 tokens and an eager one its whole schema.
 pub(super) fn without_alias_twins(tools: Vec<RuntimeToolSpec>) -> Vec<RuntimeToolSpec> {
     let names: std::collections::HashSet<String> =
         tools.iter().map(|tool| tool.name.clone()).collect();

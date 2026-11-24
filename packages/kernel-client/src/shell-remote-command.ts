@@ -141,8 +141,8 @@ export async function executeMachineCommand(
         return { ok: false, message: "usage: machine revoke <machine-ref>" }
       }
       const response = await deps.client.send(forgetRemoteMachineRequest(kernelRef))
-      const payload = expectVariant<{ machine: RemoteMachineRecord }>(response, "RemoteMachineForgotten")
-      return { ok: true, message: `revoked machine ${formatRemoteMachineLabel(payload.machine)}`, data: payload }
+      const payload = expectVariant<{ machine_id: string; display_name: string }>(response, "RemoteMachineForgotten")
+      return { ok: true, message: `removed machine ${payload.display_name}`, data: payload }
     }
     default:
       return { ok: false, message: "usage: machine invite create|join|list|kernels|approve|revoke" }

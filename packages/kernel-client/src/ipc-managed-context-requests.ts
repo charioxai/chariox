@@ -1,4 +1,4 @@
-import type { ManagedContextTransferTicket, ProviderAccountTransferSelection } from "./context-transfer-types.js"
+import type { ContextDevelopmentSetup, ManagedContextTransferTicket, ProviderAccountTransferSelection } from "./context-transfer-types.js"
 
 export type ManagedContextTransferPhase =
   | "preparing"
@@ -30,15 +30,19 @@ export type ManagedContextLaunchTarget = {
     | { readonly kind: "empty"; readonly workspacePath: string }
     | {
         readonly kind: "from_source"
-        readonly projectId: string
-        readonly destinationRoot: string
-        readonly primaryRepositoryId: string
-        readonly repositories: readonly {
-          readonly repositoryId: string
-          readonly role: "primary" | "supporting"
-          readonly targetDirectory: string
-          readonly workspacePath: string
-          readonly headSha: string
+        /** One per carried Project, in the order of the plan. */
+        readonly projects: readonly {
+          readonly projectId: string
+          readonly copyOrigin?: { readonly kernelId: string; readonly projectId: string }
+          readonly destinationRoot: string
+          readonly primaryRepositoryId: string
+          readonly repositories: readonly {
+            readonly repositoryId: string
+            readonly role: "primary" | "supporting"
+            readonly targetDirectory: string
+            readonly workspacePath: string
+            readonly headSha: string
+          }[]
         }[]
       }
 }
@@ -74,17 +78,7 @@ export type OwnerManagedContextTransfer = {
   readonly contextSelection: {
     readonly kernelContext: "empty" | "source_kernel_without_credentials"
     readonly eventConnections?: OwnerManagedEventConnections
-    readonly developmentSetup:
-      | { readonly kind: "empty" }
-      | {
-          readonly kind: "source_project"
-          readonly projectId: string
-          readonly repositories: readonly {
-            readonly role: "primary" | "supporting"
-            readonly workspaceId: string
-            readonly worktreeId: string | null
-          }[]
-        }
+    readonly developmentSetup: ContextDevelopmentSetup
   }
 }
 
@@ -106,8 +100,9 @@ export function getManagedContextLaunchTargetRequest(contextId: string, planDige
 }
 
 // MP-08 / MP-11: kernel-owned portability check returns acknowledgement only.
-export const providerAccountPortabilityPreflightMinimumProtocolVersion = 491
+// 1013: the check carries the launch's kernel-context choice; a copy of the kernel holds its Vault unlock for the export.
+export const providerAccountPortabilityPreflightMinimumProtocolVersion = 1013
 /** `launchId` names the launch, so its transfer start finds the Vault unlock this preflight holds. */
-export function preflightProviderAccountPortabilityRequest(providerAccounts: ProviderAccountTransferSelection, launchId?: string) {
-  return {PreflightProviderAccountPortability: {providerAccounts, ...(launchId ? {launchId} : {})}} as const
+export function preflightProviderAccountPortabilityRequest(providerAccounts: ProviderAccountTransferSelection, kernelContext: "empty" | "source_kernel" | "source_kernel_without_credentials", launchId?: string) {
+  return {PreflightProviderAccountPortability: {providerAccounts, kernelContext, ...(launchId ? {launchId} : {})}} as const
 }

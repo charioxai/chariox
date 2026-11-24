@@ -22,7 +22,7 @@ async function freePort() {
   await new Promise(r => server.close(r))
   return port
 }
-export async function createDrill(flags) {
+export async function createDrill(flags, { captureLedgers = true, kernelEnvironment = {}, copyClaudeAccount = true } = {}) {
   const required = key => { assert(flags.get(key), `${key} is required`); return resolve(flags.get(key)) }
   const stateRoot = required("--state-root"), evidence = required("--evidence-dir")
   assert(stateRoot.startsWith("/root/.chariox/dev/"))
@@ -49,7 +49,7 @@ export async function createDrill(flags) {
     for (let n = 0; n < parents.length; n++) for (const [pid, parent] of parents) if (owned.has(parent)) owned.add(pid)
     const alive = pid => { try { process.kill(pid, 0); return true } catch { return false } }
     const signal = (pid, value) => { try { process.kill(pid, value) } catch (e) { if (e.code !== "ESRCH") throw e } }
-    for (const name of ["a", "b"]) {
+    for (const name of captureLedgers ? ["a", "b"] : []) {
       const db = join(root, name, "chariox/history/operational.db")
       if (existsSync(db)) save(`public-history-${name}.json`, JSON.parse(execFileSync("sqlite3", ["-readonly", "-json", db, "SELECT sequence,session_id,agent_id,kind,text,document_json FROM public_history ORDER BY sequence"]).toString() || "[]"))
       const stateDb = join(root, name, "chariox/state.db")
@@ -87,7 +87,7 @@ export async function createDrill(flags) {
       for (const sub of ["chariox", "home", "tmp", "work", "logs", "history", "config", "cache", "state"]) mkdirSync(join(dir, sub), { recursive: true, mode: 0o700 })
       writeFileSync(join(dir, "chariox/config.toml"), `[credential_vault]\nbackend = "chariox_encrypted"\npath = "${dir}/chariox/vault.json"\nunlock_policy = "kernel_init"\n[state]\npath = "${dir}/chariox/state.db"\n`, { mode: 0o600 })
       const ports = await Promise.all([freePort(), freePort(), freePort(), freePort()])
-      const localEnv = { ...env, ...cloudEnv, HOME: join(dir,"home"), TMPDIR: join(dir,"tmp"), XDG_CONFIG_HOME: join(dir,"config"), XDG_CACHE_HOME: join(dir,"cache"), XDG_STATE_HOME: join(dir,"state"), CHARIOX_HOME: join(dir,"chariox"), CHARIOX_LOG_DIR: join(dir,"logs"), CHARIOX_SESSION_HISTORY_DIR: join(dir,"history"), CHARIOX_DAEMON_SOCKET: `/var/tmp/aod2/ao-${process.pid}-${name}.sock`, CHARIOX_DAEMON_ALIAS: `ao-${name}`, CHARIOX_MACHINE_ALIAS: `ao-machine-${name}`, CHARIOX_KERNEL_PORT: String(ports[0]), CHARIOX_MCP_PORT: String(ports[1]), CHARIOX_OPENCODE_PORT: String(ports[2]), CHARIOX_CODEX_PORT: String(ports[3]) }
+      const localEnv = { ...env, ...cloudEnv, ...kernelEnvironment, HOME: join(dir,"home"), TMPDIR: join(dir,"tmp"), XDG_CONFIG_HOME: join(dir,"config"), XDG_CACHE_HOME: join(dir,"cache"), XDG_STATE_HOME: join(dir,"state"), CHARIOX_HOME: join(dir,"chariox"), CHARIOX_LOG_DIR: join(dir,"logs"), CHARIOX_SESSION_HISTORY_DIR: join(dir,"history"), CHARIOX_DAEMON_SOCKET: `/var/tmp/aod2/ao-${process.pid}-${name}.sock`, CHARIOX_DAEMON_ALIAS: `ao-${name}`, CHARIOX_MACHINE_ALIAS: `ao-machine-${name}`, CHARIOX_KERNEL_PORT: String(ports[0]), CHARIOX_MCP_PORT: String(ports[1]), CHARIOX_OPENCODE_PORT: String(ports[2]), CHARIOX_CODEX_PORT: String(ports[3]) }
       mkdirSync("/var/tmp/aod2", { recursive: true })
       start(required("--kernel-binary"), [], localEnv, name)
       const url = `ws://127.0.0.1:${ports[0]}/kernel`, client = new LocalIpcClient(url, { localAuthEnvironment: localEnv, controlRequestRetryDeadlineMs: 1000 })
@@ -130,10 +130,11 @@ export async function createDrill(flags) {
       const bootstrap = await makeRoom(a, "account-transfer", profile)
       const spawned = (await a.rpc({ SpawnAgent: { session_id: bootstrap.id, alias: "account-transfer-worker", provider, account_profile: profile, model, effort: "low", permission_level: "yolo", kernel_ref: b.status.daemon_id, worktree_id: join(b.dir, "work") } })).AgentSpawned.agent
       await a.rpc(submitPromptRequest(bootstrap.id, bootstrap.attachment, spawned.id, "Reply READY as your final answer. Do not use tools.", []))
-      await until(() => {
-        const rows = JSON.parse(execFileSync("sqlite3", ["-readonly", "-json", join(a.dir, "chariox/state.db"), `SELECT payload FROM agent_tasks WHERE agent_id='${spawned.id}'`]).toString() || "[]").map(r => JSON.parse(r.payload))
-        return rows.some(r => r.state === "done")
-      }, "Codex transfer worker completes real turn", 180000)
+      await until(async () => {
+        const session = (await a.rpc({ GetSessionState: { session_id: bootstrap.id } })).SessionState.session
+        const prompt = session.prompt_states?.[spawned.id]
+        return !prompt?.active_prompt && !prompt?.queued_prompts?.length
+      }, "Codex transfer worker settles its turn", 180000)
       const profiles = (await b.rpc({ ListProviderAccountProfiles: { provider } })).ProviderAccountProfilesListed.profiles.filter(p => p.auth_state === "authenticated")
       assert.equal(profiles.length, 1, "one selected Codex account installed through the product")
       profileB = profiles[0].profile_id
@@ -144,14 +145,16 @@ export async function createDrill(flags) {
       const value = readFileSync(process.env.CLAUDE_TOKEN_FILE ?? "/root/.claude-lanes/oauth-token.chariox", "utf8").trim()
       await a.rpc({ SetProviderAccountCredential: { provider, account_profile: "default", value, overwrite: true } })
       profile = (await a.rpc({ GetProviderAccountProfile: { provider, account_profile: "default" } })).ProviderAccountProfile.profile.profile_id
-      await until(() => enrolled.has(b.status.daemon_id), "target enrollment")
-      const target = enrolled.get(b.status.daemon_id)
-      const result = await a.rpc({ CopyProviderAccountToKernel: { provider, account_profile: profile, operation_id: `ao-copy-${randomUUID()}`, target_kernel_id: target.kernelId, target_key_thumbprint: target.keyThumbprint, replace: false } })
-      profileB = result.ProviderAccountCopied.receipt.account_profile
-      assert(profileB)
-      save("account-copy.json", result); record("account-copied", { profile, profileB })
+      if (copyClaudeAccount) {
+        await until(() => enrolled.has(b.status.daemon_id), "target enrollment")
+        const target = enrolled.get(b.status.daemon_id)
+        const result = await a.rpc({ CopyProviderAccountToKernel: { provider, account_profile: profile, operation_id: `ao-copy-${randomUUID()}`, target_kernel_id: target.kernelId, target_key_thumbprint: target.keyThumbprint, replace: false } })
+        profileB = result.ProviderAccountCopied.receipt.account_profile
+        assert(profileB)
+        save("account-copy.json", result); record("account-copied", { profile, profileB })
+      }
     }
-    const room = await makeRoom(a, "ao-parent", profile), other = await makeRoom(b, "ao-other", profileB)
+    const room = await makeRoom(a, "ao-parent", profile), other = profileB ? await makeRoom(b, "ao-other", profileB) : null
     const state = async () => (await a.rpc({ GetSessionState: { session_id: room.id } })).SessionState.session
     const submit = async text => {
       if (tui) return tui.send("submit_prompt", { prompt: text })

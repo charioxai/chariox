@@ -3,6 +3,31 @@
 use super::*;
 
 impl KernelRuntimeState {
+    pub(crate) fn announce_relay_registration_refusal(&self, message: &str) -> bool {
+        let mut notified = false;
+        let attachments = &self.owned.attachment_store;
+        for session_id in attachments.list_attached_session_ids() {
+            let mut recipients = attachments.list_session_attachment_ids(&session_id);
+            recipients.retain(|id| {
+                attachments
+                    .get_attachment(id)
+                    .is_ok_and(|attachment| self.acts_for_kernel_owner(attachment.owner_user_id()))
+            });
+            if !recipients.is_empty() {
+                // Keep a kernel-private notice out of the Room's shared history.
+                self.owned.terminal_stream.record_notice(
+                    &session_id,
+                    None,
+                    None,
+                    recipients,
+                    message,
+                );
+                notified = true;
+            }
+        }
+        notified
+    }
+
     pub(crate) fn record_meta_migration_notice(&self, session_id: &str, agent_id: &str) {
         self.owned.record_notice_for_agent(session_id, None, Some(agent_id),
             self.owned.attachment_store.list_session_attachment_ids(session_id),
@@ -60,15 +85,29 @@ impl KernelRuntimeOwnedState {
         recipient_attachment_ids: Vec<String>,
         message: impl Into<String>,
     ) {
-        let message = message.into();
+        self.record_notice_entry(
+            SessionHistoryEntry::notice(session_id, provider_run_id, agent_id, message),
+            recipient_attachment_ids,
+        );
+    }
+
+    pub(super) fn record_notice_entry(
+        &self,
+        entry: SessionHistoryEntry,
+        recipient_attachment_ids: Vec<String>,
+    ) {
+        let session_id = entry.session_id.as_str();
+        let provider_run_id = entry.provider_run_id.as_deref();
+        let agent_id = entry.agent_id.as_deref();
+        let message = &entry.text;
         if self.config_projection.snapshot().room_agent_tools
-            && crate::terminal::is_internal_dispatch_diagnostic(&message)
+            && crate::terminal::is_internal_dispatch_diagnostic(message)
         {
             crate::logging::debug_with_fields(
                 "daemon.prompt_delivery",
                 "internal dispatch notice",
                 serde_json::json!({"session_id": session_id, "provider_run_id": provider_run_id,
-                    "agent_id": agent_id, "diagnostic": crate::provider::sanitize_provider_diagnostic(&message)}),
+                    "agent_id": agent_id, "diagnostic": crate::provider::sanitize_provider_diagnostic(message)}),
             );
             return;
         }
@@ -79,14 +118,6 @@ impl KernelRuntimeOwnedState {
         );
         let recipient_attachment_ids =
             self.with_metaagent_trace_recipient_ids(session_id, agent_id, recipient_attachment_ids);
-        self.terminal_stream.record_notice(
-            session_id,
-            provider_run_id,
-            agent_id,
-            recipient_attachment_ids,
-            message.clone(),
-        );
-        self.notify_metaagent_trace_activity(session_id, agent_id);
         if let Err(error) = self.session_store.get_session(session_id) {
             crate::logging::warn_with_fields(
                 "daemon.history",
@@ -96,9 +127,16 @@ impl KernelRuntimeOwnedState {
                     "error": error.to_string(),
                 }),
             );
-            return;
+        } else {
+            self.append_operational_history_entry(&entry, None, None, None);
         }
-        let entry = SessionHistoryEntry::notice(session_id, provider_run_id, agent_id, message);
-        self.append_operational_history_entry(&entry, None, None, None);
+        self.terminal_stream.record_notice(
+            session_id,
+            provider_run_id,
+            agent_id,
+            recipient_attachment_ids,
+            message.clone(),
+        );
+        self.notify_metaagent_trace_activity(session_id, agent_id);
     }
 }

@@ -5,6 +5,7 @@ import http.client
 import importlib.util
 import importlib.resources
 import socketserver
+import sys
 import threading
 import os
 from pathlib import Path
@@ -222,6 +223,75 @@ class SelkiesHealthTests(unittest.TestCase):
                 LIFECYCLE.urllib.request, "urlopen", side_effect=ValueError("invalid probe")):
             with self.assertRaises(ValueError):
                 LIFECYCLE.healthy({"port": 6080})
+
+
+FAKE_STREAMER = """#!{python}
+import http.server, sys
+port = int([arg for arg in sys.argv if arg.startswith("--port=")][0].split("=")[1])
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200); self.end_headers(); self.wfile.write(b"OK")
+    def do_POST(self):
+        self.send_response(200); self.end_headers(); self.wfile.write(b"{{}}")
+    def log_message(self, *args):
+        pass
+
+http.server.HTTPServer(("127.0.0.1", port), Handler).serve_forever()
+"""
+
+
+class SelkiesSupervisorTests(unittest.TestCase):
+    def test_a_killed_streamer_is_restarted_until_a_stop_removes_its_record(self):
+        import signal
+        import socket
+        import time
+
+        with tempfile.TemporaryDirectory() as scratch, socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
+            probe.close()
+            streamer = Path(scratch) / "fake-selkies"
+            streamer.write_text(FAKE_STREAMER.format(python=sys.executable))
+            streamer.chmod(0o700)
+            directory = Path(scratch) / "state"
+            directory.mkdir(mode=0o700)
+            with mock.patch.dict(os.environ, {"CHARIOX_SLICE_SELKIES_BIN": str(streamer)}), \
+                 mock.patch.object(LIFECYCLE, "SUPERVISE_POLL_SECONDS", 0.05), \
+                 mock.patch.object(LIFECYCLE, "SUPERVISE_RETRY_SECONDS", 0.05):
+                first = LIFECYCLE.start(directory, port=port, display=":99")
+                supervisor = threading.Thread(target=LIFECYCLE.supervise, args=(directory,))
+                supervisor.start()
+                try:
+                    os.kill(first["pid"], signal.SIGKILL)
+                    deadline = time.monotonic() + 15
+                    restarted = None
+                    while time.monotonic() < deadline and restarted is None:
+                        record = LIFECYCLE.read_state(directory)
+                        if record and record["pid"] != first["pid"] and LIFECYCLE.healthy(record):
+                            restarted = record
+                        time.sleep(0.05)
+                    self.assertIsNotNone(restarted, "the killed streamer was not restarted")
+                    self.assertEqual((restarted["port"], restarted["display"]), (port, ":99"))
+                finally:
+                    with LIFECYCLE.lifecycle_lock(directory):
+                        LIFECYCLE.stop(directory)
+                    supervisor.join(timeout=10)
+                self.assertFalse(supervisor.is_alive(), "a stop must end the supervisor")
+                self.assertIsNone(LIFECYCLE.read_state(directory))
+
+    def test_a_second_supervisor_leaves_the_running_one_alone(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            directory = Path(scratch)
+            LIFECYCLE.write_state(directory, {"pid": 1})
+            held = os.open(directory / "supervisor.lock", os.O_RDWR | os.O_CREAT, 0o600)
+            LIFECYCLE.fcntl.flock(held, LIFECYCLE.fcntl.LOCK_EX)
+            try:
+                with mock.patch.object(LIFECYCLE, "owned_process") as owned:
+                    LIFECYCLE.supervise(directory)
+                owned.assert_not_called()
+            finally:
+                os.close(held)
 
 
 if __name__ == "__main__":

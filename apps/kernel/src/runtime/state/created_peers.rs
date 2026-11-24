@@ -8,23 +8,6 @@ use crate::error::DaemonError;
 use crate::session::SessionStatus;
 
 impl KernelRuntimeState {
-    /// `creator` made `peer` in another room of this kernel.
-    pub(crate) fn record_created_local_peer(
-        &self,
-        creator_agent: &str,
-        peer: &crate::agent::AgentInstance,
-    ) -> Result<(), DaemonError> {
-        let creator = self.owned.agent_store.get_agent(creator_agent)?;
-        self.record_created_peer(CreatedPeer {
-            creator_room: creator.session_id().into(),
-            creator_agent: creator.id().into(),
-            kernel: String::new(),
-            peer: peer.id().into(),
-            created_at_ms: 0,
-        })
-        .map(|_| ())
-    }
-
     /// Whether this call wrote the link: an earlier attempt of the same spawn may have, and its
     /// peer may exist.
     pub(crate) fn record_created_peer(&self, mut peer: CreatedPeer) -> Result<bool, DaemonError> {

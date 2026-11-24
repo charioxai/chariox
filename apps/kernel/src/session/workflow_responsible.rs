@@ -4,6 +4,7 @@
 //! an ordinary prompt. Runs never raise cards; they end or hold with a typed outcome that the
 //! responsible reads.
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 
 use super::workflow_diagnostics::WorkflowFailureKind;
 use super::workflow_run_records::WorkflowNodeRun;
@@ -131,6 +132,8 @@ pub enum WorkflowRunOutcome {
     Waiting {
         on: WorkflowWaitingOn,
         node_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        detail: Option<String>,
     },
 }
 
@@ -140,7 +143,7 @@ impl WorkflowRunOutcome {
     pub fn key(&self) -> String {
         match self {
             Self::Failed { reason, .. } => format!("failed:{reason:?}"),
-            Self::Waiting { on, node_id } => format!("waiting:{node_id}:{on:?}"),
+            Self::Waiting { on, node_id, .. } => format!("waiting:{node_id}:{on:?}"),
         }
     }
 }
@@ -152,7 +155,33 @@ fn node_waiting_on(node_run: &WorkflowNodeRun) -> Option<WorkflowWaitingOn> {
     node_run.waiting_reason().map(WorkflowWaitingOn::from)
 }
 
+fn workspace_wait_detail(node_run: &WorkflowNodeRun) -> Option<String> {
+    if node_run.status() != WorkflowNodeRunStatus::BlockedOnWorkspaceClaim {
+        return None;
+    }
+    Some(match node_run.workspace_claim_holding_run_id() {
+        Some(run_id) => format!("waiting for the workspace, held by run {run_id}"),
+        None => "waiting for the workspace, held by another operation".to_owned(),
+    })
+}
+
 impl WorkflowRun {
+    pub(crate) fn status_notice_suffix(&self) -> Cow<'static, str> {
+        if self.status() == WorkflowRunStatus::Waiting {
+            if let Some(detail) = self.node_runs().iter().find_map(workspace_wait_detail) {
+                return Cow::Owned(detail);
+            }
+        }
+        Cow::Borrowed(match self.status() {
+            WorkflowRunStatus::Waiting => "waiting for downstream handoffs",
+            WorkflowRunStatus::Completing => "is completing",
+            WorkflowRunStatus::Completed => "completed",
+            WorkflowRunStatus::Failed => "failed",
+            WorkflowRunStatus::Stopped => "stopped",
+            _ => "updated",
+        })
+    }
+
     /// Present for a failed run and for a run holding a node on a named thing.
     pub fn outcome(&self) -> Option<WorkflowRunOutcome> {
         match self.status() {
@@ -172,6 +201,7 @@ impl WorkflowRun {
                 node_waiting_on(node_run).map(|on| WorkflowRunOutcome::Waiting {
                     on,
                     node_id: node_run.node_id().to_owned(),
+                    detail: workspace_wait_detail(node_run),
                 })
             }),
         }
@@ -234,6 +264,7 @@ mod tests {
             serde_json::to_value(WorkflowRunOutcome::Waiting {
                 on: WorkflowWaitingOn::ProviderProfileUsageExhausted,
                 node_id: "n1".into(),
+                detail: None,
             })
             .unwrap(),
             serde_json::json!({"kind": "waiting", "on": "provider_profile_usage_exhausted", "node_id": "n1"})

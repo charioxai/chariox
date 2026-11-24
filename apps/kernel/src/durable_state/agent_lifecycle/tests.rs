@@ -99,7 +99,7 @@ impl Fixture {
             },
         });
     }
-    fn yield_now(&self) {
+    pub(super) fn yield_now(&self) {
         self.apply(Operation::Yield {
             task: "p".into(),
             prompt: "p".into(),
@@ -362,6 +362,34 @@ fn a02_empty_or_tool_only_end_with_open_obligations_never_silently_done() {
     assert!(correction);
     assert_ne!(task.state, ExecutionState::Done);
 }
+/// A finished source whose outcome the agent never acknowledged is no question for a person:
+/// after the one correction the kernel settles the task, with no card.
+#[test]
+fn a02_unacknowledged_source_outcome_after_the_correction_settles_without_a_card() {
+    let f = Fixture::new();
+    f.begin("p");
+    f.register();
+    f.apply(Operation::SourceOutcome {
+        room: "room".into(),
+        source: "child".into(),
+        occurrence: "finished".into(),
+        success: true,
+        public_answer: None,
+        now: 2,
+    });
+    let Outcome::Settled { task, correction } = f.settle("p", true) else {
+        panic!()
+    };
+    assert!(correction);
+    let again = task.pending_prompt_id.unwrap();
+    f.begin(&again);
+    let Outcome::Settled { task, correction } = f.settle(&again, true) else {
+        panic!()
+    };
+    assert!(!correction);
+    assert_eq!(task.state, ExecutionState::Done);
+    assert!(task.obligations.iter().all(|o| o.status == "satisfied"));
+}
 #[test]
 fn a02_plain_turn_without_obligation_or_wait_ends_done_without_correction() {
     let f = Fixture::new();
@@ -406,7 +434,7 @@ fn a02_yield_refuses_missing_dead_or_uncovered_sources() {
         .is_err());
 }
 #[test]
-fn a02_uncertain_attempt_blocks_fifo_and_ack_never_repairs_it() {
+fn a02_uncertain_attempt_blocks_fifo_ack_never_repairs_it_and_settlement_sends_it_again() {
     let f = Fixture::new();
     f.begin("p");
     let Outcome::Event(e) = f.apply(Operation::Occur(occurrence(
@@ -472,7 +500,25 @@ fn a02_uncertain_attempt_blocks_fifo_and_ack_never_repairs_it() {
         busy_recipients: Vec::new(),
         held_work: Vec::new(),
     });
-    assert_eq!(f.task().state, ExecutionState::Blocked);
+    // The sweep asks no owner: the kernel settles the attempt itself, and until it does
+    // the attempt keeps holding the queue behind it.
+    assert_eq!(f.task().state, ExecutionState::Working);
+    assert_eq!(
+        f.store.agent_inbox("room", "parent", 0).unwrap()[0].state,
+        "uncertain"
+    );
+    // A rejection from the kernel's settlement hands the same event back for a second try.
+    f.apply(Operation::Receipt {
+        room: "room".into(),
+        agent: "parent".into(),
+        sequence: e.sequence,
+        state: "rejected".into(),
+        now: DELIVERY_TIMEOUT_MS + 11,
+    });
+    assert_eq!(
+        f.store.agent_inbox("room", "parent", 0).unwrap()[0].state,
+        "pending"
+    );
 }
 #[test]
 fn a02_independent_task_never_hides_older_wait() {
@@ -710,101 +756,20 @@ fn a02_cancel_independent_task_preserves_uncertain_recipient_delivery() {
         });
         assert_eq!(
             f.store.agent_inbox("room", "parent", 0).unwrap()[0].state,
-            "blocked",
+            "submitting",
             "cancelling unrelated work must not abandon another turn's receipt"
         );
-        let bound_id = target
-            .map(str::to_owned)
-            .unwrap_or_else(|| format!("delivery-{}", e.sequence));
-        let bound = f
-            .store
-            .agent_tasks(Some("room"), Some("parent"))
-            .unwrap()
-            .into_iter()
-            .find(|t| t.task_id == bound_id)
-            .expect("unknown delivery has its own owner interaction");
-        f.apply(Operation::OwnerResponse {
-            task: bound.task_id,
-            revision: bound.blocked_revision,
-            resume: false,
-            now: DELIVERY_TIMEOUT_MS + 3,
-        });
-        assert_eq!(
-            f.store.agent_inbox("room", "parent", 0).unwrap()[0].state,
-            "failed"
+        assert!(
+            f.store
+                .agent_tasks(Some("room"), Some("parent"))
+                .unwrap()
+                .iter()
+                .all(|t| !t.task_id.starts_with("delivery-")),
+            "the kernel settles the delivery; no card asks the owner"
         );
     }
 }
 
-#[test]
-fn a02_exact_late_receipt_unlocks_owner_resume_and_cancel_abandons_without_replay() {
-    for resume in [false, true] {
-        let f = Fixture::new();
-        f.begin("p");
-        let Outcome::Event(e) = f.apply(Operation::Occur(occurrence(
-            "room",
-            "parent",
-            "peer",
-            "one",
-            "message",
-            serde_json::json!({}),
-        ))) else {
-            panic!()
-        };
-        f.apply(Operation::Attempt {
-            room: "room".into(),
-            agent: "parent".into(),
-            sequence: e.sequence,
-            prompt: "event".into(),
-            target: Some("p".into()),
-            run: Some("run".into()),
-            now: 1,
-            work: None,
-            through: 0,
-        });
-        f.apply(Operation::Sweep {
-            now: DELIVERY_TIMEOUT_MS + 1,
-            vault_wait_recipients: Vec::new(),
-            busy_recipients: Vec::new(),
-            held_work: Vec::new(),
-        });
-        let blocked = f.task();
-        assert_eq!(blocked.state, ExecutionState::Blocked);
-        assert!(f
-            .store
-            .agent_lifecycle(Operation::OwnerResponse {
-                task: "p".into(),
-                revision: blocked.blocked_revision,
-                resume: true,
-                now: DELIVERY_TIMEOUT_MS + 2
-            })
-            .is_err());
-        if resume {
-            f.apply(Operation::Receipt {
-                room: "room".into(),
-                agent: "parent".into(),
-                sequence: e.sequence,
-                state: "accepted".into(),
-                now: DELIVERY_TIMEOUT_MS + 2,
-            });
-        }
-        f.apply(Operation::OwnerResponse {
-            task: "p".into(),
-            revision: blocked.blocked_revision,
-            resume,
-            now: DELIVERY_TIMEOUT_MS + 3,
-        });
-        assert!(f
-            .store
-            .agent_delivery_front("room", "parent")
-            .unwrap()
-            .is_none());
-        assert_eq!(
-            f.store.agent_inbox("room", "parent", 0).unwrap()[0].state,
-            if resume { "accepted" } else { "failed" }
-        );
-    }
-}
 #[test]
 fn a02_named_wake_keeps_independent_waits_separate() {
     let f = Fixture::new();
@@ -1410,7 +1375,7 @@ fn a02_urgent_steers_past_nonurgent_queue_but_never_uncertain_receipts() {
 }
 
 #[test]
-fn a02_urgent_reply_tracks_corrected_task_and_late_exact_acceptance() {
+fn a02_steered_request_settles_once_after_late_exact_acceptance() {
     let f = Fixture::new();
     f.begin("p");
     f.apply(Operation::Begin {
@@ -1449,31 +1414,15 @@ fn a02_urgent_reply_tracks_corrected_task_and_late_exact_acceptance() {
         work: None,
         through: 0,
     });
-    let Outcome::Settled { task, correction } = f.apply(Operation::Settle {
+    f.apply(Operation::MarkShown {
         room: "room".into(),
         agent: "child".into(),
-        prompt: "q".into(),
-        run: "child-run".into(),
-        has_answer: false,
-        cancelled: false,
-        now: 3,
-    }) else {
-        panic!()
-    };
-    assert!(correction);
-    let corrected = task.pending_prompt_id.unwrap();
-    f.apply(Operation::Begin {
-        owner: "owner".into(),
-        room: "room".into(),
-        agent: "child".into(),
-        prompt: corrected.clone(),
-        run: Some("child-run".into()),
-        now: 4,
+        sequences: vec![event.sequence],
     });
     f.apply(Operation::Settle {
         room: "room".into(),
         agent: "child".into(),
-        prompt: corrected,
+        prompt: "q".into(),
         run: "child-run".into(),
         has_answer: true,
         cancelled: false,
@@ -1498,9 +1447,10 @@ fn a02_urgent_reply_tracks_corrected_task_and_late_exact_acceptance() {
     });
     let reply = f.store.agent_inbox("room", "parent", 0).unwrap();
     assert_eq!(reply.len(), 1);
+    assert_eq!(reply[0].kind, "source_lost");
     assert_eq!(
-        reply[0].payload["public_answer"]["excerpt"],
-        "verified result"
+        reply[0].payload["public_answer"],
+        ReplyOutcome::no_answer("child")
     );
     f.apply(Operation::Ack {
         room: "room".into(),
@@ -1739,6 +1689,44 @@ fn a02_review_failed_turn_on_blocked_task_does_not_abort_settlement() {
 }
 
 #[test]
+fn spawn_receipt_quarantines_an_unreadable_historical_task() {
+    let f = Fixture::new();
+    f.begin("old");
+    f.settle("old", true);
+    f.begin("p");
+    f.register();
+    let db = rusqlite::Connection::open(f.root.join("state.sqlite")).unwrap();
+    let raw: String = db
+        .query_row(
+            "UPDATE agent_tasks SET payload=json_set(payload,'$.state','cancelled','$.owner_action','browser_access') WHERE task_id='old' RETURNING payload",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+
+    f.apply(Operation::DispatchReceipt {
+        id: "obligation".into(),
+        accepted: true,
+        resource: Some("child".into()),
+    });
+    let tasks = f.store.agent_tasks(Some("room"), Some("parent")).unwrap();
+    let historical = tasks.iter().find(|task| task.task_id == "old").unwrap();
+    let spawning = tasks.iter().find(|task| task.task_id == "p").unwrap();
+    assert_eq!(historical.state, ExecutionState::Blocked);
+    assert!(historical.reason.contains("agent_tasks"));
+    assert!(historical.reason.contains("old"));
+    assert_eq!(spawning.obligations[0].dispatch_state, "accepted");
+    let retained: String = db
+        .query_row(
+            "SELECT payload FROM agent_lifecycle_quarantine WHERE kind='task' AND id='old'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(retained, raw);
+}
+
+#[test]
 fn a02_review_late_rejected_dispatch_receipt_cannot_corrupt_done_task() {
     let f = Fixture::new();
     f.begin("p");
@@ -1889,7 +1877,7 @@ fn a02_r3_reverse_parent_creation_binds_in_delegation_order() {
 
 // MP-08/MP-10/MP-11: rejected attempts must not renew their timeout indefinitely.
 #[test]
-fn a02_r3_rejected_first_message_escalates_without_task_rows() {
+fn a02_r3_rejected_first_message_settles_without_task_rows() {
     let f = Fixture::new();
     let Outcome::Event(e) = f.apply(Operation::Occur(occurrence(
         "room",
@@ -1939,13 +1927,11 @@ fn a02_r3_rejected_first_message_escalates_without_task_rows() {
     }) else {
         panic!()
     };
-    assert_eq!(
-        changed.len(),
-        1,
-        "a repeatedly refused message must reach the owner"
+    assert!(
+        changed.is_empty(),
+        "a failed start cannot create an owner decision"
     );
-    assert_eq!(changed[0].state, ExecutionState::Blocked);
-    assert_eq!(changed[0].task_id, format!("delivery-{}", e.sequence));
+    assert!(f.store.agent_tasks(None, None).unwrap().is_empty());
     assert_eq!(
         f.store.agent_inbox("room", "child", 0).unwrap()[0].state,
         "failed",
@@ -1966,12 +1952,12 @@ fn a02_r3_rejected_first_message_escalates_without_task_rows() {
     };
     assert!(
         changed.is_empty(),
-        "one timeout must emit one owner transition"
+        "the terminal delivery does not emit an owner transition"
     );
 }
 
 #[test]
-fn a02_review_timed_out_delivery_blocks_only_its_own_task() {
+fn a02_review_timed_out_delivery_leaves_every_task_alone() {
     let f = Fixture::new();
     f.begin("p");
     f.register();
@@ -2008,10 +1994,10 @@ fn a02_review_timed_out_delivery_blocks_only_its_own_task() {
     let tasks = f.store.agent_tasks(Some("room"), Some("parent")).unwrap();
     let waiting = tasks.iter().find(|t| t.task_id == "p").unwrap();
     assert_eq!(waiting.state, ExecutionState::Waiting);
-    assert!(tasks
-        .iter()
-        .any(|t| t.task_id == format!("delivery-{}", e.sequence)
-            && t.state == ExecutionState::Blocked));
+    assert!(
+        tasks.iter().all(|t| !t.task_id.starts_with("delivery-")),
+        "the kernel settles the delivery; no card asks the owner"
+    );
 }
 
 #[test]
@@ -2103,20 +2089,22 @@ fn a02_r4_admission_after_refusal_gets_full_delivery_timeout(receipt: &str) {
         held_work: Vec::new(),
     });
     assert!(f.store.agent_tasks(None, None).unwrap().is_empty());
+    // The kernel settles an attempt only once a full delivery window has passed since it began.
+    let settled = |now: u64| {
+        f.store
+            .agent_interrupted_deliveries(now.saturating_sub(DELIVERY_TIMEOUT_MS))
+            .unwrap()
+            .len()
+    };
+    assert_eq!(settled(90_010 + DELIVERY_TIMEOUT_MS), 0);
+    assert_eq!(settled(90_010 + DELIVERY_TIMEOUT_MS + 1), 1);
     f.apply(Operation::Sweep {
-        now: 90_010 + DELIVERY_TIMEOUT_MS,
+        now: 90_010 + DELIVERY_TIMEOUT_MS + 1,
         vault_wait_recipients: Vec::new(),
         busy_recipients: Vec::new(),
         held_work: Vec::new(),
     });
-    assert_eq!(
-        f.store
-            .agent_delivery_front("room", "child")
-            .unwrap()
-            .unwrap()
-            .state,
-        "blocked"
-    );
+    assert!(f.store.agent_tasks(None, None).unwrap().is_empty());
 }
 
 // MP-08/MP-10: late busy refusals must leave an idle delivery opportunity.
@@ -2185,11 +2173,12 @@ fn late_steer_rejection_retries_idle(timed_out: bool) {
                 .unwrap()
                 .unwrap()
                 .state,
-            "blocked"
+            "submitting",
+            "the sweep asks no owner and leaves the attempt to the kernel's settlement"
         );
     }
     // Exercise the real structured-submit reconciliation seam, including its
-    // exact run/epoch binding and the already-blocked receipt path.
+    // exact run/epoch binding and a receipt that arrives after the delivery window.
     let finished = crate::provider::FinishedProviderPromptSubmitJob {
         session_id: "room".into(),
         agent_id: "child".into(),
@@ -2396,8 +2385,8 @@ fn damaged_refusal_clock_is_quarantined(clock: rusqlite::types::Value) {
     };
     assert_eq!(
         changed.len(),
-        2,
-        "one damaged row must not stop another Room's owner transition"
+        1,
+        "only the damaged delivery requires an owner transition"
     );
     let damaged = changed
         .iter()
@@ -2489,8 +2478,6 @@ fn a02_r6_delivery_clocks_tolerate_sweep_receipt_race() {
             });
             let expected = if ahead > DELIVERY_TIMEOUT_MS && receipt == "rejected" {
                 "failed"
-            } else if ahead > DELIVERY_TIMEOUT_MS {
-                "blocked"
             } else if receipt == "rejected" {
                 "pending"
             } else {
@@ -2516,13 +2503,14 @@ fn a02_r6_delivery_clocks_tolerate_sweep_receipt_race() {
                     busy_recipients: Vec::new(),
                     held_work: Vec::new(),
                 });
-                // A refusal before any provider I/O ends as failed; an unconfirmed attempt blocks.
+                // A refusal before any provider I/O ends as failed; an unconfirmed attempt is
+                // left to the kernel's settlement, never to an owner card.
                 assert_eq!(
                     f.store.agent_inbox("room", "child", 0).unwrap()[0].state,
                     if receipt == "rejected" {
                         "failed"
                     } else {
-                        "blocked"
+                        receipt
                     }
                 );
             }
@@ -2530,9 +2518,9 @@ fn a02_r6_delivery_clocks_tolerate_sweep_receipt_race() {
     }
 }
 
-// MP-08/MP-10/MP-11: every exact receipt retracts the synthetic timeout decision.
+// A late exact receipt settles the delivery, and an unrelated blocked task stays as it was.
 #[test]
-fn a02_r6_late_receipts_close_only_synthetic_delivery_tasks() {
+fn a02_r6_late_receipts_leave_unrelated_blocked_tasks_alone() {
     for receipt in ["accepted", "uncertain", "rejected"] {
         let f = Fixture::new();
         f.begin("real-task");
@@ -2568,17 +2556,6 @@ fn a02_r6_late_receipts_close_only_synthetic_delivery_tasks() {
             busy_recipients: Vec::new(),
             held_work: Vec::new(),
         });
-        let synthetic = format!("delivery-{}", e.sequence);
-        assert_eq!(
-            f.store
-                .agent_tasks(None, None)
-                .unwrap()
-                .iter()
-                .find(|t| t.task_id == synthetic)
-                .unwrap()
-                .state,
-            ExecutionState::Blocked
-        );
         f.apply(Operation::Receipt {
             room: "room".into(),
             agent: "parent".into(),
@@ -2587,10 +2564,7 @@ fn a02_r6_late_receipts_close_only_synthetic_delivery_tasks() {
             now: 10 + DELIVERY_TIMEOUT_MS,
         });
         let tasks = f.store.agent_tasks(None, None).unwrap();
-        assert_eq!(
-            tasks.iter().find(|t| t.task_id == synthetic).unwrap().state,
-            ExecutionState::Done
-        );
+        assert!(tasks.iter().all(|t| !t.task_id.starts_with("delivery-")));
         assert_eq!(
             tasks
                 .iter()
@@ -3908,6 +3882,56 @@ fn visible_tasks_are_unfinished_and_recent_finished_ones_in_ledger_order() {
     assert_eq!(ids.len(), 34);
     assert_eq!((ids[0].as_str(), ids[1].as_str()), ("t0", "t8"));
     assert_eq!((ids[32].as_str(), ids[33].as_str()), ("t39", "broken"));
+}
+
+#[test]
+fn finished_room_tasks_continue_before_the_last_visible_task() {
+    let f = Fixture::new();
+    let db = Connection::open(f.root.join("state.sqlite")).unwrap();
+    let insert = |id: &str, room: &str, agent: &str, state: &str| {
+        let payload = serde_json::json!({"task_id":id,"room_id":room,"agent_id":agent,"prompt_id":id,"provider_run_id":null,"revision":1,"state":state,"reason":"","obligations":[],"wait":null,"last_progress_at_ms":1,"correction_used":false,"pending_prompt_id":null});
+        db.execute(
+            "INSERT INTO agent_tasks(task_id,room_id,agent_id,prompt_id,payload) VALUES(?1,?2,?3,?1,?4)",
+            params![id, room, agent, payload.to_string()],
+        )
+        .unwrap();
+    };
+    for index in 0..70 {
+        insert(
+            &format!("t{index}"),
+            "room",
+            "a",
+            if index % 2 == 0 { "done" } else { "cancelled" },
+        );
+        insert(&format!("private{index}"), "room", "b", "done");
+    }
+    insert("working", "room", "a", "working");
+    insert("another-room", "other", "a", "done");
+    let (first, next) = f.store.finished_room_tasks("room", &["a"], None).unwrap();
+    assert_eq!(first.len(), 32);
+    insert("new-task", "room", "a", "done");
+    let (second, next) = f
+        .store
+        .finished_room_tasks("room", &["a"], Some(next.unwrap()))
+        .unwrap();
+    assert_eq!(second.len(), 32);
+    let (last, next) = f
+        .store
+        .finished_room_tasks("room", &["a"], Some(next.unwrap()))
+        .unwrap();
+    assert_eq!(next, None);
+    assert_eq!(
+        first
+            .into_iter()
+            .chain(second)
+            .chain(last)
+            .map(|task| task.task_id)
+            .collect::<Vec<_>>(),
+        (0..70)
+            .rev()
+            .map(|index| format!("t{index}"))
+            .collect::<Vec<_>>()
+    );
 }
 
 /// Virtual machine steps one snapshot read takes in a room with `done` finished tasks and one waiting.

@@ -18,9 +18,9 @@ use crate::runtime::owned_process_signals::OwnedProcessSignals;
 mod tests;
 
 pub(super) struct Process {
-    child: Child,
-    signals: OwnedProcessSignals,
-    _domain: crate::runtime::process_resources::ProcessDomain,
+    pub(super) child: Child,
+    pub(super) signals: OwnedProcessSignals,
+    pub(super) domain: crate::runtime::process_resources::ProcessDomain,
 }
 
 impl Drop for Process {
@@ -104,6 +104,13 @@ fn spawn_with_environment(
     for name in crate::room_terminal::KERNEL_SECRET_ENVIRONMENT {
         command.env_remove(name);
     }
+    // Everything the command starts inherits this claim, so cleanup owns a job that detached
+    // before anything looked at the command's tree.
+    let claim = format!("room-exec-{:032x}", rand::random::<u128>());
+    command.env(
+        crate::runtime::owned_process_signals::CLAIM_VARIABLE,
+        &claim,
+    );
     #[cfg(unix)]
     unsafe {
         command.pre_exec(|| {
@@ -119,7 +126,7 @@ fn spawn_with_environment(
             format!("cannot start command: {failure}; check the program and Room directory"),
         )
     })?;
-    let mut signals = match OwnedProcessSignals::for_tokio_session_child(&child) {
+    let mut signals = match OwnedProcessSignals::for_claimed_tokio_session_child(&child, &claim) {
         Ok(signals) => signals,
         Err(failure) => {
             let _ = child.start_kill();
@@ -146,7 +153,7 @@ fn spawn_with_environment(
     Ok(Process {
         child,
         signals,
-        _domain: domain,
+        domain,
     })
 }
 
@@ -186,37 +193,61 @@ async fn output(
         if length == 0 {
             return Ok(OutputEnd::Eof);
         }
-        loop {
-            let space = record.space.notified();
-            tokio::pin!(space);
-            space.as_mut().enable();
-            if record
-                .output
-                .lock()
-                .expect("exec output poisoned")
-                .push(stream, &bytes[..length])
-            {
-                record.changed.notify_waiters();
-                break;
-            }
-            tokio::select! {
-                reason = cancelled(&mut cancel) => return Ok(OutputEnd::Canceled(reason)),
-                _ = space => {},
-            }
-        }
+        record
+            .output
+            .lock()
+            .expect("exec output poisoned")
+            .push(stream, &bytes[..length]);
+        record.changed.notify_waiters();
     }
+}
+
+/// A command that ended by a signal, or failed after the memory controller
+/// killed one of its processes, says so in its own output: the reader of its
+/// outcome otherwise sees only an exit code. An OOM kill is the typed
+/// memory-limit outcome, since the exit code of a tool that lost a child says
+/// nothing of why.
+pub(super) fn name_the_kill(
+    record: &Record,
+    outcome: ExecOutcome,
+    oom: Option<crate::runtime::process_resources::OomKill>,
+) -> ExecOutcome {
+    let failed = match &outcome {
+        ExecOutcome::Signaled { .. } => true,
+        ExecOutcome::Exited { code } => *code != 0,
+        ExecOutcome::MemoryLimit { .. } | ExecOutcome::Failed { .. } => return outcome,
+    };
+    let (line, outcome) = match (oom, &outcome) {
+        (Some(kill), _) if failed => (
+            kill.notice(),
+            ExecOutcome::MemoryLimit {
+                limit_bytes: kill.bytes,
+            },
+        ),
+        (None, ExecOutcome::Signaled { signal }) => (
+            crate::runtime::process_resources::signal_notice(*signal),
+            outcome,
+        ),
+        _ => return outcome,
+    };
+    record
+        .output
+        .lock()
+        .expect("exec output poisoned")
+        .push(ExecStream::Stderr, format!("\n{line}\n").as_bytes());
+    outcome
 }
 
 pub(super) fn run(
     mut process: Process,
     record: Arc<Record>,
-    mut input: mpsc::Receiver<Option<Vec<u8>>>,
+    input: mpsc::Receiver<Option<Vec<u8>>>,
     mut cancel: watch::Receiver<Option<CancelReason>>,
     service: RoomExecService,
     permit: crate::runtime::process_resources::LaunchPermit,
 ) {
     let mut permit = Some(permit);
-    let mut stdin = process.child.stdin.take().expect("piped stdin");
+    let stdin = process.child.stdin.take().expect("piped stdin");
     let stdout = process.child.stdout.take().expect("piped stdout");
     let stderr = process.child.stderr.take().expect("piped stderr");
     let out = tokio::spawn(output(
@@ -231,17 +262,7 @@ pub(super) fn run(
         ExecStream::Stderr,
         cancel.clone(),
     ));
-    let mut input_cancel = cancel.clone();
-    let writer = tokio::spawn(async move {
-        tokio::select! {
-            _ = cancelled(&mut input_cancel) => {},
-            _ = async {
-                while let Some(Some(bytes)) = input.recv().await {
-                    if stdin.write_all(&bytes).await.is_err() { break; }
-                }
-            } => {},
-        }
-    });
+    let writer = start_input(stdin, input, cancel.clone());
     tokio::spawn(async move {
         let outcome = supervise(&mut process, &mut cancel, &mut permit).await;
         writer.abort();
@@ -267,12 +288,10 @@ pub(super) fn run(
                 }
             }
         };
-        let outcome = process
-            ._domain
-            .memory_limit_bytes()
-            .map_or(outcome, |limit_bytes| ExecOutcome::MemoryLimit {
-                limit_bytes,
-            });
+        let outcome = match process.domain.memory_limit_bytes() {
+            Some(limit_bytes) => ExecOutcome::MemoryLimit { limit_bytes },
+            None => name_the_kill(&record, outcome, process.domain.oom_kill()),
+        };
         // Only the reaped process and settled pipes publish the final outcome.
         // Stop the resource watch outside the async executor: its Drop joins a thread.
         let _ = tokio::task::spawn_blocking(move || {
@@ -282,6 +301,23 @@ pub(super) fn run(
         .await;
         service.finish(&record, outcome);
     });
+}
+
+pub(super) fn start_input(
+    mut stdin: tokio::process::ChildStdin,
+    mut input: mpsc::Receiver<Option<Vec<u8>>>,
+    mut cancel: watch::Receiver<Option<CancelReason>>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        tokio::select! {
+            _ = cancelled(&mut cancel) => {},
+            _ = async {
+                while let Some(Some(bytes)) = input.recv().await {
+                    if stdin.write_all(&bytes).await.is_err() { break; }
+                }
+            } => {},
+        }
+    })
 }
 
 async fn supervise(
@@ -335,6 +371,10 @@ async fn supervise(
             message: format!("command cleanup failed: {message}"),
         };
     }
+    exit_outcome(status)
+}
+
+pub(super) fn exit_outcome(status: io::Result<std::process::ExitStatus>) -> ExecOutcome {
     match status {
         Ok(status) => {
             #[cfg(unix)]
@@ -361,8 +401,15 @@ async fn supervise(
 fn exited(child: &Child) -> io::Result<bool> {
     let pid = child
         .id()
-        .filter(|pid| *pid > 1 && *pid <= i32::MAX as u32)
         .ok_or_else(|| io::Error::other("invalid owned child PID"))?;
+    exited_pid(pid)
+}
+
+#[cfg(unix)]
+pub(super) fn exited_pid(pid: u32) -> io::Result<bool> {
+    if pid <= 1 || pid > i32::MAX as u32 {
+        return Err(io::Error::other("invalid owned child PID"));
+    }
     let mut info = std::mem::MaybeUninit::<libc::siginfo_t>::zeroed();
     if unsafe {
         libc::waitid(

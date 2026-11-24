@@ -456,6 +456,19 @@ impl KernelRuntimeOwnedState {
                 ),
             _ => false,
         };
+        if self.hold_queued_provider_turn(&session, agent_id, next_queued_prompt)? {
+            return self.finalize_local_completion_without_queued_advance(
+                session_id,
+                agent_id,
+                completed,
+                &provider_run_id,
+                released_workflow_claim,
+                QueueHeadHeld {
+                    next_prompt_id: next_queued_prompt.id(),
+                    cause: "the machine needs more memory before the next turn",
+                },
+            );
+        }
         // MP-08/MP-10/MP-11: Project inputs require normal activation after the
         // old turn settles. Never dispatch this queue head to an unvalidated process.
         if self.project_prompt_provider_requires_resolution(&session, &provider_run) {
@@ -465,6 +478,10 @@ impl KernelRuntimeOwnedState {
                 completed,
                 &provider_run_id,
                 released_workflow_claim,
+                QueueHeadHeld {
+                    next_prompt_id: next_queued_prompt.id(),
+                    cause: "the project's provider settings must be resolved first",
+                },
             );
         }
         if !self.provider_account_allows_queued_prompt_advance(
@@ -478,6 +495,10 @@ impl KernelRuntimeOwnedState {
                 completed,
                 &provider_run_id,
                 released_workflow_claim,
+                QueueHeadHeld {
+                    next_prompt_id: next_queued_prompt.id(),
+                    cause: "the provider account is unavailable",
+                },
             );
         }
         let _admission = match self.begin_managed_activity_admission() {
@@ -489,6 +510,10 @@ impl KernelRuntimeOwnedState {
                     completed,
                     &provider_run_id,
                     released_workflow_claim,
+                    QueueHeadHeld {
+                        next_prompt_id: next_queued_prompt.id(),
+                        cause: "kernel activity admission is closed",
+                    },
                 );
             }
         };
@@ -504,6 +529,10 @@ impl KernelRuntimeOwnedState {
                         completed,
                         &provider_run_id,
                         released_workflow_claim,
+                        QueueHeadHeld {
+                            next_prompt_id: next_queued_prompt.id(),
+                            cause: "another turn holds the workspace",
+                        },
                     );
                 }
                 Err(error) => return Err(error),
@@ -591,14 +620,15 @@ impl KernelRuntimeOwnedState {
                 started_next.prompt(),
                 false,
             )?;
-            let granted_skill_context =
-                self.granted_skill_hidden_context(session_id, agent_id, &prompt_with_handoff)?;
-            let mut hidden_system_context = join_hidden_context(
-                &self.hidden_context_with_failed_requests(
+            let mut hidden_system_context = self.context_with_agent_release_note(
+                agent_id,
+                started_next.id(),
+                started_next.prompt_origin(),
+                false,
+                self.hidden_context_with_failed_requests(
                     agent_id,
                     started_next.hidden_system_context(),
                 ),
-                &granted_skill_context,
             );
             if self.config_projection.snapshot().room_agent_tools
                 && !self
@@ -652,6 +682,7 @@ impl KernelRuntimeOwnedState {
                     false,
                 ),
                 false,
+                None,
             ) {
                 let _ = self.cancel_active_prompt_only(session_id, agent_id);
                 let _ = self.clear_prompt_activity(&provider_run_id);
@@ -705,7 +736,21 @@ impl KernelRuntimeOwnedState {
         completed: crate::session::PromptQueueItem,
         provider_run_id: &str,
         released_workflow_claim: bool,
+        held: QueueHeadHeld<'_>,
     ) -> Result<Option<OwnedPromptCompletion>, DaemonError> {
+        // The agent is free and work waits: say why it does not start now.
+        crate::logging::info_with_fields(
+            "daemon.prompt_queue",
+            "queued prompt not started after the turn ended",
+            serde_json::json!({
+                "session_id": session_id,
+                "agent_id": agent_id,
+                "completed_prompt_id": completed.id(),
+                "next_prompt_id": held.next_prompt_id,
+                "provider_run_id": provider_run_id,
+                "cause": held.cause,
+            }),
+        );
         let session = self.session_store.get_session(session_id)?;
         let (active_prompt, queued_prompts) =
             self.prompt_state_owner.state_parts(&session, agent_id);
@@ -794,4 +839,10 @@ fn join_hidden_context(first: &str, second: &str) -> String {
         ("", second) => second.to_string(),
         (first, second) => format!("{first}\n\n{second}"),
     }
+}
+
+/// The queue head a turn's end did not start, and why.
+struct QueueHeadHeld<'a> {
+    next_prompt_id: &'a str,
+    cause: &'static str,
 }

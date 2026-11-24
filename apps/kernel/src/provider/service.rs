@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 mod outcomes;
+mod prompt_envelope;
 mod run_lifecycle;
 mod runtime_io;
 mod store;
@@ -28,8 +29,18 @@ pub struct ProviderProcessService {
 
 impl ProviderProcessService {
     pub fn new() -> Self {
+        Self::with_registry(ProviderRegistry::new())
+    }
+
+    pub(crate) fn with_test_fixtures() -> Self {
+        Self::with_registry(ProviderRegistry {
+            dev_stub_enabled: true,
+        })
+    }
+
+    fn with_registry(registry: ProviderRegistry) -> Self {
         Self {
-            registry: ProviderRegistry::new(),
+            registry,
             run_actor_mailbox: ProviderRunActorMailbox::default(),
             runs: BTreeMap::new(),
             next_run_number: 0,
@@ -70,6 +81,10 @@ impl ProviderProcessService {
 
     pub(crate) fn run_actor_completion_signal(&self) -> ProviderRunActorCompletionSignal {
         self.run_actor_mailbox.completion_signal()
+    }
+
+    pub(crate) fn claude_runs_exited_while_idle(&self, only: Option<&str>) -> Vec<(String, bool)> {
+        self.run_actor_mailbox.claude_runs_exited_while_idle(only)
     }
 }
 

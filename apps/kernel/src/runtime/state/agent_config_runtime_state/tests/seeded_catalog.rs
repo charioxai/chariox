@@ -15,6 +15,7 @@ pub(super) async fn seed_claude_aliases(app: &Arc<Mutex<DaemonApp>>, provider: &
                 id: id.to_string(),
                 name: id.to_string(),
                 status: "active".to_string(),
+                aliases: Vec::new(),
                 limit: None,
                 variants: BTreeMap::new(),
             },

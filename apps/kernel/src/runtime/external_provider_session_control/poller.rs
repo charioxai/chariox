@@ -18,8 +18,7 @@ pub(super) async fn refresh_external_provider_session_index(
             })
         })
         .flatten();
-    let profile_roots = runtime_state
-        .map(|runtime_state| registered_external_provider_profile_roots(runtime_state, None));
+    let profile_roots = runtime_state.map(registered_external_provider_profile_roots);
     let mut signature_read = match read_external_provider_discovery_signature(
         cached_candidate_paths,
         profile_roots.clone(),
@@ -288,7 +287,7 @@ pub(crate) async fn execute_external_provider_session_request(
                 || crate::app::discover_external_provider_sessions(provider.as_deref()),
                 |runtime_state| {
                     crate::app::discover_external_provider_sessions_for_profiles(
-                        &registered_external_provider_profile_roots(runtime_state, None),
+                        &registered_external_provider_profile_roots(runtime_state),
                         provider.as_deref(),
                     )
                 },

@@ -1,5 +1,5 @@
 {
-  "local_protocol": 1063,
+  "local_protocol": 1014,
   "requests": [
     {
       "GrantAppStanding": {
@@ -64,6 +64,7 @@
     "publisher_id": "com.chariox",
     "publisher_name": "Chariox",
     "action_name": "merge_pull_request",
+    "input": "{\n  \"number\": 7\n}",
     "preview": [
       {
         "label": "Repository",

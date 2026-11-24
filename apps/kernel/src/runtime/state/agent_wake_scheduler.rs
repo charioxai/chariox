@@ -15,6 +15,9 @@ pub(crate) const WAKE_DELIVERY_TOLERANCE_MS: u64 = 60_000;
 const VERIFY_WAIT_MS: u64 = 5_000;
 /// Drill-only stall fault: while this file exists the scheduler skips ticks.
 const STALL_FAULT_ENV: &str = "CHARIOX_WAKE_SCHEDULER_STALL_FILE";
+/// Drill-only task fault: while this file lists an agent id (one per line), the lifecycle sweep's
+/// settlement of that agent's tasks does not end.
+const TASK_STALL_FAULT_ENV: &str = "CHARIOX_SWEEP_TASK_STALL_FILE";
 
 pub(crate) struct AgentWakeMonitor {
     pub(super) started_at_ms: u64,
@@ -24,6 +27,10 @@ pub(crate) struct AgentWakeMonitor {
     sweep_stall_alerted: AtomicBool,
     tick_failure_alerted: AtomicBool,
     stall_fault: Option<PathBuf>,
+    task_stall_fault: std::sync::Mutex<Option<PathBuf>>,
+    /// What the scheduler loop and the lifecycle sweep wait on, named in their stall reports.
+    pub(super) scheduler_step: super::supervision_step::SupervisionStep,
+    pub(super) sweep_step: super::supervision_step::SupervisionStep,
     pub(super) leased_polls: std::sync::Mutex<BTreeSet<String>>,
     pub(super) processes: super::agent_process_watch::WatchedProcesses,
     /// Sources of every other kind; watched processes stay with `processes`.
@@ -40,7 +47,12 @@ impl AgentWakeMonitor {
             sweep_stall_alerted: AtomicBool::new(false),
             tick_failure_alerted: AtomicBool::new(false),
             stall_fault: std::env::var_os(STALL_FAULT_ENV).map(PathBuf::from),
+            task_stall_fault: std::sync::Mutex::new(
+                std::env::var_os(TASK_STALL_FAULT_ENV).map(PathBuf::from),
+            ),
             processes: Default::default(),
+            scheduler_step: Default::default(),
+            sweep_step: Default::default(),
             leased_polls: Default::default(),
             drivers: Default::default(),
         };
@@ -56,6 +68,41 @@ impl AgentWakeMonitor {
         let tick = self.scheduler_tick_ms.load(Ordering::Acquire);
         now.saturating_sub(tick.max(self.started_at_ms))
     }
+
+    #[cfg(test)]
+    pub(super) fn set_task_stall_fault(&self, file: PathBuf) {
+        *self
+            .task_stall_fault
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(file);
+    }
+
+    /// Drill fault: a settlement of `agent`'s task that does not end while the fault file names it.
+    pub(super) async fn hold_while_task_stall_fault_names(&self, agent: &str) {
+        loop {
+            let file = self
+                .task_stall_fault
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone();
+            let named = file
+                .and_then(|file| std::fs::read_to_string(file).ok())
+                .is_some_and(|names| names.lines().any(|name| name.trim() == agent));
+            if !named {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
+    /// Why the lifecycle sweep has not passed its dead-man check since `since`.
+    fn sweep_stall_report(&self, since: u64) -> String {
+        let held = match self.sweep_step.current() {
+            Some((step, entered)) => format!("its pass waits on {step} since {}", iso(entered)),
+            None => "no pass has started since".into(),
+        };
+        format!("Kernel supervision sweep stalled since {}: {held}; wake delivery checks are degraded; timers still fire", iso(since))
+    }
 }
 
 fn armed(w: &AgentWake) -> bool {
@@ -65,33 +112,7 @@ fn armed(w: &AgentWake) -> bool {
     )
 }
 
-/// Armed wakes plus the 64 most recent finished ones with their receipts.
-pub(super) fn visible_wakes(wakes: Vec<AgentWake>, now: u64) -> Vec<AgentWake> {
-    let mut finished = 0;
-    let mut visible: Vec<_> = wakes
-        .into_iter()
-        .rev()
-        .filter(|w| {
-            if armed(w) {
-                return true;
-            }
-            if finished < 64
-                && w.last_fired_at_ms
-                    .unwrap_or(w.created_at_ms)
-                    .saturating_add(86_400_000)
-                    > now
-            {
-                finished += 1;
-                return true;
-            }
-            false
-        })
-        .collect();
-    visible.reverse();
-    visible
-}
-
-fn iso(ms: u64) -> String {
+pub(super) fn iso(ms: u64) -> String {
     chrono::DateTime::<chrono::Utc>::from_timestamp_millis(ms as i64)
         .map(|t| t.format("%H:%M:%SZ").to_string())
         .unwrap_or_else(|| ms.to_string())
@@ -108,16 +129,19 @@ impl KernelRuntimeState {
         let mut recovered = false;
         let mut worker_recovered = false;
         loop {
+            let step = &self.owned.agent_wakes.scheduler_step;
             if maintenance.is_empty() {
                 let state = self.clone();
                 maintenance.spawn(async move { state.run_disk_maintenance().await });
             }
+            step.enter("deadline cleanup");
             if let Err(error) = self
                 .tick_agent_deadlines(crate::session::unix_epoch_ms())
                 .await
             {
                 tracing::warn!(%error, "MP-08/MP-09/MP-10/MP-11: deadline cleanup retained for retry");
             }
+            step.enter("usage limit resumes");
             if let Err(error) = self
                 .tick_usage_limit_stops(crate::session::unix_epoch_ms())
                 .await
@@ -129,13 +153,20 @@ impl KernelRuntimeState {
                 let state = self.clone();
                 orphan_sweep.spawn(async move { state.end_orphaned_sub_agents().await });
             }
+            step.enter("agent tree publication");
             self.publish_changed_agent_trees();
+            step.enter("watched process recovery");
             if !worker_recovered {
                 worker_recovered = self
-                    .recover_worker_leased_processes(crate::session::unix_epoch_ms())
+                    .recover_worker_processes(
+                        crate::hot_reload::take_watched(),
+                        crate::session::unix_epoch_ms(),
+                    )
                     .is_ok();
             }
+            step.enter("watched process waits");
             self.deliver_process_waits();
+            step.enter("the wake tick");
             let monitor = &self.owned.agent_wakes;
             let paused = monitor.stall_fault.as_ref().is_some_and(|p| p.exists());
             if !paused
@@ -178,9 +209,12 @@ impl KernelRuntimeState {
                     && now.saturating_sub(sweep) > 3 * SWEEP_MS
                     && !monitor.sweep_stall_alerted.swap(true, Ordering::AcqRel)
                 {
-                    self.notify_wake_owners(None, |_| format!("Kernel supervision sweep stalled since {}: wake delivery checks are degraded; timers still fire", iso(sweep)));
+                    let report = monitor.sweep_stall_report(sweep);
+                    tracing::warn!(%report, "MP-08/MP-09/MP-10/MP-11 A03: lifecycle sweep stalled");
+                    self.notify_wake_owners(None, |_| report.clone());
                 }
             }
+            step.leave();
             tokio::select! {
                 _ = tokio::time::sleep(Duration::from_millis(WAKE_TICK_MS)) => {},
                 result = maintenance.join_next() => {
@@ -222,7 +256,14 @@ impl KernelRuntimeState {
         if due.is_empty() {
             return Ok(());
         }
-        let Outcome::Wakes(fired) = store.agent_lifecycle(Operation::FireWakes { now })? else {
+        let Outcome::Wakes(fired) = store
+            .agent_lifecycle(Operation::FireWakes { now })
+            .inspect_err(|_| {
+                for wake in &due {
+                    self.deliver_committed_wake(wake);
+                }
+            })?
+        else {
             return Err(crate::durable_state::agent_lifecycle::error(
                 "wake fire outcome mismatch",
             ));
@@ -273,6 +314,13 @@ impl KernelRuntimeState {
         if let Err(error) = self.tick_agent_deadlines(now).await {
             tracing::warn!(%error, "MP-08/MP-09/MP-10/MP-11: deadline cleanup retained for retry");
         }
+        // Every worker is asked at once with its own 5 s bound; this bound only keeps a stuck
+        // relay from holding the sweep. An unanswered worker's entry stays for the next one.
+        match tokio::time::timeout(Duration::from_secs(10), self.rearm_leased_agent_deadlines()).await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => tracing::warn!(%error, "a worker still holds a leased agent's deadline from before the pause; retrying at the next sweep"),
+            Err(_) => tracing::warn!("telling the workers the shifted deadlines took too long; retrying at the next sweep"),
+        }
         let monitor = &self.owned.agent_wakes;
         monitor.sweep_ms.store(now, Ordering::Release);
         monitor.sweep_stall_alerted.store(false, Ordering::Release);
@@ -288,7 +336,13 @@ impl KernelRuntimeState {
             } else {
                 iso(tick)
             };
-            self.notify_wake_owners(Some(&timers), |_| format!("Wake alert: scheduler stalled (no tick since {since}); the kernel sweep fires due wakes until it recovers"));
+            let held = match monitor.scheduler_step.current() {
+                Some((step, entered)) => format!("; it waits on {step} since {}", iso(entered)),
+                None => String::new(),
+            };
+            let report = format!("Wake alert: scheduler stalled (no tick since {since}{held}); the kernel sweep fires due wakes until it recovers");
+            tracing::warn!(%report, "MP-08/MP-09/MP-10/MP-11 A03: wake scheduler stalled");
+            self.notify_wake_owners(Some(&timers), |_| report.clone());
         }
         if timers.iter().any(|w| {
             w.next_due_ms
@@ -344,6 +398,14 @@ impl KernelRuntimeState {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
         None
+    }
+
+    #[cfg(test)]
+    pub(crate) fn agent_wakes_last_swept_for_test(&self, at_ms: u64) {
+        self.owned
+            .agent_wakes
+            .sweep_ms
+            .store(at_ms, Ordering::Release);
     }
 
     pub(super) fn wake_scheduler_health(&self, now: u64) -> serde_json::Value {
@@ -407,7 +469,7 @@ impl KernelRuntimeState {
 
     /// After a restart a driver-held source from an earlier kernel is either
     /// reattached by its driver or reported lost; it is never relaunched.
-    fn recover_driver_wakes(&self, now: u64) -> Result<(), DaemonError> {
+    pub(super) fn recover_driver_wakes(&self, now: u64) -> Result<(), DaemonError> {
         let monitor = &self.owned.agent_wakes;
         for wake in self.owned.durable_state_store.agent_wakes(None, None)? {
             if wake.kind == "process"
@@ -424,6 +486,7 @@ impl KernelRuntimeState {
                 self.report_lost_wake(&wake, now, &format!("the kernel restarted: {reason}"))?;
             }
         }
+        monitor.drivers.reconcile_ended();
         Ok(())
     }
 
@@ -471,6 +534,19 @@ impl KernelRuntimeState {
         );
         self.schedule_wake_delivery(wake);
         Ok(())
+    }
+
+    /// A failed writer reply can follow a successful commit. Only a new
+    /// durable occurrence warrants delivery when the writer returned an error.
+    pub(super) fn deliver_committed_wake(&self, before: &AgentWake) {
+        match self.owned.durable_state_store.agent_wake(&before.id) {
+            Ok(Some(wake)) if wake.last_sequence > before.last_sequence => {
+                self.schedule_wake_delivery(&wake);
+            }
+            Ok(_) => {}
+            Err(error) => tracing::warn!(%error, wake_id=%before.id,
+                "could not reconcile an unconfirmed wake commit; the sweep retains delivery"),
+        }
     }
 
     pub(super) fn schedule_wake_delivery(&self, wake: &AgentWake) {
@@ -535,38 +611,5 @@ impl KernelRuntimeState {
                 .terminal_stream
                 .notify_terminal_projection_change(room);
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a03_projection_keeps_every_armed_wake_when_finished_history_is_bounded() {
-        let template: AgentWake = serde_json::from_value(serde_json::json!({
-            "id":"wake", "task_id":"task", "room_id":"room", "agent_id":"agent",
-            "registration_id":"registration", "kind":"timer", "label":"check-in",
-            "state":"scheduled", "created_at_ms":1, "verified_at_ms":1,
-            "next_due_ms":100_000, "interval_ms":null, "command":[], "match_text":null,
-            "matched_at_ms":null, "pid":null, "exit_code":null, "fire_count":0,
-            "missed_fires":0, "last_fired_at_ms":null, "last_sequence":null,
-            "last_delivery":null, "last_delivered_at_ms":null,
-            "last_acknowledged_at_ms":null, "alerted_sequence":null
-        }))
-        .unwrap();
-        // Several agents may each own up to 32 wakes in one Room.
-        let mut wakes = vec![template.clone(); 65];
-        let mut finished = template;
-        finished.state = "fired".into();
-        finished.last_fired_at_ms = Some(2);
-        wakes.extend(vec![finished; 100]);
-        let projected = visible_wakes(wakes, 3);
-        assert_eq!(
-            projected.iter().filter(|w| armed(w)).count(),
-            65,
-            "finished history must not evict pending wakes from any client"
-        );
-        assert_eq!(projected.iter().filter(|w| !armed(w)).count(), 64);
     }
 }

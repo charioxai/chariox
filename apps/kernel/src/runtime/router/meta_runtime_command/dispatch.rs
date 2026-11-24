@@ -595,7 +595,7 @@ impl CommandRouter {
         Ok(result)
     }
 
-    async fn dispatch_meta_agent_spawn_command(
+    pub(super) async fn dispatch_meta_agent_spawn_command(
         &self,
         provider_run: Option<&crate::provider::RuntimeProviderRun>,
         session: &crate::session::RuntimeSession,
@@ -613,17 +613,17 @@ impl CommandRouter {
             if let Some(kernel) = spawn.kernel_ref.take() {
                 match self.runtime_state.resolve_peer_kernel(&kernel).await {
                     Ok(Some(kernel)) => {
+                        if spawn.deadline.is_some() {
+                            return Ok(meta_command_failure_result(
+                                command,
+                                meta_command_error(
+                                    "only the owner sets a deadline on a peer of another kernel",
+                                ),
+                            ));
+                        }
                         return Ok(self
                             .spawn_peer_on_kernel(metaagent, command, &kernel, room, spawn)
-                            .await)
-                    }
-                    Ok(None) if spawn.command_id.is_some() => {
-                        return Ok(meta_command_failure_result(
-                            command,
-                            meta_command_error(
-                                "usage: agent spawn --room does not accept --command-id for a room on this kernel",
-                            ),
-                        ))
+                            .await);
                     }
                     Ok(None) => {}
                     Err(error) => return Ok(meta_command_failure_result(command, error)),
@@ -655,6 +655,29 @@ impl CommandRouter {
             }
         }
 
+        let target_room = match spawn.room.as_deref() {
+            Some(room) => match self.runtime_state.resolve_session_ref_id(room, None).await {
+                Ok(room) => Some(room),
+                Err(error) => return Ok(meta_command_failure_result(command, error)),
+            },
+            None => None,
+        };
+        // A spawn in the caller's own room is a sub-agent, so `--room` never names that room.
+        if target_room.as_deref() == Some(session.id()) {
+            return Ok(meta_command_failure_result(
+                command,
+                meta_command_error(
+                    "usage: agent spawn --room names another room of yours (see `room list`); to create an agent in this room omit --room, it becomes your sub-agent",
+                ),
+            ));
+        }
+        if target_room.is_some() && spawn.no_follow {
+            return Ok(meta_command_failure_result(
+                command,
+                meta_command_error("your sub-agent reports to you automatically; omit --no-follow"),
+            ));
+        }
+
         let mut created_slice = None;
         if let Some(slice_create) = spawn.slice_create.take() {
             let worktree_id = spawn
@@ -662,6 +685,22 @@ impl CommandRouter {
                 .clone()
                 .or_else(|| metaagent.worktree_id().map(str::to_string))
                 .unwrap_or_else(|| session.worktree_id().to_string());
+            let development = match self
+                .runtime_state
+                .slice_development_selection_for_session(session, &worktree_id)
+            {
+                Ok(development) => development,
+                // The refusal names the directory and the next step; show it without the wrapper.
+                Err(DaemonError::ManagedContext {
+                    operation, message, ..
+                }) => {
+                    return Ok(meta_command_failure_result(
+                        command,
+                        DaemonError::LocalTransport { operation, message },
+                    ))
+                }
+                Err(error) => return Ok(meta_command_failure_result(command, error)),
+            };
             let create_request = LocalDaemonRequest::CreateSlice(CreateSliceRequest {
                 source_slice_ref: None,
                 name: metaagent_spawn_slice_name(spawn.alias.as_deref()),
@@ -672,10 +711,7 @@ impl CommandRouter {
                 workspace_id: Some(session.workspace_id().to_string()),
                 worktree_id: Some(worktree_id.clone()),
                 workspace_mount: Some(worktree_id.clone()),
-                development: Some(
-                    self.runtime_state
-                        .slice_development_selection_for_session(session, &worktree_id)?,
-                ),
+                development: Some(development),
                 worker_kernel_ref: spawn.kernel_ref.clone(),
                 display_url: None,
                 provider_auth: Vec::new(),
@@ -711,7 +747,10 @@ impl CommandRouter {
             .await
             {
                 Ok(response) => response,
-                Err(error) => return Ok(meta_command_failure_result(command, error)),
+                Err(error) => {
+                    self.runtime_state.cleanup_unused_agent_slice(&slice).await;
+                    return Ok(meta_command_failure_result(command, error));
+                }
             };
             let slice = match start_response {
                 LocalDaemonResponse::SliceStarted { slice } => slice,
@@ -727,22 +766,6 @@ impl CommandRouter {
             created_slice = Some(slice);
         }
 
-        let target_room = match spawn.room.as_deref() {
-            Some(room) => match self.runtime_state.resolve_session_ref_id(room, None).await {
-                Ok(room) => Some(room),
-                Err(error) => return Ok(meta_command_failure_result(command, error)),
-            },
-            None => None,
-        };
-        // A spawn in the caller's own room is a sub-agent, so `--room` never names that room.
-        if target_room.as_deref() == Some(session.id()) {
-            return Ok(meta_command_failure_result(
-                command,
-                meta_command_error(
-                    "usage: agent spawn --room names another room of yours (see `room list`); to create an agent in this room omit --room, it becomes your sub-agent",
-                ),
-            ));
-        }
         // A reference to this kernel creates a local child: only another kernel decides the folder.
         let kernel_ref = if spawn.slice_ref.is_some() {
             None
@@ -753,10 +776,11 @@ impl CommandRouter {
             }
         };
         let same_provider = spawns_same_provider(spawn.provider.as_deref(), metaagent);
-        let follow = target_room.is_some() && !spawn.no_follow;
         let request = LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            initial_task: spawn.initial_task,
+            peer_spawn: None,
             max_context_tokens: spawn.max_context_tokens,
-            no_subscribe: spawn.no_follow,
+            no_subscribe: false,
             session_id: target_room
                 .clone()
                 .unwrap_or_else(|| session.id().to_string()),
@@ -797,7 +821,7 @@ impl CommandRouter {
         });
         let mut spawn_command = meta_kernel_command(provider_run, metaagent, &request);
         spawn_command.idempotency_key = spawn.command_id.clone();
-        // A peer in another room of the owner is created by the owner as that room knows it.
+        // Use the owner's identity as the destination Room knows it.
         if let Some(room) = target_room.as_deref().filter(|room| *room != session.id()) {
             spawn_command.caller.user_id = Some(
                 self.runtime_state
@@ -806,7 +830,12 @@ impl CommandRouter {
         }
         let response = match Box::pin(self.dispatch(spawn_command, request)).await {
             Ok(response) => response,
-            Err(error) => return Ok(meta_command_failure_result(command, error)),
+            Err(error) => {
+                if let Some(slice) = &created_slice {
+                    self.runtime_state.cleanup_unused_agent_slice(slice).await;
+                }
+                return Ok(meta_command_failure_result(command, error));
+            }
         };
         if let (Some(after), LocalDaemonResponse::AgentSpawned { agent, .. }) =
             (spawn.deadline, &response)
@@ -818,16 +847,6 @@ impl CommandRouter {
                 return Ok(meta_command_failure_result(command, error));
             }
         }
-        // The spawner of a peer hears of its turns without polling, unless it said --no-follow.
-        // The peer exists either way, so a follow that fails is reported next to it.
-        let followed = match (&response, follow) {
-            (LocalDaemonResponse::AgentSpawned { agent, .. }, true) => Some(
-                self.runtime_state
-                    .follow_spawned_peer(metaagent, agent)
-                    .map_err(|error| error.to_string()),
-            ),
-            _ => None,
-        };
         let mut result = meta_command_success_result(
             command,
             &response,
@@ -841,23 +860,6 @@ impl CommandRouter {
                 Err(error) => return Ok(meta_command_failure_result(command, error)),
             };
             result.payload["response"]["agent"] = summarize_spawned_agent(agent, &facts);
-        }
-        if target_room.is_some() {
-            if let Some(payload) = result.payload.as_object_mut() {
-                payload.insert("lifetime".to_string(), PEER_LIFETIME.into());
-                let (registration, refused) = match followed {
-                    Some(Ok(registration)) => (Some(registration), None),
-                    Some(Err(refused)) => (None, Some(refused)),
-                    None => (None, None),
-                };
-                payload.insert(
-                    "follow_registration_id".to_string(),
-                    serde_json::json!(registration),
-                );
-                if let Some(refused) = refused {
-                    payload.insert("follow_refused".to_string(), serde_json::json!(refused));
-                }
-            }
         }
         if let Some(slice) = created_slice {
             if let Some(payload) = result.payload.as_object_mut() {
@@ -892,7 +894,7 @@ impl CommandRouter {
             model: spawn.model.or_else(|| inherited(metaagent.model())),
             effort: spawn.effort.or_else(|| inherited(metaagent.effort())),
             alias: spawn.alias,
-            prompt: None,
+            prompt: spawn.initial_task,
             permission_level: spawn
                 .permission_level
                 .or(metaagent.permission_level_override()),
@@ -948,7 +950,11 @@ impl CommandRouter {
                     crate::local::CreateAgentTriggerRequest {
                         session_id: session.id().to_string(),
                         agent_id: actor.id().to_string(),
-                        source: crate::local::AgentTriggerSourceRequest::Notification { source },
+                        source: crate::local::AgentTriggerSourceRequest::Notification {
+                            source,
+                            options: Vec::new(),
+                            once: false,
+                        },
                         busy_policy: None,
                         prompt,
                     },
@@ -1041,17 +1047,7 @@ impl CommandRouter {
                     &agents,
                 )
             }
-            "skill" | "skills" => {
-                let agents = self.runtime_state.session_agents(session.id());
-                meta_extension_request(
-                    session,
-                    metaagent,
-                    ExtensionKind::Skill,
-                    "skill",
-                    &tokens[1..],
-                    &agents,
-                )
-            }
+            "skills" => super::request::meta_skills_request(session, metaagent, &tokens[1..]),
             "extension" | "extensions"
                 if matches!(tokens.get(1).map(String::as_str), Some("grant" | "revoke"))
                     && tokens.get(2).map(String::as_str) == Some("app") =>

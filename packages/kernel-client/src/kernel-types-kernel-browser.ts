@@ -24,7 +24,7 @@ export type KernelBrowserCommand =
   | { op: "list_grants" }
   | { op: "subscribe_grants"; after: number; wait_ms: number }
   // Protocol 556: `state` that waits (<= 2000 ms) until it differs from the `revision` the caller holds ("" reads at once).
-  | { op: "state_wait"; after: string; wait_ms: number }
+  | { op: "state_wait"; after: string; wait_ms: number; known_favicons?: string[] }
   | { op: "revoke_grants"; agent_id: string | null }
   | { op: "mirror_subscribe"; tab_id: string; generation: number; device_scale_factor: 1 | 2; wire?: 2; navigation_preview?: true; viewport_first?: true; visited_links?: true; font_requirements?: true; font_absent?: true; layout_width?: number; layout_height?: number }
   | { op: "mirror_next"; subscription_id: string; generation: number; after_sequence: number; drift_nodes: string[]; known_sheets?: string[]; known_fonts?: string[]; wait_ms?: number; resend?: true; flush?: true }
@@ -57,32 +57,13 @@ export type KernelBrowserFrame = {
   generation: number; tab_id: string; mime_type: "image/png" | "image/jpeg";
   data_base64: string; width: number; height: number; sequence?: number
 }
-export type UserDomainWindowAccess = {
-  kernel_id: string; kernel_name: string; focused_agent_kernel_id: string | null;
-  reachable_by_focused_agent: boolean
-}
-export type UserDomainResource =
-  | { kind: "desktop"; surface_id: string }
-  | { kind: "browser_tab"; tab_id: string }
-  | { kind: "app_view"; view_id: string }
-  | { kind: "capture"; capture_id: string }
-export type UserDomainGrant = {
-  agent_id: string; session_id: string; kernel_id: string; resources: UserDomainResource[];
-  since_ms: number; focused: boolean; idle_since_ms: number | null;
-  idle_timeout_seconds: number; expiry_rule: string
-  prompt_id?: string | null; delegated_by_agent_id?: string | null; expires_at_ms?: number | null
-}
 export type UserDomainGrantEvent = {
+  event: "user_domain_grants_changed"; cursor: number
   room_computer?: { agent_id: string; session_id: string; allowed: boolean }[]
-  event: "user_domain_grants_changed"; cursor: number; grants: UserDomainGrant[];
-  notice: { agent_id: string; resource: UserDomainResource; at_ms: number } | null
-}
-export function userDomainWindowBadge(access: UserDomainWindowAccess): string | null {
-  return access.reachable_by_focused_agent ? null : `Your focused agent can't control this window — focus an agent on kernel ${access.kernel_name}`
 }
 export type KernelBrowserTabActor = { actor_id: string; kind: "agent" | "human"; display_label: string }
 export type KernelBrowserAgentActivity = { sequence: number; tab_id: string; actor: KernelBrowserTabActor }
-export type KernelBrowserTab = { can_go_back?: boolean | null; can_go_forward?: boolean | null; favicon_png_base64?: string | null; tab_id: string; document_id: string; url: string; title: string; opened_by?: KernelBrowserTabActor | null; opener_tab_id?: string; taken_over?: boolean }
+export type KernelBrowserTab = { can_go_back?: boolean | null; can_go_forward?: boolean | null; favicon_hash?: string | null; favicon_png_base64?: string; tab_id: string; document_id: string; url: string; title: string; opened_by?: KernelBrowserTabActor | null; opener_tab_id?: string; taken_over?: boolean }
 export type KernelBrowserDialog = {
   dialog_id: string; tab_id: string; generation: number; document_id: string;
   kind: "alert" | "confirm" | "prompt" | "beforeunload" | "permission"; message: string; origin: string; default_prompt?: string
@@ -98,8 +79,6 @@ export type KernelBrowserResult = {
   generation?: number; state?: "ready" | "stopped"; tabs?: KernelBrowserTab[]; agent_activity?: KernelBrowserAgentActivity | null;
   tab_id?: string; subscription_id?: string; frame?: KernelBrowserFrame | null;
   snapshot?: unknown; unsubscribed?: boolean;
-  kernel_id?: string; kernel_name?: string; focused_agent_kernel_id?: string | null;
-  reachable_by_focused_agent?: boolean;
   // Protocol 556: a `state_wait` reply's opaque revision, echoed back as the next `after`.
   revision?: string
   // Protocol 1008: a `state_wait` that ended without a change answers only `revision` and

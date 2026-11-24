@@ -18,6 +18,7 @@ async fn performance_drill_session_history_outline() {
         crate::history::OperationalHistoryStore::open(history_path).expect("history should open");
     let session = crate::session::RuntimeSession::new(
         "session-history-baseline",
+        crate::session::ProjectId::test(),
         None,
         "workspace-1",
         "worktree-1",
@@ -37,6 +38,7 @@ async fn performance_drill_session_history_outline() {
         operational_history.clone(),
         crate::local::GetSessionHistoryOutlineRequest {
             session_id: session.id().to_string(),
+            after_sequence: None,
             include_prefetched_content: false,
             agent_ids: Some(agent_ids.clone()),
             latest_prompt_count: Some(4),
@@ -126,6 +128,61 @@ async fn performance_drill_session_history_outline() {
     std::fs::remove_dir_all(root).expect("baseline root should be removed");
 }
 
+#[tokio::test]
+async fn performance_drill_session_history_outline_delta() {
+    use crate::local::{GetSessionHistoryOutlineRequest, LocalDaemonResponse};
+    use crate::runtime::history_requests::execute_session_history_outline_request;
+
+    let dir = crate::test_support::TestTempDir::new("history-outline-delta");
+    let store = crate::history::OperationalHistoryStore::open(dir.join("history.db")).unwrap();
+    let session_id = "session-history-baseline";
+    seed_history_baseline(&store, session_id);
+    let request = GetSessionHistoryOutlineRequest {
+        session_id: session_id.into(),
+        agent_ids: Some(vec!["agent-0".into()]),
+        latest_prompt_count: Some(2),
+        cursor: None,
+        after_sequence: Some(Default::default()),
+        include_prefetched_content: false,
+    };
+    let full = execute_session_history_outline_request(store.clone(), request.clone())
+        .await
+        .unwrap();
+    let LocalDaemonResponse::SessionHistoryOutline { agents } = &full else {
+        panic!("expected the session history outline")
+    };
+    let cursor = agents[0]
+        .delta_cursor
+        .clone()
+        .expect("full page should supply a cursor");
+
+    let full_bytes = serde_json::to_vec(&full).unwrap().len();
+    let delta = execute_session_history_outline_request(
+        store,
+        GetSessionHistoryOutlineRequest {
+            after_sequence: Some([("agent-0".into(), cursor)].into()),
+            ..request
+        },
+    )
+    .await
+    .unwrap();
+    let delta_bytes = serde_json::to_vec(&delta).unwrap().len();
+    let LocalDaemonResponse::SessionHistoryOutline { agents } = delta else {
+        panic!("expected the session history outline")
+    };
+    let changes = agents[0].turn_deltas.as_ref().expect("expected a delta");
+    assert_eq!(changes.len(), 2);
+    assert!(changes.iter().all(|turn| matches!(
+        turn.header,
+        crate::local::SessionHistoryOutlineDeltaItem::Retained(_)
+    )));
+    assert!(
+        delta_bytes < full_bytes,
+        "{delta_bytes} delta bytes versus {full_bytes} full bytes"
+    );
+    println!("HISTORY_OUTLINE_DELTA_METRICS full_bytes={full_bytes} delta_bytes={delta_bytes}");
+}
+
 fn seed_history_baseline(
     operational_history: &crate::history::OperationalHistoryStore,
     session_id: &str,
@@ -198,6 +255,7 @@ fn performance_drill_noisy_prompt_queue_is_bounded_per_agent() {
     let owner = crate::runtime::prompt_state::PromptStateOwner::default();
     let session = crate::session::RuntimeSession::new(
         "session-perf-queue",
+        crate::session::ProjectId::test(),
         None,
         "workspace-1",
         "worktree-1",

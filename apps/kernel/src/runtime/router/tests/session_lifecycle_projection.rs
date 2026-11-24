@@ -55,11 +55,7 @@ async fn session_runtime_publishes_attach_and_focus_projection_without_router_sn
     let state_task =
         tokio::spawn(async move { state_router.dispatch(state_command, state_request).await });
 
-    tokio::task::yield_now().await;
-    assert!(
-        state_task.is_finished(),
-        "session state should come from the SessionRuntime-published projection without taking the app lock"
-    );
+    assert_finishes_without_app_lock(&state_task, "session state should come from the SessionRuntime-published projection without taking the app lock").await;
     drop(app_guard);
 
     let state_response = state_task
@@ -94,6 +90,8 @@ async fn agent_lifecycle_refresh_uses_published_projection_without_app_lock() {
     let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
 
     let spawn_request = LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+        initial_task: None,
+        peer_spawn: None,
         max_context_tokens: None,
         no_subscribe: false,
         account_profile: None,
@@ -588,6 +586,8 @@ async fn spawn_agent_rejects_slice_from_another_worktree() {
     let app = Arc::new(Mutex::new(app));
     let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
     let request = LocalDaemonRequest::SpawnAgent(crate::local::SpawnAgentRequest {
+        initial_task: None,
+        peer_spawn: None,
         max_context_tokens: None,
         no_subscribe: false,
         account_profile: None,
@@ -1260,3 +1260,5 @@ async fn an_idle_session_lane_holds_little() {
         "a Room kept {per_room} bytes after its first command"
     );
 }
+
+mod wake_history;

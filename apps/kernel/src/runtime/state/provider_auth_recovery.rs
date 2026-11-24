@@ -98,6 +98,44 @@ impl KernelRuntimeState {
         )
     }
 
+    pub(super) fn spawn_structured_prompt_auth_recovery(
+        &self,
+        finished: crate::provider::FinishedProviderPromptSubmitJob,
+    ) {
+        let state = self.clone();
+        tokio::spawn(async move {
+            let _permit = state
+                .provider_runtime_lanes
+                .acquire(&finished.provider_run_id)
+                .await;
+            if let (Ok(run), Err(error)) = (
+                state
+                    .owned
+                    .provider_store
+                    .get_run(&finished.provider_run_id),
+                &finished.result,
+            ) {
+                let message = error.to_string();
+                let failure = crate::provider::TurnOutcome::classify(run.adapter_key(), &message);
+                match state
+                    .try_provider_auth_recovery(&run, &message, failure, Some(&finished.prompt_id))
+                    .await
+                {
+                    Ok(true) => return,
+                    Ok(false) => {}
+                    Err(error) => crate::logging::warn_with_fields(
+                        "provider.account",
+                        "could not open provider sign-in recovery",
+                        serde_json::json!({ "provider_run_id": run.id(), "error": error.to_string() }),
+                    ),
+                }
+            }
+            state.spawn_workflow_prompt_dispatches(
+                state.owned.settle_failed_structured_prompt_submit(finished),
+            );
+        });
+    }
+
     pub(super) fn try_provider_auth_recovery<'a>(
         &'a self,
         run: &'a crate::provider::RuntimeProviderRun,
@@ -138,10 +176,27 @@ impl KernelRuntimeState {
             if !crate::provider::renewal_failure::renewal_failed(run.adapter_key(), message) {
                 return Ok(false);
             }
+            let owner = self.resolved_provider_account_owner_for_run(run).await?;
+            let account = self.owned.provider_account_profiles.get(
+                &owner,
+                run.adapter_key(),
+                run.account_profile(),
+            )?;
+            let account = self.owned.provider_account_profiles.update_observation(
+                &owner,
+                run.adapter_key(),
+                run.account_profile(),
+                crate::account_profile::ProviderAccountAuthState::Expired,
+                account.identity_summary,
+                account.plan,
+                account.detected_provider_version,
+                None,
+            )?;
+            self.notify_provider_account_sign_in(&account, false)
+                .await?;
             let Some(agent_id) = run.agent_instance_id() else {
                 return Ok(false);
             };
-            let owner = self.resolved_provider_account_owner_for_run(run).await?;
             let setup_token = run.adapter_key() == "claude"
                 && crate::provider::provider_account_credential_registered(
                     &owner,
@@ -194,6 +249,21 @@ impl KernelRuntimeState {
                 return Ok(false);
             }
             let provider = provider_label(run.adapter_key());
+            if !setup_token {
+                self.owned.provider_account_profiles.update_observation(
+                    &owner,
+                    run.adapter_key(),
+                    run.account_profile(),
+                    crate::account_profile::ProviderAccountAuthState::Expired,
+                    None,
+                    None,
+                    None,
+                    None,
+                )?;
+                self.with_app_side_effect(|app| app.invalidate_provider_catalog_cache())
+                    .await;
+                self.record_room_list_change();
+            }
             let sudo_entry = self
                 .sudo_for_provider_run(run.id())
                 .ok()

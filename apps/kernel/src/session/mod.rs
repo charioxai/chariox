@@ -17,12 +17,15 @@ mod room_environment;
 mod room_setup;
 mod room_setup_store;
 mod runtime_interactions;
-pub(crate) use runtime_interactions::bounded_display_text;
 pub use runtime_interactions::NativeInteractionOrigin;
+pub(crate) use runtime_interactions::{
+    bounded_display_text, is_blocked_task_decision, BLOCKED_TASK_DECISION_PREFIX,
+};
 pub use runtime_interactions::{
     HANDOFF_CHANGE_LINE_MAX_CHARS, HANDOFF_CHANGE_MAX_LINES, HANDOFF_EXPLANATION_MAX_CHARS,
     HANDOFF_LABEL_MAX_CHARS, HANDOFF_MAX_TIMEOUT_SEC, HANDOFF_MIN_TIMEOUT_SEC,
 };
+mod project_id;
 mod runtime_project;
 mod runtime_session;
 mod runtime_worktrees;
@@ -46,6 +49,7 @@ mod workflow_scheduling;
 mod workflow_turns;
 mod workspace_links;
 
+pub(crate) use agent_config::effective_agent_execution_config_with_parents;
 pub use agent_config::{
     effective_agent_execution_config, effective_agent_execution_config_in_tree,
     effective_agent_execution_mode, effective_agent_extension_registration_authority,
@@ -54,6 +58,7 @@ pub use agent_config::{
     SESSION_AGENT_PERMISSION_CONFIG_KEY,
 };
 pub(crate) use owner::{SessionStateOwner, SessionStateReader, SessionStateStore};
+pub use project_id::{EmptyProjectId, ProjectId};
 pub use room_environment::{
     agent_environment_actor_id, human_environment_actor_id, human_environment_actor_label,
     ActionAdmission, ActionCancellationOutcome, AppPanelLayout, AppPanelPlacement,
@@ -77,7 +82,8 @@ pub use room_setup::{
 };
 pub(crate) use room_setup_store::RoomSetupStore;
 pub use runtime_project::{
-    RuntimeProject, RuntimeProjectKind, RuntimeProjectStatus, SessionProjectSelection,
+    ProjectCopyOrigin, RuntimeProject, RuntimeProjectKind, RuntimeProjectStatus,
+    SessionProjectSelection,
 };
 pub(crate) use runtime_session::DurableWorkflowHotState;
 pub use service::{
@@ -91,18 +97,18 @@ pub use types::WorkflowHandoffValidationPolicy;
 pub use types::{
     unix_epoch_ms, AgentPromptState, CollaborationLevel, CreateSessionRequest, HandoffChangeLine,
     HandoffChangeOp, HandoffKind, HandoffReason, HandoffTarget, MetaagentTask, MetaagentTaskStatus,
-    PromptAttachment, PromptCancellation, PromptCompletion, PromptDetachEffect, PromptOrigin,
-    PromptQueueItem, PromptStatus, PromptSubmissionOutcome, QueuedMetaagentTask,
-    ResponsibleForWorkflow, ResponsibleNotice, ResponsibleNoticeKind, RuntimeHandoff,
-    RuntimeInteraction, RuntimeInteractionBrowserRect, RuntimeInteractionBrowserRegion,
+    PromptAttachment, PromptCancellation, PromptCompletion, PromptOrigin, PromptQueueItem,
+    PromptStatus, PromptSubmissionOutcome, QueuedMetaagentTask, ResponsibleForWorkflow,
+    ResponsibleNotice, ResponsibleNoticeKind, RuntimeHandoff, RuntimeInteraction,
+    RuntimeInteractionBrowserRect, RuntimeInteractionBrowserRegion,
     RuntimeInteractionBrowserVerification, RuntimeInteractionBrowserVerificationOutcome,
     RuntimeInteractionBrowserVerificationResult, RuntimeInteractionChoice,
     RuntimeInteractionChoiceStyle, RuntimeInteractionCustomChoice, RuntimeInteractionInputKind,
     RuntimeInteractionKind, RuntimeInteractionLevel, RuntimeInteractionSubject,
     RuntimeInteractionView, RuntimeProviderLogin, RuntimeSession, RuntimeWorktreeAssignment,
     SchedulerState, SessionAgentDefaults, SessionCollaborationAgentCounts, SessionConfigState,
-    SessionExecutionMode, SessionInvite, SessionMember, SessionStatus, WorkflowArtifactRef,
-    WorkflowCanvasLayout, WorkflowCanvasLayoutPatch, WorkflowCanvasPoint,
+    SessionExecutionMode, SessionInvite, SessionMember, SessionStatus, SkillIntent,
+    WorkflowArtifactRef, WorkflowCanvasLayout, WorkflowCanvasLayoutPatch, WorkflowCanvasPoint,
     WorkflowCodeSourceBinding, WorkflowCodeSourceOrigin, WorkflowCompletionSnapshot,
     WorkflowConsole, WorkflowConsoleEntry, WorkflowDefinition, WorkflowEdgeDefinition,
     WorkflowEdgeEndpointSide, WorkflowEndpointDefinition, WorkflowFailureEvent,
@@ -119,16 +125,16 @@ pub use types::{
     WorkflowTurnRuntimeState, WorkflowTurnSubmissionKind, WorkflowWaitingOn,
     WorkflowWatchdogDefinition, WorkflowWatchdogPolicy, WorkspaceLinkAttachment,
     WorkspaceLinkDefinition, WorktreeIsolationMode, DEFAULT_LOCAL_USER_ID,
-    DEFAULT_SESSION_MAX_AGENTS, DEFAULT_WORKFLOW_CODE_MAX_AGENTS,
-    DEFAULT_WORKFLOW_CODE_MAX_CONCURRENT, DEFAULT_WORKFLOW_CODE_MAX_EDGES,
-    DEFAULT_WORKFLOW_CODE_MAX_ENDPOINTS, DEFAULT_WORKFLOW_CODE_MAX_GENERATED_PROMPT_BYTES,
-    DEFAULT_WORKFLOW_CODE_MAX_NODES, DEFAULT_WORKFLOW_CODE_MAX_QUEUES,
-    DEFAULT_WORKFLOW_CODE_MAX_SCHEMA_BYTES, DEFAULT_WORKFLOW_CODE_MAX_WATCHDOGS,
-    DEFAULT_WORKFLOW_CODE_SCRIPT_MEMORY_BYTES, DEFAULT_WORKFLOW_CODE_SCRIPT_TIMEOUT_MS,
-    DEFAULT_WORKFLOW_RUN_MAX_TURNS_SAFETY_LIMIT, DEFAULT_WORKFLOW_SCHEDULE_MAX_RUNS,
-    DEFAULT_WORKFLOW_WATCHDOG_MAX_WAKEUPS, OUTCOME_DETAIL_CHARS,
+    DEFAULT_WORKFLOW_CODE_MAX_AGENTS, DEFAULT_WORKFLOW_CODE_MAX_CONCURRENT,
+    DEFAULT_WORKFLOW_CODE_MAX_EDGES, DEFAULT_WORKFLOW_CODE_MAX_ENDPOINTS,
+    DEFAULT_WORKFLOW_CODE_MAX_GENERATED_PROMPT_BYTES, DEFAULT_WORKFLOW_CODE_MAX_NODES,
+    DEFAULT_WORKFLOW_CODE_MAX_QUEUES, DEFAULT_WORKFLOW_CODE_MAX_SCHEMA_BYTES,
+    DEFAULT_WORKFLOW_CODE_MAX_WATCHDOGS, DEFAULT_WORKFLOW_CODE_SCRIPT_MEMORY_BYTES,
+    DEFAULT_WORKFLOW_CODE_SCRIPT_TIMEOUT_MS, DEFAULT_WORKFLOW_RUN_MAX_TURNS_SAFETY_LIMIT,
+    DEFAULT_WORKFLOW_SCHEDULE_MAX_RUNS, DEFAULT_WORKFLOW_WATCHDOG_MAX_WAKEUPS,
+    OUTCOME_DETAIL_CHARS,
 };
-pub(crate) use types::{DurablePromptDeliveryPhase, DurablePromptPrivateState};
+pub(crate) use types::{DurablePromptDeliveryPhase, DurablePromptPrivateState, QueuedNotification};
 pub(crate) use workflow_definition::{
     WorkflowCodeSourceDescriptor, WorkflowCodeStructureReplacement,
 };

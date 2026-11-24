@@ -428,6 +428,8 @@ export BUN_BIN=/absolute/path/to/bun
 
 If you override the kernel host/port, both processes must use the same values or the CLI must be launched with a matching `CHARIOX_KERNEL_URL`.
 
+If the kernel home contains a Cloud link for a different kernel ID, startup exits with status 1. Start that home at its original host and port, or use a new kernel home and link it to Cloud.
+
 Example:
 
 ```bash
@@ -442,6 +444,13 @@ For the default kernel WebSocket path:
 export CHARIOX_KERNEL_HOST=127.0.0.1
 export CHARIOX_KERNEL_PORT=43118
 ```
+
+
+Agent processes on Linux and macOS get a short private temporary directory.
+The kernel exposes each agent's own directory and sets `TMPDIR`, `TMP` and
+`TEMP` for its provider. Idle scratch files are cleared. Removing the agent or
+ending its Room removes the directory, and a cold kernel restart clears
+scratch left by the previous process.
 
 ### 12.4 Logging
 

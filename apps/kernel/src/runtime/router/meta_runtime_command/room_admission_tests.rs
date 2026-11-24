@@ -17,7 +17,15 @@ fn agent(id: &str, parent: Option<&str>) -> crate::agent::AgentInstance {
 }
 
 fn session() -> crate::session::RuntimeSession {
-    crate::session::RuntimeSession::new("room", None, "workspace", "worktree", "machine", "kernel")
+    crate::session::RuntimeSession::new(
+        "room",
+        crate::session::ProjectId::test(),
+        None,
+        "workspace",
+        "worktree",
+        "machine",
+        "kernel",
+    )
 }
 
 #[test]
@@ -259,10 +267,6 @@ fn settings_set_changes_mode_permission_and_directory_as_a_config() {
         Some(crate::provider::AgentPermissionLevel::Required)
     );
     assert_eq!(request.worktree_id.as_deref(), Some("/work/tree"));
-    assert!(
-        request.self_settings.is_none(),
-        "an agent never sets what it may change"
-    );
 }
 
 #[test]

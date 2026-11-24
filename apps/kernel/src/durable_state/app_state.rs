@@ -400,6 +400,14 @@ pub(crate) fn fixture_inbox_installation(
     package
 }
 
+/// `fixture_inbox_installation` with its release staged, so the incoming event's declared
+/// options can be read.
+#[cfg(test)]
+pub(crate) fn fixture_staged_inbox_installation(store: &DurableKernelStateStore, owner: &str) {
+    let (bytes, publisher) = fixture_inbox_installation(store, owner);
+    stage_fixture_release(store, &bytes, publisher);
+}
+
 /// P1.20: a deployment's own active installation of `package`, as a
 /// committed deployment install leaves it (the owner already trusts the
 /// fixture publisher).
@@ -546,8 +554,18 @@ pub(crate) fn fixture_room_event_catalog(
 ) -> Arc<EventCatalog> {
     let (bytes, publisher) = tests::package();
     let catalog = tests::catalog_for_owner(store, owner, (bytes.clone(), publisher.clone()));
+    stage_fixture_release(store, &bytes, publisher);
+    catalog
+}
+
+#[cfg(test)]
+fn stage_fixture_release(
+    store: &DurableKernelStateStore,
+    bytes: &[u8],
+    publisher: chariox_app_package::TrustedPublisher,
+) {
     let package = chariox_app_package::verify(
-        &bytes,
+        bytes,
         &chariox_app_package::VerificationPolicy::new(
             crate::local::LOCAL_DAEMON_PROTOCOL_VERSION,
             vec![publisher],
@@ -558,7 +576,7 @@ pub(crate) fn fixture_room_event_catalog(
         .unwrap()
         .stage(
             &package,
-            &bytes,
+            bytes,
             chariox_app_runtime::release_store::StageBudget {
                 max_stage_bytes: 1024 * 1024,
                 reserved_bytes: 1024 * 1024,
@@ -566,5 +584,4 @@ pub(crate) fn fixture_room_event_catalog(
             },
         )
         .unwrap();
-    catalog
 }

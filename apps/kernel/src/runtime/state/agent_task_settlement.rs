@@ -150,6 +150,10 @@ impl KernelRuntimeOwnedState {
     ) -> String {
         let reason = crate::terminal::public_task_failure_reason(&task.reason);
         let mut text = alias.map_or_else(|| reason.clone(), |alias| format!("{alias}: {reason}"));
+        if crate::provider::switch_turn::needs_fresh_agent(&task.reason) {
+            text.push_str(" Start a fresh agent to continue with the brief.");
+            return text;
+        }
         match self.task_settle_steps(task) {
             Ok(steps) if !steps.is_empty() => {
                 text.push_str(&format!(" Open: {}.", steps.join("; ")));

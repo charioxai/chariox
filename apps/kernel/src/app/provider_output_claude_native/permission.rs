@@ -23,23 +23,6 @@ pub(super) fn claude_native_marker(context_file: &str) -> Option<String> {
 pub(super) fn write_claude_native_marker(context_file: &str, value: &str) {
     let marker = std::path::Path::new(context_file).with_file_name("active-prompt-id");
     let _ = fs::write(marker, value);
-    if value
-        .strip_prefix("accepted:")
-        .is_some_and(|id| !id.is_empty())
-    {
-        // Acknowledgement belongs to this launch's fresh runtime directory.
-        let _ = fs::write(
-            std::path::Path::new(context_file).with_file_name("headless-composer-initialized"),
-            "accepted",
-        );
-    }
-}
-
-pub(super) fn claude_headless_composer_initialized(context_file: &str) -> bool {
-    fs::read_to_string(
-        std::path::Path::new(context_file).with_file_name("headless-composer-initialized"),
-    )
-    .is_ok_and(|value| value == "accepted")
 }
 
 fn claude_yolo_rendered_permission_marker_path(context_file: &str) -> Option<PathBuf> {
@@ -367,6 +350,29 @@ pub(super) fn write_claude_hook_context_response(
     request_id: &str,
     context: &str,
 ) -> Result<(), crate::error::DaemonError> {
+    write_claude_hook_response(context_file, request_id, "txt", context)
+}
+
+pub(super) fn write_claude_hook_context_rejection(
+    context_file: &str,
+    request_id: &str,
+    message: &str,
+    retry_native: bool,
+) -> Result<(), crate::error::DaemonError> {
+    write_claude_hook_response(
+        context_file,
+        request_id,
+        "error",
+        &serde_json::json!({"message": message, "retry_native": retry_native}).to_string(),
+    )
+}
+
+fn write_claude_hook_response(
+    context_file: &str,
+    request_id: &str,
+    extension: &str,
+    contents: &str,
+) -> Result<(), crate::error::DaemonError> {
     let error = |message: String| crate::error::DaemonError::LocalTransport {
         operation: "claude_hook_context_response",
         message,
@@ -378,8 +384,8 @@ pub(super) fn write_claude_hook_context_response(
     let dir = root.join("hook-context-responses");
     fs::create_dir_all(&dir).map_err(|e| error(e.to_string()))?;
     let pending = dir.join(format!("{request_id}.tmp"));
-    let response = dir.join(format!("{request_id}.txt"));
-    let result = fs::write(&pending, context).and_then(|()| fs::rename(&pending, &response));
+    let response = dir.join(format!("{request_id}.{extension}"));
+    let result = fs::write(&pending, contents).and_then(|()| fs::rename(&pending, &response));
     if result.is_err() {
         let _ = fs::remove_file(&pending);
     }

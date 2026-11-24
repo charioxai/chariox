@@ -44,6 +44,12 @@ pub(super) fn codex_catalog_from_models(models: Vec<CodexModel>) -> OpenCodeProv
 
     for model in models.into_iter().filter(|model| !model.hidden) {
         let model_id = model.model.clone();
+        // The model list names a model by its picker id and by the slug a turn runs; both work.
+        let aliases = if model.id == model.model {
+            Vec::new()
+        } else {
+            vec![model.id.clone()]
+        };
         if first_model.is_none() {
             first_model = Some(model_id.clone());
         }
@@ -61,6 +67,7 @@ pub(super) fn codex_catalog_from_models(models: Vec<CodexModel>) -> OpenCodeProv
                 id: model_id,
                 name: model.display_name.unwrap_or_else(|| model.id.clone()),
                 status: "active".to_string(),
+                aliases,
                 limit: None,
                 variants,
             },
@@ -171,6 +178,20 @@ mod tests {
         assert_eq!(models.len(), 2);
         assert!(models["future-model"].variants.contains_key("xhigh"));
         assert!(!models.contains_key("hidden-model"));
+    }
+
+    #[test]
+    fn a_model_listed_under_another_picker_id_keeps_that_id_as_an_alias() {
+        let catalog = codex_catalog_from_models(vec![serde_json::from_value(serde_json::json!({
+            "id": "picker-id", "model": "gpt-slug", "displayName": "Slug",
+            "supportedReasoningEfforts": []}))
+        .unwrap()]);
+        assert_eq!(catalog.all[0].models["gpt-slug"].aliases, ["picker-id"]);
+        let same =
+            codex_catalog_from_models(vec![
+                serde_json::from_value(model("same", false, true)).unwrap()
+            ]);
+        assert!(same.all[0].models["same"].aliases.is_empty());
     }
 
     #[test]

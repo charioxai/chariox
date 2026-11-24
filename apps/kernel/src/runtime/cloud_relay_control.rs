@@ -1,10 +1,31 @@
-use crate::config::{DaemonConfig, PersistedCloudRelayProfile};
+use crate::config::{CloudKernelRemoval, DaemonConfig, PersistedCloudRelayProfile};
 use base64::Engine;
 use chariox_relay::protocol::DaemonRegistration;
 
 pub(crate) const CLOUD_RELAY_RUNTIME_TOKEN_TTL_MS: u64 = 300_000;
 pub(crate) const CLOUD_RELAY_CLIENT_TOKEN_TTL_MS: u64 = 300_000;
 pub(crate) const CLOUD_RELAY_TOKEN_REFRESH_WINDOW_MS: u64 = 60_000;
+pub(crate) const CLOUD_KERNEL_UNLINKED_MESSAGE: &str =
+    "This kernel was removed from the account. Run /cloud link on that machine to reconnect.";
+
+pub(crate) fn cloud_kernel_removal_message(removal: CloudKernelRemoval) -> &'static str {
+    match removal {
+        CloudKernelRemoval::Pending => {
+            "This kernel was removed from the account. Use Undo Remove in Settings to reconnect."
+        }
+        CloudKernelRemoval::Permanent => CLOUD_KERNEL_UNLINKED_MESSAGE,
+    }
+}
+
+pub(crate) fn cloud_kernel_removal_error(
+    operation: &'static str,
+    removal: CloudKernelRemoval,
+) -> crate::error::DaemonError {
+    crate::error::DaemonError::LocalTransport {
+        operation,
+        message: cloud_kernel_removal_message(removal).into(),
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CloudRuntimeTokenSubject {
@@ -67,6 +88,9 @@ pub(crate) fn cloud_relay_token_unusable(
     {
         return None;
     }
+    if profile.kernel_removal_pending {
+        return Some(CloudRelayTokenProblem::OwnerRemovalPending);
+    }
     if profile
         .token_expires_at_ms
         .is_some_and(|expires_at| expires_at <= now_ms)
@@ -80,6 +104,7 @@ pub(crate) fn cloud_relay_token_unusable(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CloudRelayTokenProblem {
     Expired,
+    OwnerRemovalPending,
     /// Issued for another key or machine than this kernel registers with.
     ForAnotherIdentity,
 }
@@ -88,6 +113,7 @@ impl CloudRelayTokenProblem {
     pub(crate) fn reason(self) -> &'static str {
         match self {
             Self::Expired => "cloud relay token expired",
+            Self::OwnerRemovalPending => cloud_kernel_removal_message(CloudKernelRemoval::Pending),
             Self::ForAnotherIdentity => "cloud relay token is for another machine or key",
         }
     }
@@ -216,6 +242,7 @@ pub(crate) fn cloud_kernel_presence_body(
             "host": config.kernel_websocket_host,
             "port": config.kernel_websocket_port,
             "relay_public_key": config.relay_public_key,
+            "kernel_version": env!("CARGO_PKG_VERSION"),
             "local_daemon_protocol_version": crate::local::LOCAL_DAEMON_PROTOCOL_VERSION,
             "owner_managed_context_transfer_protocol_version": 1,
             "relay_peer_protocol_version": crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
@@ -263,6 +290,8 @@ mod tests {
             machine_credential: Some("machine-secret".to_string()),
             cloud_session_token: None,
             cloud_session_expires_at_ms: None,
+            kernel_unlinked: false,
+            kernel_removal_pending: false,
             token_expires_at_ms: Some(200_000),
         }
     }
@@ -516,6 +545,7 @@ mod tests {
             accepting_remote_leases: true,
             leased_agent_count: 0,
             local_session_count: 0,
+            local_protocol: None,
         };
         let body = cloud_kernel_presence_body(
             &config(Some(profile())),
@@ -558,6 +588,7 @@ mod tests {
             accepting_remote_leases: false,
             leased_agent_count: 1,
             local_session_count: 0,
+            local_protocol: None,
         };
 
         let body = cloud_kernel_presence_body(

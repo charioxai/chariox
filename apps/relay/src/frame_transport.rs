@@ -1,6 +1,7 @@
 //! MP-08 / MP-10 / MP-11: bounded relay transport for every runtime client.
 //! Opaque, socket-local framing. Receipts acknowledge transport delivery only;
 //! they never authorize a request or acknowledge a kernel operation.
+use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -76,27 +77,123 @@ pub fn text_chunk(
     offset: usize,
     limit: usize,
 ) -> Option<(String, usize)> {
-    if offset == text.len() {
+    write_text_chunk(
+        transfer_id,
+        text.get(offset..)?,
+        offset,
+        text.len(),
+        limit,
+        limit,
+    )
+}
+
+#[derive(Serialize)]
+struct TextChunk<'a> {
+    kind: &'static str,
+    transfer_id: u32,
+    offset: u32,
+    total_bytes: u32,
+    payload: &'a str,
+}
+
+pub(crate) fn peer_reply_block_size() -> usize {
+    CHUNK_BYTES - *TEXT_CHUNK_HEADER_BYTES
+}
+
+static TEXT_CHUNK_HEADER_BYTES: std::sync::LazyLock<usize> = std::sync::LazyLock::new(|| {
+    serde_json::to_string(&TextChunk {
+        kind: "transport_chunk",
+        transfer_id: u32::MAX,
+        offset: u32::MAX,
+        total_bytes: u32::MAX,
+        payload: "",
+    })
+    .expect("an empty text frame always serializes")
+    .len()
+});
+
+pub(crate) fn peer_reply_chunk(
+    transfer_id: u32,
+    text: &str,
+    offset: usize,
+    total_bytes: usize,
+    limit: usize,
+) -> Option<(String, usize)> {
+    // Most of a peer reply is base64. Account for the transport header
+    // up front so a fitting payload is encoded once at its full length.
+    let payload_limit = limit
+        .min(CHUNK_BYTES)
+        .saturating_sub(*TEXT_CHUNK_HEADER_BYTES);
+    write_text_chunk(transfer_id, text, offset, total_bytes, limit, payload_limit)
+}
+
+pub(crate) fn peer_reply_ciphertext_chunk(
+    transfer_id: u32,
+    ciphertext: &[u8],
+    offset: usize,
+    total_bytes: usize,
+    limit: usize,
+) -> Option<(String, usize)> {
+    let limit = limit.min(CHUNK_BYTES);
+    let mut frame = Vec::with_capacity(limit);
+    serde_json::to_writer(
+        &mut frame,
+        &TextChunk {
+            kind: "transport_chunk",
+            transfer_id,
+            offset: offset as u32,
+            total_bytes: total_bytes as u32,
+            payload: "",
+        },
+    )
+    .ok()?;
+    // Keep intermediate chunks on a Base64 quantum so only the last can add padding.
+    let count = (limit.saturating_sub(frame.len()) / 4 * 3).min(ciphertext.len());
+    if count == 0 {
         return None;
     }
+    frame.truncate(frame.len() - 2);
+    let start = frame.len();
+    let end = start + base64::encoded_len(count, true)?;
+    frame.resize(end, 0);
+    STANDARD
+        .encode_slice(&ciphertext[..count], &mut frame[start..])
+        .ok()?;
+    frame.extend_from_slice(b"\"}");
+    Some((String::from_utf8(frame).ok()?, offset + end - start))
+}
+
+fn write_text_chunk(
+    transfer_id: u32,
+    text: &str,
+    offset: usize,
+    total_bytes: usize,
+    limit: usize,
+    payload_limit: usize,
+) -> Option<(String, usize)> {
     let limit = limit.min(CHUNK_BYTES);
-    let mut end = (offset + limit).min(text.len());
-    loop {
+    let mut end = payload_limit.min(limit).min(text.len());
+    while end > 0 {
         while !text.is_char_boundary(end) {
             end -= 1;
         }
-        let frame = serde_json::to_string(&TransportFrame::TransportChunk {
+        if end == 0 {
+            return None;
+        }
+        let frame = serde_json::to_string(&TextChunk {
+            kind: "transport_chunk",
             transfer_id,
             offset: offset as u32,
-            total_bytes: text.len() as u32,
-            payload: text[offset..end].to_string(),
+            total_bytes: total_bytes as u32,
+            payload: &text[..end],
         })
         .ok()?;
         if frame.len() <= limit {
-            return Some((frame, end));
+            return Some((frame, offset + end));
         }
-        end = offset + (end - offset) / 2;
+        end /= 2;
     }
+    None
 }
 
 #[derive(Serialize, Deserialize)]

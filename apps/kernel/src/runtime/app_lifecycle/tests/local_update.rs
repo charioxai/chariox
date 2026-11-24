@@ -730,3 +730,37 @@ fn a_stop_between_commit_and_activation_runs_the_committed_generation_on_restart
     assert!(all_reaped(&restarted));
     control.lifecycle().shutdown_blocking().unwrap();
 }
+
+/// A cold first compile of a large App (34 s with a debug worker) has its own
+/// bound; it must not spend the budget of the kernel-side steps that follow.
+#[test]
+fn a_first_install_whose_worker_preparation_outlasts_the_budget_still_commits() {
+    let scratch = Scratch::new();
+    let runtime = runtime();
+    let store = scratch.store();
+    let (control, observations, id) = installed(&store, &runtime);
+    {
+        let mut fixture = control.lifecycle().0.fixture.lock().unwrap();
+        let fixture = fixture.as_mut().unwrap();
+        fixture.budget = Some(Duration::from_millis(800));
+        fixture.prepare_delay = Duration::from_millis(1600);
+    }
+    stage_update(&store, &id, "cold_update", "1.0.1", 0);
+    control
+        .lifecycle()
+        .start_first_blocking("alice", "cold_update", runtime.handle().clone())
+        .unwrap();
+    wait(|| {
+        store
+            .first_app_install_status("alice", "cold_update")
+            .unwrap()
+            .phase
+            == InstallPhase::Committed
+    });
+    assert_eq!(
+        store.get_app_installation("alice", &id).unwrap().generation,
+        2
+    );
+    control.lifecycle().shutdown_blocking().unwrap();
+    assert!(all_reaped(&observations));
+}

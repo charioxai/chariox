@@ -3,11 +3,106 @@
 //! revocation use the ordinary interaction machinery.
 use super::*;
 
+use crate::session::{RuntimeInteraction, RuntimeSession, SessionStatus};
+
+/// The refusal that `interaction_waits` recognises by its leading words.
+fn decision_limit_message(holders: &[String]) -> String {
+    if holders.is_empty() {
+        return format!(
+            "{}. Other owners have open decisions. Retry when a slot clears.",
+            super::KERNEL_DECISION_LIMIT
+        );
+    }
+    const LISTED_OPEN_DECISIONS: usize = 10;
+    let mut listed = holders
+        .iter()
+        .take(LISTED_OPEN_DECISIONS)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(", ");
+    if holders.len() > LISTED_OPEN_DECISIONS {
+        listed.push_str(&format!(
+            ", and {} more",
+            holders.len() - LISTED_OPEN_DECISIONS
+        ));
+    }
+    format!(
+        "{}. Open decisions: {listed}. Answer or dismiss them in your Chariox terminal, then retry.",
+        super::KERNEL_DECISION_LIMIT
+    )
+}
+
 impl KernelRuntimeOwnedState {
+    pub(in crate::runtime::state) fn pending_kernel_decisions(
+        &self,
+    ) -> Vec<(String, PendingInteraction)> {
+        self.pending_interactions
+            .write()
+            .iter()
+            .filter(|(_, p)| {
+                p.belongs_to(&self.session_store) && p.kernel_operation_owner.is_some()
+            })
+            .map(|(id, p)| (id.clone(), p.clone()))
+            .collect()
+    }
+
+    /// The interaction backing a pending kernel operation. An ended or deleted Room
+    /// cannot deliver an answer, even when the original caller is still waiting.
+    pub(super) fn kernel_operation_card(
+        &self,
+        id: &str,
+        pending: &PendingInteraction,
+        session_of: &dyn Fn(&str) -> Option<RuntimeSession>,
+    ) -> Option<RuntimeInteraction> {
+        pending
+            .kernel_wide_interaction
+            .clone()
+            .or_else(|| pending.user_domain_interaction.clone())
+            .or_else(|| {
+                let session = session_of(&pending.session_id)?;
+                if session.status() == SessionStatus::Ended {
+                    return None;
+                }
+                session
+                    .active_interactions()
+                    .iter()
+                    .find(|card| card.id() == id)
+                    .cloned()
+            })
+    }
+
+    /// The counted subset of the pending store, shared by admission and owner views.
+    pub(in crate::runtime::state) fn open_kernel_decision(
+        &self,
+        id: &str,
+        pending: &PendingInteraction,
+        now: std::time::Instant,
+        session_of: &dyn Fn(&str) -> Option<RuntimeSession>,
+    ) -> Option<RuntimeInteraction> {
+        if !pending.belongs_to(&self.session_store)
+            || pending.kernel_operation_owner.is_none()
+            || !pending.decision_still_waits(now)
+        {
+            return None;
+        }
+        self.kernel_operation_card(id, pending, session_of)
+    }
+
+    pub(in crate::runtime::state) fn kernel_decision_owner_matches(
+        &self,
+        owner: &str,
+        recorded_owner: &str,
+    ) -> bool {
+        let local = crate::session::DEFAULT_LOCAL_USER_ID;
+        self.room_member_user_id_in(local, owner)
+            == self.room_member_user_id_in(local, recorded_owner)
+    }
+
     pub(super) fn ensure_kernel_decision_capacity(
         &self,
         owner: &str,
-        interaction: &crate::session::RuntimeInteraction,
+        interaction: &RuntimeInteraction,
+        session_of: &dyn Fn(&str) -> Option<RuntimeSession>,
     ) -> Result<(), DaemonError> {
         let owner_elevation = interaction.id().starts_with("sudo:")
             && interaction.requester().is_none()
@@ -18,18 +113,27 @@ impl KernelRuntimeOwnedState {
                 .choices()
                 .iter()
                 .any(crate::session::RuntimeInteractionChoice::requires_passkey);
-        let pending = self.pending_interactions.write();
-        let decisions = pending
-            .values()
-            .filter(|p| p.belongs_to(&self.session_store))
-            .filter(|p| p.kernel_operation_owner.is_some())
-            .collect::<Vec<_>>();
-        // Keep the hard kernel bound, reserving its last slot for owner elevation.
-        // Agent decisions cannot spend the owner's separate elevation allowance.
-        let owner_count = decisions
+        let candidates = self.pending_kernel_decisions();
+        let now = std::time::Instant::now();
+        let decisions = candidates
             .iter()
-            .filter(|p| p.kernel_operation_owner.as_deref() == Some(owner))
-            .filter(|p| {
+            .filter_map(|(id, pending)| {
+                self.open_kernel_decision(id, pending, now, session_of)
+                    .map(|card| (pending, card))
+            })
+            .collect::<Vec<_>>();
+        let own_decisions = decisions
+            .iter()
+            .filter(|(p, _)| {
+                p.kernel_operation_owner
+                    .as_deref()
+                    .is_some_and(|recorded| self.kernel_decision_owner_matches(owner, recorded))
+            })
+            .collect::<Vec<_>>();
+        // Keep the hard kernel bound and reserve its last slot for owner elevation.
+        let owner_count = own_decisions
+            .iter()
+            .filter(|(p, _)| {
                 !owner_elevation
                     || p.passkey_prompt.as_ref().is_some_and(|prompt| {
                         prompt.kind == crate::local::PasskeyPromptKind::Sudo
@@ -43,7 +147,11 @@ impl KernelRuntimeOwnedState {
             .count();
         if decisions.len() >= 32 || (!owner_elevation && decisions.len() >= 31) || owner_count >= 8
         {
-            return Err(interaction_error(super::KERNEL_DECISION_LIMIT));
+            let holders = own_decisions
+                .iter()
+                .map(|(_, card)| format!("{} ({})", card.id(), card.title().unwrap_or("decision")))
+                .collect::<Vec<_>>();
+            return Err(interaction_error(&decision_limit_message(&holders)));
         }
         Ok(())
     }
@@ -81,7 +189,9 @@ impl KernelRuntimeOwnedState {
             &interaction,
             crate::session::unix_epoch_ms(),
         );
-        self.ensure_kernel_decision_capacity(owner, &interaction)?;
+        self.ensure_kernel_decision_capacity(owner, &interaction, &|id| {
+            self.session_store.get_session(id).ok()
+        })?;
         let mut pending = self.pending_interactions.write();
         if pending.contains_key(interaction.id()) {
             return Err(interaction_error(super::INTERACTION_ALREADY_PENDING));
@@ -91,6 +201,7 @@ impl KernelRuntimeOwnedState {
         pending.insert(
             interaction.id().into(),
             super::super::PendingInteraction {
+                codex_approval_transfer: None,
                 checking_answer: Default::default(),
                 goal_approval: None,
                 session_id: scope.into(),
@@ -152,7 +263,9 @@ impl KernelRuntimeOwnedState {
             crate::session::unix_epoch_ms(),
         )?
         .ok_or_else(|| interaction_error("Access requires a passkey popup"))?;
-        self.ensure_kernel_decision_capacity(owner, &interaction)?;
+        self.ensure_kernel_decision_capacity(owner, &interaction, &|id| {
+            self.session_store.get_session(id).ok()
+        })?;
         let mut pending = self.pending_interactions.write();
         if pending.contains_key(interaction.id())
             || pending.values().any(|p| {
@@ -169,6 +282,7 @@ impl KernelRuntimeOwnedState {
         pending.insert(
             interaction.id().into(),
             super::super::PendingInteraction {
+                codex_approval_transfer: None,
                 checking_answer: Default::default(),
                 goal_approval: None,
                 async_task_id: None,

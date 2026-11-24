@@ -2,7 +2,7 @@ use serde_json::{json, Value};
 use tokio_tungstenite::tungstenite::Message;
 
 use crate::error::DaemonError;
-use crate::provider::ProviderWriteAccessMode;
+use crate::provider::{CodexApprovalOutcome, ProviderWriteAccessMode};
 
 use super::approval_bodies::{
     apply_patch_review_body, command_execution_approval_body, exec_command_review_body,
@@ -13,6 +13,7 @@ use super::permission::{
     read_only_codex_permission_grant, workspace_live_sync_codex_permission_grant,
 };
 use super::runtime_mcp::call_runtime_mcp_tool;
+use super::workspace_sandbox::{is_shell_command_approval, PendingWorkspaceApproval};
 use super::{CodexClient, CodexSocket};
 
 impl CodexClient {
@@ -57,7 +58,12 @@ impl CodexClient {
         } else {
             match method {
                 "item/commandExecution/requestApproval" => {
-                    self.command_execution_approval_response(message)?
+                    let Some(result) =
+                        self.command_execution_approval_response(request_id, message)?
+                    else {
+                        return Ok(true);
+                    };
+                    result
                 }
                 "item/fileChange/requestApproval" => self.file_change_approval_response(message)?,
                 "execCommandApproval" => self.exec_command_approval_response(message)?,
@@ -78,6 +84,16 @@ impl CodexClient {
                 }
             }
         };
+        self.send_server_result(socket, request_id, result)?;
+        Ok(true)
+    }
+
+    fn send_server_result(
+        &self,
+        socket: &mut CodexSocket,
+        request_id: &Value,
+        result: Value,
+    ) -> Result<(), DaemonError> {
         let payload = json!({
             "jsonrpc": "2.0",
             "id": request_id,
@@ -85,8 +101,7 @@ impl CodexClient {
         });
         socket
             .send(Message::Text(payload.to_string().into()))
-            .map_err(|error| self.protocol_error("codex_write", error.to_string()))?;
-        Ok(true)
+            .map_err(|error| self.protocol_error("codex_write", error.to_string()))
     }
 
     fn respond_to_mcp_elicitation(&self, message: &JsonRpcMessage) -> Value {
@@ -161,10 +176,11 @@ impl CodexClient {
 
     fn command_execution_approval_response(
         &self,
+        request_id: &Value,
         message: &JsonRpcMessage,
-    ) -> Result<Value, DaemonError> {
+    ) -> Result<Option<Value>, DaemonError> {
         if self.read_only_discovery_permissions {
-            return Ok(json!({ "decision": "decline" }));
+            return Ok(Some(json!({ "decision": "decline" })));
         }
         let params = message
             .params
@@ -179,14 +195,27 @@ impl CodexClient {
                 "params": params,
             }),
         );
+        let title = Some("Command approval required".to_string());
+        let prefix = "codex-command-approval";
+        let level = crate::session::RuntimeInteractionLevel::Warning;
         let body = command_execution_approval_body(&params);
-        self.request_native_permission_interaction(
-            &params,
-            "codex-command-approval",
-            Some("Command approval required".to_string()),
-            body,
-            crate::session::RuntimeInteractionLevel::Warning,
-        )
+        if let Some(sandbox) = self.unavailable_workspace_sandbox.as_ref().filter(|_| {
+            self.native_interaction_bridge.is_some() && is_shell_command_approval(&params)
+        }) {
+            let explained_body = sandbox.approval_body(&params, body);
+            let interaction =
+                self.native_permission_interaction(&params, prefix, title, explained_body, level)?;
+            return self.workspace_approval_response(
+                sandbox,
+                PendingWorkspaceApproval {
+                    request_id: request_id.clone(),
+                    interaction,
+                    handover: None,
+                },
+            );
+        }
+        self.request_native_permission_interaction(&params, prefix, title, body, level)
+            .map(Some)
     }
 
     fn file_change_approval_response(
@@ -339,12 +368,83 @@ impl CodexClient {
         let Some(bridge) = self.native_interaction_bridge.as_ref() else {
             return Ok(json!({ "decision": "decline" }));
         };
-        let session_id = self.session_id.as_deref().ok_or_else(|| {
+        let session_id = self.native_permission_session()?;
+        let interaction =
+            self.native_permission_interaction(params, prefix, title, message, level)?;
+        let resolution =
+            self.native_interaction_resolution(bridge.request_blocking(session_id, interaction));
+        Ok(self.native_permission_result(prefix, &resolution))
+    }
+
+    pub(in crate::provider) fn resume_workspace_approval(
+        &self,
+        socket: &mut CodexSocket,
+    ) -> Result<(), DaemonError> {
+        if let Some(sandbox) = &self.unavailable_workspace_sandbox {
+            if let Some(approval) = sandbox.take_adopted_approval() {
+                let request_id = approval.request_id.clone();
+                let result = self.workspace_approval_response(sandbox, approval);
+                #[cfg(unix)]
+                crate::hot_reload::release_retained_goal_approval(&self.provider_run_id);
+                if let Some(result) = result? {
+                    self.send_server_result(socket, &request_id, result)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub(in crate::provider) fn has_workspace_approval_for_successor(&self) -> bool {
+        self.unavailable_workspace_sandbox
+            .as_ref()
+            .is_some_and(super::UnavailableWorkspaceSandbox::approval_is_waiting_for_successor)
+    }
+
+    fn workspace_approval_response(
+        &self,
+        sandbox: &super::UnavailableWorkspaceSandbox,
+        mut approval: PendingWorkspaceApproval,
+    ) -> Result<Option<Value>, DaemonError> {
+        let Some(bridge) = self.native_interaction_bridge.as_ref() else {
+            return Ok(Some(json!({ "decision": "decline" })));
+        };
+        let outcome = bridge.request_codex_workspace_approval_blocking(
+            self.native_permission_session()?,
+            approval.interaction.clone(),
+            approval.handover.take(),
+        );
+        let resolution = match outcome {
+            Ok(CodexApprovalOutcome::HandingOver(handover)) => {
+                approval.handover = Some(handover);
+                sandbox.store_for_successor(approval);
+                return Ok(None);
+            }
+            Ok(CodexApprovalOutcome::Resolved(resolution)) => resolution,
+            Err(error) => self.native_interaction_resolution(Err(error)),
+        };
+        Ok(Some(self.native_permission_result(
+            "codex-command-approval",
+            &resolution,
+        )))
+    }
+
+    fn native_permission_session(&self) -> Result<&str, DaemonError> {
+        self.session_id.as_deref().ok_or_else(|| {
             self.protocol_error(
                 "codex_native_permission",
                 "missing session context for native permission prompt".to_string(),
             )
-        })?;
+        })
+    }
+
+    fn native_permission_interaction(
+        &self,
+        params: &Value,
+        prefix: &str,
+        title: Option<String>,
+        message: String,
+        level: crate::session::RuntimeInteractionLevel,
+    ) -> Result<crate::session::RuntimeInteraction, DaemonError> {
         let agent_id = self.agent_id.as_deref().ok_or_else(|| {
             self.protocol_error(
                 "codex_native_permission",
@@ -352,10 +452,17 @@ impl CodexClient {
             )
         })?;
         let origin = self.native_approval_origin_for_request(params);
-        let interaction = codex_permission_interaction(prefix, title, message, level, agent_id)
-            .with_native_origin(origin);
-        let resolution =
-            self.native_interaction_resolution(bridge.request_blocking(session_id, interaction));
+        Ok(
+            codex_permission_interaction(prefix, title, message, level, agent_id)
+                .with_native_origin(origin),
+        )
+    }
+
+    fn native_permission_result(
+        &self,
+        prefix: &str,
+        resolution: &crate::provider::ProviderNativeInteractionResolution,
+    ) -> Value {
         crate::logging::info_with_fields(
             "daemon.provider.codex",
             "codex native permission interaction resolved",
@@ -367,7 +474,7 @@ impl CodexClient {
                 "reply": resolution.reply,
             }),
         );
-        Ok(Self::codex_v2_approval_decision(&resolution))
+        Self::codex_v2_approval_decision(resolution)
     }
 
     fn request_native_review_interaction(
@@ -516,6 +623,56 @@ fn codex_permission_interaction(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    #[test]
+    fn workspace_approval_handover_keeps_one_card_and_leaves_the_later_request_eligible() {
+        use super::super::UnavailableWorkspaceSandbox;
+        use super::{codex_permission_interaction, PendingWorkspaceApproval};
+        use crate::provider::{CodexApprovalHandover, NativeApprovalGoal};
+        use crate::session::RuntimeInteractionLevel;
+
+        let sandbox = UnavailableWorkspaceSandbox::default();
+        let first = json!({"turnId":"turn","itemId":"first","command":"date","cwd":"/work"});
+        let body = sandbox.approval_body(&first, "date".into());
+        let card = codex_permission_interaction(
+            "codex-command-approval",
+            None,
+            body,
+            RuntimeInteractionLevel::Warning,
+            "agent",
+        );
+        sandbox.store_for_successor(PendingWorkspaceApproval {
+            request_id: json!(7),
+            interaction: card.clone(),
+            handover: Some(CodexApprovalHandover {
+                holder_agent_id: Some("parent".into()),
+                holder_tenure: 2,
+                goal: Some(NativeApprovalGoal {
+                    task_id: "goal-task".into(),
+                    prompt_id: "prompt".into(),
+                    blocked_revision: 3,
+                }),
+            }),
+        });
+        let serialized = serde_json::to_vec(&sandbox.hand_over()).unwrap();
+        let successor =
+            UnavailableWorkspaceSandbox::adopt(serde_json::from_slice(&serialized).unwrap());
+        let approval = successor.take_adopted_approval().unwrap();
+        assert_eq!(approval.request_id, json!(7));
+        assert_eq!(approval.interaction, card);
+        assert!(approval
+            .interaction
+            .message()
+            .contains("workspace sandbox is unavailable"));
+        let authority = approval.handover.unwrap();
+        assert_eq!(authority.holder_agent_id.as_deref(), Some("parent"));
+        assert_eq!(authority.holder_tenure, 2);
+        assert_eq!(authority.goal.unwrap().blocked_revision, 3);
+        assert!(successor.take_adopted_approval().is_none());
+        let retry = json!({"turnId":"turn","itemId":"retry","command":"date","cwd":"/work"});
+        assert_eq!(successor.approval_body(&retry, "date".into()), "date");
+    }
+
     #[test]
     fn approval_lifetime_withdrawn_codex_permission_is_declined() {
         let resolution = crate::provider::ProviderNativeInteractionResolution {

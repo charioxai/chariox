@@ -117,7 +117,9 @@ impl KernelRuntimeOwnedState {
                     continue;
                 }
                 let state = match value.status {
-                    AgentRuntimeStatus::Idle => EventRunState::Idle,
+                    AgentRuntimeStatus::Idle | AgentRuntimeStatus::EndedDeadline => {
+                        EventRunState::Idle
+                    }
                     AgentRuntimeStatus::Working => EventRunState::Working,
                     AgentRuntimeStatus::Error => EventRunState::Error,
                 };

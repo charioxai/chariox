@@ -89,7 +89,7 @@ async fn spawn_kid(
     spawn_command: impl FnOnce(&str) -> String,
 ) -> (serde_json::Value, crate::agent::AgentInstance) {
     let room = &fixture.rooms[0];
-    dispatch_json(&fixture.home, bind(room, "desktop"))
+    dispatch_bind_room(&fixture.home, bind(room, "desktop"))
         .await
         .unwrap();
     let worker_ref = {

@@ -141,7 +141,7 @@ impl KernelRuntimeState {
             credential.clone(),
             issued.value.as_str(),
             false,
-            Some(&authority.context),
+            Some(&|| self.recheck_vault_agent(&authority.context)),
         )
         .await?;
         record_registration(self, &credential, &issued.registration_id)?;

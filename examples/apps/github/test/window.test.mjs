@@ -249,14 +249,30 @@ test('failed checks can be run again from the Checks tab', { skip }, async () =>
   assert.deepEqual(made(session).map(([method, path]) => `${method} ${path}`), ['POST /actions/runs/43680658254/rerun-failed-jobs', 'POST /actions/runs/43680655184/rerun-failed-jobs']);
 });
 
-test('a failed check shows its annotations and the steps of its job, the failing one marked', { skip }, async () => {
-  const { page } = await window();
+test('a failed check shows its annotations, job steps and log', { skip }, async () => {
+  const log = '2026-11-17T10:00:00.0000000Z run the check\n2026-11-17T10:00:01.0000000Z <failure>\n';
+  const { page } = await window(url => url.pathname.endsWith('/logs') ? { status: 200, headers: {}, body: log } : undefined);
   await openPull(page, 2);
   await page.click('a:has-text("Checks")');
   await page.click('[data-check="failing"] button[aria-label^="Details of"] >> nth=0');
   await page.waitForSelector('[data-step]');
   assert.deepEqual(await page.locator('[data-step]').evaluateAll(rows => rows.map(row => row.dataset.step)), ['Set up job', 'Run echo "e2e: expected a green banner"', 'Complete job']);
   assert.match(await page.textContent('[data-check="failing"]'), /Process completed with exit code 1/);
+  const tail = page.locator('[data-check="failing"] pre');
+  assert.equal(await tail.count(), 1);
+  assert.equal(await tail.textContent(), 'run the check\n<failure>');
+});
+
+test('a failed check keeps its details when the job log is unavailable', { skip }, async () => {
+  const { page } = await window(url => url.pathname.endsWith('/logs') ? json(410, { message: 'Gone' }) : undefined);
+  await openPull(page, 2);
+  await page.click('a:has-text("Checks")');
+  const check = page.locator('[data-check="failing"]').first();
+  await check.getByRole('button', { name: 'Details of failing' }).click();
+  await check.locator('[data-step]').first().waitFor();
+  assert.match(await check.textContent(), /Process completed with exit code 1/);
+  assert.match(await check.textContent(), /Job log unavailable\. Check the job on GitHub for details\./);
+  assert.equal(await check.locator('pre').count(), 0);
 });
 
 test('a pull request is opened from two branches: the comparison is shown, the title comes from the branch, and the page goes to the new pull request', { skip }, async () => {

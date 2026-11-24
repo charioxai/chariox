@@ -61,7 +61,7 @@
     },
     {
       "name": "save_draft",
-      "description": "Keep the scene a window is about to save, under that window's id, so a replaced window can recover it. Used by the window; one draft per id, at most four at once (a new id is refused until one is discarded or an hour old).",
+      "description": "Keep a window's whole unsaved scene (elements and document settings) under that window's id, replacing its previous draft, so a window that replaces it can recover it. Used by the window; one draft per id.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -107,8 +107,8 @@
       }
     },
     {
-      "name": "read_drafts",
-      "description": "The kept drafts, oldest first, as {drafts: [{id, scene}]}. Drafts kept for an hour or longer are not returned.",
+      "name": "list_drafts",
+      "description": "The kept drafts as {drafts: [{id, revision}]}, oldest first. Drafts kept for an hour or longer are not listed. Read each scene with read_draft.",
       "inputSchema": {
         "type": "object",
         "properties": {},
@@ -117,8 +117,47 @@
       }
     },
     {
+      "name": "read_draft",
+      "description": "The scene of one kept draft as {id, revision, scene}; scene is null when the draft was discarded or aged out since it was listed.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{1,64}$"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "retire_draft",
+      "description": "Forget the draft of this id when it is still at this revision, because the caller recovered it and its saved scene now holds that content. A draft its window wrote since stays. Returns {retired}.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{1,64}$"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "id",
+          "revision"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
       "name": "discard_draft",
-      "description": "Forget the draft kept under this window id and no other. Only the window of that id sends it; a window that recovers drafts never removes them.",
+      "description": "Forget the draft kept under this window id and no other. Only the window of that id sends it; a window that recovers drafts retires them with retire_draft instead.",
       "inputSchema": {
         "type": "object",
         "properties": {

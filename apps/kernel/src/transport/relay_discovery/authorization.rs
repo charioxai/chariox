@@ -60,9 +60,38 @@ pub(crate) async fn cloud_metadata_token_for_targets(
 pub(crate) async fn visible_targets(
     profile: &crate::config::PersistedCloudRelayProfile,
 ) -> Result<Option<std::collections::BTreeSet<String>>, DaemonError> {
+    granted_targets(profile, GrantedKernels::Online).await
+}
+
+/// The kernels a metadata grant names. The machine list also names kernels too old for the
+/// relay, which Cloud has offline, so it is granted every kernel the account links; the relay
+/// still lists only the kernels connected or refused now. Kernel queries are granted the online
+/// ones: an offline kernel is never a target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GrantedKernels {
+    Online,
+    Linked,
+}
+
+impl GrantedKernels {
+    pub(crate) fn for_query(query: &chariox_relay::protocol::RelayMetadataQuery) -> Self {
+        match query {
+            chariox_relay::protocol::RelayMetadataQuery::ListLiveMachines => Self::Linked,
+            _ => Self::Online,
+        }
+    }
+}
+
+pub(crate) async fn granted_targets(
+    profile: &crate::config::PersistedCloudRelayProfile,
+    granted: GrantedKernels,
+) -> Result<Option<std::collections::BTreeSet<String>>, DaemonError> {
     Ok(visible_directory(profile)
         .await?
-        .map(|directory| directory.online))
+        .map(|directory| match granted {
+            GrantedKernels::Online => directory.online,
+            GrantedKernels::Linked => directory.linked,
+        }))
 }
 
 /// What the owner's Cloud directory lists: the kernels that are online, and every kernel still
@@ -71,6 +100,9 @@ pub(crate) async fn visible_targets(
 pub(crate) struct VisibleDirectory {
     pub(crate) online: std::collections::BTreeSet<String>,
     pub(crate) linked: std::collections::BTreeSet<String>,
+    /// The machines of the linked kernels; None when a linked target names no machine, so the
+    /// read cannot tell which machines the account still has.
+    pub(crate) linked_machines: Option<std::collections::BTreeSet<String>>,
 }
 
 pub(crate) async fn visible_directory(
@@ -85,12 +117,10 @@ pub(crate) async fn visible_directory(
             Ok(VisibleDirectory {
                 online: cloud_directory_discovery_targets(&directory)?,
                 linked: cloud_directory_linked_targets(&directory),
+                linked_machines: cloud_directory_linked_machines(&directory),
             })
         });
-    let key = format!(
-        "{}/{}/{}",
-        profile.api_url, profile.account_id, profile.realm_id
-    );
+    let key = cloud_directory_key(profile);
     let mut last = LAST_VISIBLE_TARGETS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -103,6 +133,15 @@ pub(crate) async fn visible_directory(
         // answer for a moment must not take the kernel list down once it has answered.
         Err(error) => last.get(&key).cloned().map(Some).ok_or(error),
     }
+}
+
+/// The Cloud directory a profile reads: its API, account and realm. A machine registry record
+/// carries it as the directory that owns the record.
+pub(crate) fn cloud_directory_key(profile: &crate::config::PersistedCloudRelayProfile) -> String {
+    format!(
+        "{}/{}/{}",
+        profile.api_url, profile.account_id, profile.realm_id
+    )
 }
 
 /// Cloud's last answer to "which kernels are visible", by account and realm.
@@ -126,6 +165,27 @@ fn cloud_directory_linked_targets(
         .filter_map(|target| {
             target
                 .get("daemonId")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+        })
+        .collect()
+}
+
+/// The machines of every kernel the account still links (see `cloud_directory_linked_targets`).
+fn cloud_directory_linked_machines(
+    directory: &serde_json::Value,
+) -> Option<std::collections::BTreeSet<String>> {
+    directory
+        .get("targets")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|target| {
+            target.get("status").and_then(serde_json::Value::as_str) != Some("REVOKED")
+        })
+        .map(|target| {
+            target
+                .get("machineId")
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_string)
         })
@@ -159,6 +219,25 @@ fn cloud_directory_discovery_targets(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn the_directory_links_the_machines_of_every_kernel_not_revoked() {
+        let linked = cloud_directory_linked_machines(&serde_json::json!({
+            "targets": [
+                {"daemonId": "a", "machineId": "m-a", "status": "ONLINE"},
+                {"daemonId": "b", "machineId": "m-b", "status": "OFFLINE"},
+                {"daemonId": "c", "machineId": "m-c", "status": "REVOKED"}
+            ]
+        }));
+        assert_eq!(linked, Some(["m-a".to_string(), "m-b".to_string()].into()));
+        assert_eq!(
+            cloud_directory_linked_machines(&serde_json::json!({
+                "targets": [{"daemonId": "a", "status": "ONLINE"}]
+            })),
+            None,
+            "a linked kernel that names no machine leaves the read unable to tell"
+        );
+    }
+
     #[test]
     fn cloud_directory_excludes_inactive_siblings_from_discovery_grants() {
         let targets = cloud_directory_discovery_targets(&serde_json::json!({

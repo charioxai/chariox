@@ -38,7 +38,7 @@ fn config(resume: UsageLimitResume) -> crate::config::DaemonConfig {
     config
 }
 
-/// `count` Claude agents of one room, each with a turn running on its own provider run.
+/// `count` agents with a fixture run that speaks Claude's failure protocol.
 async fn team(config: crate::config::DaemonConfig, count: usize) -> Team {
     team_of(config, count, false).await
 }
@@ -89,7 +89,7 @@ async fn team_of(config: crate::config::DaemonConfig, count: usize, workflow_ste
         let request = crate::provider::LaunchProviderRequest::new(
             &session_id,
             "claude",
-            "claude",
+            "dev-stub",
             "default",
             "claude-haiku-5-5",
         )
@@ -376,12 +376,40 @@ async fn a_turn_that_ends_on_the_limit_asks_by_default_and_names_when_usage_is_b
     let stop = team.stop(0).expect("the agent records the stop");
     assert_eq!(stop.state, UsageLimitStopState::Asking);
     assert_eq!(stop.prompt_id, team.lanes[0].prompt_id);
-    assert_eq!(stop.provider, "claude");
+    assert_eq!(stop.provider, "dev-stub");
     assert!(
         stop.resumes_at_ms.is_some(),
         "the provider's own words name the time"
     );
     assert!(!team.has_turn(0));
+}
+
+#[tokio::test]
+async fn a_weekly_limit_card_names_the_utc_reset_date() {
+    let team = team(config(UsageLimitResume::Ask), 1).await;
+    let day = chrono::Utc::now().date_naive() + chrono::Days::new(2);
+    team.hit_the_limit_saying(
+        0,
+        &format!(
+            "Claude StopFailure [rate_limit]: You've hit your weekly limit · resets {}, 4pm (UTC)",
+            day.format("%b %-d")
+        ),
+    )
+    .await;
+
+    let session = team
+        .rt()
+        .owned
+        .session_store
+        .get_session(&team.session_id)
+        .unwrap();
+    let card = session
+        .active_interactions()
+        .iter()
+        .find(|card| card.related_agent_id() == Some(team.lanes[0].agent_id.as_str()))
+        .expect("the weekly limit raises a card");
+    let expected = format!("back at {} 16:00 UTC.", day.format("%b %-d"));
+    assert!(card.message().ends_with(&expected), "{}", card.message());
 }
 
 #[tokio::test]
@@ -393,7 +421,7 @@ async fn an_armed_stop_says_when_the_kernel_resumes_instead_of_asking_to_send_ag
     let lines = team.failed_turn_lines(0);
     assert_eq!(lines.len(), 1, "one failed-turn line: {lines:?}");
     assert!(
-        lines[0].ends_with("Resumes automatically at 16:00 UTC."),
+        lines[0].contains("Resumes automatically at ") && lines[0].ends_with(" 16:00 UTC."),
         "{}",
         lines[0]
     );
@@ -413,7 +441,7 @@ async fn an_armed_stop_from_the_providers_error_frame_says_when_the_kernel_resum
     let lines = team.failed_turn_lines(0);
     assert_eq!(lines.len(), 1, "one failed-turn line: {lines:?}");
     assert!(
-        lines[0].ends_with("Resumes automatically at 16:00 UTC."),
+        lines[0].contains("Resumes automatically at ") && lines[0].ends_with(" 16:00 UTC."),
         "{}",
         lines[0]
     );
@@ -1934,4 +1962,219 @@ async fn a_drop_for_the_cancelled_task_of_an_earlier_turn_leaves_the_stop_of_a_n
 
     assert!(!dropped);
     assert_eq!(team.stop(0), Some(newer));
+}
+
+impl Team {
+    /// The agent goes on by a route of its own (a settings change and a prompt, an urgent
+    /// prompt): a new turn runs on `account`, and nobody took the stop.
+    async fn goes_on_on(&self, lane: usize, account: &str) {
+        let agent_id = &self.lanes[lane].agent_id;
+        let request = crate::provider::LaunchProviderRequest::new(
+            &self.session_id,
+            "claude",
+            "claude",
+            account,
+            "claude-haiku-5-5",
+        )
+        .with_agent_id(agent_id);
+        let mut run = crate::provider::RuntimeProviderRun::new(
+            "continued-run",
+            &request,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::External,
+                process_label: "test-claude".to_string(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: Vec::new(),
+                pty_env: std::collections::BTreeMap::new(),
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: Some("test-claude-runtime".to_string()),
+            },
+        );
+        run.mark_running();
+        self.rt()
+            .with_app_side_effect(move |app| {
+                app.providers_mut().insert_run_for_test(run);
+                let attachment = crate::app::KernelSessionService::new(app).attach(
+                    crate::attachment::AttachRequest::new(
+                        &self.session_id,
+                        "usage-limit-continue",
+                        crate::attachment::ClientCapabilityLevel::FullTerminal,
+                    ),
+                )?;
+                let prompt = crate::session::PromptQueueItem::new(
+                    "continued-prompt",
+                    attachment.id(),
+                    agent_id,
+                    "go on",
+                    crate::session::PromptStatus::Queued,
+                );
+                app.prompt_owner_submit_prepared_prompt(&self.session_id, prompt, false)
+            })
+            .await
+            .unwrap();
+        let owned = &self.rt().owned;
+        let session = owned.session_store.get_session(&self.session_id).unwrap();
+        let active = owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, agent_id)
+            .expect("the continuation is admitted");
+        assert_eq!(active.prompt(), "go on");
+        owned
+            .mark_active_prompt_delivery(
+                &self.session_id,
+                agent_id,
+                active.id(),
+                crate::session::DurablePromptDeliveryPhase::Delivered,
+                Some("continued-run".to_string()),
+                None,
+            )
+            .unwrap();
+    }
+
+    async fn finishes_on(&self, account: &str) {
+        self.goes_on_on(0, account).await;
+        self.rt()
+            .settle_owned_provider_prompt(&self.session_id, "continued-run", true, false, true)
+            .await
+            .unwrap();
+        assert!(
+            !self.has_turn(0),
+            "the other-account turn finished before the tick"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_turn_on_another_account_ends_the_stop_and_closes_its_card_with_the_reason() {
+    let team = team(config(UsageLimitResume::Ask), 1).await;
+    team.hit_the_limit(0).await;
+    assert_eq!(team.cards(0).len(), 1, "the stripe asks");
+
+    // The first tick, nothing went on: the stop and its card stay.
+    tick(team.rt(), 1).await;
+    assert!(team.stop(0).is_some());
+    assert_eq!(team.cards(0).len(), 1);
+
+    team.goes_on_on(0, "other-account").await;
+    tick(team.rt(), 2).await;
+
+    assert!(
+        team.stop(0).is_none(),
+        "the agent went on: the stop is over"
+    );
+    assert!(
+        team.cards(0).is_empty(),
+        "the card is closed on every client"
+    );
+    assert!(
+        team.rt()
+            .owned
+            .terminal_stream
+            .notice_records()
+            .into_iter()
+            .any(|notice| notice.message.starts_with("Continued on ")),
+        "the history says why"
+    );
+}
+
+#[tokio::test]
+async fn a_turn_on_the_limited_account_leaves_the_stop_and_its_card() {
+    let team = team(config(UsageLimitResume::Ask), 1).await;
+    team.hit_the_limit(0).await;
+    let limited = team.stop(0).unwrap().account_profile;
+
+    team.goes_on_on(0, &limited).await;
+    tick(team.rt(), 2).await;
+
+    assert!(team.stop(0).is_some());
+    assert_eq!(team.cards(0).len(), 1);
+}
+
+#[tokio::test]
+async fn a_turn_on_another_account_that_finished_before_the_tick_ends_the_stop_and_nothing_resumes_later(
+) {
+    let team = team(config(UsageLimitResume::Automatic), 1).await;
+    team.hit_the_limit(0).await;
+    let reset = team.stop(0).unwrap().resumes_at_ms.unwrap();
+    team.finishes_on("other-account").await;
+
+    tick(team.rt(), reset).await;
+
+    assert!(
+        team.stop(0).is_none(),
+        "the agent went on: the stop is over"
+    );
+    assert!(team.cards(0).is_empty());
+    assert!(
+        !team.has_turn(0),
+        "the armed resume sent nothing on top of the continuation"
+    );
+    tick(
+        team.rt(),
+        reset + super::super::usage_limit_runtime::RESUME_STAGGER_MS,
+    )
+    .await;
+    assert!(!team.has_turn(0), "and nothing resumes later");
+}
+
+#[tokio::test]
+async fn a_turn_on_another_account_ends_the_stop_after_a_restart_too() {
+    let mut team = team(config(UsageLimitResume::Automatic), 1).await;
+    team.hit_the_limit(0).await;
+    let reset = team.stop(0).unwrap().resumes_at_ms.unwrap();
+    team.finishes_on("other-account").await;
+
+    let after = restarted(&mut team).await;
+    tick(&after, reset).await;
+
+    let agent = after
+        .owned
+        .agent_store
+        .get_agent(&team.lanes[0].agent_id)
+        .unwrap();
+    assert!(agent.usage_limit_stop().is_none());
+    let session = after
+        .owned
+        .session_store
+        .get_session(&team.session_id)
+        .unwrap();
+    assert!(after
+        .owned
+        .prompt_state_owner
+        .active_prompt_for_agent(&session, &team.lanes[0].agent_id)
+        .is_none());
+}
+
+#[tokio::test]
+async fn changing_the_selected_profile_closes_the_stop_before_the_next_turn() {
+    let mut team = team(config(UsageLimitResume::Ask), 1).await;
+    team.hit_the_limit(0).await;
+    let agent_id = team.lanes[0].agent_id.clone();
+    let updated = team
+        .rt()
+        .update_agent_profile(
+            &team.session_id,
+            &agent_id,
+            OWNER,
+            None,
+            Some("other-account".into()),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    assert!(updated.usage_limit_stop().is_none());
+    assert!(team.cards(0).is_empty());
+
+    let after = restarted(&mut team).await;
+    assert!(after
+        .owned
+        .agent_store
+        .get_agent(&agent_id)
+        .unwrap()
+        .usage_limit_stop()
+        .is_none());
 }

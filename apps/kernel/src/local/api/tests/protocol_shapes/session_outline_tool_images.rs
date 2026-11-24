@@ -8,7 +8,7 @@ const FIXTURE: &[u8] = include_bytes!("session-outline-tool-image-count-1000.jso
 fn mp10_session_outline_tool_image_count_1000_snapshot_and_hash() {
     assert_eq!(
         format!("{:x}", Sha256::digest(FIXTURE)),
-        "c1a37d6755b6d9b14fdb2846db789add0eb2efe05fd2b03a630c65a61509c26d"
+        "921652b5c80d8194011e6775ccb5d0e6b565e2d4f95eb282dc59e34becbeb568"
     );
     let fixture: serde_json::Value = serde_json::from_slice(FIXTURE).unwrap();
     assert_eq!(fixture["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
@@ -74,6 +74,7 @@ fn mp10_a_stored_tool_call_with_pictures_has_their_count_in_the_outline_preview(
                 agent_ids: Some(vec![agent_id]),
                 latest_prompt_count: Some(1),
                 cursor: None,
+                after_sequence: None,
                 include_prefetched_content: false,
             },
         ))

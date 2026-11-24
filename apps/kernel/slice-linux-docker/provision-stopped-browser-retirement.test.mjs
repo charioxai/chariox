@@ -1,3 +1,4 @@
+import { drillDockerLabels } from "../../../scripts/lib/drill-docker-owner.mjs"
 import assert from "node:assert/strict"
 import { execFileSync } from "node:child_process"
 import { fileURLToPath } from "node:url"
@@ -17,7 +18,7 @@ test("stopped browser retirement preserves numeric archive ownership", {
     supervisor: processIdentity, browser: processIdentity }
   const root = "/tmp/chariox-browser-lifecycle-1001"
   try {
-    container = docker("create", "--label", "io.chariox.slice.id=archive-test",
+    container = docker("create", ...drillDockerLabels(import.meta.url), "--label", "io.chariox.slice.id=archive-test",
       "--label", "io.chariox.slice.owner-kernel-id=archive-kernel",
       "--label", "io.chariox.slice.owner-machine-id=archive-machine",
       "--entrypoint", "/bin/sh", process.env.CHARIOX_SLICE_TEST_IMAGE,

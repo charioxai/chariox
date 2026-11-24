@@ -58,6 +58,7 @@ Workflow-code scripts run in the kernel compiler with a single builder named `wo
 - `workflow.endpoint(entryNode, options)` defines an invocation endpoint and returns an endpoint handle:
   - `handle`
   - `alias`
+  - `maxInstances` caps concurrent invocations. Extra copies use detached Git worktrees or separate empty directories for plain-directory Rooms. The first instance uses the Room's directory.
   - `canvas`
 
 - `workflow.queue(options)` defines a prompt queue and returns a queue handle:
@@ -113,14 +114,13 @@ Extension grant shape:
 
 ```js
 extensions: [
-  { kind: "skill", name: "workflow-code-skill" },
   { kind: "mcp", name: "repo-tools" },
   { kind: "script", name: "release-script", environment: "node" },
   { kind: "connector", name: "linear", credential: "linear-api", maxSafety: "read" },
 ]
 ```
 
-Supported `kind` values are `"mcp"`, `"skill"`, `"script"`, and `"connector"`. Script grants must include `environment`. Connector grants may include `credential` and `maxSafety`; the kernel rejects unavailable or invalid extension requirements before applying the workflow.
+Supported `kind` values are `"mcp"`, `"script"`, `"connector"`, and `"app"`. Script grants must include `environment`. Connector grants may include `credential` and `maxSafety`; the kernel rejects unavailable or invalid extension requirements before applying the workflow.
 
 ## Existing Agents and Portability
 

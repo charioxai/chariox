@@ -354,26 +354,30 @@ async fn targets() {
     // person's call that overlaps an agent's gives the agent no more.
     let agent_call = json!({"kind":"agent","id":agent});
     let person_call = json!({"kind":"human","id":"local"});
+    let approved = state.app_control().approved_operations();
     assert_eq!(
-        Acting::of(std::slice::from_ref(&agent_call)),
+        Acting::of(std::slice::from_ref(&agent_call), approved),
         Ok(Acting::Agent(agent.clone()))
     );
     assert_eq!(
-        Acting::of(std::slice::from_ref(&person_call)),
+        Acting::of(std::slice::from_ref(&person_call), approved),
         Ok(Acting::Person)
     );
     assert_eq!(
-        Acting::of(&[person_call.clone(), agent_call.clone()]),
+        Acting::of(&[person_call.clone(), agent_call.clone()], approved),
         Ok(Acting::Agent(agent.clone()))
     );
     assert_eq!(
-        Acting::of(&[agent_call.clone(), json!({"kind":"agent","id":"other"})]),
+        Acting::of(
+            &[agent_call.clone(), json!({"kind":"agent","id":"other"})],
+            approved
+        ),
         Err(RoutingError::NotAllowed)
     );
-    assert_eq!(Acting::of(&[]), Err(RoutingError::NotAllowed));
+    assert_eq!(Acting::of(&[], approved), Err(RoutingError::NotAllowed));
     assert_eq!(
-        Acting::of(&[json!({"kind":"background","id":"wake"})]),
-        Err(RoutingError::NotAllowed)
+        Acting::of(&[json!({"kind":"background","id":"wake"})], approved),
+        Ok(Acting::Background)
     );
 
     let me = Acting::Agent(agent.clone());
@@ -488,5 +492,150 @@ async fn targets() {
             .await,
         Err(RoutingError::TargetNotFound)
     );
+    fixture.stop().await;
+}
+
+#[test]
+fn a_call_a_person_approved_acts_for_the_person_and_a_background_call_only_cleans_up() {
+    on_runtime(approved_and_background);
+}
+
+async fn approved_and_background() {
+    let fixture = Fixture::new().await;
+    let state = fixture.state();
+    let scope = scope(6);
+    let agent = fixture.agent.clone();
+    let (session, publication) = fixture.sessions[0].clone();
+    let operations = state.app_control().approved_operations();
+    let call = |operation: &str| json!({"kind":"agent","id":agent,"operation_id":operation});
+
+    // The approval belongs to one operation: another call of the same agent, or one
+    // that overlaps it, is still the agent's own.
+    let approval = operations.approve("op-approved");
+    let approved = Acting::of(&[call("op-approved")], operations).unwrap();
+    assert_eq!(approved, Acting::Approved(agent.clone()));
+    assert_eq!(
+        Acting::of(&[call("op-other")], operations),
+        Ok(Acting::Agent(agent.clone()))
+    );
+    assert_eq!(
+        Acting::of(&[call("op-approved"), call("op-other")], operations),
+        Ok(Acting::Agent(agent.clone()))
+    );
+    assert_eq!(
+        Acting::of(
+            &[call("op-approved"), json!({"kind":"human","id":"local"})],
+            operations
+        ),
+        Ok(approved.clone())
+    );
+
+    // Approved, an agent names a workflow, which an agent alone never does.
+    let alone = Acting::Agent(agent.clone());
+    assert_eq!(
+        state
+            .app_routing_bind_workflow(
+                &scope,
+                &alone,
+                "changed".into(),
+                session.clone(),
+                publication.clone(),
+                None
+            )
+            .await,
+        Err(RoutingError::NotAllowed)
+    );
+    let workflow = state
+        .app_routing_bind_workflow(
+            &scope,
+            &approved,
+            "changed".into(),
+            session.clone(),
+            publication.clone(),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(workflow.kind, "workflow");
+    // An approved call naming no agent binds its own; naming one, that one.
+    let own = state
+        .app_routing_bind_agent(&scope, &approved, "changed".into(), None)
+        .await
+        .unwrap();
+    assert_eq!(own.agent_id.as_deref(), Some(agent.as_str()));
+    assert_eq!(
+        state
+            .app_routing_bind_agent(&scope, &approved, "changed".into(), Some(agent.clone()))
+            .await
+            .unwrap()
+            .automation_id,
+        own.automation_id
+    );
+    assert_eq!(
+        state
+            .app_routing_bind_agent(
+                &scope,
+                &alone,
+                "changed".into(),
+                Some("someone-else".into())
+            )
+            .await,
+        Err(RoutingError::NotAllowed)
+    );
+    assert_eq!(
+        state
+            .app_routing_bind_agent(
+                &scope,
+                &approved,
+                "changed".into(),
+                Some("someone-else".into())
+            )
+            .await,
+        Err(RoutingError::TargetNotFound)
+    );
+    // The approval ends with the call.
+    drop(approval);
+    assert_eq!(
+        Acting::of(&[call("op-approved")], operations),
+        Ok(Acting::Agent(agent.clone()))
+    );
+
+    // A background call (an event or a wake the App handles) ends targets to clean up and
+    // never starts one.
+    let background = Acting::of(&[json!({"kind":"background","id":"delivery"})], operations);
+    let background = background.unwrap();
+    assert_eq!(background, Acting::Background);
+    assert_eq!(
+        state
+            .app_routing_bind_agent(&scope, &background, "changed".into(), None)
+            .await,
+        Err(RoutingError::NotAllowed)
+    );
+    assert_eq!(
+        state
+            .app_routing_bind_workflow(
+                &scope,
+                &background,
+                "changed".into(),
+                session.clone(),
+                publication.clone(),
+                None
+            )
+            .await,
+        Err(RoutingError::NotAllowed)
+    );
+    state
+        .app_routing_unbind_target(&scope, &background, &workflow.automation_id)
+        .await
+        .unwrap();
+    state
+        .app_routing_unbind_target(&scope, &background, &own.automation_id)
+        .await
+        .unwrap();
+    assert!(state
+        .app_routing_list_targets(&scope)
+        .await
+        .unwrap()
+        .is_empty());
     fixture.stop().await;
 }

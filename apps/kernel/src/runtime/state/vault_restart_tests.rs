@@ -11,7 +11,7 @@ fn fixture(
 ) {
     let workspace = crate::test_support::TestWorktree::new("vault-restart-workspace");
     let private = crate::test_support::TestWorktree::new("vault-restart-state");
-    let vault = private.path().join("vault.json");
+    let vault = private.path().join("vault").join("vault.json");
     crate::secret::create_chariox_encrypted_vault_for_test(&vault, "restart passphrase").unwrap();
     let mut config = crate::config::DaemonConfig::for_tests();
     config.user_config.credential_vault.backend =
@@ -107,15 +107,24 @@ async fn mp08_vault_restart_or_abandoned_wait_can_retry_before_the_pump() {
             agent,
             &format!("vault-unlock-{}-{}", agent, rand::random::<u64>()),
             &crate::config::UserCredentialVaultConfig::default(),
-            60,
         );
         let mut snapshot = state.owned.session_store.get_session(session).unwrap();
         snapshot.add_active_interaction(orphan.clone());
         state.owned.session_store.write().restore_session(snapshot);
         let mut call =
             Box::pin(state.ensure_vault_unlocked_for_agent(session, agent, "after restart"));
-        let card = pending(&state, session, &mut call).await;
-        assert_ne!(card.id(), orphan.id());
+        let card = tokio::select! {
+            result = &mut call => panic!("unlock returned before the user could answer: {}", result.is_ok()),
+            card = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                loop {
+                    if let Some(card) = interaction(&state, session).filter(|card| card.id() != orphan.id()) {
+                        return card;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            }) => card.expect("the call replaces the orphaned card with its own"),
+        };
+        // A caller that stops waiting leaves the card open; the retry joins it.
         drop(call);
         let mut retry = Box::pin(state.ensure_vault_unlocked_for_agent(
             session,
@@ -123,7 +132,7 @@ async fn mp08_vault_restart_or_abandoned_wait_can_retry_before_the_pump() {
             "retry cancelled caller",
         ));
         let next = pending(&state, session, &mut retry).await;
-        assert_ne!(next.id(), card.id());
+        assert_eq!(next.id(), card.id());
         assert_eq!(
             state
                 .owned
@@ -137,29 +146,33 @@ async fn mp08_vault_restart_or_abandoned_wait_can_retry_before_the_pump() {
     }
 }
 
+// An unanswered launch ends quickly and says where to unlock; the card stays for the person.
 #[tokio::test(start_paused = true)]
-async fn mp08_vault_unanswered_launch_ends_with_retry_guidance() {
+async fn mp08_vault_unanswered_launch_ends_naming_the_open_card() {
     let (state, sessions, _workspace, _private) =
         fixture(crate::config::CredentialVaultUnlockPolicy::KernelInit);
     let (session, agent) = &sessions[0];
     let mut call = Box::pin(state.ensure_vault_unlocked_for_agent(session, agent, "new launch"));
     let card = pending(&state, session, &mut call).await;
-    assert!(
-        card.timeout_sec().unwrap() <= 60,
-        "a launch cannot silently wait five minutes"
-    );
+    assert_eq!(card.timeout_sec(), None, "the card waits for the person");
     tokio::task::yield_now().await;
     tokio::time::advance(std::time::Duration::from_secs(61)).await;
     let error = call
         .await
         .err()
-        .expect("an unanswered unlock must end the launch")
+        .expect("an unanswered unlock ends the launch")
         .to_string();
-    assert!(error.contains("timed out"), "{error}");
-    assert!(error.to_ascii_lowercase().contains("retry"), "{error}");
-    assert!(interaction(&state, session).is_none());
+    assert!(
+        error.contains("The Vault is locked. The unlock card is open in this Room")
+            && error.contains("try again once the Vault is unlocked"),
+        "{error}"
+    );
+    assert_eq!(
+        interaction(&state, session).map(|open| open.id().to_owned()),
+        Some(card.id().to_owned())
+    );
     let mut retry = Box::pin(state.ensure_vault_unlocked_for_agent(session, agent, "retry launch"));
-    pending(&state, session, &mut retry).await;
+    assert_eq!(pending(&state, session, &mut retry).await.id(), card.id());
 }
 
 #[tokio::test]
@@ -235,7 +248,6 @@ fn mp09_managed_kernel_registers_a_vault_prompt_without_hanging() {
             &agent,
             &format!("vault-unlock-{}-{}", agent, rand::random::<u64>()),
             &crate::config::UserCredentialVaultConfig::default(),
-            60,
         );
         let _receiver = registering
             .create_terminal_credential_interaction(&session, card)
@@ -260,7 +272,6 @@ async fn mp11_vault_retry_cannot_replace_another_live_decision() {
         agent,
         &format!("vault-unlock-{}-{}", agent, rand::random::<u64>()),
         &crate::config::UserCredentialVaultConfig::default(),
-        60,
     );
     let _receiver = state
         .create_terminal_credential_interaction(session, card.clone())
@@ -287,7 +298,7 @@ fn locked_vault_with_a_run() -> (
     let workspace = crate::test_support::TestWorktree::new("vault-refusal-workspace");
     let private = crate::test_support::TestWorktree::new("vault-refusal-state");
     std::env::set_var("CHARIOX_HOME", private.path().join("home"));
-    let vault = private.path().join("vault.json");
+    let vault = private.path().join("vault").join("vault.json");
     crate::secret::create_chariox_encrypted_vault_for_test(&vault, "refusal passphrase").unwrap();
     crate::credential::CharioxCredentialRegistry::user()
         .unwrap()
@@ -416,22 +427,39 @@ async fn a_request_that_passes_every_check_still_asks_for_the_unlock() {
     }
 }
 
-// MP-08 / MP-09 / MP-10 / MP-11: a person must find the card, so an agent's tool call waits longer
-// than a launch, which ends quickly with retry guidance.
+// MP-08 / MP-09 / MP-10 / MP-11: a person must find the card. An agent's Vault tool waits on it for
+// its whole provider budget, a launch ends quickly, a submit never waits and a queued prompt waits
+// until the card ends.
 #[test]
-fn vflag_agent_tools_get_a_longer_unlock_card_than_launches() {
+fn vflag_each_vault_use_waits_on_the_card_as_long_as_its_caller_can() {
     for tool in [
         "vault_generate",
+        "vault_use_env",
+        "vault_write_file",
+        "vault_copy",
         "credential_vault_manage",
         "runtime_tool_http_request_with_credential",
     ] {
-        assert_eq!(vault_unlock_card_seconds(tool), 280, "{tool}");
+        assert_eq!(
+            vault_unlock_wait(tool),
+            Some(std::time::Duration::from_secs(280)),
+            "{tool}"
+        );
     }
     for launch in [
         "launch provider run",
         "restore interrupted prompt",
         "new launch",
     ] {
-        assert_eq!(vault_unlock_card_seconds(launch), 60, "{launch}");
+        assert_eq!(
+            vault_unlock_wait(launch),
+            Some(std::time::Duration::from_secs(60)),
+            "{launch}"
+        );
     }
+    assert_eq!(
+        vault_unlock_wait(VAULT_ADMIT_PROMPT),
+        Some(std::time::Duration::ZERO)
+    );
+    assert_eq!(vault_unlock_wait(VAULT_START_QUEUED_PROMPT), None);
 }

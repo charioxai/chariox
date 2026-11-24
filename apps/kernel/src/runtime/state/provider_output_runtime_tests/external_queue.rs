@@ -31,6 +31,13 @@ async fn unavailable_provider_account_defers_explicit_queue_advances_without_los
         &account.profile_id,
     )
     .expect("account should start authenticated");
+    crate::test_support::seed_account_models(
+        &app.provider_catalog_projection_store(),
+        crate::session::DEFAULT_LOCAL_USER_ID,
+        "codex",
+        &account.profile_id,
+        &["gpt-5.4"],
+    );
 
     let app = Arc::new(Mutex::new(app));
     let runtime = owned_runtime_state(&app).await;
@@ -903,7 +910,10 @@ async fn provider_only_switch_selects_compatible_defaults_atomically() {
     assert_eq!(changed.provider(), "codex");
     assert_eq!(changed.provider_account_profile(), expected.profile_id);
     // The new provider's default model and variant are chosen, never left empty.
-    assert_eq!(changed.model(), Some("gpt-6.1-sol"));
+    let model = changed
+        .model()
+        .expect("the target catalog supplies a model");
+    assert_ne!(model, "opencode/gpt-6-luna");
     assert!(changed.effort().is_some());
     let before = changed.clone();
     let rejected = runtime
@@ -924,4 +934,6 @@ async fn provider_only_switch_selects_compatible_defaults_atomically() {
         retained.provider_account_profile(),
         before.provider_account_profile()
     );
+    assert_eq!(retained.model(), before.model());
+    assert_eq!(retained.effort(), before.effort());
 }

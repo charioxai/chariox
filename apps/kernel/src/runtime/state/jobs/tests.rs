@@ -1,7 +1,7 @@
 use super::*;
 use crate::provider::*;
 
-type Fixture = (
+pub(super) type Fixture = (
     KernelRuntimeState,
     RuntimeProviderRun,
     AgentTaskExecution,
@@ -10,18 +10,18 @@ type Fixture = (
 
 /// A kernel as started by default: every job runs locally.
 pub(super) async fn fixture() -> Fixture {
-    fixture_with(false).await
+    fixture_with(crate::config::DaemonConfig::for_tests()).await
 }
 
 /// A kernel started with remote jobs on, for the tests that drive the remote path.
 pub(super) async fn remote_fixture() -> Fixture {
-    fixture_with(true).await
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.remote_jobs = true;
+    fixture_with(config).await
 }
 
-async fn fixture_with(remote_jobs: bool) -> Fixture {
+pub(super) async fn fixture_with(config: crate::config::DaemonConfig) -> Fixture {
     let worktree = crate::test_support::TestWorktree::new("offload-job-entry");
-    let mut config = crate::config::DaemonConfig::for_tests();
-    config.remote_jobs = remote_jobs;
     let mut app = crate::DaemonApp::bootstrap(config).unwrap();
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(worktree.session_request())
@@ -214,13 +214,17 @@ async fn offload_job_remote_upload_exec_environment_artifact_and_conflict_return
         router,
         home: home.path().to_owned(),
     });
-    let record = Record { job_id: "job-remote-test".into(), wake_id: "wake-remote-test".into(), registration_id: "completion-wake-remote-test".into(), room_id: "home-room".into(), agent_id: "home-agent".into(), request: RunJobRequest { command: JobCommand::Argv(vec!["/bin/sh".into(), "-c".into(), "printf remote > source.txt; mkdir -p target; printf artifact > target/build.bin; printf '%s' \"$NAMED\"".into()]), cwd: None, env: vec!["NAMED".into()], needs: JobNeeds::default(), timeout_s: 30, wait_s: 0, outputs: vec!["target/*.bin".into()] }, workspace: source.path().to_owned(), cwd: source.path().to_owned(), placement: JobPlacement::Remote, started_at_ms: crate::session::unix_epoch_ms(), running_at_ms: None, state: "uploading".into(), allocation_ref: None, capability_revision: None, machine_label: Some("offload-test".into()), address: Some("2001:db8::1".into()), result: None, exec_id: None, class_id: None, rate_per_minute: None, estimate_micros: None, deleted: false, remote_available: true, remote_refusal: None, estimated_minutes: None, memory_mib: None, remote: RemoteStage::Idle };
+    let record = Record { job_id: "job-remote-test".into(), wake_id: "wake-remote-test".into(), registration_id: "completion-wake-remote-test".into(), room_id: "home-room".into(), agent_id: "home-agent".into(), request: RunJobRequest { command: JobCommand::Argv(vec!["/bin/sh".into(), "-c".into(), "printf remote > source.txt; mkdir -p target; printf artifact > target/build.bin; printf '%s' \"$NAMED\"".into()]), cwd: None, env: vec!["NAMED".into()], needs: JobNeeds::default(), timeout_s: 30, wait_s: 0, outputs: vec!["target/*.bin".into()], machine: None, machine_only: false }, workspace: source.path().to_owned(), cwd: source.path().to_owned(), placement: JobPlacement::Remote, started_at_ms: crate::session::unix_epoch_ms(), running_at_ms: None, state: "uploading".into(), allocation_ref: None, capability_revision: None, machine_label: Some("offload-test".into()), held_kernel_id: None, address: Some("2001:db8::1".into()), result: None, exec_id: None, class_id: None, rate_per_minute: None, estimate_micros: None, deleted: false, remote_available: true, remote_refusal: None, estimated_minutes: None, memory_mib: None, remote: RemoteStage::Idle };
     let base = crate::jobs::snapshot(source.path(), &record.request.outputs).unwrap();
     let upload = crate::jobs::snapshot(source.path(), &[]).unwrap();
     let (_cancel, cancelled) = watch::channel(false);
-    let (remote, root) = remote::Remote::prepare(worker, &record, &upload, &cancelled)
+    let located = remote::Remote::locate(worker.clone(), &record.job_id)
         .await
         .unwrap();
+    let remote = remote::Remote::prepare(worker, &record, &located, &upload, &cancelled)
+        .await
+        .unwrap();
+    let root = located.root;
     assert!(!Path::new(&root).join(".env").exists());
     let exec = remote
         .open(
@@ -279,6 +283,67 @@ async fn offload_job_remote_upload_exec_environment_artifact_and_conflict_return
         std::fs::read(source.path().join("target/build.bin")).unwrap(),
         b"artifact"
     );
+}
+
+#[tokio::test]
+async fn offload_job_live_output_tail_preserves_lines_and_utf8() {
+    let (state, run, task, _worktree) = fixture().await;
+    let long_line = "'a' * (6 * 1024 - 1) + 'é' + 'x' * (64 * 1024 - 2)";
+    for (output, last_line, expected) in [
+        (
+            "'a' * 70000 + '\\nfirst\\nsecond'".into(),
+            "second\n",
+            "first\nsecond\n".into(),
+        ),
+        (
+            long_line.to_owned(),
+            "x\n",
+            format!("{}\n", "x".repeat(TAIL_BYTES - 2)),
+        ),
+    ] {
+        let script = format!("import time; print({output}, flush=True); time.sleep(60)");
+        let job = state
+            .dispatch_job_tool(
+                Some(&run),
+                "chariox.jobs.run",
+                &serde_json::json!({"command":["python3","-c",script],"wait_s":0}),
+                &task,
+            )
+            .await
+            .unwrap();
+        let args = serde_json::json!({"job_id":job["job_id"]});
+        let observed = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let status = state
+                    .dispatch_job_tool(Some(&run), "chariox.jobs.status", &args, &task)
+                    .await
+                    .unwrap();
+                assert!(
+                    status["result"].is_null(),
+                    "job finished before publishing live output"
+                );
+                if let Some(tail) = status["output_tail"]
+                    .as_str()
+                    .filter(|tail| tail.ends_with(last_line))
+                {
+                    break tail.to_owned();
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await;
+        state
+            .dispatch_job_tool(Some(&run), "chariox.jobs.cancel", &args, &task)
+            .await
+            .unwrap();
+        let observed = observed.expect("running job did not publish a non-empty output tail");
+        assert!(
+            observed == expected,
+            "expected {} bytes of exact output, got {} bytes",
+            expected.len(),
+            observed.len()
+        );
+    }
 }
 
 #[tokio::test]
@@ -412,13 +477,17 @@ async fn offload_job_acquisition_receipt_survives_yield_and_ended_native_turn_bu
 
 #[tokio::test]
 async fn offload_job_runtime_budget_starts_after_queue_admission() {
-    let (state, run, task, _worktree) = remote_fixture().await;
-    state
-        .set_remote_job_policy(
-            &task.room_id,
-            Some(&task.agent_id),
-            &task.owner_user_id,
-            Some(crate::local::OffloadPolicy::WhenBusy),
+    let (state, run, task, worktree) = fixture().await;
+    // The job fits the machine and must wait: another command holds all of its memory.
+    let admission = crate::runtime::process_resources::LaunchAdmission::default();
+    let _busy = admission
+        .reserve_with_memory(
+            "other-job",
+            &["cat".into()],
+            worktree.path(),
+            true,
+            // The host's live headroom can exceed the configured command pool.
+            u64::MAX,
         )
         .unwrap();
     let value = state
@@ -426,7 +495,7 @@ async fn offload_job_runtime_budget_starts_after_queue_admission() {
             Some(&run),
             "chariox.jobs.run",
             &serde_json::json!({
-                "command":["/bin/true"], "needs":{"memory_gib":u32::MAX}, "timeout_s":1
+                "command":["/bin/true"], "needs":{"memory_gib":1}, "timeout_s":1
             }),
             &task,
         )
@@ -506,4 +575,221 @@ async fn offload_job_duration_estimate_counts_completed_records_once_not_artifac
     second.result.as_mut().unwrap().duration_ms = 1200;
     driver.save(&second).unwrap();
     assert_eq!(state.job_duration_estimate(&next), Some(1100));
+}
+
+#[tokio::test]
+async fn offload_job_runs_while_other_agents_fill_the_rooms_exec_records() {
+    let (state, run, task, worktree) = fixture().await;
+    let execs = &state.owned.room_execs;
+    let held: Vec<String> = (0..16)
+        .map(|_| {
+            execs
+                .open_as(
+                    &task.room_id,
+                    &task.owner_user_id,
+                    worktree.path(),
+                    &["/bin/sleep".to_string(), "60".to_string()],
+                    None,
+                    Some("another-agent".into()),
+                )
+                .unwrap()
+        })
+        .collect();
+    let result = state
+        .dispatch_job_tool(
+            Some(&run),
+            "chariox.jobs.run",
+            &serde_json::json!({"command":["/bin/sh","-c","exit 0"],"wait_s":10}),
+            &task,
+        )
+        .await
+        .unwrap();
+    for id in &held {
+        execs.close(&task.room_id, id).unwrap();
+    }
+    assert_eq!(result["result"]["outcome"], "completed", "{result}");
+    assert_eq!(result["result"]["exit_code"], 0, "{result}");
+}
+
+#[test]
+fn offload_job_command_that_ended_without_a_status_says_why() {
+    let notice = super::execute::failed_end_notice(&crate::room_exec::ExecOutcome::Failed {
+        message: "provider launch refused the directory".into(),
+    })
+    .expect("a failed end has a notice");
+    assert!(
+        notice.contains("without an exit status") && notice.contains("refused the directory"),
+        "{notice}"
+    );
+    assert_eq!(
+        super::execute::failed_end_notice(&crate::room_exec::ExecOutcome::Exited { code: 3 }),
+        None
+    );
+}
+
+#[tokio::test]
+async fn job_admission_ignores_running_ordinary_pipes() {
+    // Live ordinary commands fill the limit here; finished ones are the next test.
+    let (state, run, task, worktree) = fixture().await;
+    let execs = &state.owned.room_execs;
+    let mut held = Vec::new();
+    for _ in 0..64 {
+        let id = execs
+            .open_as(
+                &task.room_id,
+                &task.owner_user_id,
+                worktree.path(),
+                &["/bin/sleep".to_string(), "60".to_string()],
+                None,
+                Some("another-agent".into()),
+            )
+            .unwrap();
+        held.push(id);
+    }
+    let result = state
+        .dispatch_job_tool(
+            Some(&run),
+            "chariox.jobs.run",
+            &serde_json::json!({"command":["/bin/sh","-c","exit 0"],"wait_s":10}),
+            &task,
+        )
+        .await
+        .unwrap();
+    for id in &held {
+        execs.close(&task.room_id, id).unwrap();
+    }
+    assert_ne!(result["result"]["outcome"], "outside_end", "{result}");
+    assert!(result["job_id"].as_str().is_some(), "{result}");
+}
+
+#[tokio::test]
+async fn offload_job_failure_notice_is_kept_after_a_line_over_one_mib_without_a_newline() {
+    use base64::Engine as _;
+    let (state, run, task, _workspace) = fixture().await;
+    let started = state
+        .dispatch_job_tool(
+            Some(&run),
+            "chariox.jobs.run",
+            &serde_json::json!({"command":["/bin/true"],"wait_s":5}),
+            &task,
+        )
+        .await
+        .unwrap();
+    let driver = state.job_wake_driver.as_ref().unwrap();
+    let record = driver.read(started["job_id"].as_str().unwrap()).unwrap();
+    let mut output = super::execute::Output::new(&state, &record).unwrap();
+    let flood = base64::engine::general_purpose::STANDARD.encode(vec![b'x'; 1024 * 1024 + 1]);
+    let page = crate::room_exec::ExecOutput {
+        chunks: vec![crate::room_exec::ExecChunk {
+            cursor: 0,
+            stream: crate::room_exec::ExecStream::Stdout,
+            data_base64: flood,
+        }],
+        next_cursor: 1,
+        outcome: Some(crate::room_exec::ExecOutcome::Failed {
+            message: "provider launch refused the directory".into(),
+        }),
+    };
+    output.page(&state, &record.room_id, &page).unwrap();
+    output
+        .notice(
+            &state,
+            &record.room_id,
+            &super::execute::failed_end_notice(page.outcome.as_ref().unwrap()).unwrap(),
+        )
+        .unwrap();
+    let logged = std::fs::read_to_string(&output.log).unwrap();
+    for text in [&output.tail, &logged] {
+        assert!(text.contains("refused the directory"), "{text}");
+        assert!(!text.contains("xxxx"), "the long line stays withheld");
+    }
+}
+
+#[tokio::test]
+async fn job_admission_ignores_retained_ordinary_pipes() {
+    let (state, run, task, worktree) = fixture().await;
+    let execs = &state.owned.room_execs;
+    let mut held = Vec::new();
+    for _ in 0..64 {
+        let id = execs
+            .open_as(
+                &task.room_id,
+                &task.owner_user_id,
+                worktree.path(),
+                &["/bin/true".to_string()],
+                None,
+                Some("another-agent".into()),
+            )
+            .unwrap();
+        held.push(id);
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while execs
+        .list(&task.room_id)
+        .iter()
+        .any(|exec| exec.state != crate::room_exec::ExecState::Finished)
+    {
+        assert!(std::time::Instant::now() < deadline, "commands never ended");
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    let result = state
+        .dispatch_job_tool(
+            Some(&run),
+            "chariox.jobs.run",
+            &serde_json::json!({"command":["/bin/sh","-c","exit 0"],"wait_s":10}),
+            &task,
+        )
+        .await
+        .unwrap();
+    // The reply's remedy must work: closing the records it names lets the job run.
+    for id in &held {
+        execs.close(&task.room_id, id).unwrap();
+    }
+    assert_eq!(result["result"]["outcome"], "completed", "{result}");
+    assert_eq!(result["result"]["exit_code"], 0, "{result}");
+    let rerun = state
+        .dispatch_job_tool(
+            Some(&run),
+            "chariox.jobs.run",
+            &serde_json::json!({"command":["/bin/sh","-c","exit 0"],"wait_s":10}),
+            &task,
+        )
+        .await
+        .unwrap();
+    assert_eq!(rerun["result"]["outcome"], "completed", "{rerun}");
+}
+
+#[tokio::test]
+async fn job_admission_ignores_active_jobs_pipe_count() {
+    let (state, run, task, worktree) = fixture().await;
+    let execs = &state.owned.room_execs;
+    let mut held = Vec::new();
+    for _ in 0..64 {
+        let id = execs
+            .open_job_as(
+                &task.room_id,
+                &task.owner_user_id,
+                worktree.path(),
+                &["/bin/sleep".to_string(), "60".to_string()],
+                &crate::local::JobNeeds::default(),
+                None,
+                Some(task.agent_id.clone()),
+            )
+            .unwrap();
+        held.push(id);
+    }
+    let result = state
+        .dispatch_job_tool(
+            Some(&run),
+            "chariox.jobs.run",
+            &serde_json::json!({"command":["/bin/sh","-c","exit 0"],"wait_s":10}),
+            &task,
+        )
+        .await
+        .unwrap();
+    for id in &held {
+        execs.close(&task.room_id, id).unwrap();
+    }
+    assert!(result["job_id"].as_str().is_some(), "{result}");
+    assert_ne!(result["result"]["outcome"], "outside_end", "{result}");
 }

@@ -4,6 +4,7 @@ import test from "node:test"
 import type {
   RuntimeSession,
   WorkflowDefinition,
+  WorkflowRun,
 } from "./cli-types.js"
 import {
   handleWorkflowAliasCommand,
@@ -82,6 +83,40 @@ test("workflow show and new project the selected workflow", async () => {
     "apply:session-1",
     "footer:info:created workflow workflow-1 (fresh)",
   ])
+})
+
+test("opening a workflow loads active run details without overwriting a newer event", async () => {
+  const definition = workflow()
+  const run: WorkflowRun = {
+    id: "run-1", workflow_id: definition.id, endpoint_id: "entry", entry_node_id: "node-1", status: "Running",
+    invocation_prompt: "Review change", active_node_run_id: "node-run", node_runs: [], messages: [],
+    created_at_ms: 1, started_at_ms: 2, completed_at_ms: null,
+  }
+  let current = session({ room_workflows: {
+    session_id: "session-1", home_kernel_id: "home", revision: "active", workflow_count: 1, workflows: [{
+      workflow_id: definition.id, workflow_revision: 1, label: "Review", state: "running", running_count: 1,
+      paused_count: 0, queued_count: 0, endpoints: [], runs: [{ run_id: run.id, endpoint_id: "entry", status: "Running", can_pause: true, can_resume: false, can_stop: true }],
+    }],
+  } })
+  let sends = 0
+  const { deps, context } = createHarness({
+    sessionState: () => current,
+    upsertWorkflowDefinition: workflow => { current = { ...current, workflows: [workflow] } },
+    getWorkflowRun: async id => {
+      assert.equal(id, run.id)
+      if (++sends === 2) current = { ...current, workflow_runs: [{ ...run, status: "Paused" }] }
+      return { workflow_run: run }
+    },
+    applySessionState: state => { current = state },
+  })
+
+  await handleWorkflowShowCommand(deps, context, ["show", definition.id])
+  assert.deepEqual(current.workflow_runs, [run])
+  await handleWorkflowShowCommand(deps, context, ["show", definition.id])
+  assert.equal(sends, 1)
+  current = { ...current, workflow_runs: [] }
+  await handleWorkflowShowCommand(deps, context, ["show", definition.id])
+  assert.equal(current.workflow_runs?.[0]?.status, "Paused")
 })
 
 test("workflow alias validates missing and unknown workflows", async () => {
@@ -217,11 +252,10 @@ function session(overrides: Partial<RuntimeSession> = {}): RuntimeSession {
     created_at_ms: 1,
     status: "active",
     active_provider_run_id: null,
-    attachment_ids: [],
+    connected_cli_count: 0,
     active_prompt: null,
     queued_prompts: [],
     focused_agent_id: null,
-    max_agents: 4,
     agents: [],
     config_state: { version: 1, values: {} },
     ...overrides,

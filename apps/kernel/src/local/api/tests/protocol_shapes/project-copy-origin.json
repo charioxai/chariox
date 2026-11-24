@@ -1,0 +1,37 @@
+{
+  "ManagedContextLaunchTarget": {
+    "target": {
+      "destination": {
+        "kind": "owner_managed_machine",
+        "machineId": "target-machine",
+        "kernelId": "target-kernel"
+      },
+      "kernelId": "target-kernel",
+      "contextId": "context",
+      "planDigest": "digest",
+      "development": {
+        "kind": "from_source",
+        "projects": [
+          {
+            "projectId": "copy-context-0",
+            "copyOrigin": {
+              "kernelId": "source-kernel",
+              "projectId": "original-project"
+            },
+            "destinationRoot": "/managed/context",
+            "primaryRepositoryId": "repo",
+            "repositories": [
+              {
+                "repositoryId": "repo",
+                "role": "primary",
+                "targetDirectory": "work",
+                "workspacePath": "/managed/context/work",
+                "headSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

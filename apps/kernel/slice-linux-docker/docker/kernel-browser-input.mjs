@@ -228,13 +228,26 @@ export async function inputHostTab(browser, tab, input, { viewport=canonicalView
         assertNotCancelled(signal);
         onDispatch?.()?.();
       } else {
+        // B3: the viewer's pointer left the page: the mouse moves off the page (Chrome fires mouseout/leave, :hover ends).
+        if (input.kind === "leave" && resolved) {
+          await mirrorGuard?.(); onDispatch?.();
+          await connection.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: -1, y: -1, button: "none", buttons: 0, ...stamp }, sessionId);
+          assertNotCancelled(signal); return;
+        }
         if (!Number.isInteger(input.x) || input.x < 0 || input.x >= viewport.css_width || !Number.isInteger(input.y) || input.y < 0 || input.y >= viewport.css_height) throw new PointerOutsideViewport();
-        // Protocol 530: middle/right buttons are the band's (Chrome's own UI), never a page click.
-        if (input.kind === "click" && input.button !== undefined) throw new Error("MD-2: unsupported input");
+        // Protocol 530: middle/right buttons are the band's (Chrome's own UI), never a page click; B4: a mirror's
+        // resolved right click is the page's.
+        if (input.kind === "click" && input.button !== undefined && !(resolved && input.button === "right")) throw new Error("MD-2: unsupported input");
+        if (input.kind === "move" && resolved) {
+          // B3: the page hovers where the viewer's pointer is (mouseenter/over/move, :hover); no button, no focus.
+          await mirrorGuard?.(); onDispatch?.();
+          await connection.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: input.x * viewScale, y: input.y * viewScale, button: "none", buttons: 0, ...stamp }, sessionId);
+          assertNotCancelled(signal); return;
+        }
         if (input.kind === "click") {
           // MP-08/MP-10: a viewer click on the owned display goes through
           // XTest after the same fences (no renderer acknowledgement wait).
-          if (nativeClick && !resolved) {
+          if (nativeClick && !resolved && input.button === undefined) {
             await check(); await mirrorGuard?.();
             if (await nativeOnce(() => nativeClick(input.x, input.y))) { onDispatch?.(); return; }
           }
@@ -248,8 +261,10 @@ export async function inputHostTab(browser, tab, input, { viewport=canonicalView
           // matching release before awaiting the frame-paced press reply. Once
           // admitted, navigation/cancellation must not strand a pressed button.
           onDispatch?.();
-          const press = connection.send("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", clickCount: 1, ...stamp }, sessionId);
-          const release = connection.send("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", clickCount: 1, ...stamp }, sessionId);
+          // B4: a mirror's right click presses the right button (Chrome fires mousedown 2, contextmenu, mouseup).
+          const button = input.button === "right" ? "right" : "left";
+          const press = connection.send("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button, clickCount: 1, ...(button === "right" ? { buttons: 2 } : {}), ...stamp }, sessionId);
+          const release = connection.send("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button, clickCount: 1, ...stamp }, sessionId);
           const replies = await Promise.allSettled([press, release]);
           const failed = replies.find(reply => reply.status === "rejected");
           if (failed) throw failed.reason;
@@ -281,11 +296,33 @@ export async function inputHostTab(browser, tab, input, { viewport=canonicalView
           // cannot strand the button (as for a click).
           onDispatch?.();
           const steps = 8, at = i => ({ x: from[0] + (to[0] - from[0]) * i / steps, y: from[1] + (to[1] - from[1]) * i / steps });
-          const sent = [connection.send("Input.dispatchMouseEvent", { type: "mousePressed", ...at(0), button: "left", buttons: 1, clickCount: 1 }, sessionId)];
-          for (let i = 1; i <= steps; i++) sent.push(connection.send("Input.dispatchMouseEvent", { type: "mouseMoved", ...at(i), button: "left", buttons: 1 }, sessionId));
-          sent.push(connection.send("Input.dispatchMouseEvent", { type: "mouseReleased", ...at(steps), button: "left", buttons: 0, clickCount: 1 }, sessionId));
-          const failed = (await Promise.allSettled(sent)).find(reply => reply.status === "rejected");
-          if (failed) throw failed.reason;
+          // An HTML5 drag-and-drop the moves start never completes from CDP mouse events: with drags intercepted, Chrome
+          // hands the drag's data over (Input.dragIntercepted) and the kernel finishes it at the end point with drag
+          // events, as a person's mouse would. The release stays queued with the press; a text-selection drag starts
+          // no drag-and-drop and is unchanged. The host keeps this browser after a failed or timed-out step, so an
+          // intercepted drag that cannot complete is cancelled and interception always ends here (an enable that timed
+          // out may still have taken effect).
+          let dragData = null, enabling = null;
+          const unsubscribe = typeof connection.subscribe === "function" ? connection.subscribe(message => { if (message?.method === "Input.dragIntercepted" && message.sessionId === sessionId) dragData = message.params?.data ?? null; }) : null;
+          try {
+            enabling = unsubscribe ? connection.send("Input.setInterceptDrags", { enabled: true }, sessionId).catch(() => {}) : null;
+            const sent = [connection.send("Input.dispatchMouseEvent", { type: "mousePressed", ...at(0), button: "left", buttons: 1, clickCount: 1 }, sessionId)];
+            for (let i = 1; i <= steps; i++) sent.push(connection.send("Input.dispatchMouseEvent", { type: "mouseMoved", ...at(i), button: "left", buttons: 1 }, sessionId));
+            sent.push(connection.send("Input.dispatchMouseEvent", { type: "mouseReleased", ...at(steps), button: "left", buttons: 0, clickCount: 1 }, sessionId));
+            try {
+              const failed = (await Promise.allSettled(sent)).find(reply => reply.status === "rejected");
+              if (failed) throw failed.reason;
+              await enabling;
+              // Chrome reports an intercepted drag only while interception is on.
+              if (dragData) for (const type of ["dragEnter", "dragOver", "drop"]) await connection.send("Input.dispatchDragEvent", { type, ...at(steps), data: dragData }, sessionId);
+            } catch (error) {
+              if (dragData) await connection.send("Input.dispatchDragEvent", { type: "dragCancel", ...at(steps), data: dragData }, sessionId).catch(() => {});
+              throw error;
+            }
+          } finally {
+            unsubscribe?.();
+            if (enabling) await connection.send("Input.setInterceptDrags", { enabled: false }, sessionId).catch(() => {});
+          }
           assertNotCancelled(signal);
         } else throw new Error("MD-2: unsupported input");
       }

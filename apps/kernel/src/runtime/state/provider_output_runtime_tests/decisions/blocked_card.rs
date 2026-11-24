@@ -25,6 +25,29 @@ fn timer(task: &AgentTaskExecution, id: &str) -> AgentWake {
 impl Tree {
     /// `agent`'s admitted turn begins, arms a timer it never waits on and is blocked with `reason`.
     fn blocked_task_of(&self, agent: &str, reason: &str) -> AgentTaskExecution {
+        let task = self.working_task_of(agent);
+        let store = &self.runtime.owned.durable_state_store;
+        store
+            .agent_lifecycle(Operation::CreateWake {
+                task: task.task_id.clone(),
+                prompt: task.prompt_id.clone(),
+                wake: timer(&task, "wake-blk"),
+            })
+            .unwrap();
+        store
+            .agent_lifecycle(Operation::Block {
+                task: task.task_id.clone(),
+                prompt: task.prompt_id.clone(),
+                reason: reason.into(),
+            })
+            .unwrap();
+        let task = store.agent_task(&task.task_id).unwrap().unwrap();
+        assert_eq!(task.state, ExecutionState::Blocked);
+        task
+    }
+
+    /// `agent`'s admitted turn begins its task.
+    fn working_task_of(&self, agent: &str) -> AgentTaskExecution {
         let session = self.session();
         let prompt = session.active_prompt_for_agent(agent).unwrap().clone();
         let run = self
@@ -44,28 +67,58 @@ impl Tree {
                 now: 1,
             })
             .unwrap();
-        let task = store
+        store
             .agent_tasks(Some(&self.room), Some(agent))
             .unwrap()
             .pop()
-            .unwrap();
+            .unwrap()
+    }
+
+    /// `from`'s working turn sends `to` an urgent message, and the kernel starts writing it into
+    /// the provider as `prompt`: the row is submitting until its exact receipt.
+    fn submitting_message(&self, from: &AgentTaskExecution, to: &str, prompt: &str) -> u64 {
+        let store = &self.runtime.owned.durable_state_store;
+        let Outcome::Event(message) = store
+            .agent_lifecycle(Operation::Send {
+                task: from.task_id.clone(),
+                prompt: from.prompt_id.clone(),
+                event: InboxEvent {
+                    sequence: 0,
+                    room_id: self.room.clone(),
+                    agent_id: to.into(),
+                    source_id: from.agent_id.clone(),
+                    occurrence_id: format!("message-as-{prompt}"),
+                    kind: "message".into(),
+                    payload: serde_json::json!({"message": "status?"}),
+                    urgent: true,
+                    reply_requested: false,
+                    state: "pending".into(),
+                    prompt_id: None,
+                    target_prompt_id: None,
+                    provider_run_id: None,
+                    attempted_at_ms: None,
+                    submit_epoch: None,
+                    resumed_at_ms: None,
+                },
+            })
+            .unwrap()
+        else {
+            panic!("event")
+        };
         store
-            .agent_lifecycle(Operation::CreateWake {
-                task: task.task_id.clone(),
-                prompt: prompt.id().into(),
-                wake: timer(&task, "wake-blk"),
+            .agent_lifecycle(Operation::Attempt {
+                room: self.room.clone(),
+                agent: to.into(),
+                sequence: message.sequence,
+                prompt: prompt.into(),
+                target: None,
+                run: None,
+                now: crate::session::unix_epoch_ms(),
+                work: None,
+                through: message.sequence,
             })
             .unwrap();
-        store
-            .agent_lifecycle(Operation::Block {
-                task: task.task_id.clone(),
-                prompt: prompt.id().into(),
-                reason: reason.into(),
-            })
-            .unwrap();
-        let task = store.agent_task(&task.task_id).unwrap().unwrap();
-        assert_eq!(task.state, ExecutionState::Blocked);
-        task
+        message.sequence
     }
 
     fn blocked_card_id(task: &AgentTaskExecution) -> String {
@@ -398,5 +451,93 @@ async fn corrupt_completion_registrations_keep_the_parents_cancel_decision() {
         detail.contains("Recovery instructions could not be read")
             && detail.contains("Cancel this task"),
         "{detail}"
+    );
+}
+
+/// Answers `task`'s card with `choice` through the card entry point and returns the task once
+/// the owner action has settled it (left Blocked, or failed visibly).
+async fn answer_card(t: &Tree, task: &AgentTaskExecution, choice: &str) -> AgentTaskExecution {
+    t.runtime
+        .owned
+        .resolve_runtime_interaction(
+            &t.room,
+            &Tree::blocked_card_id(task),
+            choice,
+            None,
+            Some("local"),
+            false,
+        )
+        .unwrap();
+    let store = &t.runtime.owned.durable_state_store;
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let now = store.agent_task(&task.task_id).unwrap().unwrap();
+            let failed = t
+                .runtime
+                .agent_notices_for_test(&t.room, &task.agent_id)
+                .iter()
+                .any(|n| n.contains("Owner action failed"));
+            if now.state != ExecutionState::Blocked || failed {
+                return now;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the owner's answer must settle the task or fail visibly")
+}
+
+#[tokio::test]
+async fn resume_is_not_refused_by_another_turns_unconfirmed_delivery() {
+    let t = tree(
+        "blocked-card-other-delivery",
+        AgentPermissionLevel::Yolo,
+        AgentPermissionLevel::Yolo,
+    )
+    .await;
+    let task = t.blocked_task_of(&t.g, INVALID_TURN_END);
+    t.runtime
+        .ensure_task_owner_interaction(task.clone())
+        .await
+        .unwrap();
+    // A message for a later turn is on its way into the provider: its receipt is not in yet.
+    let sender = t.working_task_of(&t.p);
+    t.submitting_message(&sender, &t.g, "later-turn");
+
+    let resumed = answer_card(&t, &task, "resume").await;
+
+    assert_ne!(resumed.state, ExecutionState::Blocked, "{}", resumed.reason);
+    let notices = t.runtime.agent_notices_for_test(&t.room, &t.g);
+    assert!(
+        notices.iter().all(|n| !n.contains("Owner action failed")),
+        "{notices:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_refused_resume_says_why_on_the_agent() {
+    let t = tree(
+        "blocked-card-refused-resume",
+        AgentPermissionLevel::Yolo,
+        AgentPermissionLevel::Yolo,
+    )
+    .await;
+    let task = t.blocked_task_of(&t.g, INVALID_TURN_END);
+    t.runtime
+        .ensure_task_owner_interaction(task.clone())
+        .await
+        .unwrap();
+    // The blocked turn's own wake is still on its way in: Resume must wait for its receipt.
+    let sender = t.working_task_of(&t.p);
+    t.submitting_message(&sender, &t.g, &task.prompt_id);
+
+    answer_card(&t, &task, "resume").await;
+
+    let notices = t.runtime.agent_notices_for_test(&t.room, &t.g);
+    assert!(
+        notices
+            .iter()
+            .any(|n| n.contains("Owner action failed") && n.contains("unconfirmed delivery")),
+        "the notice must name why the Resume did not take: {notices:?}"
     );
 }

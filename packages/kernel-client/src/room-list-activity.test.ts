@@ -128,7 +128,7 @@ test("Room list session activity predicates derive work and unread output", () =
     working_agent_count: 1,
     active_prompt_count: 1,
     queued_prompt_count: 2,
-  }), "1 working, 1 active prompt, 2 queued prompts")
+  }), "1 top-level agent working, 1 active prompt, 2 queued prompts")
 })
 
 test("Room list status labels normalize lifecycle state and activity overrides", () => {

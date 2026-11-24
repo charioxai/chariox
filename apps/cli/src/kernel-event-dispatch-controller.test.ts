@@ -180,11 +180,12 @@ test("kernel event dispatch applies relay and remote-machine patches without ref
       machine_alias: "worker",
       display_name: "worker",
       trust_status: "approved",
-      online: true,
+      presence: "online",
       pending: false,
       kernel_count: 1,
       available_providers: ["opencode"],
     }],
+    offline_machines: [],
   })
 
   assert.deepEqual(harness.calls, [
@@ -763,11 +764,10 @@ function session(overrides: Partial<RuntimeSession> = {}): RuntimeSession {
     created_at_ms: 1,
     status: "Created",
     active_provider_run_id: null,
-    attachment_ids: [],
+    connected_cli_count: 0,
     active_prompt: null,
     queued_prompts: [],
     focused_agent_id: null,
-    max_agents: 1,
     agents: [],
     config_state: { values: {} } as RuntimeSession["config_state"],
     ...overrides,

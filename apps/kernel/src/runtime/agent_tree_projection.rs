@@ -6,39 +6,52 @@
 //! is the current holder of one of its pending decisions (slice A3): a decision
 //! an ancestor agent holds keeps the node waiting and shows no card. A turn
 //! blocked without an interaction is `waiting` only.
-//! A node is `running` while its turn lives (processing, or a task working or
-//! parked on a wait or on its children); its `outcome` is how its latest turn
-//! ended and is null while it runs or before it ever ran.
+//! Running and starting come from an active provider turn or an admitted
+//! prompt. A parked task is waiting. `outcome` records how the latest task ended.
 //! `totals.live` counts the nodes that are starting, running, waiting or unreachable: an idle node (finished,
 //! or not started) is done to a client, which closes its Sub-agents view when none is live.
 use crate::agent::AgentInstance;
 use crate::local::{AgentTree, AgentTreeNode, AgentTreeState, AgentTreeTotals};
 use crate::provider::TurnOutcomeKind;
 use crate::session::{
-    effective_agent_execution_config_in_tree, CollaborationLevel, RuntimeSession,
+    effective_agent_execution_config_with_parents, CollaborationLevel, PromptStatus, RuntimeSession,
 };
 
-/// What the latest task of an agent says about its turn.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Live provider activity and the state of the latest durable task.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct NodeTurn {
-    pub(crate) live: bool,
+    pub(crate) active: bool,
+    pub(crate) parked: bool,
     pub(crate) blocked: bool,
     pub(crate) outcome: Option<TurnOutcomeKind>,
 }
 
-fn node_state(agent: &AgentInstance, waiting: bool, turn: Option<NodeTurn>) -> AgentTreeState {
+fn node_state(
+    room: &RuntimeSession,
+    agent: &AgentInstance,
+    pending: bool,
+    turn: NodeTurn,
+) -> AgentTreeState {
     if agent.archived() {
-        AgentTreeState::Ended
-    } else if agent.state() == crate::agent::AgentState::Error {
-        AgentTreeState::Error
-    } else if waiting || turn.is_some_and(|turn| turn.blocked) {
-        AgentTreeState::Waiting
-    } else if agent.is_processing() || turn.is_some_and(|turn| turn.live) {
-        AgentTreeState::Running
-    } else if agent.state() == crate::agent::AgentState::Working {
-        AgentTreeState::Starting
-    } else {
-        AgentTreeState::Idle
+        return AgentTreeState::Ended;
+    }
+    if agent.state() == crate::agent::AgentState::Error {
+        return AgentTreeState::Error;
+    }
+    if pending || turn.blocked || turn.parked {
+        return AgentTreeState::Waiting;
+    }
+    if turn.active {
+        return AgentTreeState::Running;
+    }
+    match room
+        .active_prompt_for_agent(agent.id())
+        .map(|prompt| prompt.status())
+    {
+        Some(PromptStatus::Dispatching) => AgentTreeState::Starting,
+        Some(PromptStatus::Running | PromptStatus::Cancelling) => AgentTreeState::Running,
+        _ if room.agent_is_waiting(agent.id()) => AgentTreeState::Waiting,
+        _ => AgentTreeState::Idle,
     }
 }
 
@@ -55,7 +68,12 @@ fn totals_of(nodes: &[AgentTreeNode]) -> AgentTreeTotals {
             .count() as u32,
         running: nodes
             .iter()
-            .filter(|node| node.state == AgentTreeState::Running)
+            .filter(|node| {
+                matches!(
+                    node.state,
+                    AgentTreeState::Starting | AgentTreeState::Running
+                )
+            })
             .count() as u32,
         needs_user: nodes.iter().filter(|node| node.needs_user).count() as u32,
     }
@@ -101,7 +119,8 @@ pub(crate) fn tree_for_viewer(
             .find(|agent| agent.id() == node.agent_id)
             .is_some_and(|agent| {
                 is_viewers(agent.owner_user_id())
-                    || session.can_view_tree_agent_owned_by(member, agent.owner_user_id())
+                    || (agent.session_id() == session.id()
+                        && session.can_view_tree_agent_owned_by(member, agent.owner_user_id()))
             })
     });
     if !level.can_view_agent_parameters() {
@@ -122,22 +141,14 @@ pub(crate) fn project_agent_tree(
     session: &RuntimeSession,
     agents: &[AgentInstance],
     root: &str,
-    held_by_agent: &dyn Fn(&str) -> bool,
-    deadline_ms: &dyn Fn(&str) -> Option<u64>,
-    turn_of: &dyn Fn(&str) -> Option<NodeTurn>,
+    held_by_agent: &dyn Fn(&RuntimeSession, &str) -> bool,
+    deadline_ms: &dyn Fn(&AgentInstance) -> Option<u64>,
+    turn_of: &dyn Fn(&AgentInstance) -> Option<NodeTurn>,
+    find_room: &dyn Fn(&str) -> Option<RuntimeSession>,
 ) -> Option<AgentTree> {
-    agents.iter().find(|agent| agent.id() == root)?;
-    let pending = |agent_id: &str| {
-        session
-            .active_interactions()
-            .iter()
-            .any(|interaction| interaction.agent_id() == Some(agent_id))
-    };
-    let user_holds = |agent_id: &str| {
-        session.active_interactions().iter().any(|interaction| {
-            interaction.agent_id() == Some(agent_id) && !held_by_agent(interaction.id())
-        })
-    };
+    agents
+        .iter()
+        .find(|agent| agent.id() == root && agent.session_id() == session.id())?;
     // Membership and depth come from the parent edges, whatever the creation order: the user can
     // place an older agent under a newer descendant. Only the display order is by creation.
     let mut children = std::collections::HashMap::<&str, Vec<&AgentInstance>>::new();
@@ -166,17 +177,41 @@ pub(crate) fn project_agent_tree(
     });
     let mut nodes = Vec::new();
     for (agent, depth) in members {
-        let turn = turn_of(agent.id());
-        let state = node_state(
+        let other_room = (agent.session_id() != session.id())
+            .then(|| find_room(agent.session_id()))
+            .flatten();
+        let room = other_room.as_ref().unwrap_or(session);
+        let pending = room
+            .active_interactions()
+            .iter()
+            .filter(|interaction| interaction.agent_id() == Some(agent.id()))
+            .collect::<Vec<_>>();
+        let user_holds = pending
+            .iter()
+            .any(|interaction| !held_by_agent(room, interaction.id()));
+        let turn = turn_of(agent).unwrap_or_default();
+        let state = node_state(room, agent, !pending.is_empty(), turn);
+        let find_agent = |id: &str| agents.iter().find(|candidate| candidate.id() == id);
+        let effective = effective_agent_execution_config_with_parents(
+            room,
             agent,
-            pending(agent.id()) || (!agent.is_processing() && session.agent_is_waiting(agent.id())),
-            turn,
+            |id| find_agent(id).cloned(),
+            find_room,
         );
-        // The value approval gating reads, after the limit of the parent chain.
-        let effective = effective_agent_execution_config_in_tree(session, agent, agents);
+        let started_by = other_room.as_ref().and_then(|_| {
+            agent
+                .parent_agent_id()
+                .and_then(find_agent)
+                .map(|parent| parent.alias().unwrap_or(parent.agent_ref()).to_owned())
+        });
         nodes.push(AgentTreeNode {
             agent_id: agent.id().to_owned(),
             parent_agent_id: agent.parent_agent_id().map(str::to_owned),
+            room_id: other_room.as_ref().map(|room| room.id().to_owned()),
+            room_alias: other_room
+                .as_ref()
+                .and_then(|room| room.alias().map(str::to_owned)),
+            started_by,
             kernel_id: None,
             alias: agent.alias().map(str::to_owned),
             provider: agent.provider().to_owned(),
@@ -189,13 +224,13 @@ pub(crate) fn project_agent_tree(
             workspace_id: Some(
                 agent
                     .workspace_id()
-                    .unwrap_or_else(|| session.workspace_id())
+                    .unwrap_or_else(|| room.workspace_id())
                     .to_owned(),
             ),
             worktree_id: Some(
                 agent
                     .worktree_id()
-                    .unwrap_or_else(|| session.worktree_id())
+                    .unwrap_or_else(|| room.worktree_id())
                     .to_owned(),
             ),
             worker_kernel_id: agent
@@ -203,12 +238,12 @@ pub(crate) fn project_agent_tree(
                 .map(|remote| remote.worker_kernel_id.clone()),
             depth,
             state,
-            outcome: turn.and_then(|turn| turn.outcome),
-            needs_user: user_holds(agent.id())
+            outcome: turn.outcome,
+            needs_user: user_holds
                 && !matches!(state, AgentTreeState::Ended | AgentTreeState::Error),
-            deadline_ms: deadline_ms(agent.id()),
+            deadline_ms: deadline_ms(agent),
             created_at_ms: agent.created_at_ms(),
-            usage_limit_stop: agent.usage_limit_stop().cloned(),
+            usage_limit_stop: agent.usage_limit_wait().cloned(),
         });
     }
     let totals = totals_of(&nodes);
@@ -222,6 +257,25 @@ pub(crate) fn project_agent_tree(
 
 #[cfg(test)]
 mod tests {
+    fn project_agent_tree(
+        session: &RuntimeSession,
+        agents: &[AgentInstance],
+        root: &str,
+        held_by_agent: &dyn Fn(&str) -> bool,
+        deadline_ms: &dyn Fn(&str) -> Option<u64>,
+        turn_of: &dyn Fn(&str) -> Option<NodeTurn>,
+    ) -> Option<AgentTree> {
+        super::project_agent_tree(
+            session,
+            agents,
+            root,
+            &|_, interaction| held_by_agent(interaction),
+            &|agent| deadline_ms(agent.id()),
+            &|agent| turn_of(agent.id()),
+            &|_| None,
+        )
+    }
+
     use super::*;
     use crate::agent::{AgentRef, GridPosition};
     use crate::provider::{AgentExecutionMode, AgentPermissionLevel};
@@ -244,8 +298,15 @@ mod tests {
     }
 
     fn session(agents: Vec<AgentInstance>) -> RuntimeSession {
-        let mut session =
-            RuntimeSession::new("room", None, "workspace", "worktree", "machine", "daemon");
+        let mut session = RuntimeSession::new(
+            "room",
+            crate::session::ProjectId::test(),
+            None,
+            "workspace",
+            "worktree",
+            "machine",
+            "daemon",
+        );
         session.set_agents(agents);
         session
     }
@@ -527,11 +588,11 @@ mod tests {
             agent("done", Some("root"), 2),
             agent("cancelled", Some("root"), 3),
             agent("busy", Some("root"), 4),
+            agent("parked", Some("root"), 5),
         ]);
         let finished = |outcome| NodeTurn {
-            live: false,
-            blocked: false,
             outcome: Some(outcome),
+            ..NodeTurn::default()
         };
         let tree = project_agent_tree(
             &session,
@@ -542,10 +603,14 @@ mod tests {
             &|id| match id {
                 "done" => Some(finished(TurnOutcomeKind::Completed)),
                 "cancelled" => Some(finished(TurnOutcomeKind::Cancelled)),
+                "parked" => Some(NodeTurn {
+                    active: true,
+                    parked: true,
+                    ..NodeTurn::default()
+                }),
                 _ => Some(NodeTurn {
-                    live: true,
-                    blocked: false,
-                    outcome: None,
+                    active: true,
+                    ..NodeTurn::default()
                 }),
             },
         )
@@ -556,10 +621,12 @@ mod tests {
             vec![
                 AgentTreeState::Idle,
                 AgentTreeState::Idle,
-                AgentTreeState::Running
+                AgentTreeState::Running,
+                AgentTreeState::Waiting,
             ]
         );
-        assert_eq!(tree.totals.live, 1);
+        assert_eq!(tree.totals.live, 2);
+        assert_eq!(tree.totals.running, 1);
     }
 
     fn settings_child(
@@ -779,13 +846,12 @@ mod tests {
             &|_| None,
             &|id| {
                 Some(NodeTurn {
-                    live: false,
-                    blocked: false,
                     outcome: Some(if id == "done" {
                         TurnOutcomeKind::Completed
                     } else {
                         TurnOutcomeKind::Cancelled
                     }),
+                    ..NodeTurn::default()
                 })
             },
         )
