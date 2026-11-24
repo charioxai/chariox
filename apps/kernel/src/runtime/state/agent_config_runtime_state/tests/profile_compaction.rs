@@ -1394,6 +1394,38 @@ async fn a_deferred_downshift_does_not_resume_the_oversized_native_session() {
         .provider_store
         .write()
         .insert_run_for_test(run.clone());
+    let prompt = crate::history::SessionHistoryEntry::user_prompt(
+        &session,
+        "attachment",
+        &agent,
+        "Review continuity without changing the accepted decision.",
+    );
+    let proposal = crate::history::SessionHistoryEntry::provider_output(
+        &session,
+        run.id(),
+        Some(&agent),
+        crate::terminal::TerminalOutputKind::ProviderOutput,
+        None,
+        "Assistant proposal: Continuity Ledger. This is not an accepted user decision.",
+    );
+    for entry in [&prompt, &proposal] {
+        runtime
+            .owned
+            .operational_history_store
+            .append_transcript(
+                entry,
+                crate::history::HistoryEventTurnContext {
+                    prompt_id: Some("audit-prompt".into()),
+                    turn_id: Some("audit-turn".into()),
+                    provider: Some(run.provider().into()),
+                    model: Some(run.model().into()),
+                    provider_run_id: Some(run.id().into()),
+                    provider_session_id: Some("oversized-native-session".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+    }
     {
         let mut agents = runtime.owned.agent_store.write();
         let mut current = agents.get_agent(&agent).unwrap();
@@ -1425,14 +1457,12 @@ async fn a_deferred_downshift_does_not_resume_the_oversized_native_session() {
     );
     let mut target = run.clone();
     target.set_model("haiku");
-    assert!(
-        runtime
-            .owned
-            .pending_agent_context_handoffs
-            .peek_matching(&session, &agent, &target)
-            .is_some(),
-        "the next turn carries the protected kernel history"
-    );
+    let handoff = runtime
+        .owned
+        .pending_agent_context_handoffs
+        .peek_matching(&session, &agent, &target)
+        .expect("the next turn carries the protected kernel history");
+    assert!(handoff.render_hidden(24_000).contains("Continuity Ledger"));
 }
 
 // MP-08 / MP-10 / MP-11: real launches keep selection default, not the resolved id.
