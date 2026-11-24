@@ -391,3 +391,40 @@ fn refusal_the_reader_holds_counts_when_another_branch_ends_the_connection() {
     let (_still_reading, mut reader_end) = oneshot::channel::<ReaderEnd>();
     assert!(!reader_end_refused_token(&mut reader_end));
 }
+
+#[tokio::test]
+async fn writer_ending_with_the_readers_queue_full_close_keeps_the_reason() {
+    // The reader sends its close frame and drops the upload receipt channel, which ends the
+    // writer: both are ready together and the connection loop may see the writer first.
+    use socket_thread::ReaderEnd;
+    use tokio_tungstenite::tungstenite::protocol::{frame::coding::CloseCode, CloseFrame};
+    let relay_url = "wss://relay.test/";
+    let state = Arc::new(RwLock::new(RelayClientState::default()));
+    let (sender, mut reader_end) = oneshot::channel();
+    let _ = sender.send(ReaderEnd::SocketClose(Some(CloseFrame {
+        code: CloseCode::Again,
+        reason: chariox_relay::protocol::REPLY_QUEUE_FULL_CLOSE_REASON.into(),
+    })));
+    let (reason, refusal) = writer_end_reason(&state, relay_url, &mut reader_end).await;
+    assert_eq!(reason, "relay reply queue was full");
+    assert!(!refusal);
+    assert!(state.read().await.reply_queue_closed(Some(relay_url)));
+
+    // A refusal the reader holds is handed back for the connection to count.
+    let (sender, mut reader_end) = oneshot::channel();
+    let _ = sender.send(ReaderEnd::SocketClose(Some(CloseFrame {
+        code: CloseCode::Policy,
+        reason: "relay token expired".into(),
+    })));
+    let (reason, refusal) = writer_end_reason(&state, relay_url, &mut reader_end).await;
+    assert_eq!(reason, "relay close frame received");
+    assert!(refusal);
+
+    // Nothing from the reader: the writer simply ended.
+    let state = Arc::new(RwLock::new(RelayClientState::default()));
+    let (_still_reading, mut reader_end) = oneshot::channel::<ReaderEnd>();
+    let (reason, refusal) = writer_end_reason(&state, relay_url, &mut reader_end).await;
+    assert_eq!(reason, "relay writer ended");
+    assert!(!refusal);
+    assert!(!state.read().await.reply_queue_closed(Some(relay_url)));
+}
