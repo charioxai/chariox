@@ -184,6 +184,19 @@ impl KernelRuntimeState {
                 &task,
             )
         };
+        // The agent sets the box's label and placeholder; with none the card has a plain box.
+        let reply_choice = crate::session::RuntimeInteractionCustomChoice::new(
+            "reply",
+            task.question_reply
+                .as_ref()
+                .and_then(|reply| reply.label.clone())
+                .unwrap_or_default(),
+            task.question_reply
+                .as_ref()
+                .and_then(|reply| reply.placeholder.clone()),
+            Some(1),
+            None,
+        );
         if let Some(existing) = session.active_interactions().iter().find(|i| i.id() == id) {
             let live = self
                 .owned
@@ -202,6 +215,7 @@ impl KernelRuntimeState {
             if live {
                 if existing.message() != message
                     || existing.related_agent_id() != Some(task.agent_id.as_str())
+                    || existing.custom_choice() != Some(&reply_choice)
                 {
                     let mutation = self.owned.begin_managed_activity_mutation();
                     let mut sessions = self.owned.session_store.write();
@@ -210,7 +224,8 @@ impl KernelRuntimeState {
                         latest.add_active_interaction(
                             current
                                 .with_message(message)
-                                .with_related_agent_id(task.agent_id.clone()),
+                                .with_related_agent_id(task.agent_id.clone())
+                                .with_question_reply(reply_choice.clone()),
                         );
                         sessions.restore_session(latest);
                     }
@@ -257,21 +272,7 @@ impl KernelRuntimeState {
         .without_timeout()
         .with_related_agent_id(task.agent_id.clone());
         if question {
-            interaction = interaction.with_question_reply(
-                // The agent sets the box's label and placeholder; with none the card has a plain box.
-                crate::session::RuntimeInteractionCustomChoice::new(
-                    "reply",
-                    task.question_reply
-                        .as_ref()
-                        .and_then(|reply| reply.label.clone())
-                        .unwrap_or_default(),
-                    task.question_reply
-                        .as_ref()
-                        .and_then(|reply| reply.placeholder.clone()),
-                    Some(1),
-                    None,
-                ),
-            );
+            interaction = interaction.with_question_reply(reply_choice.clone());
         }
 
         let rx = self

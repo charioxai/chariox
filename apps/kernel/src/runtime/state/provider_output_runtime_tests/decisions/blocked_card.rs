@@ -607,3 +607,81 @@ async fn a_question_card_with_empty_label_and_placeholder_from_the_agent_has_a_p
     assert_eq!(custom.label(), "");
     assert_eq!(custom.placeholder(), None);
 }
+
+/// The same question asked again (the same reason, or a new one) with another label and hint: the open card shows the new box.
+async fn reasked_card_custom_choice(
+    label: &str,
+    new_reason: bool,
+) -> (
+    crate::session::RuntimeInteractionCustomChoice,
+    crate::session::RuntimeInteractionCustomChoice,
+) {
+    use crate::durable_state::agent_lifecycle::QuestionReply;
+    let t = tree(
+        label,
+        AgentPermissionLevel::Yolo,
+        AgentPermissionLevel::Yolo,
+    )
+    .await;
+    let working = t.working_task_of(&t.g);
+    let ask = |reason: &str, text: &str| Operation::BlockForQuestion {
+        task: working.task_id.clone(),
+        prompt: working.prompt_id.clone(),
+        reason: reason.into(),
+        reply: Some(QuestionReply {
+            label: Some(text.into()),
+            placeholder: Some(format!("{text} hint")),
+        }),
+    };
+    let store = &t.runtime.owned.durable_state_store;
+    let card = |task: &AgentTaskExecution| {
+        t.session()
+            .active_interactions()
+            .iter()
+            .find(|card| card.id() == Tree::blocked_card_id(task))
+            .and_then(|card| card.custom_choice().cloned())
+            .expect("the question has a free-text box")
+    };
+    let crate::durable_state::agent_lifecycle::Outcome::Task(first) = store
+        .agent_lifecycle(ask("Which colour?", "First label"))
+        .unwrap()
+    else {
+        panic!("task")
+    };
+    t.runtime
+        .ensure_task_owner_interaction(first.clone())
+        .await
+        .unwrap();
+    let before = card(&first);
+    let reason = if new_reason {
+        "Which colour now?"
+    } else {
+        "Which colour?"
+    };
+    let crate::durable_state::agent_lifecycle::Outcome::Task(second) =
+        store.agent_lifecycle(ask(reason, "Second label")).unwrap()
+    else {
+        panic!("task")
+    };
+    t.runtime
+        .ensure_task_owner_interaction(second.clone())
+        .await
+        .unwrap();
+    (before, card(&second))
+}
+
+#[tokio::test]
+async fn asking_the_same_question_again_with_another_label_changes_the_open_card() {
+    let (before, after) = reasked_card_custom_choice("reask-same", false).await;
+    assert_eq!(before.label(), "First label");
+    assert_eq!(after.label(), "Second label");
+    assert_eq!(after.placeholder(), Some("Second label hint"));
+}
+
+#[tokio::test]
+async fn asking_a_new_question_with_another_label_changes_the_open_card() {
+    let (before, after) = reasked_card_custom_choice("reask-new", true).await;
+    assert_eq!(before.label(), "First label");
+    assert_eq!(after.label(), "Second label");
+    assert_eq!(after.placeholder(), Some("Second label hint"));
+}
