@@ -261,13 +261,45 @@ impl LaunchAdmission {
                 .memory
                 .saturating_sub(reserved)
                 .saturating_sub(launch_memory.values().copied().fold(0, u64::saturating_add));
-            // A declared job books capacity before it has a PID. Ordinary
-            // command predictions wait only when physical memory is short.
+            // A declared job books capacity before it has a PID. A command
+            // whose last run peaked heavy waits when that peak does not fit
+            // the room left and something heavy runs that can free it
+            // (otherwise it starts: one command always makes progress). Other
+            // ordinary commands wait only when physical memory is short.
+            let heavy_known =
+                expected.memory >= light && ledger.heavy_running(&members, light, &launches);
             if !force
                 && protection.memory
-                && (minimum_memory > 0 || pool.memory_emergency())
+                && (minimum_memory > 0 || heavy_known || pool.memory_emergency())
                 && memory > free
             {
+                let first = pool
+                    .launch_waiting
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .insert(id.to_string());
+                if first {
+                    crate::logging::info_with_fields(
+                        "process_resources.admission",
+                        format!(
+                            "admission held (Memory): {}: {}",
+                            admission::display(argv),
+                            if minimum_memory > 0 {
+                                "it declared a memory need above the room left in the pool"
+                            } else if heavy_known {
+                                "its last run peaked above the room left in the pool, so it waits before it starts"
+                            } else {
+                                "the machine is short of memory"
+                            }
+                        ),
+                        serde_json::json!({
+                            "decision": "held", "reason": "memory", "launch": id,
+                            "command": admission::display(argv).chars().take(200).collect::<String>(),
+                            "need_bytes": memory, "free_bytes": free,
+                            "declared_bytes": minimum_memory,
+                        }),
+                    );
+                }
                 return Err(LaunchWait {
                     reason: admission::WaitReason::Memory,
                     need_bytes: memory,
@@ -289,6 +321,25 @@ impl LaunchAdmission {
                         free_bytes: free,
                     });
                 }
+            }
+            if pool
+                .launch_waiting
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(id)
+            {
+                crate::logging::info_with_fields(
+                    "process_resources.admission",
+                    format!(
+                        "admission started (Memory): {}: the room it waited for is free",
+                        admission::display(argv)
+                    ),
+                    serde_json::json!({
+                        "decision": "started", "reason": "memory", "launch": id,
+                        "command": admission::display(argv).chars().take(200).collect::<String>(),
+                        "need_bytes": memory, "free_bytes": free,
+                    }),
+                );
             }
             launches.insert(
                 id.to_string(),

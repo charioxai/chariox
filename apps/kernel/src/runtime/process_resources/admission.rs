@@ -546,6 +546,27 @@ impl Ledger {
         }
     }
 
+    /// Whether a heavy command runs now whose end would free room: a launch
+    /// that holds a heavy reservation, or a command of an observed workload
+    /// holding at least `light` (a job's own process counts while its launch
+    /// is alive; a provider's or a shell's long-lived root never does).
+    pub(super) fn heavy_running(
+        &self,
+        members: &[Arc<Mutex<Observation>>],
+        light: u64,
+        launches: &BTreeMap<String, super::launch::Reservation>,
+    ) -> bool {
+        launches.values().any(|launch| launch.memory >= light)
+            || members.iter().any(|member| {
+                let member = member.lock().unwrap_or_else(|e| e.into_inner());
+                let launched = launches.contains_key(&member.unit);
+                member
+                    .commands
+                    .iter()
+                    .any(|command| (launched || !command.root) && command.resident >= light)
+            })
+    }
+
     /// Growth beyond each domain's already-reserved binary prediction.
     pub(super) fn reserved_memory(
         &self,
@@ -1020,8 +1041,9 @@ impl Ledger {
                 entry.wait_for(held);
                 let free = match held {
                     Wait::Held(WaitReason::Memory) => state.memory_room(&unit, room),
-                    Wait::Held(WaitReason::Disk) | Wait::Paused(_) => disk
-                        .map_or(0, |disk| state.spare(disk, &unit, room)),
+                    Wait::Held(WaitReason::Disk) | Wait::Paused(_) => {
+                        disk.map_or(0, |disk| state.spare(disk, &unit, room))
+                    }
                 };
                 entry.decision(
                     pid,

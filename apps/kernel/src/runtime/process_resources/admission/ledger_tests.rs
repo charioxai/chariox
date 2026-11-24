@@ -2720,7 +2720,11 @@ fn a_known_peak_that_does_not_fit_waits_before_it_starts_on_a_healthy_machine() 
     pass_after_settle(&mut ledger, &current, &healthy(60 * GIB, &*volume));
     assert_eq!(wait(&current, 2), None);
     pass_after_settle(&mut ledger, &current, &healthy(20 * GIB, &*volume));
-    assert_eq!(wait(&current, 2), None, "a started command is not held again");
+    assert_eq!(
+        wait(&current, 2),
+        None,
+        "a started command is not held again"
+    );
 }
 
 #[test]
@@ -2827,15 +2831,19 @@ fn every_hold_start_and_release_is_logged_with_its_reason() {
         .filter(|line| line.contains("frame-analysis-541"))
         .collect::<Vec<_>>();
     assert!(
-        lines.iter().any(|line| line.starts_with("process_resources.admission admission held")
-            && line.contains("its last run peaked above the room left")
-            && line.contains("\"need_bytes\"")
-            && line.contains("\"free_bytes\"")),
+        lines.iter().any(
+            |line| line.starts_with("process_resources.admission admission held")
+                && line.contains("its last run peaked above the room left")
+                && line.contains("\"need_bytes\"")
+                && line.contains("\"free_bytes\"")
+        ),
         "no held line: {lines:?}"
     );
     assert!(
-        lines.iter().any(|line| line.starts_with("process_resources.admission admission started")
-            && line.contains("next in line")),
+        lines.iter().any(
+            |line| line.starts_with("process_resources.admission admission started")
+                && line.contains("next in line")
+        ),
         "no started line: {lines:?}"
     );
 }
