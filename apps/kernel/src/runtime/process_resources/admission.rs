@@ -662,19 +662,41 @@ impl Ledger {
             .copied()
             .collect::<Vec<_>>();
         for pid in ended {
-            if let Some(Entry {
-                seen: Some(seen),
-                peak,
-                ..
-            }) = observation.admission.remove(&pid)
-            {
-                self.peaks.record(
-                    &seen.key,
-                    Peak {
-                        exact: seen.exact,
-                        ..peak
+            let Some(entry) = observation.admission.remove(&pid) else {
+                continue;
+            };
+            let heavy = entry.peak.memory >= light;
+            let Some(seen) = entry.seen.as_ref() else {
+                if heavy {
+                    entry.decision(
+                        pid,
+                        "forgot",
+                        WaitReason::Memory,
+                        "it ended without a recognised command line, so its peak is not kept for its next run",
+                        serde_json::json!({"peak_bytes": entry.peak.memory}),
+                    );
+                }
+                continue;
+            };
+            let kept = self.peaks.record(
+                &seen.key,
+                Peak {
+                    exact: seen.exact,
+                    ..entry.peak.clone()
+                },
+                light,
+            );
+            if heavy {
+                entry.decision(
+                    pid,
+                    if kept { "remembered" } else { "forgot" },
+                    WaitReason::Memory,
+                    if kept {
+                        "it ended; its peak is kept, so its next run waits when the pool cannot fit it"
+                    } else {
+                        "it ended; its peak was not kept"
                     },
-                    light,
+                    serde_json::json!({"peak_bytes": entry.peak.memory}),
                 );
             }
         }
@@ -1969,9 +1991,9 @@ impl Peaks {
         true
     }
 
-    pub(super) fn record(&mut self, key: &str, peak: Peak, light: u64) {
+    pub(super) fn record(&mut self, key: &str, peak: Peak, light: u64) -> bool {
         if !self.remember(key, peak, light) {
-            return;
+            return false;
         }
         if let Some(file) = &self.file {
             let written = serde_json::to_vec(&self.known)
@@ -1989,6 +2011,7 @@ impl Peaks {
                 );
             }
         }
+        true
     }
 }
 
