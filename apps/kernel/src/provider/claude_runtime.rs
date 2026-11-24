@@ -438,6 +438,12 @@ pub(crate) fn drain_claude_events(
         // The turn that began in this batch was cut off (process exit, cancel) before its result.
         batch.provider_own_turn = ProviderOwnTurnSignal::StartedAndEnded;
     }
+    if batch.terminal_failure.is_some() {
+        // The kernel ends the run on a terminal failure and may never poll it again, so the
+        // compaction the failure cut off settles in this batch.
+        settle_running_compaction(run.id(), state);
+        batch.chunks.append(&mut state.unsent_chunks);
+    }
 
     Ok(batch)
 }
@@ -716,6 +722,16 @@ fn settle_running_compaction(run_id: &str, state: &mut ClaudeRuntimeState) {
         },
     ));
     state.compactions += 1;
+}
+
+/// The rows still owed when a run is terminated: the running compaction fails, and whatever an
+/// earlier restart queued goes out with it, because nothing polls the run again.
+pub(crate) fn take_closing_compaction_chunks(
+    run_id: &str,
+    state: &mut ClaudeRuntimeState,
+) -> Vec<crate::provider::ProviderPromptChunk> {
+    settle_running_compaction(run_id, state);
+    std::mem::take(&mut state.unsent_chunks)
 }
 
 fn restart_claude_runtime(
