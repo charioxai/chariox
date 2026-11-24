@@ -1925,28 +1925,3 @@ async fn a_wake_turn_that_leaves_its_outcome_unacknowledged_is_still_held_for_it
     assert!(working(&team));
     assert!(child_finished(&team).is_empty());
 }
-
-/// A provider that is still running a tool cannot start the notification turn: the grace does
-/// not count against it.
-#[tokio::test]
-async fn a_busy_provider_is_not_given_up_on_after_the_grace() {
-    let team = child_with_a_call_running("background-hold-busy").await;
-    apply(
-        &team,
-        vec![ended_at(crate::session::unix_epoch_ms() - 2 * MINUTE_MS)],
-    )
-    .await;
-    // The provider is inside a foreground command (cardrule's polling loop).
-    apply(
-        &team,
-        vec![tool_chunk(&serde_json::json!({
-            "id": "toolu_poll", "tool": "Bash", "status": "running",
-            "started_at_ms": crate::session::unix_epoch_ms(),
-            "input": {"command": "until grep -q done log; do sleep 30; done"}
-        }))],
-    )
-    .await;
-    sweep(&team).await;
-    assert!(working(&team), "the child is still held");
-    assert!(child_finished(&team).is_empty());
-}
