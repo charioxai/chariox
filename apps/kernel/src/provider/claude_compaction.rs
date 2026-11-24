@@ -177,6 +177,40 @@ mod tests {
         );
     }
 
+    // A transcript over the tail limit is read from an arbitrary byte. When that byte falls inside a multibyte
+    // character of an older entry, the intact summary near the end of the file must still be found.
+    #[test]
+    fn a_tail_that_starts_inside_a_character_still_finds_the_summary() {
+        const TAIL_BYTES: usize = 8 * 1024 * 1024;
+        let temp = crate::test_temp_dir::TestTempDir::new("claude-compaction-tail-split");
+        let project = temp.path().join("projects").join("-repo");
+        std::fs::create_dir_all(&project).unwrap();
+        let prefix = r#"{"type":"assistant","text":""#;
+        let mut summary = json!({"type":"user","isCompactSummary":true,"uuid":"s9","message":{"content":"Kept summary."}}).to_string();
+        // The cutoff must fall one byte into a three-byte character: pad the summary line until it does.
+        let filler = |characters: usize| format!("{prefix}{}\"}}\n", "\u{20ac}".repeat(characters));
+        let characters = TAIL_BYTES / 3 + 1_000;
+        loop {
+            let total = filler(characters).len() + summary.len() + 1;
+            let cutoff = total - TAIL_BYTES;
+            if cutoff > prefix.len() && (cutoff - prefix.len()) % 3 == 1 {
+                break;
+            }
+            summary.push(' ');
+        }
+        let transcript = format!("{}{summary}\n", filler(characters));
+        let cutoff = transcript.len() - TAIL_BYTES;
+        assert!(
+            std::str::from_utf8(&transcript.as_bytes()[cutoff..]).is_err(),
+            "the cutoff must split a character"
+        );
+        std::fs::write(project.join("session-9.jsonl"), transcript).unwrap();
+        assert_eq!(
+            read_summary_from_transcript(temp.path(), "session-9", "s9").as_deref(),
+            Some("Kept summary.")
+        );
+    }
+
     #[test]
     fn a_summary_entry_without_text_has_an_empty_summary() {
         let cut =
