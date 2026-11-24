@@ -35,6 +35,7 @@ export type TerminalRecordTranscriptFields = {
   readonly observed_at_ms?: number | null
   readonly external_observation?: ExternalProviderObservedTranscriptMetadata["externalObservation"] | null
   readonly text?: string | null
+  readonly replaces?: boolean | null
 }
 
 export type TerminalRecordTranscriptRole =
@@ -47,6 +48,8 @@ export type TerminalRecordTranscriptRole =
 
 export type TerminalRecordTranscriptMetadata = ExternalProviderObservedTranscriptFields & {
   readonly historySequence?: number
+  /** The text takes the place of its merge key's row: a reply streamed live gets its finished text. */
+  readonly replaces?: true
   readonly promptId?: string | null
   readonly promptOrigin?: string | null
   readonly sourceAttachmentId?: string | null
@@ -84,6 +87,7 @@ export function terminalRecordTranscriptMetadata(
       ? { historySequence: record.sequence as number } : {}),
     ...presentTranscriptPromptMetadataFields(kernelRecordTranscriptMetadata(record)),
     ...(externalObservedMetadata ?? {}),
+    ...(record.replaces === true ? { replaces: true as const } : {}),
   }
 }
 

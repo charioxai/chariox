@@ -21,6 +21,11 @@ impl ProviderReportedTranscript {
             .then_some(Self { path, file })
     }
 
+    /// Bytes in the file now, to tell a transcript that has not grown since the last read.
+    pub(crate) fn len(&self) -> Option<u64> {
+        self.file.metadata().ok().map(|metadata| metadata.len())
+    }
+
     pub(crate) fn read(mut self) -> std::io::Result<String> {
         let mut raw = String::new();
         self.file.read_to_string(&mut raw)?;

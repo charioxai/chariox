@@ -45,6 +45,8 @@ export type TranscriptStreamEntry = {
 
 export type TranscriptStreamMetadata = ExternalProviderObservedMutableTranscriptMetadataFields & {
   readonly historySequence?: number | undefined
+  /** The chunk is the whole text of its merge key's row, not more of it. */
+  readonly replaces?: true | undefined
   readonly promptId?: string | null | undefined
   readonly promptOrigin?: string | null | undefined
   readonly sourceAttachmentId?: string | null | undefined
@@ -288,6 +290,10 @@ function mergeProviderChunk(
     mergeAdjacentUnkeyedRoles,
   } = options
 
+  if (mergeKey && metadata.replaces) {
+    return replaceKeyedRow(entries, { role, normalized, normalizedSource, mergeKey, metadata, providerRunId })
+  }
+
   if (mergeKey) {
     for (let index = entries.length - 1; index >= 0; index -= 1) {
       const candidate = entries[index]
@@ -365,6 +371,49 @@ function sameStreamingMergeIdentity(
     return false
   }
   return true
+}
+
+/**
+ * The whole text of a keyed row: its first fragment takes it and the fragments
+ * a tool row split off are dropped. The merge key names one prompt's row, so a
+ * replacement that lands after later rows or in a later turn still finds it.
+ */
+function replaceKeyedRow(
+  entries: MutableTranscriptStreamEntry[],
+  options: {
+    role: string
+    normalized: string
+    normalizedSource: string | undefined
+    mergeKey: string
+    metadata: TranscriptStreamMetadata
+    providerRunId: string | null | undefined
+  },
+): { readonly kind: "noop" | "merged"; readonly entry: MutableTranscriptStreamEntry } | null {
+  const fragments = entries.flatMap((candidate, index) =>
+    candidate.role === options.role
+    && candidate.mergeKey === options.mergeKey
+    && sameStreamingMergeIdentity(candidate, { currentTurnId: null, providerRunId: options.providerRunId, metadata: options.metadata })
+      ? [index]
+      : [])
+  const [first, ...rest] = fragments
+  if (first === undefined) {
+    return null
+  }
+  const row = entries[first]!
+  if (rest.length === 0 && row.text === options.normalized && row.sourceText === options.normalizedSource) {
+    return { kind: "noop", entry: row }
+  }
+  for (const index of rest.reverse()) {
+    entries.splice(index, 1)
+  }
+  row.text = options.normalized
+  if (options.normalizedSource === undefined) {
+    delete row.sourceText
+  } else {
+    row.sourceText = options.normalizedSource
+  }
+  applyStreamMetadata(row, options.metadata, { preserveExisting: true })
+  return { kind: "merged", entry: row }
 }
 
 function applyMergedChunk(

@@ -698,6 +698,8 @@ public struct TranscriptEntry: Identifiable, Equatable, Sendable {
   public let id: UUID
   public let kind: Kind
   public let agentID: String?
+  /// The kernel's key for this row: later output under it continues or replaces it.
+  public let mergeKey: String?
   public var text: String
   public let createdAt: Date
 
@@ -705,12 +707,14 @@ public struct TranscriptEntry: Identifiable, Equatable, Sendable {
     id: UUID = UUID(),
     kind: Kind,
     agentID: String?,
+    mergeKey: String? = nil,
     text: String,
     createdAt: Date = Date()
   ) {
     self.id = id
     self.kind = kind
     self.agentID = agentID
+    self.mergeKey = mergeKey
     self.text = text
     self.createdAt = createdAt
   }

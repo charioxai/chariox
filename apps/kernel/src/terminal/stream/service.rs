@@ -213,6 +213,7 @@ impl TerminalStreamService {
             recipient_attachment_ids,
             bytes: bytes.to_vec(),
             external_observation_metadata: None,
+            replaces: false,
         };
 
         let changed_keys = record
@@ -261,6 +262,7 @@ impl TerminalStreamService {
                 recipient_attachment_ids,
                 bytes: output.bytes,
                 external_observation_metadata: None,
+                replaces: output.replaces,
             };
             let same_recipient_scope = last_recipient_scope.as_ref().is_some_and(
                 |(session_id, recipient_attachment_ids)| {
@@ -323,6 +325,7 @@ impl TerminalStreamService {
             recipient_attachment_ids,
             bytes: bytes.to_vec(),
             external_observation_metadata: Some(external_observation_metadata),
+            replaces: false,
         };
 
         let changed_keys = record
@@ -396,6 +399,7 @@ impl TerminalStreamService {
             recipient_attachment_ids,
             bytes: bytes.to_vec(),
             external_observation_metadata: None,
+            replaces: false,
         };
 
         let changed_keys = record
@@ -529,7 +533,11 @@ impl TerminalStreamService {
     }
 
     fn try_coalesce_output_record(&mut self, record: &TerminalOutputRecord) -> bool {
-        if self.output_coalesce_byte_limit == 0 || !is_coalescible_output_kind(&record.kind) {
+        // Text that replaces a row must not be added to what came before it.
+        if self.output_coalesce_byte_limit == 0
+            || !is_coalescible_output_kind(&record.kind)
+            || record.replaces
+        {
             return false;
         }
         let Some(previous_id) = self.last_output_record_id else {

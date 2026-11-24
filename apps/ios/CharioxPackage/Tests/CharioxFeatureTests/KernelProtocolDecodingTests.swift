@@ -620,6 +620,20 @@ import Testing
     #expect(records[0].text == "Hello")
 }
 
+// MP-08 / MP-10 (#1425, protocol 1071): a record that replaces its row says so.
+@Test func terminalOutputRecordDecodesReplaces() throws {
+    let replacing = try JSONDecoder().decode(
+        TerminalOutputRecord.self,
+        from: Data(#"{"kind":"provider_output","merge_key":"k","bytes":[65],"replaces":true}"#.utf8)
+    )
+    let appended = try JSONDecoder().decode(
+        TerminalOutputRecord.self,
+        from: Data(#"{"kind":"provider_output","merge_key":"k","bytes":[65]}"#.utf8)
+    )
+    #expect(replacing.replaces == true)
+    #expect(appended.replaces == nil)
+}
+
 // MP-08 / MP-09 / MP-10 / MP-11: Stop may cancel a parked task.
 @Test func agentTaskUpdatedResponseDecodesCancelledTask() throws {
     let json = """

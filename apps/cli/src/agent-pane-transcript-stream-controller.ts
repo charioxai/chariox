@@ -45,7 +45,8 @@ export function createAgentPaneTranscriptStreamController(
     }
 
     const nextEntries = result.entries as TranscriptEntry[]
-    if (result.kind === "merged" && result.updatedEntryId !== undefined) {
+    // A replacement that folded a split row into one changed the rows, not one row's text.
+    if (result.kind === "merged" && result.updatedEntryId !== undefined && nextEntries.length === currentEntries.length) {
       deps.commitStreamingAgentPaneEntry(agentId, currentEntries, nextEntries, result.updatedEntryId)
       return
     }
