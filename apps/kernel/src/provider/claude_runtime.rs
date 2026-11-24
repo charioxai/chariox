@@ -704,13 +704,26 @@ fn release_detached_jobs(
 }
 
 /// A restart ends the turn a compaction was running in: its row settles as failed under its own key.
-fn settle_running_compaction(_run_id: &str, _state: &mut ClaudeRuntimeState) {}
+fn settle_running_compaction(run_id: &str, state: &mut ClaudeRuntimeState) {
+    if state.compaction_started_at_ms.take().is_none() {
+        return;
+    }
+    state.unsent_chunks.push(events::compaction_chunk(
+        run_id,
+        state.compactions,
+        &crate::provider::ContextCompaction::Failed {
+            reason: "The turn ended before the compaction finished.".into(),
+        },
+    ));
+    state.compactions += 1;
+}
 
 fn restart_claude_runtime(
     run: &RuntimeProviderRun,
     state: &mut ClaudeRuntimeState,
     operation: &'static str,
 ) -> Result<(), DaemonError> {
+    settle_running_compaction(run.id(), state);
     let identity = state
         .process_identity
         .lock()

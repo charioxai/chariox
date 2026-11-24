@@ -85,16 +85,26 @@ fn note_compaction(
         Some(ClaudeCompaction::Summary { summary, .. }) => ContextCompaction::Done { summary },
         None => return,
     };
-    batch.chunks.push(ProviderPromptChunk {
-        kind: TerminalOutputKind::ContextCompacted,
-        merge_key: Some(format!(
-            "claude:{provider_run_id}:compaction:{}",
-            state.compactions
-        )),
-        bytes: compaction.to_text().into_bytes(),
-    });
+    batch.chunks.push(compaction_chunk(
+        provider_run_id,
+        state.compactions,
+        &compaction,
+    ));
     if !matches!(compaction, ContextCompaction::Running { .. }) {
         state.compactions += 1;
+    }
+}
+
+/// The row of compaction number `compactions` of this run: every state of one compaction shares the key.
+pub(super) fn compaction_chunk(
+    provider_run_id: &str,
+    compactions: u64,
+    compaction: &ContextCompaction,
+) -> ProviderPromptChunk {
+    ProviderPromptChunk {
+        kind: TerminalOutputKind::ContextCompacted,
+        merge_key: Some(format!("claude:{provider_run_id}:compaction:{compactions}")),
+        bytes: compaction.to_text().into_bytes(),
     }
 }
 
