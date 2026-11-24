@@ -428,7 +428,6 @@ async fn provider_failure_reason_deadline_overrides_the_last_error() {
             room: team.room.clone(),
             agent: team.child.clone(),
             deadline: Some(now),
-            inherited: Vec::new(),
         })
         .unwrap();
     runtime.tick_agent_deadlines(now).await.unwrap();
@@ -822,7 +821,6 @@ async fn a_revived_sub_agents_new_work_survives_its_parents_ended_deadline() {
             room: team.room.clone(),
             agent: team.parent.clone(),
             deadline: Some(crate::session::unix_epoch_ms() + 30),
-            inherited: Vec::new(),
         })
         .unwrap();
     tokio::time::sleep(std::time::Duration::from_millis(80)).await;

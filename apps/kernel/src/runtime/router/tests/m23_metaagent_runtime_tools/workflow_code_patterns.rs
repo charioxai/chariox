@@ -759,7 +759,6 @@ async fn metaagent_workflow_code_validate_rejects_unauthorized_existing_agent_bi
                 room: session.id().into(),
                 agent: owned_worker.id().into(),
                 deadline: Some(deadline),
-                inherited: vec![],
             })
             .unwrap();
         app.sessions()
