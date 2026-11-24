@@ -25,6 +25,7 @@ fn restore_room(runtime: &KernelRuntimeState, room: &str) {
         .session_store
         .restore_session(RuntimeSession::new(
             room,
+            crate::session::ProjectId::test(),
             None,
             "workspace",
             "worktree",

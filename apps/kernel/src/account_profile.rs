@@ -36,8 +36,8 @@ mod authority;
 pub(crate) use authority::{
     bind_provider_account_authority, copy_provider_account_selection,
     provider_account_authority_for_launch, provider_account_authority_for_run,
-    provider_account_authority_owner_for_profile, provider_account_selection_for_run,
-    ResolvedProviderAccount,
+    provider_account_authority_owner_for_lease, provider_account_authority_owner_for_profile,
+    provider_account_selection_for_run, ResolvedProviderAccount,
 };
 
 const REGISTRY_VERSION: u32 = 1;
@@ -405,7 +405,7 @@ impl ProviderAccountUsageSnapshot {
             management_url: match provider.as_str() {
                 "codex" => Some("https://chatgpt.com/codex/settings/usage".to_string()),
                 "claude" => Some("https://claude.ai/settings/usage".to_string()),
-                "opencode" => Some("https://opencode.ai/zen".to_string()),
+                "opencode" => Some("https://opencode.ai/console".to_string()),
                 _ => None,
             },
         }
@@ -463,6 +463,10 @@ impl ProviderAccountUsageSnapshot {
 struct ProviderAccountUsageBlock {
     exhausted_labels: Vec<String>,
     requires_exhausted_credits: bool,
+}
+
+pub(crate) fn is_opencode_go_model(model: Option<&str>) -> bool {
+    model.is_some_and(|model| model.starts_with("opencode-go/"))
 }
 
 fn provider_account_usage_block(
@@ -635,6 +639,21 @@ pub fn supported_provider_enrollment_methods(provider: &str) -> &'static [&'stat
     }
 }
 
+/// The one origin a Vault entry must be bound to for the kernel to type it into
+/// this API-key login. Methods that take no API key have none.
+pub(crate) fn provider_enrollment_vault_origin(
+    provider: &str,
+    method: Option<&str>,
+) -> Option<&'static str> {
+    match (
+        crate::provider::canonical_provider_family(provider)?,
+        method?,
+    ) {
+        ("opencode", "opencode_go_api_key" | "opencode_zen_api_key") => Some("https://opencode.ai"),
+        _ => None,
+    }
+}
+
 /// Validates a client-selected enrollment method against what the provider
 /// adapter actually supports. `None` keeps the provider's historical default.
 pub fn validate_provider_enrollment_method(
@@ -676,6 +695,9 @@ pub struct ProviderAccountProfile {
     pub origin: ProviderAccountProfileOrigin,
     pub is_default: bool,
     pub auth_state: ProviderAccountAuthState,
+    /// Actionable native sign-in failure, without provider output or credentials.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_error: Option<String>,
     /// Versioned credential-kind contract (v1). `None` on records written
     /// before the contract existed; readers must treat it as not-reported.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -987,9 +1009,12 @@ struct StoredProviderAccountProfile {
     replica_root_identity: Option<(u64, u64)>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     managed_context_replica: Option<ManagedContextReplicaBinding>,
-    /// Which account of which kernel a managed-context transfer installed here, so a lease from that kernel can use it instead of making a second copy.
+    /// Which account of which kernel a managed-context transfer or an account copy installed here, so a lease from that kernel can use it instead of making a second copy.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     transferred_from: Option<TransferredAccountOrigin>,
+    /// Only same-kernel copies depend on another registration; remote provenance is independent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    local_credential_source: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1014,6 +1039,8 @@ struct ManagedContextReplicaBinding {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct ReplacedProviderAccountProfile {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    local_credential_source: Option<String>,
     public: ProviderAccountProfile,
     locator: ProviderAccountLocator,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1252,6 +1279,7 @@ impl ProviderAccountProfileRegistry {
                 replica_root_identity: None,
                 managed_context_replica: None,
                 transferred_from: None,
+                local_credential_source: None,
             });
             changed = true;
         }
@@ -1342,6 +1370,17 @@ impl ProviderAccountProfileRegistry {
                 }
             }
         };
+        let auth_state = if provider == "opencode" && is_opencode_go_model(model) {
+            profile
+                .services
+                .iter()
+                .find(|service| service.service_id == "opencode-go")
+                .map_or(ProviderAccountAuthState::NotConfigured, |service| {
+                    service.auth_state
+                })
+        } else {
+            profile.auth_state
+        };
         // MP-08/MP-10/MP-11: a registered Claude token is admitted to the
         // kernel's first-use check. Unknown/expired observations must not ask
         // the user to replace a potentially valid token before that check. A
@@ -1356,7 +1395,7 @@ impl ProviderAccountProfileRegistry {
                 "claude",
                 &profile.profile_id,
             )? || self.is_home_token_claude_replica(owner_user_id, &profile.profile_id)?);
-        if profile.auth_state == ProviderAccountAuthState::Authenticated || deferred_claude_check {
+        if auth_state == ProviderAccountAuthState::Authenticated || deferred_claude_check {
             if provider_account_usage_block(
                 &profile.provider,
                 model,
@@ -1372,7 +1411,7 @@ impl ProviderAccountProfileRegistry {
             return Ok(profile);
         }
         Err(refused(
-            if profile.auth_state == ProviderAccountAuthState::Unknown {
+            if auth_state == ProviderAccountAuthState::Unknown {
                 crate::error::ProviderProfileRefusal::Unverified
             } else {
                 crate::error::ProviderProfileRefusal::Unauthenticated
@@ -1389,6 +1428,13 @@ impl ProviderAccountProfileRegistry {
         let Some(provider) = crate::provider::canonical_provider_family(agent.provider()) else {
             return Ok(());
         };
+        // OpenCode runs its free models with no account, as plain `opencode`
+        // does. The running server's connected catalog refuses a model that
+        // needs an account and names the models that are available.
+        if provider == "opencode" && !is_opencode_go_model(agent.model()) {
+            self.get(owner_user_id, provider, agent.provider_account_profile())?;
+            return Ok(());
+        }
         self.require_authenticated(
             owner_user_id,
             provider,
@@ -1442,6 +1488,9 @@ impl ProviderAccountProfileRegistry {
                             (index != profile_index
                                 && candidate.public.owner_user_id == owner_user_id
                                 && candidate.public.provider == provider
+                                && !candidate.locator.same_credential_scope(
+                                    &document.profiles[profile_index].locator,
+                                )
                                 && candidate.public.auth_state
                                     == ProviderAccountAuthState::Authenticated
                                 && normalized_account_identity(
@@ -1483,6 +1532,11 @@ impl ProviderAccountProfileRegistry {
         let profile = &mut document.profiles[profile_index];
         let previous_identity = profile.public.identity_summary.take();
         profile.public.auth_state = auth_state;
+        profile.public.auth_error = matches!(
+            auth_state,
+            ProviderAccountAuthState::Error | ProviderAccountAuthState::Expired
+        )
+        .then(|| native_sign_in_advice(&profile.public));
         profile.public.identity_summary = identity_summary;
         profile.public.plan = plan;
         profile.public.detected_provider_version = detected_provider_version;
@@ -1494,6 +1548,25 @@ impl ProviderAccountProfileRegistry {
             refresh_automatic_label(&mut document, profile_index, previous_identity.as_deref());
         }
         let result = document.profiles[profile_index].public.clone();
+        let scope = document.profiles[profile_index].locator.clone();
+        for (index, peer) in document.profiles.iter_mut().enumerate() {
+            if index == profile_index
+                || peer.public.provider != provider
+                || !peer.locator.same_credential_scope(&scope)
+            {
+                continue;
+            }
+            // One native credential has one authentication state, including across aliases.
+            peer.public.auth_state = result.auth_state;
+            peer.public.auth_error = result
+                .auth_error
+                .as_ref()
+                .map(|_| native_sign_in_advice(&peer.public));
+            peer.public.identity_summary = result.identity_summary.clone();
+            peer.public.plan = result.plan.clone();
+            peer.public.detected_provider_version = result.detected_provider_version.clone();
+            peer.public.last_validated_at_ms = result.last_validated_at_ms;
+        }
         self.persist_locked(&document)?;
         Ok(result)
     }
@@ -1509,12 +1582,26 @@ impl ProviderAccountProfileRegistry {
         let profile =
             resolve_stored_profile_mut(&mut document, owner_user_id, provider, profile_id)?;
         profile.public.auth_state = ProviderAccountAuthState::NotConfigured;
+        profile.public.auth_error = None;
         profile.public.identity_summary = None;
         profile.public.plan = None;
         profile.public.services.clear();
         profile.public.last_validated_at_ms = Some(crate::session::unix_epoch_ms());
         profile.public.usage = ProviderAccountUsageSnapshot::unavailable(profile_id, provider);
         let result = profile.public.clone();
+        let locator = profile.locator.clone();
+        for peer in &mut document.profiles {
+            if peer.public.provider == provider && peer.locator.same_credential_scope(&locator) {
+                peer.public.auth_state = result.auth_state;
+                peer.public.auth_error = None;
+                peer.public.identity_summary = None;
+                peer.public.plan = None;
+                peer.public.services.clear();
+                peer.public.last_validated_at_ms = result.last_validated_at_ms;
+                peer.public.usage =
+                    ProviderAccountUsageSnapshot::unavailable(&peer.public.profile_id, provider);
+            }
+        }
         self.persist_locked(&document)?;
         Ok(result)
     }
@@ -1642,6 +1729,24 @@ impl ProviderAccountProfileRegistry {
             resolve_stored_profile_mut(&mut document, owner_user_id, provider, profile_id)?;
         services.sort_by(|left, right| left.service_id.cmp(&right.service_id));
         services.dedup_by(|left, right| left.service_id == right.service_id);
+        if provider == "opencode" {
+            profile.public.usage.management_url = Some(
+                if services
+                    .iter()
+                    .any(|service| service.service_id == "opencode-go")
+                {
+                    "https://opencode.ai/console/go"
+                } else if services
+                    .iter()
+                    .any(|service| service.service_id == "opencode")
+                {
+                    "https://opencode.ai/zen"
+                } else {
+                    "https://opencode.ai/console"
+                }
+                .to_string(),
+            );
+        }
         profile.public.services = services;
         let result = profile.public.clone();
         self.persist_locked(&document)?;
@@ -1678,9 +1783,12 @@ impl ProviderAccountProfileRegistry {
         profile_id: &str,
     ) -> Result<BTreeMap<String, String>, DaemonError> {
         let provider = normalize_provider(provider)?;
+        let source_profile_id =
+            self.credential_source_profile_id(owner_user_id, provider, profile_id)?;
         let (origin, locator, materialized_replica) = {
             let document = self.read_document()?;
-            let profile = resolve_stored_profile(&document, owner_user_id, provider, profile_id)?;
+            let profile =
+                resolve_stored_profile(&document, owner_user_id, provider, &source_profile_id)?;
             (
                 profile.public.origin,
                 profile.locator.clone(),
@@ -1811,6 +1919,7 @@ impl ProviderAccountProfileRegistry {
             replica_root_identity: None,
             managed_context_replica: None,
             transferred_from: None,
+            local_credential_source: None,
         });
         self.persist_locked(&document)?;
         Ok(profile)
@@ -1873,6 +1982,7 @@ impl ProviderAccountProfileRegistry {
             replica_root_identity: None,
             managed_context_replica: None,
             transferred_from: None,
+            local_credential_source: None,
         });
         self.persist_locked(&document)?;
         Ok(profile)
@@ -1932,6 +2042,7 @@ impl ProviderAccountProfileRegistry {
             replica_root_identity: None,
             managed_context_replica: None,
             transferred_from: None,
+            local_credential_source: None,
         });
         self.persist_locked(&document)?;
         Ok(profile)
@@ -1982,6 +2093,19 @@ impl ProviderAccountProfileRegistry {
         Ok(project_usage_freshness(result))
     }
 
+    pub(crate) fn ensure_profile_removable(
+        &self,
+        owner_user_id: &str,
+        provider: &str,
+        profile_id: &str,
+        deletes_data: bool,
+    ) -> Result<(), DaemonError> {
+        let provider = normalize_provider(provider)?;
+        let document = self.read_document()?;
+        let index = resolved_profile_index(&document, owner_user_id, provider, profile_id)?;
+        ensure_no_credential_dependents(&document, index, deletes_data)
+    }
+
     pub fn remove_registration(
         &self,
         owner_user_id: &str,
@@ -1991,6 +2115,7 @@ impl ProviderAccountProfileRegistry {
         let provider = normalize_provider(provider)?;
         let mut document = self.write_document()?;
         let index = resolved_profile_index(&document, owner_user_id, provider, profile_id)?;
+        ensure_no_credential_dependents(&document, index, false)?;
         let removed = take_registration(&mut document, owner_user_id, provider, index);
         self.persist_locked(&document)?;
         Ok(project_usage_freshness(removed.public))
@@ -2019,6 +2144,7 @@ impl ProviderAccountProfileRegistry {
                 "only Chariox-created profile data can be deleted",
             ));
         }
+        ensure_no_credential_dependents(&document, index, true)?;
         let managed_root = self
             .path
             .parent()
@@ -3079,7 +3205,7 @@ impl ProviderAccountProfileRegistry {
         Ok(())
     }
 
-    /// The profile a managed-context transfer installed from `source_profile_id` of `source_kernel_id`, if it is still here.
+    /// The profile a managed-context transfer or an account copy installed from `source_profile_id` of `source_kernel_id`, if it is still here.
     pub(crate) fn transferred_profile(
         &self,
         owner_user_id: &str,
@@ -3101,6 +3227,21 @@ impl ProviderAccountProfileRegistry {
                     })
             })
             .map(|stored| stored.public.clone()))
+    }
+
+    /// Whether `profile_id` of `owner_user_id` is a login a managed-context transfer or an account copy installed here.
+    pub(crate) fn is_transferred_profile(
+        &self,
+        owner_user_id: &str,
+        provider: &str,
+        profile_id: &str,
+    ) -> Result<bool, DaemonError> {
+        let provider = normalize_provider(provider)?;
+        let document = self.read_document()?;
+        Ok(
+            find_stored_profile(&document, owner_user_id, provider, profile_id)
+                .is_some_and(|stored| stored.transferred_from.is_some()),
+        )
     }
 
     fn materialize_replica_internal(
@@ -3406,6 +3547,7 @@ impl ProviderAccountProfileRegistry {
                 .map(|stored| ReplacedProviderAccountProfile {
                     public: stored.public.clone(),
                     locator: stored.locator.clone(),
+                    local_credential_source: stored.local_credential_source.clone(),
                     label_source: stored.label_source,
                 })
         });
@@ -3463,6 +3605,7 @@ impl ProviderAccountProfileRegistry {
             existing.replica_root_identity = replica_root_identity;
             existing.managed_context_replica = managed_context_binding;
             existing.transferred_from = None;
+            existing.local_credential_source = None;
             existing.public.clone()
         } else {
             let public = new_public_profile(
@@ -3484,6 +3627,7 @@ impl ProviderAccountProfileRegistry {
                 replica_root_identity,
                 managed_context_replica: managed_context_binding,
                 transferred_from: None,
+                local_credential_source: None,
             });
             public
         };
@@ -3606,6 +3750,7 @@ impl ProviderAccountProfileRegistry {
                 replica_root_identity: None,
                 managed_context_replica: None,
                 transferred_from: None,
+                local_credential_source: replaced.local_credential_source,
             };
         } else {
             document.profiles.remove(index);
@@ -4058,6 +4203,7 @@ fn new_public_profile(
         origin,
         is_default,
         auth_state: ProviderAccountAuthState::Unknown,
+        auth_error: None,
         credential_kind,
         credential_kind_not_reported_reason,
         identity_summary: None,
@@ -4069,6 +4215,13 @@ fn new_public_profile(
         materializations: Vec::new(),
         context_transfer: ProviderAccountContextTransfer::Available,
     }
+}
+
+pub(crate) fn native_sign_in_advice(profile: &ProviderAccountProfile) -> String {
+    format!(
+        "{} could not use the sign-in for `{}`; sign in again in Provider Accounts on this machine",
+        profile.provider, profile.label,
+    )
 }
 
 fn normalize_provider(provider: &str) -> Result<&'static str, DaemonError> {
@@ -4466,6 +4619,33 @@ fn resolve_stored_profile_mut<'a>(
 ) -> Result<&'a mut StoredProviderAccountProfile, DaemonError> {
     let index = resolved_profile_index(document, owner_user_id, provider, profile_id)?;
     Ok(&mut document.profiles[index])
+}
+
+fn ensure_no_credential_dependents(
+    document: &RegistryDocument,
+    index: usize,
+    deletes_data: bool,
+) -> Result<(), DaemonError> {
+    let source = &document.profiles[index];
+    let dependent = document
+        .profiles
+        .iter()
+        .enumerate()
+        .any(|(other_index, other)| {
+            other_index != index
+                && other.public.provider == source.public.provider
+                && ((other.public.owner_user_id == source.public.owner_user_id
+                    && other.local_credential_source.as_deref()
+                        == Some(source.public.profile_id.as_str()))
+                    || (deletes_data && other.locator.same_credential_scope(&source.locator)))
+        });
+    if dependent {
+        return Err(registry_error("mutate provider account profile", format!(
+            "account profile `{}` supplies credentials to linked profiles; remove those links in Provider Accounts before removing the source or deleting its data",
+            source.public.label,
+        )));
+    }
+    Ok(())
 }
 
 fn take_registration(
@@ -4915,6 +5095,11 @@ fn enforce_codex_file_credentials(codex_home: &Path) -> Result<(), DaemonError> 
     }
     let mut config = lines.join("\n");
     config.push('\n');
+    // Every resolve of the default profile lands here, including the external
+    // session poller's pass every two seconds; a settled file needs no fsync.
+    if config == existing {
+        return Ok(());
+    }
     atomic_write_private(&config_path, config.as_bytes())
 }
 
@@ -4937,9 +5122,19 @@ fn validate_linked_root(path: &Path) -> Result<PathBuf, DaemonError> {
             ));
         }
         if metadata.permissions().mode() & 0o077 != 0 {
+            let Some(path) = canonical.to_str().or_else(|| path.to_str()) else {
+                return Err(registry_error(
+                    "link account profile",
+                    format!(
+                        "Remove group and other permissions from the provider folder at {:?}, then link it again.",
+                        canonical
+                    ),
+                ));
+            };
+            let quoted = path.replace('\'', "'\\''");
             return Err(registry_error(
                 "link account profile",
-                "linked provider root must not be accessible by group or other users",
+                format!("Provider folder '{quoted}' is accessible by group or other users. Run chmod go-rwx -- '{quoted}' and link it again."),
             ));
         }
     }
@@ -7278,6 +7473,34 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn resolving_the_default_codex_profile_leaves_a_settled_config_in_place() {
+        use std::os::unix::fs::MetadataExt;
+        let (root, registry) = fixture();
+        let home = root.join("home");
+        fs::create_dir_all(&home).unwrap();
+        registry
+            .migrate_effective_defaults("owner-a", &home)
+            .unwrap();
+        let environment = registry
+            .resolve_environment("owner-a", "codex", "default")
+            .unwrap();
+        let config_path = Path::new(&environment["CODEX_HOME"]).join("config.toml");
+        let settled = fs::metadata(&config_path).unwrap().ino();
+
+        registry
+            .resolve_environment("owner-a", "codex", "default")
+            .unwrap();
+
+        assert_eq!(fs::metadata(&config_path).unwrap().ino(), settled);
+        assert_eq!(
+            fs::read_to_string(&config_path).unwrap(),
+            "cli_auth_credentials_store = \"file\"\n"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
     #[test]
     fn resolving_an_existing_default_repairs_missing_profile_roots() {
         let (root, registry) = fixture();
@@ -9577,13 +9800,22 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         let (root, registry) = fixture();
-        let linked = root.join("insecure");
+        let linked = root.join("Provider's account");
         fs::create_dir_all(&linked).unwrap();
-        fs::set_permissions(&linked, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::set_permissions(&linked, fs::Permissions::from_mode(0o750)).unwrap();
 
+        let refusal = registry
+            .link_existing("owner-a", "opencode", "Linked", &linked)
+            .unwrap_err();
+        let path = linked.canonicalize().unwrap();
+        let quoted = path.to_str().unwrap().replace('\'', "'\\''");
+        assert!(refusal
+            .to_string()
+            .contains(&format!("chmod go-rwx -- '{quoted}'")));
+        fs::set_permissions(&linked, fs::Permissions::from_mode(0o700)).unwrap();
         assert!(registry
-            .link_existing("owner-a", "codex", "Unsafe", &linked)
-            .is_err());
+            .link_existing("owner-a", "opencode", "Linked", &linked)
+            .is_ok());
         let _ = fs::remove_dir_all(root);
     }
 }

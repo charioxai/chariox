@@ -13,20 +13,20 @@ use super::types::{
 use super::{
     unix_epoch_ms, AgentTrigger, AgentTriggerBusyPolicy, AgentTriggerDispatch, AgentTriggerOutcome,
     AgentTriggerRepeat, CanonicalViewport, CollaborationLevel, CreateSessionRequest,
-    DurableWorkflowHotState, EnvironmentError, EnvironmentReplay, PromptDetachEffect,
-    PromptQueueItem, RoomEnvironmentRegistry, RoomEnvironmentSnapshot, RuntimeProject,
-    RuntimeProjectKind, RuntimeProjectStatus, RuntimeSession, SessionConfigState, SessionInvite,
-    SessionMember, SessionProjectSelection, SessionStatus, SessionStore,
-    WorkflowCompletionSnapshot, WorkflowConsole, WorkflowConsoleEntry, WorkflowDefinition,
-    WorkflowEdgeDefinition, WorkflowEndpointDefinition, WorkflowFailureEvent, WorkflowFailureKind,
-    WorkflowHandoffPayload, WorkflowHandoffValidationPolicy, WorkflowMessage,
-    WorkflowNodeDefinition, WorkflowNodeRun, WorkflowNodeRunStatus, WorkflowOutputPayload,
-    WorkflowPromptQueueDefinition, WorkflowPublicationDefinition, WorkflowQueuedPrompt,
-    WorkflowQueuedPromptSource, WorkflowQueuedPromptStatus, WorkflowRun, WorkflowRunStatus,
-    WorkflowRuntimeToolCallEvent, WorkflowScheduleDefinition, WorkflowScheduleOverlapPolicy,
-    WorkflowScheduleTrigger, WorkflowSchemaDefinition, WorkflowTurnEnvelope,
-    WorkflowTurnRuntimeState, WorkflowWatchdogDefinition, WorkflowWatchdogPolicy,
-    WorkspaceLinkAttachment, WorkspaceLinkDefinition, DEFAULT_LOCAL_USER_ID,
+    DurableWorkflowHotState, EnvironmentError, EnvironmentReplay, ProjectId, PromptQueueItem,
+    RoomEnvironmentRegistry, RoomEnvironmentSnapshot, RuntimeProject, RuntimeProjectKind,
+    RuntimeProjectStatus, RuntimeSession, SessionConfigState, SessionInvite, SessionMember,
+    SessionProjectSelection, SessionStatus, SessionStore, WorkflowCompletionSnapshot,
+    WorkflowConsole, WorkflowConsoleEntry, WorkflowDefinition, WorkflowEdgeDefinition,
+    WorkflowEndpointDefinition, WorkflowFailureEvent, WorkflowFailureKind, WorkflowHandoffPayload,
+    WorkflowHandoffValidationPolicy, WorkflowMessage, WorkflowNodeDefinition, WorkflowNodeRun,
+    WorkflowNodeRunStatus, WorkflowOutputPayload, WorkflowPromptQueueDefinition,
+    WorkflowPublicationDefinition, WorkflowQueuedPrompt, WorkflowQueuedPromptSource,
+    WorkflowQueuedPromptStatus, WorkflowRun, WorkflowRunStatus, WorkflowRuntimeToolCallEvent,
+    WorkflowScheduleDefinition, WorkflowScheduleOverlapPolicy, WorkflowScheduleTrigger,
+    WorkflowSchemaDefinition, WorkflowTurnEnvelope, WorkflowTurnRuntimeState,
+    WorkflowWatchdogDefinition, WorkflowWatchdogPolicy, WorkspaceLinkAttachment,
+    WorkspaceLinkDefinition, DEFAULT_LOCAL_USER_ID,
 };
 #[cfg(test)]
 use super::{PromptAttachment, PromptSubmissionOutcome};
@@ -295,13 +295,13 @@ pub struct SessionService {
     next_workflow_queued_prompt_number: u64,
     next_agent_trigger_number: u64,
     max_workflow_queues_per_workflow: usize,
-    session_default_max_agents: i32,
     workflow_default_max_concurrent: u32,
     next_workspace_link_number: u64,
 }
 
 mod core;
 mod durable_queue;
+mod project_creation;
 mod retired_sessions;
 pub(crate) use durable_queue::{PreparedWorkflowQueueRun, WorkflowQueueRun};
 mod agent_triggers;

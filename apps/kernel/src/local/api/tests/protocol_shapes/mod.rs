@@ -40,25 +40,34 @@ mod display_resumption;
 mod event_publication;
 mod extension_apps;
 mod files_watch;
+mod folded_answer;
 mod fresh_remote_relay_inventory;
 mod handoff_config;
+mod job_held_machine;
 mod kernel_access;
 mod kernel_browser;
 mod kernel_computer;
 mod kernel_gateway;
 mod kernel_operation_interactions;
 mod kernel_resources;
+mod kernel_trash;
 mod landing8;
+mod machine_presence;
 mod managed_activity;
 mod managed_context;
 mod managed_environment;
+mod multi_project_context;
 mod native_spawn_slice;
 mod notes;
 mod panes_history;
+mod program_stdin;
 mod project_environment;
+mod prompt_receipts;
 mod prompt_settings;
 mod provider_account_credential;
 mod provider_auth_recovery;
+mod provider_catalog_aliases;
+mod provider_login_vault_entry;
 mod provider_usage_activity;
 mod provider_vault_login;
 mod publication;
@@ -76,6 +85,7 @@ mod room_list;
 mod room_setup;
 mod room_terminal;
 mod session_feed_596;
+mod session_outline_delta;
 mod session_view;
 mod slice_disk_quota;
 mod slice_display;
@@ -105,6 +115,7 @@ fn history_page_entry(
         fragment_end: text.chars().count(),
         total_chars: text.chars().count(),
         entry: crate::history::SessionHistoryEntry {
+            prompt_author: None,
             session_id: "session-1".to_string(),
             provider_run_id: Some("provider-run-1".to_string()),
             agent_id: Some(agent_id.to_string()),
@@ -116,6 +127,7 @@ fn history_page_entry(
                 _ => None,
             },
             kind,
+            notice_reason: None,
             merge_key: None,
             source: None,
             external_provider: None,
@@ -135,6 +147,7 @@ mod relay_transport;
 mod room_list_workspace;
 mod room_workflows;
 mod screenshot;
+mod skills_v2;
 
 mod leased_agent_file_copy;
 mod machine_files;
@@ -143,6 +156,7 @@ mod provider_tool_background_lifecycle;
 mod provider_tool_images;
 mod remote_agent_binding_worktree;
 mod room_pin;
+mod runtime_mcp_paging;
 mod session_outline_tool_images;
 mod usage_snapshot;
 mod vault_creation;
@@ -150,9 +164,13 @@ mod vault_secret;
 mod vault_unlock;
 mod vault_use;
 
+mod agent_release_notes;
 mod async_questions;
 mod provider_login;
 mod session_activity;
 
+mod event_follow;
 mod owner_vault;
+mod person_inbox;
 mod totp;
+mod watcher;

@@ -170,7 +170,7 @@ impl KernelRuntimeState {
             || self
                 .owned
                 .provider_store
-                .get_run_for_agent(agent.session_id(), agent.id())
+                .get_tool_run_for_agent(agent.session_id(), agent.id())
                 .is_none_or(|current| {
                     current.id() != run.id()
                         || current.state() == crate::provider::ProviderRunState::Ended

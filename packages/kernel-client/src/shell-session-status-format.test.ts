@@ -34,7 +34,7 @@ test("formatSessionRuntimeStatus renders home authority, placement, sync, and re
     host_daemon_id: "home-kernel",
     host_machine_id: "home-machine",
     workspace_live_sync_mode: "tracked",
-    attachment_ids: ["cli-1", "web-1"],
+    connected_cli_count: 2,
     active_provider_run_id: "run-session",
     prompt_states: {
       [remoteAgent.id]: {

@@ -7,16 +7,10 @@ impl KernelRuntimeOwnedState {
         &self,
         session_id: &str,
     ) -> Result<bool, DaemonError> {
-        if !self
-            .attachment_store
-            .list_session_attachment_ids(session_id)
-            .is_empty()
-        {
-            return Ok(false);
-        }
-
         let session = self.session_store.get_session(session_id)?;
-        if self.prompt_state_owner.has_any_active_prompt(&session) {
+        if !session.attachment_ids().is_empty()
+            || self.prompt_state_owner.has_any_active_prompt(&session)
+        {
             return Ok(false);
         }
         let Some(active_provider_run_id) = session.active_provider_run_id().map(str::to_string)
@@ -43,9 +37,17 @@ impl KernelRuntimeOwnedState {
                 self.clear_active_provider_run_session_pointer(session_id, run.id())?;
             }
             Ok(_) => {
-                let outcome = self
-                    .provider_store
-                    .park_run_provider_only(session_id, &active_provider_run_id)?;
+                // A prompt given since the check above keeps the run.
+                let Some(outcome) = self.prompt_state_owner.while_sessions_idle(
+                    std::slice::from_ref(&session),
+                    || {
+                        self.provider_store
+                            .park_run_provider_only(session_id, &active_provider_run_id)
+                    },
+                )?
+                else {
+                    return Ok(false);
+                };
                 self.clear_active_provider_run_session_pointer(session_id, outcome.run().id())?;
                 self.provider_run_projection.update(outcome.into_run());
             }
@@ -62,12 +64,13 @@ impl KernelRuntimeOwnedState {
             Err(error) => return Err(error),
         }
 
-        for run in self.provider_store.list_runs() {
-            if run.session_id() == session_id {
-                self.clear_prompt_activity(run.id());
-            }
+        // Settlement owns turn activity even if the last window closed while it was committing.
+        if self
+            .session_projection
+            .clear_parked_provider_run(session_id, &active_provider_run_id)
+        {
+            self.runtime_projection_changes.record_change();
         }
-        self.session_snapshot(session_id)?;
         Ok(true)
     }
 

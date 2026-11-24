@@ -14,6 +14,8 @@ mod goal_check;
 mod peer_follow;
 #[path = "sweep_stall_tests/pump.rs"]
 mod pump;
+#[path = "sweep_stall_tests/unsettled_turn.rs"]
+mod unsettled_turn;
 #[path = "sweep_stall_tests/whole_pump.rs"]
 mod whole_pump;
 #[path = "sweep_stall_tests/whole_sweep.rs"]
@@ -43,7 +45,9 @@ async fn serve_worker_that_never_cancels(
             home_public_key.clone(),
         );
         tokio::spawn(async move {
-            let Ok(mut socket) = accept_async(stream).await else {
+            let Ok(mut socket) =
+                crate::transport::relay_socket_connect::accept_as_relay(stream).await
+            else {
                 return;
             };
             while let Some(Ok(message)) = socket.next().await {

@@ -82,13 +82,14 @@ fn cloud_lease_account_owner_preserves_exact_profile_and_rejects_other_owners() 
             None,
         )
         .unwrap();
-    assert!(registry
+    // OpenCode's free models need no account, so an expired replica still prompts.
+    registry
         .require_agent_authenticated(
             &owner(&config, &registry, &agent),
             &agent,
-            "MP-08/MP-10/MP-11 expired replica"
+            "MP-08/MP-10/MP-11 expired replica",
         )
-        .is_err());
+        .unwrap();
     let alias = agents
         .create_agent(
             crate::agent::CreateAgentRequest::new(session.id(), "opencode")
@@ -180,4 +181,40 @@ fn enrolled_runtime_owner_keeps_its_resolved_local_provider_account() {
         provider_account_authority_for_run(&config, &registry, &run).is_err(),
         "another enrolled person must not inherit the selected local account"
     );
+}
+
+#[test]
+fn an_opencode_prompt_needs_no_account_but_a_claude_prompt_does() {
+    crate::test_support::isolated_env_test!();
+    let root = crate::test_support::TestWorktree::new("opencode-free-models");
+    let registry = ProviderAccountProfileRegistry::open(root.path().join("profiles.json")).unwrap();
+    let config = crate::config::DaemonConfig::for_tests();
+    let defaults = registry
+        .migrate_effective_defaults("local", &root.path().join("local"))
+        .unwrap();
+    let mut sessions = crate::session::SessionService::new(&config);
+    let session = sessions
+        .create_session(
+            crate::session::CreateSessionRequest::new("workspace", root.path().to_string_lossy())
+                .with_owner_user_id("local"),
+        )
+        .unwrap();
+    let mut agents = crate::agent::AgentService::new();
+    for provider in ["opencode", "claude"] {
+        let profile = defaults
+            .iter()
+            .find(|profile| profile.provider == provider)
+            .unwrap();
+        assert_ne!(profile.auth_state, ProviderAccountAuthState::Authenticated);
+        let request = crate::agent::CreateAgentRequest::new(session.id(), provider)
+            .with_owner_user_id("local")
+            .with_account_profile(profile.profile_id.clone());
+        let agent = agents.create_agent(request, &mut sessions).unwrap();
+        let result = registry.require_agent_authenticated("local", &agent, "submit prompt");
+        assert_eq!(
+            result.is_ok(),
+            provider == "opencode",
+            "{provider}: {result:?}"
+        );
+    }
 }

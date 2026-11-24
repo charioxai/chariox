@@ -556,6 +556,30 @@ fn rejects_duplicate_sources_external_symlinks_submodules_and_lfs() {
 }
 
 #[test]
+fn accepts_repositories_that_only_mention_the_lfs_pointer_header() {
+    let root = test_root("lfs-header-mention");
+    let repository = root.join("repository");
+    init_repository(&repository, "tracked.txt", "base\n");
+    // Source, docs and a small file that merely quote the header, including
+    // one that has it at the start of a line but not at the start of the file.
+    fs::write(
+        repository.join("detector.rs"),
+        "const HEADER: &[u8] = b\"version https://git-lfs.github.com/spec/v1\\n\";\n",
+    )
+    .expect("write source");
+    fs::write(
+        repository.join("NOTES.md"),
+        "A pointer looks like:\n\nversion https://git-lfs.github.com/spec/v1\noid sha256:aaaa\nsize 1\n",
+    )
+    .expect("write notes");
+    git(&repository, &["add", "."]);
+    git(&repository, &["commit", "-m", "mention the header"]);
+    one_repo_export(&root, &repository, "mention").expect("a mention is not an LFS pointer");
+
+    fs::remove_dir_all(root).expect("remove test root");
+}
+
+#[test]
 fn rejects_dirty_symlinks_and_requires_exactly_one_primary() {
     let root = test_root("selection-and-dirty-symlink");
     let repository = root.join("repository");
@@ -2257,6 +2281,39 @@ fn interrupted_materialization_recovers_the_directory_published_after_intent() {
     )
     .expect("recover crash after rename");
     assert!(!destination.exists());
+    fs::remove_dir_all(root).expect("remove test root");
+}
+
+#[test]
+fn rolling_back_a_project_directory_removes_only_what_the_publication_created() {
+    let root = test_root("unit-root-rollback");
+    let staging = root.join("staging");
+    let unit_root = root.join("repositories/project-1");
+    fs::create_dir_all(&staging).expect("create staging");
+    fs::create_dir_all(unit_root.parent().unwrap()).expect("create repository root");
+
+    // The crash came before the directory was created.
+    super::import::test_roll_back_unit_root(&staging, &unit_root)
+        .expect("a Project directory not created yet needs no rollback");
+
+    // The crash came after it was created and before anything landed in it.
+    fs::create_dir(&unit_root).expect("create Project directory");
+    super::import::test_roll_back_unit_root(&staging, &unit_root)
+        .expect("an empty Project directory is removed");
+    assert!(!unit_root.exists());
+
+    // Something else of the user's is in it: it stays, and the rollback says so.
+    fs::create_dir(&unit_root).expect("create Project directory");
+    fs::write(unit_root.join("notes.txt"), "mine\n").expect("write user file");
+    let error = super::import::test_roll_back_unit_root(&staging, &unit_root)
+        .expect_err("a Project directory with other content is not removed");
+    assert!(error
+        .to_string()
+        .contains("remove managed Project directory"));
+    assert_eq!(
+        fs::read_to_string(unit_root.join("notes.txt")).unwrap(),
+        "mine\n"
+    );
     fs::remove_dir_all(root).expect("remove test root");
 }
 

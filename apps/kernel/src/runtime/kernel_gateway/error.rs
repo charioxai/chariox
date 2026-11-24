@@ -13,6 +13,9 @@ pub(crate) enum GatewayError {
     Offline {
         name: String,
     },
+    Released {
+        name: String,
+    },
     Unreachable {
         name: String,
         detail: String,
@@ -34,8 +37,17 @@ pub(crate) enum GatewayError {
         name: String,
         detail: String,
     },
+    /// The target runs a protocol below the oldest this kernel's gateway serves: no retry helps.
+    UpdateNeeded {
+        name: String,
+        kernel_protocol: u32,
+        needed_protocol: u32,
+    },
     RequestTimeout {
         name: String,
+    },
+    SteerUnconfirmed {
+        command_id: String,
     },
     ConnectionLost {
         name: String,
@@ -89,12 +101,14 @@ impl GatewayError {
         match self {
             Self::Unknown { .. } => "kernel_unknown",
             Self::Ambiguous { .. } => "kernel_ambiguous",
-            Self::Offline { .. } => "kernel_offline",
+            Self::Offline { .. } | Self::Released { .. } => "kernel_offline",
             Self::Unreachable { .. } | Self::ListUnavailable { .. } => "kernel_unreachable",
             Self::Unpaired { .. } | Self::GatewayRevoked => "kernel_unpaired",
             Self::AccessEnded { .. } => "kernel_access_ended",
             Self::Incompatible { .. } => "kernel_incompatible",
+            Self::UpdateNeeded { .. } => "kernel_update_needed",
             Self::RequestTimeout { .. } => "kernel_request_timeout",
+            Self::SteerUnconfirmed { .. } => "steer_unconfirmed",
             Self::ConnectionLost { .. } | Self::SubscriptionEnded { .. } => {
                 "kernel_connection_lost"
             }
@@ -115,6 +129,9 @@ impl GatewayError {
             Self::Offline { name } => format!(
                 "Kernel \"{name}\" is offline. Start the Chariox kernel there; ssh is only a break-glass."
             ),
+            Self::Released { name } => format!(
+                "The machine for kernel \"{name}\" was released. Run `chariox kernels` and pick a live kernel."
+            ),
             Self::Unreachable { name, detail } => format!(
                 "Could not reach kernel \"{name}\" ({detail}). Retry; check that the relay is reachable."
             ),
@@ -131,8 +148,18 @@ impl GatewayError {
             Self::Incompatible { name, detail } => format!(
                 "Kernel \"{name}\" cannot run this request ({detail}). Update the Chariox kernel on that machine."
             ),
+            Self::UpdateNeeded {
+                name,
+                kernel_protocol,
+                needed_protocol,
+            } => format!(
+                "Kernel \"{name}\" runs protocol {kernel_protocol} and needs {needed_protocol}. Update the Chariox kernel on that machine, then try again."
+            ),
             Self::RequestTimeout { name } => format!(
                 "Kernel \"{name}\" did not answer in time. For a state-changing request retry once with the same --command-id; the kernel never runs it twice."
+            ),
+            Self::SteerUnconfirmed { command_id } => format!(
+                "The steer is not confirmed yet. It may still arrive. Retry with the same command ID (--command-id {command_id:?})."
             ),
             Self::ConnectionLost { name } => format!(
                 "The connection to kernel \"{name}\" ended while the request was in flight. Retry once with the same --command-id."
@@ -154,6 +181,7 @@ impl GatewayError {
             Self::Unreachable { .. }
             | Self::ListUnavailable { .. }
             | Self::RequestTimeout { .. }
+            | Self::SteerUnconfirmed { .. }
             | Self::ConnectionLost { .. }
             | Self::SubscriptionEnded { .. } => true,
             Self::Remote { retryable, .. } => *retryable,
@@ -168,29 +196,6 @@ impl GatewayError {
             retryable: self.retryable(),
         }
     }
-}
-
-/// Codes whose text the gateway or a target's gateway ledger writes itself, so
-/// the grant holder may read them in full.
-pub(crate) fn is_public_code(code: &str) -> bool {
-    matches!(
-        code,
-        "kernel_unknown"
-            | "kernel_ambiguous"
-            | "kernel_offline"
-            | "kernel_unreachable"
-            | "kernel_unpaired"
-            | "kernel_incompatible"
-            | "kernel_request_timeout"
-            | "kernel_connection_lost"
-            | "kernel_access_ended"
-            | "kernel_outcome_unknown"
-            | "kernel_response_too_large"
-            | "kernel_not_available"
-            | "kernel_join_refused"
-            | "command_id_required"
-            | "ledger_unavailable"
-    )
 }
 
 #[cfg(test)]

@@ -2,6 +2,7 @@ use super::*;
 
 #[test]
 fn metaagent_runtime_tools_create_validate_apply_and_delete_workflow_code() {
+    crate::test_support::isolated_env_test!();
     run_large_stack_async_test(
         "metaagent-runtime-tools-create-validate-apply-and-delete-workflow-code",
         metaagent_runtime_tools_create_validate_apply_and_delete_workflow_code_inner,
@@ -18,16 +19,16 @@ async fn metaagent_runtime_tools_create_validate_apply_and_delete_workflow_code_
     let workspace = env.root.join("workspace");
     std::fs::create_dir_all(&workspace).expect("workspace should be created");
     std::fs::create_dir_all(workspace.join("schemas")).expect("schema directory should be created");
-    let skill_dir = workspace
-        .join(".chariox")
-        .join("skills")
-        .join("meta-workflow-code-skill");
-    std::fs::create_dir_all(&skill_dir).expect("workflow-code test skill dir should be created");
-    std::fs::write(
-        skill_dir.join("SKILL.md"),
-        "---\nname: meta-workflow-code-skill\ndescription: Meta workflow-code test skill.\n---\nUse this skill only in meta workflow-code tests.\n",
-    )
-    .expect("workflow-code test skill should be written");
+    crate::mcp::CharioxMcpRegistry::new(vec![crate::mcp::CharioxMcpRegistry::project_root(
+        &workspace,
+    )])
+    .install(&crate::mcp::CharioxMcpServerConfig::stdio(
+        "meta-workflow-code-mcp",
+        "/bin/echo",
+        vec![],
+    ))
+    .expect("workflow-code test MCP should install");
+
     let schema_path = workspace.join("schemas/final.json");
     std::fs::write(
         &schema_path,
@@ -183,13 +184,15 @@ const planner = workflow.node({
   instructions: "Plan and complete.",
   canCompleteWorkflowRun: true,
   extensions: [
-    { kind: "skill", name: "meta-workflow-code-skill" }
+    { kind: "mcp", name: "meta-workflow-code-mcp" }
   ],
   canvas: { x: 40, y: 80 }
 })
 workflow.endpoint(planner, { handle: "entry", alias: "entry" })
 "#;
 
+    let source = format!("{source}\n// {}", "x".repeat(12_000));
+    let source_hash = crate::workflow_code::sha256_hex(source.as_bytes());
     let created = router
         .runtime_state
         .dispatch_meta_runtime_tool_call_for_agent(
@@ -205,36 +208,36 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
         .expect("metaagent should create workflow-code artifact");
     assert!(created.ok, "{:?}", created.payload);
     assert_eq!(
-        created
-            .payload
-            .pointer("/WorkflowCodeArtifactCreated/artifact/metadata/name")
-            .and_then(serde_json::Value::as_str),
-        Some("meta-flow")
+        created.payload,
+        serde_json::json!({
+            "WorkflowCodeArtifactCreated": { "artifact": { "metadata": {
+                "name": "meta-flow",
+                "source_sha256": source_hash,
+                "validation": { "ok": true },
+            } } }
+        })
     );
+    assert!(created.payload.to_string().len() < 4_096);
+    let read = router
+        .runtime_state
+        .dispatch_meta_runtime_tool_call_for_agent(
+            session.id(),
+            metaagent.id(),
+            crate::transport::runtime_tools::META_WORKFLOW_CODE_READ_TOOL,
+            serde_json::json!({ "name": "meta-flow" }),
+        )
+        .await
+        .expect("read should return the full saved artifact");
+    let artifact = &read.payload["WorkflowCodeArtifact"]["artifact"];
+    assert_eq!(artifact["source"], source);
     assert_eq!(
-        created
-            .payload
-            .pointer(
-                "/WorkflowCodeArtifactCreated/artifact/metadata/provenance/created_by/metaagent_id"
-            )
-            .and_then(serde_json::Value::as_str),
-        Some(metaagent.id())
+        artifact["metadata"]["provenance"]["created_by"]["metaagent_id"],
+        metaagent.id()
     );
+    assert_eq!(artifact["metadata"]["history"][0]["action"], "created");
     assert_eq!(
-        created
-            .payload
-            .pointer("/WorkflowCodeArtifactCreated/artifact/metadata/history/0/action")
-            .and_then(serde_json::Value::as_str),
-        Some("created")
-    );
-    assert_eq!(
-        created
-            .payload
-            .pointer(
-                "/WorkflowCodeArtifactCreated/artifact/definition/schemas/0/schema/properties/answer/type"
-            )
-            .and_then(serde_json::Value::as_str),
-        Some("string")
+        artifact["definition"]["schemas"][0]["schema"]["properties"]["answer"]["type"],
+        "string"
     );
     let listed = router
         .runtime_state
@@ -372,13 +375,13 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
                         .is_some_and(|grants| {
                             grants.iter().any(|grant| {
                                 grant.get("kind").and_then(serde_json::Value::as_str)
-                                    == Some("skill")
+                                    == Some("mcp")
                                     && grant.get("name").and_then(serde_json::Value::as_str)
-                                        == Some("meta-workflow-code-skill")
+                                        == Some("meta-workflow-code-mcp")
                             })
                         })
             })),
-        "applied workflow-code should create the planner with the rebound provider/model and skill grant: {:?}",
+        "applied workflow-code should create the planner with the rebound provider/model and MCP grant: {:?}",
         applied.payload
     );
     assert!(
@@ -414,42 +417,28 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
         .await
         .expect("metaagent should apply and run saved workflow-code artifact");
     assert!(run.ok, "{:?}", run.payload);
-    assert!(run
-        .payload
-        .pointer("/WorkflowCodeRun/result/apply/apply/endpoint_ids/entry")
-        .and_then(serde_json::Value::as_str)
-        .is_some());
+    assert!(run.payload.to_string().len() < 4_096);
+    let result = &run.payload["WorkflowCodeRun"]["result"];
     assert_eq!(
-        run.payload
-            .pointer("/WorkflowCodeRun/result/invocation/kind")
-            .and_then(serde_json::Value::as_str),
-        Some("started")
+        result["source_sha256"],
+        crate::workflow_code::sha256_hex(updated_source.as_bytes())
     );
-    assert_eq!(
-        run.payload
-            .pointer("/WorkflowCodeRun/result/invocation/workflow/controlled_by_metaagent_id")
-            .and_then(serde_json::Value::as_str),
-        Some(metaagent.id())
-    );
-    assert_eq!(
-        run.payload
-            .pointer("/WorkflowCodeRun/result/invocation/endpoint/alias")
-            .and_then(serde_json::Value::as_str),
-        Some("entry")
-    );
+    assert_eq!(result["invocation"]["kind"], "started");
+    assert_eq!(result.as_object().unwrap().len(), 3);
+    assert_eq!(result["invocation"].as_object().unwrap().len(), 3);
     let run_workflow_id = run
         .payload
-        .pointer("/WorkflowCodeRun/result/apply/apply/workflow_id")
+        .pointer("/WorkflowCodeRun/result/workflow_id")
         .and_then(serde_json::Value::as_str)
         .expect("run response should include generated workflow id");
     let run_endpoint_id = run
         .payload
-        .pointer("/WorkflowCodeRun/result/invocation/endpoint/id")
+        .pointer("/WorkflowCodeRun/result/invocation/endpoint_id")
         .and_then(serde_json::Value::as_str)
         .expect("run response should include invoked endpoint id");
     let run_id = run
         .payload
-        .pointer("/WorkflowCodeRun/result/invocation/workflow_run/id")
+        .pointer("/WorkflowCodeRun/result/invocation/workflow_run_id")
         .and_then(serde_json::Value::as_str)
         .expect("run response should include workflow run id");
     let durable_events = {

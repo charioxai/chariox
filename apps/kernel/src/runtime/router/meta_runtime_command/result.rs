@@ -45,13 +45,13 @@ pub(super) fn meta_command_error(message: impl Into<String>) -> DaemonError {
 
 pub(super) fn meta_command_failure_result(
     command: &str,
-    error: impl std::fmt::Display,
+    error: impl std::borrow::Borrow<DaemonError>,
 ) -> RuntimeToolResult {
     RuntimeToolResult {
         ok: false,
         payload: serde_json::json!({
             "command": redacted_meta_command_for_payload(command),
-            "error": error.to_string(),
+            "error": crate::error::runtime_tool::message(error.borrow()),
         }),
     }
 }

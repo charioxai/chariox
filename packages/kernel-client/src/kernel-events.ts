@@ -3,6 +3,7 @@ import type {
   PasskeyPrompt,
   PasskeyPromptClosure,
   ProviderAccountSummary,
+  RemoteMachineKernel,
   SliceRecord,
   RoomListSessionSummary,
   WorkflowDesignOpForwarded,
@@ -14,6 +15,7 @@ export type KernelEvent =
   | { event: "session_processes_changed"; session_id: string; processes: SessionProcess[] }
   | { event: "client_catalog_changed"; revision: number }
   | { event: "kernel_browser_frame"; subscription_id: string; frame: Record<string, unknown> }
+  | { event: "skills_changed"; session_id: string; change: import("./kernel-types-skills-v2.js").SkillCatalogEvent }
   | {
     event: "terminal_output"
     records: Array<Record<string, unknown>>
@@ -99,15 +101,7 @@ export type KernelEvent =
   }
   | {
     event: "relay_status_changed"
-    status: {
-      configured: boolean
-      connected: boolean
-      relay_url?: string | null
-      relay_token_configured: boolean
-      daemon_id: string
-      machine_id: string
-      machine_alias?: string | null
-    }
+    status: import("./kernel-types-cloud.js").RelayStatus
   }
   | {
     event: "remote_machines_changed"
@@ -115,12 +109,20 @@ export type KernelEvent =
       machine_id: string
       machine_alias?: string | null
       display_name: string
-      trust_status: "approved" | "pending" | "forgotten"
-      online: boolean
+      trust_status: "approved" | "pending"
+      presence: "online" | "reconnecting"
       pending: boolean
       kernel_count: number
       available_providers?: string[]
       provider_accounts?: ProviderAccountSummary[]
+      kernels?: RemoteMachineKernel[]
+      directory?: string | null
+    }>
+    offline_machines: Array<{
+      machine_id: string
+      display_name: string
+      last_seen_ms: number
+      directory?: string | null
     }>
   }
   | {
@@ -260,10 +262,16 @@ export type JobView = {
   job_id: string; agent_id: string; command: string; state: "starting" | "queued" | "allocating" | "uploading" | "running" | "reconnecting" | "returning" | "deleting" | "finished";
   placement: "local" | "remote"; started_at_ms: number; machine_label?: string | null; address?: string | null;
   class_id?: string | null; rate_per_minute?: { amount_micros: number; currency: string } | null;
-  estimate_micros?: number | null; deleted: boolean; result?: JobResult | null;
+  estimate_micros?: number | null; deleted: boolean; result?: JobResultSummary | null; read_error?: string | null;
 }
 export type JobResult = {
   exit_code: number | null; output_tail: string; log: string; files_back: string[]; conflicts: string[];
   ran_on: { machine: string; ip: string | null }; duration_ms: number;
   outcome: "completed" | "time_limit" | "memory_limit" | "outside_end" | "machine_lost" | "capacity_unavailable" | "cancelled";
+}
+
+/** Bounded jobs-list metadata. Open a job with jobs.status for output and artifact paths. */
+export type JobResultSummary = {
+  exit_code: number | null; reason: string | null; files_back_count: number; conflicts_count: number;
+  ran_on: JobResult["ran_on"]; duration_ms: number; outcome: JobResult["outcome"];
 }

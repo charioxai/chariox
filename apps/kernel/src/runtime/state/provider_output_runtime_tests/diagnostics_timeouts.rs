@@ -146,6 +146,7 @@ async fn refused_structured_submit(failure: FailedSubmit, room_agent_tools: bool
                     crate::prompt_assembly::PromptAssemblyMode::NormalProviderTurn,
                     None,
                     false,
+                    None,
                 )
                 .unwrap();
             // The provider actor submits on its own thread; reap until the
@@ -519,11 +520,11 @@ async fn structured_terminal_failure_settles_and_persists_single_provider_error(
     assert_eq!(provider_errors.len(), 2);
     assert_eq!(
         String::from_utf8_lossy(&provider_errors[0].bytes),
-        "The provider could not complete this request. Check the provider account and model settings, then send the request again."
+        "Unsupported parameter: 'reasoning.summary' is not supported with the 'gpt-5.3-codex-spark' model. Check the provider account and model settings, then send the request again."
     );
     assert_eq!(
         String::from_utf8_lossy(&provider_errors[1].bytes),
-        "Request not carried out: The provider could not complete this request. It was dropped; send it again to retry."
+        "Request not carried out: Unsupported parameter: 'reasoning.summary' is not supported with the 'gpt-5.3-codex-spark' model. It was dropped; send it again to retry."
     );
     let durable_errors = runtime
         .owned
@@ -535,7 +536,7 @@ async fn structured_terminal_failure_settles_and_persists_single_provider_error(
             event.kind == crate::history::HistoryEventKind::ProviderError
                 && event.content.as_deref()
                     == Some(
-                        "The provider could not complete this request. Check the provider account and model settings, then send the request again.",
+                        "Unsupported parameter: 'reasoning.summary' is not supported with the 'gpt-5.3-codex-spark' model. Check the provider account and model settings, then send the request again.",
                     )
         })
         .collect::<Vec<_>>();
@@ -1065,6 +1066,17 @@ async fn structured_prompt_acknowledgement_retries_until_profile_and_delivery_ar
         },
     );
     run.mark_running();
+    // The run was launched from the agent's selection; only its native identity is new.
+    app.agents_mut()
+        .set_agent_runtime_profile_with_account_profile(
+            agent.id(),
+            "codex",
+            Some("gpt-5.5".to_string()),
+            None,
+            Some("default".to_string()),
+            crate::provider::ProviderResumeState::default(),
+        )
+        .expect("agent selection should match the run");
     app.providers_mut().insert_run_for_test(run.clone());
     app.sessions
         .set_active_provider_run(session.id(), Some(run.id().to_string()))
@@ -2174,7 +2186,7 @@ async fn metaagent_receives_required_failed_turn_event_on_provider_failure() {
     assert_eq!(events[0].source_agent_id.as_deref(), Some(agent.id()));
     assert!(events[0]
         .summary
-        .contains("The provider could not complete this request"));
+        .contains("provider reported a terminal failure"));
     let session_state = runtime
         .owned
         .session_snapshot(session.id())

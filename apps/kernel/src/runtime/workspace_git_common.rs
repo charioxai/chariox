@@ -1,5 +1,6 @@
 use crate::runtime::bounded_process::{BoundedCommandExt as _, Work};
 use std::path::{Path, PathBuf};
+use std::process::Output;
 
 use crate::error::DaemonError;
 
@@ -14,6 +15,14 @@ pub(crate) fn git_command_output(path: &str, args: &[&str]) -> Option<String> {
     }
     let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
     (!value.is_empty()).then_some(value)
+}
+
+pub(crate) fn git_common_directory(directory: &Path) -> Option<PathBuf> {
+    let common = git_command_output(
+        directory.to_str()?,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    )?;
+    Path::new(&common).canonicalize().ok()
 }
 
 /// Whether a `git` executable runs here. Only a positive answer is remembered, so installing
@@ -47,22 +56,81 @@ pub(crate) fn run_workspace_git_command(
             message: error.to_string(),
         })?;
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        let message = if !stderr.is_empty() {
-            stderr
-        } else if !stdout.is_empty() {
-            stdout
-        } else {
-            format!(
-                "git {} failed with status {}",
-                args.join(" "),
-                output.status
-            )
-        };
-        return Err(DaemonError::LocalTransport { operation, message });
+        return Err(DaemonError::LocalTransport {
+            operation,
+            message: git_failure_message(args, &output),
+        });
     }
     Ok(())
+}
+
+/// What a failed git command said, with the command and its exit status.
+pub(crate) fn git_failure_message(args: &[&str], output: &Output) -> String {
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let said = if !stderr.is_empty() { stderr } else { stdout };
+    let status = format!("git {} exited with {}", args.join(" "), output.status);
+    if said.is_empty() {
+        status
+    } else {
+        format!("{said} ({status})")
+    }
+}
+
+/// Runs a read-only git command whose answer the caller needs. A failure is
+/// an error that carries git's words and the next step, never an empty answer.
+pub(crate) fn git_query(
+    path: &str,
+    args: &[&str],
+    operation: &'static str,
+) -> Result<Vec<u8>, DaemonError> {
+    let output = crate::process_spawn::command("git")
+        .args(args)
+        .current_dir(path)
+        .bounded_output()
+        .map_err(|error| DaemonError::LocalTransport {
+            operation,
+            message: error.to_string(),
+        })?;
+    if !output.status.success() {
+        return Err(DaemonError::LocalTransport {
+            operation,
+            message: format!(
+                "{}; run `git {}` in {path}, fix what it reports (a stale .git/index.lock or a damaged index are common) and retry",
+                git_failure_message(args, &output),
+                args.join(" ")
+            ),
+        });
+    }
+    Ok(output.stdout)
+}
+
+/// The fetch URL of `origin`, or none when the repository has no such remote.
+/// Any other git failure is an error: it is not "no remote".
+pub(crate) fn origin_url(worktree_path: &str) -> Result<Option<String>, DaemonError> {
+    let remotes = git_query(worktree_path, &["remote"], "workspace git remote")?;
+    if !String::from_utf8_lossy(&remotes)
+        .lines()
+        .any(|name| name == "origin")
+    {
+        return Ok(None);
+    }
+    let url = git_query(
+        worktree_path,
+        &["remote", "get-url", "origin"],
+        "workspace git remote",
+    )?;
+    Ok(Some(String::from_utf8_lossy(&url).trim().to_string()))
+}
+
+/// The commit `HEAD` names.
+pub(crate) fn head_commit(worktree_path: &str) -> Result<String, DaemonError> {
+    let commit = git_query(
+        worktree_path,
+        &["rev-parse", "--verify", "HEAD"],
+        "workspace git commit",
+    )?;
+    Ok(String::from_utf8_lossy(&commit).trim().to_string())
 }
 
 pub(crate) fn run_git(repo_root: &Path, args: &[&str]) -> Result<(), DaemonError> {
@@ -177,6 +245,11 @@ pub(crate) fn workspace_repository_state(workspace_path: &str) -> String {
         "ready"
     }
     .to_string()
+}
+
+/// A folder that exists and holds nothing at all: the only place a Room offers to start a private repository.
+pub(crate) fn workspace_is_empty(workspace_path: &str) -> bool {
+    std::fs::read_dir(workspace_path).is_ok_and(|mut entries| entries.next().is_none())
 }
 
 pub(crate) fn workspace_display_label(workspace_path: &str) -> Option<String> {

@@ -23,9 +23,13 @@ function target(flags: EventFlags): { kernel: string; session_id: string; agent_
   if (typeof kernel !== "string" || !kernel || typeof session !== "string" || !session || (agent !== undefined && typeof agent !== "string")) throw new CommandFailure("usage", "events subscribe/unsubscribe needs --kernel K --session S [--agent A], or unsubscribe --all")
   return { kernel, session_id: session, ...(typeof agent === "string" ? { agent_id: agent } : {}) }
 }
+// One wait is one request the kernel holds open; longer than this it ends in an error, not a timeout. Refused up front.
+export const MAX_WAIT_SECONDS = 540
 export function eventTimeoutSeconds(verb: EventVerb, flags: EventFlags): number {
-  return verb === "wait" || verb === "watch" ? integer(flags.get("--timeout"), 540, "--timeout", 900) : 30
+  return verb === "wait" || verb === "watch" ? integer(flags.get("--timeout"), MAX_WAIT_SECONDS, "--timeout", MAX_WAIT_SECONDS) : 30
 }
+// What a grant that follows nothing is told, by `access` and `events subscription`. The kernel says the same to a wait or list.
+export const FOLLOWS_NOTHING_NOTE = "this grant follows nothing: follow an agent with chariox events subscribe --kernel K --session S [--agent A], or take over an earlier grant's targets with chariox events subscribe --like <grant id> (chariox access list shows the ids)"
 function batch(response: unknown): EventsBatch {
   if (!response || typeof response !== "object") throw new CommandFailure("events_response_invalid", "kernel returned an invalid event response; update Chariox")
   const wire = response as { EventsListed?: EventsBatch; EventsCursorExpired?: { oldest_cursor: number } }
@@ -57,6 +61,9 @@ function subscriptionBody(response: unknown): { subscription: EventSubscription 
   if (!wire?.EventSubscription?.subscription) throw new CommandFailure("events_response_invalid", "kernel returned no subscription; update Chariox")
   return wire.EventSubscription
 }
+function followsNothing(subscription: EventSubscription): boolean {
+  return !subscription.ended && subscription.targets.length === 0 && !subscription.sources?.length
+}
 export async function followSource(send: SendRequest, reference: string): Promise<{ subscription: EventSubscription }> {
   const source = resolveSource(await listSources(send), reference, "is not a source you can follow; run chariox events sources")
   return subscriptionBody(await send({ SubscribeEvents: { targets: [], sources: [source] } }))
@@ -74,7 +81,19 @@ export async function unfollowSource(send: SendRequest, reference: string): Prom
 }
 
 export async function runEventsVerb(verb: EventVerb, flags: EventFlags, args: readonly string[], send: SendRequest, write: (value: unknown) => void): Promise<number> {
-  if (verb === "sources") { write({ sources: await listSources(send) }); return 0 }
+  if (verb === "sources") {
+    const kernel = flags.get("--kernel")
+    if (kernel !== undefined && (typeof kernel !== "string" || kernel.length === 0)) throw new CommandFailure("usage", "events sources --kernel needs a kernel id")
+    const sources = await listSources(send)
+    write({ sources: kernel === undefined ? sources : sources.filter(source => source.kernel_id === kernel) })
+    return 0
+  }
+  if (verb === "subscribe" && flags.has("--like")) {
+    const like = flags.get("--like")
+    if (typeof like !== "string" || !like || ["--kernel", "--session", "--agent", "--source"].some(flag => flags.has(flag))) throw new CommandFailure("usage", "events subscribe --like takes an earlier grant id and no other target flag")
+    write(subscriptionBody(await send({ SubscribeEvents: { targets: [], like } })))
+    return 0
+  }
   if ((verb === "subscribe" || verb === "unsubscribe") && flags.has("--source")) {
     const source = flags.get("--source")
     if (typeof source !== "string" || !source || ["--kernel", "--session", "--agent", "--all"].some(flag => flags.has(flag))) throw new CommandFailure("usage", `events ${verb} --source takes a source id or name and no other target flag`)
@@ -88,7 +107,11 @@ export async function runEventsVerb(verb: EventVerb, flags: EventFlags, args: re
     write((response as { EventSubscription: unknown }).EventSubscription)
     return 0
   }
-  if (verb === "subscription") { const response = await send({ GetEventSubscription: {} }); write((response as { EventSubscription: unknown }).EventSubscription); return 0 }
+  if (verb === "subscription") {
+    const { subscription } = subscriptionBody(await send({ GetEventSubscription: {} }))
+    write({ subscription, ...(followsNothing(subscription) ? { note: FOLLOWS_NOTHING_NOTE } : {}) })
+    return 0
+  }
   if (verb === "mcp") throw new CommandFailure("usage", "events mcp serves a harness over stdio")
   if (verb === "ack") { const response = await send({ AckEvents: { cursor: integer(args[0], 0, "cursor") } }); write((response as { EventsAcknowledged: unknown }).EventsAcknowledged); return 0 }
   const limit = integer(flags.get("--limit"), 1000, "--limit", 1000)

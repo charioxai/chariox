@@ -1,7 +1,7 @@
 use super::*;
 use crate::local::{
     CreateWorkflowPublicationRequest, CreateWorkflowScheduleRequest,
-    ExportWorkflowPublicationPackageRequest, InstallSkillRequest, ListWorkflowPublicationsRequest,
+    ExportWorkflowPublicationPackageRequest, ListWorkflowPublicationsRequest,
     RegisterEnvironmentRequest, RegisterScriptRequest, RegisterWorkflowPublicationEndpointRequest,
 };
 use base64::Engine;
@@ -103,6 +103,8 @@ fn create_publication_test_graph_in_workspace(
     };
     let agent = match harness
         .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            initial_task: None,
+            peer_spawn: None,
             max_context_tokens: None,
             no_subscribe: false,
             account_profile: None,
@@ -140,7 +142,6 @@ fn create_publication_test_graph_in_workspace(
                 worktree_id: Some(worktree_id.to_string()),
                 clear_worktree_id: false,
                 reason: None,
-                self_settings: None,
                 usage_limit: None,
             },
         ))

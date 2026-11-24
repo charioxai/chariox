@@ -6,6 +6,12 @@ use crate::room_exec::{ExecOutcome, ExecOutput};
 use crate::runtime::kernel_gateway::forward_with_retry;
 use std::io::Read;
 
+/// A job's place on its machine: the home directory and the workspace root below it.
+pub(super) struct Located {
+    home: String,
+    pub(super) root: String,
+}
+
 #[derive(Clone)]
 pub(super) struct Remote {
     grant: Arc<dyn GrantedSend>,
@@ -182,14 +188,40 @@ impl Remote {
             }
         }
     }
-    pub(super) async fn prepare(
+    /// Deletes the job's uploaded workspace, in a room of its own so it works when the job's rooms
+    /// are not at hand any more. The machine's gateway keeps the answer of every state-changing
+    /// request under its command id, so each attempt names its own: a retry after a failure would
+    /// otherwise be answered with the old failure and never run. Within one attempt the ids stay
+    /// the same, so the gateway's own retry of a lost reply is still answered, not run twice.
+    pub(super) async fn remove_workspace(&self, root: &str) -> Result<(), DaemonError> {
+        let malformed = || ledger::error("Job workspace path is malformed");
+        let (job_dir, _) = root.rsplit_once('/').ok_or_else(malformed)?;
+        let (jobs_dir, _) = job_dir.rsplit_once('/').ok_or_else(malformed)?;
+        let attempt = format!("{}:cleanup:{:032x}", self.job_id, rand::random::<u128>());
+        let room = create_target_room(&*self.grant, &attempt, Some(jobs_dir)).await?;
+        Self::new(self.grant.clone(), room, attempt)
+            .utility(
+                vec!["/bin/rm".into(), "-rf".into(), "--".into(), job_dir.into()],
+                "cleanup",
+            )
+            .await
+    }
+    /// Where the job's workspace goes on the machine, known before any byte is uploaded so it can
+    /// be saved first.
+    pub(super) async fn locate(
         grant: Arc<dyn GrantedSend>,
-        record: &Record,
-        manifest: &crate::jobs::Manifest,
-        cancelled: &watch::Receiver<bool>,
-    ) -> Result<(Self, String), DaemonError> {
-        let probe = Self::new(grant.clone(), String::new(), record.job_id.clone());
-        let home = match probe
+        job_id: &str,
+    ) -> Result<Located, DaemonError> {
+        let home = Self::home(grant, job_id).await?;
+        let root = format!(
+            "{}/chariox-jobs/{job_id}/workspace",
+            home.trim_end_matches('/')
+        );
+        Ok(Located { home, root })
+    }
+    async fn home(grant: Arc<dyn GrantedSend>, job_id: &str) -> Result<String, DaemonError> {
+        let probe = Self::new(grant, String::new(), job_id.into());
+        match probe
             .call(
                 "home",
                 LocalDaemonRequest::StatKernelFile(StatKernelFileRequest {
@@ -199,17 +231,57 @@ impl Remote {
             )
             .await?
         {
-            LocalDaemonResponse::KernelFileStat { stat } if stat.exists => stat.path,
-            _ => return Err(ledger::error("Job machine has no home directory")),
+            LocalDaemonResponse::KernelFileStat { stat } if stat.exists => Ok(stat.path),
+            _ => Err(ledger::error("Job machine has no home directory")),
+        }
+    }
+
+    pub(super) async fn without_workspace(
+        grant: Arc<dyn GrantedSend>,
+        record: &Record,
+    ) -> Result<Self, DaemonError> {
+        let command_id = format!("{}:command", record.job_id);
+        if record.request.target_directory().is_none() {
+            let home = Self::home(grant.clone(), &record.job_id).await?;
+            let room = create_target_room(&*grant, &command_id, Some(&home)).await?;
+            return Ok(Self::new(grant, room, record.job_id.clone()));
+        }
+        let directory = record.cwd.to_string_lossy();
+        let mut remote = Self::new(grant, String::new(), record.job_id.clone());
+        let answer = remote
+            .call(
+                "directory",
+                LocalDaemonRequest::StatKernelFile(StatKernelFileRequest {
+                    path: directory.to_string(),
+                    with_sha256: false,
+                }),
+            )
+            .await?;
+        let LocalDaemonResponse::KernelFileStat { stat } = answer else {
+            return Err(ledger::error(
+                "The enrolled machine did not confirm the job directory.",
+            ));
         };
+        if !stat.exists || stat.kind != Some(KernelFileKind::Directory) {
+            return Err(ledger::error(format!(
+                "The directory {directory} is missing on the enrolled machine. Copy it there with chariox.files.copy and try again."
+            )));
+        }
+        remote.room = create_target_room(&*remote.grant, &command_id, Some(&stat.path)).await?;
+        Ok(remote)
+    }
+
+    pub(super) async fn prepare(
+        grant: Arc<dyn GrantedSend>,
+        record: &Record,
+        located: &Located,
+        manifest: &crate::jobs::Manifest,
+        cancelled: &watch::Receiver<bool>,
+    ) -> Result<Self, DaemonError> {
+        let Located { home, root } = located;
         let room =
-            create_target_room(&*grant, &format!("{}:prepare", record.job_id), Some(&home)).await?;
+            create_target_room(&*grant, &format!("{}:prepare", record.job_id), Some(home)).await?;
         let preparation = Self::new(grant.clone(), room, record.job_id.clone());
-        let root = format!(
-            "{}/chariox-jobs/{}/workspace",
-            home.trim_end_matches('/'),
-            record.job_id
-        );
         let relative_cwd = record
             .cwd
             .strip_prefix(&record.workspace)
@@ -309,7 +381,7 @@ impl Remote {
         };
         let room =
             create_target_room(&*grant, &format!("{}:command", record.job_id), Some(&cwd)).await?;
-        Ok((Self::new(grant, room, record.job_id.clone()), root))
+        Ok(Self::new(grant, room, record.job_id.clone()))
     }
 
     pub(super) async fn return_files(

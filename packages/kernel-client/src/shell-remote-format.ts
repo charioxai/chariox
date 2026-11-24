@@ -17,9 +17,9 @@ export function formatRemoteMachines(machines: RemoteMachineRecord[]): string {
     const name = formatRemoteMachineLabel(machine)
     const providers = (machine.available_providers ?? []).join(",") || "-"
     const accounts = formatProviderAccounts(machine.provider_accounts)
-    const offline = machine.online ? "" : ",offline"
+    const reconnecting = machine.presence === "online" ? "" : ",reconnecting"
     const next = remoteMachineNextAction(machine)
-    return `${name} id=${machine.machine_id} status=${machine.trust_status}${offline} kernels=${machine.kernel_count} providers=${providers} accounts=${accounts}${next ? ` next: ${next}` : ""}`
+    return `${name} id=${machine.machine_id} status=${machine.trust_status}${reconnecting} kernels=${machine.kernel_count} providers=${providers} accounts=${accounts}${next ? ` next: ${next}` : ""}`
   }).join("\n")
 }
 
@@ -95,8 +95,8 @@ function formatAcceptingRemoteLeases(value: boolean | undefined): string {
 
 function remoteMachineNextAction(machine: RemoteMachineRecord): string {
   const machineLabel = formatRemoteMachineLabel(machine)
-  if (machine.online === false) {
-    return "connect or restart the remote kernel on this machine"
+  if (machine.presence === "reconnecting") {
+    return "wait for the remote kernel to reconnect, or restart it on this machine"
   }
   if (machine.trust_status !== "approved" || machine.pending) {
     return `approve with machine approve ${machine.machine_id}`
@@ -252,8 +252,12 @@ function remoteKernelLabel(kernel: RelayKernelPresence): string {
 
 export function formatRelayStatus(status: RelayStatus): string {
   const state = !status.configured ? "not configured" : status.connected ? "connected" : "configured, disconnected"
+  const refusal = status.registration_refused
   return [
-    `relay ${state}`,
+    refusal ? `Relay not registered: ${refusal.reason}. Next step: ${refusal.next_step}.` : `relay ${state}`,
+    ...(refusal?.next_retry_at_ms == null
+      ? []
+      : [`Next retry at ${new Date(refusal.next_retry_at_ms).toISOString()}`]),
     `url=${status.relay_url ?? "-"}`,
     `token_configured=${String(status.relay_token_configured)}`,
     `daemon=${status.daemon_id}`,

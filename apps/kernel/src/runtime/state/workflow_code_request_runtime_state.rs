@@ -214,7 +214,7 @@ impl KernelRuntimeState {
                 let result = workflow_code_artifact_apply_result(
                     app,
                     &request.name,
-                    crate::workflow_code::WorkflowCodeArtifactHistoryAction::Applied,
+                    Some(crate::workflow_code::WorkflowCodeArtifactHistoryAction::Applied),
                     WorkflowApplyContext {
                         session_id: &request.session_id,
                         provider_rebindings: &request.provider_rebindings,
@@ -294,6 +294,12 @@ impl KernelRuntimeState {
                         queue_ref.as_deref(),
                         "workflow_code.run",
                     )?;
+                    workflow_code_run_entry_deadline(
+                        app,
+                        &session_id,
+                        &compile.definition,
+                        endpoint.as_deref(),
+                    )?;
                     let apply = crate::app::KernelSessionService::with_authorization(app, &|| {
                         self.authorize_current_external_command()
                     })
@@ -314,7 +320,16 @@ impl KernelRuntimeState {
         };
         let endpoint_ref = match workflow_code_endpoint_ref(&apply_result.apply, request.endpoint) {
             Ok(endpoint_ref) => endpoint_ref,
-            Err(error) => return (Err(error), self.owned.session_snapshot(&session_id).ok()),
+            Err(error) => {
+                return (
+                    Err(self.owned.workflow_code_dispatch_refusal(
+                        &session_id,
+                        Some(&apply_result),
+                        error,
+                    )),
+                    self.owned.session_snapshot(&session_id).ok(),
+                );
+            }
         };
         let queue_ref = workflow_code_queue_ref(&apply_result.apply, request.queue_ref);
         let invocation_prompt = workflow_code_invocation_prompt(
@@ -333,6 +348,7 @@ impl KernelRuntimeState {
                 },
                 &caller_user_id,
                 caller_metaagent_id,
+                Some(&apply_result),
             )
             .await;
         let result = match invoke_response {
@@ -430,7 +446,7 @@ impl KernelRuntimeState {
                     workflow_code_artifact_apply_result(
                         app,
                         &name,
-                        crate::workflow_code::WorkflowCodeArtifactHistoryAction::Run,
+                        None,
                         WorkflowApplyContext {
                             session_id: &session_id,
                             provider_rebindings: &provider_rebindings,
@@ -452,7 +468,16 @@ impl KernelRuntimeState {
         };
         let endpoint_ref = match workflow_code_endpoint_ref(&apply_result.apply, request.endpoint) {
             Ok(endpoint_ref) => endpoint_ref,
-            Err(error) => return (Err(error), self.owned.session_snapshot(&session_id).ok()),
+            Err(error) => {
+                return (
+                    Err(self.owned.workflow_code_dispatch_refusal(
+                        &session_id,
+                        Some(&apply_result),
+                        error,
+                    )),
+                    self.owned.session_snapshot(&session_id).ok(),
+                );
+            }
         };
         let queue_ref = workflow_code_queue_ref(&apply_result.apply, request.queue_ref);
         let invocation_prompt = workflow_code_invocation_prompt(
@@ -471,6 +496,7 @@ impl KernelRuntimeState {
                 },
                 &caller_user_id,
                 caller_metaagent_id,
+                Some(&apply_result),
             )
             .await;
         let result = match invoke_response {
@@ -528,6 +554,22 @@ impl KernelRuntimeState {
             Err(error) => Err(error),
         };
         if let Ok(crate::local::LocalDaemonResponse::WorkflowCodeRun { result, .. }) = &result {
+            if let Err(error) = self
+                .with_authorized_app_side_effect(|app| {
+                    record_workflow_code_artifact_apply_history(
+                        app,
+                        &session_id,
+                        &request.name,
+                        &result.apply.compile.source_sha256,
+                        workflow_code_artifact_actor(&caller_user_id, caller_metaagent_id),
+                        crate::workflow_code::WorkflowCodeArtifactHistoryAction::Run,
+                        &result.apply.apply,
+                    )
+                })
+                .await
+            {
+                tracing::warn!(%error, "failed to record accepted workflow-code artifact run history");
+            }
             self.persist_workflow_code_run_event(
                 &session_id,
                 &caller_user_id,

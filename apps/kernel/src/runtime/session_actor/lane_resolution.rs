@@ -15,6 +15,7 @@ pub(super) async fn resolve_session_lane_key(
         | LocalDaemonRequest::ListProjects(_)
         | LocalDaemonRequest::SuggestSessionAlias(_)
         | LocalDaemonRequest::SetProjectPinned(_)
+        | LocalDaemonRequest::CreateProject(_)
         | LocalDaemonRequest::RenameProject(_)
         | LocalDaemonRequest::UpdateProjectWorkspaces(_)
         | LocalDaemonRequest::ArchiveProject(_)
@@ -171,16 +172,6 @@ pub(super) async fn resolve_session_lane_key(
                 .await
         }
         LocalDaemonRequest::DetachFromSession(request) => {
-            if let Some(session_id) =
-                session_projection.session_id_for_attachment(&request.attachment_id)
-            {
-                return Ok(session_id);
-            }
-            if session_projection.has_warmed_list() {
-                return Err(DaemonError::AttachmentNotFound {
-                    attachment_id: request.attachment_id.clone(),
-                });
-            }
             store.attachment_session_id(&request.attachment_id).await
         }
         _ => Err(DaemonError::LocalTransport {

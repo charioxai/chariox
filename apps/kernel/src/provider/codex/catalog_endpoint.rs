@@ -1,3 +1,4 @@
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::process::Stdio;
 use std::sync::OnceLock;
@@ -22,12 +23,40 @@ pub(crate) fn ensure_codex_account_endpoint(
     environment: BTreeMap<String, String>,
 ) -> Result<String, DaemonError> {
     let key = format!("{owner_user_id}\0{account_profile}");
+    let home = environment
+        .get("CODEX_HOME")
+        .ok_or(DaemonError::InvalidConfig {
+            field: "Codex account scope",
+            message: "the account has no CODEX_HOME; re-link it in Provider Accounts",
+        })?;
+    let home = std::fs::canonicalize(home).map_err(|_| DaemonError::InvalidConfig {
+        field: "Codex account scope", message: "the account directory is unavailable; re-link it or sign in again in Provider Accounts",
+    })?;
+    let scope = format!("{:x}", Sha256::digest(home.as_os_str().as_encoded_bytes()));
+    let credential_revision = match std::fs::metadata(home.join("auth.json")) {
+        Ok(metadata) => {
+            #[cfg(unix)]
+            let identity = {
+                use std::os::unix::fs::MetadataExt;
+                (metadata.dev(), metadata.ino())
+            };
+            #[cfg(not(unix))]
+            let identity = (0_u64, 0_u64);
+            Some(format!("{:?}", (identity, metadata.len(), metadata.modified().ok())))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(_) => return Err(DaemonError::InvalidConfig {
+            field: "Codex account scope", message: "the saved sign-in is unreadable; repair the account directory permissions and sign in again",
+        }),
+    };
     let owner_user_id = owner_user_id.to_string();
     let account_profile = account_profile.to_string();
     CODEX_ACCOUNT_ENDPOINTS
         .get_or_init(|| AccountEndpoints::new("codex.catalog"))
-        .ensure(
+        .ensure_scoped(
             key,
+            scope,
+            credential_revision,
             codex_endpoint_is_healthy,
             CODEX_ENDPOINT_STARTUP_TIMEOUT,
             move || {
@@ -88,6 +117,15 @@ pub(crate) fn invalidate_codex_account_endpoint(owner_user_id: &str, account_pro
     }
 }
 
+pub(crate) fn retain_codex_account_login(
+    owner: &str,
+    profile: &str,
+) -> Result<std::sync::Arc<()>, DaemonError> {
+    CODEX_ACCOUNT_ENDPOINTS
+        .get_or_init(|| AccountEndpoints::new("codex.catalog"))
+        .retain_login(format!("{owner}\0{profile}"))
+}
+
 pub(crate) fn shutdown_codex_account_endpoints() {
     if let Some(endpoints) = CODEX_ACCOUNT_ENDPOINTS.get() {
         endpoints.shutdown();
@@ -104,11 +142,6 @@ mod stall_tests {
         let store = crate::provider::ProviderProcessServiceStore::new(
             crate::provider::ProviderProcessService::new(),
         );
-        let deadline = std::time::Instant::now() + Duration::from_secs(3);
-        while crate::runtime::process_resources::snapshot_row_count_for_test() == 0 {
-            assert!(std::time::Instant::now() < deadline);
-            std::thread::sleep(Duration::from_millis(20));
-        }
         for ignore_term in [false, true] {
             let descendants = crate::test_support::TestWorktree::new("account-child");
             let child_pid_file = descendants.path().join("child.pid");
@@ -144,6 +177,13 @@ mod stall_tests {
                 invalidate_codex_account_endpoint("stall-owner", "stall-profile");
                 done.send(()).unwrap();
             });
+            // The sampler drops its table after a second nobody reads it, so read one just before
+            // descriptors run out.
+            let deadline = std::time::Instant::now() + Duration::from_secs(3);
+            while crate::runtime::process_resources::snapshot_row_count_for_test() == 0 {
+                assert!(std::time::Instant::now() < deadline);
+                std::thread::sleep(Duration::from_millis(20));
+            }
             let mut original = std::mem::MaybeUninit::<libc::rlimit>::uninit();
             assert_eq!(
                 unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, original.as_mut_ptr()) },

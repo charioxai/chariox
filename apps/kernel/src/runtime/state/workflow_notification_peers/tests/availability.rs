@@ -2,6 +2,8 @@
 //! seconds, without waiting for the Cloud inventory to change.
 use super::reconnect::{both_connected, connect};
 use super::*;
+use crate::local::{KernelConnectionClass, LocalDaemonRequest, LocalDaemonResponse};
+use crate::runtime::command::KernelCommand;
 use crate::session::{AgentTriggerNotificationSource, AgentTriggerSource};
 
 pub(super) fn on_a_big_stack<F: std::future::Future<Output = ()> + Send + 'static>(drill: F) {
@@ -31,6 +33,7 @@ pub(super) struct Drill {
     source_connection: Option<(watch::Sender<bool>, tokio::task::JoinHandle<()>)>,
     target_connection: (watch::Sender<bool>, tokio::task::JoinHandle<()>),
     source_router: Arc<CommandRouter>,
+    target_router: Arc<CommandRouter>,
     source_config: DaemonConfig,
     target_config: DaemonConfig,
     registry: Arc<tokio::sync::RwLock<chariox_relay::server::RelayRegistry>>,
@@ -101,6 +104,7 @@ impl Drill {
             source_connection: Some(source_connection),
             target_connection,
             source_router,
+            target_router: tr,
             source_config: sc,
             target_config: tc,
             registry,
@@ -156,6 +160,7 @@ impl Drill {
                 subscription_id.into(),
                 "reviewer".into(),
                 None,
+                crate::session::AgentTriggerBusyPolicy::Queue,
             )
             .unwrap();
         self.trigger_id = trigger.id().to_owned();
@@ -244,10 +249,114 @@ impl Drill {
         let _ = self.target_connection.1.await;
         let _ = self.server_tx.send(());
         let _ = self.server_task.await;
-        drop((self.source_runtime, self.target_runtime));
+        drop((
+            self.source_router,
+            self.target_router,
+            self.source_runtime,
+            self.target_runtime,
+        ));
         cleanup(self.source);
         cleanup(self.target);
     }
+}
+
+#[test]
+fn an_outside_grant_lists_and_follows_a_source_on_its_owners_other_kernel() {
+    on_a_big_stack(async {
+        let mut drill = Drill::connect().await;
+        let source = drill.source.source(&drill.workflow);
+        let grant = drill
+            .target_runtime
+            .insert_access_grant_for_test(&drill.target.session);
+        let dispatch = |label: &str, request: LocalDaemonRequest| {
+            let router = Arc::clone(&drill.target_router);
+            let mut command = KernelCommand::from_local_request(label, None, None, &request);
+            command.caller.caller_id = grant.clone();
+            command.caller.connection_class = Some(KernelConnectionClass::ExternalAgent);
+            command.caller.user_id = Some(crate::session::DEFAULT_LOCAL_USER_ID.into());
+            async move { router.dispatch(command, request).await }
+        };
+
+        let listed = dispatch(
+            "outside-remote-sources",
+            serde_json::from_value(serde_json::json!({"ListNotificationSources":{}})).unwrap(),
+        )
+        .await;
+        let followed = dispatch(
+            "outside-follow-remote-source",
+            serde_json::from_value(serde_json::json!({
+                "SubscribeEvents":{"targets":[],"sources":[source.source_id]}
+            }))
+            .unwrap(),
+        )
+        .await;
+        let occurrence = "outside-peer-run";
+        drill.source.complete(
+            &drill.workflow,
+            occurrence,
+            None,
+            crate::session::WorkflowRunStatus::Completed,
+            "review from the source kernel",
+        );
+        drill
+            .source_runtime
+            .owned
+            .session_store
+            .write()
+            .restore_session(
+                drill
+                    .source
+                    .sessions
+                    .get_session(&drill.source.session)
+                    .unwrap(),
+            );
+        drill
+            .source_runtime
+            .route_remote_workflow_notifications()
+            .await;
+        let received = dispatch(
+            "outside-read-peer-occurrence",
+            serde_json::from_value(serde_json::json!({"ListEvents":{"since":0}})).unwrap(),
+        )
+        .await;
+        drill.finish().await;
+
+        let LocalDaemonResponse::NotificationSources { sources } = listed.unwrap() else {
+            panic!("expected a notification source list");
+        };
+        assert!(
+            sources.iter().any(|item| item.source_id == source.source_id
+                && item.kernel_id == source.kernel_id
+                && item.available),
+            "the grant's offers omit the owner's reachable peer source: {sources:?}"
+        );
+        let LocalDaemonResponse::EventSubscription { subscription } = followed.unwrap() else {
+            panic!("expected an event subscription");
+        };
+        assert!(subscription
+            .sources
+            .iter()
+            .any(|item| item.source_id == source.source_id && item.available));
+        let LocalDaemonResponse::EventsListed { events, .. } = received.unwrap() else {
+            panic!("expected an outside event batch");
+        };
+        assert_eq!(events.len(), 1, "{events:?}");
+        let event = &events[0];
+        assert_eq!(event.kernel, source.kernel_id);
+        assert_eq!(event.session_id, source.session_id);
+        let crate::local::OutsideEventValue::Notification {
+            source_id,
+            occurrence_id,
+            output,
+            ..
+        } = &event.value
+        else {
+            panic!("expected a notification occurrence: {event:?}");
+        };
+        assert_eq!(source_id, &source.source_id);
+        assert_eq!(occurrence_id, occurrence);
+        assert_eq!(output.message(), "review from the source kernel");
+    });
 }
 
 #[test]

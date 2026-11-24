@@ -1,10 +1,19 @@
+use serde::ser::{Serialize, SerializeMap, Serializer};
 use serde_json::Value;
 
 const RESULT_TEXT_BYTES: usize = 64 * 1024;
 const RESULT_PREVIEW_BYTES: usize = 6 * 1024;
 const RESULT_IMAGE_BYTES: usize = 8 * 1024 * 1024;
 
-pub(super) fn runtime_tool_content(mut payload: Value) -> (Vec<Value>, Value) {
+#[cfg(test)]
+pub(super) fn runtime_tool_content(payload: Value) -> (Vec<Value>, Value) {
+    runtime_tool_content_ordered(payload, &[])
+}
+
+pub(super) fn runtime_tool_content_ordered(
+    mut payload: Value,
+    first_keys: &[&str],
+) -> (Vec<Value>, Value) {
     // MCP structuredContent is an object, while script results may be any JSON value.
     if !payload.is_object() {
         payload = serde_json::json!({ "result": payload });
@@ -53,7 +62,7 @@ pub(super) fn runtime_tool_content(mut payload: Value) -> (Vec<Value>, Value) {
     let serialization = if pretty {
         serde_json::to_writer_pretty(&mut serialized, &payload)
     } else {
-        serde_json::to_writer(&mut serialized, &payload)
+        serde_json::to_writer(&mut serialized, &OrderedPayload(&payload, first_keys))
     };
     let text_payload = if serialization.is_ok() {
         String::from_utf8(serialized.bytes).expect("serde_json emits UTF-8")
@@ -108,6 +117,28 @@ pub(super) fn runtime_tool_content(mut payload: Value) -> (Vec<Value>, Value) {
         None => vec![text],
     };
     (content, payload)
+}
+
+struct OrderedPayload<'a>(&'a Value, &'a [&'a str]);
+
+impl Serialize for OrderedPayload<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let Some(fields) = self.0.as_object().filter(|_| !self.1.is_empty()) else {
+            return self.0.serialize(serializer);
+        };
+        let mut map = serializer.serialize_map(Some(fields.len()))?;
+        for key in self.1 {
+            if let Some(value) = fields.get(*key) {
+                map.serialize_entry(key, value)?;
+            }
+        }
+        for (key, value) in fields {
+            if !self.1.contains(&key.as_str()) {
+                map.serialize_entry(key, value)?;
+            }
+        }
+        map.end()
+    }
 }
 
 struct BoundedJson {

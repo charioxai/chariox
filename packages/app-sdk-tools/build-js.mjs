@@ -37,15 +37,15 @@ try {
     format: 'esm', platform: 'neutral', target: 'es2023', conditions: ['browser'], mainFields: ['browser', 'module', 'main'],
     // WIT imports stay component imports; Node builtins fail at the bundler.
     external: ['chariox:*', 'wasi:*'],
-    alias: { '@chariox/app-sdk-wasm/event-routing': resolve(here, '../app-sdk-js/src/event-routing.js'), '@chariox/app-sdk-wasm': resolve(here, '../app-sdk-js/src/index.js') },
+    alias: { '@chariox/app-sdk-wasm/event-routing': resolve(here, '../app-sdk-js/src/event-routing.js'), '@chariox/app-sdk-wasm/workspace': resolve(here, '../app-sdk-js/src/workspace.js'), '@chariox/app-sdk-wasm': resolve(here, '../app-sdk-js/src/index.js') },
     legalComments: 'eof', sourcemap: false, minify: true, metafile: true,
   });
   const npm = await npmPackages(built.metafile.inputs);
   const npmNotices = join(scratch, 'npm-notices');
   const licenseResult = spawnSync('python3', [join(here, 'licenses.py'), '--npm', npmNotices], { input: JSON.stringify(npm), encoding: 'utf8' });
   if (licenseResult.status !== 0) throw Error(`npm licence check failed: ${licenseResult.stderr}`);
-  // An App that imports event-routing is built for the additive 1.1.0 world.
-  const routed = Object.values(built.metafile.outputs).some(output => output.imports.some(item => item.path === 'chariox:app/event-routing@1.1.0'));
+  // An App that imports event-routing or workspace is built for the additive 1.1.0 world.
+  const routed = Object.values(built.metafile.outputs).some(output => output.imports.some(item => item.path === 'chariox:app/event-routing@1.1.0' || item.path === 'chariox:app/workspace@1.1.0'));
   run(compiler, ['--wit', resolve(here, '../app-wit/wit'), '--world', routed ? 'chariox:app/app@1.1.0' : 'app', '--js', 'app.js', '--module-root', '.', '-o', component], scratch);
   // Check actual component bytes, including dependencies' imports.
   const admitted = join(scratch, 'admitted.wasm');

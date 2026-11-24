@@ -17,6 +17,7 @@ use serde_json::Value;
 use super::process::{ClaudeChild, ClaudeOutput, ClaudeRuntimeMessage};
 use super::state::ClaudeRuntimeState;
 use super::tool_transcript::ClaudeToolTranscript;
+use super::watchdog::ClaudeStartState;
 use crate::pty::ReaderGate;
 
 const HOLD_TIMEOUT: Duration = Duration::from_secs(2);
@@ -155,6 +156,11 @@ struct ClaudeTurn {
     session_id: Option<String>,
     active_turn_id: Option<String>,
     active_prompt_message: Option<Value>,
+    // A predecessor program (L12) hands neither over: its turns had no own-turn state.
+    #[serde(default)]
+    own_turn: bool,
+    #[serde(default)]
+    background_notification_pending: bool,
     active_stream_message_id: Option<String>,
     next_turn_number: u64,
     result_number: u64,
@@ -166,6 +172,7 @@ struct ClaudeTurn {
     last_context_window: Option<u64>,
     observed_context_model: Option<String>,
     main_stream_has_context: bool,
+    start: ClaudeStartState,
 }
 
 impl std::fmt::Debug for ClaudeTurn {
@@ -262,6 +269,8 @@ pub(super) fn hand_over(
             session_id: state.session_id.clone(),
             active_turn_id: state.active_turn_id.clone(),
             active_prompt_message: state.active_prompt_message.clone(),
+            own_turn: state.own_turn,
+            background_notification_pending: state.background_notification_pending,
             active_stream_message_id: state.active_stream_message_id.clone(),
             next_turn_number: state.next_turn_number,
             result_number: state.result_number,
@@ -273,6 +282,9 @@ pub(super) fn hand_over(
             last_context_window: state.last_context_window,
             observed_context_model: state.observed_context_model.clone(),
             main_stream_has_context: state.main_stream_has_context,
+            start: state
+                .turn_watchdog
+                .start_state(std::time::Instant::now(), crate::session::unix_epoch_ms()),
         },
         credentials: state.provider_credential_env.clone(),
     };
@@ -355,6 +367,8 @@ impl Adopted {
         state.settings_file = self.settings_file;
         state.usage_file = self.usage_file;
         state.session_id = turn.session_id;
+        state.own_turn = turn.own_turn;
+        state.background_notification_pending = turn.background_notification_pending;
         state.active_stream_message_id = turn.active_stream_message_id;
         state.next_turn_number = turn.next_turn_number;
         state.result_number = turn.result_number;
@@ -369,6 +383,7 @@ impl Adopted {
         AdoptedTurn {
             turn_id: turn.active_turn_id,
             prompt_message: turn.active_prompt_message,
+            start: turn.start,
         }
     }
 }
@@ -379,4 +394,5 @@ impl Adopted {
 pub(super) struct AdoptedTurn {
     pub(super) turn_id: Option<String>,
     pub(super) prompt_message: Option<Value>,
+    pub(super) start: ClaudeStartState,
 }

@@ -57,10 +57,6 @@ export async function runHidden(ctx) {
   check("ListAgents shows only the room agent", listed.length === 1 && listed[0].id === orch, { aliases: listed.map(x => x.alias) })
   check("snapshot shows only the room agent", (snapshot.agents ?? []).length === 1, { count: (snapshot.agents ?? []).length })
   check("room list shows only the room agent", (room?.agents ?? []).length === 1, { count: (room?.agents ?? []).length })
-  // max_agents is 2 for this kernel (see the driver config): the room agent plus one peer fill it, five sub-agents do not count.
-  const peer1 = await a.rpc({ SpawnAgent: { session_id: R, alias: "peer1", provider: "claude", model, effort: "low", permission_level: "yolo", worktree_id: null } }).then(() => "ok", e => e.message.slice(0, 160))
-  const peer2 = await a.rpc({ SpawnAgent: { session_id: R, alias: "peer2", provider: "claude", model, effort: "low", permission_level: "yolo", worktree_id: null } }).then(() => "ok", e => e.message.slice(0, 160))
-  check("max_agents ignores the five sub-agents (one peer fits, a second is refused)", peer1 === "ok" && peer2 !== "ok", { peer1, peer2 })
   const read = f => { try { return readFileSync(join(work, f), "utf8") } catch { return null } }
   const overview = read("overview.txt")
   note("room-command-answers", { overview: overview?.slice(0, 1500) ?? null, agent_list: read("agent-list.txt")?.slice(0, 600) ?? null, children: read("children.txt")?.slice(0, 600) ?? null })

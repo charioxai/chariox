@@ -7,7 +7,7 @@ fn an_app_confirmation_keeps_its_kernel_written_frame_in_the_card() {
     let frame = json!({
         "installation_id":"campaign", "app_id":"com.chariox.campaign",
         "app_name":"Campaign", "publisher_id":"com.chariox",
-        "publisher_name":"Chariox", "action_name":"pay"
+        "publisher_name":"Chariox", "action_name":"pay", "input":"{\n  \"amount\": 5\n}"
     });
     wire["app_confirmation"] = frame.clone();
     let card: RuntimeInteraction = serde_json::from_value(wire).unwrap();

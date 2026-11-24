@@ -26,7 +26,6 @@ fn submit_leased_prompt_with_receipt(
         None,
         Some(context),
         Vec::new(),
-        None,
         crate::extension::RemoteExtensionManifest::default(),
     )?;
     runtime.update_leased_prompt_receipt(

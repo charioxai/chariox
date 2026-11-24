@@ -6,7 +6,15 @@ use crate::durable_state::agent_lifecycle::{
 use sha2::{Digest, Sha256};
 
 fn room_session() -> crate::session::RuntimeSession {
-    crate::session::RuntimeSession::new("room", None, "workspace", "worktree", "machine", "daemon")
+    crate::session::RuntimeSession::new(
+        "room",
+        crate::session::ProjectId::test(),
+        None,
+        "workspace",
+        "worktree",
+        "machine",
+        "daemon",
+    )
 }
 
 #[test]
@@ -256,7 +264,7 @@ fn owner_agent_cancellation_987_snapshot_and_hash() {
     let bytes = include_bytes!("owner-agent-cancellation-987.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "56e6ba024e08c36d68c10080d9427d35b44549a544cd5a9c995602269da4be8e"
+        "8d9303a9e11a4b7ebadb60807699bd12f66950bf36a1c01c2f59693732791607"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(fixture["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
@@ -264,46 +272,6 @@ fn owner_agent_cancellation_987_snapshot_and_hash() {
         let request: LocalDaemonRequest = serde_json::from_value(fixture[key].clone()).unwrap();
         assert_eq!(serde_json::to_value(request).unwrap(), fixture[key]);
     }
-}
-
-#[test]
-fn browser_owner_action_shape_is_bound_to_protocol993() {
-    let fixture: serde_json::Value =
-        serde_json::from_str(include_str!("agent-browser-owner-action-993.json")).unwrap();
-    assert_eq!(fixture["local"], LOCAL_DAEMON_PROTOCOL_VERSION);
-    assert_eq!(
-        fixture["peer"],
-        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION
-    );
-    let task: AgentTaskExecution = serde_json::from_value(fixture["task"].clone()).unwrap();
-    assert_eq!(
-        task.owner_action,
-        Some(crate::durable_state::agent_lifecycle::TaskOwnerAction::BrowserAccess)
-    );
-    assert_eq!(serde_json::to_value(task).unwrap(), fixture["task"]);
-    let card = crate::session::RuntimeInteraction::for_kernel_operation(
-        "task-blocked-browser-task-2",
-        "task-blocked-browser-task-2",
-        "Allow browser access",
-        "Allow browser access?",
-        vec![crate::session::RuntimeInteractionChoice::new(
-            "allow_browser",
-            "Allow browser",
-            "resume",
-            None,
-        )],
-    )
-    .without_timeout()
-    .with_related_agent_id("agent".into());
-    let encoded = serde_json::to_value(card).unwrap();
-    assert_eq!(
-        serde_json::json!({"related_agent_id":encoded["related_agent_id"],"timeout_sec":encoded["timeout_sec"]}),
-        fixture["decision"]
-    );
-    assert_eq!(
-        format!("{:x}", Sha256::digest(fixture.to_string().as_bytes())),
-        "ef3310c0165a324b4ebae3fe15352a1f36b09549c51a69a7ce29959259efee0a"
-    );
 }
 
 // MP-08 / MP-09 / MP-10 / MP-11: idle Stop has an explicit successful wire result.

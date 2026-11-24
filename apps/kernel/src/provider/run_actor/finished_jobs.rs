@@ -16,6 +16,7 @@ pub(crate) struct ProviderPromptSubmitAcknowledgement {
 pub(crate) enum ProviderPromptSubmitReceipt {
     Accepted,
     Rejected,
+    OpenCodeConflict,
     Uncertain,
 }
 
@@ -26,6 +27,7 @@ impl ProviderPromptSubmitReceipt {
         match result {
             Ok(_) => Self::Accepted,
             Err(DaemonError::ProviderPromptSteerRejected { .. }) => Self::Rejected,
+            Err(DaemonError::OpenCodeSteerConflict) => Self::OpenCodeConflict,
             Err(_) => Self::Uncertain,
         }
     }

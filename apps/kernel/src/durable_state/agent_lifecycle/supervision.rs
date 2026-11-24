@@ -145,6 +145,15 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             }
             Ok(Outcome::Saved)
         }
+        Operation::WorkerResultReturned { room, parent, task } => {
+            tx.execute(
+                "INSERT INTO agent_source_occurrences(room_id,source_id,occurrence_id,success)
+                 VALUES(?1,?2,?3,1) ON CONFLICT(room_id,source_id,occurrence_id) DO NOTHING",
+                params![room, format!("worker-result-returned:{task}"), parent],
+            )
+            .map_err(sql)?;
+            Ok(Outcome::Saved)
+        }
         Operation::SourceOutcome {
             mut public_answer,
             room,
@@ -326,7 +335,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                             continue;
                         }
                     };
-                    if super::settled_waits::finish(tx, &mut t)? {
+                    if super::settled_waits::finish(tx, &mut t, now)? {
                         t.revision += 1;
                         save(tx, &t)?;
                         changed.push(t);
@@ -338,6 +347,11 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     } else {
                         None
                     };
+                    let settled = super::settled_waits::is_settled(tx, &t)?;
+                    let unread = match t.wait.as_ref() {
+                        Some(w) => super::settled_waits::unread_outcome(tx, &t, w)?,
+                        None => false,
+                    };
                     if let Some(w) = t.wait.as_mut() {
                         let clock_rollback = now < w.last_checked_at_ms;
                         w.last_checked_at_ms = w.last_checked_at_ms.max(now);
@@ -345,7 +359,6 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                             .registration_ids
                             .iter()
                             .any(|id| !regs.iter().any(|r| &r.id == id && r.live));
-                        let unread:i64=tx.query_row("SELECT count(*) FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND sequence>?3 AND json_extract(payload,'$.state') NOT IN ('handled','expired','failed') AND json_extract(payload,'$.kind') IN ('source_completed','source_lost','peer_event') AND (json_extract(payload,'$.payload.task_id')=?4 OR EXISTS(SELECT 1 FROM json_each(json_extract(payload,'$.payload.task_ids')) WHERE value=?4))",params![t.room_id,t.agent_id,sql_integer(w.inbox_cursor)?,t.task_id],|r|r.get(0)).map_err(sql)?;
                         let check_in = next_check_in.filter(|due| {
                             *due <= now
                                 && source_deadline.is_none_or(|deadline| deadline > now)
@@ -353,12 +366,17 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                                 && now >= w.started_at_ms
                                 && !clock_rollback
                         });
-                        if (dead && unread == 0)
-                            || w.deadline_ms.is_some_and(|deadline| deadline <= now)
-                            || now < w.started_at_ms
-                            || clock_rollback
-                            || check_in.is_some()
-                        {
+                        // An unread outcome is the wake when its source already ended.
+                        let needs_wake = if dead {
+                            !unread
+                        } else {
+                            w.deadline_ms.is_some_and(|deadline| deadline <= now)
+                                || now < w.started_at_ms
+                                || clock_rollback
+                                || check_in.is_some()
+                        };
+                        // A settled wait held back by the agent's other work has nothing to re-check.
+                        if !settled && needs_wake {
                             let kind = if dead {
                                 "wait_recheck"
                             } else {
@@ -500,7 +518,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 } else {
                     e.attempted_at_ms
                 };
-                if matches!(e.state.as_str(), "pending" | "submitting" | "uncertain")
+                if e.state == "pending"
                     && (clock_quarantined
                         || deadline_start.is_some_and(|at| {
                             // Receipt time can advance during Sweep's awaited pre-work.
@@ -510,23 +528,35 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                                 || now.saturating_sub(at) >= DELIVERY_TIMEOUT_MS
                         }))
                 {
-                    // Refused before any provider I/O: nothing is unconfirmed, so it ends as
-                    // failed and cannot fence the recipient's later wakes and messages.
-                    let undelivered =
-                        e.state == "pending" && e.submit_epoch.is_none() && !clock_quarantined;
-                    let reason = if clock_quarantined {
-                        format!("Delivery {} refusal clock is quarantined; owner must restore authoritative state or cancel", e.sequence)
-                    } else if undelivered {
-                        format!("Delivery {} failed: the agent did not start. Resume sends it again, or Cancel", e.sequence)
-                    } else {
-                        format!("Unconfirmed delivery {}: reconcile the original attempt or explicitly cancel", e.sequence)
-                    };
-                    if undelivered {
-                        super::delivery_failure::fail_undelivered(tx, &mut e)?;
-                    } else {
-                        e.state = "blocked".into();
-                        save_event(tx, &e)?;
+                    // A delivery with a provider attempt but no receipt is settled by the
+                    // kernel before this sweep (`settle_interrupted_deliveries`). What is
+                    // left refused before any provider I/O, so nothing is unconfirmed.
+                    if !clock_quarantined {
+                        if matches!(e.kind.as_str(), "deadline_reached" | "wait_recheck") {
+                            // The wait can only produce this occurrence once. Keep a refused
+                            // wake deliverable so the wait resumes after the workspace returns.
+                            tx.execute(
+                                "UPDATE agent_inbox_refusals SET first_refused_at_ms=?2 WHERE sequence=?1",
+                                params![sql_integer(e.sequence)?, sql_integer(now)?],
+                            )
+                            .map_err(sql)?;
+                            continue;
+                        }
+                        super::delivery_failure::fail_undelivered(
+                            tx,
+                            &mut e,
+                            DelegateGoneReason::FailedStart,
+                            now,
+                        )?;
+                        settle_refused_wake(tx, &e, &mut changed, now)?;
+                        continue;
                     }
+                    let reason = format!(
+                        "Delivery {} refusal clock is quarantined; owner must restore authoritative state or cancel",
+                        e.sequence
+                    );
+                    e.state = "blocked".into();
+                    save_event(tx, &e)?;
                     // Only the task this delivery belongs to waits on its
                     // reconciliation; unrelated work of the recipient continues.
                     let mut matched = false;
@@ -542,13 +572,10 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                             }
                             t.state = ExecutionState::Blocked;
                             t.blocked_revision = t.revision + 1;
-                            t.reason = if clock_quarantined || undelivered {
-                                reason.clone()
-                            } else {
-                                format!("Unconfirmed delivery {}: owner must reconcile the original attempt", e.sequence)
-                            };
+                            t.reason = reason.clone();
                             t.revision += 1;
                             save(tx, &t)?;
+                            record_block_cause(tx, &t, true)?;
                             changed.push(t);
                         }
                     }
@@ -559,11 +586,11 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                         task.blocked_revision = task.revision;
                         task.reason = reason;
                         save(tx, &task)?;
+                        record_block_cause(tx, &task, true)?;
                         changed.push(task);
                     }
                 }
             }
-            changed.extend(super::delivery_waits::block_undeliverable_waits(tx, now)?);
             Ok(Outcome::Swept(changed))
         }
         Operation::CancelTask {
@@ -596,27 +623,37 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
         Operation::RetireRestartFailure {
             task,
             revision,
+            later_prompt,
             now,
         } => {
             let mut t = load(tx, &task)?;
-            // Admission must not abandon a goal, owned work, or an uncertain receipt.
+            // Admission must not abandon a goal, owned work, or an uncertain receipt. The rows of
+            // the later turn itself are its own delivery, not work left behind.
             let unresolved: bool = tx.query_row(
-                "SELECT EXISTS(SELECT 1 FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND CASE WHEN json_valid(payload) THEN json_extract(payload,'$.state') IN ('blocked','submitting','uncertain') OR (json_extract(payload,'$.state')='pending' AND json_extract(payload,'$.kind') IS NOT 'task_cancelled') ELSE 1 END)",
-                params![t.room_id, t.agent_id], |r| r.get(0),
+                "SELECT EXISTS(SELECT 1 FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND CASE WHEN json_valid(payload) THEN json_extract(payload,'$.prompt_id') IS NOT ?3 AND (json_extract(payload,'$.state') IN ('blocked','submitting','uncertain') OR (json_extract(payload,'$.state')='pending' AND json_extract(payload,'$.kind') IS NOT 'task_cancelled')) ELSE 1 END)",
+                params![t.room_id, t.agent_id, later_prompt], |r| r.get(0),
             ).map_err(sql)?;
+            // A Blocked task is not waiting: its pending prompt and wait are what its ended
+            // attempt left behind, and a wait on a live source shows as a live registration.
+            // Only an interrupted attempt is superseded: a block the agent raised for its owner
+            // (a question, a decision) stays until the owner answers it.
             if t.state != ExecutionState::Blocked
                 || t.blocked_revision != revision
-                || t.goal.is_some()
-                || !t.obligations.is_empty()
-                || t.wait.is_some()
-                || t.pending_prompt_id.is_some()
+                || !is_interrupted_block(tx, &t)?
+                || t.owns_unfinished_work()
                 || unresolved
                 || registrations(tx, &t.task_id)?.iter().any(|r| r.live)
             {
                 return Ok(Outcome::Task(t));
             }
+            // An interrupted wake turn keeps the wait and wake prompt it was dispatched with;
+            // with its source settled and handled nothing can consume them.
+            t.wait = None;
+            t.pending_prompt_id = None;
             t.state = ExecutionState::Cancelled;
-            t.reason = "Interrupted attempt superseded by a later turn".into();
+            t.reason = "Superseded by a later turn of the same agent; it holds no open work".into();
+            t.pending_prompt_id = None;
+            t.wait = None;
             t.last_progress_at_ms = now;
             t.revision += 1;
             save(tx, &t)?;
@@ -634,29 +671,12 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             }
             let quarantined:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM agent_lifecycle_quarantine WHERE kind='task' AND id=?1)",[&task],|r|r.get(0)).map_err(sql)?;
             if resume && quarantined {
-                return Err(error("quarantined obligation coverage must be restored before resume; explicit cancellation remains available"));
+                return Err(error(
+                    "quarantined obligation coverage must be restored before resume; explicit cancellation remains available",
+                ));
             }
             if resume {
                 registrations(tx, &t.task_id)?;
-            }
-            if resume {
-                // The card exists only for this delivery: Resume is the owner's word to send it again.
-                let own = t
-                    .task_id
-                    .strip_prefix("delivery-")
-                    .and_then(|n| n.parse::<u64>().ok());
-                if let Some(own) = own {
-                    let mut event = get_event(tx, &t.room_id, &t.agent_id, own)?;
-                    if matches!(event.state.as_str(), "blocked" | "uncertain" | "failed") {
-                        super::delivery_failure::send_again(tx, &mut event, now)?;
-                        t.state = ExecutionState::Done;
-                        t.reason = "Delivery sent again".into();
-                        t.owner_action = None;
-                        t.revision += 1;
-                        save(tx, &t)?;
-                        return Ok(Outcome::Task(t));
-                    }
-                }
             }
             let mut q = tx.prepare("SELECT sequence FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND json_extract(payload,'$.state') IN ('blocked','submitting','uncertain')").map_err(sql)?;
             let deliveries = q
@@ -665,22 +685,26 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(sql)?;
             drop(q);
-            if resume && !deliveries.is_empty() {
-                return Err(error("unconfirmed delivery must receive its exact provider receipt or be explicitly cancelled before resume"));
-            }
-            if !resume {
-                for sequence in deliveries {
-                    let mut event = get_event(
-                        tx,
-                        &t.room_id,
-                        &t.agent_id,
-                        u64::try_from(sequence).map_err(|_| error("corrupt delivery sequence"))?,
-                    )?;
-                    if delivery_belongs_to_task(tx, &event, &t)? {
-                        event.state = "failed".into();
-                        save_event(tx, &event)?;
-                    }
+            // Only this task's own unsettled deliveries hold its Resume: another turn's message
+            // on its way in keeps its place in the agent's queue either way.
+            for sequence in deliveries {
+                let mut event = get_event(
+                    tx,
+                    &t.room_id,
+                    &t.agent_id,
+                    u64::try_from(sequence).map_err(|_| error("corrupt delivery sequence"))?,
+                )?;
+                if !delivery_belongs_to_task(tx, &event, &t)? {
+                    continue;
                 }
+                if resume {
+                    return Err(error(format!(
+                        "unconfirmed delivery of inbox event {} to task {} must receive its exact provider receipt or be explicitly cancelled before resume",
+                        event.sequence, t.task_id
+                    )));
+                }
+                event.state = "failed".into();
+                save_event(tx, &event)?;
             }
             let retry_wake = resume && t.wait.is_some() && pending_refused_wake(tx, &t)?;
             let blocked_revision = t.blocked_revision;
@@ -718,7 +742,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 };
                 t.last_progress_at_ms = now;
                 if let Some(goal) = &t.goal {
-                    migration::audit(
+                    audit::audit(
                         tx,
                         "goal.owner_resume",
                         &t.task_id,
@@ -944,6 +968,45 @@ fn delivery_belongs_to_task(
     Ok(false)
 }
 
+/// A terminal receipt cannot leave its source outcome waiting for a turn.
+fn settle_refused_wake(
+    tx: &Transaction<'_>,
+    event: &InboxEvent,
+    changed: &mut Vec<AgentTaskExecution>,
+    now: u64,
+) -> Result<(), DaemonError> {
+    if !event.is_source_outcome() {
+        return Ok(());
+    }
+    for mut task in live_tasks(tx, &event.room_id, &event.agent_id)? {
+        if task.state != ExecutionState::Waiting || !delivery_belongs_to_task(tx, event, &task)? {
+            continue;
+        }
+        let mut released = false;
+        for obligation in &mut task.obligations {
+            if matches!(obligation.status.as_str(), "settling" | "failed")
+                && obligation
+                    .completion_source()
+                    .is_some_and(|source| event.reports_source(source))
+            {
+                obligation.status = "cancelled".into();
+                released = true;
+            }
+        }
+        let finished = super::settled_waits::finish(tx, &mut task, now)?;
+        if finished {
+            task.state = ExecutionState::Cancelled;
+            task.reason = "Wake delivery failed: the agent could not start.".into();
+        }
+        if released || finished {
+            task.revision += 1;
+            save(tx, &task)?;
+            changed.push(task);
+        }
+    }
+    Ok(())
+}
+
 fn refused_wake(event: &InboxEvent) -> bool {
     event.state == "pending"
         && event.kind != "message"
@@ -975,4 +1038,39 @@ fn pending_refused_wake(
         }
     }
     Ok(false)
+}
+
+/// Records why `t` is Blocked at its current `blocked_revision`: an interrupted attempt the kernel
+/// blocked (a later turn may supersede it), or a block for the owner (never superseded).
+pub(super) fn record_block_cause(
+    tx: &Transaction<'_>,
+    t: &AgentTaskExecution,
+    interrupted: bool,
+) -> Result<(), DaemonError> {
+    if interrupted && t.state == ExecutionState::Blocked {
+        tx.execute(
+            "INSERT INTO agent_interrupted_blocks(task_id,blocked_revision) VALUES(?1,?2) ON CONFLICT(task_id) DO UPDATE SET blocked_revision=excluded.blocked_revision",
+            params![t.task_id, sql_integer(t.blocked_revision)?],
+        )
+    } else {
+        tx.execute(
+            "DELETE FROM agent_interrupted_blocks WHERE task_id=?1",
+            params![t.task_id],
+        )
+    }
+    .map_err(sql)?;
+    Ok(())
+}
+
+/// Whether `t`'s current block is an interrupted attempt the kernel recorded.
+pub(super) fn is_interrupted_block(
+    tx: &Transaction<'_>,
+    t: &AgentTaskExecution,
+) -> Result<bool, DaemonError> {
+    tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM agent_interrupted_blocks WHERE task_id=?1 AND blocked_revision=?2)",
+        params![t.task_id, sql_integer(t.blocked_revision)?],
+        |r| r.get(0),
+    )
+    .map_err(sql)
 }

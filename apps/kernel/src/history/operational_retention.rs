@@ -134,7 +134,7 @@ impl OperationalHistoryStore {
                     message: error.to_string(),
                 })?
         };
-        self.range_cache.invalidate();
+        self.rows_rewritten();
         let now = unix_epoch_ms();
         for session_id in session_ids {
             let remaining = connection
@@ -226,7 +226,7 @@ impl OperationalHistoryStore {
         transaction
             .commit()
             .map_err(|error| history_retention_error("commit operational history prune", error))?;
-        self.range_cache.invalidate();
+        self.rows_rewritten();
         Ok(rows.len())
     }
 
@@ -343,7 +343,7 @@ impl OperationalHistoryStore {
             .map_err(|error| history_retention_error("reclaim operational history disk", error));
         // VACUUM may renumber the implicit row ids the cached ranges continue from, whether or
         // not it failed halfway, and an outline can have warmed a range since the last prune.
-        self.range_cache.invalidate();
+        self.rows_rewritten();
         reclaimed
     }
 

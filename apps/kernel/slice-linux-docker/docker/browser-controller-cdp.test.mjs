@@ -269,6 +269,7 @@ test("persistent browser connection returns page identities, focus, and applied 
     "Page.setLifecycleEventsEnabled",
     "Runtime.enable",
     "Inspector.enable",
+    "Emulation.setScrollbarsHidden",
   ]) {
     assert.equal(
       connection.calls.filter((call) => call.method === method).length,

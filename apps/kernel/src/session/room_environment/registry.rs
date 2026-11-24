@@ -17,6 +17,23 @@ impl RoomEnvironmentRegistry {
         self.environments_by_session.get(session_id)
     }
 
+    pub(crate) fn disconnect_actor(&mut self, session_id: &str, actor_id: &str) {
+        if let Some(environment) = self.environments_by_session.get_mut(session_id) {
+            environment.disconnect_actor(actor_id);
+        }
+    }
+
+    pub(crate) fn connect_actor(
+        &mut self,
+        session_id: &str,
+        actor: EnvironmentActor,
+    ) -> Result<(), EnvironmentError> {
+        if let Some(environment) = self.environments_by_session.get_mut(session_id) {
+            environment.register_actor(actor)?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn restore(&mut self, environment: RoomEnvironment) {
         self.environments_by_session
             .insert(environment.snapshot().session_id, environment);

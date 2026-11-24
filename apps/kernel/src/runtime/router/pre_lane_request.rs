@@ -15,6 +15,7 @@ use crate::runtime::provider_catalog_control::execute_provider_catalog_request;
 use crate::runtime::provider_process_control::provider_processes_visible_to_user_from_projection;
 use crate::runtime::relay_config_control::execute_relay_config_request;
 use crate::runtime::remote_relay_inventory::execute_remote_relay_inventory_request;
+use crate::runtime::state::ManagedContextRegistrationFailure;
 use crate::runtime::terminal_command_catalog::terminal_command_catalog_response;
 use crate::runtime::workspace_command_executor::execute_workspace_command_request;
 
@@ -74,11 +75,18 @@ impl CommandRouter {
                     )?;
                     if let LocalDaemonResponse::ManagedContextLaunchTarget { target } = &response {
                         self.runtime_state
-                            .ensure_managed_context_project(target, caller_user_id)?;
+                            .ensure_managed_context_project(target, caller_user_id)
+                            .map_err(ManagedContextRegistrationFailure::into_error)?;
                     }
                     Ok(Some(response))
                 }))
             }
+            LocalDaemonRequest::GetAgentReleaseNotes { .. } => Some(Box::pin(async move {
+                Ok(Some(LocalDaemonResponse::AgentReleaseNotes {
+                    landing: crate::agent_release_notes::LANDING,
+                    text: crate::agent_release_notes::NOTE.into(),
+                }))
+            })),
             LocalDaemonRequest::GetTerminalCommandCatalog(_) => Some(Box::pin(async move {
                 terminal_command_catalog_response().map(Some)
             })),
@@ -128,13 +136,10 @@ impl CommandRouter {
             | LocalDaemonRequest::ListWorkspaceWorktrees(_)
             | LocalDaemonRequest::CreateWorkspaceWorktree(_)
             | LocalDaemonRequest::DeleteWorkspaceWorktree(_)
-            | LocalDaemonRequest::CreateWorkspacePullRequest(_)
             | LocalDaemonRequest::GetWorkspaceGitOverview(_)
             | LocalDaemonRequest::ListWorkspaceFiles(_)
             | LocalDaemonRequest::GetWorkspaceFileContent(_)
-            | LocalDaemonRequest::CommitWorkspaceChanges(_)
-            | LocalDaemonRequest::PushWorkspaceBranch(_)
-            | LocalDaemonRequest::CommitAndPushWorkspaceChanges(_)) => Some(Box::pin(async move {
+            | LocalDaemonRequest::CommitWorkspaceChanges(_)) => Some(Box::pin(async move {
                 execute_workspace_command_request(
                     &self.runtime_state,
                     &self.session_projection,
@@ -156,6 +161,12 @@ impl CommandRouter {
                     .map(Some)
                 }))
             }
+            LocalDaemonRequest::Watcher(request) => Some(Box::pin(async move {
+                self.runtime_state
+                    .execute_watcher_request(request.clone(), caller_user_id)
+                    .await
+                    .map(Some)
+            })),
             LocalDaemonRequest::GetProjectEnvironment(request) => Some(Box::pin(async move {
                 self.runtime_state
                     .get_project_environment(request.clone(), caller_user_id)
@@ -291,14 +302,7 @@ impl CommandRouter {
             | LocalDaemonRequest::RemoveConnector(_)
             | LocalDaemonRequest::GetConnector(_)
             | LocalDaemonRequest::ListConnectors(_)
-            | LocalDaemonRequest::TestConnector(_)
-            | LocalDaemonRequest::UpsertSkill(_)
-            | LocalDaemonRequest::InstallSkill(_)
-            | LocalDaemonRequest::UpdateSkill(_)
-            | LocalDaemonRequest::UninstallSkill(_)
-            | LocalDaemonRequest::ImportSkills(_)
-            | LocalDaemonRequest::GetSkill(_)
-            | LocalDaemonRequest::ListSkills(_)) => Some(Box::pin(async move {
+            | LocalDaemonRequest::TestConnector(_)) => Some(Box::pin(async move {
                 let credential_vault = self
                     .config_projection
                     .snapshot()

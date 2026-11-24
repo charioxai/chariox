@@ -30,11 +30,13 @@ async fn daemon_registration_is_tracked_and_removed_on_disconnect() {
     });
 
     let url = format!("ws://{}:{}", addr.ip(), addr.port());
-    let (mut socket, _) = connect_async(&url)
+    let (mut socket, socket_handshake) = connect_async(&url)
         .await
         .expect("client should connect to relay");
-    let register = RelayEnvelope::DaemonRegister {
-        registration: DaemonRegistration {
+    let register = signed_register(
+        &url,
+        &socket_handshake,
+        DaemonRegistration {
             auth_token: "secret".to_string(),
             daemon_id: "daemon-1".to_string(),
             machine_id: "machine-1".to_string(),
@@ -43,15 +45,16 @@ async fn daemon_registration_is_tracked_and_removed_on_disconnect() {
             kernel_started_at_ms: 10,
             daemon_alias: Some("mbp".to_string()),
             kernel_alias: Some("default".to_string()),
-            public_key: "public-key".to_string(),
+            public_key: test_public_key("daemon-1"),
             capabilities: vec!["kernel_ws".to_string()],
             available_providers: vec!["opencode".to_string()],
             provider_accounts: Vec::new(),
             accepting_remote_leases: false,
             leased_agent_count: 0,
             local_session_count: 1,
+            local_protocol: Some(crate::protocol::MINIMUM_KERNEL_REGISTRATION_PROTOCOL),
         },
-    };
+    );
     socket
         .send(Message::Text(
             serde_json::to_string(&register)
@@ -110,12 +113,14 @@ async fn reconnecting_daemon_replaces_stale_socket_without_removing_live_registr
     });
 
     let url = format!("ws://{}:{}", addr.ip(), addr.port());
-    let (mut first_socket, _) = connect_async_with_retry(&url)
+    let (mut first_socket, first_socket_handshake) = connect_async_with_retry(&url)
         .await
         .expect("first daemon should connect to relay");
-    let register = RelayEnvelope::DaemonRegister {
-        registration: test_registration("daemon-1", "machine-1", "macOS", 10),
-    };
+    let register = signed_register(
+        &url,
+        &first_socket_handshake,
+        test_registration("daemon-1", "machine-1", "macOS", 10),
+    );
     first_socket
         .send(Message::Text(
             serde_json::to_string(&register)
@@ -126,14 +131,18 @@ async fn reconnecting_daemon_replaces_stale_socket_without_removing_live_registr
         .expect("first register frame should send");
     sleep(Duration::from_millis(50)).await;
 
-    let (mut second_socket, _) = connect_async_with_retry(&url)
+    let (mut second_socket, second_socket_handshake) = connect_async_with_retry(&url)
         .await
         .expect("second daemon should connect to relay");
     second_socket
         .send(Message::Text(
-            serde_json::to_string(&register)
-                .expect("register envelope should serialize")
-                .into(),
+            serde_json::to_string(&signed_register(
+                &url,
+                &second_socket_handshake,
+                test_registration("daemon-1", "machine-1", "macOS", 10),
+            ))
+            .expect("register envelope should serialize")
+            .into(),
         ))
         .await
         .expect("second register frame should send");
@@ -212,23 +221,27 @@ async fn a_replaced_daemon_socket_cannot_overwrite_the_live_registration() {
                 .into(),
         )
     };
-    let (mut stale_socket, _) = connect_async_with_retry(&url)
+    let (mut stale_socket, stale_socket_handshake) = connect_async_with_retry(&url)
         .await
         .expect("first daemon should connect to relay");
     stale_socket
-        .send(send(RelayEnvelope::DaemonRegister {
-            registration: test_registration("daemon-1", "machine-1", "macOS", 10),
-        }))
+        .send(send(signed_register(
+            &url,
+            &stale_socket_handshake,
+            test_registration("daemon-1", "machine-1", "macOS", 10),
+        )))
         .await
         .expect("first register frame should send");
     sleep(Duration::from_millis(50)).await;
-    let (mut live_socket, _) = connect_async_with_retry(&url)
+    let (mut live_socket, live_socket_handshake) = connect_async_with_retry(&url)
         .await
         .expect("second daemon should connect to relay");
     live_socket
-        .send(send(RelayEnvelope::DaemonRegister {
-            registration: test_registration("daemon-1", "machine-2", "linux", 20),
-        }))
+        .send(send(signed_register(
+            &url,
+            &live_socket_handshake,
+            test_registration("daemon-1", "machine-2", "linux", 20),
+        )))
         .await
         .expect("second register frame should send");
     sleep(Duration::from_millis(50)).await;
@@ -288,15 +301,17 @@ async fn daemon_socket_cannot_switch_registered_identity() {
     });
 
     let url = format!("ws://{}:{}", addr.ip(), addr.port());
-    let (mut socket, _) = connect_async_with_retry(&url)
+    let (mut socket, socket_handshake) = connect_async_with_retry(&url)
         .await
         .expect("daemon should connect to relay");
     let first_registration = test_registration("daemon-1", "machine-1", "macOS", 10);
     socket
         .send(Message::Text(
-            serde_json::to_string(&RelayEnvelope::DaemonRegister {
-                registration: first_registration,
-            })
+            serde_json::to_string(&signed_register(
+                &url,
+                &socket_handshake,
+                first_registration,
+            ))
             .expect("first register should serialize")
             .into(),
         ))
@@ -304,38 +319,13 @@ async fn daemon_socket_cannot_switch_registered_identity() {
         .expect("first register should send");
     sleep(Duration::from_millis(50)).await;
 
-    let mut refreshed_registration = test_registration("daemon-1", "machine-1", "macOS", 20);
-    refreshed_registration.public_key = "refreshed-public-key".to_string();
     socket
         .send(Message::Text(
-            serde_json::to_string(&RelayEnvelope::DaemonRegister {
-                registration: refreshed_registration,
-            })
-            .expect("refresh register should serialize")
-            .into(),
-        ))
-        .await
-        .expect("refresh register should send");
-    sleep(Duration::from_millis(50)).await;
-    assert_no_relay_close(&mut socket).await;
-
-    {
-        let guard = registry.read().await;
-        assert_eq!(guard.daemon_count(), 1);
-        assert_eq!(guard.peer_count(), 1);
-        assert_eq!(
-            guard
-                .daemon("daemon-1")
-                .map(|registration| registration.public_key.as_str()),
-            Some("refreshed-public-key")
-        );
-    }
-
-    socket
-        .send(Message::Text(
-            serde_json::to_string(&RelayEnvelope::DaemonRegister {
-                registration: test_registration("daemon-2", "machine-1", "macOS", 30),
-            })
+            serde_json::to_string(&signed_register(
+                &url,
+                &socket_handshake,
+                test_registration("daemon-2", "machine-1", "macOS", 30),
+            ))
             .expect("identity switch register should serialize")
             .into(),
         ))
@@ -353,7 +343,10 @@ async fn daemon_socket_cannot_switch_registered_identity() {
             .expect("relay close should decode")
         {
             RelayEnvelope::Close { reason, .. } => {
-                assert_eq!(reason, "daemon connection already registered");
+                assert_eq!(
+                    reason,
+                    "relay connection already registered; reconnect to register again"
+                );
             }
             other => panic!("unexpected identity switch envelope: {other:?}"),
         }
@@ -402,18 +395,22 @@ async fn reregistering_daemon_fails_requests_sent_to_its_stale_socket() {
             .expect("relay server should run");
     });
     let url = format!("ws://{}:{}", addr.ip(), addr.port());
-    let register = Message::Text(
-        serde_json::to_string(&RelayEnvelope::DaemonRegister {
-            registration: test_registration("daemon-1", "machine-1", "Linux", 10),
-        })
-        .expect("register envelope should serialize")
-        .into(),
-    );
-    let (mut stale_socket, _) = connect_async_with_retry(&url)
+    let register = |handshake: &tokio_tungstenite::tungstenite::handshake::client::Response| {
+        Message::Text(
+            serde_json::to_string(&signed_register(
+                &url,
+                handshake,
+                test_registration("daemon-1", "machine-1", "Linux", 10),
+            ))
+            .expect("register envelope should serialize")
+            .into(),
+        )
+    };
+    let (mut stale_socket, stale_handshake) = connect_async_with_retry(&url)
         .await
         .expect("first daemon socket should connect");
     stale_socket
-        .send(register.clone())
+        .send(register(&stale_handshake))
         .await
         .expect("first register should send");
     sleep(Duration::from_millis(50)).await;
@@ -486,11 +483,11 @@ async fn reregistering_daemon_fails_requests_sent_to_its_stale_socket() {
         display_tx,
     );
 
-    let (mut fresh_socket, _) = connect_async_with_retry(&url)
+    let (mut fresh_socket, fresh_handshake) = connect_async_with_retry(&url)
         .await
         .expect("second daemon socket should connect");
     fresh_socket
-        .send(register)
+        .send(register(&fresh_handshake))
         .await
         .expect("second register should send");
 

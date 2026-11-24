@@ -68,13 +68,9 @@ impl KernelRuntimeState {
 
         if crate::provider::provider_run_uses_claude_native_bridge(&provider_run) {
             let provider_run = provider_run.clone();
-            let native_tui = provider_run.client_interface()
-                == crate::provider::ProviderClientInterface::NativeTui;
-            if native_tui {
-                // Remember the admitted turn before the bridge can start and Stop it in one pass.
-                self.settle_finished_native_tui_turn(session_id, &provider_run)
-                    .await;
-            }
+            // Remember the admitted turn before the bridge can start and Stop it in one pass.
+            self.settle_finished_native_bridge_turn(session_id, &provider_run)
+                .await;
             // Keep registration/retirement out of the final protected hook replay.
             let room_guard = owned
                 .room_secret_observations
@@ -145,10 +141,8 @@ impl KernelRuntimeState {
                 self.release_held_turn_after_native_stop(session_id, &provider_run)
                     .await?;
             }
-            if native_tui {
-                self.settle_finished_native_tui_turn(session_id, &provider_run)
-                    .await;
-            }
+            self.settle_finished_native_bridge_turn(session_id, &provider_run)
+                .await;
         }
 
         let mut chunks = match self
@@ -178,6 +172,12 @@ impl KernelRuntimeState {
                 .iter()
                 .map(|chunk| String::from_utf8_lossy(&chunk.bytes))
                 .collect::<String>();
+            if let Some(update) =
+                crate::app::claude_native_trust_dialog_update(&provider_run, &rendered)
+            {
+                self.follow_claude_trust_dialog(session_id, &provider_run, update)
+                    .await;
+            }
             if !rendered.is_empty() {
                 let provider_run = provider_run.clone();
                 self.with_app_side_effect(|app| {
@@ -204,13 +204,31 @@ impl KernelRuntimeState {
             owned
                 .schedule_provider_output_check_after(provider_run_id, PTY_PROMPT_SETTLE_QUIET_FOR);
         }
-        let terminal_failure = crate::provider::classify_provider_terminal_failure_output_text(
+        let pty_output = chunks
+            .iter()
+            .map(|chunk| String::from_utf8_lossy(&chunk.bytes))
+            .collect::<String>();
+        let classified = crate::provider::find_provider_terminal_failure_output(
             provider_run.adapter_key(),
-            &chunks
-                .iter()
-                .map(|chunk| String::from_utf8_lossy(&chunk.bytes))
-                .collect::<String>(),
+            &pty_output,
         );
+        let diagnostic = classified
+            .as_ref()
+            .map(|(line, _)| (*line).to_owned())
+            .or_else(|| crate::provider::provider_error_frame(&pty_output));
+        let has_terminal_diagnostic = diagnostic.is_some();
+        if let Some(diagnostic) = diagnostic {
+            let diagnostic = owned.scrub_room_provider_diagnostic(session_id, diagnostic);
+            crate::logging::warn_with_fields(
+                "daemon.provider_output",
+                "provider terminal reported a failure",
+                serde_json::json!({
+                    "provider_run_id": provider_run_id,
+                    "diagnostic": crate::provider::sanitize_provider_diagnostic(&diagnostic),
+                }),
+            );
+        }
+        let terminal_failure = classified.map(|(_, message)| message);
         let terminal_failure = terminal_failure.or_else(|| {
             crate::provider::provider_run_uses_claude_native_bridge(&provider_run)
                 .then(|| crate::app::claude_native_recent_terminal_failure(&provider_run))
@@ -219,7 +237,7 @@ impl KernelRuntimeState {
         let has_active_prompt = owned.provider_run_has_active_prompt(session_id, &provider_run)?;
         if !crate::app::provider_output::should_project_pty_output(
             has_active_prompt,
-            terminal_failure.as_deref(),
+            has_terminal_diagnostic || terminal_failure.is_some(),
             uses_transient_native_terminal,
         ) {
             chunks.clear();
@@ -456,7 +474,12 @@ fn provider_run_uses_transient_native_terminal(
 pub(super) fn provider_run_allows_quiet_pty_settlement(
     provider_run: &crate::provider::RuntimeProviderRun,
 ) -> bool {
-    !provider_run_uses_structured_output_pump(provider_run)
+    // The private MCP fixture writes a terminal answer for each request in
+    // the same turn. Silence between those answers cannot end the turn.
+    let private_mcp_fixture =
+        provider_run.adapter_key() == "dev-stub" && provider_run.model() == "runtime-mcp-fixture";
+    !private_mcp_fixture
+        && !provider_run_uses_structured_output_pump(provider_run)
         && !crate::provider::provider_run_uses_claude_native_bridge(provider_run)
 }
 

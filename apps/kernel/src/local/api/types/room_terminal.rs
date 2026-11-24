@@ -21,6 +21,17 @@ pub struct RoomTerminalRequest {
     pub operation: RoomTerminalOperation,
 }
 
+/// One operation on the kernel's own terminals: shells on this machine that belong to no Room.
+/// The terminal operations and results are a Room's; commands with separate stdout and stderr
+/// (`exec_*`) need a Room and are refused. Who may send it: `authorize_kernel_terminal`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KernelTerminalRequest {
+    /// The folder `open` starts in; the kernel user's home folder when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub directory: Option<String>,
+    pub operation: RoomTerminalOperation,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case")]
 pub enum RoomTerminalOperation {
@@ -74,6 +85,9 @@ pub enum RoomTerminalOperation {
         title: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         command: Option<Vec<String>>,
+        /// What `command` reads on standard input; the terminal when absent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        stdin: Option<crate::room_terminal::ProgramInput>,
     },
     List,
     Snapshot {

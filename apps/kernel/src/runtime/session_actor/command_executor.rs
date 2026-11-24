@@ -223,6 +223,9 @@ impl SessionRuntimeCommandExecutor {
                     async move { self.store.set_project_pinned(request, caller_user_id).await },
                 )
             }
+            LocalDaemonRequest::CreateProject(request) => {
+                Box::pin(async move { self.store.create_project(request, caller_user_id).await })
+            }
             LocalDaemonRequest::RenameProject(request) => {
                 Box::pin(async move { self.store.rename_project(request, caller_user_id).await })
             }
@@ -250,21 +253,17 @@ impl SessionRuntimeCommandExecutor {
                     .detach_from_session(request, caller_user_id)
                     .await
             }),
-            LocalDaemonRequest::FocusAgent(request) => Box::pin(async move {
-                self.store
-                    .focus_agent(request, caller_user_id, terminal_caller)
-                    .await
-            }),
+            LocalDaemonRequest::FocusAgent(request) => {
+                Box::pin(async move { self.store.focus_agent(request, caller_user_id).await })
+            }
             LocalDaemonRequest::AcknowledgeAgentOutputSeen(request) => Box::pin(async move {
                 self.store
                     .acknowledge_agent_output_seen(request, caller_user_id)
                     .await
             }),
-            LocalDaemonRequest::CycleAgentFocus(request) => Box::pin(async move {
-                self.store
-                    .cycle_agent_focus(request, caller_user_id, terminal_caller)
-                    .await
-            }),
+            LocalDaemonRequest::CycleAgentFocus(request) => {
+                Box::pin(async move { self.store.cycle_agent_focus(request, caller_user_id).await })
+            }
             LocalDaemonRequest::ResizeTerminal(request) => {
                 Box::pin(async move { self.store.resize_terminal(request).await })
             }
@@ -377,12 +376,22 @@ impl SessionRuntimeCommandExecutor {
             }),
             LocalDaemonRequest::UpdateAgentConfig(request) => Box::pin(async move {
                 self.store
-                    .update_agent_config(request, caller_user_id, caller_metaagent_id)
+                    .update_agent_config(
+                        request,
+                        caller_user_id,
+                        caller_metaagent_id,
+                        connection_class,
+                    )
                     .await
             }),
             LocalDaemonRequest::UpdateAgentProfile(request) => Box::pin(async move {
                 self.store
-                    .update_agent_profile(request, caller_user_id, caller_metaagent_id)
+                    .update_agent_profile(
+                        request,
+                        caller_user_id,
+                        caller_metaagent_id,
+                        connection_class,
+                    )
                     .await
             }),
             LocalDaemonRequest::AliasAgent(request) => {

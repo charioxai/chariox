@@ -26,13 +26,14 @@ impl KernelRuntimeState {
             .owned
             .durable_state_store
             .agent_tasks(Some(&request.session_id), None)?;
+        let agents = self.owned.agent_store.list_agents();
+        let active_turns = self.active_turn_snapshot();
         let (tree, _) = self
-            .read_agent_tree(&session, &request.agent_id, &tasks)
+            .read_agent_tree(&session, &request.agent_id, &tasks, &agents, &active_turns)
             .ok_or_else(|| DaemonError::AgentNotInSession {
                 session_id: request.session_id.clone(),
                 agent_id: request.agent_id.clone(),
             })?;
-        let agents = self.owned.agent_store.get_session_agents(session.id());
         let member = self.room_member_user_id_in(session.owner_user_id(), caller_user_id);
         let tree = tree_for_viewer(tree, &session, &agents, &member, &|agent_owner| {
             self.owned
@@ -47,31 +48,57 @@ impl KernelRuntimeState {
         session: &crate::session::RuntimeSession,
         root: &str,
         tasks: &[crate::durable_state::agent_lifecycle::AgentTaskExecution],
+        agents: &[crate::agent::AgentInstance],
+        active_turns: &std::collections::BTreeMap<String, crate::app::ActiveTurnState>,
     ) -> Option<(AgentTree, u64)> {
         let store = &self.owned.durable_state_store;
         let held_by_agent = self.owned.decisions_held_by_agents(session.id());
         let mut tree = project_agent_tree(
             session,
-            &self.owned.agent_store.get_session_agents(session.id()),
+            agents,
             root,
-            &|interaction_id| held_by_agent.contains(interaction_id),
-            &|agent_id| {
+            &|room, interaction_id| {
+                if room.id() == session.id() {
+                    held_by_agent.contains(interaction_id)
+                } else {
+                    self.owned
+                        .decisions_held_by_agents(room.id())
+                        .contains(interaction_id)
+                }
+            },
+            &|agent| {
                 store
-                    .agent_deadline(session.id(), agent_id)
+                    .agent_deadline(agent.session_id(), agent.id())
                     .ok()
                     .flatten()
                     .map(|deadline| deadline.deadline_ms)
             },
-            &|agent_id| {
-                let task = tasks.iter().rev().find(|task| task.agent_id == agent_id)?;
-                let finished =
-                    matches!(task.state, ExecutionState::Done | ExecutionState::Cancelled);
+            &|agent| {
+                let active = active_turns.values().any(|turn| {
+                    turn.session_id == agent.session_id() && turn.agent_id == agent.id()
+                });
+                let other_tasks;
+                let tasks = if agent.session_id() == session.id() {
+                    tasks
+                } else {
+                    other_tasks = store
+                        .agent_tasks(Some(agent.session_id()), Some(agent.id()))
+                        .unwrap_or_default();
+                    &other_tasks
+                };
+                let task = tasks.iter().rev().find(|task| task.agent_id == agent.id());
                 Some(NodeTurn {
-                    live: !finished && task.state != ExecutionState::Blocked,
-                    blocked: task.state == ExecutionState::Blocked,
-                    outcome: finished.then(|| self.owned.finished_task_outcome(task, None).kind),
+                    active,
+                    parked: task.is_some_and(|task| task.state == ExecutionState::Waiting),
+                    blocked: task.is_some_and(|task| task.state == ExecutionState::Blocked),
+                    outcome: task
+                        .filter(|task| {
+                            matches!(task.state, ExecutionState::Done | ExecutionState::Cancelled)
+                        })
+                        .map(|task| self.owned.finished_task_outcome(task, None).kind),
                 })
             },
+            &|room| self.owned.session_store.get_session(room).ok(),
         )?;
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         serde_json::to_string(&(&tree.totals, &tree.nodes))
@@ -86,23 +113,26 @@ impl KernelRuntimeState {
     /// Run by the wake scheduler: a change is noticed whatever caused it, and several
     /// changes within one pass make one event.
     pub(crate) fn publish_changed_agent_trees(&self) {
+        let agents = self.owned.agent_store.list_agents();
+        let parents = agents
+            .iter()
+            .filter_map(|agent| agent.parent_agent_id())
+            .collect::<std::collections::HashSet<_>>();
+        let active_turns = self.active_turn_snapshot();
         for session in self
             .owned
             .session_store
             .list_non_ended_sessions_including_hidden()
         {
             let session_id = session.id().to_owned();
-            let agents = self.owned.agent_store.get_session_agents(&session_id);
-            let parents = agents
-                .iter()
-                .filter_map(|agent| agent.parent_agent_id())
-                .collect::<std::collections::HashSet<_>>();
             // A root that lost its last child still has a change to announce.
             let mut roots = tree_rev::seen_roots(&session_id);
             roots.extend(
                 agents
                     .iter()
-                    .filter(|agent| parents.contains(agent.id()))
+                    .filter(|agent| {
+                        agent.session_id() == session.id() && parents.contains(agent.id())
+                    })
                     .map(|agent| agent.id().to_owned()),
             );
             roots.sort();
@@ -118,7 +148,8 @@ impl KernelRuntimeState {
                 continue;
             };
             for root in roots {
-                let Some((tree, fingerprint)) = self.read_agent_tree(&session, &root, &tasks)
+                let Some((tree, fingerprint)) =
+                    self.read_agent_tree(&session, &root, &tasks, &agents, &active_turns)
                 else {
                     continue;
                 };

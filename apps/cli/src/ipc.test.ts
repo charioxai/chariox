@@ -102,7 +102,7 @@ test("LocalIpcClient uses websocket request and subscription frames", async (t) 
           event_id: 2,
           event: {
             event: "session_snapshot",
-            session: { id: frame.session_id, attachment_ids: [frame.attachment_id] },
+            session: { id: frame.session_id, connected_cli_count: 1 },
             provider_run: null,
           },
         }))
@@ -160,7 +160,7 @@ test("LocalIpcClient uses websocket request and subscription frames", async (t) 
     },
     {
       event: "session_snapshot",
-      session: { id: "session-1", attachment_ids: ["attachment-1"] },
+      session: { id: "session-1", connected_cli_count: 1 },
       provider_run: null,
     },
   ])
@@ -797,7 +797,7 @@ test("LocalIpcClient subscribes to relay kernel events with encrypted payloads",
         sendEvent(2, { event: "future_kernel_event", session_id: frame.session_id })
         sendEvent(3, {
           event: "session_snapshot",
-          session: { id: frame.session_id, attachment_ids: [frame.attachment_id] },
+          session: { id: frame.session_id, connected_cli_count: 1 },
           provider_run: null,
         })
         return
@@ -847,7 +847,7 @@ test("LocalIpcClient subscribes to relay kernel events with encrypted payloads",
     { event: "future_kernel_event", session_id: "session-1" },
     {
       event: "session_snapshot",
-      session: { id: "session-1", attachment_ids: ["attachment-1"] },
+      session: { id: "session-1", connected_cli_count: 1 },
       provider_run: null,
     },
   ])

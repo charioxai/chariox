@@ -9,8 +9,8 @@ use crate::provider::{
 use crate::session::{RuntimeSession, SessionService};
 
 use super::{
-    AgentInstance, AgentSelfSettings, AgentService, AgentState, AgentSubstituteProfile,
-    CreateAgentRequest, RemoteAgentBinding, UsageLimitStop,
+    AgentInstance, AgentService, AgentState, AgentSubstituteProfile, CreateAgentRequest,
+    RemoteAgentBinding, UsageLimitStop,
 };
 
 #[derive(Debug, Clone)]
@@ -359,15 +359,23 @@ impl AgentServiceStore {
 
     /// MP-08 / MP-10 / MP-11: native identity confirmation does not change
     /// the selected provider, model, effort or account, including on workers.
+    /// A process launched under another provider or account than the agent now selects (the
+    /// selection changed while its turn ran) reports an identity that belongs to the old
+    /// selection: it is not recorded. The check shares the lock with the write, so a profile
+    /// change cannot land between them.
     pub(crate) fn set_agent_provider_resume_state_durably(
         &self,
         durable_state_store: &DurableKernelStateStore,
         agent_id: &str,
         resume_state: ProviderResumeState,
         provider_run_id: &str,
+        run_selection: (&str, &str),
     ) -> Result<AgentInstance, DaemonError> {
         let mut agents = self.write();
         let previous = agents.get_agent(agent_id)?;
+        if (previous.provider(), previous.provider_account_profile()) != run_selection {
+            return Ok(previous);
+        }
         let updated = agents.set_agent_provider_resume_state(agent_id, resume_state)?;
         if updated == previous {
             return Ok(updated);
@@ -533,6 +541,15 @@ impl AgentServiceStore {
         self.write().clear_agent_substitutes(agent_id)
     }
 
+    pub fn set_agent_parent_limit_waived(
+        &self,
+        agent_id: &str,
+        waived: bool,
+    ) -> Result<AgentInstance, DaemonError> {
+        self.write().set_agent_parent_limit_waived(agent_id, waived)
+    }
+
+    #[cfg(test)]
     pub fn change_usage_limit_stop(
         &self,
         agent_id: &str,
@@ -541,13 +558,26 @@ impl AgentServiceStore {
         self.write().change_usage_limit_stop(agent_id, next)
     }
 
-    pub fn set_agent_self_settings(
+    pub(crate) fn change_usage_limit_stop_durably(
         &self,
+        durable_state_store: &DurableKernelStateStore,
         agent_id: &str,
-        self_settings: AgentSelfSettings,
-    ) -> Result<AgentInstance, DaemonError> {
-        self.write()
-            .set_agent_self_settings(agent_id, self_settings)
+        next: impl FnOnce(&AgentInstance) -> Option<Option<UsageLimitStop>>,
+    ) -> Result<Option<AgentInstance>, DaemonError> {
+        let mut agents = self.write();
+        let previous = agents.get_agent(agent_id)?;
+        let Some(updated) = agents.change_usage_limit_stop(agent_id, |_| next(&previous))? else {
+            return Ok(None);
+        };
+        if let Err(error) = durable_state_store.append_event(
+            "agent.updated",
+            Some(agent_id.to_string()),
+            serde_json::json!({ "agent": &updated }),
+        ) {
+            agents.restore_agent(previous);
+            return Err(error);
+        }
+        Ok(Some(updated))
     }
 
     pub fn set_agent_substitution_timeout(
@@ -557,6 +587,16 @@ impl AgentServiceStore {
     ) -> Result<AgentInstance, DaemonError> {
         self.write()
             .set_agent_substitution_timeout(agent_id, timeout_ms)
+    }
+
+    pub fn set_worker_model_selection(
+        &self,
+        agent_id: &str,
+        model: Option<String>,
+        effort: Option<String>,
+    ) -> Result<AgentInstance, DaemonError> {
+        self.write()
+            .set_worker_model_selection(agent_id, model, effort)
     }
 
     pub fn bind_remote_execution(
@@ -600,6 +640,24 @@ impl AgentServiceStore {
         self.write().deactivate_agent_meta_mode(agent_id)
     }
 
+    pub(crate) fn is_ancestor(&self, ancestor_id: &str, agent: &AgentInstance) -> bool {
+        self.read().is_ancestor(ancestor_id, agent)
+    }
+
+    pub(crate) fn effective_execution_config(
+        &self,
+        session: &RuntimeSession,
+        agent: &AgentInstance,
+        rooms: &crate::session::SessionStateStore,
+    ) -> crate::session::EffectiveAgentExecutionConfig {
+        crate::session::effective_agent_execution_config_with_parents(
+            session,
+            agent,
+            |id| self.get_agent(id).ok(),
+            |room| rooms.get_session(room).ok(),
+        )
+    }
+
     pub fn get_agent_by_ref(&self, agent_ref: &str) -> Result<AgentInstance, DaemonError> {
         self.read().get_agent_by_ref(agent_ref)
     }
@@ -630,14 +688,6 @@ impl AgentServiceStore {
 
     pub fn revoke_mcp(&self, agent_ref: &str, name: &str) -> Result<AgentInstance, DaemonError> {
         self.write().revoke_mcp(agent_ref, name)
-    }
-
-    pub fn grant_skill(&self, agent_ref: &str, name: String) -> Result<AgentInstance, DaemonError> {
-        self.write().grant_skill(agent_ref, name)
-    }
-
-    pub fn revoke_skill(&self, agent_ref: &str, name: &str) -> Result<AgentInstance, DaemonError> {
-        self.write().revoke_skill(agent_ref, name)
     }
 
     pub fn revoke_extension(

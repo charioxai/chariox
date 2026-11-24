@@ -67,6 +67,16 @@ impl CharioxUserConfig {
         }
 
         match normalized {
+            "skills.metadata_budget_percent" => {
+                let percent = value
+                    .parse::<f64>()
+                    .map_err(|_| DaemonError::InvalidConfig {
+                        field: "skills.metadata_budget_percent",
+                        message: "must be a finite percentage greater than 0 and at most 100",
+                    })?;
+                self.skills.metadata_budget_percent =
+                    super::SkillMetadataBudgetPercent::new(percent)?;
+            }
             "version" => {
                 self.version = value
                     .parse::<u32>()
@@ -395,13 +405,6 @@ impl CharioxUserConfig {
                     true,
                 )?)
             }
-            "workflow.session_default_max_agents" => {
-                self.workflow.session_default_max_agents = Some(parse_config_u32(
-                    "workflow.session_default_max_agents",
-                    &value,
-                    true,
-                )?)
-            }
             path if path.starts_with("workflow.code.") => {
                 let code = self.workflow.code.get_or_insert_with(Default::default);
                 match path {
@@ -554,6 +557,7 @@ impl CharioxUserConfig {
         }
 
         match normalized {
+            "skills.metadata_budget_percent" => self.skills = super::UserSkillsConfig::default(),
             "providers.default" => self.providers.default = None,
             "web_bot_auth.projects" => self.web_bot_auth.projects.clear(),
             "web_bot_auth.signature_agent" => self.web_bot_auth.signature_agent = None,
@@ -663,9 +667,6 @@ impl CharioxUserConfig {
             "kernel.runtime_mcp_host" => self.kernel.runtime_mcp_host = None,
             "kernel.runtime_mcp_port" => self.kernel.runtime_mcp_port = None,
             "workflow.max_queues_per_workflow" => self.workflow.max_queues_per_workflow = None,
-            "workflow.session_default_max_agents" => {
-                self.workflow.session_default_max_agents = None
-            }
             path if path.starts_with("workflow.code.") => {
                 if let Some(code) = self.workflow.code.as_mut() {
                     match path {

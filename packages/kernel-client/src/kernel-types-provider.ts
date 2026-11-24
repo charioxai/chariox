@@ -1,5 +1,4 @@
-import type { ExternalProviderImportMetadata, RuntimeSession } from "./kernel-types-session.js"
-import type { AgentRuntimeActivity, PromptQueueItem } from "./kernel-types-runtime.js"
+import type { ExternalProviderImportMetadata } from "./kernel-types-session.js"
 import type { SessionHistoryExternalObservation } from "./kernel-types-history.js"
 
 // MP-11 F7: public DTO; launch environment, MCP credentials and private resume data stay in the kernel.
@@ -247,6 +246,7 @@ export type ProviderAccountProfile = {
   origin: "default" | "chariox_created" | "linked"
   is_default: boolean
   auth_state: "unknown" | "not_configured" | "authenticated" | "expired" | "error"
+  auth_error?: string | null
   credential_kind?: ProviderCredentialKind | null
   credential_kind_not_reported_reason?: string | null
   identity_summary?: string | null
@@ -314,39 +314,54 @@ export type TerminalOutputRecord = {
   bytes: number[]
 }
 
+export type PromptReceipt = {
+  id: string
+  target_agent_id: string
+  status: string
+  created_at_ms: number
+  updated_at_ms: number
+}
+
 export type PromptSubmittedPayload = {
+  session_id: string
   outcome: Record<string, unknown>
-  session: RuntimeSession
-  agent_activity: Record<string, AgentRuntimeActivity>
-  agent_activity_revision: number
 }
 
 export type QueuedPromptSteeredPayload = {
-  prompt: PromptQueueItem
-  session: RuntimeSession
-  agent_activity: Record<string, AgentRuntimeActivity>
-  agent_activity_revision: number
+  session_id: string
+  prompt: PromptReceipt
 }
 
-export type QueuedPromptCancelledPayload = {
-  prompt: PromptQueueItem
-  session: RuntimeSession
-  agent_activity: Record<string, AgentRuntimeActivity>
-  agent_activity_revision: number
-}
+export type QueuedPromptCancelledPayload = QueuedPromptSteeredPayload
 
-export type QueuedPromptUpdatedPayload = {
-  prompt: PromptQueueItem
-  session: RuntimeSession
-  agent_activity: Record<string, AgentRuntimeActivity>
-  agent_activity_revision: number
-}
+export type QueuedPromptUpdatedPayload = QueuedPromptSteeredPayload
 
 /** Local protocol: read-only account identity and status, with no credential/profile locations. */
 export type ProviderUsageAccount = Pick<ProviderAccountProfile, "provider" | "profile_id" | "label" | "identity_summary" | "auth_state" | "services" | "usage"> & { account_id: string }
+export type AgentModelUsage = {
+  provider: string
+  model: string
+  /** Includes input cache reads and writes. */
+  input_tokens: number
+  output_tokens: number
+  cached_input_tokens: number
+  cache_write_input_tokens: number
+  /** Standard short-context list rates and shortest cache-write TTL. Null for an unpriced model. */
+  api_equivalent_nanodollars: string | null
+}
 export type AgentUsageSnapshot = {
   session_id: string
   agent_id: string
   context?: { used_tokens: number; limit_tokens?: number }
+  models: AgentModelUsage[]
   route: { target: string; target_kernel_id: string; via?: string; via_kernel_id?: string }
+}
+
+/** A kernel-owned Inbox action. Start the existing sign-in flow on kernel_id. */
+export type PersonInboxNoticeAction = {
+  kind: "provider_sign_in"
+  kernel_id: string
+  provider: string
+  account_profile: string
+  label: string
 }

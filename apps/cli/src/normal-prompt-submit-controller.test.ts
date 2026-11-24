@@ -83,11 +83,10 @@ test("normal prompt submit appends prompt acknowledgement metadata", async () =>
           Started: {
             prompt: {
               id: "prompt-started",
-              source_attachment_id: "attachment-started",
               target_agent_id: "agent-1",
-              prompt: "hello\n",
-              status: "running",
-              prompt_origin: " External ",
+              status: "Running",
+              created_at_ms: 1,
+              updated_at_ms: 1,
             },
           },
         },
@@ -106,8 +105,6 @@ test("normal prompt submit appends prompt acknowledgement metadata", async () =>
     text: "hello\n",
     agentId: "agent-1",
     promptId: "prompt-started",
-    sourceAttachmentId: "attachment-started",
-    promptOrigin: "external",
   }])
 })
 
@@ -593,8 +590,6 @@ function promptSubmissionResult(
     payload: {
       outcome: {},
       session: runtimeSession(sessionId, activePromptId),
-      agent_activity: {},
-      agent_activity_revision: 1,
     },
     targetAgentId,
     outcomeName,
@@ -614,7 +609,7 @@ function runtimeSession(
     created_at_ms: 1,
     status: "Created",
     active_provider_run_id: null,
-    attachment_ids: [],
+    connected_cli_count: 0,
     active_prompt: null,
     queued_prompts: [],
     ...(activePromptId
@@ -632,7 +627,6 @@ function runtimeSession(
       } }
       : {}),
     focused_agent_id: null,
-    max_agents: 1,
     agents: [],
     config_state: {
       version: 1,

@@ -8,7 +8,6 @@ import test from "node:test"
 import type {
   AgentInstance,
   CharioxMcpServerConfig,
-  CharioxSkillMetadata,
   ProviderProcessInfo,
   WorkspaceLinkDefinition,
 } from "./kernel-types.js"
@@ -832,7 +831,7 @@ test("executeShellCommand configures workflow trigger package bindings", async (
 
 test("executeShellCommand manages advanced workflow settings, schedules, and queue", async () => {
   const workflow = makeWorkflow({ flush_agent_context_before_run: false, run_output_schema_ref: "final" })
-  const session = makeSession({ attachment_ids: ["attachment-1"], workflows: [workflow] })
+  const session = makeSession({ connected_cli_count: 1, workflows: [workflow] })
   const node = { id: "node-1", agent_id: "agent-1", can_complete_workflow_run: true, max_turns: 3 }
   const schedule = makeWorkflowWatchdog({ id: "schedule-1" })
   const queue = { id: "default", workflow_id: "workflow-1", alias: "default", priority: 0, enabled: true, created_at_ms: 0, updated_at_ms: 0 }
@@ -882,7 +881,7 @@ test("executeShellCommand manages advanced workflow settings, schedules, and que
       },
     },
   }
-  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo", sessionId: "session-1", workflowId: "workflow-1" })
+  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo", sessionId: "session-1", workflowId: "workflow-1", attachmentId: "attachment-1" })
   const flush = await executeShellCommand(parseShellCommand("workflow flush-context false"), context, { client: fake.client })
   const schema = await executeShellCommand(parseShellCommand("workflow run-output-schema final"), context, { client: fake.client })
   const maxTurns = await executeShellCommand(parseShellCommand("workflow max-turns 4"), context, { client: fake.client })
@@ -911,7 +910,6 @@ test("executeShellCommand manages advanced workflow settings, schedules, and que
   assert.deepEqual(requests, [
     { SetWorkflowFlushContext: { session_id: "session-1", workflow_ref: "workflow-1", flush_agent_context_before_run: false } },
     { SetWorkflowRunOutputSchema: { session_id: "session-1", workflow_ref: "workflow-1", run_output_schema_ref: "final" } },
-    { GetSessionState: { session_id: "session-1" } },
     { UpdateSessionConfig: { session_id: "session-1", attachment_id: "attachment-1", values: { "workflow.max_turns": "4" }, requires_idle: false } },
     { SetWorkflowNodeCanCompleteRun: { session_id: "session-1", workflow_ref: "workflow-1", node_id: "node-1", can_complete_workflow_run: true } },
     { CreateWorkflowSchedule: { session_id: "session-1", workflow_ref: "workflow-1", endpoint_ref: "endpoint-1", queue_ref: null, trigger: { kind: "interval", every_seconds: 60 }, invocation_prompt: "Run it", overlap_policy: "queue", max_runs_configured: false, max_runs: null } },

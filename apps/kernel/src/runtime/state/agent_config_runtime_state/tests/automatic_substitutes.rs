@@ -384,7 +384,7 @@ async fn codex_server_overloaded_reruns_the_turn_on_the_first_substitute() {
         turn.rerun_notices(),
         vec![format!(
             "This turn runs on {SUBSTITUTE_A} because {PRIMARY_MODEL} failed: \
-             The provider is at capacity."
+             Selected model is at capacity. Please try a different model."
         )]
     );
     let failure_outputs = turn
@@ -420,7 +420,7 @@ async fn provider_crash_mid_turn_reruns_the_turn_on_the_substitute() {
         turn.rerun_notices(),
         vec![format!(
             "This turn runs on {SUBSTITUTE_A} because {PRIMARY_MODEL} failed: \
-             provider process exited with status 1."
+             Provider CLI exited with status 1."
         )]
     );
 }
@@ -444,7 +444,7 @@ async fn a_failing_substitute_hands_the_same_turn_to_the_next_one() {
         Some(
             format!(
                 "This turn runs on {SUBSTITUTE_B} because {SUBSTITUTE_A} failed: \
-                 The provider could not complete this request."
+                 OpenCode error: upstream request failed."
             )
             .as_str()
         )
@@ -464,7 +464,7 @@ async fn an_exhausted_chain_fails_the_turn_visibly() {
     assert!(turn.live_run().is_none());
     assert!(turn.notices().contains(&format!(
         "No substitute is left for this turn: {SUBSTITUTE_A} failed: \
-         The provider's usage limit was reached."
+         You have exceeded your usage limit."
     )));
     let agent = turn
         .runtime
@@ -494,11 +494,10 @@ async fn without_substitutes_the_turn_fails_as_before() {
         .map(|record| String::from_utf8_lossy(&record.bytes).into_owned())
         .collect::<Vec<_>>();
     // The failed turn's request is dropped and marked as such (protocol 393).
-    let not_carried_out = crate::agent::failed_request_notice(
-        &crate::agent::failed_request_reason("dev-stub", SERVER_OVERLOADED),
-    );
-    let failure_notice =
-        crate::provider::TurnOutcome::classify("dev-stub", SERVER_OVERLOADED).notice();
+    let failure = crate::provider::TurnOutcome::classify("dev-stub", SERVER_OVERLOADED);
+    let not_carried_out =
+        crate::agent::failed_request_notice(&crate::agent::failed_request_reason(Some(&failure)));
+    let failure_notice = failure.notice();
     assert_eq!(errors, vec![failure_notice, not_carried_out]);
 }
 
@@ -905,7 +904,7 @@ async fn a_substitute_on_another_account_never_resumes_the_primary_session() {
 
 impl FailingTurn {
     /// Queues "implement that solution" behind the active turn.
-    async fn queue_follow_up(&self) {
+    pub(super) async fn queue_follow_up(&self) {
         self.runtime
             .with_app_side_effect(|app| {
                 let attachment = crate::app::KernelSessionService::new(app).attach(
@@ -1189,7 +1188,7 @@ async fn substitute_notices_never_carry_provider_credentials() {
             .iter()
             .filter(|notice| notice.starts_with("This turn runs on ")
                 || notice.starts_with("No substitute is left"))
-            .all(|notice| notice.contains("The provider could not complete this request")),
+            .all(|notice| notice.contains("upstream failed · retry later")),
         "the notices stay readable: {notices:?}"
     );
 }

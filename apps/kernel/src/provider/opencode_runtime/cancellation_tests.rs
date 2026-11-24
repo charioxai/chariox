@@ -183,6 +183,7 @@ fn check_error_without_assistant(user_id: &str, status: &str, expect_failure: bo
             crate::provider::AgentExecutionMode::Build,
             false,
             true,
+            false,
         )
         .unwrap();
     state.note_prompt_submitted("user-next".to_string());

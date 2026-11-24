@@ -7,6 +7,9 @@ const splitRepo = repo => { const [owner, name] = repo.split('/'); return { owne
 const DIFF_DEFAULT = 256 * 1024;
 const REVIEW_PAGES = 30;
 const CHECK_PAGES = 30;
+const LOG_TAIL_LINES = 200;
+const LOG_TAIL_CHARS = 16 * 1024;
+const LOG_TIMESTAMP = /^\uFEFF?\d{4}-\d\d-\d\dT[\d:.]+Z /;
 
 /** The GitHub search that finds what a scope of the pull request list means. */
 export function searchQuery({ scope, repos = [], org, state = 'open', draft = 'any', labels = [], author, review, query }) {
@@ -31,7 +34,7 @@ export function searchQuery({ scope, repos = [], org, state = 'open', draft = 'a
   return parts.join(' ');
 }
 
-export function createPulls({ accounts, github }) {
+export function createPulls({ accounts, github, links }) {
   const call = async (input, run) => {
     const account = await accounts.resolve(input);
     return run(account);
@@ -58,6 +61,23 @@ export function createPulls({ accounts, github }) {
       pages('/repos/{owner}/{repo}/commits/{ref}/status', 'statuses'),
     ]);
     return { runs, statuses };
+  }
+
+  /**
+   * The end of a job's log, where a failure shows. GitHub answers with a redirect to its storage, which the kernel follows
+   * only for this route; a log the kernel refuses (over 1 MiB, expired or still running) is reported, not thrown, so the steps still come back.
+   */
+  async function jobLog(account, input) {
+    try {
+      const { data } = await github.get(account, '/repos/{owner}/{repo}/actions/jobs/{job_id}/logs', { ...where(input), job_id: input.check_run_id }, { text: true });
+      const lines = data.split(/\r?\n/).map(line => line.replace(LOG_TIMESTAMP, ''));
+      if (lines.at(-1) === '') lines.pop();
+      const kept = lines.slice(-LOG_TAIL_LINES).join('\n');
+      return { lines: lines.length, truncated: lines.length > LOG_TAIL_LINES || kept.length > LOG_TAIL_CHARS, tail: kept.slice(-LOG_TAIL_CHARS) };
+    } catch (error) {
+      const { code, message } = error?.payload ?? error ?? {};
+      return { unavailable: `${code ?? 'ERROR'}: ${message ?? 'the log could not be read'}` };
+    }
   }
 
   /** Every review: the decision is each reviewer's latest verdict, which may sit on a later page. */
@@ -98,7 +118,7 @@ export function createPulls({ accounts, github }) {
     },
 
     async get_pull_request(input) {
-      return call(input, async account => ({ account, pull: n.pullDetail((await fetchPull(account, input)).data) }));
+      return call(input, async account => ({ account, pull: n.pullDetail((await fetchPull(account, input)).data), madeBy: await links.get(input.repo, input.number) }));
     },
 
     /** A list row's extras: size from the pull request, check state from its head commit, the review decision. */
@@ -146,7 +166,7 @@ export function createPulls({ accounts, github }) {
         }
         let text;
         try {
-          ({ data: text } = await fetchPull(account, input, { accept: 'application/vnd.github.diff' }));
+          ({ data: text } = await fetchPull(account, input, { accept: 'application/vnd.github.diff', text: true }));
         } catch (error) {
           const code = (error?.payload ?? error)?.code;
           // GitHub refuses a diff of more than 20000 lines, and the kernel answers at most 1 MiB.
@@ -188,6 +208,7 @@ export function createPulls({ accounts, github }) {
         return {
           check: n.checkRun(run.data), title: run.data.output?.title ?? null, summary: run.data.output?.summary ?? null, text: run.data.output?.text ?? null,
           annotations: annotations.data.map(n.annotation), steps: (job?.steps ?? []).map(n.step),
+          log: job ? await jobLog(account, input) : null,
         };
       });
     },

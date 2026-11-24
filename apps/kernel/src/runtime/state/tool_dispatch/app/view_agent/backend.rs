@@ -76,6 +76,7 @@ impl KernelRuntimeState {
             },
             authority,
             declared: catalog.app_catalog().ui_actions().to_vec(),
+            approved: false,
         }))
     }
 
@@ -93,22 +94,31 @@ impl KernelRuntimeState {
             .get_agent(&context.agent_id)
             .map_err(|_| app_view_authority::not_granted())?;
         let (state, agent) = (self, &agent);
-        let run = |tool: String, input: Value| async move {
+        let run = |tool: String, input: Value, approved: bool| async move {
             let mut call = state.app_control().views().detached_call();
+            let caller = if approved {
+                ViewCaller::ApprovedAgent(agent)
+            } else {
+                ViewCaller::Agent(agent)
+            };
             tokio::select! {
-                result = state.invoke_app_view_tool(ViewCaller::Agent(agent), &context.binding, &tool, input, &mut call) => result,
+                result = state.invoke_app_view_tool(caller, &context.binding, &tool, input, &mut call) => result,
                 () = context.authority.cancelled() => Err(app_view_authority::not_granted()),
             }
         };
         match (kind, invoke) {
-            (ViewAgentCallKind::Registrations, _) => run(ACTIONS_TOOL.to_owned(), json!({})).await,
-            (ViewAgentCallKind::State, _) => run(STATE_TOOL.to_owned(), json!({})).await,
+            (ViewAgentCallKind::Registrations, _) => {
+                run(ACTIONS_TOOL.to_owned(), json!({}), false).await
+            }
+            (ViewAgentCallKind::State, _) => run(STATE_TOOL.to_owned(), json!({}), false).await,
             (ViewAgentCallKind::Invoke, Some((action, input))) => {
                 #[cfg(test)]
-                if let Some(answer) = test_backend::answer(&context.session, action, &input) {
+                if let Some(answer) =
+                    test_backend::answer(&context.session, action, &input, context.approved)
+                {
                     return Ok(answer);
                 }
-                run(action.to_owned(), input).await
+                run(action.to_owned(), input, context.approved).await
             }
             (ViewAgentCallKind::Invoke, None) => Err(failure(
                 "invalid_arguments",
@@ -128,7 +138,7 @@ impl KernelRuntimeState {
                             "The signed action names no preview for the person to confirm",
                         )
                     })?;
-                run(preview_tool, input).await
+                run(preview_tool, input, false).await
             }
             (ViewAgentCallKind::PrepareConfirmation, None) => {
                 Err(failure("invalid_arguments", "a preview names its action"))
@@ -143,7 +153,9 @@ impl KernelRuntimeState {
                 };
                 let (since, wait_ms) = changes.unwrap_or_default();
                 changes_after(since, wait_ms, |since| async move {
-                    checked_feed(run(CHANGES_TOOL.to_owned(), json!({ "since": since })).await?)
+                    checked_feed(
+                        run(CHANGES_TOOL.to_owned(), json!({ "since": since }), false).await?,
+                    )
                 })
                 .await
             }
@@ -158,7 +170,7 @@ pub(super) mod test_backend {
     use std::collections::HashMap;
     use std::sync::{LazyLock, Mutex};
 
-    type Calls = HashMap<(String, String), (Value, Vec<Value>)>;
+    type Calls = HashMap<(String, String), (Value, Vec<(Value, bool)>)>;
     static CALLS: LazyLock<Mutex<Calls>> = LazyLock::new(Default::default);
 
     /// The session's backend answers `tool` with `answer` from now on.
@@ -171,18 +183,38 @@ pub(super) mod test_backend {
 
     /// The inputs the session's backend was asked `tool` with.
     pub(crate) fn asked(session: &str, tool: &str) -> Vec<Value> {
+        calls(session, tool)
+            .into_iter()
+            .map(|(input, _)| input)
+            .collect()
+    }
+
+    /// For each call of `tool`, whether it ran as a call a person approved.
+    pub(crate) fn approvals(session: &str, tool: &str) -> Vec<bool> {
+        calls(session, tool)
+            .into_iter()
+            .map(|(_, approved)| approved)
+            .collect()
+    }
+
+    fn calls(session: &str, tool: &str) -> Vec<(Value, bool)> {
         CALLS
             .lock()
             .unwrap()
             .get(&(session.into(), tool.into()))
-            .map(|(_, inputs)| inputs.clone())
+            .map(|(_, calls)| calls.clone())
             .unwrap_or_default()
     }
 
-    pub(super) fn answer(session: &str, tool: &str, input: &Value) -> Option<Value> {
+    pub(super) fn answer(
+        session: &str,
+        tool: &str,
+        input: &Value,
+        approved: bool,
+    ) -> Option<Value> {
         let mut calls = CALLS.lock().unwrap();
         let (answer, inputs) = calls.get_mut(&(session.into(), tool.into()))?;
-        inputs.push(input.clone());
+        inputs.push((input.clone(), approved));
         Some(answer.clone())
     }
 }

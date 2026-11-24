@@ -18,17 +18,8 @@ impl KernelRuntimeOwnedState {
         room: &str,
         agent: &str,
     ) -> Result<(), DaemonError> {
-        if self
-            .durable_state_store
-            .agent_deadline(room, agent)?
-            .is_some_and(|d| {
-                d.state == AgentDeadlineState::Reached
-                    || d.deadline_ms <= crate::session::unix_epoch_ms()
-            })
-        {
-            return Err(refusal("agent_deadline_reached", "agent deadline reached; this agent cannot start another turn. Start a new agent for new work"));
-        }
-        Ok(())
+        self.durable_state_store
+            .ensure_agent_before_deadline(room, agent)
     }
 }
 
@@ -38,6 +29,7 @@ impl KernelRuntimeState {
         caller_user_id: &str,
         request: SetAgentDeadlineRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        let _rearm = self.owned.agent_deadline_rearm.lock().await;
         let _deadline_edit = self.owned.agent_deadline_edit.lock().await;
         self.authorize_current_external_command()?;
         // A reached deadline ends the agent's work, so only who acts for its owner arms one.
@@ -53,15 +45,12 @@ impl KernelRuntimeState {
             });
         }
         // A deadline is never later than an ancestor's: the parent's deadline ends its team.
-        let agents = self
-            .owned
-            .agent_store
-            .get_session_agents(&request.session_id);
+        let agents = self.owned.agent_store.list_agents();
         for ancestor in crate::agent::authority_limit::ancestors(&agent, &agents) {
             if self
                 .owned
                 .durable_state_store
-                .agent_deadline(&request.session_id, ancestor.id())?
+                .agent_deadline(ancestor.session_id(), ancestor.id())?
                 .is_some_and(|parent| {
                     request
                         .deadline_ms
@@ -88,7 +77,7 @@ impl KernelRuntimeState {
             if self
                 .owned
                 .durable_state_store
-                .agent_deadline(&request.session_id, descendant.id())?
+                .agent_deadline(descendant.session_id(), descendant.id())?
                 .is_some_and(|own| own.state == AgentDeadlineState::Reached)
             {
                 continue;
@@ -96,30 +85,34 @@ impl KernelRuntimeState {
             let mut effective = self
                 .owned
                 .durable_state_store
-                .agent_deadline_intent(&request.session_id, descendant.id())?;
+                .agent_deadline_intent(descendant.session_id(), descendant.id())?;
             for ancestor in crate::agent::authority_limit::ancestors(descendant, &agents) {
                 let limit = if ancestor.id() == agent.id() {
                     request.deadline_ms
                 } else {
                     self.owned
                         .durable_state_store
-                        .agent_deadline_intent(&request.session_id, ancestor.id())?
+                        .agent_deadline_intent(ancestor.session_id(), ancestor.id())?
                 };
                 effective = match (effective, limit) {
                     (Some(a), Some(b)) => Some(a.min(b)),
                     (a, b) => a.or(b),
                 };
             }
-            inherited.push((descendant.id().to_string(), effective));
+            inherited.push((
+                descendant.session_id().to_string(),
+                descendant.id().to_string(),
+                effective,
+            ));
         }
         // The executor confirms every changed limit before the local transaction commits.
         self.arm_leased_agent_deadline(&agent, request.deadline_ms)
             .await?;
-        for (id, effective) in &inherited {
+        for (_, id, effective) in &inherited {
             let descendant = agents
                 .iter()
                 .find(|agent| agent.id() == id)
-                .expect("descendant in room");
+                .expect("descendant in tree");
             self.arm_leased_agent_deadline(descendant, *effective)
                 .await?;
         }
@@ -142,7 +135,7 @@ impl KernelRuntimeState {
 
     /// Asks the worker that runs a leased agent to arm the deadline on its backing agent. An
     /// agent that runs on this kernel needs nothing here.
-    async fn arm_leased_agent_deadline(
+    pub(super) async fn arm_leased_agent_deadline(
         &self,
         agent: &crate::agent::AgentInstance,
         deadline_ms: Option<u64>,
@@ -225,7 +218,16 @@ impl KernelRuntimeState {
     pub(super) async fn tick_agent_deadlines(&self, now: u64) -> Result<(), DaemonError> {
         let _deadline_edit = self.owned.agent_deadline_edit.lock().await;
         let mut due = Vec::new();
-        for deadline in self.owned.durable_state_store.agent_deadlines()? {
+        let deadlines = self.owned.durable_state_store.agent_deadlines()?;
+        if deadlines
+            .iter()
+            .any(|deadline| deadline.state == AgentDeadlineState::Armed)
+        {
+            self.owned
+                .durable_state_store
+                .agent_lifecycle(Operation::BeatDeadlineClock { now })?;
+        }
+        for deadline in deadlines {
             if deadline.deadline_ms > now {
                 continue;
             }
@@ -352,7 +354,9 @@ impl KernelRuntimeState {
             owned.persist_deadline_prompt_state(&session, agent)?;
             return Err(refusal(
                 "agent_deadline_cleanup_pending",
-                &format!("deadline reached; the worker has not settled the turn of agent {agent} yet. Cleanup retries"),
+                &format!(
+                    "deadline reached; the worker has not settled the turn of agent {agent} yet. Cleanup retries"
+                ),
             ));
         }
         // A leased agent's provider process lives on its worker.

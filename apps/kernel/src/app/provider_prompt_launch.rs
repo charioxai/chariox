@@ -84,11 +84,9 @@ impl DaemonApp {
         let provider = crate::provider::provider_id_for_launch(agent.provider());
         let adapter_key = crate::provider::adapter_key_for_provider(provider);
         let session = self.sessions.get_session(session_id)?;
-        let effective_config = crate::session::effective_agent_execution_config_in_tree(
-            &session,
-            &agent,
-            &self.agents().get_session_agents(session_id),
-        );
+        let effective_config =
+            self.agents()
+                .effective_execution_config(&session, &agent, &self.sessions);
         let mut request = LaunchProviderRequest::new(
             session_id,
             adapter_key,

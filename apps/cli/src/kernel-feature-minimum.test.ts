@@ -1,12 +1,13 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 import { issueOwnMachineEnrollmentRequest, ownMachineEnrollmentMinimumProtocolVersion, acceptAppHostActionRequest, appHostActionMinimumProtocolVersion, restoreAppDataSnapshotRequest, startSliceRequest, submitRoomEnvironmentBrowserActionRequest } from "@chariox/kernel-client/ipc-requests"
+import * as requests from "@chariox/kernel-client/ipc-requests"
 import { requireKernelFeatureProtocol } from "./kernel-feature-minimum.js"
 
-test("MP-08 MP-10 native active steering requires allocated protocol 491", () => {
+test("active steering requires the prompt receipt protocol", () => {
   const request = { SteerActivePrompt: {} }
-  assert.throws(() => requireKernelFeatureProtocol(request, 482), /Active prompt steering needs protocol ≥491/)
-  assert.doesNotThrow(() => requireKernelFeatureProtocol(request, 491))
+  assert.throws(() => requireKernelFeatureProtocol(request, 1012), /Active prompt steering needs protocol ≥1013/)
+  assert.doesNotThrow(() => requireKernelFeatureProtocol(request, 1013))
 })
 
 test("protocol-388 kernel gets actionable App host refusal before a request is sent", () => {
@@ -47,11 +48,17 @@ test("unknown versions and unrelated requests retain existing transport behavior
 })
 
 test("Cloud owner control and terminal pivots require allocated protocol 491", () => {
-  for (const name of ["CloudRelayStatus", "StartCloudRelayLogin", "PollCloudRelayLogin", "LogoutCloudRelay", "ConnectCloudRelay", "IssueCloudRelayClientToken", "ResolveKernelClientConnection", "PreflightProviderAccountPortability"]) {
+  for (const name of ["CloudRelayStatus", "StartCloudRelayLogin", "PollCloudRelayLogin", "LogoutCloudRelay", "ConnectCloudRelay", "IssueCloudRelayClientToken", "ResolveKernelClientConnection"]) {
     assert.throws(() => requireKernelFeatureProtocol({[name]: {}}, 472), /491/)
     assert.throws(() => requireKernelFeatureProtocol({[name]: {}}, 490), /491/)
     assert.doesNotThrow(() => requireKernelFeatureProtocol({[name]: {}}, 491))
   }
+})
+
+test("provider account portability preflight requires protocol 1013", () => {
+  const request = { PreflightProviderAccountPortability: {} }
+  assert.throws(() => requireKernelFeatureProtocol(request, 1012), /Provider account portability needs protocol ≥1013/)
+  assert.doesNotThrow(() => requireKernelFeatureProtocol(request, 1013))
 })
 
 test("MP-08 / MP-10 / MP-11 kernel-wide access decisions require allocated protocol 470", () => {
@@ -100,7 +107,7 @@ test("MP-08 MP-10 exact prompt cancellation rejects old and unknown kernels", ()
   for (const version of [undefined, 0, NaN, -1, 490.5, 490, 489]) {
     assert.throws(() => requireKernelFeatureProtocol(request, version), /Exact prompt cancellation needs protocol ≥491/)
   }
-  assert.doesNotThrow(() => requireKernelFeatureProtocol(request, 491))
+  assert.doesNotThrow(() => requireKernelFeatureProtocol(request, 1091))
   assert.doesNotThrow(() => requireKernelFeatureProtocol({ CancelActivePrompt: {} }, undefined))
   assert.doesNotThrow(() => requireKernelFeatureProtocol({ CancelActivePrompt: {} }, 490))
 })
@@ -148,4 +155,11 @@ test("machine acquisition requires the kernel's owner connection support", () =>
     assert.throws(() => requireKernelFeatureProtocol(request, 1005), /Machine acquisition needs protocol ≥1006/)
     assert.doesNotThrow(() => requireKernelFeatureProtocol(request, 1006))
   }
+})
+
+test("a program's stdin is refused before sending to a kernel that would ignore it", () => {
+  const request = requests.openRoomTerminalRequest({ kernelTerminal: true }, { cols: 80, rows: 24 }, { command: ["bash", "-s"], stdin: { kind: "inline", data_base64: "ZWNobyBoaQo=" } })
+  assert.throws(() => requireKernelFeatureProtocol(request, 1013), /kernel too old: Program stdin needs protocol ≥1014; this kernel is 1013/)
+  assert.doesNotThrow(() => requireKernelFeatureProtocol(request, 1014))
+  assert.doesNotThrow(() => requireKernelFeatureProtocol(requests.openRoomTerminalRequest({ kernelTerminal: true }, { cols: 80, rows: 24 }, { command: ["ls"] }), 1013))
 })

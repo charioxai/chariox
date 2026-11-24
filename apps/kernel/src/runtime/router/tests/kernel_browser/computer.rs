@@ -16,12 +16,14 @@ fn mp11_leased_computer_requires_a_typed_explicit_desktop_grant() {
 }
 #[test]
 #[cfg(target_os = "linux")]
-fn mp11_kernel_computer_mcp_loader_revoke_and_human_channel_guards() {
+fn mp11_kernel_computer_mcp_loader_and_human_channel_guards() {
     run_test(|| Box::pin(check()));
 }
 async fn check() {
     let workspace = crate::test_support::TestWorktree::new("culinux-computer-mcp");
-    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
+    let mut config = DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let mut app = DaemonApp::bootstrap(config).unwrap();
     let (session, first) = crate::app::KernelSessionService::new(&mut app)
         .create_session(workspace.session_request())
         .unwrap();
@@ -43,12 +45,8 @@ async fn check() {
             .map(|t| t.name)
             .collect::<Vec<_>>()
     };
+    // Every agent has the Computer: an unfocused agent loads it with no card.
     focus(&router, session.id(), second.id()).await;
-    assert!(router
-        .dispatch_authenticated_runtime_tool_call(token, "chariox.load_kernel_computer", json!({}))
-        .await
-        .is_err());
-    focus(&router, session.id(), first.id()).await;
     assert!(names().contains(&"chariox.load_kernel_computer".into()));
     assert!(!names().contains(&"chariox.kernel_computer".into()));
     router
@@ -94,39 +92,12 @@ async fn check() {
         )
         .await
         .is_err());
-    let request = LocalDaemonRequest::KernelBrowser(KernelBrowserRequest {
-        command: KernelBrowserCommand::RevokeGrants {
-            agent_id: Some(first.id().into()),
-        },
-    });
-    router
-        .dispatch(terminal_command("culinux-revoke", &request), request)
-        .await
-        .unwrap();
-    assert!(!names().contains(&"chariox.kernel_computer".into()));
-    let error = router
-        .dispatch_authenticated_runtime_tool_call(
-            token,
-            "chariox.kernel_computer",
-            json!({"command":{"op":"state"}}),
-        )
-        .await
-        .unwrap_err();
-    assert!(
-        matches!(
-            error,
-            crate::error::DaemonError::UserDomainRefused {
-                reason: crate::error::UserDomainRefusalReason::NotGranted
-            }
-        ),
-        "{error}"
-    );
     router.runtime_state.shutdown_cleanup().await.unwrap();
 }
 
 #[test]
 #[cfg(target_os = "linux")]
-fn mp11_authenticated_computer_clipboard_read_preserves_agent_copy_while_ocr_stays_masked() {
+fn authenticated_computer_clipboard_read_preserves_agent_copy_while_ocr_stays_masked() {
     run_test(|| Box::pin(clipboard_read_check()));
 }
 
@@ -227,30 +198,6 @@ done
             .is_err(),
         "malformed clipboard commands remain rejected"
     );
-    let revoke = LocalDaemonRequest::KernelBrowser(KernelBrowserRequest {
-        command: KernelBrowserCommand::RevokeGrants {
-            agent_id: Some(first.id().into()),
-        },
-    });
-    router
-        .dispatch(
-            terminal_command("computer-clipboard-revoke", &revoke),
-            revoke,
-        )
-        .await
-        .unwrap();
-    assert!(
-        router
-            .dispatch_authenticated_runtime_tool_call(
-                token,
-                "chariox.kernel_computer",
-                json!({"command":{"op":"clipboard_read","target":target}}),
-            )
-            .await
-            .is_err(),
-        "a revoked agent cannot read the clipboard"
-    );
-
     router.runtime_state.shutdown_cleanup().await.unwrap();
     std::fs::remove_dir_all(root).unwrap();
 }

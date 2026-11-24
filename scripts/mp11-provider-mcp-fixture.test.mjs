@@ -11,7 +11,9 @@ import { bindProviderMcpFixture } from '../apps/cli/scripts/lib/provider-mcp-fix
 import { callRuntimeMcp } from '../apps/cli/scripts/lib/runtime-mcp-assertions.mjs'
 import { callRuntimeMcp as hostedCall } from '../apps/cli/scripts/lib/hosted-cloud-runtime-helpers.mjs'
 
-const fixtureSource = readFileSync(new URL('../apps/kernel/src/provider/registry/dev_stub_adapter/runtime_mcp_fixture.cjs', import.meta.url), 'utf8')
+const fixtureSource = ['runtime_mcp_client.cjs', 'runtime_mcp_fixture.cjs']
+  .map(file => readFileSync(new URL(`../apps/kernel/src/provider/registry/dev_stub_adapter/${file}`, import.meta.url), 'utf8'))
+  .join('\n')
 const fixtureSecret = 'mp11-synthetic-binding-only'
 
 test('MP-11 protocol-435 consumer executes tools inside the private provider; no binding leaves it', async t => {

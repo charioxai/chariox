@@ -9,9 +9,35 @@ use crate::runtime::state::KernelRuntimeState;
 fn cloud_request_body(
     account_id: &str,
     credential: &str,
-    request: &ControlPlaneRequest,
+    request: impl serde::Serialize,
 ) -> serde_json::Value {
     serde_json::json!({"accountId": account_id, "kernelCredential": credential, "request": request})
+}
+
+pub(crate) async fn kernel_was_released(config: &DaemonConfig, kernel_id: &str) -> bool {
+    #[derive(serde::Deserialize)]
+    struct ReleaseStatus {
+        released: bool,
+    }
+
+    let Some(profile) = crate::runtime::cloud_relay_control::active_cloud_profile(config) else {
+        return false;
+    };
+    let Some(credential) = profile.kernel_credential.as_deref() else {
+        return false;
+    };
+    crate::runtime::cloud_api_client::post_cloud_json_with_timeout::<ReleaseStatus>(
+        profile.api_url.clone(),
+        "/control-plane",
+        cloud_request_body(
+            &profile.account_id,
+            credential,
+            serde_json::json!({"action": "released_kernel", "kernel_id": kernel_id}),
+        ),
+        std::time::Duration::from_secs(2),
+    )
+    .await
+    .is_ok_and(|status| status.released)
 }
 
 pub(crate) async fn execute(
@@ -67,7 +93,18 @@ pub(crate) async fn execute(
                 &ControlPlaneRequest::Capabilities {},
             ),
         )
-        .await?;
+        .await
+        // A Cloud code on an acquire's error is the service's answer to that acquire, and the
+        // refusal the agent reads names it. This answer is not about the acquire, so it passes on
+        // without its code.
+        .map_err(|error| DaemonError::RelayTransport {
+            operation: "connected control plane",
+            code: "control_plane_offer_unavailable".into(),
+            retryable: true,
+            message: format!(
+                "The connected service did not return its machine offer, so this try was not sent; retry it: {error}"
+            ),
+        })?;
         let ControlPlaneResponse::Capabilities { machine_allocation } = offered else {
             return Err(unavailable(
                 "control_plane_binding_invalid",
@@ -174,7 +211,9 @@ pub(crate) async fn execute(
             ));
         }
         *access_state = "pending".into();
-        *access_reason = None;
+        if !matches!(machine_state.as_str(), "deleting" | "deleted" | "failed") {
+            *access_reason = None;
+        }
         if let Some(target) = kernel_target.as_ref().filter(|_| machine_state == "ready") {
             let grant = grant
                 .or_else(|| command.reach_caller_id())
@@ -226,6 +265,12 @@ pub(crate) async fn execute(
                 Ok(()) => *access_state = "available".into(),
                 Err(error) => *access_reason = Some(error.code().to_string()),
             }
+        }
+        // The service tracks compute lifecycle. A ready response also requires verified access
+        // to the kernel, which can disappear independently of the compute instance.
+        if machine_state == "ready" && access_state != "available" {
+            *machine_state = "reconnecting".into();
+            access_reason.get_or_insert_with(|| "kernel_target_unverified".into());
         }
     }
     Ok(LocalDaemonResponse::ControlPlane { result })

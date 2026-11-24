@@ -3,7 +3,8 @@
 //!
 //! A failed turn gets its kind from the harness's own error (EA2-75). Chariox
 //! reports the kind and retryability, preserving the harness's explicit
-//! retryability when it supplies one. Native diagnostics go to the kernel log.
+//! retryability when it supplies one. The reason carries a bounded, redacted
+//! provider message.
 //! It never retries or backs off a failed turn itself; a usage-limit stop is
 //! recorded and resumed by the kernel (`usage_limit_runtime`), and the provider's
 //! native behaviour stays as it is. A reader decides to retry or stop from `kind` and
@@ -18,6 +19,7 @@ const SUBSTITUTABLE_PREFIX: &str = "Provider reported a substitutable resource l
 #[serde(rename_all = "snake_case")]
 pub enum TurnOutcomeKind {
     Completed,
+    AnsweredInTurn,
     Cancelled,
     /// The kernel restarted while the turn ran and could not resume it.
     InterruptedByRestart,
@@ -26,6 +28,8 @@ pub enum TurnOutcomeKind {
     SignInRequired,
     ProviderCrashed,
     Network,
+    ModelRefused,
+    StreamEnded,
     Other,
     /// A kind a newer kernel added; `reason` still says what happened.
     #[serde(other)]
@@ -36,6 +40,7 @@ impl TurnOutcomeKind {
     pub fn label(self) -> &'static str {
         match self {
             Self::Completed => "completed",
+            Self::AnsweredInTurn => "answered in another turn",
             Self::Cancelled => "cancelled",
             Self::InterruptedByRestart => "interrupted by restart",
             Self::Unknown => "unknown",
@@ -44,6 +49,8 @@ impl TurnOutcomeKind {
             Self::SignInRequired => "Sign-in required",
             Self::ProviderCrashed => "provider crashed",
             Self::Network => "network",
+            Self::ModelRefused => "model refused",
+            Self::StreamEnded => "stream ended early",
             Self::Other => "other",
         }
     }
@@ -53,16 +60,28 @@ impl TurnOutcomeKind {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TurnOutcome {
     pub kind: TurnOutcomeKind,
-    /// A calm explanation for people. Native provider diagnostics stay in the log.
+    /// A redacted explanation for people.
     pub reason: String,
     /// A later attempt may succeed without anyone changing anything.
     pub retryable: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub answered_in_turn: Option<AnsweredTurnReceipt>,
+}
+
+/// The one answering turn, shared by delivery receipts and transcript navigation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AnsweredTurnReceipt {
+    pub session_id: String,
+    pub agent_id: String,
+    pub prompt_id: String,
+    pub task_id: String,
 }
 
 impl TurnOutcomeKind {
     fn headline(self) -> &'static str {
         match self {
             Self::Completed => "Turn completed",
+            Self::AnsweredInTurn => "Answered in another turn",
             Self::Cancelled => "Turn cancelled",
             Self::InterruptedByRestart => "Interrupted by a restart",
             Self::Unknown => "Turn ended",
@@ -71,12 +90,22 @@ impl TurnOutcomeKind {
             Self::SignInRequired => "Sign-in required",
             Self::ProviderCrashed => "Provider stopped unexpectedly",
             Self::Network => "Network problem",
+            Self::ModelRefused => "The model refused the request",
+            Self::StreamEnded => "The provider stream ended before the turn completed",
             Self::Other => "Provider error",
         }
     }
 }
 
 impl TurnOutcome {
+    pub fn answered_in_turn(receipt: AnsweredTurnReceipt) -> Self {
+        Self {
+            kind: TurnOutcomeKind::AnsweredInTurn,
+            reason: String::new(),
+            retryable: false,
+            answered_in_turn: Some(receipt),
+        }
+    }
     /// One line for event summaries, such as `overloaded, retryable`.
     pub fn summary(&self) -> String {
         let retry = if self.retryable {
@@ -121,14 +150,18 @@ impl TurnOutcome {
     pub fn is_error(&self) -> bool {
         !matches!(
             self.kind,
-            TurnOutcomeKind::Completed | TurnOutcomeKind::Cancelled
+            TurnOutcomeKind::Completed
+                | TurnOutcomeKind::AnsweredInTurn
+                | TurnOutcomeKind::Cancelled
         )
     }
 
     /// How a turn that ends with this outcome is settled: a turn a person
     /// stopped is cancelled, not failed.
     pub(crate) fn settlement_status(&self) -> crate::git_observer::CompletedTurnSettlementStatus {
-        if self.is_error() {
+        if self.kind == TurnOutcomeKind::AnsweredInTurn {
+            crate::git_observer::CompletedTurnSettlementStatus::Completed
+        } else if self.is_error() {
             crate::git_observer::CompletedTurnSettlementStatus::Failed
         } else {
             crate::git_observer::CompletedTurnSettlementStatus::Cancelled
@@ -140,6 +173,7 @@ impl TurnOutcome {
             kind,
             retryable,
             reason: reason.to_string(),
+            answered_in_turn: None,
         }
     }
 
@@ -147,7 +181,7 @@ impl TurnOutcome {
     /// what to change before sending the request again.
     fn recovery(&self) -> &'static str {
         match (self.kind, self.retryable) {
-            (TurnOutcomeKind::Completed | TurnOutcomeKind::Cancelled, _) => "",
+            (TurnOutcomeKind::Completed | TurnOutcomeKind::AnsweredInTurn | TurnOutcomeKind::Cancelled, _) => "",
             (TurnOutcomeKind::InterruptedByRestart, _) => {
                 "The kernel restarted while this turn was running; send the request again and the agent continues the same conversation."
             }
@@ -172,7 +206,9 @@ impl TurnOutcome {
             (TurnOutcomeKind::Network, _) => {
                 "Check the connection to the provider, then send the request again."
             }
-            (TurnOutcomeKind::Other | TurnOutcomeKind::Unknown, true) => "Send the request again.",
+            (TurnOutcomeKind::StreamEnded, _)
+            | (TurnOutcomeKind::Other | TurnOutcomeKind::Unknown, true) => "Send the request again.",
+            (TurnOutcomeKind::ModelRefused, _) => "Change the request or choose another model.",
             (TurnOutcomeKind::Other | TurnOutcomeKind::Unknown, false) => {
                 "Check the provider account and model settings, then send the request again."
             }
@@ -196,11 +232,14 @@ impl TurnOutcome {
     }
 
     fn notice_with(&self, recovery: &str) -> String {
-        let reason = if self.reason.is_empty() {
+        let mut reason = if self.reason.is_empty() {
             format!("{}.", self.kind.headline())
         } else {
             self.reason.clone()
         };
+        if !recovery.is_empty() && !reason.ends_with(['.', '?', '!']) {
+            reason.push('.');
+        }
         format!("{reason} {recovery}").trim_end().to_string()
     }
 
@@ -213,16 +252,20 @@ impl TurnOutcome {
         )
     }
 
-    /// Provider diagnostics stay in logs except for Claude's bounded usage-limit detail.
+    /// Use the product explanation when the provider supplied no message.
     pub(crate) fn provider_failure(kind: TurnOutcomeKind, retryable: bool) -> Self {
         let reason = match kind {
-            TurnOutcomeKind::Completed | TurnOutcomeKind::Cancelled => "",
+            TurnOutcomeKind::Completed
+            | TurnOutcomeKind::AnsweredInTurn
+            | TurnOutcomeKind::Cancelled => "",
             TurnOutcomeKind::InterruptedByRestart => "The kernel restarted during this turn.",
             TurnOutcomeKind::Overloaded => "The provider is at capacity.",
             TurnOutcomeKind::UsageLimit => "The provider's usage limit was reached.",
             TurnOutcomeKind::SignInRequired => "The provider needs you to sign in.",
             TurnOutcomeKind::ProviderCrashed => "The provider process stopped unexpectedly.",
             TurnOutcomeKind::Network => "The connection to the provider was interrupted.",
+            TurnOutcomeKind::ModelRefused => "The model refused the request.",
+            TurnOutcomeKind::StreamEnded => "The provider stream ended before the turn completed.",
             TurnOutcomeKind::Other | TurnOutcomeKind::Unknown => {
                 "The provider could not complete this request."
             }
@@ -233,30 +276,39 @@ impl TurnOutcome {
     /// Types a harness error from the code its adapter framed (see
     /// `provider_coded_failure_text`), then from the words of the error.
     pub(crate) fn classify(adapter_key: &str, text: &str) -> Self {
-        crate::logging::info_with_fields(
-            "daemon.provider",
-            "provider reported a turn failure",
-            serde_json::json!({
-                "adapter_key": adapter_key,
-                "diagnostic": crate::secret_redaction::redact_secrets(text),
-            }),
-        );
+        let text = text.trim_start();
         let text = text.strip_prefix(DISPATCH_PREFIX).unwrap_or(text);
         let text = text.strip_prefix(SUBSTITUTABLE_PREFIX).unwrap_or(text);
-        if let Some((code, message, native_retryable)) =
+        let text = text
+            .strip_prefix("Provider reported a terminal model error: ")
+            .unwrap_or(text);
+        let text = text
+            .strip_prefix("Provider reported a resource limit: ")
+            .unwrap_or(text);
+        if adapter_key == "opencode" && text == super::opencode_runtime::NATIVE_PERMISSION_DENIED {
+            return Self::cancelled();
+        }
+        let failure = if let Some((code, message, native_retryable)) =
             super::prompt_signals::split_coded_failure(text)
         {
             let mut failure = if let Some((cause, retryable)) = failure_for_code(code, message) {
-                Self::provider_failure_for_message(adapter_key, cause, retryable, message)
+                Self::provider_failure_for_message(cause, retryable, message)
             } else {
                 Self::classify_words(adapter_key, message)
             };
             if let Some(retryable) = native_retryable {
                 failure.retryable = retryable;
             }
-            return failure;
-        }
-        Self::classify_words(adapter_key, text)
+            failure
+        } else {
+            Self::classify_words(adapter_key, text)
+        };
+        crate::logging::info_with_fields(
+            "daemon.provider",
+            "provider reported a turn failure",
+            serde_json::json!({"adapter_key": adapter_key, "kind": failure.kind}),
+        );
+        failure
     }
 
     fn classify_words(adapter_key: &str, message: &str) -> Self {
@@ -281,6 +333,15 @@ impl TurnOutcome {
             (TurnOutcomeKind::SignInRequired, false)
         } else if super::prompt_signals::text_reports_resource_limit(message) {
             (TurnOutcomeKind::UsageLimit, rate_limit_clears(&normalized))
+        } else if model_refusal(&normalized) {
+            (TurnOutcomeKind::ModelRefused, false)
+        } else if has(&[
+            "stream ended before",
+            "closed its stream before",
+            "stream ended early",
+            "stream ended without",
+        ]) {
+            (TurnOutcomeKind::StreamEnded, true)
         } else if has(&[
             "exited before",
             "exited unexpectedly",
@@ -316,27 +377,51 @@ impl TurnOutcome {
         } else {
             (TurnOutcomeKind::Other, false)
         };
-        Self::provider_failure_for_message(adapter_key, cause, retryable, message)
+        Self::provider_failure_for_message(cause, retryable, message)
     }
 
     fn provider_failure_for_message(
-        adapter_key: &str,
         cause: TurnOutcomeKind,
         retryable: bool,
         message: &str,
     ) -> Self {
-        let mut failure = Self::provider_failure(cause, retryable);
-        if adapter_key != "claude" || cause != TurnOutcomeKind::UsageLimit {
-            return failure;
+        if matches!(
+            cause,
+            TurnOutcomeKind::Completed | TurnOutcomeKind::Cancelled
+        ) {
+            return Self::provider_failure(cause, retryable);
         }
-        if let Some(line) = message.lines().map(str::trim).find(|line| !line.is_empty()) {
-            failure.reason = crate::secret_redaction::redact_secrets(line)
-                .chars()
-                .take(512)
-                .collect();
+        let reason = match message.trim() {
+            "Codex turn failed"
+            | "Codex reported an unknown error"
+            | "Provider ended the turn with an API error"
+            | "provider reported an explicit error" => String::new(),
+            message => super::termination::sanitize_provider_failure_message(message),
+        };
+        if reason.is_empty() {
+            Self::provider_failure(cause, retryable)
+        } else {
+            Self::of(cause, retryable, &reason)
         }
-        failure
     }
+}
+
+fn model_refusal(normalized: &str) -> bool {
+    [
+        "model refused",
+        "unsupported model",
+        "invalid model",
+        "model access denied",
+        "model_not_found",
+        "model not found",
+        "model does not exist",
+        "model is not supported",
+        "model rejected",
+        "terminal model error",
+        "blocked by policy",
+    ]
+    .iter()
+    .any(|needle| normalized.contains(needle))
 }
 
 fn reports_overload(normalized: &str) -> bool {
@@ -389,6 +474,7 @@ fn failure_for_code(code: &str, message: &str) -> Option<(TurnOutcomeKind, bool)
         }
         return Some(match status {
             408 | 500..=599 => (Network, true),
+            400 | 403 if model_refusal(&message.to_lowercase()) => (ModelRefused, false),
             _ => (Other, false),
         });
     }
@@ -423,17 +509,19 @@ fn failure_for_code(code: &str, message: &str) -> Option<(TurnOutcomeKind, bool)
                 (Other, true)
             }
         }
+        "model_refused"
+        | "model_not_found"
+        | "too_many_denials"
+        | "bio_policy"
+        | "cyber_policy"
+        | "misalignment_policy_violation" => (ModelRefused, false),
+        "stream_ended_early" => (StreamEnded, true),
         "context_window_exceeded"
         | "invalid_prompt"
-        | "too_many_denials"
         | "active_turn_not_steerable"
-        | "bio_policy"
         | "max_output_tokens"
         | "bad_request"
         | "invalid_request"
-        | "model_not_found"
-        | "cyber_policy"
-        | "misalignment_policy_violation"
         | "sandbox_error"
         | "thread_rollback_failed" => (Other, false),
         _ => return None,
@@ -464,45 +552,57 @@ mod tests {
     }
 
     #[test]
-    fn provider_failure_outcomes_do_not_echo_full_diagnostics() {
-        for (adapter, text, kind, retryable) in [
-            ("codex", "Codex error [server_overloaded]: Selected model is at capacity. Please try a different model.", TurnOutcomeKind::Overloaded, true),
-            ("claude", "Claude StopFailure [rate_limit]: You've hit your weekly limit · resets Oct 28, 9pm (UTC)", TurnOutcomeKind::UsageLimit, false),
-            ("claude", "Not logged in · Please run /login", TurnOutcomeKind::SignInRequired, false),
-            ("claude", "API Error: Connection refused (ECONNREFUSED)", TurnOutcomeKind::Network, true),
-            ("codex", "Codex error [other]: something odd", TurnOutcomeKind::Other, false),
+    fn provider_failure_outcomes_keep_bounded_redacted_details() {
+        for (text, kind, retryable, reason) in [
+            (
+                "Codex error [server_overloaded]: Selected model is at capacity.",
+                TurnOutcomeKind::Overloaded,
+                true,
+                "Selected model is at capacity.",
+            ),
+            (
+                "Codex error [unauthorized]: The session expired.",
+                TurnOutcomeKind::SignInRequired,
+                false,
+                "The session expired.",
+            ),
+            (
+                "Codex error [stream_ended_early]: Upstream closed the response.",
+                TurnOutcomeKind::StreamEnded,
+                true,
+                "Upstream closed the response.",
+            ),
+            (
+                "Codex error [other]: Something odd happened.",
+                TurnOutcomeKind::Other,
+                false,
+                "Something odd happened.",
+            ),
+            (
+                "Codex error [other]: ",
+                TurnOutcomeKind::Other,
+                false,
+                "The provider could not complete this request.",
+            ),
         ] {
-            let outcome = TurnOutcome::classify(adapter, text);
-            assert_eq!((outcome.kind, outcome.retryable), (kind, retryable));
-            assert!(!outcome.reason.contains(text));
-            assert!(!outcome.notice().contains(text));
-            assert!(outcome.notice().contains("again"));
+            let outcome = TurnOutcome::classify("codex", text);
+            assert_eq!(
+                (outcome.kind, outcome.retryable, outcome.reason.as_str()),
+                (kind, retryable, reason)
+            );
         }
-        let diagnostic = "API Error: 500 request failed for Authorization: Bearer sk-ant-abcdefghijklmnop0123456789";
-        let outcome = TurnOutcome::classify("claude", diagnostic);
-        assert_eq!(
-            outcome.reason,
-            "The provider could not complete this request."
-        );
-        assert!(!outcome.notice().contains("API Error"));
-    }
-
-    #[test]
-    fn ea2_75_native_diagnostics_reach_the_kernel_log_with_secrets_redacted() {
-        let capture = crate::logging::capture::start();
-        let diagnostic = "Codex error [server_overloaded]: Selected model is at capacity. Please try a different model.";
-        let outcome = TurnOutcome::classify("codex", diagnostic);
-        assert!(capture
-            .records()
-            .iter()
-            .any(|record| record.contains(diagnostic)));
-        assert!(!outcome.notice().contains(diagnostic));
         let secret = "sk-ant-abcdefghijklmnop0123456789";
-        TurnOutcome::classify("claude", &format!("Claude StopFailure [server_error]: API Error: 500 for Authorization: Bearer {secret}"));
+        let capture = crate::logging::capture::start();
+        let diagnostic =
+            format!("API Error: 500 request failed for Authorization: Bearer {secret}");
+        let outcome = TurnOutcome::classify("claude", &diagnostic);
+        assert!(outcome.reason.contains("API Error: 500"));
+        assert!(outcome.reason.contains("[redacted]"));
+        assert!(!outcome.notice().contains(secret));
         let records = capture.records();
         assert!(records
             .iter()
-            .any(|record| record.contains("API Error: 500")));
+            .any(|record| record.contains("provider reported a turn failure")));
         assert!(records.iter().all(|record| !record.contains(secret)));
     }
 

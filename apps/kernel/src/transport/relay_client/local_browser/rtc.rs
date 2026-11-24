@@ -35,6 +35,13 @@ use super::super::daemon_requests::request_limits::MAX_MESSAGE_BYTES;
 use super::*;
 
 pub(super) const UDP_PORT_ENV: &str = "CHARIOX_KERNEL_DIRECT_UDP_PORT";
+/// The UDP port of the STUN responder on the relay's host (3478 unless set): a lab or a relay on another port can answer.
+pub(super) const STUN_PORT_ENV: &str = "CHARIOX_KERNEL_DIRECT_STUN_PORT";
+/// Row 252: with nothing learned yet, an answer waits at most this long for the reflexive lookup (a prompt STUN answer still makes
+/// the first answer, as a browser behind another NAT needs it); an unanswered lookup no longer holds the grant for 300 + 400 ms.
+const REFLEXIVE_FIRST_WAIT: Duration = Duration::from_millis(100);
+/// A learned reflexive address is looked up again in the background after this long; answers meanwhile use the one known.
+const REFLEXIVE_REFRESH: Duration = Duration::from_secs(300);
 const MAX_OFFER_BYTES: usize = 16 * 1024;
 const MAX_PEERS: usize = 32;
 /// A peer whose data channel has not opened by then is dropped with its grant.
@@ -74,6 +81,17 @@ pub(in crate::transport::relay_client) struct RtcEndpoint {
     interfaces: Interfaces,
     stun_port: u16,
     state: Mutex<Option<Bound>>,
+    reflexive: Arc<std::sync::Mutex<ReflexiveCache>>,
+}
+
+type ReflexivePairs = Vec<(SocketAddr, SocketAddr)>;
+
+/// What the endpoint's sockets map to, learned for one set of addresses and one relay; a lookup runs at most once at a time.
+#[derive(Default)]
+struct ReflexiveCache {
+    key: Option<(Vec<SocketAddr>, String)>,
+    found: Option<(std::time::Instant, ReflexivePairs)>,
+    looking: Option<watch::Receiver<bool>>,
 }
 
 /// The machine's usable interface addresses right now.
@@ -113,8 +131,13 @@ impl RtcEndpoint {
         Self {
             port,
             interfaces,
-            stun_port: stun::DEFAULT_PORT,
+            stun_port: std::env::var(STUN_PORT_ENV)
+                .ok()
+                .and_then(|value| value.trim().parse::<u16>().ok())
+                .filter(|port| *port != 0)
+                .unwrap_or(stun::DEFAULT_PORT),
             state: Mutex::new(None),
+            reflexive: Arc::default(),
         }
     }
 
@@ -143,11 +166,7 @@ impl RtcEndpoint {
             .upgrade()
             .and_then(|direct| direct.router.relay_config_snapshot().relay_url);
         let reflexive = match relay_url {
-            Some(relay_url) => {
-                bound
-                    .reflexive(&stun_servers(&relay_url, self.stun_port).await)
-                    .await
-            }
+            Some(relay_url) => self.known_reflexive(&bound, relay_url).await,
             None => Vec::new(),
         };
         let mut rtc = RtcConfig::new()
@@ -176,6 +195,54 @@ impl RtcEndpoint {
             })))
             .map_err(|_| unavailable("direct WebRTC endpoint is shutting down"))?;
         Ok((answer.to_sdp_string(), bound.epoch))
+    }
+
+    /// The reflexive candidates to offer now. Row 252: the lookup runs in the background and its result is kept for the endpoint;
+    /// only an answer with nothing learned yet waits for it, and then at most `REFLEXIVE_FIRST_WAIT`.
+    async fn known_reflexive(&self, bound: &Bound, relay_url: String) -> ReflexivePairs {
+        let key = (bound.addresses.clone(), relay_url.clone());
+        let (pending, known) = {
+            let mut cache = self.reflexive.lock().expect("reflexive cache poisoned");
+            if cache.key.as_ref() != Some(&key) {
+                *cache = ReflexiveCache {
+                    key: Some(key.clone()),
+                    ..ReflexiveCache::default()
+                };
+            }
+            let stale = cache
+                .found
+                .as_ref()
+                .is_none_or(|(at, _)| at.elapsed() >= REFLEXIVE_REFRESH);
+            if stale && cache.looking.is_none() {
+                let (done, wait) = watch::channel(false);
+                cache.looking = Some(wait);
+                tokio::spawn(learn_reflexive(
+                    Arc::clone(&self.reflexive),
+                    bound.clone(),
+                    relay_url,
+                    self.stun_port,
+                    key,
+                    done,
+                ));
+            }
+            (
+                cache.looking.clone(),
+                cache.found.as_ref().map(|(_, found)| found.clone()),
+            )
+        };
+        if let Some(found) = known {
+            return found;
+        }
+        if let Some(mut wait) = pending {
+            let _ = timeout(REFLEXIVE_FIRST_WAIT, wait.wait_for(|done| *done)).await;
+        }
+        self.reflexive
+            .lock()
+            .expect("reflexive cache poisoned")
+            .found
+            .as_ref()
+            .map(|(_, found)| found.clone())
+            .unwrap_or_default()
     }
 
     pub(super) async fn wait_stopped(&self) {
@@ -345,6 +412,29 @@ impl Bound {
 }
 
 /// The STUN responder runs on the relay's host at the STUN port.
+/// Learns the reflexive candidates for `key` in the background and keeps them for the endpoint, unless the
+/// addresses or relay changed meanwhile.
+async fn learn_reflexive(
+    shared: Arc<std::sync::Mutex<ReflexiveCache>>,
+    bound: Bound,
+    relay_url: String,
+    stun_port: u16,
+    key: (Vec<SocketAddr>, String),
+    done: watch::Sender<bool>,
+) {
+    let found = bound
+        .reflexive(&stun_servers(&relay_url, stun_port).await)
+        .await;
+    {
+        let mut cache = shared.lock().expect("reflexive cache poisoned");
+        if cache.key.as_ref() == Some(&key) {
+            cache.found = Some((std::time::Instant::now(), found));
+            cache.looking = None;
+        }
+    }
+    let _ = done.send(true);
+}
+
 async fn stun_servers(relay_url: &str, port: u16) -> Vec<SocketAddr> {
     let Some(host) = url::Url::parse(relay_url).ok().and_then(|url| {
         url.host_str()

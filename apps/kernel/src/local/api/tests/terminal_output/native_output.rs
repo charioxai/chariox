@@ -113,10 +113,10 @@ fn stale_terminal_sweep_removes_dead_attachment_before_fanout() {
     };
     let provider_run_id = harness.with_app_mut(|app| {
         app.attachments()
-            .record_heartbeat(session.id(), stale_attachment.id(), 1)
+            .renew_lease(session.id(), stale_attachment.id(), 1)
             .expect("stale heartbeat should record");
         app.attachments()
-            .record_heartbeat(
+            .renew_lease(
                 session.id(),
                 fresh_attachment.id(),
                 crate::session::unix_epoch_ms(),
@@ -220,7 +220,7 @@ fn pump_terminal_output_refreshes_terminal_attachment_heartbeat() {
     };
     harness.with_app_mut(|app| {
         app.attachments()
-            .record_heartbeat(session.id(), attachment.id(), 1)
+            .renew_lease(session.id(), attachment.id(), 1)
             .expect("old heartbeat should record");
     });
 
@@ -271,7 +271,7 @@ fn poll_runtime_notices_refreshes_terminal_attachment_heartbeat() {
     };
     harness.with_app_mut(|app| {
         app.attachments()
-            .record_heartbeat(session.id(), attachment.id(), 1)
+            .renew_lease(session.id(), attachment.id(), 1)
             .expect("old heartbeat should record");
     });
 

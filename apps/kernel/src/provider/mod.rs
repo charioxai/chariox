@@ -1,3 +1,11 @@
+mod skill_ack;
+pub(crate) use skill_ack::completed_native_skill_tool;
+#[cfg(test)]
+pub(crate) use skill_ack::completed_skill_tool;
+pub use skill_ack::SkillToolDeliveryAcknowledgement;
+pub mod skill_delivery;
+pub mod skill_inventory;
+pub(crate) mod switch_turn;
 pub(crate) use account_credential::provider_account_credential_uses_vault;
 use std::time::Duration;
 
@@ -41,6 +49,7 @@ pub(crate) use account_handoff::encode_account_handoff;
 mod launch_contract;
 mod managed_isolation;
 mod mcp_proxy;
+mod model_usage;
 mod opencode;
 mod opencode_binding;
 mod opencode_client;
@@ -48,6 +57,7 @@ mod opencode_runtime;
 pub(crate) mod output_ready;
 mod process_info;
 mod prompt_signals;
+pub use model_usage::{ModelTokenCounts, ModelTurnUsage};
 mod public_run;
 mod registry;
 pub(crate) mod renewal_failure;
@@ -59,6 +69,7 @@ mod usage_limit_reset;
 pub use public_run::PublicProviderRun;
 mod service;
 pub(crate) mod startup_diagnostic;
+pub(crate) mod state_confinement;
 mod termination;
 mod types;
 mod usage_read_error;
@@ -69,16 +80,15 @@ pub(crate) use account_credential::{
     launch_uses_vault_credential, provider_account_credential_id,
     provider_account_credential_registered, remove_provider_account_credential,
     resolve_provider_account_credentials, resolve_provider_account_credentials_for_launch,
-    store_provider_account_credential, validate_provider_account_credential_input,
-    verify_account_login, CLAUDE_OAUTH_TOKEN_ENV,
+    store_provider_account_copy_credential, store_provider_account_credential,
+    validate_provider_account_credential_input, verify_account_login, CLAUDE_OAUTH_TOKEN_ENV,
 };
 pub(crate) use claude::claude_provider_catalog_with_environment;
-pub(crate) use claude::prepare_claude_onboarding_state;
-pub(crate) use claude::CLAUDE_RUNTIME_FILES_PREFIX;
+pub(crate) use claude::{
+    prepare_claude_launch_state, trusted_workspace_notice, CLAUDE_START_BUDGET,
+};
 
-/// Names the launching kernel's pid in every process it starts for a provider run, and so in the
-/// tool processes that run starts. A restored kernel ends those of a kernel that is gone.
-pub(crate) const PROVIDER_OWNER_PID_ENV: &str = "CHARIOX_PROVIDER_OWNER_PID";
+pub(crate) mod process_owner;
 pub(crate) use claude::{
     claude_native_hidden_context_room, ensure_claude_native_hidden_context_fits,
     fit_claude_native_hidden_context, CLAUDE_NATIVE_PERMISSION_HOOK_WAIT_SECS,
@@ -86,8 +96,8 @@ pub(crate) use claude::{
 };
 pub use claude::{claude_provider_catalog, plan_claude_launch, resolve_claude_executable};
 pub(crate) use claude::{
-    read_claude_rate_limits, verify_claude_account_credential, verify_claude_setup_token,
-    ClaudeCredentialCheckError,
+    probe_claude_skill_version, read_claude_rate_limits, verify_claude_account_credential,
+    verify_claude_setup_token, ClaudeCredentialCheckError,
 };
 #[cfg(test)]
 pub(crate) use claude_runtime::claude_runtime_tool_wait_pending;
@@ -109,11 +119,12 @@ pub use codex::{
     codex_catalog_endpoint, logout_codex, plan_codex_launch, resolve_codex_executable,
 };
 pub(crate) use codex::{
-    ensure_codex_account_endpoint, invalidate_codex_account_endpoint,
+    ensure_codex_account_endpoint, invalidate_codex_account_endpoint, retain_codex_account_login,
     shutdown_codex_account_endpoints,
 };
 #[cfg(test)]
 pub(crate) use codex_client::test_codex_connect;
+pub(crate) use codex_client::CodexDeviceLogin;
 pub use codex_client::{
     CodexClient, CodexNotification, CodexRunSelection, CodexSocket, CodexStream, CodexThread,
     CodexThreadStartResponse, ProviderAuthStatus, ProviderLoginStart,
@@ -179,23 +190,26 @@ pub use opencode_client::{
 pub use process_info::{ProviderProcessInfo, ProviderProcessStatus};
 pub(crate) use prompt_signals::{
     classify_provider_terminal_failure_output_text, classify_provider_terminal_failure_text,
-    claude_native_stop_failure, provider_coded_failure_text, provider_retry_status,
-    provider_turn_failure_reason, text_reports_resource_limit, PROVIDER_CONNECTION_RETRY_MERGE_KEY,
+    claude_native_stop_failure, find_provider_terminal_failure_output, provider_coded_failure_text,
+    provider_error_frame, provider_exit_error_message, provider_retry_status,
+    text_reports_resource_limit, PROVIDER_CONNECTION_RETRY_MERGE_KEY,
 };
 pub use prompt_signals::{
-    ProviderAssistantCompletion, ProviderPromptChunk, ProviderPromptSignalBatch,
+    ProviderAssistantCompletion, ProviderBackgroundNotification, ProviderOwnTurnSignal,
+    ProviderPromptChunk, ProviderPromptSignalBatch,
 };
 pub use registry::{AgentEndpointAdapter, ProviderRegistry};
 pub(crate) use run_actor::{
-    setup_turn_origin, FinishedProviderOutputPollJob, FinishedProviderPromptAbortJob,
-    FinishedProviderPromptSubmitJob, ProviderNativeInteractionBridge,
+    run_room_commands_on_fresh_claude, setup_turn_origin, CodexApprovalHandover,
+    CodexApprovalOutcome, FinishedProviderOutputPollJob, FinishedProviderPromptAbortJob,
+    FinishedProviderPromptSubmitJob, NativeApprovalGoal, ProviderNativeInteractionBridge,
     ProviderNativeInteractionResolution, ProviderOutputPromptIdentity,
     ProviderPromptSubmitAcknowledgement, ProviderPromptSubmitReceipt,
     ProviderRunActorCompletionSignal, ProviderRunActorMailbox, ProviderRunOperationLanes,
     ProviderRunOperationPermit,
 };
 pub(crate) use runtime_run::{
-    projected_leased_provider_run_id, worker_provider_run_id_from_projected_leased_id,
+    projected_leased_provider_run_id, worker_provider_run_id_from_projected_leased_id, ProcessStart,
 };
 pub use runtime_run::{ProviderRunTokenUsage, RuntimeProviderRun};
 pub use service::{ProviderProcessService, ProviderProcessServiceStore};
@@ -205,7 +219,7 @@ pub(crate) use termination::{
     sanitize_provider_diagnostic,
 };
 pub use termination::{ProviderRunTermination, ProviderRunTerminationCategory};
-pub use turn_outcome::{TurnOutcome, TurnOutcomeKind};
+pub use turn_outcome::{AnsweredTurnReceipt, TurnOutcome, TurnOutcomeKind};
 pub(crate) use types::provider_workspace_live_sync_mode_for_session;
 pub use types::{
     AgentEndpointMode, ControlCapability, ControlCapabilityMode, ControlOperation,
@@ -298,6 +312,18 @@ pub(crate) fn effective_model_context_window_tokens(
     }
 }
 
+/// The window a run's next turn has: the one the provider reported, or before
+/// its first report (a fresh run) the window of the model it runs.
+pub(crate) fn run_context_window_tokens(run: &RuntimeProviderRun) -> u64 {
+    run.usage().context_window.unwrap_or_else(|| {
+        effective_model_context_window_tokens(
+            run.provider(),
+            run.model(),
+            claude_1m_context_disabled(run),
+        )
+    })
+}
+
 pub(crate) fn claude_1m_context_disabled(run: &RuntimeProviderRun) -> bool {
     run.pty_env()
         .get("CLAUDE_CODE_DISABLE_1M_CONTEXT")
@@ -334,12 +360,20 @@ pub(crate) fn provider_run_uses_claude_permission_prompt_tool(run: &RuntimeProvi
             || run.permission_level() == AgentPermissionLevel::Required)
 }
 
+pub(crate) fn is_dev_trace(adapter: &str, model: &str) -> bool {
+    adapter == "dev-stub" && model == "trace"
+}
+
+pub(crate) fn provider_run_uses_opencode_io(run: &RuntimeProviderRun) -> bool {
+    run.adapter_key() == "opencode" || is_dev_trace(run.adapter_key(), run.model())
+}
+
 pub(crate) fn provider_run_uses_structured_prompt_io(run: &RuntimeProviderRun) -> bool {
     run.adapter_key() == "codex"
         || (run.adapter_key() == "claude"
             && run.client_interface().is_chariox()
             && !provider_run_uses_claude_native_bridge(run))
-        || run.adapter_key() == "opencode"
+        || provider_run_uses_opencode_io(run)
         || (run.adapter_key() == "dev-stub"
             && matches!(run.provider(), "slow-structured" | "lost-ack-structured"))
 }
@@ -400,21 +434,13 @@ pub(crate) fn provider_batch_launch_concurrency_limit(
 }
 
 pub(crate) fn retain_public_inventory_providers(providers: &mut Vec<String>) {
-    retain_public_inventory_providers_with_dev_stub_policy(
-        providers,
-        dev_stub_public_inventory_enabled(),
-    );
+    retain_public_inventory_providers_with_dev_stub_policy(providers, dev_stub_enabled());
 }
 
-pub(crate) fn dev_stub_public_inventory_enabled() -> bool {
-    std::env::var("CHARIOX_PROVIDER_DEV_STUB")
-        .ok()
-        .is_some_and(|value| {
-            matches!(
-                value.trim().to_ascii_lowercase().as_str(),
-                "1" | "true" | "yes" | "on"
-            )
-        })
+pub(crate) const DEV_STUB_ENV: &str = "CHARIOX_PROVIDER_DEV_STUB";
+
+pub(crate) fn dev_stub_enabled() -> bool {
+    std::env::var(DEV_STUB_ENV).as_deref() == Ok("1")
 }
 
 fn retain_public_inventory_providers_with_dev_stub_policy(
@@ -433,7 +459,7 @@ pub(crate) fn provider_run_supports_policy_reload(run: &RuntimeProviderRun) -> b
 pub(crate) fn provider_run_uses_runtime_structured_utility_prompt(
     run: &RuntimeProviderRun,
 ) -> bool {
-    run.adapter_key() == "claude" && run.client_interface().is_chariox()
+    run.adapter_key() == "claude" && !provider_run_uses_claude_native_bridge(run)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -446,7 +472,9 @@ pub(crate) enum ProviderUtilityExecutionPolicy {
     SessionCommand,
     /// A setup turn the person asked for (publishing a new Room): it runs commands in the run's
     /// folder under the run's permissions, its approvals reach the person like any agent's, and
-    /// the whole answer comes back so a closing verdict line is never lost.
+    /// the whole answer comes back so a closing verdict line is never lost. A Claude run with no
+    /// structured I/O (headless) runs it on a fresh `claude -p` child that may run only `git`
+    /// and `gh`.
     RoomCommands,
 }
 
@@ -805,6 +833,7 @@ mod tests {
     #[test]
     fn runtime_structured_utility_prompt_is_provider_policy() {
         let structured_claude = provider_run("claude", "claude");
+        let headless_claude = provider_run("claude", "claude-headless");
         let native_claude = provider_run_with_client_interface(
             "claude",
             "claude",
@@ -815,6 +844,9 @@ mod tests {
 
         assert!(provider_run_uses_runtime_structured_utility_prompt(
             &structured_claude
+        ));
+        assert!(!provider_run_uses_runtime_structured_utility_prompt(
+            &headless_claude
         ));
         assert!(!provider_run_uses_runtime_structured_utility_prompt(
             &native_claude

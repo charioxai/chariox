@@ -12,17 +12,22 @@ use tokio_tungstenite::{accept_hdr_async, tungstenite::Message};
 
 use crate::auth::{RelayAction, RelayAuthVerifier, VerifiedRelayIdentity};
 use crate::meter::{ConnectionMeter, Direction, UsageMeter, CONTROL_SCOPE, DISPLAY_TUNNEL_SCOPE};
-use crate::protocol::{RelayConnectionRole, RelayEnvelope, RelayError, RelayMetadataQuery};
+use crate::protocol::{
+    RelayConnectionRole, RelayEnvelope, RelayError, RelayMetadataQuery, DAEMON_REGISTERED_PROTOCOL,
+    MINIMUM_KERNEL_REGISTRATION_PROTOCOL,
+};
 use crate::registry::{
     ActiveEventRoute, ActiveSubscription, DaemonKey, DisplayStreamEvent, PeerHandle,
     PendingRequestKind, RelayRegistry, RelaySender,
 };
 
 mod client_connect;
+mod peer_replies;
 mod support;
 #[cfg(test)]
 mod tests;
 mod token_refusal;
+mod update_needed;
 mod writer;
 
 use support::*;
@@ -106,6 +111,55 @@ async fn close_display_stream_from_daemon(
     let _ = sender.try_send(DisplayStreamEvent::Close { error });
 }
 
+// Inspect only admission metadata before requiring the proof. An old kernel must
+// receive the upgrade reason even though its registration cannot decode.
+fn registration_version_refusal(text: &str) -> Option<String> {
+    #[derive(serde::Deserialize)]
+    struct RegistrationVersion {
+        local_protocol: Option<u32>,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct Admission {
+        kind: String,
+        registration: Option<RegistrationVersion>,
+    }
+
+    let admission = serde_json::from_str::<Admission>(text).ok()?;
+    if admission.kind != "daemon_register" {
+        return None;
+    }
+    let version = admission.registration?.local_protocol;
+    let minimum = MINIMUM_KERNEL_REGISTRATION_PROTOCOL;
+    match version {
+        Some(version) if version < minimum => Some(format!(
+            "upgrade required: protocol {version} < minimum {minimum}"
+        )),
+        None => Some(format!(
+            "upgrade required: protocol unknown, minimum {minimum}"
+        )),
+        _ => None,
+    }
+}
+
+fn malformed_envelope_reason(text: &str) -> &'static str {
+    // Serde errors may include client-supplied field names and values. Never
+    // relay them to the owner or put them in logs.
+    match serde_json::from_str::<serde_json::Value>(text)
+        .ok()
+        .as_ref()
+    {
+        Some(frame) if frame["kind"] == "daemon_register" => {
+            if frame.get("proof").is_none() {
+                "invalid relay registration: missing registration proof"
+            } else {
+                "invalid relay registration"
+            }
+        }
+        _ => "invalid relay message",
+    }
+}
+
 fn is_transport_ack(text: &str) -> bool {
     serde_json::from_str::<serde_json::Value>(text)
         .ok()
@@ -130,6 +184,8 @@ pub(crate) async fn handle_connection(
     let mut upload_chunks = false;
     let mut initial_resume_negotiated = false;
     let mut hello = token_refusal::ConnectionHello::default();
+    let challenge = crate::registration_proof::new_challenge()?;
+    let mut dialed_address = None;
     let handshake = accept_hdr_async(
         stream,
         |request: &tokio_tungstenite::tungstenite::handshake::server::Request,
@@ -145,6 +201,15 @@ pub(crate) async fn handle_connection(
                         && part != crate::frame_transport::TRANSPORT_QUERY
                 })
             });
+            dialed_address = request
+                .headers()
+                .get("host")
+                .and_then(|host| host.to_str().ok())
+                .map(str::to_owned);
+            response.headers_mut().insert(
+                crate::registration_proof::CHALLENGE_HEADER,
+                challenge.parse().unwrap(),
+            );
             hello.user_agent = request
                 .headers()
                 .get("user-agent")
@@ -264,6 +329,7 @@ pub(crate) async fn handle_connection(
         ),
     )));
     let mut uploads = crate::frame_transport::FrameReceiver::default();
+    let mut registration_challenge = Some(challenge);
     let mut registered_daemon_key: Option<DaemonKey> = None;
     let mut verified_identity: Option<VerifiedRelayIdentity> = None;
     let mut auth_expiry_deadline: Option<Instant> = None;
@@ -459,9 +525,57 @@ pub(crate) async fn handle_connection(
                         }
                     }
                     first_message_received = true;
-                    let envelope: RelayEnvelope = serde_json::from_str(&text).map_err(|error| {
-                        std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string())
-                    })?;
+                    if text.starts_with(peer_replies::WIRE_PREFIX) {
+                        let reply: peer_replies::IncomingPeerReply<'_> = serde_json::from_str(&text)
+                            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string()))?;
+                        if !counted {
+                            connection_meter.record(Direction::In, CONTROL_SCOPE, text.len());
+                        }
+                        let Some(daemon) = registered_daemon_key.as_ref() else {
+                            send_close(&outgoing_tx, "daemon must register before sending peer responses".to_string());
+                            break;
+                        };
+                        peer_replies::forward(
+                            &routes, daemon, &reply.relay_request_id,
+                            reply.encrypted_response.as_ref(), reply.error.as_ref(),
+                        );
+                        continue;
+                    }
+                    let envelope: RelayEnvelope = match serde_json::from_str(&text) {
+                        Ok(envelope) => envelope,
+                        Err(_) => {
+                            // Only a kernel older than the proof (or reporting no protocol) is
+                            // told to update; a current kernel that omits the proof is malformed.
+                            if registered_daemon_key.is_none()
+                                && registration_version_refusal(&text).is_some()
+                            {
+                                if let Some(reason) = update_needed::refuse_old_registration(
+                                    &text,
+                                    &auth_verifier,
+                                    &registry,
+                                    peer_addr,
+                                )
+                                .await?
+                                {
+                                    send_close(&outgoing_tx, reason);
+                                    end_reason = "update_needed";
+                                    break;
+                                }
+                            }
+                            send_close(&outgoing_tx, malformed_envelope_reason(&text).into());
+                            end_reason = "malformed_envelope";
+                            break;
+                        }
+                    };
+                    // A registration that reads but names an old or unknown protocol. One that no
+                    // longer reads went through update_needed above, which lists the kernel.
+                    if registered_daemon_key.is_none() {
+                        if let Some(reason) = registration_version_refusal(&text) {
+                            send_close(&outgoing_tx, reason);
+                            end_reason = "registration_protocol_refused";
+                            break;
+                        }
+                    }
                     let scope = match &envelope {
                         RelayEnvelope::DaemonEvent { subscription_id, .. } => routes
                             .subscription(subscription_id)
@@ -481,7 +595,7 @@ pub(crate) async fn handle_connection(
                         );
                     }
                     match envelope {
-                        RelayEnvelope::DaemonRegister { registration } => {
+                        RelayEnvelope::DaemonRegister { registration, proof } => {
                             let identity = verify_relay_token(
                                 &auth_verifier,
                                 &registration.auth_token,
@@ -493,6 +607,27 @@ pub(crate) async fn handle_connection(
                                 &registration,
                             ) {
                                 send_close(&outgoing_tx, reason.to_string());
+                                break;
+                            }
+                            // Before the registration can take or displace anything: the
+                            // challenge admits one registration, so a proof is never replayed.
+                            if let Err(reason) = verify_registration_proof(
+                                registration_challenge.take(),
+                                dialed_address.as_deref(),
+                                &registration,
+                                &proof,
+                            ) {
+                                relay_log(
+                                    "warn",
+                                    "relay_registration_proof_refused",
+                                    json!({
+                                        "peer_addr": peer_addr.to_string(),
+                                        "daemon_id": registration.daemon_id,
+                                        "reason": reason,
+                                    }),
+                                );
+                                send_close(&outgoing_tx, reason.to_string());
+                                end_reason = "registration_proof_refused";
                                 break;
                             }
                             // Before any authority or registry state changes: this
@@ -512,20 +647,15 @@ pub(crate) async fn handle_connection(
                             );
                             let allowed_actions = identity.allowed_actions.clone();
                             let allowed_targets = identity.allowed_targets.clone();
-                            verified_identity = Some(identity.clone());
-                            if registered_daemon_key
-                                .as_ref()
-                                .is_some_and(|current_key| current_key != &daemon_key)
-                            {
-                                send_close(
-                                    &outgoing_tx,
-                                    "daemon connection already registered".to_string(),
-                                );
-                                break;
-                            }
-                            registered_daemon_key = Some(daemon_key.clone());
                             let mut replaced_senders = Vec::new();
                             let mut guard = registry.write().await;
+                            // Landing 12.1 kernels do not recognize the acknowledgment. For kernels
+                            // that do, it must precede traffic routed to the new peer.
+                            if registration.local_protocol.is_some_and(|version| version >= DAEMON_REGISTERED_PROTOCOL) {
+                                send_envelope(&outgoing_tx, &RelayEnvelope::DaemonRegistered)?;
+                            }
+                            verified_identity = Some(identity.clone());
+                            registered_daemon_key = Some(daemon_key.clone());
                             guard.peers.retain(|addr, peer| {
                                 let replace = *addr != peer_addr
                                     && peer.role == RelayConnectionRole::Daemon
@@ -557,6 +687,7 @@ pub(crate) async fn handle_connection(
                                     client_daemon_key: None,
                                 },
                             );
+                            guard.clear_update_needed_kernel(&daemon_key);
                             guard.daemons.insert(daemon_key.clone(), registration);
                             guard.daemon_peers.insert(daemon_key.clone(), peer_addr);
                             routes.set_daemon_sender(daemon_key, outgoing_tx.clone());
@@ -573,9 +704,13 @@ pub(crate) async fn handle_connection(
                             registration,
                         } => {
                             let Some(current_daemon_key) = registered_daemon_key.clone() else {
+                                send_close(&outgoing_tx, "register before sending a heartbeat".into());
+                                end_reason = "heartbeat_before_registration";
                                 break;
                             };
                             if current_daemon_key.daemon_id != daemon_id {
+                                send_close(&outgoing_tx, "heartbeat kernel does not match registration".into());
+                                end_reason = "heartbeat_identity_mismatch";
                                 break;
                             }
                             if let Some(registration) = registration {
@@ -597,9 +732,13 @@ pub(crate) async fn handle_connection(
                                     identity.expires_at_ms,
                                 );
                                 if identity.realm_id != current_daemon_key.realm_id {
+                                    send_close(&outgoing_tx, REALM_CHANGED.into());
+                                    end_reason = "realm_changed";
                                     break;
                                 }
                                 if registration.daemon_id != daemon_id {
+                                    send_close(&outgoing_tx, "heartbeat kernel does not match registration".into());
+                                    end_reason = "heartbeat_identity_mismatch";
                                     break;
                                 }
                                 let allowed_actions = identity.allowed_actions.clone();
@@ -611,6 +750,18 @@ pub(crate) async fn handle_connection(
                                 if guard.daemon_peers.get(&current_daemon_key) != Some(&peer_addr) {
                                     drop(guard);
                                     send_close(&outgoing_tx, "daemon reconnected".to_string());
+                                    break;
+                                }
+                                // Only a registration proves its key; a heartbeat renews the token.
+                                if guard.daemons.get(&current_daemon_key).is_some_and(|current| {
+                                    current.public_key != registration.public_key
+                                }) {
+                                    drop(guard);
+                                    send_close(
+                                        &outgoing_tx,
+                                        "daemon identity key changed; reconnect to register it"
+                                            .to_string(),
+                                    );
                                     break;
                                 }
                                 if let Some(peer) = guard.peers.get_mut(&peer_addr) {
@@ -979,7 +1130,7 @@ pub(crate) async fn handle_connection(
                             encrypted_response,
                             error,
                         } => {
-                            let Some(current_daemon_key) = registered_daemon_key.clone() else {
+                            let Some(current_daemon_key) = registered_daemon_key.as_ref() else {
                                 send_close(
                                     &outgoing_tx,
                                     "daemon must register before sending peer responses"
@@ -987,34 +1138,11 @@ pub(crate) async fn handle_connection(
                                 );
                                 break;
                             };
-                            let daemon_target = routes
-                                .take_pending_daemon_if(&relay_request_id, |pending| {
-                                    pending.target_daemon_key == current_daemon_key
-                                })
-                                .and_then(|pending| {
-                                    routes
-                                    .daemon_sender(&pending.requester_daemon_key)
-                                    .map(|sender| {
-                                        (
-                                            sender,
-                                            pending.requester_request_id,
-                                            pending.target_daemon_key.daemon_id,
-                                        )
-                                    })
-                                });
-                            if let Some((daemon_sender, requester_request_id, target_daemon_id)) =
-                                daemon_target
-                            {
-                                deliver(
-                                    &daemon_sender,
-                                    &RelayEnvelope::DaemonPeerResponse {
-                                        request_id: requester_request_id,
-                                        from_daemon_id: target_daemon_id,
-                                        encrypted_response,
-                                        error,
-                                    },
-                                );
-                            }
+                            let encrypted = encrypted_response.as_ref().map(peer_replies::OpaquePayload::from);
+                            peer_replies::forward(
+                                &routes, current_daemon_key, &relay_request_id,
+                                encrypted.as_ref(), error.as_ref(),
+                            );
                         }
                         RelayEnvelope::DaemonDisplayTunnelRegister { registration } => {
                             let Some(current_daemon_key) = registered_daemon_key.clone() else {
@@ -1168,7 +1296,8 @@ pub(crate) async fn handle_connection(
                             let _ = outgoing_tx.try_send(Message::Close(None));
                             break;
                         }
-                        RelayEnvelope::ClientConnected { .. }
+                        RelayEnvelope::DaemonRegistered
+                        | RelayEnvelope::ClientConnected { .. }
                         | RelayEnvelope::ClientMetadataResponse { .. }
                         | RelayEnvelope::DaemonPeerResponse { .. }
                         | RelayEnvelope::DaemonIncomingPeerRequest { .. }

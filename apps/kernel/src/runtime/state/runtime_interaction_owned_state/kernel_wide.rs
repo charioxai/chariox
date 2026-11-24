@@ -3,7 +3,74 @@
 //! revocation use the ordinary interaction machinery.
 use super::*;
 
+use crate::session::{RuntimeInteraction, RuntimeSession, SessionStatus};
+
 impl KernelRuntimeOwnedState {
+    pub(in crate::runtime::state) fn pending_kernel_decisions(
+        &self,
+    ) -> Vec<(String, PendingInteraction)> {
+        self.pending_interactions
+            .write()
+            .iter()
+            .filter(|(_, p)| {
+                p.belongs_to(&self.session_store) && p.kernel_operation_owner.is_some()
+            })
+            .map(|(id, p)| (id.clone(), p.clone()))
+            .collect()
+    }
+
+    /// The interaction backing a pending kernel operation. An ended or deleted Room
+    /// cannot deliver an answer, even when the original caller is still waiting.
+    pub(super) fn kernel_operation_card(
+        &self,
+        id: &str,
+        pending: &PendingInteraction,
+        session_of: &dyn Fn(&str) -> Option<RuntimeSession>,
+    ) -> Option<RuntimeInteraction> {
+        pending
+            .kernel_wide_interaction
+            .clone()
+            .or_else(|| pending.user_domain_interaction.clone())
+            .or_else(|| {
+                let session = session_of(&pending.session_id)?;
+                if session.status() == SessionStatus::Ended {
+                    return None;
+                }
+                session
+                    .active_interactions()
+                    .iter()
+                    .find(|card| card.id() == id)
+                    .cloned()
+            })
+    }
+
+    /// The counted subset of the pending store, shared by admission and owner views.
+    pub(in crate::runtime::state) fn open_kernel_decision(
+        &self,
+        id: &str,
+        pending: &PendingInteraction,
+        now: std::time::Instant,
+        session_of: &dyn Fn(&str) -> Option<RuntimeSession>,
+    ) -> Option<RuntimeInteraction> {
+        if !pending.belongs_to(&self.session_store)
+            || pending.kernel_operation_owner.is_none()
+            || !pending.decision_still_waits(now)
+        {
+            return None;
+        }
+        self.kernel_operation_card(id, pending, session_of)
+    }
+
+    pub(in crate::runtime::state) fn kernel_decision_owner_matches(
+        &self,
+        owner: &str,
+        recorded_owner: &str,
+    ) -> bool {
+        let local = crate::session::DEFAULT_LOCAL_USER_ID;
+        self.room_member_user_id_in(local, owner)
+            == self.room_member_user_id_in(local, recorded_owner)
+    }
+
     /// An outside agent's Vault value request: a kernel-wide decision every owner terminal
     /// shows as a popup. It has the secret choice and no passkey; the answer is the value.
     pub(super) fn register_kernel_wide_secret_interaction(
@@ -46,6 +113,7 @@ impl KernelRuntimeOwnedState {
         pending.insert(
             interaction.id().into(),
             super::super::PendingInteraction {
+                codex_approval_transfer: None,
                 checking_answer: Default::default(),
                 goal_approval: None,
                 session_id: scope.into(),
@@ -123,6 +191,7 @@ impl KernelRuntimeOwnedState {
         pending.insert(
             interaction.id().into(),
             super::super::PendingInteraction {
+                codex_approval_transfer: None,
                 checking_answer: Default::default(),
                 goal_approval: None,
                 async_task_id: None,

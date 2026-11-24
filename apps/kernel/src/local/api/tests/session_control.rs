@@ -1,6 +1,44 @@
 use super::*;
 
 #[test]
+fn a_room_can_create_more_than_1024_idle_agents() {
+    let worktree = crate::test_support::TestWorktree::new("session-control-large-room");
+    let harness = LocalRouterTestHarness::new();
+    let LocalDaemonResponse::SessionCreated { session, .. } = harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            worktree.session_request(),
+        ))
+        .unwrap()
+    else {
+        panic!("expected a new Room");
+    };
+    for range in [0..400, 400..800, 800..1025] {
+        let count = range.len();
+        let agents = range
+            .map(|index| serde_json::json!({"alias": format!("idle-{index}"), "provider": "dev-stub"}))
+            .collect::<Vec<_>>();
+        let request = serde_json::from_value(serde_json::json!({"SpawnAgents": {
+            "session_id": session.id(), "agents": agents, "no_subscribe": true
+        }}))
+        .unwrap();
+        let LocalDaemonResponse::AgentsSpawned { agents, .. } = harness.dispatch(request).unwrap()
+        else {
+            panic!("expected idle Room agents");
+        };
+        assert_eq!(agents.len(), count);
+    }
+    let LocalDaemonResponse::AgentsListed { agents } = harness
+        .dispatch(LocalDaemonRequest::ListAgents(ListAgentsRequest {
+            session_id: session.id().to_string(),
+        }))
+        .unwrap()
+    else {
+        panic!("expected the Room agents");
+    };
+    assert_eq!(agents.len(), 1026);
+}
+
+#[test]
 fn project_lifecycle_archives_idle_sessions_and_restore_parks_them() {
     let worktree = crate::test_support::TestWorktree::new("session-control-project-lifecycle");
     let harness = LocalRouterTestHarness::new();
@@ -428,13 +466,15 @@ fn session_attach_clears_a_missing_active_provider_run() {
         .expect("initial attachment should succeed");
     harness
         .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            initial_task: None,
+            peer_spawn: None,
             max_context_tokens: None,
             no_subscribe: false,
             account_profile: None,
             session_id: session.id().to_string(),
             alias: Some("remote-worker".to_string()),
-            provider: Some("opencode".to_string()),
-            model: Some("kimi-k2.6".to_string()),
+            provider: Some("dev-stub".to_string()),
+            model: Some("test-model".to_string()),
             effort: None,
             execution_mode: None,
             permission_level: None,
@@ -504,6 +544,8 @@ fn session_attach_clears_a_projected_leased_run_for_an_unfocused_agent() {
         .expect("initial attachment should succeed");
     let remote_agent = match harness
         .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            initial_task: None,
+            peer_spawn: None,
             max_context_tokens: None,
             no_subscribe: false,
             account_profile: None,
@@ -855,8 +897,13 @@ fn local_request_api_spawns_and_focuses_agents() {
         _ => panic!("unexpected local response"),
     };
 
+    harness.with_app(|app| {
+        crate::test_support::seed_default_account_models(app, "opencode", &["openai/gpt-5.4"])
+    });
     let spawned = match harness
         .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            initial_task: None,
+            peer_spawn: None,
             max_context_tokens: None,
             no_subscribe: false,
             account_profile: None,
@@ -998,6 +1045,9 @@ fn local_request_api_spawns_and_focuses_agents() {
         );
     });
 
+    harness.with_app(|app| {
+        crate::test_support::seed_default_account_models(app, "codex", &["gpt-5.4"])
+    });
     let profiled = match harness
         .dispatch(LocalDaemonRequest::UpdateAgentProfile(
             UpdateAgentProfileRequest {
@@ -1078,7 +1128,6 @@ fn local_request_api_spawns_and_focuses_agents() {
                 worktree_id: Some("/repo/feature-wt".to_string()),
                 clear_worktree_id: false,
                 reason: None,
-                self_settings: None,
                 usage_limit: None,
             },
         ))
@@ -1573,6 +1622,7 @@ fn seed_codex_catalog(harness: &LocalRouterTestHarness) {
             id: "gpt-6.1-sol".to_string(),
             name: "GPT-6.1 Sol".to_string(),
             status: "active".to_string(),
+            aliases: Vec::new(),
             limit: None,
             variants: ["low", "high"]
                 .iter()

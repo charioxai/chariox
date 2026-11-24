@@ -16,8 +16,10 @@ use crate::error::DaemonError;
 
 pub(crate) use handoff_brief::AgentHandoffBrief;
 mod compaction_boundary;
+pub(crate) use compaction_boundary::AgentCompactionOrigin;
 mod handoff_brief;
 pub(crate) mod leased_projection;
+mod model_usage;
 mod operational_archive;
 mod operational_legacy_import;
 mod operational_query;
@@ -36,15 +38,19 @@ pub use session_log::{
     external_provider_observed_merge_key, external_provider_observed_merge_key_prefix,
     external_provider_observed_state_merge_key, parse_external_provider_observed_id,
     ExternalProviderObservedId, SessionHistoryEntry, SessionHistoryEntryKind,
-    SessionHistoryEntrySource, SessionHistoryExternalObservation, SessionHistoryPromptAttachment,
-    SessionHistoryStore, EXTERNAL_PROVIDER_ACTIVE_PROMPT_SETTLED_REASON,
-    EXTERNAL_PROVIDER_ACTIVE_PROMPT_STARTED_REASON, EXTERNAL_PROVIDER_HISTORY_UPDATED_STATUS,
+    SessionHistoryEntrySource, SessionHistoryExternalObservation, SessionHistoryNoticeReason,
+    SessionHistoryPromptAttachment, SessionHistoryStore,
+    EXTERNAL_PROVIDER_ACTIVE_PROMPT_SETTLED_REASON, EXTERNAL_PROVIDER_ACTIVE_PROMPT_STARTED_REASON,
+    EXTERNAL_PROVIDER_HISTORY_UPDATED_STATUS,
 };
 
 pub const OPERATIONAL_HISTORY_HARD_MAX_BYTES: u64 = 500 * 1024 * 1024;
 pub const OPERATIONAL_HISTORY_HARD_MAX_MB: u32 =
     (OPERATIONAL_HISTORY_HARD_MAX_BYTES / 1024 / 1024) as u32;
 pub const STEERING_PROMPT_MERGE_KEY_PREFIX: &str = "steering-prompt:";
+/// Where a provider's own turn resumes a prompt held for its background calls: the prompt's
+/// answer reads this segment as well as the one after its own boundary.
+pub const RESUMED_PROMPT_MERGE_KEY_PREFIX: &str = "resumed-prompt:";
 pub(crate) const PROMPT_SETTLED_AT_MS_METADATA_KEY: &str = "prompt_settled_at_ms";
 pub(crate) const PROMPT_SETTLEMENT_STATUS_METADATA_KEY: &str = "prompt_settlement_status";
 pub(crate) const TURN_OUTCOME_METADATA_KEY: &str = "turn_outcome";
@@ -57,6 +63,10 @@ const OPERATIONAL_HISTORY_WRITE_BATCH_LIMIT: usize = 256;
 
 pub fn steering_prompt_merge_key(prompt_id: &str) -> String {
     format!("{STEERING_PROMPT_MERGE_KEY_PREFIX}{prompt_id}")
+}
+
+pub fn resumed_prompt_merge_key(prompt_id: &str) -> String {
+    format!("{RESUMED_PROMPT_MERGE_KEY_PREFIX}{prompt_id}")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -241,7 +251,7 @@ impl HistoryEvent {
         self.worktree_path.clone_from(&origin.worktree_path);
         self.caused_by_event_id
             .clone_from(&origin.caused_by_event_id);
-        for key in ["prompt_origin", "source_attachment_id"] {
+        for key in ["prompt_origin", "prompt_author", "source_attachment_id"] {
             match origin.metadata.get(key) {
                 Some(value) => self.metadata.insert(key.to_string(), value.clone()),
                 None => self.metadata.remove(key),
@@ -278,10 +288,22 @@ impl HistoryEvent {
                 serde_json::Value::String(source_attachment_id),
             );
         }
+        if let Some(author) = entry.prompt_author.as_ref() {
+            metadata.insert(
+                "prompt_author".to_string(),
+                serde_json::Value::String(author.clone()),
+            );
+        }
         if let Some(prompt_origin) = entry.prompt_origin {
             metadata.insert(
                 "prompt_origin".to_string(),
                 serde_json::to_value(prompt_origin).unwrap_or(serde_json::Value::Null),
+            );
+        }
+        if let Some(reason) = entry.notice_reason {
+            metadata.insert(
+                "notice_reason".to_string(),
+                serde_json::to_value(reason).unwrap_or(serde_json::Value::Null),
             );
         }
         if let Some(source) = entry.source {
@@ -407,7 +429,8 @@ impl HistoryEvent {
             .is_some_and(crate::terminal::is_internal_dispatch_diagnostic)
     }
 
-    pub fn to_session_history_entry(&self) -> Option<SessionHistoryEntry> {
+    /// The kind of the entry `to_session_history_entry` builds, without building it.
+    pub fn session_history_entry_kind(&self) -> Option<SessionHistoryEntryKind> {
         if self.kind == HistoryEventKind::ProviderTool
             && self
                 .content
@@ -416,14 +439,53 @@ impl HistoryEvent {
         {
             return None;
         }
-        let kind = SessionHistoryEntryKind::try_from(self.kind).ok()?;
+        self.session_id.as_ref()?;
+        SessionHistoryEntryKind::try_from(self.kind).ok()
+    }
+
+    /// The entry's text, read without building the entry; outline reads check every streamed
+    /// fragment of a turn, so they read fields and build entries only for what they return.
+    pub fn session_history_entry_text(&self) -> Option<&str> {
+        self.session_history_entry_kind()?;
+        Some(self.content.as_deref().unwrap_or_default())
+    }
+
+    pub fn is_external_provider_observed(&self) -> bool {
+        self.metadata.get("source").is_some_and(|source| {
+            SessionHistoryEntrySource::deserialize(source).ok()
+                == Some(SessionHistoryEntrySource::ExternalProviderObserved)
+        }) && self.session_history_entry_kind().is_some()
+    }
+
+    pub fn is_external_provider_observed_state_signal(&self) -> bool {
+        self.is_external_provider_observed()
+            && self
+                .to_session_history_entry()
+                .is_some_and(|entry| entry.is_external_provider_observed_state_signal())
+    }
+
+    pub fn session_history_observed_at_ms(&self) -> Option<u64> {
+        self.metadata
+            .get("observed_at_ms")
+            .and_then(|value| value.as_u64())
+    }
+
+    pub fn to_session_history_entry(&self) -> Option<SessionHistoryEntry> {
+        let kind = self.session_history_entry_kind()?;
         let session_id = self.session_id.clone()?;
+        #[cfg(test)]
+        session_history_entry_builds::BUILDS.with(|count| count.set(count.get() + 1));
         let source_attachment_id = self
             .metadata
             .get("source_attachment_id")
             .and_then(|value| value.as_str())
             .map(str::to_string);
         let mut entry = SessionHistoryEntry {
+            prompt_author: self
+                .metadata
+                .get("prompt_author")
+                .and_then(|value| value.as_str())
+                .map(str::to_string),
             session_id,
             provider_run_id: self.provider_run_id.clone(),
             agent_id: self.agent_id.clone(),
@@ -434,6 +496,10 @@ impl HistoryEvent {
                 .cloned()
                 .and_then(|value| serde_json::from_value(value).ok()),
             kind,
+            notice_reason: self
+                .metadata
+                .get("notice_reason")
+                .and_then(|reason| SessionHistoryNoticeReason::deserialize(reason).ok()),
             merge_key: self
                 .metadata
                 .get("merge_key")
@@ -459,15 +525,8 @@ impl HistoryEvent {
                 .get("external_provider_turn_id")
                 .and_then(|value| value.as_str())
                 .map(str::to_string),
-            observed_at_ms: self
-                .metadata
-                .get("observed_at_ms")
-                .and_then(|value| value.as_u64()),
-            external_observation: self
-                .metadata
-                .get("external_observation")
-                .cloned()
-                .and_then(|value| serde_json::from_value(value).ok()),
+            observed_at_ms: self.session_history_observed_at_ms(),
+            external_observation: self.metadata_external_observation(),
             attachments: self
                 .metadata
                 .get("attachments")
@@ -484,7 +543,13 @@ impl HistoryEvent {
     pub fn session_history_external_observation(
         &self,
     ) -> Option<SessionHistoryExternalObservation> {
-        self.to_session_history_entry()?.external_observation
+        self.session_history_entry_kind()?;
+        self.metadata_external_observation()
+    }
+
+    fn metadata_external_observation(&self) -> Option<SessionHistoryExternalObservation> {
+        SessionHistoryExternalObservation::deserialize(self.metadata.get("external_observation")?)
+            .ok()
     }
 
     pub fn operational(
@@ -528,6 +593,16 @@ impl HistoryEvent {
             attribution_confidence: None,
             caused_by_event_id: None,
         }
+    }
+}
+
+/// Per-thread count of entries built from events, so tests can assert how much work a read repeats.
+#[cfg(test)]
+pub(crate) mod session_history_entry_builds {
+    use std::cell::Cell;
+
+    thread_local! {
+        pub(crate) static BUILDS: Cell<usize> = const { Cell::new(0) };
     }
 }
 
@@ -657,10 +732,17 @@ pub struct OperationalHistoryStore {
     read_connections: Arc<Vec<Mutex<Connection>>>,
     next_read_connection: Arc<AtomicU64>,
     next_sequence: Arc<AtomicU64>,
+    /// Advances after every committed change to stored rows: appends, in-place
+    /// rewrites and deletes.
+    committed_revision: Arc<AtomicU64>,
     range_cache: Arc<range_cache::RangeCache>,
     reclaim_in_progress: Arc<AtomicBool>,
     appended_bytes_since_size_check: Arc<AtomicU64>,
     read_delay_ms: u64,
+    #[cfg(test)]
+    delayed_reads: Arc<AtomicU64>,
+    #[cfg(test)]
+    agent_history_loads: Arc<AtomicU64>,
     max_size_bytes: u64,
     capture_enabled: Arc<AtomicBool>,
     writer: Arc<OperationalHistoryWriter>,
@@ -716,6 +798,8 @@ impl OperationalHistoryStore {
         ensure_operational_history_merge_key_index(&mut connection)?;
         public_history::initialize_public_history(&connection)?;
         ensure_operational_history_answered_sessions(&connection)?;
+        compaction_boundary::migrate(&connection)?;
+        model_usage::migrate(&connection)?;
         remote_lease_context::migrate(&connection)?;
         let max_sequence: u64 = connection
             .query_row(
@@ -758,6 +842,8 @@ impl OperationalHistoryStore {
         let worker_health = Arc::clone(&writer_health);
         let public_history_projector = Arc::<public_history::ProjectorSlot>::default();
         let worker_projector = Arc::clone(&public_history_projector);
+        let committed_revision = Arc::<AtomicU64>::default();
+        let worker_revision = Arc::clone(&committed_revision);
         let writer_worker = thread::Builder::new()
             .name("chariox-history-writer".to_string())
             // MP-08 / MP-10 / MP-11: joined messages are re-projected here.
@@ -768,6 +854,7 @@ impl OperationalHistoryStore {
                     writer_receiver,
                     worker_health,
                     worker_projector,
+                    worker_revision,
                 )
             })
             .map_err(|error| DaemonError::SessionHistoryFailed {
@@ -785,10 +872,15 @@ impl OperationalHistoryStore {
             read_connections: Arc::new(read_connections),
             next_read_connection: Arc::new(AtomicU64::new(0)),
             next_sequence: Arc::new(AtomicU64::new(max_sequence + 1)),
+            committed_revision,
             range_cache: Arc::default(),
             reclaim_in_progress: Arc::new(AtomicBool::new(false)),
             appended_bytes_since_size_check: Arc::new(AtomicU64::new(0)),
             read_delay_ms,
+            #[cfg(test)]
+            delayed_reads: Arc::default(),
+            #[cfg(test)]
+            agent_history_loads: Arc::default(),
             max_size_bytes: max_size_bytes.clamp(1, OPERATIONAL_HISTORY_HARD_MAX_BYTES),
             capture_enabled: Arc::new(AtomicBool::new(true)),
             writer: Arc::new(OperationalHistoryWriter {
@@ -802,9 +894,40 @@ impl OperationalHistoryStore {
     }
 
     pub(crate) fn delay_read_if_configured(&self) {
+        #[cfg(test)]
+        self.delayed_reads.fetch_add(1, Ordering::SeqCst);
         if self.read_delay_ms > 0 {
             thread::sleep(Duration::from_millis(self.read_delay_ms));
         }
+    }
+
+    /// Equal values mean no stored row was appended, rewritten or deleted in between.
+    pub(crate) fn committed_revision(&self) -> u64 {
+        self.committed_revision.load(Ordering::Acquire)
+    }
+
+    /// Rows already read changed or went: cached ranges load again and the
+    /// committed revision advances.
+    pub(super) fn rows_rewritten(&self) {
+        self.range_cache.invalidate();
+        self.committed_revision.fetch_add(1, Ordering::AcqRel);
+    }
+
+    /// How many reads this store served, for tests that count repeated work.
+    #[cfg(test)]
+    pub(crate) fn reads_served(&self) -> u64 {
+        self.delayed_reads.load(Ordering::SeqCst)
+    }
+
+    /// How many times one agent's history was read, whole or from a sequence on.
+    #[cfg(test)]
+    pub(crate) fn agent_history_loads(&self) -> u64 {
+        self.agent_history_loads.load(Ordering::SeqCst)
+    }
+
+    #[cfg(test)]
+    pub(super) fn count_agent_history_load(&self) {
+        self.agent_history_loads.fetch_add(1, Ordering::SeqCst);
     }
 
     pub fn capture_enabled(&self) -> bool {
@@ -1027,7 +1150,7 @@ impl OperationalHistoryStore {
         transaction
             .commit()
             .map_err(|error| operational_history_error("replace public history", error))?;
-        self.range_cache.invalidate();
+        self.rows_rewritten();
         Ok(Some(replacement))
     }
 
@@ -1075,8 +1198,14 @@ impl OperationalHistoryStore {
             ),
         ]);
         let outcome = match status {
-            "completed" => crate::provider::TurnOutcome::completed(),
-            "cancelled" => crate::provider::TurnOutcome::cancelled(),
+            "completed" => failure
+                .filter(|outcome| outcome.kind == crate::provider::TurnOutcomeKind::AnsweredInTurn)
+                .cloned()
+                .unwrap_or_else(crate::provider::TurnOutcome::completed),
+            "cancelled" => failure
+                .filter(|outcome| outcome.kind == crate::provider::TurnOutcomeKind::Cancelled)
+                .cloned()
+                .unwrap_or_else(crate::provider::TurnOutcome::cancelled),
             _ => crate::provider::TurnOutcome::settled(
                 crate::git_observer::CompletedTurnSettlementStatus::Failed,
                 failure.cloned(),
@@ -1234,10 +1363,17 @@ fn run_operational_history_writer(
     receiver: Receiver<OperationalHistoryWriteRequest>,
     health: Arc<OperationalHistoryWriterHealth>,
     projector: Arc<public_history::ProjectorSlot>,
+    committed_revision: Arc<AtomicU64>,
 ) {
     while let Ok(first) = receiver.recv() {
         let batch = collect_ready_history_batch(first, || receiver.try_recv().ok());
-        commit_operational_history_batch(&mut connection, batch, &health, &projector);
+        commit_operational_history_batch(
+            &mut connection,
+            batch,
+            &health,
+            &projector,
+            &committed_revision,
+        );
     }
 }
 
@@ -1260,6 +1396,7 @@ fn commit_operational_history_batch(
     batch: Vec<OperationalHistoryWriteRequest>,
     health: &OperationalHistoryWriterHealth,
     projector: &public_history::ProjectorSlot,
+    committed_revision: &AtomicU64,
 ) {
     let transaction = match connection.transaction() {
         Ok(transaction) => transaction,
@@ -1333,6 +1470,10 @@ fn commit_operational_history_batch(
             health
                 .max_batch_records
                 .fetch_max(batch_records, Ordering::AcqRel);
+            // Before the ACKs: a writer that saw its append committed reads the new revision.
+            if batch_records > 0 {
+                committed_revision.fetch_add(1, Ordering::AcqRel);
+            }
             for request in batch {
                 let _ = request.response.send(Ok(()));
             }
@@ -1466,17 +1607,23 @@ CREATE TABLE IF NOT EXISTS history_agent_handoff_briefs (
     PRIMARY KEY (session_id, agent_id)
 ) WITHOUT ROWID;
 
-CREATE TABLE IF NOT EXISTS history_agent_compaction_boundaries (
+CREATE TABLE IF NOT EXISTS history_agent_compaction_observations (
+    session_id TEXT NOT NULL,
+    agent_id TEXT NOT NULL,
+    provider_family TEXT NOT NULL,
+    account_profile TEXT NOT NULL,
+    provider_session_id TEXT NOT NULL,
+    provider_turn_id TEXT NOT NULL,
+    PRIMARY KEY (session_id, agent_id, provider_family, account_profile, provider_session_id, provider_turn_id)
+) WITHOUT ROWID;
+
+CREATE TABLE IF NOT EXISTS history_agent_compaction_reloads (
     session_id TEXT NOT NULL,
     agent_id TEXT NOT NULL,
     revision INTEGER NOT NULL,
-    delivered_revision INTEGER NOT NULL,
-    provider_family TEXT NOT NULL,
-    source_provider TEXT NOT NULL,
-    source_model TEXT NOT NULL,
-    account_profile TEXT NOT NULL,
-    provider_session_id TEXT,
-    PRIMARY KEY (session_id, agent_id)
+    skill_id TEXT NOT NULL,
+    digest TEXT NOT NULL,
+    PRIMARY KEY (session_id, agent_id, revision, skill_id, digest)
 ) WITHOUT ROWID;
 "#;
 

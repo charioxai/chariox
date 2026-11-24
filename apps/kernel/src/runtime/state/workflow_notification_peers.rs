@@ -27,7 +27,7 @@ impl KernelRuntimeState {
         Ok(())
     }
 
-    fn ensure_notification_home_role(&self) -> Result<(), DaemonError> {
+    pub(super) fn ensure_notification_home_role(&self) -> Result<(), DaemonError> {
         let config = self.owned.config_projection.snapshot();
         if config.kernel_runtime_role != crate::config::KernelRuntimeRole::General
             || config.daemon_id.starts_with("slice:")
@@ -511,6 +511,28 @@ impl KernelRuntimeState {
                             })
                             .filter(|s| self.owned.notification_grant_live(s))
                             .ok_or_else(|| store::error("notification not attached"))?;
+                        if sub.target_kind == WorkflowNotificationTargetKind::OutsideAgent {
+                            let (_, kernels) =
+                                self.owned.notification_inventory_projection.snapshot();
+                            let machine = kernels
+                                .iter()
+                                .find(|peer| peer.kernel_id == kernel)
+                                .map_or_else(|| kernel.to_owned(), |peer| peer.machine_id.clone());
+                            return self.owned.with_live_notification_grant(&sub, |_| {
+                                match self.owned.notify_traced(
+                                    NotificationOperation::DeliverPeerToGrantInbox {
+                                        subscription: sub.clone(),
+                                        envelope,
+                                        machine,
+                                    },
+                                )? {
+                                    NotificationOutcome::Ack(ack) => {
+                                        Ok(RelayPeerResponse::WorkflowNotificationAccepted { ack })
+                                    }
+                                    _ => Err(store::error("notification admission failed")),
+                                }
+                            });
+                        }
                         if sub.target_kind == WorkflowNotificationTargetKind::Agent {
                             if !sessions.get_session(&sub.session_id).is_ok_and(|session| {
                                 self.owned.agent_notification_target_live(&session, &sub)
@@ -532,12 +554,10 @@ impl KernelRuntimeState {
                                 return Err(store::error("notification target changed"));
                             }
                         }
-                        match self.owned.durable_state_store.notify(
-                            NotificationOperation::Accept {
-                                subscription: sub,
-                                envelope,
-                            },
-                        )? {
+                        match self.owned.notify_traced(NotificationOperation::Accept {
+                            subscription: sub,
+                            envelope,
+                        })? {
                             NotificationOutcome::Ack(ack) => {
                                 Ok(RelayPeerResponse::WorkflowNotificationAccepted { ack })
                             }
@@ -707,7 +727,7 @@ mod tests {
         runtime
             .owned
             .notification_inventory_projection
-            .update(vec![], vec![presence]);
+            .update(Default::default(), vec![presence]);
     }
 
     fn peer(
@@ -727,7 +747,7 @@ mod tests {
         config.user_config_path = f.root.join("runtime/config.toml");
         config = config.with_session_history_root(f.root.join("history"));
         config.user_config.history.operational.path =
-            Some(f.root.join("operational.db").display().to_string());
+            Some(f.root.join("runtime/operational.db").display().to_string());
         config.user_config.artifacts.operational.root =
             Some(f.root.join("artifacts").display().to_string());
         config.user_config.artifacts.operational.index_path =

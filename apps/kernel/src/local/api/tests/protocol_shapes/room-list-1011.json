@@ -1,6 +1,7 @@
 {
-  "local": 1011,
-  "relayPeer": 448,
+  "local": 1014,
+  "relayPeer": 451,
+  "retired_session_field": "max_agents",
   "requests": [
     { "GetRoomListSnapshot": null },
     { "ListRoomListSessions": { "inventory_version": "inventory-1", "cursor": null, "limit": 100 } }

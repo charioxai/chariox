@@ -132,15 +132,15 @@ async fn mcp_tools_list_exposes_slice_tools_only_for_slice_provider_tokens() {
     assert!(tools
         .iter()
         .any(|tool| tool["name"] == "chariox.slice_screenshot"));
-    assert!(tools.iter().any(|tool| tool["name"] == "slice_screenshot"));
+    assert!(!tools.iter().any(|tool| tool["name"] == "slice_screenshot"));
     assert!(tools
         .iter()
         .any(|tool| tool["name"] == "chariox.slice_find_text"));
-    assert!(tools.iter().any(|tool| tool["name"] == "slice_mouse"));
+    assert!(!tools.iter().any(|tool| tool["name"] == "slice_mouse"));
     assert!(tools
         .iter()
         .any(|tool| tool["name"] == "chariox.slice_clipboard_write"));
-    assert!(tools
+    assert!(!tools
         .iter()
         .any(|tool| tool["name"] == "slice_clipboard_write"));
     assert!(!tools.iter().any(|tool| {
@@ -151,19 +151,19 @@ async fn mcp_tools_list_exposes_slice_tools_only_for_slice_provider_tokens() {
     assert!(tools
         .iter()
         .any(|tool| tool["name"] == "chariox.slice_browser_status"));
-    assert!(tools
+    assert!(!tools
         .iter()
         .any(|tool| tool["name"] == "slice_browser_status"));
     assert!(tools
         .iter()
         .any(|tool| tool["name"] == "chariox.slice_browser_wait_for_text"));
-    assert!(tools
+    assert!(!tools
         .iter()
         .any(|tool| tool["name"] == "slice_browser_wait_for_idle"));
     assert!(tools
         .iter()
         .any(|tool| tool["name"] == "chariox.slice_browser_dialog"));
-    assert!(tools
+    assert!(!tools
         .iter()
         .any(|tool| tool["name"] == "slice_browser_dialog"));
     for name in [
@@ -180,9 +180,11 @@ async fn mcp_tools_list_exposes_slice_tools_only_for_slice_provider_tokens() {
         "chariox.slice_browser_permission",
         "slice_browser_permission",
     ] {
-        assert!(
+        // #1565 lists each runtime tool once, by its canonical name; the bare alias still dispatches.
+        assert_eq!(
             tools.iter().any(|tool| tool["name"] == name),
-            "missing MCP browser tool {name}"
+            name.starts_with("chariox."),
+            "MCP browser tool {name}: only the canonical name is listed"
         );
     }
 }

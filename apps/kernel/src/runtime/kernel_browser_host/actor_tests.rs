@@ -187,26 +187,19 @@ done
 }
 
 #[test]
-fn human_takeover_cancels_the_running_controller_and_fences_the_focused_agent() {
-    check_running_cancellation(false, false);
+fn human_takeover_cancels_the_running_controller_and_fences_the_agent() {
+    check_running_cancellation(false);
 }
 #[test]
-fn mdaccess_revoke_cancels_inflight_controller_input_immediately() {
-    check_running_cancellation(true, false);
+fn revoking_an_agent_cancels_inflight_controller_input_immediately() {
+    check_running_cancellation(true);
 }
-#[test]
-fn mdaccess_focus_switch_preserves_running_input() {
-    check_running_cancellation(false, true);
-}
-fn check_running_cancellation(revoke: bool, focus_change: bool) {
+fn check_running_cancellation(revoke: bool) {
     let root = std::env::temp_dir().join(format!(
         "chariox-md3-takeover-{:032x}",
         rand::random::<u128>()
     ));
     std::fs::create_dir(&root).unwrap();
-    if focus_change {
-        std::fs::write(root.join("focus-retention"), "owned").unwrap();
-    }
     let script = root.join("controller.sh");
     std::fs::write(&script, r#"set -eu
 root=$1
@@ -217,11 +210,7 @@ while IFS= read -r request; do
     *'"method":"host.revoke_subscriptions"'*) printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
   *'"method":"host.protect"'*) printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
     *'"op":"state"'*) printf '{"id":%s,"ok":true,"result":{"generation":1,"tabs":[{"tab_id":"host-tab-a","document_id":"d"}]}}\n' "$id" ;;
-    *'"op":"input"'*) pending=$id; printf 'started\n' > "$root/started"
-      if [ -f "$root/focus-retention" ]; then
-        while [ ! -f "$root/release" ]; do sleep 0.01; done
-        printf '{"id":%s,"ok":true,"result":{}}\n' "$id"
-      fi ;;
+    *'"op":"input"'*) pending=$id; printf 'started\n' > "$root/started" ;;
     *'"method":"browser.cancel"'*)
       printf 'cancelled\n' > "$root/cancelled"
       printf '{"id":%s,"ok":true,"result":{"accepted":true}}\n' "$id"
@@ -242,8 +231,11 @@ done
         .unwrap()
         .browsers
         .insert("alice".into(), Arc::new(Mutex::new(backend)));
-    host.set_focus("alice", Some("agent"));
-    host.load("alice", "agent").unwrap();
+    host.load_for(
+        "alice",
+        "agent",
+        crate::runtime::kernel_browser_host::KernelBrowserCapability::Browser,
+    );
     host.backend("alice")
         .unwrap()
         .lock()
@@ -270,15 +262,6 @@ done
         assert!(root.join("started").exists());
         if revoke {
             host.revoke_agent("agent");
-        } else if focus_change {
-            host.set_focus("alice", Some("second"));
-            assert!(host.has_grant("alice", "agent"));
-            assert!(!host
-                .admit("alice", "agent")
-                .unwrap()
-                .cancellation
-                .requested());
-            std::fs::write(root.join("release"), "release").unwrap();
         } else {
             let takeover = host
                 .request_takeover(
@@ -301,33 +284,21 @@ done
                 )
                 .is_err());
         }
-        let result = running.join().unwrap();
-        if focus_change {
-            result.unwrap();
-        } else {
-            let error = result.unwrap_err();
-            if revoke {
-                assert!(matches!(
-                    error,
-                    crate::error::HostFailure::Refused(
-                        crate::error::UserDomainRefusalReason::NotGranted
-                    )
-                ));
-            } else {
-                assert!(
-                    matches!(error, crate::error::HostFailure::Other(message) if message.contains("browser_action_cancelled"))
-                );
-            }
+        let error = running.join().unwrap().unwrap_err();
+        assert!(matches!(error, crate::error::HostFailure::Other(_)));
+        if !revoke {
+            assert!(
+                matches!(error, crate::error::HostFailure::Other(message) if message.contains("browser_action_cancelled"))
+            );
         }
     });
-    assert_eq!(root.join("cancelled").exists(), !focus_change);
+    assert!(root.join("cancelled").exists());
     if revoke {
-        assert!(!host.has_grant("alice", "agent"));
         assert!(host.actor_snapshot("alice").unwrap()["actors"]
             .as_array()
             .unwrap()
             .is_empty());
-    } else if !focus_change {
+    } else {
         let admission = host.admit("alice", "agent").unwrap();
         assert!(matches!(
             host.protected_request_admitted(
@@ -362,8 +333,11 @@ fn retired_agents_reclaim_actor_slots_beyond_the_presence_limit() {
     let host = KernelBrowserHost::new(std::env::temp_dir().join("MD-3-retired-actors"));
     for i in 0..80 {
         let agent = format!("retired-{i}");
-        host.set_focus("alice", Some(&agent));
-        host.load("alice", &agent).unwrap();
+        host.load_for(
+            "alice",
+            &agent,
+            crate::runtime::kernel_browser_host::KernelBrowserCapability::Browser,
+        );
         let model = host.actor_model("alice").unwrap();
         let (action, _) = model
             .lock()
@@ -382,7 +356,6 @@ fn retired_agents_reclaim_actor_slots_beyond_the_presence_limit() {
             .unwrap()
             .finish(&action, EnvironmentActionTerminal::Completed);
         // Retire a non-focused agent too: focus alone keeps the prior grant.
-        host.set_focus("alice", None);
         host.revoke_agent(&agent);
         assert!(
             host.actor_snapshot("alice").unwrap()["actors"]
@@ -517,35 +490,28 @@ done
 }
 
 #[test]
-fn mdaccess_revoke_releases_grant_lock_before_waiting_for_actor() {
-    let host = KernelBrowserHost::new(std::env::temp_dir().join("mdaccess-lock-order"));
-    host.set_focus("alice", Some("agent"));
-    let epoch = host
-        .inner
-        .lock()
-        .unwrap()
-        .access
-        .grant("alice", "agent")
-        .unwrap()
-        .epoch
-        .clone();
+fn revoking_an_agent_releases_the_host_lock_before_waiting_for_the_actor_model() {
+    let host = KernelBrowserHost::new(std::env::temp_dir().join("revoke-lock-order"));
+    let admission = host.admit("alice", "agent").unwrap();
     let model = host.actor_model("alice").unwrap();
     let actor_guard = model.lock().unwrap();
     let revoker = host.clone();
     let revoke = std::thread::spawn(move || revoker.revoke_agent("agent"));
     let deadline = std::time::Instant::now() + Duration::from_secs(2);
-    while !epoch.requested() && std::time::Instant::now() < deadline {
+    while !admission.cancellation.requested() && std::time::Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(1));
     }
     let reader = host.clone();
     let (sender, receiver) = std::sync::mpsc::channel();
-    let authority = std::thread::spawn(move || sender.send(reader.has_grant("alice", "agent")));
+    let reading = admission.clone();
+    let authority =
+        std::thread::spawn(move || sender.send(reader.check_admission(Some(&reading)).is_err()));
     let result = receiver.recv_timeout(Duration::from_secs(2));
     drop(actor_guard); // Also lets a broken implementation terminate cleanly.
     revoke.join().unwrap();
     authority.join().unwrap().unwrap();
     assert!(
-        !result.unwrap(),
+        result.unwrap(),
         "MP-11: revoke must not deadlock authority callbacks"
     );
 }
@@ -571,15 +537,12 @@ done
 "#).unwrap();
     let host = KernelBrowserHost::new(root.clone());
     host.install_fixture_backend("owner", &script, &root);
-    host.set_focus("owner", Some("first"));
-    host.load("owner", "first").unwrap();
+    host.load_for(
+        "owner",
+        "first",
+        crate::runtime::kernel_browser_host::KernelBrowserCapability::Browser,
+    );
     let admission = host.admit("owner", "first").unwrap();
-    host.claim_resource(
-        Some(&admission),
-        UserDomainResource::BrowserTab { tab_id: "a".into() },
-        false,
-    )
-    .unwrap();
     let policy = json!({"values":[],"targets":[],"unknown":false});
     host.backend("owner")
         .unwrap()
@@ -602,7 +565,6 @@ done
         1,
     )
     .unwrap();
-    host.set_focus("owner", Some("second"));
     let scoped = host
         .protected_request_admitted(
             "owner",
@@ -612,8 +574,8 @@ done
             policy,
         )
         .unwrap();
-    assert_eq!(scoped["tabs"].as_array().unwrap().len(), 1);
-    assert_eq!(scoped["tabs"][0]["tab_id"], "a");
+    // Every agent lists every tab, however focus moved.
+    assert_eq!(scoped["tabs"].as_array().unwrap().len(), 2);
     assert!(host.actor_snapshot("owner").unwrap()["input_ownership"]
         .to_string()
         .contains("b"));
@@ -626,12 +588,14 @@ done
 }
 
 #[test]
-fn mdaccess_focus_change_keeps_inflight_grant_authority_until_revoke() {
+fn a_revoke_cancels_the_admission() {
     let host = KernelBrowserHost::new(PathBuf::from("/tmp/mdaccess-authority"));
-    host.set_focus("owner", Some("first"));
-    host.load("owner", "first").unwrap();
+    host.load_for(
+        "owner",
+        "first",
+        crate::runtime::kernel_browser_host::KernelBrowserCapability::Browser,
+    );
     let admission = host.admit("owner", "first").unwrap();
-    host.set_focus("owner", Some("second"));
     assert!(!admission.cancellation.requested());
     host.check_admission(Some(&admission)).unwrap();
     host.revoke_agent("first");
@@ -639,7 +603,7 @@ fn mdaccess_focus_change_keeps_inflight_grant_authority_until_revoke() {
     assert!(host
         .check_admission(Some(&admission))
         .unwrap_err()
-        .contains("not_granted"));
+        .contains("run ended"));
 }
 
 #[test]
@@ -663,8 +627,11 @@ done
 "#).unwrap();
     let host = KernelBrowserHost::new(root.clone());
     host.install_fixture_backend("owner", &script, &root);
-    host.set_focus("owner", Some("first"));
-    host.load("owner", "first").unwrap();
+    host.load_for(
+        "owner",
+        "first",
+        crate::runtime::kernel_browser_host::KernelBrowserCapability::Browser,
+    );
     let admission = host.admit("owner", "first").unwrap();
     let epoch = admission.cancellation.clone();
     let caller = host.clone();
@@ -702,25 +669,19 @@ done
     assert!(immediate, "MP-11: startup I/O blocked grant revocation");
     assert!(matches!(
         outcome.unwrap_err(),
-        crate::error::HostFailure::Refused(crate::error::UserDomainRefusalReason::NotGranted)
+        crate::error::HostFailure::Other(_)
     ));
 }
 
 #[test]
-fn mdaccess_retained_browser_scope_allows_input_but_no_new_resources_or_vault() {
+fn mdaccess_unfocused_agent_scope_allows_input_new_tabs_stop_and_vault() {
     let host = KernelBrowserHost::new(PathBuf::from("/tmp/mdaccess-scope"));
-    host.set_focus("owner", Some("first"));
-    host.load("owner", "first").unwrap();
+    host.load_for(
+        "owner",
+        "first",
+        crate::runtime::kernel_browser_host::KernelBrowserCapability::Browser,
+    );
     let admission = host.admit("owner", "first").unwrap();
-    host.claim_resource(
-        Some(&admission),
-        UserDomainResource::BrowserTab {
-            tab_id: "tab".into(),
-        },
-        false,
-    )
-    .unwrap();
-    host.set_focus("owner", Some("second"));
     for input in [
         json!({"kind":"key","key":"Tab"}),
         json!({"kind":"key","key":"Delete"}),
@@ -729,238 +690,41 @@ fn mdaccess_retained_browser_scope_allows_input_but_no_new_resources_or_vault() 
     ] {
         host.scope_browser_request(
             Some(&admission),
-            "host.browser",
             &json!({"op":"input","tab_id":"tab","input":input}),
         )
         .unwrap();
     }
     for op in ["state", "start", "navigate", "close"] {
-        host.scope_browser_request(
-            Some(&admission),
-            "host.browser",
-            &json!({"op":op,"tab_id":"tab"}),
-        )
-        .unwrap();
+        host.scope_browser_request(Some(&admission), &json!({"op":op,"tab_id":"tab"}))
+            .unwrap();
     }
-    // MP-08/MP-11 SB-02: Stop is global even with a scoped tab parameter.
-    assert!(host
-        .scope_browser_request(
-            Some(&admission),
-            "host.browser",
-            &json!({"op":"stop","tab_id":"tab"})
-        )
-        .unwrap_err()
-        .contains("not_focused_agent"));
-    assert!(host
-        .scope_browser_request(
-            Some(&admission),
-            "host.browser",
-            &json!({"op":"snapshot","tab_id":"new"})
-        )
-        .unwrap_err()
-        .contains("not_focused_agent"));
+    // Every agent has the kernel browser: stop and the owner's other tabs need no focus.
+    host.scope_browser_request(Some(&admission), &json!({"op":"stop","tab_id":"tab"}))
+        .unwrap();
+    host.scope_browser_request(Some(&admission), &json!({"op":"snapshot","tab_id":"new"}))
+        .unwrap();
     // A Vault fill needs the grant and the tab, not focus.
     assert!(host
-        .scope_browser_request(Some(&admission), "host.secret", &json!({"tab_id":"tab"}))
+        .scope_browser_request(Some(&admission), &json!({"tab_id":"tab"}))
         .is_ok());
     host.revoke_agent("first");
     assert!(host
         .check_admission(Some(&admission))
         .unwrap_err()
-        .contains("not_granted"));
-}
-
-#[test]
-fn mp11_global_stop_requires_focus_even_with_retained_tabs() {
-    for owns_tab in [false, true] {
-        let root = std::env::temp_dir().join(format!(
-            "chariox-mp11-stop-scope-{:032x}",
-            rand::random::<u128>()
-        ));
-        std::fs::create_dir(&root).unwrap();
-        let script = root.join("controller.sh");
-        // A real stdio controller lifetime. Browser resources are fixture IDs;
-        // this tests kernel admission/shutdown, not Chromium/client acceptance.
-        std::fs::write(
-            &script,
-            r#"set -eu
-while IFS= read -r request; do
-  id=${request#*:}; id=${id%%,*}
-  case "$request" in
-    *'"method":"health"'*) result=$(printf '{"state":"ready","process_id":%s}' "$$") ;;
-    *'"method":"shutdown"'*) printf '{"id":%s,"ok":true,"result":{}}\n' "$id"; exit 0 ;;
-    *) result='{}' ;;
-  esac
-  printf '{"id":%s,"ok":true,"result":%s}\n' "$id" "$result"
-done
-"#,
-        )
-        .unwrap();
-        let host = KernelBrowserHost::new(root.clone());
-        let backend = BrowserControllerProcessStdioBackend::new(
-            "/bin/sh",
-            vec![script.display().to_string()],
-            Duration::from_secs(2),
-        )
-        .for_host();
-        host.inner
-            .lock()
-            .unwrap()
-            .browsers
-            .insert("owner".into(), Arc::new(Mutex::new(backend)));
-        host.backend("owner")
-            .unwrap()
-            .lock()
-            .unwrap()
-            .start()
-            .unwrap();
-        host.set_focus("owner", Some("first"));
-        host.load("owner", "first").unwrap();
-        let first = host.admit("owner", "first").unwrap();
-        if owns_tab {
-            host.claim_resource(
-                Some(&first),
-                UserDomainResource::BrowserTab {
-                    tab_id: "first-tab".into(),
-                },
-                false,
-            )
-            .unwrap();
-        }
-        host.set_focus("owner", Some("second"));
-        host.load("owner", "second").unwrap();
-        let second = host.admit("owner", "second").unwrap();
-        host.claim_resource(
-            Some(&second),
-            UserDomainResource::BrowserTab {
-                tab_id: "second-tab".into(),
-            },
-            false,
-        )
-        .unwrap();
-        let mut refusals = Vec::new();
-        // Exercise the actual tabless Stop path, and reject tab_id smuggling.
-        for params in [
-            json!({"op":"stop"}),
-            json!({"op":"stop","tab_id":"first-tab"}),
-        ] {
-            refusals.push(host.protected_request_admitted(
-                "owner",
-                Some(&first),
-                "host.browser",
-                params,
-                json!({"values":[],"targets":[],"unknown":false}),
-            ));
-        }
-        let still_running = host
-            .backend("owner")
-            .unwrap()
-            .lock()
-            .unwrap()
-            .health()
-            .unwrap()
-            .state
-            == BrowserControllerProcessState::Ready;
-        let second_can_stop =
-            host.scope_browser_request(Some(&second), "host.browser", &json!({"op":"stop"}));
-        let owner_can_stop =
-            host.scope_browser_request(None, "host.browser", &json!({"op":"stop"}));
-        let first_retained = host.has_grant("owner", "first");
-        host.shutdown().unwrap();
-        std::fs::remove_dir_all(root).unwrap();
-        for result in refusals {
-            assert!(
-                matches!(
-                    result,
-                    Err(crate::error::HostFailure::Refused(
-                        crate::error::UserDomainRefusalReason::NotFocusedAgent
-                    ))
-                ),
-                "MP-11: retained global Stop was admitted: {result:?}"
-            );
-        }
-        assert!(
-            still_running,
-            "MP-11: retained Stop shut down the shared controller"
-        );
-        second_can_stop.unwrap();
-        owner_can_stop.unwrap();
-        assert!(first_retained);
-    }
-}
-
-#[test]
-fn mdaccess_idle_lapse_refuses_retained_keys_text_clicks_and_note_commits() {
-    let host = KernelBrowserHost::new(PathBuf::from("/tmp/mdaccess-idle-input"));
-    host.set_focus("owner", Some("first"));
-    host.load("owner", "first").unwrap();
-    let admission = host.admit("owner", "first").unwrap();
-    host.claim_resource(
-        Some(&admission),
-        UserDomainResource::BrowserTab {
-            tab_id: "tab".into(),
-        },
-        false,
-    )
-    .unwrap();
-    host.set_focus("owner", Some("second"));
-    let now = Instant::now();
-    host.inner.lock().unwrap().access.bind(
-        "owner",
-        "first",
-        "session",
-        true,
-        (now, 0),
-        Duration::from_secs(1),
-    );
-    host.inner.lock().unwrap().access.bind(
-        "owner",
-        "first",
-        "session",
-        false,
-        (now, 0),
-        Duration::from_secs(1),
-    );
-    assert!(host.inner.lock().unwrap().access.bind(
-        "owner",
-        "first",
-        "session",
-        false,
-        (now + Duration::from_secs(1), 1000),
-        Duration::from_secs(1)
-    ));
-    for input in [
-        json!({"kind":"key","key":"Delete"}),
-        json!({"kind":"text","text":"expired"}),
-        json!({"kind":"click","x":1,"y":2}),
-    ] {
-        let error = host
-            .protected_request_admitted(
-                "owner",
-                Some(&admission),
-                "host.browser",
-                json!({"op":"input","tab_id":"tab","input":input}),
-                Value::Null,
-            )
-            .unwrap_err();
-        assert!(matches!(
-            error,
-            crate::error::HostFailure::Refused(crate::error::UserDomainRefusalReason::NotGranted)
-        ));
-    }
+        .contains("run ended"));
 }
 
 // MP-08/MP-11: deterministic post-controller/pre-registration revoke/refocus race.
 #[test]
-fn mdaccess_revoked_open_cannot_populate_refocused_grant() {
+fn a_revoked_open_returns_nothing() {
     check_result_epoch_race("open", true);
 }
 #[test]
-fn mdaccess_revoked_snapshot_cannot_return_after_refocus() {
+fn a_revoked_snapshot_returns_nothing() {
     check_result_epoch_race("snapshot", true);
 }
 #[test]
-fn mdaccess_result_rechecks_provider_run_authority_before_return() {
+fn a_result_rechecks_provider_run_authority_before_return() {
     check_result_epoch_race("snapshot", false);
 }
 fn check_result_epoch_race(op: &str, refocus: bool) {
@@ -994,8 +758,11 @@ done
         .unwrap()
         .browsers
         .insert("owner".into(), Arc::new(Mutex::new(backend)));
-    host.set_focus("owner", Some("agent"));
-    host.load("owner", "agent").unwrap();
+    host.load_for(
+        "owner",
+        "agent",
+        crate::runtime::kernel_browser_host::KernelBrowserCapability::Browser,
+    );
     host.backend("owner")
         .unwrap()
         .lock()
@@ -1012,8 +779,6 @@ done
     host.inner.lock().unwrap().after_controller_check = Some(Arc::new(move || {
         if refocus {
             caller.revoke_agent("agent");
-            caller.set_focus("owner", Some("agent"));
-            caller.load("owner", "agent").unwrap();
         } else {
             live.store(false, std::sync::atomic::Ordering::Release);
         }
@@ -1029,23 +794,10 @@ done
         params,
         json!({"values":[],"targets":[],"unknown":false}),
     );
-    let state = host.inner.lock().unwrap();
-    let grant = state.access.grant("owner", "agent").unwrap();
-    let uncontaminated = !grant.resources.contains(&UserDomainResource::BrowserTab {
-        tab_id: "late-tab".into(),
-    });
-    drop(state);
     host.shutdown().unwrap();
     std::fs::remove_dir_all(root).unwrap();
     assert!(
-        uncontaminated,
-        "MP-11: revoked result populated the fresh grant"
-    );
-    assert!(
-        matches!(
-            result.unwrap_err(),
-            crate::error::HostFailure::Refused(crate::error::UserDomainRefusalReason::NotGranted)
-        ),
+        matches!(result.unwrap_err(), crate::error::HostFailure::Other(_)),
         "MP-11: old request crossed result authority boundary"
     );
 }
@@ -1053,7 +805,7 @@ done
 #[test]
 fn authority_callback_does_not_hold_actor_lock_during_concurrent_retirement() {
     use std::sync::atomic::{AtomicBool, Ordering};
-    for retire in [false, true] {
+    for _round in 0..2 {
         for op in ["input", "stop", "takeover"] {
             let root = crate::test_support::TestWorktree::new("md-authority-lock-order");
             let script = root.path().join("controller.sh");
@@ -1071,8 +823,11 @@ done
 "#).unwrap();
             let host = KernelBrowserHost::new(root.path().to_path_buf());
             host.install_fixture_backend("alice", &script, root.path());
-            host.set_focus("alice", Some("agent"));
-            host.load("alice", "agent").unwrap();
+            host.load_for(
+                "alice",
+                "agent",
+                crate::runtime::kernel_browser_host::KernelBrowserCapability::Browser,
+            );
             let model = host.actor_model("alice").unwrap();
             model
                 .lock()
@@ -1098,7 +853,10 @@ done
                         return false;
                     }
                     // Production authority reaches this host.inner acquisition.
-                    authority_host.is_focused("alice", "agent")
+                    {
+                        let _ = authority_host.is_loaded("alice", "agent");
+                        true
+                    }
                 });
             let call = || {
                 if op == "takeover" {
@@ -1125,11 +883,7 @@ done
             std::thread::scope(|scope| {
                 let running = scope.spawn(call);
                 let retirement = scope.spawn(|| {
-                    if retire {
-                        host.revoke_agent("agent");
-                    } else {
-                        host.set_focus("alice", None);
-                    }
+                    host.revoke_agent("agent");
                 });
                 let _ = running.join().unwrap();
                 retirement.join().unwrap();
@@ -1917,6 +1671,7 @@ fn mp10_replacement_viewer_lease_recovers_takeover_until_the_person_goes_idle() 
     }
     drop(first);
     let second = host.lease_terminal("alice", "terminal:b");
+    model.lock().unwrap().viewer_shows_tab("terminal:b");
     let ownership =
         |host: &KernelBrowserHost| host.actor_snapshot("alice").unwrap()["input_ownership"].clone();
     // The replacement watches before the person reaches the idle timeout.
@@ -1949,6 +1704,7 @@ fn mp10_takeover_moves_to_the_viewer_that_stays_when_the_taking_viewer_leaves() 
     let first = host.lease_terminal("alice", "terminal:a");
     let second = host.lease_terminal("alice", "terminal:b");
     let model = host.actor_model("alice").unwrap();
+    model.lock().unwrap().viewer_shows_tab("terminal:b");
     {
         let mut model = model.lock().unwrap();
         model
@@ -2011,8 +1767,11 @@ done
 "#).unwrap();
     let host = KernelBrowserHost::new(root.clone());
     host.install_fixture_backend("alice", &script, &root);
-    host.set_focus("alice", Some("agent"));
-    host.load("alice", "agent").unwrap();
+    host.load_for(
+        "alice",
+        "agent",
+        crate::runtime::kernel_browser_host::KernelBrowserCapability::Browser,
+    );
     host.backend("alice")
         .unwrap()
         .lock()
@@ -2122,4 +1881,77 @@ done
     let (input, state) = early.expect("input and state waited behind the save");
     assert_eq!(input.unwrap()["input_completed"], true);
     assert_eq!(state.unwrap()["generation"], 1);
+}
+
+// A local terminal of the person is connected but shows no Tab: only a connection that shows the Tab holds its takeover.
+#[test]
+fn a_connection_that_shows_no_tab_never_holds_the_persons_takeover() {
+    let root = crate::test_support::TestWorktree::new("takeover-viewers-show-the-tab");
+    let script = root.path().join("controller.sh");
+    std::fs::write(&script, r#"set -eu
+root=$1
+while IFS= read -r request; do
+ id=${request#*:}; id=${id%%,*}
+ case "$request" in
+ *'"method":"health"'*) printf '{"id":%s,"ok":true,"result":{"state":"ready","process_id":%s}}\n' "$id" "$$" ;;
+ *'"method":"host.protect"'*) printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
+ *'"op":"state"'*) printf '{"id":%s,"ok":true,"result":{"generation":1,"_observation":1,"tabs":[{"tab_id":"host-tab-a","document_id":"d"}]}}\n' "$id" ;;
+ *'"op":"display_subscribe"'*) printf '{"id":%s,"ok":true,"result":{"generation":1,"subscription_id":"native-crop"}}\n' "$id" ;;
+ *'"method":"shutdown"'*) printf '{"id":%s,"ok":true,"result":{"state":"stopped","process_id":null}}\n' "$id";exit 0 ;;
+ esac
+done
+"#).unwrap();
+    let host = KernelBrowserHost::new(root.path().to_path_buf());
+    host.install_fixture_backend("alice", &script, root.path());
+    host.backend("alice")
+        .unwrap()
+        .lock()
+        .unwrap()
+        .start()
+        .unwrap();
+    let policy = json!({"values":[],"targets":[],"unknown":false});
+    let show_tab = |viewer: &str| {
+        host.protected_request(
+            "alice",
+            None,
+            "host.browser",
+            json!({"op":"display_subscribe","tab_id":"host-tab-a","generation":1,"observed_by":viewer}),
+            policy.clone(),
+        )
+        .unwrap()
+    };
+    let holder = |host: &KernelBrowserHost| {
+        host.actor_snapshot("alice").unwrap()["input_ownership"][0]["actor_id"].clone()
+    };
+    let agent = || EnvironmentActor::new("agent:a", EnvironmentActorKind::Agent, "Agent");
+    let input = json!({"op":"input","tab_id":"host-tab-a","generation":1,"input":{"kind":"text","text":"x"}});
+    let web = host.lease_terminal("alice", "terminal:web");
+    let _terminal = host.lease_terminal("alice", "terminal:local");
+    show_tab("terminal:web");
+    let model = host.actor_model("alice").unwrap();
+    model
+        .lock()
+        .unwrap()
+        .takeover(
+            EnvironmentActor::new("terminal:web", EnvironmentActorKind::Human, "Person"),
+            "host-tab-a",
+            1,
+        )
+        .unwrap();
+    drop(web);
+    assert_eq!(
+        holder(&host),
+        "terminal:web",
+        "the local terminal looks at no Tab: the takeover waits for a viewer that shows it"
+    );
+    assert!(model.lock().unwrap().begin(agent(), &input).is_err());
+    // A connection that comes up later is no viewer either; the one that shows the Tab continues the takeover.
+    let _local_again = host.lease_terminal("alice", "terminal:local-two");
+    assert_eq!(holder(&host), "terminal:web");
+    let _replacement = host.lease_terminal("alice", "terminal:web-two");
+    assert_eq!(holder(&host), "terminal:web");
+    show_tab("terminal:web-two");
+    assert_eq!(holder(&host), "terminal:web-two");
+    assert!(model.lock().unwrap().begin(agent(), &input).is_err());
+    host.shutdown().unwrap();
 }

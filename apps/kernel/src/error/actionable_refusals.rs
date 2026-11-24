@@ -1,4 +1,8 @@
 //! MP-08 / MP-10 / MP-11: constant remediations safe at every external boundary.
+pub(crate) const PROVIDER_DEV_STUB_DISABLED_CODE: &str = "provider_dev_stub_disabled";
+pub(super) const PROVIDER_DEV_STUB_DISABLED_MESSAGE: &str =
+    "dev-stub is disabled. For a private development kernel, start it with CHARIOX_PROVIDER_DEV_STUB=1.";
+
 pub(crate) fn message(code: &str) -> Option<&'static str> {
     if crate::provider_account_copy::is_public_code(code) {
         return Some(crate::provider_account_copy::failure_message(code));
@@ -9,10 +13,11 @@ pub(crate) fn message(code: &str) -> Option<&'static str> {
         "control_plane_authorization_denied" => "Reconnect the owner's signed-in client and refresh machine capabilities",
         "control_plane_binding_invalid" => "The connected service returned an invalid machine binding",
 
-        "provider_profile_unverified" => "provider profile has not been verified; run RefreshProviderAccountProfile {provider, account_profile} on the executing kernel, then retry the prompt",
-        "provider_profile_unauthenticated" => "provider profile is not authenticated; run RefreshProviderAccountProfile {provider, account_profile} on the executing kernel. If it remains unauthenticated, reconnect it in Provider Accounts before retrying",
-        "provider_profile_usage_exhausted" => "provider profile usage is exhausted; run RefreshProviderAccountProfile {provider, account_profile} to refresh usage, or select another account before starting work",
+        "provider_profile_unverified" => "provider profile has not been verified; retry the prompt, or choose Sign in for this account in Provider Accounts",
+        "provider_profile_unauthenticated" => "provider profile is not authenticated; choose Sign in for this account in Provider Accounts, then retry",
+        "provider_profile_usage_exhausted" => "provider profile usage is exhausted; select another account in Provider Accounts before starting work",
         "provider_profile_unavailable" => "provider profile is not registered for this owner on this kernel; run ListProviderAccountProfiles {provider}, then link or select a profile on the executing kernel",
+        PROVIDER_DEV_STUB_DISABLED_CODE => PROVIDER_DEV_STUB_DISABLED_MESSAGE,
         "provider_account_name_taken" => "an account with this name already exists on this kernel; choose another name or use the existing account",
         "provider_login_code_incomplete" => "the sign-in code is incomplete; paste the whole code the provider showed and submit it again",
         "provider_login_code_invalid" => "the provider rejected the sign-in code; start the sign-in again and paste the new code",
@@ -32,7 +37,7 @@ pub(crate) fn message(code: &str) -> Option<&'static str> {
         "secret_request_denied" => "the user's settings do not let agents create Vault credentials on this kernel",
         "secret_request_unknown" => "this agent has no such secret request; use the interaction_id that chariox secret request printed",
         "too_many_open_files" => "too many open files in this kernel; close a terminal and try again",
-        "agent_deadline_reached" => "agent deadline reached; this agent cannot start another turn. Start a new agent for new work",
+        super::AGENT_DEADLINE_REACHED => "This agent reached its deadline. Start a new agent for new work.",
         "agent_deadline_requires_executor" => "arm an agent deadline on its executing kernel; an agent with a deadline cannot move to a leased worker without worker enforcement",
         "agent_deadline_invalid" => "deadline must be a positive bounded epoch millisecond, or null to clear; supply deadline_ms to SetAgentDeadline",
         "agent_deadline_cleanup_pending" => "deadline reached; physical cleanup is pending and will retry. Read GetAgentDeadline for the stopping receipt",

@@ -8,6 +8,7 @@ use crate::provider::ExternalProviderImportMetadata;
 
 use super::agent_triggers::{AgentTrigger, AgentTriggers, TriggerDelivery, TriggerDeliveryState};
 use super::metaagent_task::{MetaagentTask, MetaagentTaskStatus};
+use super::project_id::ProjectId;
 #[cfg(test)]
 use super::prompt_queue::PromptSubmissionOutcome;
 use super::prompt_queue::{AgentPromptState, DurablePromptPrivateState, PromptQueueItem};
@@ -24,7 +25,7 @@ use super::session_identity::{
 use super::session_lifecycle::{
     KernelRestartReconciliation, SchedulerState, SessionExecutionMode, SessionStatus,
 };
-use super::types::{unix_epoch_ms, DEFAULT_SESSION_MAX_AGENTS};
+use super::types::unix_epoch_ms;
 use super::workflow_definition::WorkflowDefinition;
 use super::workflow_diagnostics::{WorkflowConsole, WorkflowFailureEvent, WorkflowFailureKind};
 use super::workflow_instances::{
@@ -88,8 +89,7 @@ pub(crate) struct DurableWorkflowHotState {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeSession {
     id: String,
-    #[serde(default)]
-    project_id: String,
+    project_id: ProjectId,
     alias: Option<String>,
     #[serde(default, skip_serializing_if = "crate::session::is_false")]
     pinned: bool,
@@ -119,11 +119,15 @@ pub struct RuntimeSession {
     agent_defaults: SessionAgentDefaults,
     active_provider_run_id: Option<String>,
     focused_agent_id: Option<String>,
-    max_agents: i32,
     agents: Vec<AgentInstance>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     collaboration_agent_counts: Option<SessionCollaborationAgentCounts>,
+    #[serde(skip)]
     attachment_ids: BTreeSet<String>,
+    #[serde(skip)]
+    attachment_revision: u64,
+    #[serde(default)]
+    connected_cli_count: usize,
     #[serde(flatten)]
     prompt_runtime: PromptRuntimeState,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -151,7 +155,9 @@ pub struct RuntimeSession {
     agent_output_read_state: BTreeMap<String, AgentOutputReadState>,
     config_state: SessionConfigState,
     worktree_assignments: Vec<RuntimeWorktreeAssignment>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     workflows: Vec<WorkflowDefinition>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     workflow_runs: Vec<WorkflowRun>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     workflow_runtime_instances: Vec<WorkflowEndpointRuntimeInstance>,
@@ -180,7 +186,7 @@ pub struct RuntimeSession {
     external_provider_imports: Vec<ExternalProviderImportMetadata>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     workspace_live_sync_mode: Option<crate::config::WorkspaceLiveSyncMode>,
-    /// Setup steps of a new Room, projected from the kernel's live setup store; never stored.
+    /// Setup steps of a new Room, projected from the kernel's durable setup store.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     room_setup: Option<RoomSetupState>,
 }
@@ -263,7 +269,13 @@ impl RuntimeSession {
     }
 
     pub(crate) fn durable_prompt_private_states(&self) -> Vec<DurablePromptPrivateState> {
-        self.prompt_runtime.durable_private_states(&self.id)
+        let mut states = self.prompt_runtime.durable_private_states(&self.id);
+        states.extend(
+            self.queued_metaagent_tasks
+                .iter()
+                .filter_map(|task| task.durable_skill_intent(&self.id)),
+        );
+        states
     }
 
     pub(crate) fn restore_durable_prompt_private_states(
@@ -271,12 +283,21 @@ impl RuntimeSession {
         states: &[DurablePromptPrivateState],
     ) {
         self.prompt_runtime.restore_durable_private_states(states);
+        for task in &mut self.queued_metaagent_tasks {
+            if let Some(state) = states
+                .iter()
+                .find(|state| state.session_id == self.id && state.prompt_id == task.id())
+            {
+                task.restore_skill_intent(state);
+            }
+        }
         self.prompt_runtime
             .refresh_after_focus_change(self.focused_agent_id.as_deref());
     }
 
     pub fn new(
         id: impl Into<String>,
+        project_id: ProjectId,
         alias: Option<String>,
         workspace_id: impl Into<String>,
         worktree_id: impl Into<String>,
@@ -289,7 +310,7 @@ impl RuntimeSession {
 
         Self {
             id: id.clone(),
-            project_id: String::new(),
+            project_id,
             alias,
             workspace_id: workspace_id.into(),
             worktree_id: worktree_id.clone(),
@@ -308,10 +329,11 @@ impl RuntimeSession {
             agent_defaults: SessionAgentDefaults::default(),
             active_provider_run_id: None,
             focused_agent_id: None,
-            max_agents: DEFAULT_SESSION_MAX_AGENTS,
             agents: Vec::new(),
             collaboration_agent_counts: None,
             attachment_ids: BTreeSet::new(),
+            attachment_revision: 0,
+            connected_cli_count: 0,
             prompt_runtime: PromptRuntimeState::default(),
             active_interactions: Vec::new(),
             metaagent_tasks: Vec::new(),
@@ -353,26 +375,28 @@ impl RuntimeSession {
     }
 
     pub fn project_id(&self) -> &str {
+        self.project_id.as_str()
+    }
+
+    pub fn project(&self) -> &ProjectId {
         &self.project_id
     }
 
-    pub(crate) fn assign_project_id(&mut self, project_id: impl Into<String>) -> bool {
-        if !self.project_id.is_empty() {
-            return false;
-        }
-        self.project_id = project_id.into();
-        true
+    /// A hidden backing Room adopts the Project its lease imported; a visible Room never changes Project this way.
+    pub(crate) fn join_leased_project(&mut self, project_id: ProjectId) {
+        debug_assert!(self.hidden);
+        self.project_id = project_id;
     }
 
     pub(crate) fn migrate_default_project_scope(
         &mut self,
         workspace_id: impl Into<String>,
-        project_id: impl Into<String>,
+        project_id: ProjectId,
         alias: Option<String>,
     ) {
         debug_assert!(!self.hidden);
         self.workspace_id = workspace_id.into();
-        self.project_id = project_id.into();
+        self.project_id = project_id;
         self.alias = alias;
     }
 
@@ -678,14 +702,6 @@ impl RuntimeSession {
 
     pub fn focused_agent_id(&self) -> Option<&str> {
         self.focused_agent_id.as_deref()
-    }
-
-    pub fn max_agents(&self) -> i32 {
-        self.max_agents
-    }
-
-    pub fn set_max_agents(&mut self, max_agents: i32) {
-        self.max_agents = max_agents.max(1);
     }
 
     pub fn agents(&self) -> &[AgentInstance] {
@@ -1091,16 +1107,30 @@ impl RuntimeSession {
     /// Names each agent's card by its asker as the session's agents name it now, so a client
     /// shows who asks without a lookup.
     pub(crate) fn name_interaction_askers(&mut self) {
-        let agents = &self.agents;
-        for interaction in &mut self.active_interactions {
-            let name = interaction.agent_id().and_then(|asker| {
-                agents
-                    .iter()
-                    .find(|agent| agent.id() == asker)
-                    .map(|agent| agent.alias().unwrap_or(agent.agent_ref()).to_owned())
-            });
-            interaction.set_asker_name(name);
-        }
+        self.active_interactions = self.named_active_interactions();
+    }
+
+    /// The agent's name as the session's agents name it now.
+    pub(crate) fn agent_display_name(&self, agent_id: &str) -> Option<String> {
+        self.agents
+            .iter()
+            .find(|agent| agent.id() == agent_id)
+            .map(|agent| agent.alias().unwrap_or(agent.agent_ref()).to_owned())
+    }
+
+    /// The active interactions, each named by its asker as the session's agents name it now.
+    pub(crate) fn named_active_interactions(&self) -> Vec<RuntimeInteraction> {
+        self.active_interactions
+            .iter()
+            .map(|interaction| {
+                let name = interaction
+                    .agent_id()
+                    .and_then(|asker| self.agent_display_name(asker));
+                let mut interaction = interaction.clone();
+                interaction.set_asker_name(name);
+                interaction
+            })
+            .collect()
     }
 
     /// Moves where the user sees an active interaction; the interaction itself stays one object.
@@ -1176,6 +1206,12 @@ impl RuntimeSession {
 
     pub fn workflows(&self) -> &[WorkflowDefinition] {
         &self.workflows
+    }
+
+    pub(crate) fn without_room_workflow_details(mut self) -> Self {
+        self.workflows.clear();
+        self.workflow_runs.clear();
+        self
     }
 
     pub fn workflow_runs(&self) -> &[WorkflowRun] {
@@ -1306,6 +1342,8 @@ impl RuntimeSession {
     pub fn equivalent_except_presence(&self, other: &Self) -> bool {
         let mut left = self.clone();
         left.attachment_ids = other.attachment_ids.clone();
+        left.attachment_revision = other.attachment_revision;
+        left.connected_cli_count = other.connected_cli_count;
         left.last_used_at_ms = other.last_used_at_ms;
         left == *other
     }
@@ -1314,6 +1352,8 @@ impl RuntimeSession {
         let mut left = self.clone();
         let right = other.clone();
         left.attachment_ids = right.attachment_ids.clone();
+        left.attachment_revision = right.attachment_revision;
+        left.connected_cli_count = right.connected_cli_count;
         left.alias = right.alias.clone();
         left.last_used_at_ms = right.last_used_at_ms;
         left.last_activity_at_ms = right.last_activity_at_ms;
@@ -1382,17 +1422,40 @@ impl RuntimeSession {
     }
 
     pub fn add_attachment(&mut self, attachment_id: impl Into<String>) {
-        self.attachment_ids.insert(attachment_id.into());
+        if self.attachment_ids.insert(attachment_id.into()) {
+            self.attachment_revision += 1;
+        }
+        self.connected_cli_count = self.attachment_ids.len();
     }
 
     pub fn remove_attachment(&mut self, attachment_id: &str) -> bool {
-        self.attachment_ids.remove(attachment_id)
+        let removed = self.attachment_ids.remove(attachment_id);
+        if removed {
+            self.attachment_revision += 1;
+        }
+        self.connected_cli_count = self.attachment_ids.len();
+        removed
     }
 
     pub fn clear_attachments(&mut self) -> usize {
         let removed_count = self.attachment_ids.len();
-        self.attachment_ids.clear();
+        if removed_count > 0 {
+            self.attachment_ids.clear();
+            self.attachment_revision += 1;
+        }
+        self.connected_cli_count = 0;
         removed_count
+    }
+
+    /// Attachment membership changes independently of slower Room projections.
+    pub(crate) fn preserve_newer_attachment_membership(&mut self, newer: &Self) -> bool {
+        if newer.attachment_revision <= self.attachment_revision {
+            return false;
+        }
+        self.attachment_revision = newer.attachment_revision;
+        self.attachment_ids.clone_from(&newer.attachment_ids);
+        self.last_used_at_ms = self.last_used_at_ms.max(newer.last_used_at_ms);
+        true
     }
 
     pub fn set_active_provider_run(&mut self, provider_run_id: Option<String>) {
@@ -1511,7 +1574,7 @@ impl RuntimeSession {
         if next == SessionStatus::Ended {
             self.active_provider_run_id = None;
             self.focused_agent_id = None;
-            self.attachment_ids.clear();
+            self.clear_attachments();
             self.prompt_runtime.clear();
         }
 
@@ -1525,12 +1588,12 @@ mod tests;
 impl RuntimeSession {
     pub(crate) fn for_execution_project(
         &self,
-        project_id: &str,
+        project_id: ProjectId,
         workspace: &str,
         worktree: &str,
     ) -> Self {
         let mut execution = self.clone();
-        execution.project_id = project_id.to_string();
+        execution.project_id = project_id;
         execution.workspace_id = workspace.to_string();
         execution.worktree_id = worktree.to_string();
         execution
@@ -1545,6 +1608,7 @@ mod session_activity_tests {
     fn session_activity_is_persisted_and_metadata_cannot_change_it() {
         let mut session = RuntimeSession::new(
             "session",
+            ProjectId::test(),
             None,
             "workspace",
             "worktree",

@@ -43,9 +43,9 @@ async fn leased_claude_failure_reaches_home_projection_without_terminal_polling(
     config.provider_runtime_init_delay_ms = 100;
     config.local_socket_path = root.join("kernel.sock");
     config = config.with_session_history_root(root.join("history"));
-    config.user_config.state.path = Some(root.join("state.db").display().to_string());
+    config.user_config.state.path = Some(root.join("kernel/state.db").display().to_string());
     config.user_config.history.operational.path =
-        Some(root.join("events.db").display().to_string());
+        Some(root.join("kernel/events.db").display().to_string());
     config.user_config.artifacts.operational.root =
         Some(root.join("artifacts").display().to_string());
     config.user_config.artifacts.operational.index_path =
@@ -122,7 +122,6 @@ async fn leased_claude_failure_reaches_home_projection_without_terminal_polling(
                 prompt_summary: "inspect the Room".to_string(),
             }),
             Vec::new(),
-            None,
             crate::extension::RemoteExtensionManifest::default(),
             // The isolated fake CLI still enters through the real cold-launch
             // admission path. Supply only a synthetic, profile-bound token.
@@ -135,6 +134,7 @@ async fn leased_claude_failure_reaches_home_projection_without_terminal_polling(
                     ),
                 },
             ),
+            Default::default(),
         )
         .await
         .expect("leased prompt accepted");
@@ -215,6 +215,7 @@ fn run_isolated_launch_fixture() {
         root: root.clone(),
         providers: None,
     };
+    std::fs::create_dir_all(root.join("home")).unwrap();
     let executable = root.join("claude");
     std::fs::write(&executable, r#"#!/bin/bash
 if [[ "$1" == "--version" ]]; then printf 'Claude Code 2.1.207\n'; exit 0; fi

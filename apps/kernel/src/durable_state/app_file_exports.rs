@@ -3,7 +3,7 @@
 //! The offered bytes are a copy made when the App asked. The owner may take it
 //! again until the offer expires (a failed or cancelled local save is not the
 //! end of it); then the bytes are dropped.
-use super::{DurableKernelStateStore, DurableWriterRequest};
+use super::{DurableKernelStateStore, DurableWriterRequest, FINISHED_RETENTION_MS};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::sync::mpsc;
 
@@ -11,7 +11,6 @@ use std::sync::mpsc;
 pub(crate) const OFFER_MS: u64 = 10 * 60 * 1000;
 /// Unanswered offers per installation.
 const MAX_OPEN: i64 = 4;
-const FINISHED_RETENTION_MS: u64 = 24 * 60 * 60 * 1000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct FileExport {

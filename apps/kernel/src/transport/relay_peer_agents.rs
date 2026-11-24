@@ -83,8 +83,10 @@ pub enum PeerAgentRefusal {
         permission_level: AgentPermissionLevel,
     },
     SubAgentCaller,
-    RoomFull,
     AttachmentsLocalOnly,
+    AgentDeadlineReached {
+        message: String,
+    },
 }
 
 #[cfg(test)]
@@ -158,6 +160,7 @@ mod shapes {
                 protocol_version: v,
                 request_id: "request-4".into(),
                 sender: a,
+                sender_name: "Lead".into(),
                 room: "room-b".into(),
                 provider: "claude".into(),
                 account_profile: None,
@@ -237,6 +240,12 @@ mod shapes {
                 protocol_version: v,
                 refusal: PeerAgentRefusal::RoomUnavailable,
             },
+            RelayPeerResponse::PeerAgentRefused {
+                protocol_version: v,
+                refusal: PeerAgentRefusal::AgentDeadlineReached {
+                    message: "This agent’s time limit ended at 2026-11-19 17:00:00 UTC. Start a new agent for new work.".into(),
+                },
+            },
         ];
         for request in &requests {
             let wire = serde_json::to_value(request).unwrap();
@@ -260,5 +269,14 @@ mod shapes {
         }
         assert_eq!(wire["requests"], fixture["requests"]);
         assert_eq!(wire["responses"], fixture["responses"]);
+        use sha2::{Digest, Sha256};
+        let deadline = wire["responses"].as_array().unwrap().last().unwrap();
+        assert_eq!(
+            format!(
+                "{:x}",
+                Sha256::digest(serde_json::to_vec(deadline).unwrap())
+            ),
+            "f8f95c5976539ed4d027aa1e56b9a66959be0c5fc3ff7a26602302ddf95ef320"
+        );
     }
 }

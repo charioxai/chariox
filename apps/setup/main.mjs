@@ -3,14 +3,16 @@ import { createInterface } from "node:readline/promises"
 import { stdin, stdout } from "node:process"
 import { installLocal, publicUrl } from "./installer.mjs"
 import { command } from "./machine/remote.mjs"
+import { buildToolchainHelp, runBuildToolchain } from "./build-toolchain.mjs"
 
 export async function runSetup(build, argv = process.argv.slice(2)) {
+  if (argv[0] === "build-toolchain") return runBuildToolchain(argv.slice(1), build.buildToolchainLock)
   const options = { ...build, apiUrl: build.controlPlaneUrl }
   let login = false, enroll = false
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]
     if (arg === "--version") { stdout.write(`Chariox Setup ${build.version}\n`); return }
-    if (arg === "--help") { stdout.write("MP-07/MP-08/MP-11: Chariox Setup [--repair|--upgrade|--uninstall] [--enroll] [--install-only --login] [--id ID --port PORT]\n--enroll reads a single-use code from stdin or a hidden terminal prompt; codes are never accepted in argv.\n"); return }
+    if (arg === "--help") { stdout.write("MP-07/MP-08/MP-11: Chariox Setup [--repair|--upgrade|--uninstall] [--enroll] [--install-only --login] [--id ID --port PORT]\n--enroll reads a single-use code from stdin or a hidden terminal prompt; codes are never accepted in argv.\n"); stdout.write(buildToolchainHelp); return }
     if (arg === "--enroll") { enroll = true; continue }
     if (arg === "--login") { login = true; continue }
     if (arg === "--install-only") { options.installOnly = true; continue }

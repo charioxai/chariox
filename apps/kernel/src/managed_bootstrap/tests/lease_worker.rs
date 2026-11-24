@@ -82,6 +82,15 @@ async fn enrolled_lease_worker_materializes_selected_project_via_public_context_
     };
 
     init_test_repository(&source_git, "selected.txt", "selected source\n");
+    // Source that only mentions the Git LFS pointer header (as this repository's
+    // own sources do) is not an LFS pointer and must transfer.
+    fs::write(
+        source_git.join("lfs_header_mention.rs"),
+        "const HEADER: &str = \"version https://git-lfs.github.com/spec/v1\";\n",
+    )
+    .expect("header mention file should exist");
+    run_git(&source_git, &["add", "lfs_header_mention.rs"]);
+    run_git(&source_git, &["commit", "-m", "mention the LFS header"]);
     fs::create_dir_all(&source_directory).expect("selected directory should exist");
     fs::write(
         source_directory.join("supporting.txt"),
@@ -403,11 +412,16 @@ async fn enrolled_lease_worker_materializes_selected_project_via_public_context_
     let Some(Ok(target)) = launch_result else {
         panic!("worker should retain the completed launch target: {launch_result:?}");
     };
-    let crate::local::ManagedContextDevelopmentLaunchTarget::FromSource { repositories, .. } =
+    let crate::local::ManagedContextDevelopmentLaunchTarget::FromSource { projects } =
         target.development
     else {
         panic!("selected Project should produce source repositories");
     };
+    let repositories = projects
+        .into_iter()
+        .next()
+        .expect("one Project")
+        .repositories;
     assert_eq!(repositories.len(), 2);
     for repository in repositories {
         let path = std::path::PathBuf::from(repository.workspace_path);
@@ -593,13 +607,13 @@ fn isolated_worker_test_config(
     config.runtime_mcp_host = "127.0.0.1".to_string();
     config.runtime_mcp_port = websocket_port.saturating_add(1);
     config.user_config.history.operational.path =
-        Some(root.join("history.db").display().to_string());
+        Some(root.join("history/history.db").display().to_string());
     config.user_config.artifacts.operational.root =
         Some(root.join("artifacts").display().to_string());
     config.user_config.artifacts.operational.index_path =
         Some(root.join("artifacts.db").display().to_string());
     config.user_config.state.path = Some(root.join("state/state.db").display().to_string());
-    config.user_config.credential_vault.path = root.join("vault.json").display().to_string();
+    config.user_config.credential_vault.path = root.join("vault/vault.json").display().to_string();
     config
 }
 
@@ -655,6 +669,8 @@ fn test_cloud_profile(
         machine_credential: Some(machine_credential.to_string()),
         cloud_session_token: None,
         cloud_session_expires_at_ms: None,
+        kernel_unlinked: false,
+        kernel_removal_pending: false,
         token_expires_at_ms: None,
     }
 }

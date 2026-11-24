@@ -127,12 +127,14 @@ public enum LocalDaemonResponse: Equatable, Sendable, Decodable {
     case providerLoginStarted(ProviderLoginStart)
     case providerLoggedOut(String)
     case mcpServersListed([CharioxMcpServerConfig])
-    case skillsListed([CharioxSkillMetadata])
-    case promptSubmitted(RuntimeSession)
+    case runtimeCapabilities([String])
+    case projectCreated(SkillsV2JSON)
+    case skillsV2(SkillsV2Response)
+    case promptSubmitted(sessionID: String)
     case promptCancelled
     case nothingToStop
     case agentTaskUpdated(taskID: String)
-    case interactionResponded(interactionID: String, session: RuntimeSession)
+    case interactionResponded(interactionID: String, choiceID: String)
     case workspaceLiveSyncStatus(WorkspaceLiveSyncStatus)
     case workspaceLinkAttached(session: RuntimeSession)
     case workspaceLiveSyncModeUpdated(session: RuntimeSession)
@@ -208,14 +210,24 @@ public enum LocalDaemonResponse: Equatable, Sendable, Decodable {
             self = .mcpServersListed(payload.mcps)
             return
         }
-        if let key = container.allKeys.first(where: { $0.stringValue == "SkillsListed" }) {
-            let payload = try container.decode(SkillsListedPayload.self, forKey: key)
-            self = .skillsListed(payload.skills)
+        if let key = container.allKeys.first(where: { $0.stringValue == "ProjectCreated" }) {
+            let payload = try container.decode(SkillsV2ProjectCreatedResponse.Payload.self, forKey: key)
+            self = .projectCreated(payload.project)
+            return
+        }
+        if let key = container.allKeys.first(where: { $0.stringValue == "SkillsV2" }) {
+            let payload = try container.decode(SkillsV2Payload.self, forKey: key)
+            self = .skillsV2(payload.result)
+            return
+        }
+        if let key = container.allKeys.first(where: { $0.stringValue == "RelayStatus" }) {
+            let payload = try container.decode(RuntimeCapabilitiesPayload.self, forKey: key)
+            self = .runtimeCapabilities(payload.status.capabilities ?? [])
             return
         }
         if let key = container.allKeys.first(where: { $0.stringValue == "PromptSubmitted" }) {
             let payload = try container.decode(PromptSubmittedPayload.self, forKey: key)
-            self = .promptSubmitted(payload.session)
+            self = .promptSubmitted(sessionID: payload.sessionID)
             return
         }
         if container.allKeys.contains(where: { $0.stringValue == "PromptCancelled" }) {
@@ -233,7 +245,7 @@ public enum LocalDaemonResponse: Equatable, Sendable, Decodable {
         }
         if let key = container.allKeys.first(where: { $0.stringValue == "InteractionResponded" }) {
             let payload = try container.decode(InteractionRespondedPayload.self, forKey: key)
-            self = .interactionResponded(interactionID: payload.interactionID, session: payload.session)
+            self = .interactionResponded(interactionID: payload.interactionID, choiceID: payload.choiceID)
             return
         }
         if let key = container.allKeys.first(where: { $0.stringValue == "WorkspaceLiveSyncStatus" }) {
@@ -462,12 +474,19 @@ private struct McpServersListedPayload: Decodable, Equatable, Sendable {
     let mcps: [CharioxMcpServerConfig]
 }
 
-private struct SkillsListedPayload: Decodable, Equatable, Sendable {
-    let skills: [CharioxSkillMetadata]
+private struct RuntimeCapabilitiesPayload: Decodable, Equatable, Sendable {
+    struct Status: Decodable, Equatable, Sendable {
+        let capabilities: [String]?
+    }
+    let status: Status
 }
 
 private struct PromptSubmittedPayload: Decodable, Equatable, Sendable {
-    let session: RuntimeSession
+    let sessionID: String
+
+    enum CodingKeys: String, CodingKey {
+        case sessionID = "session_id"
+    }
 }
 
 private struct AgentTaskUpdatedPayload: Decodable, Equatable, Sendable {
@@ -484,11 +503,11 @@ private struct AgentTaskUpdatedPayload: Decodable, Equatable, Sendable {
 
 private struct InteractionRespondedPayload: Decodable, Equatable, Sendable {
     let interactionID: String
-    let session: RuntimeSession
+    let choiceID: String
 
     enum CodingKeys: String, CodingKey {
         case interactionID = "interaction_id"
-        case session
+        case choiceID = "choice_id"
     }
 }
 
@@ -518,3 +537,5 @@ struct DynamicCodingKey: CodingKey {
         self.intValue = intValue
     }
 }
+
+private struct SkillsV2Payload: Decodable { let result: SkillsV2Response }

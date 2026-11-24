@@ -203,7 +203,16 @@ pub(super) async fn handle_relay_subscribe(
         )
         .await;
     }
-    if subscription_scope.as_deref() == Some(super::room_terminal_stream::ROOM_TERMINAL_SCOPE) {
+    let terminal_scope = match subscription_scope.as_deref() {
+        Some(super::room_terminal_stream::ROOM_TERMINAL_SCOPE) => Some(
+            crate::room_terminal::TerminalScope::room(session_id.clone()),
+        ),
+        Some(super::room_terminal_stream::KERNEL_TERMINAL_SCOPE) => {
+            Some(crate::room_terminal::TerminalScope::Kernel)
+        }
+        _ => None,
+    };
+    if let Some(scope) = terminal_scope {
         return super::room_terminal_stream::handle_subscribe(
             router,
             outgoing_tx,
@@ -211,7 +220,7 @@ pub(super) async fn handle_relay_subscribe(
             super::room_terminal_stream::RoomTerminalSubscription {
                 request_id: relay_request_id,
                 relay_id: relay_subscription_id,
-                session_id,
+                scope,
                 address: attachment_id,
                 identity: caller_identity,
                 public_key: client_public_key,
@@ -414,10 +423,7 @@ pub(super) async fn handle_relay_subscribe(
             &session_id,
             &attachment_id,
             resume_from_event_id,
-            !matches!(
-                subscription_scope.as_deref(),
-                Some("session_metadata" | "session_metadata_processes")
-            ),
+            !matches!(subscription_scope.as_deref(), Some("session_metadata")),
         )
         .await
         {
@@ -571,6 +577,8 @@ pub(super) async fn run_relay_subscription_loop(
         PasskeyPromptFeed::new(subscriber.connection_class, &subscriber.user_id);
     let mut previous_catalog_revision = None;
     let mut previous_snapshot: Option<SessionSnapshotProjection> = None;
+    // Reconnect rebuilds this disposable journal cursor.
+    let mut skill_cursor = crate::skill::watch::SkillWatchCursor::default();
     let mut last_workflow_design_sequence = 0_u64;
     let mut last_snapshot_projection_sequence: Option<u64> = None;
     let mut next_snapshot_reconciliation_at = Instant::now();
@@ -626,6 +634,7 @@ pub(super) async fn run_relay_subscription_loop(
         let session_projection_change_sequence =
             router.session_projection_session_change_sequence(&session_id);
         let workflow_design_change_sequence = router.workflow_design_change_sequence();
+        let skill_change_sequence = router.room_list_change_sequence();
         let now = Instant::now();
         let should_check_snapshot = previous_snapshot.is_none()
             || last_snapshot_projection_sequence != Some(session_projection_change_sequence)
@@ -713,10 +722,43 @@ pub(super) async fn run_relay_subscription_loop(
                 {
                     agent_turns.mark_changed(agent_id);
                 }
-                if !matches!(
-                    subscription_scope.as_deref(),
-                    Some("session_metadata" | "session_metadata_processes")
-                ) && !records.is_empty()
+                // The ordinary watch has admitted the live attachment. Project
+                // and user membership are rechecked inside the scoped read.
+                match router
+                    .runtime_state()
+                    .skill_subscription_events(&session_id, &attachment_id, skill_cursor.clone())
+                    .await
+                {
+                    Ok((next, changes)) => {
+                        for change in changes {
+                            if emit_relay_event(
+                                &router,
+                                &outgoing_tx,
+                                &subscription_id,
+                                &client_public_key,
+                                &event_runtime,
+                                &event_stream_id,
+                                KernelEvent::SkillsChanged {
+                                    session_id: session_id.clone(),
+                                    change,
+                                },
+                            )
+                            .await
+                            .is_err()
+                            {
+                                return;
+                            }
+                        }
+                        skill_cursor = next;
+                    }
+                    Err(error) => crate::logging::warn_with_fields(
+                        "skills.v2.watch",
+                        "Skills event projection requires retry",
+                        serde_json::json!({"session_id": session_id, "error": error.to_string()}),
+                    ),
+                }
+                if !matches!(subscription_scope.as_deref(), Some("session_metadata"))
+                    && !records.is_empty()
                 {
                     let mut terminal_output_failed = false;
                     for records in terminal_output_event_batches(records) {
@@ -811,7 +853,7 @@ pub(super) async fn run_relay_subscription_loop(
                         &event_stream_id,
                         KernelEvent::WorkflowRunUpdated {
                             session_id: session_id.clone(),
-                            workflow_run,
+                            workflow_run: Box::new(workflow_run),
                         },
                     )
                     .await
@@ -957,6 +999,7 @@ pub(super) async fn run_relay_subscription_loop(
                         workflow_design_change_sequence
                     ) => {}
                     _ = router.wait_for_client_catalog_change_after(client_catalog_sequence) => {}
+                    _ = router.wait_for_room_list_change_after(skill_change_sequence) => {}
                     _ = passkey_prompts.changed(&router) => {}
                     _ = home_audit.changed() => {}
                 }
@@ -1008,11 +1051,7 @@ async fn record_relay_subscription_attachment_heartbeat(
     phase: &str,
 ) {
     if let Err(error) = router
-        .record_subscription_attachment_heartbeat(
-            session_id,
-            attachment_id,
-            crate::session::unix_epoch_ms(),
-        )
+        .renew_terminal_attachment_lease(session_id, attachment_id, crate::session::unix_epoch_ms())
         .await
     {
         crate::logging::warn_with_fields(
@@ -1201,9 +1240,9 @@ async fn run_relay_room_list_subscription_loop(
             );
         }
         if tick.is_multiple_of(RELAY_REMOTE_MACHINE_DISCOVERY_INTERVAL_TICKS) {
-            let machines = router.relay_remote_machines_snapshot(&subscriber.caller);
-            if previous_remote_machines.as_ref() != Some(&machines) {
-                previous_remote_machines = Some(machines.clone());
+            let inventory = router.relay_remote_machines_snapshot(&subscriber.caller);
+            if previous_remote_machines.as_ref() != Some(&inventory) {
+                previous_remote_machines = Some(inventory.clone());
                 if emit_relay_event(
                     &router,
                     &outgoing_tx,
@@ -1211,7 +1250,11 @@ async fn run_relay_room_list_subscription_loop(
                     &client_public_key,
                     &event_runtime,
                     ROOM_LIST_SUBSCRIPTION_SCOPE,
-                    KernelEvent::RemoteMachinesChanged { machines },
+                    KernelEvent::RemoteMachinesChanged {
+                        machines: inventory.machines,
+                        offline_machines: inventory.offline_machines,
+                        directory: inventory.directory,
+                    },
                 )
                 .await
                 .is_err()

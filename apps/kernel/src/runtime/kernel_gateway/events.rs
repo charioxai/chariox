@@ -74,14 +74,46 @@ impl KernelGateway {
         let store = self.runtime_state.outside_store();
         let owner = self.runtime_state.event_source_owner(id);
         let response = match request {
+            LocalDaemonRequest::ListNotificationSources(_)
+                if self.runtime_state.access_grant_summary(id).is_some() =>
+            {
+                let owner = owner.as_deref().ok_or_else(|| {
+                    crate::durable_state::agent_lifecycle::outside::refused(
+                        "grant revoked or expired",
+                    )
+                })?;
+                let sources = self
+                    .runtime_state
+                    .list_outside_notification_sources(owner)
+                    .await?;
+                if self.runtime_state.access_grant_summary(id).is_none() {
+                    return Err(crate::durable_state::agent_lifecycle::outside::refused(
+                        "grant revoked or expired",
+                    ));
+                }
+                LocalDaemonResponse::NotificationSources { sources }
+            }
             LocalDaemonRequest::SubscribeEvents(request) => {
-                let follows = request.targets.len() + request.sources.len();
+                let taken_over;
+                let requested = match &request.like {
+                    Some(like) => {
+                        if !request.targets.is_empty() || !request.sources.is_empty() {
+                            return Err(crate::durable_state::agent_lifecycle::outside::refused(
+                                "--like takes an earlier grant id and no other target",
+                            ));
+                        }
+                        taken_over = self.runtime_state.takeover_targets(id, like)?;
+                        &taken_over
+                    }
+                    None => &request.targets,
+                };
+                let follows = requested.len() + request.sources.len();
                 if follows == 0 || follows > 1024 {
                     return Err(crate::durable_state::agent_lifecycle::outside::refused(
                         "follow 1–1024 event targets and sources",
                     ));
                 }
-                let targets = self.event_targets(origin, &request.targets).await?;
+                let targets = self.event_targets(origin, requested).await?;
                 if !request.sources.is_empty() && owner.is_none() {
                     return Err(crate::durable_state::agent_lifecycle::outside::refused(
                         "grant revoked or expired",
@@ -114,9 +146,10 @@ impl KernelGateway {
                 self.runtime_state
                     .subscribe_outside_part(id, true, targets.clone())?;
                 if let Some(owner) = owner.as_deref().filter(|_| !request.sources.is_empty()) {
-                    if let Err(error) =
-                        self.runtime_state
-                            .follow_notification_sources(id, owner, &request.sources)
+                    if let Err(error) = self
+                        .runtime_state
+                        .install_outside_notification_follows(id, owner, &added.sources)
+                        .await
                     {
                         self.withdraw(origin, &added)?;
                         return Err(error);
@@ -147,6 +180,7 @@ impl KernelGateway {
                                 &LocalDaemonRequest::SubscribeEvents(SubscribeEventsRequest {
                                     targets,
                                     sources: Vec::new(),
+                                    like: None,
                                 }),
                                 REQUEST_DEADLINE,
                             )
@@ -195,12 +229,19 @@ impl KernelGateway {
             }
             LocalDaemonRequest::WaitEvents(request) => {
                 self.runtime_state
+                    .refuse_when_following_nothing(id, request.since)?;
+                self.runtime_state
                     .outside_wait(id, request, Some(id), lifetime)
                     .await?
             }
-            _ => self
-                .runtime_state
-                .outside_part_request(id, true, owner.as_deref(), request)?,
+            _ => {
+                if let LocalDaemonRequest::ListEvents(list) = request {
+                    self.runtime_state
+                        .refuse_when_following_nothing(id, list.since)?;
+                }
+                self.runtime_state
+                    .outside_part_request(id, true, owner.as_deref(), request)?
+            }
         };
         if let LocalDaemonResponse::EventSubscription { mut subscription } = response {
             let health = self

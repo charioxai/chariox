@@ -275,21 +275,10 @@ fn completed_kernel_calls(
     run: Option<&str>,
 ) -> (Vec<serde_json::Value>, usize) {
     use crate::history::SessionHistoryEntryKind as Kind;
-    let key = format!("prompt:{prompt}");
-    let Some(start) = entries.iter().position(|entry| {
-        entry.kind == Kind::UserPrompt && entry.merge_key.as_deref() == Some(&key)
-    }) else {
-        return (Vec::new(), 0);
-    };
     let mut seen = std::collections::HashSet::new();
     let mut calls = std::collections::VecDeque::new();
     let mut omitted = 0;
-    for entry in entries.iter().skip(start + 1).take_while(|entry| {
-        entry.kind != Kind::UserPrompt
-            || entry.merge_key.as_deref().is_some_and(|key| {
-                key.starts_with(crate::history::STEERING_PROMPT_MERGE_KEY_PREFIX)
-            })
-    }) {
+    for entry in super::agent_task_projection::prompt_turn_entries(entries, prompt) {
         if entry.kind != Kind::ProviderTool
             || entry.is_external_provider_observed()
             || run.is_none()

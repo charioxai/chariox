@@ -1,4 +1,4 @@
-mod tool_errors;
+use crate::error::runtime_tool as tool_errors;
 use std::convert::Infallible;
 use std::sync::Arc;
 
@@ -75,29 +75,28 @@ pub(crate) async fn run_mcp_http_server_on_listener(
     // Dropping/aborting this server closes notification streams as well as the
     // listener; streams never retain a strong CommandRouter indefinitely.
     let (_lifetime, shutdown) = tokio::sync::watch::channel(());
-    let mut catalogs = catalog::CatalogMonitor::new(&router);
+    let catalogs = Arc::new(catalog::CatalogMonitor::new());
+    let watching = Arc::clone(&catalogs).watch(Arc::clone(&router));
+    tokio::pin!(watching);
     let health = router.transport_health_store();
     loop {
-        let admission =
-            super::listener_admission::accept_with_backoff(&listener, &health, "runtime mcp");
-        tokio::pin!(admission);
-        // Catalog refreshes must not reset an in-progress admission backoff.
-        let (stream, _) = loop {
-            tokio::select! {
-                accepted = &mut admission => break accepted,
-                _ = catalogs.changed() => { catalogs.refresh(&router); },
-            }
+        // Accepting never waits for catalog work: a provider that cannot
+        // connect within its own timeout starts its turn without tools.
+        let (stream, _) = tokio::select! {
+            accepted = super::listener_admission::accept_with_backoff(&listener, &health, "runtime mcp") => accepted,
+            never = &mut watching => match never {},
         };
-        catalogs.observe_running(&router);
         let router = Arc::clone(&router);
+        let catalogs = Arc::clone(&catalogs);
         let shutdown = shutdown.clone();
         tokio::spawn(async move {
             let io = TokioIo::new(stream);
             let mut stopped = shutdown.clone();
             let service = service_fn(move |request| {
                 let router = Arc::clone(&router);
+                let catalogs = Arc::clone(&catalogs);
                 let shutdown = shutdown.clone();
-                async move { handle_http_request(router, request, shutdown).await }
+                async move { handle_http_request(router, catalogs, request, shutdown).await }
             });
             let connection = http1::Builder::new().serve_connection(io, service);
             tokio::pin!(connection);
@@ -114,10 +113,11 @@ pub(crate) async fn run_mcp_http_server_on_listener(
 
 async fn handle_http_request(
     router: Arc<CommandRouter>,
+    catalogs: Arc<catalog::CatalogMonitor>,
     request: Request<Incoming>,
     shutdown: tokio::sync::watch::Receiver<()>,
 ) -> Result<Response<HttpBody>, Infallible> {
-    let response = match handle_http_request_inner(router, request, shutdown).await {
+    let response = match handle_http_request_inner(router, catalogs, request, shutdown).await {
         Ok(response) => response,
         Err(error) => text_response(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -129,6 +129,7 @@ async fn handle_http_request(
 
 async fn handle_http_request_inner(
     router: Arc<CommandRouter>,
+    catalogs: Arc<catalog::CatalogMonitor>,
     request: Request<Incoming>,
     shutdown: tokio::sync::watch::Receiver<()>,
 ) -> Result<Response<HttpBody>, DaemonError> {
@@ -180,13 +181,20 @@ async fn handle_http_request_inner(
             "not found".to_string(),
         ));
     }
-
     match *request.method() {
-        Method::GET => Ok(catalog_notification_stream(
-            router,
-            request.headers(),
-            shutdown,
-        )),
+        Method::GET => {
+            // Only notification streams need a catalog baseline. The provider
+            // must be able to initialize while a catalog worker is busy.
+            if let Some(token) = parse_bearer_token(request.headers()) {
+                catalogs.seed(&router, &token).await;
+            }
+            Ok(catalog_notification_stream(
+                router,
+                &catalogs,
+                request.headers(),
+                shutdown,
+            ))
+        }
         Method::POST => handle_json_rpc_request(router, request).await,
         Method::DELETE => Ok(empty_response(StatusCode::METHOD_NOT_ALLOWED)),
         _ => Ok(empty_response(StatusCode::METHOD_NOT_ALLOWED)),
@@ -196,11 +204,12 @@ async fn handle_http_request_inner(
 /// One authenticated GET stream carries both invalidation sources. The
 /// run-scoped stream admits the connection (run identity, stream capacity,
 /// server shutdown) and signals runtime catalog refreshes; the registry stream
-/// compares this token's catalog after grant and registration changes. Both
+/// forwards the catalog monitor's changes to this token's listing. Both
 /// open with an immediate frame, delivered together, and the merged stream
 /// closes with the run-scoped one.
 fn catalog_notification_stream(
     router: Arc<CommandRouter>,
+    catalogs: &catalog::CatalogMonitor,
     headers: &hyper::HeaderMap,
     shutdown: tokio::sync::watch::Receiver<()>,
 ) -> Response<HttpBody> {
@@ -210,7 +219,7 @@ fn catalog_notification_stream(
     if scoped.status() != StatusCode::OK {
         return scoped;
     }
-    let registry = catalog::stream_response(router, headers);
+    let registry = catalog::stream_response(catalogs, headers);
     if registry.status() != StatusCode::OK {
         return scoped;
     }
@@ -219,9 +228,13 @@ fn catalog_notification_stream(
     let registry = http_body_util::BodyStream::new(registry.into_body());
     let body = stream::once(async move {
         let ((scoped_opening, scoped), (registry_opening, registry)) =
-            futures_util::future::join(scoped.into_future(), registry.into_future()).await;
+            futures_util::future::join(scoped.into_future(), registry.fuse().into_future()).await;
+        let scoped_opening = scoped_opening?;
         let mut opening = bytes::BytesMut::new();
-        for frame in [scoped_opening, registry_opening].into_iter().flatten() {
+        for frame in [Some(scoped_opening), registry_opening]
+            .into_iter()
+            .flatten()
+        {
             if let Ok(Ok(data)) = frame.map(hyper::body::Frame::into_data) {
                 opening.extend_from_slice(&data);
             }
@@ -232,8 +245,11 @@ fn catalog_notification_stream(
         )
         .take_while(|frame| std::future::ready(frame.is_some()))
         .filter_map(std::future::ready);
-        stream::once(async move { Ok(hyper::body::Frame::data(opening.freeze())) }).chain(rest)
+        Some(
+            stream::once(async move { Ok(hyper::body::Frame::data(opening.freeze())) }).chain(rest),
+        )
     })
+    .filter_map(std::future::ready)
     .flatten();
     Response::from_parts(parts, http_body_util::StreamBody::new(body).boxed_unsync())
 }
@@ -412,11 +428,7 @@ async fn handle_json_rpc_value(
                 .runtime_tool_specs_for_auth_token_async(auth_token.to_owned())
                 .await?;
             let claude_loading = tool_loading::ClaudeLoading::for_run(&router, auth_token);
-            let tools = if claude_loading.is_some() {
-                tool_loading::without_alias_twins(tools)
-            } else {
-                tools
-            };
+            let tools = tool_loading::without_alias_twins(tools);
             // An invalidation during discovery cannot be acknowledged by an
             // older list. Record only successful discovery for the same run.
             if let Some((run_id, revision)) = captured {
@@ -492,7 +504,7 @@ async fn handle_json_rpc_value(
                 .get("arguments")
                 .cloned()
                 .unwrap_or_else(|| serde_json::json!({}));
-            let previous_catalog = catalog::snapshot(&router, auth_token);
+            let previous_catalog = catalog::listing(&router, auth_token).await;
             let result = router
                 .dispatch_authenticated_runtime_tool_call(auth_token, tool_name, arguments)
                 .await;
@@ -500,10 +512,18 @@ async fn handle_json_rpc_value(
                 // Claude Code's `--permission-prompt-tool` contract: the result
                 // is exactly one text block holding the JSON-stringified
                 // decision. No `structuredContent`: Claude Code may forward
-                // that in place of the text block.
+                // that in place of the text block. Skill instruction bodies
+                // and discovery use one text block: exporting both forms can
+                // duplicate instruction bodies or the bounded metadata page
+                // in a provider's context (MP-08 / MP-10 / MP-11).
                 Ok(result)
                     if result.ok
-                        && tool_name == crate::transport::runtime_tools::PERMISSION_PROMPT_TOOL =>
+                        && (tool_name
+                            == crate::transport::runtime_tools::PERMISSION_PROMPT_TOOL
+                            || crate::transport::runtime_tools::canonical_skill_tool_name(
+                                tool_name,
+                            )
+                            .is_some()) =>
                 {
                     Ok(json_response(
                         StatusCode::OK,
@@ -520,10 +540,25 @@ async fn handle_json_rpc_value(
                     ))
                 }
                 Ok(result) => {
+                    let first_keys: &[&str] = if tool_name.ends_with("wakes")
+                        && crate::transport::runtime_tools::canonical_agent_event_tool_name(
+                            tool_name,
+                        ) == Some("chariox.events.wakes")
+                    {
+                        &["scheduler", "now_ms"]
+                    } else if crate::transport::runtime_tools::canonical_agent_messaging_tool_name(
+                        tool_name,
+                    ) == Some(crate::transport::runtime_tools::LIST_SESSION_AGENTS_TOOL)
+                    {
+                        &["agents", "session_id", "focused_agent_id"]
+                    } else {
+                        &[]
+                    };
                     let (content, structured_content) =
-                        tool_content::runtime_tool_content(result.payload);
+                        tool_content::runtime_tool_content_ordered(result.payload, first_keys);
+                    let changed = previous_catalog != catalog::listing(&router, auth_token).await;
                     Ok(catalog::tool_response(
-                        previous_catalog != catalog::snapshot(&router, auth_token),
+                        changed,
                         serde_json::json!({
                             "jsonrpc": JSON_RPC_VERSION,
                             "id": id,

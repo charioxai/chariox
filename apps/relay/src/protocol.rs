@@ -2,6 +2,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::auth::{RelaySubjectKind, VerifiedRelayIdentity};
 
+/// First kernel protocol that can prove its registration identity.
+pub const MINIMUM_KERNEL_REGISTRATION_PROTOCOL: u32 = 1012;
+/// First kernel protocol that reads the registration acknowledgment.
+pub const DAEMON_REGISTERED_PROTOCOL: u32 = 1014;
+/// Close reason for a receiver whose outgoing reply queue filled.
+pub const REPLY_QUEUE_FULL_CLOSE_REASON: &str = "try again later";
+
 const TEMPORARY_PEER_DAEMON_MARKER: &str = ":peer-tmp:daemon-peer-tmp-";
 
 /// Returns the stable kernel daemon id for either a kernel registration or a
@@ -113,6 +120,10 @@ pub struct DaemonRegistration {
     pub leased_agent_count: u32,
     #[serde(default)]
     pub local_session_count: u32,
+    /// The kernel's local protocol version. The relay refuses an absent or
+    /// unsupported version before requiring the rest of the envelope.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_protocol: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -125,6 +136,19 @@ pub struct RelayMachinePresence {
     pub available_providers: Vec<String>,
     #[serde(default)]
     pub provider_accounts: Vec<RelayProviderAccountSummary>,
+    /// Kernels on this machine whose registration the relay could not read because they are
+    /// older than it. The relay carries no traffic for them; clients show them as Update needed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub update_needed_kernels: Vec<RelayUpdateNeededKernel>,
+}
+
+/// A kernel the relay refused for its age, with the protocol it reported (none when it predates
+/// the field).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelayUpdateNeededKernel {
+    pub kernel_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_protocol: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -150,6 +174,9 @@ pub struct RelayKernelPresence {
     #[serde(default)]
     pub local_session_count: u32,
     pub public_key: String,
+    /// Copied from the kernel's own registration; clients compare it with what they need.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_protocol: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -256,7 +283,11 @@ pub struct InitialDisplayResumeRegistration {
 pub enum RelayEnvelope {
     DaemonRegister {
         registration: DaemonRegistration,
+        /// The kernel identity key's signature over this connection's challenge
+        /// (`registration_proof`).
+        proof: String,
     },
+    DaemonRegistered,
     DaemonHeartbeat {
         daemon_id: String,
         #[serde(default)]
@@ -488,12 +519,25 @@ mod tests {
                 accepting_remote_leases: false,
                 leased_agent_count: 0,
                 local_session_count: 1,
+                local_protocol: None,
             },
+            proof: "proof".to_string(),
         };
         let json = serde_json::to_string(&envelope).expect("envelope should serialize");
         assert!(json.contains("\"kind\":\"daemon_register\""));
+        assert!(json.contains("\"proof\":\"proof\""));
         assert!(json.contains("\"daemon_id\":\"daemon-1\""));
         assert!(json.contains("\"public_key\":\"public-key\""));
+    }
+
+    #[test]
+    fn daemon_registered_wire_shape_is_stable() {
+        let wire = serde_json::to_string(&RelayEnvelope::DaemonRegistered).unwrap();
+        assert_eq!(wire, r#"{"kind":"daemon_registered"}"#);
+        assert_eq!(
+            serde_json::from_str::<RelayEnvelope>(&wire).unwrap(),
+            RelayEnvelope::DaemonRegistered
+        );
     }
 
     #[test]

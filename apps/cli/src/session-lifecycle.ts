@@ -343,7 +343,7 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
     })
     deps.setAttachmentState(null)
     deps.setProviderRunState(null)
-    deps.setSessionState({ ...pending.session, ...session, active_prompt: null, queued_prompts: [], attachment_ids: [] })
+    deps.setSessionState({ ...pending.session, ...session, active_prompt: null, queued_prompts: [], connected_cli_count: 0 })
     deps.clearTranscript()
     deps.clearAgentPaneRuntime()
     deps.setAgentPaneEntries({})

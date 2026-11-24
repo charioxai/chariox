@@ -66,8 +66,15 @@ mod tests {
     #[test]
     fn local_steer_hold_excludes_idle_queue_promotion() {
         let owner = PromptStateOwner::default();
-        let session =
-            RuntimeSession::new("room", None, "workspace", "worktree", "machine", "kernel");
+        let session = RuntimeSession::new(
+            "room",
+            crate::session::ProjectId::test(),
+            None,
+            "workspace",
+            "worktree",
+            "machine",
+            "kernel",
+        );
         let mut prompt = PromptQueueItem::new(
             "held",
             "client",
@@ -93,17 +100,26 @@ mod tests {
         let owner = PromptStateOwner::default();
         let setup = crate::session::RoomSetupStore::default();
         owner.set_room_setup(setup.clone());
-        let session =
-            RuntimeSession::new("room", None, "workspace", "worktree", "machine", "kernel");
-        setup.begin(
+        let session = RuntimeSession::new(
             "room",
-            "agent",
-            &RoomSetupRequest {
-                git_init: true,
-                new_worktree: true,
-                publish: false,
-            },
+            crate::session::ProjectId::test(),
+            None,
+            "workspace",
+            "worktree",
+            "machine",
+            "kernel",
         );
+        setup
+            .begin(
+                "room",
+                "agent",
+                &RoomSetupRequest {
+                    git_init: true,
+                    new_worktree: true,
+                    publish: false,
+                },
+            )
+            .unwrap();
         let outcome = owner
             .submit_prepared_prompt(
                 &session,
@@ -116,15 +132,19 @@ mod tests {
             .try_claim_idle_queue_promotion(&session, "agent")
             .is_none());
 
-        setup.finish("room", RoomSetupStepId::GitInit, Ok(()));
-        setup.finish("room", RoomSetupStepId::Worktree, Err("no commits".into()));
+        setup
+            .finish("room", RoomSetupStepId::GitInit, Ok(()))
+            .unwrap();
+        setup
+            .finish("room", RoomSetupStepId::Worktree, Err("no commits".into()))
+            .unwrap();
         assert!(
             owner
                 .try_claim_idle_queue_promotion(&session, "agent")
                 .is_none(),
             "a failed worktree holds prompts until it is dismissed"
         );
-        assert!(setup.dismiss("room"));
+        assert!(setup.dismiss("room").unwrap());
         assert!(owner
             .try_claim_idle_queue_promotion(&session, "agent")
             .is_some());
@@ -133,8 +153,15 @@ mod tests {
     #[test]
     fn idle_promotion_claim_deduplicates_preparation_and_releases_for_retry() {
         let owner = PromptStateOwner::default();
-        let session =
-            RuntimeSession::new("room", None, "workspace", "worktree", "machine", "kernel");
+        let session = RuntimeSession::new(
+            "room",
+            crate::session::ProjectId::test(),
+            None,
+            "workspace",
+            "worktree",
+            "machine",
+            "kernel",
+        );
         assert!(owner
             .try_claim_idle_queue_promotion(&session, "agent")
             .is_none());

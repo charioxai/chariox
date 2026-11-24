@@ -25,17 +25,30 @@ impl KernelRuntimeState {
                 agent,
             )
             .await?;
-        if let crate::local::LocalDaemonResponse::WorkflowCodeArtifactCreated { artifact } =
-            &response
-        {
-            self.persist_metaagent_workflow_code_event(
-                "metaagent.workflow_code.created",
-                session,
-                agent,
-                serde_json::json!({ "artifact": &artifact.metadata }),
-            );
-        }
-        runtime_tool_result_from_local_response(response)
+        let crate::local::LocalDaemonResponse::WorkflowCodeArtifactCreated { artifact } = response
+        else {
+            return Err(DaemonError::LocalTransport {
+                operation: "meta.workflow_code.create",
+                message: "workflow-code create returned an unexpected response".to_string(),
+            });
+        };
+        let metadata = &artifact.metadata;
+        self.persist_metaagent_workflow_code_event(
+            "metaagent.workflow_code.created",
+            session,
+            agent,
+            serde_json::json!({ "artifact": metadata }),
+        );
+        Ok(RuntimeToolResult {
+            ok: true,
+            payload: serde_json::json!({
+                "WorkflowCodeArtifactCreated": { "artifact": { "metadata": {
+                    "name": metadata.name,
+                    "source_sha256": metadata.source_sha256,
+                    "validation": { "ok": metadata.validation.ok },
+                } } }
+            }),
+        })
     }
 
     pub(super) async fn meta_workflow_code_read(
@@ -575,6 +588,7 @@ impl KernelRuntimeState {
                             definition,
                             validation,
                             logs: String::new(),
+                            source_sha256: artifact.metadata.source_sha256,
                             source_spans: std::collections::BTreeMap::new(),
                         },
                     })
@@ -754,7 +768,10 @@ impl KernelRuntimeState {
                 &run_result.apply.apply,
             );
         }
-        runtime_tool_result_from_local_response(response)
+        Ok(RuntimeToolResult {
+            ok: true,
+            payload: workflow_code_run_reply(run_result),
+        })
     }
 
     #[allow(
@@ -926,6 +943,45 @@ fn meta_workflow_code_artifact(
             operation: "meta.workflow_code",
             message: format!("workflow-code artifact `{name}` is not saved"),
         })
+}
+
+fn workflow_code_run_reply(
+    result: &crate::workflow_code::WorkflowCodeRunResult,
+) -> serde_json::Value {
+    use crate::workflow_code::WorkflowCodeRunInvocation;
+    let invocation = match &result.invocation {
+        WorkflowCodeRunInvocation::EntryAccepted { entry } => serde_json::json!({
+            "kind": "entry_accepted",
+            "entry_id": entry.entry_id,
+            "binding_id": entry.binding_id,
+        }),
+        WorkflowCodeRunInvocation::Started {
+            workflow_run,
+            endpoint,
+            ..
+        } => serde_json::json!({
+            "kind": "started",
+            "workflow_run_id": workflow_run.id(),
+            "endpoint_id": endpoint.id(),
+        }),
+        WorkflowCodeRunInvocation::Enqueued {
+            queued_prompt,
+            endpoint,
+            ..
+        } => serde_json::json!({
+            "kind": "enqueued",
+            "queued_prompt_id": queued_prompt.id(),
+            "queue_id": queued_prompt.queue_id(),
+            "endpoint_id": endpoint.id(),
+        }),
+    };
+    serde_json::json!({
+        "WorkflowCodeRun": { "result": {
+            "source_sha256": result.apply.compile.source_sha256,
+            "workflow_id": result.apply.apply.workflow_id,
+            "invocation": invocation,
+        } }
+    })
 }
 
 fn meta_workflow_code_run_audit_payload(

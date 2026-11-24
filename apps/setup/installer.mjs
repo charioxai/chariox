@@ -4,42 +4,18 @@ import { spawn } from "node:child_process"
 import { copyFile, lstat, mkdir, mkdtemp, readFile, readlink, realpath, rename, rm, symlink, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import { runMachine, command, regular, tree, validateRequest } from "./machine/remote.mjs"
+import { download, publicUrl } from "./download.mjs"
+import { prepareProviders } from "./providers.mjs"
 import { launchdDefinition, launchdManager } from "./launchd.mjs"
 import { publicKeyFromHex, verifyBundle } from "../../scripts/release-bundle.mjs"
+
+export { publicUrl } from "./download.mjs"
 
 const fail = message => { throw new Error(message) }
 export function targetPlatform(os = process.platform, arch = process.arch) {
   const value = `${os}-${arch}`
   if (!["linux-x64", "darwin-arm64"].includes(value)) fail("supported Setup targets are Linux x86_64 and macOS arm64")
   return value
-}
-export function publicUrl(value, allowPublicAssetQuery = false) {
-  const url = new URL(value)
-  if (url.username || url.password || (url.search && !allowPublicAssetQuery) || url.hash || !(url.protocol === "https:" || (url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)))) fail("Setup requires HTTPS release/Cloud URLs (loopback allowed for tests)")
-  return value.replace(/\/$/, "")
-}
-async function download(url, path, limit) {
-  const initial = new URL(publicUrl(url))
-  let response
-  for (let redirects = 0; ; redirects++) {
-    response = await fetch(publicUrl(url, true), { redirect: "manual", signal: AbortSignal.timeout(300_000) })
-    if (![301, 302, 303, 307, 308].includes(response.status)) break
-    if (redirects >= 5 || !response.headers.get("location")) fail("release redirect refused")
-    const next = new URL(response.headers.get("location"), url).href
-    publicUrl(next, true)
-    const target = new URL(next)
-    if (initial.protocol === "https:" ? target.protocol !== "https:" : target.origin !== initial.origin) fail("release redirect transport refused")
-    await response.body?.cancel()
-    url = next
-  }
-  if (!response.ok || !response.body) fail("release download failed")
-  if (Number(response.headers.get("content-length")) > limit) fail("release download exceeded limit")
-  const { open } = await import("node:fs/promises")
-  const file = await open(path, "wx", 0o600)
-  let count = 0
-  try {
-    for await (const chunk of response.body) { count += chunk.length; if (count > limit) fail("release download exceeded limit"); await file.write(chunk) }
-  } finally { await file.close() }
 }
 const sha = bytes => createHash("sha256").update(bytes).digest("hex")
 export function bundleAdapter({ version, platform, extractorSource }) {
@@ -145,7 +121,7 @@ async function cliLink(home, root, id, remove = false) {
   }
 }
 export async function installLocal(options) {
-  const { home = process.env.HOME, version, publicKeyHex, releaseBase = "https://github.com/charioxai/chariox/releases/download", apiUrl, installId = "local", port = 55139, action = "install", ticket, userId, extractorSource, openBrowser = async () => {}, notice = message => process.stdout.write(`${message}\n`), serviceManager, servicePersistence, kernelCommand } = options
+  const { home = process.env.HOME, version, publicKeyHex, releaseBase = "https://github.com/charioxai/chariox/releases/download", apiUrl, installId = "local", port = 55139, action = "install", ticket, userId, extractorSource, openBrowser = async () => {}, notice = message => process.stdout.write(`${message}\n`), serviceManager, servicePersistence, agentConfinement, kernelCommand } = options
   if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version ?? "")) fail("a pinned release version is required")
   const platform = targetPlatform(options.platform?.split("-")[0], options.platform?.split("-")[1])
 
@@ -170,7 +146,12 @@ export async function installLocal(options) {
     } else digest = await prepareRelease({ stage, version, platform, releaseBase, publicKeyHex })
     const request = { action: action === "start" ? "repair" : action, installId, port, releaseDigest: digest }
     const adapter = bundleAdapter({ version, platform, extractorSource })
-    const deps = { home, stage, releaseAdapter: adapter, ...(platform.startsWith("darwin") ? { serviceDefinition: launchdDefinition(installId), serviceManager: serviceManager ?? launchdManager(home, installId) } : serviceManager ? { serviceManager } : {}), ...(servicePersistence ? { servicePersistence } : {}), ...(kernelCommand ? { kernelCommand } : {}) }
+    const deps = { home, stage, releaseAdapter: adapter, ...(platform.startsWith("darwin") ? { serviceDefinition: launchdDefinition(installId), serviceManager: serviceManager ?? launchdManager(home, installId) } : serviceManager ? { serviceManager } : {}), ...(servicePersistence ? { servicePersistence } : {}), ...(agentConfinement ? { agentConfinement } : {}), ...(kernelCommand ? { kernelCommand } : {}) }
+    if (platform === "linux-x64" && options.providerArtifacts && action === "install") {
+      deps.prepareServiceEnvironment = () => prepareProviders({
+        home, artifacts: options.providerArtifacts, env: options.providerEnv ?? process.env, systemBins: options.providerSystemBins, notice,
+      })
+    }
     const installed = await runMachine(request, { ...deps, enrollKernel: async () => { throw new Error("start requires enrollment") } })
     if (action === "remove") { await cliLink(home, root, installId, true); return installed }
     await cliLink(home, root, installId)

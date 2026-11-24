@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { drillDockerLabels } from "../../../scripts/lib/drill-docker-owner.mjs"
 
 import assert from "node:assert/strict"
 import { spawn } from "node:child_process"
@@ -93,7 +94,7 @@ try {
   report.keyboardSha256 = createHash("sha256").update(await readFile(path.join(path.dirname(screen), "slice-keyboard.py"))).digest("hex")
   report.imageId = (await docker(["image", "inspect", "--format", "{{.Id}}", image])).trim()
   await resources("before")
-  await docker(["run", "-d", "--rm", "--name", container, "--memory", "768m", "--memory-swap", "768m", "--cpus", "1", "--pids-limit", "256", "--network", "none", "--security-opt", `seccomp=${chromiumSeccomp}`, "--entrypoint", "/bin/sleep", image, "infinity"])
+  await docker(["run", "-d", "--rm", ...drillDockerLabels(import.meta.url), "--name", container, "--memory", "768m", "--memory-swap", "768m", "--cpus", "1", "--pids-limit", "256", "--network", "none", "--security-opt", `seccomp=${chromiumSeccomp}`, "--entrypoint", "/bin/sleep", image, "infinity"])
   await docker(["exec", "-u", "root", container, "mkdir", "-p", root])
   await docker(["cp", path.join(repo, "apps/kernel/slice-linux-docker/owned_process_signals.py"), `${container}:${root}/owned_process_signals.py`])
   await docker(["cp", screen, `${container}:${root}/slice-screen.sh`])

@@ -86,6 +86,7 @@ impl CommandRouter {
                         request.latest_prompt_count,
                     )),
                     cursor: None,
+                    after_sequence: Some(Default::default()),
                     include_prefetched_content: false,
                 }),
             )
@@ -113,6 +114,14 @@ impl CommandRouter {
                     .any(|agent| agent.id() == outline.agent_id)
             });
         }
+        // If delivery fails, the client cannot watch or detach the attachment.
+        // Start its lease before handing the reply to the transport.
+        self.renew_terminal_attachment_lease(
+            attachment.session_id(),
+            attachment.id(),
+            crate::session::unix_epoch_ms(),
+        )
+        .await?;
         Ok(LocalDaemonResponse::SessionViewAttached {
             attachment,
             state: Box::new(state),

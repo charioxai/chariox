@@ -61,6 +61,16 @@ impl<'a> KernelAgentService<'a> {
                 return Ok(None);
             };
             let target_agent_id = peeked.target_agent_id().to_string();
+            let owner = self.app.prompt_state_owner();
+            if let Some(reason) = owner.queued_provider_launch_wait(&peeked) {
+                let session = self.app.sessions.get_session(session_id)?;
+                if owner.note_provider_launch_wait(&session, &target_agent_id, peeked.id(), &reason)
+                {
+                    self.app
+                        .mirror_prompt_owner_agent_state(session_id, &target_agent_id)?;
+                }
+                return Ok(None);
+            }
             let is_workflow_prompt =
                 self.queued_prompt_is_workflow_turn(session_id, &target_agent_id, &peeked);
             let provider_run_id = match self.prepare_queued_prompt_provider_run(

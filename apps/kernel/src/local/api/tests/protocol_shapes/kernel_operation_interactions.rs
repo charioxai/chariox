@@ -50,3 +50,27 @@ fn kernel_operation_interaction_subject_is_versioned_and_uses_the_existing_reply
         "f99643ab4565e2b70faf49e82759b7558094013399f394f6aa19398db7ebba49"
     );
 }
+
+#[test]
+fn an_interaction_answer_is_acknowledged_without_the_room_state() {
+    let ack = LocalDaemonResponse::InteractionResponded {
+        interaction_id: "decision".into(),
+        choice_id: "approve".into(),
+        outcome: crate::local::InteractionOutcome::Answered,
+    };
+    let wire = serde_json::json!({"InteractionResponded":{
+        "interaction_id":"decision","choice_id":"approve","outcome":"answered",
+    }});
+    assert_eq!(serde_json::to_value(&ack).unwrap(), wire);
+    assert_eq!(
+        serde_json::from_value::<LocalDaemonResponse>(wire).unwrap(),
+        ack
+    );
+    // The reply that carried the whole session is gone: it no longer parses.
+    assert!(
+        serde_json::from_value::<LocalDaemonResponse>(serde_json::json!({
+            "InteractionResponded":{"interaction_id":"decision","session":{}}
+        }))
+        .is_err()
+    );
+}

@@ -3,6 +3,43 @@ use crate::app::DaemonApp;
 use crate::error::DaemonError;
 
 impl DaemonApp {
+    pub(crate) fn persist_cloud_relay_token(
+        &mut self,
+        profile: crate::config::PersistedCloudRelayProfile,
+        token: String,
+    ) -> Result<(), DaemonError> {
+        self.config.persist_cloud_relay_token(profile, token)?;
+        self.config_projection.update(self.config.clone());
+        Ok(())
+    }
+
+    pub(crate) fn mark_cloud_kernel_removal(
+        &mut self,
+        expected: &crate::config::PersistedCloudRelayProfile,
+        removal: crate::config::CloudKernelRemoval,
+    ) -> Result<(), DaemonError> {
+        if self
+            .config
+            .persist_cloud_kernel_removal(expected, removal)?
+        {
+            self.config_projection.update(self.config.clone());
+            let sessions = self.sessions.read().list_all_sessions();
+            for session in sessions {
+                if session.host_daemon_id() == self.config.daemon_id
+                    && session.owner_user_id() == expected.user_id
+                {
+                    self.record_notice(
+                        session.id(),
+                        None,
+                        self.attachments.list_session_attachment_ids(session.id()),
+                        crate::runtime::cloud_relay_control::cloud_kernel_removal_message(removal),
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn configure_relay(
         &mut self,
         relay_url: Option<String>,
@@ -62,6 +99,9 @@ impl DaemonApp {
                 .set_capture_enabled(self.config.user_config.history.operational.enabled);
         }
         self.config_projection.update(self.config.clone());
+        if path.starts_with("providers.") {
+            self.invalidate_provider_catalog_cache();
+        }
         Ok(())
     }
 
@@ -79,6 +119,40 @@ impl DaemonApp {
                 .set_capture_enabled(self.config.user_config.history.operational.enabled);
         }
         self.config_projection.update(self.config.clone());
+        if path.starts_with("providers.") {
+            self.invalidate_provider_catalog_cache();
+        }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_room_defaults_announce_config_changes() {
+        let mut config = crate::config::DaemonConfig::for_tests();
+        let root = crate::test_temp_dir::TestTempDir::new("new-room-defaults");
+        config.user_config_path = root.join("config.toml");
+        let mut app = DaemonApp::bootstrap(config).unwrap();
+        for (path, value) in [
+            ("providers.default", "claude"),
+            ("providers.model", "claude-haiku-5-5"),
+            ("providers.effort", "low"),
+        ] {
+            let before = app.provider_catalog_projection.change_sequence();
+            app.set_user_config_value(path, value).unwrap();
+            assert!(
+                app.provider_catalog_projection.change_sequence() > before,
+                "{path} must reach every client's launch defaults"
+            );
+            let before = app.provider_catalog_projection.change_sequence();
+            app.unset_user_config_value(path).unwrap();
+            assert!(
+                app.provider_catalog_projection.change_sequence() > before,
+                "unsetting {path} must reach every client too"
+            );
+        }
     }
 }

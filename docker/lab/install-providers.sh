@@ -10,7 +10,7 @@ fi
 
 if ! docker inspect "$worker" >/dev/null 2>&1; then
   echo "container $worker was not found; start the lab first" >&2
-  echo "  docker compose -f docker/lab/docker-compose.yml up -d relay worker-a worker-b" >&2
+  echo "  docker/lab/up.sh" >&2
   exit 1
 fi
 

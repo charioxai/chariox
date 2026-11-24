@@ -389,7 +389,11 @@ impl KernelRuntimeOwnedState {
         self.kernel_browser_host.revoke_agent(agent.id());
         let session_id = agent.session_id().to_string();
         self.cancel_owned_agent_wakes(&session_id, Some(agent_id));
-        self.announce_agent_gone(&session_id, agent_id);
+        self.announce_agent_gone(
+            &session_id,
+            agent_id,
+            super::agent_gone_announcement::AgentGone::Removed,
+        );
         let provider_run_ids = self
             .provider_store
             .list_runs()
@@ -594,7 +598,7 @@ mod tests {
 
         for agent_id in [target.id(), "nonexistent-agent"] {
             let error = runtime
-                .focus_agent(session.id(), agent_id, "non-member", false)
+                .focus_agent(session.id(), agent_id, "non-member")
                 .await
                 .expect_err("Room membership must be checked before the agent");
             assert!(
@@ -658,7 +662,7 @@ mod tests {
 
         for agent_id in [target.id(), "nonexistent-agent", archived.id()] {
             let error = runtime
-                .focus_agent(session.id(), agent_id, "room-member", false)
+                .focus_agent(session.id(), agent_id, "room-member")
                 .await
                 .expect_err("active agent Room membership must be checked before ownership");
             assert!(

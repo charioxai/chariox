@@ -14,15 +14,25 @@ impl DaemonApp {
             .unwrap_or_default()
             .into_iter()
             .map(|account| {
-                let copyable = account.provider == "claude"
-                    && account.auth_state
-                        == crate::account_profile::ProviderAccountAuthState::Authenticated
-                    && crate::provider::provider_account_credential_uses_vault(
-                        crate::session::DEFAULT_LOCAL_USER_ID,
-                        &account.provider,
-                        &account.profile_id,
-                    )
-                    .unwrap_or(false);
+                let copyable = account.auth_state
+                    == crate::account_profile::ProviderAccountAuthState::Authenticated
+                    && (account.provider == "codex"
+                        || (account.provider == "claude"
+                            && self
+                                .provider_account_profiles
+                                .credential_source_profile_id(
+                                    crate::session::DEFAULT_LOCAL_USER_ID,
+                                    &account.provider,
+                                    &account.profile_id,
+                                )
+                                .and_then(|source| {
+                                    crate::provider::provider_account_credential_uses_vault(
+                                        crate::session::DEFAULT_LOCAL_USER_ID,
+                                        &account.provider,
+                                        &source,
+                                    )
+                                })
+                                .unwrap_or(false)));
                 RelayProviderAccountSummary {
                     provider: account.provider,
                     state: serde_json::to_value(account.auth_state)
@@ -57,17 +67,16 @@ impl DaemonApp {
                 "execution_lease_management".to_string(),
             ]
             .into_iter()
-            .chain(
-                crate::local::RUNTIME_CONTROL_CAPABILITIES
-                    .iter()
-                    .map(|value| (*value).to_string()),
-            )
+            .chain(crate::runtime::state::control_capabilities(
+                &self.durable_state_store(),
+            ))
             .collect(),
             available_providers,
             provider_accounts,
             accepting_remote_leases: self.config.accept_remote_leases,
             leased_agent_count: self.leased_agents.len() as u32,
             local_session_count: self.sessions().list_sessions().len() as u32,
+            local_protocol: Some(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION),
         }
     }
 

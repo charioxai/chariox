@@ -8,12 +8,12 @@ use std::time::Instant;
 use tokio::sync::{oneshot, Notify};
 
 use super::terminal::Terminal;
-use super::types::RoomTerminalEvent;
+use super::types::{RoomTerminalEvent, TerminalScope};
 use crate::error::DaemonError;
 use crate::pty::PtyManager;
 
 pub(super) struct TerminalOwner {
-    pub session_id: String,
+    pub scope: TerminalScope,
     pub title: String,
     exited: AtomicBool,
     state: Mutex<TerminalState>,
@@ -37,7 +37,7 @@ impl TerminalOwner {
     pub fn new(terminal: Terminal, pty: PtyManager) -> Self {
         let exited = !terminal.is_running();
         Self {
-            session_id: terminal.record.session_id.clone(),
+            scope: terminal.record.scope.clone(),
             title: terminal.record.title.clone(),
             exited: AtomicBool::new(exited),
             state: Mutex::new(TerminalState {
@@ -88,7 +88,7 @@ impl TerminalOwner {
             self.exited.store(true, Ordering::Release);
             return false;
         }
-        if terminal.is_busy(&state.pty) || terminal.driver.launching(Instant::now()) {
+        if terminal.is_busy(&state.pty) || terminal.driver.has_submission() {
             return true;
         }
         let sweep = terminal.session_sweep;

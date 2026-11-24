@@ -37,6 +37,7 @@ impl KernelRuntimeOwnedState {
 
     pub(super) fn authorize_owner_card(
         &self,
+        rooms: &crate::session::SessionService,
         source: &RuntimeSession,
         caller: &AgentInstance,
         target: &RuntimeSession,
@@ -49,17 +50,22 @@ impl KernelRuntimeOwnedState {
         match super::decision_holder::user_only(pending, interaction) {
             None | Some(UserOnly::AccessGrant | UserOnly::KernelOperation)
                 if pending.passkey_prompt.is_none()
-                    && !interaction.choices().iter().any(crate::session::RuntimeInteractionChoice::requires_passkey) => {}
-            _ => return Err(denied("this card is owner-only; secrets, passkeys, payments and owner verification must be answered by the person")),
+                    && !interaction
+                        .choices()
+                        .iter()
+                        .any(crate::session::RuntimeInteractionChoice::requires_passkey) => {}
+            _ => {
+                return Err(denied(
+                    "this card is owner-only; secrets, passkeys, payments and owner verification must be answered by the person",
+                ));
+            }
         }
-        let agents = self.agent_store.get_session_agents(source.id());
-        if !self.ancestor_can_hold(source, caller, &agents) {
+        if !self.ancestor_can_hold(rooms, caller) {
             return Err(denied(
                 "your current authority requires the owner's answer to this card",
             ));
         }
-        let mine =
-            crate::session::effective_agent_execution_config_in_tree(source, caller, &agents);
+        let mine = self.decision_execution_config(rooms, source, caller);
         if let Some(subject) = interaction
             .agent_id()
             .or_else(|| interaction.related_agent_id())
@@ -69,8 +75,7 @@ impl KernelRuntimeOwnedState {
                 .iter()
                 .find(|agent| agent.id() == subject)
                 .ok_or_else(|| denied("the asking agent is unavailable"))?;
-            let theirs =
-                crate::session::effective_agent_execution_config_in_tree(target, subject, &agents);
+            let theirs = self.decision_execution_config(rooms, target, subject);
             if !mine.permission_level.permits(theirs.permission_level)
                 || !mine.mode.permits(theirs.mode)
             {
@@ -84,6 +89,71 @@ impl KernelRuntimeOwnedState {
 }
 
 impl KernelRuntimeState {
+    /// Read just enough to identify the owner's kernel decisions. The terminal still owns
+    /// presentation and answer authority, including for secrets and passkeys.
+    pub(crate) fn owner_kernel_decisions(
+        &self,
+        source: &RuntimeSession,
+        caller: &AgentInstance,
+    ) -> Result<serde_json::Value, DaemonError> {
+        if self.owned.drives_as_room_guest(source, caller) {
+            return Err(denied(
+                "a guest's agent cannot inspect the owner's kernel decisions",
+            ));
+        }
+        let now = std::time::Instant::now();
+        let now_ms = crate::session::unix_epoch_ms();
+        let mut cards = self
+            .owned
+            .pending_kernel_decisions()
+            .into_iter()
+            .filter(|(_, pending)| {
+                pending
+                    .kernel_operation_owner
+                    .as_deref()
+                    .is_some_and(|owner| {
+                        self.owned
+                            .kernel_decision_owner_matches(source.owner_user_id(), owner)
+                    })
+            })
+            .filter_map(|(id, pending)| {
+                let card = self
+                    .owned
+                    .open_kernel_decision(&id, &pending, now, &|room| {
+                        self.owned.session_store.get_session(room).ok()
+                    })?;
+                let kind = if let Some(prompt) = &pending.passkey_prompt {
+                    serde_json::json!(prompt.kind)
+                } else if id.starts_with("machine-acquisition-") {
+                    serde_json::json!("machine_acquisition")
+                } else {
+                    serde_json::json!(card.kind())
+                };
+                let requester = card
+                    .agent_id()
+                    .or_else(|| card.related_agent_id())
+                    .map(|agent_id| serde_json::json!({"agent_id": agent_id}))
+                    .or_else(|| {
+                        card.requester().map(|process| {
+                        serde_json::json!({"pid": process.pid, "harness": process.provider_harness})
+                    })
+                    });
+                let requested_at = card.requested_at_ms();
+                let row = serde_json::json!({
+                    "id": id,
+                    "kind": kind,
+                    "age_ms": now_ms.saturating_sub(requested_at),
+                    "requester": requester,
+                });
+                Some((requested_at, row))
+            })
+            .collect::<Vec<_>>();
+        cards.sort_by_key(|(requested_at, _)| *requested_at);
+        Ok(serde_json::json!({
+            "cards": cards.into_iter().map(|(_, card)| card).collect::<Vec<_>>()
+        }))
+    }
+
     pub(crate) fn owner_room_state(
         &self,
         caller_id: &str,
@@ -95,10 +165,11 @@ impl KernelRuntimeState {
         let target = self.owned.session_snapshot(room)?;
         self.owned.authorize_owner_room(&source, &caller, &target)?;
         if cards {
+            let rooms = self.owned.session_store.read();
             let pending = self.owned.pending_interactions.write();
             let cards = target.active_interactions().iter().filter_map(|interaction| {
                 let p = pending.get(interaction.id()).filter(|p| p.session_id == target.id())?;
-                let refusal = self.owned.authorize_owner_card(&source, &caller, &target, p, interaction).err();
+                let refusal = self.owned.authorize_owner_card(&rooms, &source, &caller, &target, p, interaction).err();
                 Some(serde_json::json!({
                     "id": interaction.id(),
                     "agent_id": interaction.agent_id().or_else(|| interaction.related_agent_id()),

@@ -154,6 +154,9 @@ pub struct RequestPopupArgs {
     /// Person cards: one kernel request the kernel runs the moment the person approves.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub action: Option<RequestPopupActionArgs>,
+    /// With wait:false: a key identifies one ask within the current turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idempotency_key: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -564,7 +567,7 @@ pub fn credential_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: REQUEST_POPUP_TOOL.to_string(),
-            description: "Ask a question through the shared Chariox interaction card. Use wait:false for questions you can keep working without: returns interaction_id and registration_id immediately; the attributed answer arrives in your durable event inbox and wakes you after you yield or finish this turn. Continue tools while pending, or yield on registration_id. Omit wait (or use true) only when work cannot continue without the answer; this blocks until an answer or timeout. Supply at least one fixed choice; the card always adds a Cancel choice, and a cancel reads as status cancelled with choice_id cancel (not a timeout). Set default_on_timeout to an existing choice id to return that reply on timeout; omit it to return status timed_out with no choice_id or reply. The provider cuts a blocking call after about 5 minutes and its card is withdrawn, so for a step a person must do (CAPTCHA, login, approval, anything that can take minutes) use wait:false and yield on the registration_id. Each choice carries the exact reply you want returned; a blocking notice may use one acknowledgement choice, such as OK. When a browser card becomes unavailable, verification has not succeeded: continue the owner's current request (ask for browser access if needed, take a fresh snapshot, show a replacement card) and follow any later owner instruction to pause or stop. A browser verification card gives the person's steps, such as “Press Send Code, then enter the code from your email.”".to_string(),
+            description: "Ask a question through the shared Chariox interaction card. To get your supervisor or the person to look at something while you keep working, ask with wait:false: your parent, or else the person and whoever follows them, is woken with your title and message, and the answer comes back to you; a line like `FOR <name>:` in your reply wakes nobody. Use wait:false for questions you can keep working without: returns interaction_id and registration_id immediately; the attributed answer arrives in your durable event inbox and wakes you after you yield or finish this turn. Continue tools while pending, or yield on registration_id. Supply at least one fixed choice; the card always adds a Cancel choice, and a cancel reads as status cancelled with choice_id cancel (not a timeout). Set default_on_timeout to an existing choice id to return that reply on timeout; omit it to return status timed_out with no choice_id or reply. Omit wait (or use true) only when work cannot continue without the answer: it blocks until an answer or timeout, and the provider cuts a blocking call after about 5 minutes and withdraws its card, so for a step a person must do (CAPTCHA, login, approval, anything that can take minutes) use wait:false and yield on the registration_id. Each choice carries the exact reply you want returned; a blocking notice may use one acknowledgement choice, such as OK. When a browser card becomes unavailable, verification has not succeeded: continue the owner's current request (ask for browser access if needed, take a fresh snapshot, show a replacement card) and follow any later owner instruction to pause or stop.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["message", "choices"],
@@ -578,6 +581,7 @@ pub fn credential_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                     },
                     "timeout_sec": {"type": "integer", "minimum": 1},
                     "default_on_timeout": {"type": "string"},
+                    "idempotency_key": {"type": "string", "minLength": 1, "description": "With wait:false only. Retrying with the same key in this turn returns the same interaction_id with deduplicated:true. Reuse in a later turn opens a new card."},
                     "view": {
                         "type": "object", "required": ["browser_region"], "additionalProperties": false,
                         "properties": {"browser_region": {
@@ -602,7 +606,7 @@ pub fn credential_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                         "required": ["request"],
                         "properties": {"request": {"type": "object"}},
                         "additionalProperties": false,
-                        "description": "A card that asks for one specific action. request is one kernel request (the shape chariox_kernel_request takes). The card shows the kernel's own description of exactly that request, not your title or message (they are ignored), and asks for the Chariox passkey. On approval the kernel runs it at once and returns its result; on Cancel nothing runs and status is cancelled. Blocks until decided (wait is ignored). A request that only reads the Room (ListSessions, ListAgents, GetSessionState and the like) asks nobody: it runs at once and the result carries ran true and its response."
+                        "description": "A card that asks for one specific action. request is one kernel request (the shape chariox_kernel_request takes). The card shows the kernel's own description of exactly that request, not your title or message (they are ignored), and asks for the Chariox passkey. On approval the kernel runs it at once and returns its result; on Cancel nothing runs and status is cancelled. Blocks until decided (wait is ignored). A request that only reads your own Room (ListAgents, GetSessionState and the like, with this Room's session_id) asks nobody: it runs at once and the result carries ran true and its response. A read of another Room, of every Room (ListSessions) or of the daemon waits for the card like any other action."
                     },
                     "custom_choice": {
                         "type": "object",

@@ -59,7 +59,7 @@ impl Terminal {
             if limit.is_none() && !outside_end {
                 pty.release_exited_process_jobs(
                     &run_id,
-                    &self.record.session_id,
+                    self.record.scope.process_key(),
                     crate::runtime::process_resources::SessionProcessOwner::Terminal(
                         self.record.terminal_id.clone(),
                     ),
@@ -101,6 +101,7 @@ impl Terminal {
             }
             if self.program_running && !program_running {
                 self.command_in_flight = false;
+                self.driver.finish_submission(now);
                 ended_command = Some(self.commands_started);
                 self.record_program_end(ProgramEnd {
                     output_offset: self.log.end_offset(),
@@ -136,15 +137,24 @@ impl Terminal {
     /// queued command is left to start, so waits stop expecting one.
     fn settle_unrun_lines(&mut self, pty: &PtyManager, now: Instant) -> Fired {
         // A line typed during the login files waits for the first prompt.
-        if self.is_busy(pty)
-            || self.starting(now)
-            || self.driver.lines_written() <= self.commands_started
-        {
+        if self.is_busy(pty) || self.starting(now) {
+            return Fired::new();
+        }
+        let has_submission = self.driver.has_submission();
+        if !has_submission && self.driver.lines_written() <= self.commands_started {
+            return Fired::new();
+        }
+        // A quiet continuation prompt is not the end of a submitted command.
+        // Keep both the driver and the line counts until the marked shell
+        // reports a finish. Later unsubmitted keystrokes only extend the quiet time.
+        let finish = self.driver.finish_since_last_submission();
+        if has_submission && self.mark_tracking && finish.is_none() {
             return Fired::new();
         }
         let quiet_since = [
             self.driver.last_write(),
             self.last_program_end.as_ref().map(|end| end.at),
+            finish,
         ]
         .into_iter()
         .flatten()
@@ -153,6 +163,7 @@ impl Terminal {
             return Fired::new();
         }
         self.driver.settle_lines(self.commands_started);
+        self.driver.discard_submissions(false);
         self.watches
             .on_lines_settled(self.commands_started, self.last_program_end.as_ref())
     }

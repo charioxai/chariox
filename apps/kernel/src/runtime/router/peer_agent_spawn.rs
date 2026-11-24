@@ -30,7 +30,7 @@ impl CommandRouter {
         let RelayPeerRequest::SpawnRoomPeer {
             protocol_version: RELAY_PEER_PROTOCOL_VERSION,
             request_id,
-            sender,
+            sender_name,
             room,
             provider,
             account_profile,
@@ -42,6 +42,7 @@ impl CommandRouter {
             permission_level,
             caller_authority,
             follow,
+            ..
         } = request
         else {
             return Err(crate::durable_state::agent_lifecycle::error(
@@ -58,6 +59,14 @@ impl CommandRouter {
         }) {
             return Err(crate::durable_state::agent_lifecycle::error(
                 "invalid peer subscription id",
+            ));
+        }
+        if prompt
+            .as_ref()
+            .is_some_and(|task| task.trim().is_empty() || sender_name.trim().is_empty())
+        {
+            return Err(crate::durable_state::agent_lifecycle::error(
+                "a peer spawn task and sender name must be nonempty",
             ));
         }
         let store = self.runtime_state.durable_state_store();
@@ -90,16 +99,14 @@ impl CommandRouter {
             }
             return Ok(answer);
         }
-        let (room, authority) = match self.runtime_state.admit_room_peer_spawn(
-            owner,
-            &room,
-            caller_authority,
-            execution_mode,
-            permission_level,
-        ) {
-            Ok(admitted) => admitted,
-            Err(refusal) => return Ok(refused(refusal)),
-        };
+        let (room, limit) =
+            match self
+                .runtime_state
+                .admit_room_peer_spawn(owner, &room, caller_authority)
+            {
+                Ok(admitted) => admitted,
+                Err(refusal) => return Ok(refused(refusal)),
+            };
         let spawn_key = peer_spawn_key(kernel, &request_id);
         let created_before = self
             .runtime_state
@@ -109,6 +116,14 @@ impl CommandRouter {
         // The owner as this room knows it: `local` in a room made before enrollment.
         let creator = self.runtime_state.room_member_user_id(&room, owner);
         let spawn = LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            initial_task: prompt,
+            peer_spawn: Some(crate::local::PeerSpawnOrigin {
+                kernel_id: kernel.to_string(),
+                owner_id: owner.to_string(),
+                author_name: sender_name,
+                limit,
+                follow,
+            }),
             max_context_tokens: None,
             no_subscribe: true,
             session_id: room,
@@ -117,8 +132,12 @@ impl CommandRouter {
             account_profile,
             model,
             effort,
-            execution_mode: Some(authority.mode),
-            permission_level: Some(authority.permission_level),
+            execution_mode: Some(execution_mode.unwrap_or(limit.mode).lower(limit.mode)),
+            permission_level: Some(
+                permission_level
+                    .unwrap_or(limit.permission_level)
+                    .lower(limit.permission_level),
+            ),
             worktree_id: None,
             kernel_ref: None,
             slice_ref: None,
@@ -145,37 +164,10 @@ impl CommandRouter {
             Ok(_) => {
                 return Err(crate::durable_state::agent_lifecycle::error(
                     "peer spawn answered without an agent",
-                ))
-            }
-            Err(DaemonError::AgentLimitReached { .. }) => {
-                return Ok(refused(PeerAgentRefusal::RoomFull))
+                ));
             }
             Err(error) => return Err(error),
         };
-        if let Some(follow) = follow {
-            self.runtime_state.follow_spawned_room_peer(
-                kernel,
-                owner,
-                follow,
-                agent.session_id(),
-                agent.id(),
-            )?;
-        }
-        // The first task reaches the new peer as a message from its creator, never as a prompt;
-        // it lands before the answer is kept, so a retry after a lost answer delivers it once.
-        if let Some(prompt) = prompt.filter(|prompt| !prompt.trim().is_empty()) {
-            self.runtime_state
-                .admit_peer_agent_message(
-                    kernel,
-                    &format!("{request_id}:prompt"),
-                    &sender,
-                    &agent,
-                    prompt,
-                    false,
-                    false,
-                )
-                .await?;
-        }
         let mut answer = RelayPeerResponse::RoomPeerSpawned {
             protocol_version: RELAY_PEER_PROTOCOL_VERSION,
             duplicate: false,

@@ -457,6 +457,8 @@ PYTHON
       stop_desktop
       return 1
     fi
+    # Selkies is not a child of this script: the supervisor restarts it after it dies and ends when stop removes its record.
+    nohup /opt/chariox-selkies/bin/python "$ROOT/slice-selkies.py" supervise >>"$LOGS/selkies-supervisor.log" 2>&1 &
   else
     nohup x11vnc -display "$DISPLAY_ID" -xrandr resize -nonap -wait 100 -noxdamage -localhost -nopw -forever -shared -rfbport "$VNC_PORT" >"$LOGS/x11vnc.log" 2>&1 &
     nohup websockify --web=/usr/share/novnc/ "0.0.0.0:$NOVNC_PORT" "127.0.0.1:$VNC_PORT" >"$LOGS/novnc.log" 2>&1 &

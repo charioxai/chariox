@@ -183,7 +183,7 @@ impl KernelRuntimeState {
         if let Some(existing) = registry.get(&handle)? {
             return match &destination {
                 Some((binding, host)) => {
-                    super::vault_command::committed_capture(&existing, &turn, host, binding)
+                    super::vault_command::committed_capture(&existing, &turn.actor(), host, binding)
                 }
                 None => committed(&existing, &turn, &use_on, &use_target),
             };
@@ -230,7 +230,7 @@ impl KernelRuntimeState {
             let mut params = json!({"op":"capture","tab_id":args.tab_id,"generation":args.generation,
                 "document_id":args.document_id,"node_ref":args.node_ref,"reveal_node_ref":args.reveal_node_ref,
                 "read":args.read.wire(),"expected_document_url":url});
-            self.claim_app_view_tab(user, &admission, &mut params)?;
+            self.mark_app_view_tab(user, &mut params)?;
             check_authority()?;
             let mut read = self
                 .kernel_browser_bound_operation(user, Some(&admission), "host.secret", params, true)
@@ -283,13 +283,15 @@ impl KernelRuntimeState {
         if let Some((use_binding, host)) = destination {
             return self
                 .store_captured(
-                    &turn,
+                    &turn.actor(),
+                    &|| self.recheck_vault_agent(&turn),
                     &registry,
                     super::vault_command::Captured {
                         handle,
                         host,
                         label: Some(label),
                         use_binding,
+                        request_id: args.request_id.clone(),
                     },
                     &secret,
                 )
@@ -335,7 +337,7 @@ impl KernelRuntimeState {
                 credential,
                 secret.as_str(),
                 false,
-                Some(&turn),
+                Some(&|| self.recheck_vault_agent(&turn)),
             )
             .await
         {

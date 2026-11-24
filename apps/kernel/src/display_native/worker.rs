@@ -56,11 +56,12 @@ impl Config {
             Some(window) => {
                 window.id.is_none_or(|id| id > 1)
                     && (2..=2560).contains(&self.width)
-                    && (2..=1600).contains(&self.height)
+                    && (2..=2560).contains(&self.height)
+                    && self.width * self.height <= 2560 * 1600
                     && self.width % 2 == 0
                     && self.height % 2 == 0
                     && (1..=2560).contains(&window.width)
-                    && (1..=2400).contains(&window.height)
+                    && (1..=2816).contains(&window.height)
                     && window.left >= 0
                     && window.top >= 0
                     && window.left <= window.width - self.width
@@ -181,13 +182,25 @@ mod region_tests {
             ("left", -1),
             ("top", 801),
             ("width", 1279),
-            ("height", 2410),
+            ("height", 2817),
         ] {
             let mut bad = base.clone();
             bad["window_region"][key] = value.into();
             assert!(
                 !serde_json::from_value::<Config>(bad).unwrap().valid(),
                 "{key}"
+            );
+        }
+        // BH: a tall page fits per side and in area; past 2560 per side or 2560x1600 in area it does not.
+        let tall = json!({"pid":42,"width":1600,"height":2560,"pool":"/owned/pool",
+            "window_region":{"width":1600,"height":2700,"left":0,"top":140}});
+        assert!(serde_json::from_value::<Config>(tall).unwrap().valid());
+        for (width, height) in [(2562, 1200), (1200, 2562), (2560, 1602)] {
+            let over = json!({"pid":42,"width":width,"height":height,"pool":"/owned/pool",
+                "window_region":{"width":2560,"height":2816,"left":0,"top":0}});
+            assert!(
+                !serde_json::from_value::<Config>(over).unwrap().valid(),
+                "{width}x{height}"
             );
         }
         let mut legacy = base.clone();

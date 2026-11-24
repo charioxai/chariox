@@ -24,6 +24,8 @@ fn machine_link(kernel: &Kernel) {
                         | RelayPeerRequest::ListMachineDirectory { .. }
                         | RelayPeerRequest::ReadMachineFile { .. }
                         | RelayPeerRequest::DeleteMachinePath { .. }
+                        | RelayPeerRequest::TrashMachineFiles { .. }
+                        | RelayPeerRequest::RestoreMachineTrash { .. }
                         | RelayPeerRequest::StartFileTransfer { .. }
                         | RelayPeerRequest::GetFileTransfer { .. }
                         | RelayPeerRequest::CancelFileTransfer { .. } => {
@@ -257,6 +259,128 @@ fn the_files_tools_never_touch_a_kernels_state_and_need_the_owners_account() {
         match previous {
             Some(value) => std::env::set_var("CHARIOX_HOME", value),
             None => std::env::remove_var("CHARIOX_HOME"),
+        }
+        unlink(&[&a, &b]);
+    });
+}
+
+#[test]
+fn an_agent_moves_files_to_the_trash_here_and_on_another_machine_and_undoes_it_without_overwriting()
+{
+    run_peer_test("files-trash-tools", || async {
+        let _env = crate::env_lock::lock();
+        let (a, b) = two_kernels(
+            "files-trash-tools",
+            AgentPermissionLevel::Yolo,
+            AgentPermissionLevel::Yolo,
+        );
+        machine_link(&a);
+        machine_link(&b);
+        let root = scratch("trash");
+        let share = root.join("share");
+        let previous = std::env::var_os("XDG_DATA_HOME");
+        std::env::set_var("XDG_DATA_HOME", &share);
+        let (here, there) = (root.join("here"), root.join("there"));
+        std::fs::create_dir_all(&here).unwrap();
+        plant(&here.join("old.log"), 100);
+        plant(&there.join("remote/old.bin"), 100);
+
+        // This machine: the item moves to the trash and the answer says where it went.
+        let trashed = tool(
+            &a,
+            "chariox.files.trash",
+            serde_json::json!({"paths": [here.join("old.log")]}),
+        )
+        .await
+        .unwrap();
+        assert!(!here.join("old.log").exists());
+        let kept = trashed["trashed"][0].clone();
+        assert_eq!(kept["path"], here.join("old.log").display().to_string());
+        assert!(
+            Path::new(kept["trash_path"].as_str().unwrap()).starts_with(share.join("Trash/files"))
+        );
+        let back = tool(
+            &a,
+            "chariox.files.restore",
+            serde_json::json!({"items": [kept.clone()]}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            back["restored"][0],
+            here.join("old.log").display().to_string()
+        );
+        assert!(here.join("old.log").exists());
+
+        // The same request to a path that is taken refuses and keeps the item in the trash.
+        let again = tool(
+            &a,
+            "chariox.files.trash",
+            serde_json::json!({"paths": [here.join("old.log")]}),
+        )
+        .await
+        .unwrap()["trashed"][0]
+            .clone();
+        std::fs::write(here.join("old.log"), "new").unwrap();
+        let refused = tool(
+            &a,
+            "chariox.files.restore",
+            serde_json::json!({"items": [again]}),
+        )
+        .await
+        .unwrap_err();
+        assert!(refused.contains("is taken"), "{refused}");
+        assert_eq!(
+            std::fs::read_to_string(here.join("old.log")).unwrap(),
+            "new"
+        );
+
+        // Another machine of the owner, through its file service.
+        let far = tool(
+            &a,
+            "chariox.files.trash",
+            serde_json::json!({"machine": b.name, "paths": [there.join("remote"), there.join("missing")]}),
+        )
+        .await
+        .unwrap();
+        assert!(!there.join("remote").exists());
+        assert_eq!(far["trashed"].as_array().unwrap().len(), 1);
+        assert!(
+            far["failed"][0]["message"]
+                .as_str()
+                .unwrap()
+                .contains("does not exist"),
+            "{far}"
+        );
+        tool(
+            &a,
+            "chariox.files.restore",
+            serde_json::json!({"machine": b.name, "items": far["trashed"]}),
+        )
+        .await
+        .unwrap();
+        assert!(there.join("remote/old.bin").exists());
+
+        // The kernel's own state is never trashed.
+        let state = root.join("kernel-home");
+        std::fs::create_dir_all(state.join("vault")).unwrap();
+        let home = std::env::var_os("CHARIOX_HOME");
+        std::env::set_var("CHARIOX_HOME", &state);
+        let refused = tool(
+            &a,
+            "chariox.files.trash",
+            serde_json::json!({"paths": [state]}),
+        )
+        .await
+        .unwrap_err();
+        assert!(refused.contains("own state or Vault"), "{refused}");
+        match home {
+            Some(value) => std::env::set_var("CHARIOX_HOME", value),
+            None => std::env::remove_var("CHARIOX_HOME"),
+        }
+        match previous {
+            Some(value) => std::env::set_var("XDG_DATA_HOME", value),
+            None => std::env::remove_var("XDG_DATA_HOME"),
         }
         unlink(&[&a, &b]);
     });

@@ -69,7 +69,7 @@ fn resolve_model(catalog: &OpenCodeProviderCatalog, requested: &str) -> Result<S
     match matches.as_slice() {
         [selected] => Ok((*selected).clone()),
         [] => Err(format!(
-            "OpenCode model `{requested}` is unavailable in this account's connected provider catalog. Select a catalog model before retrying. Available models: {}{}",
+            "OpenCode model `{requested}` needs an OpenCode account that is not connected. Add the model's provider in Provider Accounts, or select one of the models that run without an account. Available models: {}{}",
             if available.is_empty() { "none".to_string() } else { available.iter().take(12).cloned().collect::<Vec<_>>().join(", ") },
             if available.len() > 12 { " (list truncated)" } else { "" },
         )),
@@ -167,6 +167,7 @@ mod tests {
                     AgentExecutionMode::Build,
                     false,
                     false,
+                    false,
                 )
                 .unwrap();
         }
@@ -181,6 +182,7 @@ mod tests {
                 Some("available"),
                 None,
                 AgentExecutionMode::Build,
+                false,
                 false,
                 false,
             )
@@ -203,6 +205,7 @@ mod tests {
                 Some(model),
                 None,
                 AgentExecutionMode::Build,
+                false,
                 false,
                 false,
             )

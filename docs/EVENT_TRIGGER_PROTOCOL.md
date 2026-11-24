@@ -168,12 +168,21 @@ admission and sends a peer unsubscribe when remote.
 
 An agent subscribes itself with `CreateAgentTrigger` whose source is
 `{kind:"notification", source:{workflow:{source_id}}}` (an App event is
-`{app:{installation_id,event_name}}`, see Apps below). The request carries no
-`busy_policy` (a value is refused) and `UpdateAgentTrigger` refuses one: a notification is
-always queued as a prompt of the agent, and the agent's pane shows it as an ordinary
-queued prompt it can send now or cancel. The prompt is the trigger's own text followed by the
-quoted occurrence in `<chariox-trigger-input kind="notification">` (output and
-`display_name`, `<` and `>` escaped), under the `runtime/notification` template. The
+`{app:{installation_id,event_name}}`, see Apps below). `busy_policy` is the
+subscription's mode: `queue` (default) or `steer`, on `CreateAgentTrigger` and
+`UpdateAgentTrigger` like any trigger (the Subscriptions table changes it with
+`UpdateNotificationSubscription {mode}`). The occurrence reaches the agent through its inbox
+for every source, workflow exit or App event alike: the kernel writes the whole occurrence
+(kind `notification`, state `accepted`, up to 256 KiB, once per subscription and occurrence)
+and then prompts the agent with the trigger's own text followed by one line,
+`Notification: <title> (from <source>). Read it with chariox.events.inbox after <n>, then
+chariox.events.ack it.` No occurrence text, output or payload is in the prompt, and there is
+no `<chariox-trigger-input>` block for this kind. A payload over 16 KiB comes back from the
+list read cut (`truncated`, `payload_bytes`, `next_offset`); `chariox.events.inbox` with
+`sequence` and `offset` reads that one event's payload text window by window until
+`next_offset` is null, and the windows join into the payload's JSON text. In `queue` the one-line prompt waits as an
+ordinary queued prompt the agent's pane can send now (Steer) or cancel; in `steer` it is
+steered into the running turn, and a refused steer leaves it queued. The
 subscription is the same `app_automations` row a workflow subscriber has, with
 `target_kind: agent`, `agent_id` and `trigger_id`; its receipt stays `accepted` until the
 prompt is queued, then becomes `queued` with the prompt id. An agent target has no workflow

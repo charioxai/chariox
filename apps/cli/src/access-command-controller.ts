@@ -1,6 +1,6 @@
 import { kernelBrowserAgentTabsMinimumProtocolVersion, LOCAL_DAEMON_PROTOCOL_VERSION } from "@chariox/kernel-client"
 import { leasedComputerMinimumProtocolVersion } from "@chariox/kernel-client/ipc-requests"
-import { UserDomainAccessController, roomComputerAccessMinimumProtocol, roomComputerBulkGrantMinimumProtocol, userDomainAccessMinimumProtocol, userDomainGrantExpiry, userDomainResourceLabel, userDomainUseNotice, type UserDomainAccessClient } from "@chariox/kernel-client/user-domain-access"
+import { UserDomainAccessController, roomComputerAccessMinimumProtocol, roomComputerBulkGrantMinimumProtocol, userDomainAccessMinimumProtocol, type UserDomainAccessClient } from "@chariox/kernel-client/user-domain-access"
 
 type AccessTransport = UserDomainAccessClient & {
   readonly socketPath?: string
@@ -27,17 +27,10 @@ export function createAccessCommandController(deps: { client: AccessTransport; a
     },
     bindingKey: () => deps.client.socketPath ?? "owner-terminal",
   })
-  let lastNotice = ""
-  const unsubscribe = access.subscribe(() => {
-    const notice = access.snapshot?.notice
-    const key = notice ? JSON.stringify(notice) : ""
-    if (key && key !== lastNotice) deps.appendNotice(userDomainUseNotice(notice!)!)
-    lastNotice = key
-  })
   const unsubscribeClient = deps.client.onClientChanged?.(() => access.sync())
   return {
     start: () => access.sync(),
-    stop: () => { unsubscribeClient?.(); unsubscribe(); access.stop() },
+    stop: () => { unsubscribeClient?.(); access.stop() },
     async handle(args: string[]): Promise<void> {
       // MP-08/MP-11: explicitly grant the observed desktop, never Room authority.
       if (args[0] === "grant-computer" || args[0] === "revoke-computer") {
@@ -81,8 +74,6 @@ export function createAccessCommandController(deps: { client: AccessTransport; a
         args[0] === "revoke" ? `Revoked access and Room Computer control for ${agentId ?? "all agents"}.`
           : args[0] === "grant" ? (agentId === null ? "Restored Room Computer control for all agents." : `Granted Room Computer control for ${agentId}.`) : "User-domain access:",
         ...(snapshot.room_computer ?? []).map(g => `${g.agent_id} · session ${g.session_id} · Room Computer ${g.allowed ? "allowed" : "revoked"}`),
-        ...snapshot.grants.map(g => `${g.agent_id} · session ${g.session_id || "pending"} · kernel ${g.kernel_id} · ${g.focused ? "focused" : "retained"}\n  resources: ${g.resources.map(userDomainResourceLabel).join(", ") || "none touched"}\n  expiry: ${userDomainGrantExpiry(g)}`),
-        ...(snapshot.grants.length ? [] : ["No current grants."]),
       ].join("\n"))
     },
   }

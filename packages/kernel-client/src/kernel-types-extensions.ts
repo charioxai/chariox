@@ -20,12 +20,6 @@ export type McpImportOutcome = {
   skipped: McpImportSkip[]
 }
 
-export type CharioxSkillMetadata = {
-  name: string
-  description: string
-  short_description?: string | null
-  path: string
-}
 
 export type CharioxEnvironmentConfig = {
   name: string
@@ -74,7 +68,7 @@ export type CharioxCredentialConfig = {
   injection: Record<string, unknown>
 }
 
-export type ExtensionKind = "mcp" | "skill" | "script" | "connector" | "app"
+export type ExtensionKind = "mcp" | "script" | "connector" | "app"
 
 export type ExtensionGrant = {
   kind: ExtensionKind
@@ -82,19 +76,10 @@ export type ExtensionGrant = {
   environment?: string | null
   credential?: string | null
   max_safety?: "read" | "write" | "destructive" | string | null
-  app_grant?: { grant_id: string; expires_at_ms: number; prompt_id?: string | null; delegated_by_agent_id?: string | null; delegated_from_grant_id?: string | null } | null
+  app_grant?: { grant_id: string; expires_at_ms: number; delegated_by_agent_id?: string | null; delegated_from_grant_id?: string | null } | null
 }
 
-export type SkillImportSkip = {
-  name: string
-  path: string
-  reason: string
-}
 
-export type SkillImportOutcome = {
-  imported: CharioxSkillMetadata[]
-  skipped: SkillImportSkip[]
-}
 
 export type ProviderCapabilityImportDuplicate = {
   provider: string
@@ -129,5 +114,4 @@ export type ProviderCapabilityImportReport = {
   providers: string[]
   summary: ProviderCapabilityImportSummary
   mcps: ProviderCapabilityImportEntry[]
-  skills: ProviderCapabilityImportEntry[]
 }

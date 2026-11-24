@@ -1,6 +1,6 @@
 //! Agent command execution once a command has entered an agent lane.
 
-use crate::app::KernelPreparedPromptSubmission;
+use crate::app::{KernelPreparedPromptSubmission, KernelPromptSubmission};
 use crate::error::DaemonError;
 use crate::local::LocalDaemonResponse;
 use crate::runtime::agent_prompt_service::AgentPromptCommandService;
@@ -64,6 +64,8 @@ impl AgentRuntimeCommandExecutor {
         match command {
             AgentCommand::SubmitPrompt {
                 request,
+                skill_selections,
+                user_skill_syntax,
                 trace_id,
                 operation_id,
                 operation_fingerprint,
@@ -71,6 +73,10 @@ impl AgentRuntimeCommandExecutor {
             } => boxed_agent_handler(|| {
                 self.submit_prompt(
                     request,
+                    crate::session::SkillIntent {
+                        selections: skill_selections,
+                        user_syntax: user_skill_syntax,
+                    },
                     trace_id,
                     operation_id,
                     operation_fingerprint,
@@ -84,9 +90,14 @@ impl AgentRuntimeCommandExecutor {
             AgentCommand::SteerQueuedPrompt { request } => {
                 boxed_agent_handler(|| self.steer_queued_prompt(request))
             }
-            AgentCommand::SteerActivePrompt { request } => {
-                boxed_agent_handler(|| self.steer_active_prompt(request))
-            }
+            AgentCommand::SteerActivePrompt {
+                request,
+                trace_id,
+                operation_id,
+                operation_fingerprint,
+            } => boxed_agent_handler(|| {
+                self.steer_active_prompt(request, trace_id, operation_id, operation_fingerprint)
+            }),
             AgentCommand::CancelQueuedPrompt { request } => {
                 boxed_agent_handler(|| self.cancel_queued_prompt(request))
             }
@@ -106,11 +117,16 @@ impl AgentRuntimeCommandExecutor {
     async fn submit_prompt(
         &self,
         request: crate::local::SubmitPromptRequest,
+        skill_intent: crate::session::SkillIntent,
         trace_id: String,
         operation_id: String,
         operation_fingerprint: String,
         response_mode: PromptSubmitResponseMode,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        let crate::session::SkillIntent {
+            selections: skill_selections,
+            user_syntax: user_skill_syntax,
+        } = skill_intent;
         let mut timing = crate::runtime::perf_timing::Phases::new();
         let target_agent_id =
             request
@@ -141,12 +157,16 @@ impl AgentRuntimeCommandExecutor {
                 .prompt_commands
                 .session_task_lane_busy(&request.session_id)?
             {
-                let (task, session) = self.prompt_commands.enqueue_metaagent_task(
+                let (task, session) = self.prompt_commands.enqueue_metaagent_task_with_skills(
                     &request.session_id,
                     &target_agent_id,
                     &request.attachment_id,
                     &meta_slash.task_prompt,
                     materialized_attachments,
+                    crate::session::SkillIntent {
+                        selections: skill_selections,
+                        user_syntax: user_skill_syntax,
+                    },
                 )?;
                 let queued_prompt = PromptQueueItem::new(
                     task.id(),
@@ -155,7 +175,9 @@ impl AgentRuntimeCommandExecutor {
                     task.task_markdown(),
                     PromptStatus::Queued,
                 )
-                .with_attachments(task.attachments().to_vec());
+                .with_attachments(task.attachments().to_vec())
+                .with_skill_selections(task.skill_selections().to_vec())
+                .with_user_skill_syntax(task.user_skill_syntax());
                 if response_mode == PromptSubmitResponseMode::Full {
                     publish_session_runtime_projection(
                         &self.session_projection,
@@ -164,20 +186,10 @@ impl AgentRuntimeCommandExecutor {
                     );
                 }
                 return Ok(LocalDaemonResponse::PromptSubmitted {
+                    session_id: request.session_id,
                     outcome: crate::session::PromptSubmissionOutcome::Queued {
-                        prompt: queued_prompt,
+                        prompt: (&queued_prompt).into(),
                     },
-                    agent_activity: if response_mode == PromptSubmitResponseMode::Full {
-                        self.prompt_commands.agent_activity_for_session(&session)
-                    } else {
-                        Default::default()
-                    },
-                    agent_activity_revision: if response_mode == PromptSubmitResponseMode::Full {
-                        self.session_projection.change_sequence()
-                    } else {
-                        0
-                    },
-                    session,
                 });
             }
         }
@@ -205,10 +217,12 @@ impl AgentRuntimeCommandExecutor {
             PromptStatus::Queued,
         )
         .with_hidden_system_context(hidden_system_context)
+        .with_skill_selections(skill_selections)
+        .with_user_skill_syntax(user_skill_syntax)
         .with_durable_operation(operation_id, operation_fingerprint)
         .with_attachments(materialized_attachments);
         timing.mark("prepare");
-        let prepared = self
+        let mut prepared = self
             .prompt_commands
             .submit_prepared_prompt(KernelPreparedPromptSubmission {
                 session_id: request.session_id.clone(),
@@ -238,6 +252,19 @@ impl AgentRuntimeCommandExecutor {
         }
 
         timing.mark("publish");
+        self.record_submitted_prompt_turn(&prepared, &trace_id);
+        timing.mark("active_turn");
+        self.spawn_submitted_prompt_dispatches(&mut prepared);
+
+        timing.mark("dispatch_spawn");
+        timing.finish("prompt_submit", &trace_id);
+        Ok(LocalDaemonResponse::PromptSubmitted {
+            session_id: request.session_id,
+            outcome: prepared.outcome.into(),
+        })
+    }
+
+    fn record_submitted_prompt_turn(&self, prepared: &KernelPromptSubmission, trace_id: &str) {
         if let (crate::session::PromptSubmissionOutcome::Started { prompt }, Some(dispatch)) =
             (&prepared.outcome, prepared.dispatch.as_ref())
         {
@@ -246,37 +273,18 @@ impl AgentRuntimeCommandExecutor {
                 &dispatch.agent_id,
                 prompt.id(),
                 &dispatch.provider_run_id,
-                &trace_id,
+                trace_id,
             );
         }
-        timing.mark("active_turn");
-        let agent_activity = if response_mode == PromptSubmitResponseMode::Full {
-            self.prompt_commands
-                .agent_activity_for_session(&response_session)
-        } else {
-            Default::default()
-        };
+    }
 
-        timing.mark("activity_projection");
-        if let Some(dispatch) = prepared.dispatch {
+    fn spawn_submitted_prompt_dispatches(&self, prepared: &mut KernelPromptSubmission) {
+        if let Some(dispatch) = prepared.dispatch.take() {
             self.prompt_commands.spawn_prompt_dispatch(dispatch);
         }
-        if let Some(dispatch) = prepared.remote_dispatch {
+        if let Some(dispatch) = prepared.remote_dispatch.take() {
             self.prompt_commands.spawn_remote_prompt_dispatch(dispatch);
         }
-
-        timing.mark("dispatch_spawn");
-        timing.finish("prompt_submit", &trace_id);
-        Ok(LocalDaemonResponse::PromptSubmitted {
-            outcome: prepared.outcome,
-            session: response_session,
-            agent_activity,
-            agent_activity_revision: if response_mode == PromptSubmitResponseMode::Full {
-                self.session_projection.change_sequence()
-            } else {
-                0
-            },
-        })
     }
 
     async fn cancel_active_prompt(
@@ -323,7 +331,7 @@ impl AgentRuntimeCommandExecutor {
         }
 
         Ok(LocalDaemonResponse::PromptCancelled {
-            cancellation: prepared.cancellation,
+            cancellation: prepared.cancellation.into(),
         })
     }
 
@@ -346,25 +354,23 @@ impl AgentRuntimeCommandExecutor {
             &prepared.session,
         );
 
-        let agent_activity = self
-            .prompt_commands
-            .agent_activity_for_session(&prepared.session);
         if let Some(dispatch) = prepared.dispatch {
             self.prompt_commands
                 .spawn_queued_prompt_steer_dispatch(dispatch);
         }
 
         Ok(LocalDaemonResponse::QueuedPromptSteered {
-            prompt: prepared.prompt,
-            session: prepared.session,
-            agent_activity,
-            agent_activity_revision: self.session_projection.change_sequence(),
+            session_id: request.session_id,
+            prompt: (&prepared.prompt).into(),
         })
     }
 
     async fn steer_active_prompt(
         &self,
         mut request: crate::local::SteerActivePromptRequest,
+        trace_id: String,
+        operation_id: String,
+        operation_fingerprint: String,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         self.prompt_commands
             .ensure_attachment_in_session(&request.session_id, &request.attachment_id)
@@ -376,8 +382,46 @@ impl AgentRuntimeCommandExecutor {
             &request.target_agent_id,
             request.attachments,
         )?;
-        let prompt = self.prompt_commands.steer_active_prompt(request).await?;
-        Ok(LocalDaemonResponse::ActivePromptSteered { prompt })
+        let steer = self.prompt_commands.steer_active_prompt(&request).await?;
+        if let Some((active_prompt_id, steer)) = steer {
+            return Ok(LocalDaemonResponse::ActivePromptSteered {
+                session_id: request.session_id,
+                agent_id: request.target_agent_id,
+                active_prompt_id,
+                steer_id: steer.id().to_owned(),
+                accepted_at_ms: steer.created_at_ms(),
+            });
+        }
+
+        let prompt = PromptQueueItem::new(
+            format!("pending-draft:{trace_id}"),
+            &request.attachment_id,
+            &request.target_agent_id,
+            request.prompt,
+            PromptStatus::Queued,
+        )
+        .with_durable_operation(operation_id, operation_fingerprint)
+        .with_attachments(request.attachments);
+        let mut prepared = self
+            .prompt_commands
+            .submit_prepared_prompt(KernelPreparedPromptSubmission {
+                session_id: request.session_id.clone(),
+                prompt,
+                force_queue: false,
+                refresh_projection: true,
+            })
+            .await?;
+        publish_session_runtime_projection(
+            &self.session_projection,
+            &self.agent_runtime_projection,
+            &prepared.session,
+        );
+        self.record_submitted_prompt_turn(&prepared, &trace_id);
+        self.spawn_submitted_prompt_dispatches(&mut prepared);
+        Ok(LocalDaemonResponse::PromptSubmitted {
+            session_id: request.session_id,
+            outcome: prepared.outcome.into(),
+        })
     }
 
     async fn cancel_queued_prompt(
@@ -399,15 +443,9 @@ impl AgentRuntimeCommandExecutor {
             &prepared.session,
         );
 
-        let agent_activity = self
-            .prompt_commands
-            .agent_activity_for_session(&prepared.session);
-
         Ok(LocalDaemonResponse::QueuedPromptCancelled {
-            prompt: prepared.prompt,
-            session: prepared.session,
-            agent_activity,
-            agent_activity_revision: self.session_projection.change_sequence(),
+            session_id: request.session_id,
+            prompt: (&prepared.prompt).into(),
         })
     }
 
@@ -431,15 +469,9 @@ impl AgentRuntimeCommandExecutor {
             &prepared.session,
         );
 
-        let agent_activity = self
-            .prompt_commands
-            .agent_activity_for_session(&prepared.session);
-
         Ok(LocalDaemonResponse::QueuedPromptUpdated {
-            prompt: prepared.prompt,
-            session: prepared.session,
-            agent_activity,
-            agent_activity_revision: self.session_projection.change_sequence(),
+            session_id: request.session_id,
+            prompt: (&prepared.prompt).into(),
         })
     }
 
@@ -487,7 +519,9 @@ impl AgentRuntimeCommandExecutor {
             &session,
         );
 
-        Ok(LocalDaemonResponse::PromptCompleted { completion })
+        Ok(LocalDaemonResponse::PromptCompleted {
+            completion: completion.into(),
+        })
     }
 }
 

@@ -19,7 +19,6 @@ pub(crate) use worker_identity::{
 
 #[cfg(unix)]
 pub(crate) use local_docker::hand_over_managed_docker_broker;
-pub(crate) use local_docker::managed_docker_broker_configured;
 pub(crate) use local_docker::{
     acknowledge_protected_home_restore, cleanup_replaced_saved_state_generation,
     fresh_local_docker_observation_environment, reconcile_local_docker_restore_acknowledgements,
@@ -44,6 +43,7 @@ use local_docker::{
     ensure_local_docker_slice_ports_available, local_docker_slice_action_log_path,
     relay_url_for_container,
 };
+pub(crate) use local_docker::{local_docker_slices_unavailable, managed_docker_broker_configured};
 pub use model::{
     CreateSliceInput, LocalDockerSliceAction, SliceBackendKind, SliceBackupRecord,
     SliceBackupRestoreAcknowledgementRecord, SliceBackupRestoreTransactionRecord,
@@ -399,6 +399,36 @@ mod tests {
                 .expect("state lookup should succeed"),
             Some(restored_state)
         );
+    }
+
+    #[test]
+    fn a_started_slice_binds_a_room_only_after_it_is_stopped() {
+        let store = SliceStore::default();
+        let slice = store
+            .create("kernel-1", "machine-1", create_input("late-bind"))
+            .expect("slice should create");
+        store
+            .set_status(&slice.id, SliceStatus::Running, 42)
+            .expect("slice should start");
+        let refused = store
+            .bind_environment("room-1", &slice.id, 43, |_| Ok(()))
+            .expect_err("the running worker was started without this Room");
+        assert!(refused
+            .to_string()
+            .contains("stop it, bind the Room, then start it"));
+        assert_eq!(store.environment_slice("room-1"), None);
+        store
+            .set_status(&slice.id, SliceStatus::Stopped, 44)
+            .expect("slice should stop");
+        store
+            .bind_environment("room-1", &slice.id, 45, |_| Ok(()))
+            .expect("a stopped slice takes the Room for its next start");
+        store
+            .set_status(&slice.id, SliceStatus::Running, 46)
+            .expect("slice should start with the Room");
+        store
+            .bind_environment("room-1", &slice.id, 47, |_| Ok(()))
+            .expect("repeating the binding of the Room it started with stays idempotent");
     }
 
     #[test]

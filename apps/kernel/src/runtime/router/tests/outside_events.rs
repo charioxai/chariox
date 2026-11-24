@@ -183,8 +183,8 @@ fn outside_event_requests_are_refused_once_the_grant_is_revoked() {
         let grant = router
             .runtime_state()
             .insert_access_grant_for_test(session.id());
-        let live = request(serde_json::json!({"GetEventSubscription":{}}));
-        // A live grant gets past the guard and is answered by the event ledger itself.
+        let live = request(serde_json::json!({"ListEvents":{}}));
+        // A live grant gets past the guard and is answered by the event ledger itself: it follows nothing.
         assert!(matches!(
             router.dispatch(command(&grant, &live), live).await,
             Err(DaemonError::MachineRequest { code, .. }) if code == "events_refused"
@@ -329,6 +329,7 @@ fn outside_router_observes_a_real_terminal_job_without_a_terminal_watch() {
                     rows: 24,
                     title: None,
                     command: Some(vec!["/bin/sh".into(), "-c".into(), "exit 7".into()]),
+                    stdin: None,
                 },
             }),
         )

@@ -38,6 +38,25 @@ test('MIRROR-P2-FONTS-SUBSET: Chromium loads the subset and measures the page te
   } finally { await browser.close(); }
 });
 
+// tailwindcss.com turns on Inter's character variants (font-feature-settings "cv11"...): hb-subset's default list keeps only
+// the shaping features (kern, liga, ...), so the viewer drew the default glyphs and every line ran short of Chrome's.
+test('MIRROR-P2-FONTS-SUBSET: every OpenType feature the page can turn on draws in the subset as in the whole face', async () => {
+  const text = 'Office H2O x2 0123456789';
+  const subset = await new FontSubsets().subset(whole, async () => code(text));
+  const browser = await launch();
+  try {
+    const page = await browser.newPage();
+    await page.setContent('<body></body>');
+    const widths = await page.evaluate(async ([text, faces]) => {
+      for (const [name, base64] of Object.entries(faces)) { const font = new FontFace(name, Uint8Array.from(atob(base64), c => c.charCodeAt(0)).buffer); await font.load(); document.fonts.add(font); }
+      const width = (name, features) => { const probe = document.createElement('span'); probe.style.cssText = `font:32px "${name}", monospace;white-space:pre;font-feature-settings:${features}`; probe.textContent = text; document.body.append(probe); const value = probe.getBoundingClientRect().width; probe.remove(); return value; };
+      return Object.fromEntries(['normal', '"sups"', '"subs"'].map(features => [features, { whole: width('Whole', features), subset: width('Subset', features) }]));
+    }, [text, { Whole: whole.toString('base64'), Subset: Buffer.from(subset).toString('base64') }]);
+    assert.notEqual(widths['"sups"'].whole, widths.normal.whole, 'the fixture face draws superiors narrower than its default figures');
+    for (const [features, { whole: native, subset: viewer }] of Object.entries(widths)) assert.equal(viewer, native, `font-feature-settings: ${features}`);
+  } finally { await browser.close(); }
+});
+
 test('MIRROR-P2-FONTS-SUBSET: the observer reports the characters a document can show, pseudo-element text and field values included', async () => {
   const browser = await launch();
   try {

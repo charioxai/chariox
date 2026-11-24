@@ -175,6 +175,10 @@ test("projected queued prompt comparison includes identity and actionability", (
   assert.equal(projectedQueuedPromptListsMatch([current], [{ ...current }]), true)
   assert.equal(projectedQueuedPromptListsMatch([current], [{
     ...current,
+    launchWait: "Waiting for memory on builder",
+  }]), false)
+  assert.equal(projectedQueuedPromptListsMatch([current], [{
+    ...current,
     canSteer: false,
   }]), false)
   assert.equal(projectedQueuedPromptListsMatch([current], [{
@@ -288,6 +292,17 @@ test("queued prompt status helpers normalize queue vocabulary", () => {
   assert.equal(queuedPromptStatusLabel("dispatching_prompt"), "dispatching prompt")
   assert.equal(queuedPromptStatusLabel("queued-prompt"), "queued prompt")
   assert.equal(queuedPromptMetaLabel({ status: "Queued", attachmentCount: 0 }), "queued")
+  const projected = projectQueuedPrompt({
+    id: "held-prompt",
+    source_attachment_id: "attachment-1",
+    prompt: "Ready when the machine is",
+    status: "Queued",
+    launch_wait: "Waiting for memory on builder",
+  })
+  assert.ok(projected)
+  assert.equal(projected.prompt, "Ready when the machine is")
+  assert.equal(queuedPromptMetaLabel(projected), "Waiting for memory on builder")
+
   assert.equal(queuedPromptMetaLabel({ status: "dispatching", attachmentCount: 1 }), "dispatching · 1 file")
   assert.equal(queuedPromptMetaLabel({ status: "queued", attachmentCount: 2 }), "queued · 2 files")
   assert.equal(queuedPromptMetaLabel({ status: null, attachmentCount: -1 }), "queued")
@@ -925,11 +940,10 @@ function sessionWith(overrides: Partial<RuntimeSession>): RuntimeSession {
       permission_level: "yolo",
     },
     active_provider_run_id: null,
-    attachment_ids: [],
+    connected_cli_count: 0,
     active_prompt: null,
     queued_prompts: [],
     focused_agent_id: "agent-1",
-    max_agents: 4,
     agents: [{
       id: "agent-1",
       agent_ref: "agent-1",

@@ -193,11 +193,11 @@ fn failed_attach_releases_descriptors_and_reaps_its_child() {
             unreaped.push(pid);
         }
     }
-    // The process-wide sampler runs `ps` every 200 ms on its own thread
-    // (process_resources/sampling.rs `run_ps`), and the pipes that capture its
-    // output are open here for as long as one `ps` lives. A descriptor that a
-    // failed attach left behind never closes; a `ps` pipe closes within one
-    // sampling period, so wait for the extra ones to go.
+    // The process-wide sampler reads the process table every 200 ms on its own
+    // thread (process_resources/sampling/proc_table.rs), and the /proc
+    // descriptors it reads through are open here for as long as one read lasts.
+    // A descriptor that a failed attach left behind never closes; a table read
+    // closes within one sampling period, so wait for the extra ones to go.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     let mut transient = std::collections::BTreeSet::new();
     let (after, leaked) = loop {

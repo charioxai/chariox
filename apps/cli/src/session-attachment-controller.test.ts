@@ -14,11 +14,10 @@ function createSession(id: string): RuntimeSession {
     created_at_ms: 0,
     status: "Active",
     active_provider_run_id: null,
-    attachment_ids: [],
+    connected_cli_count: 0,
     active_prompt: null,
     queued_prompts: [],
     focused_agent_id: null,
-    max_agents: 6,
     agents: [],
     config_state: { version: 0, values: {} },
   }

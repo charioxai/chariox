@@ -520,11 +520,10 @@ impl KernelRuntimeState {
                     );
                     self.spawn_prompt_dispatch(dispatch, self.provider_runtime_lanes.clone());
                 }
+                self.owned.session_projection.update(submission.session);
                 return Ok(LocalDaemonResponse::PromptSubmitted {
-                    outcome: submission.outcome,
-                    agent_activity: self.agent_activity_for_session(&submission.session),
-                    session: submission.session,
-                    agent_activity_revision: self.owned.session_projection.change_sequence(),
+                    session_id: request.session_id.clone(),
+                    outcome: submission.outcome.into(),
                 });
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
@@ -652,7 +651,7 @@ impl KernelRuntimeState {
         };
         let submission = match submitted {
             Err(DaemonError::LocalTransport { message, .. })
-                if message == "target agent is busy; retry when its provider is ready" =>
+                if message == crate::runtime::prompt_state::TARGET_BUSY_MESSAGE =>
             {
                 if durable_work {
                     let _ = self.owned.withdraw_agent_task(&entry.entry_id);

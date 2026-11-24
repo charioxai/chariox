@@ -10,9 +10,14 @@ fn local_request_api_commits_workspace_changes() {
 }
 
 fn local_request_api_commits_workspace_changes_inner() {
-    let worktree_root = std::env::temp_dir().join("chariox-workspace-commit-test");
-    let _ = std::fs::remove_dir_all(&worktree_root);
+    let fixture = crate::test_temp_dir::TestTempDir::new("workspace-commit");
+    let worktree_root = fixture.path().join("worktree");
+    let origin = fixture.path().join("origin.git");
     std::fs::create_dir_all(&worktree_root).expect("worktree should exist");
+    run_test_git(
+        fixture.path(),
+        &["init", "--bare", "-b", "main", origin.to_str().unwrap()],
+    );
     std::fs::write(worktree_root.join("README.md"), "hello\n").expect("file should exist");
     run_test_git(&worktree_root, &["init", "-b", "main"]);
     run_test_git(
@@ -22,6 +27,11 @@ fn local_request_api_commits_workspace_changes_inner() {
     run_test_git(&worktree_root, &["config", "user.name", "Agent"]);
     run_test_git(&worktree_root, &["add", "."]);
     run_test_git(&worktree_root, &["commit", "-m", "seed"]);
+    run_test_git(
+        &worktree_root,
+        &["remote", "add", "origin", origin.to_str().unwrap()],
+    );
+    run_test_git(&worktree_root, &["push", "origin", "main"]);
     std::fs::write(worktree_root.join("README.md"), "hello\nworld\n").expect("file should update");
 
     let harness = LocalRouterTestHarness::new();
@@ -31,6 +41,8 @@ fn local_request_api_commits_workspace_changes_inner() {
                 workspace_id: worktree_root.display().to_string(),
                 worktree_id: worktree_root.display().to_string(),
                 message: "Update README".to_string(),
+                files: vec!["README.md".to_string()],
+                branch: None,
             },
         ))
         .expect("workspace commit should succeed");
@@ -38,6 +50,7 @@ fn local_request_api_commits_workspace_changes_inner() {
     match response {
         LocalDaemonResponse::WorkspaceGitActionCompleted { result } => {
             assert_eq!(result.action, "commit");
+            assert_eq!(result.branch.as_deref(), Some("chariox/update-readme"));
             assert!(result.commit_sha.is_some());
         }
         _ => panic!("unexpected local response"),
@@ -48,42 +61,6 @@ fn local_request_api_commits_workspace_changes_inner() {
         git_test_output(&worktree_root, &["status", "--porcelain"]).trim(),
         ""
     );
-}
-
-#[test]
-fn local_request_api_push_without_upstream_fails_loudly() {
-    crate::test_support::isolated_env_test!();
-    run_workspace_capability_test(
-        "local_request_api_push_without_upstream_fails_loudly",
-        local_request_api_push_without_upstream_fails_loudly_inner,
-    );
-}
-
-fn local_request_api_push_without_upstream_fails_loudly_inner() {
-    let worktree_root = std::env::temp_dir().join("chariox-workspace-push-no-upstream-test");
-    let _ = std::fs::remove_dir_all(&worktree_root);
-    std::fs::create_dir_all(&worktree_root).expect("worktree should exist");
-    std::fs::write(worktree_root.join("README.md"), "hello\n").expect("file should exist");
-    run_test_git(&worktree_root, &["init", "-b", "main"]);
-    run_test_git(
-        &worktree_root,
-        &["config", "user.email", "agent@example.com"],
-    );
-    run_test_git(&worktree_root, &["config", "user.name", "Agent"]);
-    run_test_git(&worktree_root, &["add", "."]);
-    run_test_git(&worktree_root, &["commit", "-m", "seed"]);
-
-    let harness = LocalRouterTestHarness::new();
-    let error = harness
-        .dispatch(LocalDaemonRequest::PushWorkspaceBranch(
-            PushWorkspaceBranchRequest {
-                workspace_id: worktree_root.display().to_string(),
-                worktree_id: worktree_root.display().to_string(),
-                force_with_lease: false,
-            },
-        ))
-        .expect_err("push without upstream should fail");
-    assert!(error.to_string().contains("no upstream"));
 }
 
 #[test]

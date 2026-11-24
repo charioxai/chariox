@@ -37,7 +37,7 @@ pub(super) fn apply_notification(
     text_items: &mut BTreeMap<String, CodexTextTranscriptState>,
     tool_items: &mut BTreeMap<String, CodexToolTranscriptState>,
     chunks: &mut Vec<CodexOutputChunk>,
-    _completions: &mut Vec<CodexAssistantCompletion>,
+    completions: &mut Vec<CodexAssistantCompletion>,
     notices: &mut Vec<String>,
     prompt_completed: &mut bool,
     terminal_failure: &mut Option<String>,
@@ -50,7 +50,7 @@ pub(super) fn apply_notification(
         text_items,
         tool_items,
         chunks,
-        _completions,
+        completions,
         notices,
         prompt_completed,
         terminal_failure,
@@ -71,7 +71,7 @@ pub(super) fn apply_notification_with_manifest(
     text_items: &mut BTreeMap<String, CodexTextTranscriptState>,
     tool_items: &mut BTreeMap<String, CodexToolTranscriptState>,
     chunks: &mut Vec<CodexOutputChunk>,
-    _completions: &mut Vec<CodexAssistantCompletion>,
+    completions: &mut Vec<CodexAssistantCompletion>,
     notices: &mut Vec<String>,
     prompt_completed: &mut bool,
     terminal_failure: &mut Option<String>,
@@ -111,7 +111,7 @@ pub(super) fn apply_notification_with_manifest(
                 text_items,
                 tool_items,
                 chunks,
-                _completions,
+                completions,
                 notices,
                 prompt_completed,
                 terminal_failure,
@@ -410,6 +410,29 @@ pub(super) fn apply_notification_with_manifest(
                 status: "interrupted".to_string(),
                 error_message: reason,
             });
+        }
+        CodexNotification::StreamClosed { reason } => {
+            if active_turn_id.is_none() {
+                return;
+            }
+            // A terminal reply followed by a close still ended authoritatively.
+            super::turn::maybe_finalize_terminal_signal(
+                active_turn_id,
+                turn_tracker,
+                completions,
+                notices,
+                prompt_completed,
+                terminal_failure,
+            );
+            if !*prompt_completed {
+                *active_turn_id = None;
+                *terminal_failure = Some(crate::provider::provider_coded_failure_text(
+                    "Codex",
+                    "stream_ended_early",
+                    &reason,
+                ));
+                *prompt_completed = true;
+            }
         }
         CodexNotification::Error { message } => {
             if let Some((attempt, limit)) = codex_retry_progress(&message) {

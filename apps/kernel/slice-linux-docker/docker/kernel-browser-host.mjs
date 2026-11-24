@@ -84,6 +84,8 @@ export function scheduleHostRequest(request, browser, viewport = hostViewport(),
 const TAB_LIMIT = 128;
 // A Tab the person types or clicks in is theirs until they have been idle this long (an agent's input to it waits).
 export const PERSON_IDLE_MS = 2000;
+// B3: a viewer's hover move or leave (no button) is the person's pointer, not the person acting in the Tab.
+const hoverMove = command => command.op === 'input' && command.input?.kind === 'mirror' && ['move', 'leave'].includes(command.input.action?.kind);
 const SHOW_TAB_WAIT_MS = 1000;
 // The answer to a Show tab carries the state read if it finishes in time; a busy renderer of another Tab never holds it.
 const SHOW_TAB_OBSERVE_MS = 500;
@@ -811,20 +813,20 @@ export class KernelBrowserHost {
     assertNotCancelled(signal);
     const deferredRestore = typeof deferredWebBotAuthRestoreUrl === "string" ? navigationUrl(deferredWebBotAuthRestoreUrl) : null;
     const targetUrl = deferredRestore ? "about:blank" : navigationUrl(url);
-    const signFirstNavigation = browser.webBotAuth?.byTab.has(tabId) === true;
-    const canAttachFetch = signFirstNavigation && typeof browser.ensureTargetSession === "function";
-    const { targetId } = await connection.send("Target.createTarget", { url: canAttachFetch ? "about:blank" : targetUrl, ...(background ? { background: true } : {}) });
+    const { targetId } = await connection.send("Target.createTarget", { url: "about:blank", ...(background ? { background: true } : {}) });
     if (browser !== this.browser) throw new BrowserActionError('browser_unavailable', 'MP-08: browser restarted; interrupted action was not replayed');
     this.tabs.set(tabId, { tab_id: tabId, target_id: targetId, url, title: "", document_id: "" });
     if (deferredRestore) this.webBotAuthRestoreUrls.set(tabId, { url: deferredRestore, projectId: webBotAuthProjectId });
     this.downloads.bind(this.tabs.get(tabId), downloadSession);
     this.observed = ++this.observations;
     try {
-      if (canAttachFetch) {
-        const sessionId = await browser.ensureTargetSession(connection, targetId);
-        await browser.attachWebBotAuth(tabId, targetId, sessionId);
-        if (targetUrl !== "about:blank") await connection.send("Page.navigate", { url: targetUrl }, sessionId);
-      }
+      // The page session is configured (no scrollbar gutter, signed first request) before the first document loads:
+      // a setting that arrives after the first layout leaves that document as it was.
+      const sessionId = await browser.ensureTargetSession(connection, targetId);
+      if (browser.webBotAuth?.byTab.has(tabId) === true) await browser.attachWebBotAuth(tabId, targetId, sessionId);
+      // Open answers once the Tab exists, as it did when Chrome created the target at its URL: a slow or failing load
+      // shows in the Tab's state, never as a failed open.
+      if (targetUrl !== "about:blank") connection.send("Page.navigate", { url: targetUrl }, sessionId).catch(() => {});
     } catch (error) {
       this.tabs.delete(tabId);
       if (browser.closePageTarget) await browser.closePageTarget(connection, targetId).catch(() => {});
@@ -960,6 +962,8 @@ export class KernelBrowserHost {
   // A person's input queues in order while a busy renderer cannot answer the fences; agents keep awaiting their ack.
   async request(command, options) {
     const person = !command._agent_input && !command.focused_agent;
+    // B3e: an agent acting in the Tab keeps the pointer; a hover then changes nothing the agent sees.
+    if (person && hoverMove(command) && this.agentBusy.has(command.tab_id)) return this.tabState();
     if (person) this.notePersonInput(command);
     const acting = !person && typeof command.tab_id === 'string' && ['input', 'navigate', 'snapshot', 'screenshot', 'save', 'wait', 'resize'].includes(command.op) ? command.tab_id : null;
     if (acting) this.noteAgentBusy(acting, 1);
@@ -975,10 +979,10 @@ export class KernelBrowserHost {
       }
     }
   }
-  // The person's typing, click or scroll in a Tab keeps that Tab theirs until they have been idle for PERSON_IDLE_MS.
+  // The person's typing, click or scroll in a Tab (not a hover) keeps that Tab theirs until they have been idle for PERSON_IDLE_MS.
   notePersonInput(command) {
     if (!['input', 'mirror_input', 'display_input'].includes(command.op) || typeof command.tab_id !== 'string') return;
-    if (command.action?.kind === 'selection') return;
+    if (command.action?.kind === 'selection' || hoverMove(command)) return;
     this.personInputAt.set(command.tab_id, Date.now());
   }
   async personQuiet(tabId, signal) {
@@ -1152,6 +1156,9 @@ export class KernelBrowserHost {
       stream.lastCreditAt=Date.now();stream.expires=Date.now()+60_000;this.armDisplayExpiry(stream);
       return {generation:this.generation,parked:Boolean(stream.parked)};
     }
+    // A Tab display is a crop of the browser's own display. A browser without one would answer with a CDP display at the
+    // viewer's layout size, which no viewer accepts as a Tab display: it says once that it never can.
+    if(command.op==='display_subscribe'&&command.tab_display===true&&!this.chromium.desktop?.binding?.())throw Error('MP-08: region video needs the browser\'s own display');
     // MP-08/MP-10/MP-11: allocated536 default fallback never resizes the owned desktop.
     // The visible-page adapter attests H.264; an offer without it (no decoder, VP8/VP9 only) takes the CDP display below.
     if(command.op==='display_subscribe'&&!command.target&&command.codecs?.includes?.('avc1.420033')&&this.chromium.desktop?.binding?.()){
@@ -1348,14 +1355,29 @@ export class KernelBrowserHost {
         // admitted human viewer with a live display lease owns the fast path.
         const viewerActive=()=>viewerPageInputActive(this,command,scope);
         // MP-08/MP-10/MP-11: the input grant and document fence admit drags too; a DOM mirror needs no video lease.
-        // Review #1016 P1: native whole-page input only while this Tab is Chrome's live active Tab.
+        // Review #1016 P1: native whole-page input only while this Tab is Chrome's active Tab. A click, key or wheel
+        // notch reads the owner snapshot, which Chrome's activation, resize and detach events retire; a miss reads live.
         // MP-08/MP-10/MP-11: a preview handover flush must follow actual CDP input ACKs, not an asynchronous XTest receipt.
+        const kind=command.input?.kind;
         const handoverOrdered=[...this.mirror.streams.values()].some(s=>s.tab_id===tab.tab_id&&s.scope===scope&&s.navigationPreview);
         const candidate=handoverOrdered?null:(nativeDisplay?visiblePageInputSource(this,nativeDisplay,tab,scope):this.compositors.get(tab.tab_id)?.source);
-        const owned=candidate?.attested&&viewerActive()&&await slowMark(this.timing,'input_wait native_front',this.nativeFront(tab,{cached:['key','scroll'].includes(command.input?.kind)}))?candidate:null;
-        const nativeWheel=viewerActive()&&owned?.attested&&typeof owned.wheel==='function'?(x,y,dx,dy)=>viewerActive()&&owned.wheel(x,y,dx,dy):null;
-        const nativeClick=viewerActive()&&owned?.attested&&typeof owned.click==='function'?(x,y)=>{if(!viewerActive())return false;this.arbiter.pageFocused();return owned.click(x,y);}:null;
-        const nativeKey=viewerActive()&&owned?.attested&&typeof owned.key==='function'?(keysym,shift)=>viewerActive()&&owned.key(keysym,shift):null;
+        const refusedBy=handoverOrdered?'handover':!candidate?.attested?'attested':!viewerActive()?'viewer':
+          !await slowMark(this.timing,'input_wait native_front',this.nativeFront(tab,{cached:['click','key','scroll'].includes(kind)}))?'front':null;
+        const owned=refusedBy?null:candidate;
+        // Diagnostics: the path a viewer's input took, or the gate that left it to CDP (`not_called`: the input
+        // itself is not native, such as a chord, a key without page focus or a mirror-resolved target).
+        let path=refusedBy??'not_called';
+        const failed=error=>{path=error?.code==='native_input_uncertain'?'uncertain':'refused';throw error;};
+        // A native key answers synchronously; a click or wheel notch answers with a promise.
+        const traced=native=>(...args)=>{
+          let done;
+          try{done=native(...args);}catch(error){failed(error);}
+          if(typeof done?.then!=='function'){path=done?'native':'refused';return done;}
+          return done.then(ok=>{path=ok?'native':'refused';return ok;},failed);
+        };
+        const nativeWheel=viewerActive()&&owned?.attested&&typeof owned.wheel==='function'?traced((x,y,dx,dy)=>viewerActive()&&owned.wheel(x,y,dx,dy)):null;
+        const nativeClick=viewerActive()&&owned?.attested&&typeof owned.click==='function'?traced((x,y)=>{if(!viewerActive())return false;this.arbiter.pageFocused();return owned.click(x,y);}):null;
+        const nativeKey=viewerActive()&&owned?.attested&&typeof owned.key==='function'?traced((keysym,shift)=>viewerActive()&&owned.key(keysym,shift)):null;
         const documentCurrent=(nativeKey&&command.input?.kind==='key'||nativeWheel&&command.input?.kind==='scroll')?await slowMark(this.timing,'input_wait document_guard',this.displayDocuments.guard(this.browser,tab)):undefined;
         const laneAt=timestamp();
         const deferred=await this.sampleLane(tab).run("input", async () => {
@@ -1377,6 +1399,7 @@ export class KernelBrowserHost {
         // frame-aligned ack would otherwise serialize kernel input admission.
         deferred?.ack?.catch(()=>{});
         if(dispatched)(nativeDisplay?.regionSource??this.compositors.get(tab.tab_id)?.source)?.wake?.();
+        if(command._display_input===true&&['click','key','scroll'].includes(kind))this.timing(['native','uncertain'].includes(path)?`input_path ${path}`:`input_path cdp ${path}`,at);
         this.timing('cdp_input', at);
       }
       catch (error) {
@@ -1396,6 +1419,8 @@ export class KernelBrowserHost {
       // MP-08/MP-10: a person's wheel cannot add, close or retarget a Tab; the state events and the next state read do.
       // A viewer's key is the same: no input-lane reconcile (the lane serializes the next key behind it).
       if (['scroll', 'key'].includes(command.input.kind) && command._display_input === true) return this.observe(this.tabState(), null, scope);
+      // B3-perf: a hover move cannot open, close or retarget a Tab either (up to one per frame while the pointer moves).
+      if (hoverMove(command)) return this.observe(this.tabState(), null, scope);
       // The page acknowledged this input: a timeout of the observation that follows never makes it replayable.
       // A renderer that is busy cannot answer the observation either: the input was accepted, the last observed Tab state stands.
       // The observation is bounded too: it goes on in the background and a later state read has its result.

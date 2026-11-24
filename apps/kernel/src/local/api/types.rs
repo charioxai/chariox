@@ -40,8 +40,11 @@ mod kernel_resources;
 mod managed_context;
 mod metaagent;
 mod notes;
+mod notification_subscription;
 mod outside_events;
 mod own_machine_enrollment;
+mod owner_view;
+mod person_inbox;
 mod project_environment;
 mod prompt_control;
 mod prompt_settings;
@@ -61,8 +64,8 @@ mod slice;
 mod terminal_command_catalog;
 mod terminal_interaction;
 mod usage_snapshot;
-mod user_domain_access;
 mod vault_secret;
+mod watcher;
 mod workflow;
 mod workflow_notification;
 mod workspace;
@@ -97,8 +100,11 @@ pub use kernel_resources::*;
 pub use managed_context::*;
 pub use metaagent::*;
 pub use notes::*;
+pub use notification_subscription::*;
 pub use outside_events::*;
 pub use own_machine_enrollment::*;
+pub use owner_view::*;
+pub use person_inbox::*;
 pub use project_environment::*;
 pub use prompt_control::*;
 pub use prompt_settings::*;
@@ -118,8 +124,8 @@ pub use slice::*;
 pub use terminal_command_catalog::*;
 pub use terminal_interaction::*;
 pub use usage_snapshot::*;
-pub use user_domain_access::*;
 pub use vault_secret::*;
+pub use watcher::*;
 pub use workflow::*;
 pub use workflow_notification::*;
 pub use workspace::*;
@@ -566,5 +572,75 @@ pub use workspace::*;
 /// `ListRoomListSessions` → `RoomListSessionsListed`, scope `room_list`, events `room_list_changed` /
 /// `room_list_rows_changed`, command catalog surface `room_list`) and the old full-inventory request is removed;
 /// every workflow has a `responsible` (and a `responsible_notice`), numbers its runs and gives each run an
-/// `outcome` and an `attention` flag; `SetWorkflowResponsible` and `ClearWorkflowRunAttention` change them.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1011;
+/// `outcome` and an `attention` flag; `SetWorkflowResponsible` and `ClearWorkflowRunAttention` change them;
+/// 1012 adds the person's Inbox (`GetPersonInbox` → `PersonInbox`, the `person_inbox` kernel resource): every
+/// waiting card of the owner's Rooms and the notices their agents send with `chariox.notify_person`, read,
+/// snoozed and muted by the kernel (`SetInboxCardState`, `SetInboxMute`), with a card for a failed or waiting run
+/// of a workflow the person answers for and a flag for a subscription that stopped delivering; it lists the
+/// person's subscriptions (`ListNotificationSubscriptions` → `NotificationSubscriptions`, with the workflows the
+/// person answers for), pauses, moves and removes them, dry-runs them (`TestNotificationSubscription`) and reads
+/// their trace (`ReadNotificationTrace`), and a source declares options a subscription picks, with `once`; a
+/// watcher is a notification source (docs/PROTOCOL.md, "A watcher as a notification source"); every agent has
+/// the kernel browser with no card (task `owner_action` is only `"question"`, grants carry no `prompt_id`); each
+/// Browser Tab names its icon by `favicon_hash`: a `state` read carries no icon PNG, and a `state_wait` carries
+/// one only when its `known_favicons` lacks the hash; `SendProviderLoginVaultEntry` →
+/// `ProviderLoginVaultEntrySent`: a running API-key provider login takes a Vault entry by handle and the kernel
+/// types its value into the login; an external agent's access grant answers the person's cards for them except
+/// secret entry, Vault unlock, passkeys, payments and critical decisions, and `ListOwnerInteractions` lists the
+/// person's open cards with why the person keeps one (`person_only`); `OwnerVault` `update` changes an
+/// owner-made entry's Kind and Use; a worktree listing says whether the workspace folder is empty, and a
+/// managed context copy carries several source Projects (`source_projects`); an App confirmation card carries
+/// the exact input the kernel will run (`AppConfirmationFrame.input`); a queued agent message in a session
+/// carries a `preview` (its first 200 characters) and `truncated` instead of the whole `prompt`, and a session
+/// lists at most the next ten per agent; a provider catalog's model lists `aliases`, the other names the
+/// provider's own tool accepts for it (Claude's `sonnet`), which an agent spawn, a model change and a new Room
+/// resolve to the model id; an agent's notification subscription has a `mode` (`queue` or `steer`,
+/// `NotificationSubscriptionChange::Mode`, the trigger's `busy_policy`), and the notification itself waits in the
+/// agent's inbox while its prompt carries one line; the reply to `RespondToInteraction` is a small acknowledgement
+/// (`InteractionResponded` carries `interaction_id`, `choice_id` and `outcome`, no longer the Room `session`; clients
+/// read the Room from its events); `TrashKernelFiles` moves files and folders to the machine's own trash and
+/// `RestoreKernelTrash` puts them back without overwriting (`KernelFilesTrashed`, `KernelTrashRestored`;
+/// docs/PROTOCOL.md, "Move to Trash"); `KernelTerminal` and the `kernel_terminal` stream scope serve the kernel's own
+/// terminals, a terminal summary carries its `scope` (`session_id` only for a Room's) and the `kernel_terminal_v1`
+/// capability names them (docs/PROTOCOL.md, "Kernel terminals"); a job request may name a machine the agent
+/// already holds (`machine`), which runs it through that machine's own kernel; Skills v2: Chariox and Project
+/// skill catalogs, the Auto / Manual / Off states, packages, repository install and update, and delivery to every
+/// execution place; the per-agent skill grants and the `skill` extension kind are gone; an agent's active turn has
+/// the phase `thinking` while the model reasons without visible output (`awaiting_first_output` is the provider still
+/// reading the context).
+/// An event subscription's `like` copies the follows of an earlier live grant of the same owner.
+/// `KernelAccessStatus.follows` counts the targets and notification sources followed by the grant.
+/// Agent settings updates drop `self_settings` from the request and agent record.
+/// Copied Project launch targets carry their source kernel and Project for Environment import.
+/// Deadline refusals have an explicit reason in undelivered outcomes and sender history.
+/// A cross-Room sub-agent carries its parent's Room and starter label on this kernel.
+/// A requested reply has an explicit no-answer outcome when handled during independent work.
+/// The machine list separates live/reconnecting machines (presence) from offline_machines.
+/// Machine inventories identify the Cloud directory, and a stale reply can mark an active renewal.
+/// Relay registrations and machine records include each kernel's registered local protocol.
+/// `PreflightProviderAccountPortability` carries the launch's `kernelContext`, so a copy of this
+/// kernel holds its Vault unlock for the export that follows.
+/// 1013 allows a remote-job policy request to name the Room project with `project: true`.
+/// Provider account profiles carry recovery errors and Inbox notices can offer sign-in on the target kernel.
+/// 1013 moves finished Room tasks to pages and machine samples to a Machine resource. Room views
+/// publish the connection count and workflow inventory alongside current activity.
+/// 1013 links a folded notification outcome to its answering turn.
+/// Local 1013 (relay peer 450): the mirror v2 header carries `focus_visible`, whether the page's focused element
+/// matches `:focus-visible`, so a viewer draws the focus ring only where the page's browser does; absent means no ring.
+/// Local 1014 (relay peer 451), the Landing 13 union: a workflow run waiting on a workspace claim names the holding run;
+/// machine status carries kernel diagnostics and the machine-only job scope; the local direct grant answers
+/// `LocalBrowserConnectIssued`/`LocalTerminalConnectIssued` and `LocalBrowserLeaseRenewed`/`LocalTerminalLeaseRenewed` carry
+/// `expires_in_ms`, how long the grant lasts from the kernel's answer, so a client whose clock is off still renews a grant
+/// its identity shortened; mirror hover moves and right clicks reach the kernel page (KernelBrowser input), and the mirror
+/// v2 header carries `page_wheel`, whether the page's own script takes the wheel (a non-passive wheel listener on window,
+/// document, html or body), so the viewer sends it every wheel step.
+/// Machine status includes a readable relay failure reason (#1632).
+/// Local 1014 (relay peer 451): opening a terminal with a `command` takes `stdin`, inline up to
+/// 64 KiB or a file on the kernel, which the program reads as its standard input (docs/PROTOCOL.md, "Kernel terminals").
+/// Local 1014 (relay peer 451): the owner's agents need no grant for the kernel browser, Computer or
+/// App views. `UserDomainGrant`, `UserDomainNotice`, `UserDomainResource` and `UserDomainWindowAccess` are gone; the
+/// `user_domain_grants_changed` snapshot carries only `cursor` and `room_computer`; browser and App view results no
+/// longer carry `kernel_id`, `kernel_name`, `focused_agent_kernel_id` or `reachable_by_focused_agent`; the loader tools
+/// take no arguments and `chariox.kernel_browser_share` is removed.
+/// 1014 adds revision-based latest Room history outline reads.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1014;

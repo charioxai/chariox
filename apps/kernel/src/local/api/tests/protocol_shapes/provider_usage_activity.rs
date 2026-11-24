@@ -174,6 +174,7 @@ fn local_daemon_protocol_provider_account_profile_shape_is_versioned() {
     );
     let response = LocalDaemonResponse::ProviderAccountProfile {
         profile: crate::account_profile::ProviderAccountProfile {
+            auth_error: None,
             owner_user_id: "user-1".to_string(),
             provider: "codex".to_string(),
             profile_id: "work".to_string(),
@@ -343,16 +344,6 @@ fn local_daemon_protocol_provider_capability_import_shape_is_versioned() {
                     reason: "different definition hash, older source".to_string(),
                 }],
             }],
-            skills: vec![crate::local::ProviderCapabilityImportEntry {
-                kind: "skill".to_string(),
-                name: "qa".to_string(),
-                provider: "codex".to_string(),
-                source: "/repo/.codex/skills/qa".to_string(),
-                hash: Some("hash-2".to_string()),
-                action: "already_installed".to_string(),
-                reason: "matching skill package already installed in Chariox".to_string(),
-                duplicates: Vec::new(),
-            }],
         },
     };
 
@@ -378,7 +369,7 @@ fn local_daemon_protocol_provider_capability_import_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "431b8a8d30850209aad51fab65d31ffb9e8d9ff6ced4533fbc92f96c12ba6060"
+        "c7f4cbcd3df68c892a2eb0b5b887dbad4af91923f0b9c547db6df239fb3110fc"
     );
 }
 
@@ -975,58 +966,29 @@ fn local_daemon_protocol_provider_run_usage_shape_is_versioned() {
         "d3df9ce72d0e27572f5ce66e5e29ba809d6e00d73c5508deda2aa810969f40e8"
     );
 
-    let create_pr_request = serde_json::to_value(LocalDaemonRequest::CreateWorkspacePullRequest(
-        CreateWorkspacePullRequestRequest {
+    let commit_request = serde_json::to_value(LocalDaemonRequest::CommitWorkspaceChanges(
+        CommitWorkspaceChangesRequest {
             workspace_id: "workspace-1".to_string(),
             worktree_id: "worktree-1".to_string(),
-            title: Some("Ship feature".to_string()),
-            body: Some("Body".to_string()),
-            base_ref: Some("main".to_string()),
-            draft: true,
+            message: "Ship feature".to_string(),
+            files: vec!["src/lib.rs".to_string()],
+            branch: Some("feature".to_string()),
         },
     ))
-    .expect("create pull request request should serialize");
-    let create_pr_payload = create_pr_request
-        .pointer("/CreateWorkspacePullRequest")
-        .expect("create pull request payload should serialize");
+    .expect("commit request should serialize");
+    let commit_payload = commit_request
+        .pointer("/CommitWorkspaceChanges")
+        .expect("commit payload should serialize");
     assert_eq!(
-        create_pr_payload.pointer("/base_ref"),
-        Some(&serde_json::json!("main"))
+        commit_payload.pointer("/files"),
+        Some(&serde_json::json!(["src/lib.rs"]))
     );
-    let serialized = serde_json::to_string(create_pr_payload)
-        .expect("create pull request request snapshot should encode");
+    let serialized =
+        serde_json::to_string(commit_payload).expect("commit request snapshot should encode");
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "318e776a7f78bd7b0a8543028eea8d1acd44865c3f49a7bd22a7596c77b22471"
-    );
-
-    let pull_request = WorkspacePullRequestRecord {
-        workspace_id: "workspace-1".to_string(),
-        worktree_id: "worktree-1".to_string(),
-        branch: "feature".to_string(),
-        base_ref: "main".to_string(),
-        url: "https://github.com/example/repo/pull/1".to_string(),
-        title: Some("Ship feature".to_string()),
-        draft: true,
-        generated_at_ms: 1237,
-    };
-    let pr_response =
-        serde_json::to_value(LocalDaemonResponse::WorkspacePullRequestCreated { pull_request })
-            .expect("pull request response should serialize");
-    let pr_response_payload = pr_response
-        .pointer("/WorkspacePullRequestCreated/pull_request")
-        .expect("pull request response payload should serialize");
-    assert_eq!(
-        pr_response_payload.pointer("/url"),
-        Some(&serde_json::json!("https://github.com/example/repo/pull/1"))
-    );
-    let serialized = serde_json::to_string(pr_response_payload)
-        .expect("pull request response snapshot should encode");
-    let hash = Sha256::digest(serialized.as_bytes());
-    assert_eq!(
-        format!("{hash:x}"),
-        "4354e2b9a67c08033d5306739f223f09af4ca44c747a01c30499526766bca00f"
+        "40744b6ef906cf885b7df37fb18b33ac9e5784c0edb974d06f5abe8629eb03e3"
     );
 }
 
@@ -1078,10 +1040,19 @@ fn local_daemon_protocol_active_turn_phase_shape_is_versioned() {
         started_at_ms: Some(1234),
     };
 
-    let snapshot = serde_json::to_value(active_turn).expect("active turn should serialize");
+    let snapshot = serde_json::to_value(&active_turn).expect("active turn should serialize");
     assert_eq!(
         snapshot.pointer("/phase"),
         Some(&serde_json::json!("awaiting_first_output"))
+    );
+    // Local 1012: a model that reasons without visible output is `thinking`.
+    let thinking = crate::runtime::projection::AgentActiveTurnProjection {
+        phase: crate::runtime::projection::AgentTurnRuntimePhase::Thinking,
+        ..active_turn.clone()
+    };
+    assert_eq!(
+        serde_json::to_value(thinking).unwrap().pointer("/phase"),
+        Some(&serde_json::json!("thinking"))
     );
     assert_eq!(
         snapshot.pointer("/started_at_ms"),
@@ -1195,6 +1166,7 @@ fn local_daemon_protocol_completed_turn_action_projection_shape_is_versioned() {
             kind: crate::provider::TurnOutcomeKind::ProviderCrashed,
             retryable: true,
             reason: "provider process exited with status 17".to_string(),
+            answered_in_turn: None,
         }),
         duration_ms: Some(234),
         changed_paths: vec!["src/lib.rs".to_string()],
@@ -1253,7 +1225,7 @@ fn local_daemon_protocol_completed_turn_action_projection_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "c84cd51e43bebffa138948ccfe835ed674a171f49dfd908f6b510538dd97dfd6"
+        "e65d2bece8633b356b402abd536a72eb77a85053060fed0a42ea50d18c27a07a"
     );
 }
 
@@ -1293,7 +1265,7 @@ fn local_daemon_protocol_provider_termination_categories_shape_is_versioned() {
                 "failure": {
                     "kind": "provider_crashed",
                     "retryable": true,
-                    "reason": "provider process exited with status 17",
+                    "reason": "Provider CLI exited with status 17.",
                 },
             },
             {
@@ -1313,7 +1285,7 @@ fn local_daemon_protocol_provider_termination_categories_shape_is_versioned() {
                 "failure": {
                     "kind": "other",
                     "retryable": false,
-                    "reason": "The provider could not complete this request.",
+                    "reason": "provider rejected request",
                 },
             },
             {
@@ -1357,7 +1329,7 @@ fn local_daemon_protocol_provider_termination_categories_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "6dd3a05a435f59762d5d346abced5950e28d916aede5491e00ac697c45ac3383"
+        "ed353d2ca0e1e44777e1988e7f337093a0a02a17a65cd5b78c2eaa2aa941627e"
     );
 }
 

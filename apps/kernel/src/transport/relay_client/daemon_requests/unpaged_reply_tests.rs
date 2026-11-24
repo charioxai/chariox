@@ -117,6 +117,7 @@ fn a_wide_terminal_snapshot_above_the_reply_ceiling_is_answered_over_the_relay()
                                  i=$((i+1)); done; sleep 120"
                                     .into(),
                             ]),
+                            stdin: None,
                         })
                         .await
                         .expect("the owner opens the terminal")

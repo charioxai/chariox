@@ -369,8 +369,8 @@ impl SetupRuns {
             .map_err(|_| "Setup could not start bash".to_string())?;
         *lock(&live.pid) = child.id();
         let leader =
-            crate::runtime::owned_process_signals::OwnedProcessSignals::for_tokio_session_child(
-                &child,
+            crate::runtime::owned_process_signals::OwnedProcessSignals::for_claimed_tokio_session_child(
+                &child, &claim,
             )
             .map(|signals| signals.root_birth());
         let saved = leader.ok().and_then(|leader| {

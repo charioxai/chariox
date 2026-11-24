@@ -195,6 +195,67 @@ async fn review971c_relay_subscription_keeps_mixed_task_changes() {
     result.expect("MP-08 / MP-10 relay subscriber lost a mixed task update");
 }
 
+// A subscribed client with no activity learns of a catalog mutation from the
+// kernel; it must not have to poll or wait for the next heartbeat.
+#[tokio::test]
+async fn idle_relay_subscription_receives_skills_changed_after_catalog_mutation() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
+    let session_id = create_test_session(&mut app, "workspace", "worktree");
+    let attachment_id = attach_test_client(
+        &mut app,
+        &session_id,
+        "idle-skills",
+        ClientCapabilityLevel::MessageTransport,
+    );
+    let app = Arc::new(Mutex::new(app));
+    let router = Arc::new(CommandRouter::with_interactive_capacity(app.clone(), 4));
+    let (outgoing_tx, _priority_rx, mut event_rx) = RelayOutgoingSender::channel(64);
+    let private_key = relay_crypto::generate_private_key_base64();
+    let public_key = relay_crypto::public_key_from_private_key_base64(&private_key).unwrap();
+    let task = tokio::spawn(run_relay_subscription_loop(
+        router.clone(),
+        outgoing_tx,
+        "idle-skills-subscription".into(),
+        public_key,
+        session_id,
+        attachment_id,
+        None,
+        Arc::new(RelayEventRuntime::for_tests(64)),
+        false,
+        crate::transport::relay_client::subscriptions::RelaySubscriber {
+            user_id: crate::session::DEFAULT_LOCAL_USER_ID.into(),
+            connection_class: crate::local::KernelConnectionClass::Terminal,
+            caller: crate::runtime::command::KernelCaller::for_relay_request(None),
+            heartbeat_interval: std::time::Duration::from_secs(5),
+        },
+    ));
+    let result = tokio::time::timeout(Duration::from_secs(10), async {
+        async fn next_skills_changed(rx: &mut mpsc::Receiver<RelayEnvelope>, key: &str) {
+            loop {
+                let (_, event) = decrypt_relay_event_from_channel(rx, key).await;
+                if event["event"] == "skills_changed" {
+                    return;
+                }
+            }
+        }
+        next_skills_changed(&mut event_rx, &private_key).await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        while event_rx.try_recv().is_ok() {}
+        crate::test_support::install_skill_through_requests(&router, "idle-probe", 0).await;
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            next_skills_changed(&mut event_rx, &private_key),
+        )
+        .await
+        .expect("an idle relay subscription must receive skills_changed within 2 s");
+    })
+    .await;
+    task.abort();
+    let _ = task.await;
+    router.runtime_state().shutdown_cleanup().await.unwrap();
+    result.expect("the idle relay subscription never reached the mutation drill");
+}
+
 struct RelayEventStoreTestRoot(std::path::PathBuf);
 
 impl RelayEventStoreTestRoot {
@@ -331,8 +392,177 @@ async fn relay_event_store_recovers_both_subscription_scopes_after_append_failur
     let _ = std::fs::remove_dir_all(root);
 }
 
+/// One browser-like subscriber and its socket-local bounded-frame receiver.
+struct RoomListRelayClient {
+    socket: tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >,
+    frames: chariox_relay::frame_transport::FrameReceiver,
+    private_key: String,
+}
+
+impl RoomListRelayClient {
+    async fn subscribe(url: &str, config: &DaemonConfig, name: &str) -> Self {
+        let (socket, _) = connect_async(chariox_relay::frame_transport::transport_url(url))
+            .await
+            .expect("client should connect to relay");
+        let mut client = Self {
+            socket,
+            frames: Default::default(),
+            private_key: relay_crypto::generate_private_key_base64(),
+        };
+        let target = ClientTarget {
+            daemon_id: Some(config.daemon_id.clone()),
+            daemon_alias: None,
+        };
+        send_client_envelope(
+            &mut client.socket,
+            &RelayEnvelope::ClientConnect {
+                auth_token: "secret".to_string(),
+                target: target.clone(),
+            },
+        )
+        .await;
+        let connected = client.next_envelope().await;
+        assert!(
+            matches!(connected, RelayEnvelope::ClientConnected { .. }),
+            "{connected:?}"
+        );
+
+        let client_public_key =
+            relay_crypto::public_key_from_private_key_base64(&client.private_key)
+                .expect("subscription public key should derive");
+        approve_test_terminal(config, &client_public_key);
+        let request_id = format!("{name}-subscribe");
+        send_client_envelope(
+            &mut client.socket,
+            &RelayEnvelope::ClientSubscribe {
+                request_id: request_id.clone(),
+                subscription_id: format!("{name}-subscription"),
+                target,
+                session_id: ROOM_LIST_SENTINEL_ID.to_string(),
+                attachment_id: ROOM_LIST_SENTINEL_ID.to_string(),
+                client_public_key,
+                subscription_scope: Some(ROOM_LIST_SUBSCRIPTION_SCOPE.to_string()),
+                resume_from_event_id: None,
+                heartbeat_interval_ms: None,
+            },
+        )
+        .await;
+        let response = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let envelope = client.next_envelope().await;
+                if !matches!(envelope, RelayEnvelope::ClientEvent { .. }) {
+                    break envelope;
+                }
+            }
+        })
+        .await
+        .expect("expected a relay subscription response");
+        let RelayEnvelope::ClientResponse {
+            request_id: answered,
+            encrypted_response: Some(encrypted_response),
+            error: None,
+        } = response
+        else {
+            panic!("expected a successful subscription response, got {response:?}");
+        };
+        assert_eq!(answered, request_id);
+        relay_crypto::decrypt_payload_for_private_key(&client.private_key, &encrypted_response)
+            .expect("response should decrypt");
+        client
+    }
+
+    async fn inventory(&mut self) -> (serde_json::Value, usize) {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let envelope = self.next_envelope().await;
+                let wire_bytes = serde_json::to_vec(&envelope).unwrap().len();
+                let RelayEnvelope::ClientEvent {
+                    encrypted_event, ..
+                } = envelope
+                else {
+                    panic!("expected a Room-list event, got {envelope:?}");
+                };
+                let event = relay_crypto::decrypt_payload_for_private_key(
+                    &self.private_key,
+                    &encrypted_event,
+                )
+                .expect("event should decrypt");
+                let inventory: serde_json::Value =
+                    serde_json::from_slice(&event.plaintext).expect("event should be JSON");
+                if inventory["event"] == "room_list_rows_changed" {
+                    return (inventory, wire_bytes);
+                }
+            }
+        })
+        .await
+        .expect("expected Room-list rows within five seconds")
+    }
+
+    async fn next_envelope(&mut self) -> RelayEnvelope {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                match chariox_relay::frame_transport::read_message(
+                    &mut self.socket,
+                    &mut self.frames,
+                )
+                .await
+                {
+                    Some(Ok(Message::Text(text))) => {
+                        return serde_json::from_str(&text).expect("relay envelope should parse");
+                    }
+                    Some(Ok(Message::Ping(_) | Message::Pong(_))) => {}
+                    other => panic!("unexpected relay message: {other:?}"),
+                }
+            }
+        })
+        .await
+        .expect("expected a bounded relay envelope")
+    }
+}
+
+async fn populate_framed_room_list_fixture(
+    router: &CommandRouter,
+    worktree: &crate::test_support::TestWorktree,
+) -> usize {
+    use crate::transport::kernel_protocol::room_list_rows_changed_event;
+
+    let budget = crate::transport::perf_budget::budget("event_envelope_bytes");
+    // Base64 expands the encrypted payload by a third. Measure the actual projection
+    // so differences in local paths and metadata cannot make the fixture oversize.
+    let minimum = chariox_relay::frame_transport::CHUNK_BYTES * 3 / 4;
+    for room_count in 1..=12 {
+        let alias = format!("fixture-room-{room_count}");
+        let request =
+            LocalDaemonRequest::CreateSession(worktree.session_request().with_alias(&alias));
+        let command = KernelCommand::from_local_request(alias, None, None, &request);
+        router
+            .dispatch(command, request)
+            .await
+            .expect("fixture Room should be created");
+
+        let inventory = router
+            .room_list_snapshot(crate::session::DEFAULT_LOCAL_USER_ID, None)
+            .await
+            .expect("fixture inventory should project");
+        let rows = room_list_rows_changed_event(inventory, None)
+            .expect("initial inventory should contain Room rows");
+        let plaintext_bytes = serde_json::to_vec(&rows).unwrap().len();
+        assert!(
+            plaintext_bytes <= budget,
+            "the fixture event must fit the kernel's event budget ({plaintext_bytes} > {budget})",
+        );
+        if plaintext_bytes >= minimum {
+            return room_count;
+        }
+    }
+    panic!("fixture should require bounded delivery after creating twelve Rooms");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn relay_room_list_subscription_sends_baseline_after_reload_and_observes_mutations() {
+    crate::test_support::isolated_env_test!();
     let _relay_test_guard = relay_client_test_guard().await;
     let server = RelayServer::new(RelayConfig {
         host: "127.0.0.1".to_string(),
@@ -367,6 +597,7 @@ async fn relay_room_list_subscription_sends_baseline_after_reload_and_observes_m
     config.relay_url = Some(format!("ws://{}:{}", addr.ip(), addr.port()));
     config.relay_token = Some("secret".to_string());
     config.relay_heartbeat_ms = 50;
+    let worktree = crate::test_support::TestWorktree::new("workspace-relay-inventory");
     let app = Arc::new(Mutex::new(
         DaemonApp::bootstrap(config.clone()).expect("daemon should bootstrap"),
     ));
@@ -382,125 +613,36 @@ async fn relay_room_list_subscription_sends_baseline_after_reload_and_observes_m
         shutdown_rx,
     ));
     wait_for_daemon_registration(registry, &config.daemon_id).await;
+    let fixture_room_count = populate_framed_room_list_fixture(&router, &worktree).await;
 
     let url = format!("ws://{}:{}", addr.ip(), addr.port());
-    let (mut client_socket, _) = connect_async(&url)
-        .await
-        .expect("client should connect to relay");
-    send_client_envelope(
-        &mut client_socket,
-        &RelayEnvelope::ClientConnect {
-            auth_token: "secret".to_string(),
-            target: ClientTarget {
-                daemon_id: Some(config.daemon_id.clone()),
-                daemon_alias: None,
-            },
-        },
-    )
-    .await;
-    let _daemon_public_key = expect_client_connected(&mut client_socket).await;
-    let subscription_private_key = relay_crypto::generate_private_key_base64();
-    let subscription_public_key =
-        relay_crypto::public_key_from_private_key_base64(&subscription_private_key)
-            .expect("subscription public key should derive");
-    approve_test_terminal(&config, &subscription_public_key);
-    send_client_envelope(
-        &mut client_socket,
-        &RelayEnvelope::ClientSubscribe {
-            request_id: "room-list-subscribe".to_string(),
-            subscription_id: "room-list-subscription".to_string(),
-            target: ClientTarget {
-                daemon_id: Some(config.daemon_id.clone()),
-                daemon_alias: None,
-            },
-            session_id: ROOM_LIST_SENTINEL_ID.to_string(),
-            attachment_id: ROOM_LIST_SENTINEL_ID.to_string(),
-            client_public_key: subscription_public_key,
-            subscription_scope: Some(ROOM_LIST_SUBSCRIPTION_SCOPE.to_string()),
-            resume_from_event_id: None,
-            heartbeat_interval_ms: None,
-        },
-    )
-    .await;
-    let _ = expect_json_client_response(
-        &mut client_socket,
-        "room-list-subscribe",
-        &subscription_private_key,
-    )
-    .await;
-    let first_inventory = expect_named_client_event(
-        &mut client_socket,
-        &subscription_private_key,
-        "room_list_rows_changed",
-    )
-    .await
-    .1;
+    let mut original = RoomListRelayClient::subscribe(&url, &config, "room-list").await;
+    let (first_inventory, first_wire_bytes) = original.inventory().await;
+    assert_eq!(
+        first_inventory["sessions"].as_array().unwrap().len(),
+        fixture_room_count,
+    );
 
-    let (mut reloaded_client_socket, _) = connect_async(&url)
-        .await
-        .expect("reloaded room-list client should connect to relay");
-    send_client_envelope(
-        &mut reloaded_client_socket,
-        &RelayEnvelope::ClientConnect {
-            auth_token: "secret".to_string(),
-            target: ClientTarget {
-                daemon_id: Some(config.daemon_id.clone()),
-                daemon_alias: None,
-            },
-        },
-    )
-    .await;
-    let _reloaded_daemon_public_key = expect_client_connected(&mut reloaded_client_socket).await;
-    let reloaded_subscription_private_key = relay_crypto::generate_private_key_base64();
-    let reloaded_subscription_public_key =
-        relay_crypto::public_key_from_private_key_base64(&reloaded_subscription_private_key)
-            .expect("reloaded subscription public key should derive");
-    approve_test_terminal(&config, &reloaded_subscription_public_key);
-    send_client_envelope(
-        &mut reloaded_client_socket,
-        &RelayEnvelope::ClientSubscribe {
-            request_id: "room-list-reload-subscribe".to_string(),
-            subscription_id: "room-list-reload-subscription".to_string(),
-            target: ClientTarget {
-                daemon_id: Some(config.daemon_id.clone()),
-                daemon_alias: None,
-            },
-            session_id: ROOM_LIST_SENTINEL_ID.to_string(),
-            attachment_id: ROOM_LIST_SENTINEL_ID.to_string(),
-            client_public_key: reloaded_subscription_public_key,
-            subscription_scope: Some(ROOM_LIST_SUBSCRIPTION_SCOPE.to_string()),
-            resume_from_event_id: None,
-            heartbeat_interval_ms: None,
-        },
-    )
-    .await;
-    let _ = expect_json_client_response(
-        &mut reloaded_client_socket,
-        "room-list-reload-subscribe",
-        &reloaded_subscription_private_key,
-    )
-    .await;
-    let reloaded_inventory = tokio::time::timeout(
-        Duration::from_secs(2),
-        expect_named_client_event(
-            &mut reloaded_client_socket,
-            &reloaded_subscription_private_key,
-            "room_list_rows_changed",
-        ),
-    )
-    .await
-    .expect("reloaded room-list subscriber should receive its own unchanged baseline")
-    .1;
+    let mut reloaded = RoomListRelayClient::subscribe(&url, &config, "room-list-reload").await;
+    let (reloaded_inventory, reloaded_wire_bytes) = reloaded.inventory().await;
+    assert!(
+        first_wire_bytes.min(reloaded_wire_bytes) > chariox_relay::frame_transport::CHUNK_BYTES,
+        "both encrypted baselines must require bounded delivery ({first_wire_bytes} and {reloaded_wire_bytes} bytes)",
+    );
     assert_eq!(
         reloaded_inventory["inventory_version"], first_inventory["inventory_version"],
         "each null-cursor subscriber should receive the same unchanged inventory baseline",
     );
+    assert_eq!(reloaded_inventory["sessions"], first_inventory["sessions"]);
 
-    let worktree = crate::test_support::TestWorktree::new("workspace-relay-inventory");
     let request = LocalDaemonRequest::CreateSession(
         worktree
             .session_request()
-            .with_alias("relay-visible-session"),
+            .with_alias("relay-visible-session")
+            .with_agent_defaults(crate::session::SessionAgentDefaults {
+                provider: "dev-stub".into(),
+                ..Default::default()
+            }),
     );
     let command =
         KernelCommand::from_local_request("create-relay-visible-session", None, None, &request);
@@ -513,36 +655,17 @@ async fn relay_room_list_subscription_sends_baseline_after_reload_and_observes_m
         LocalDaemonResponse::SessionCreated { .. }
     ));
 
-    let event = tokio::time::timeout(
-        Duration::from_secs(2),
-        expect_named_client_event(
-            &mut client_socket,
-            &subscription_private_key,
-            "room_list_rows_changed",
-        ),
-    )
-    .await
-    .expect("relay room-list subscription should observe the shared router mutation")
-    .1;
-    assert_eq!(
-        event["sessions"][0]["alias"],
-        serde_json::json!("relay-visible-session")
-    );
-    let reloaded_event = tokio::time::timeout(
-        Duration::from_secs(2),
-        expect_named_client_event(
-            &mut reloaded_client_socket,
-            &reloaded_subscription_private_key,
-            "room_list_rows_changed",
-        ),
-    )
-    .await
-    .expect("every concurrent relay room-list subscriber should observe the mutation")
-    .1;
-    assert_eq!(
-        reloaded_event["sessions"][0]["alias"],
-        serde_json::json!("relay-visible-session")
-    );
+    for client in [&mut original, &mut reloaded] {
+        let (inventory, _) = client.inventory().await;
+        assert!(
+            inventory["sessions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|row| row["alias"] == "relay-visible-session"),
+            "every subscriber should observe the mutation"
+        );
+    }
 
     let _ = shutdown_tx.send(true);
     connector_task.await.expect("connector task should join");
@@ -1242,12 +1365,13 @@ async fn relay_replay_after_runtime_recreation_filters_historical_resume_and_res
             if event.1["event"] == "heartbeat" {
                 break event;
             }
-            // Fresh resource samples and the current job list may follow the reset
-            // snapshot; historical snapshots and other replay events must not return.
+            // Fresh resource samples, the current job list and the current Skills
+            // catalog may follow the reset snapshot; historical snapshots and other
+            // replay events must not return.
             assert!(
                 matches!(
                     event.1["event"].as_str(),
-                    Some("session_processes_changed" | "session_jobs_changed")
+                    Some("session_processes_changed" | "session_jobs_changed" | "skills_changed")
                 ),
                 "unexpected event after the reset snapshot: {}",
                 event.1["event"]

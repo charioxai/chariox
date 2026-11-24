@@ -390,6 +390,7 @@ fn publication_package_omits_runtime_agent_state_and_remains_stable() {
 
 #[test]
 fn publication_export_captures_exact_grants_and_rejects_missing_definitions() {
+    crate::test_support::isolated_env_test!();
     let harness = LocalRouterTestHarness::new();
     let workspace = std::env::temp_dir().join(format!(
         "chariox-publication-extensions-{}-{}",
@@ -459,7 +460,6 @@ fn publication_export_captures_exact_grants_and_rejects_missing_definitions() {
                 worktree_id: Some(workspace_id.clone()),
                 clear_worktree_id: false,
                 reason: None,
-                self_settings: None,
                 usage_limit: None,
             },
         ))
@@ -717,6 +717,8 @@ fn local_request_api_exports_agent_app_publication_package() {
     };
     let agent = match harness
         .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            initial_task: None,
+            peer_spawn: None,
             max_context_tokens: None,
             no_subscribe: false,
             account_profile: None,

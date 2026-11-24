@@ -102,6 +102,7 @@ mod tests {
             leased_agent_count: 0,
             local_session_count: 0,
             public_key: format!("key-{id}"),
+            local_protocol: None,
         }
     }
 

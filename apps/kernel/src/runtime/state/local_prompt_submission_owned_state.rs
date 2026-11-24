@@ -22,18 +22,37 @@ impl KernelRuntimeOwnedState {
             prepared,
             None,
             allow_queue,
+            false,
+            None,
         )
+    }
+
+    /// Queues a prompt whose start waits for the Vault unlock, with or without a provider run.
+    pub(super) fn queue_local_prepared_prompt_for_vault(
+        &self,
+        prepared: &crate::app::KernelPreparedPromptSubmission,
+    ) -> Result<crate::app::KernelPromptSubmission, DaemonError> {
+        self.submit_local_prepared_prompt_for_provider_run_with_queue_policy(
+            prepared, None, true, true, None,
+        )?
+        .ok_or_else(|| DaemonError::LocalTransport {
+            operation: "queue prompt for the Vault unlock",
+            message: "only a local agent's prompt waits for the Vault in its queue".into(),
+        })
     }
 
     pub(super) fn submit_local_prepared_prompt_for_provider_run(
         &self,
         prepared: &crate::app::KernelPreparedPromptSubmission,
         expected_provider_run_id: Option<&str>,
+        launch_wait: Option<String>,
     ) -> Result<Option<crate::app::KernelPromptSubmission>, DaemonError> {
         self.submit_local_prepared_prompt_for_provider_run_with_queue_policy(
             prepared,
             expected_provider_run_id,
             true,
+            false,
+            launch_wait,
         )
     }
 
@@ -42,6 +61,8 @@ impl KernelRuntimeOwnedState {
         prepared: &crate::app::KernelPreparedPromptSubmission,
         expected_provider_run_id: Option<&str>,
         allow_queue: bool,
+        awaiting_vault: bool,
+        launch_wait: Option<String>,
     ) -> Result<Option<crate::app::KernelPromptSubmission>, DaemonError> {
         let mut timing = crate::runtime::perf_timing::Phases::new();
         let session_id = prepared.session_id.clone();
@@ -106,10 +127,23 @@ impl KernelRuntimeOwnedState {
         let move_pending = self
             .agent_moves
             .dispatch_fenced(&session_id, &target_agent_id);
-        if !queued_while_active && provider_run_id.is_none() && !move_pending {
+        let launch_wait = launch_wait
+            .or_else(|| prepared.prompt.launch_wait().map(str::to_string))
+            .or_else(|| {
+                (!prepared.force_queue && !move_pending && !awaiting_vault)
+                    .then(|| self.prompt_state_owner.provider_launch_wait())
+                    .flatten()
+            });
+        let waiting_for_launch = launch_wait.is_some();
+        if !queued_while_active
+            && provider_run_id.is_none()
+            && !move_pending
+            && !awaiting_vault
+            && !waiting_for_launch
+        {
             return Ok(None);
         }
-        if !queued_while_active && !move_pending {
+        if !queued_while_active && !move_pending && !awaiting_vault && !waiting_for_launch {
             if let Some(provider_run_id) = provider_run_id.as_deref() {
                 let provider_run =
                     self.ensure_provider_run_in_session(&session_id, provider_run_id)?;
@@ -123,9 +157,13 @@ impl KernelRuntimeOwnedState {
             .and_then(|provider_run_id| self.provider_store.get_run(provider_run_id).ok())
             .is_some_and(|run| run.state() == crate::provider::ProviderRunState::Starting);
 
-        let force_queue = prepared.force_queue || provider_run_is_starting || move_pending;
+        let force_queue = prepared.force_queue
+            || provider_run_is_starting
+            || move_pending
+            || awaiting_vault
+            || waiting_for_launch;
         let will_queue = force_queue || queued_while_active;
-        let prompt = if let Some(source_attachment) = source_attachment.as_ref() {
+        let mut prompt = if let Some(source_attachment) = source_attachment.as_ref() {
             prepared
                 .prompt
                 .clone()
@@ -133,9 +171,11 @@ impl KernelRuntimeOwnedState {
         } else {
             prepared.prompt.clone()
         };
+        prompt.set_launch_wait(launch_wait);
         // Kernel-owned wake and correction turns keep the id their receipts name.
         let prompt = if will_queue
             || self.config_projection.snapshot().room_agent_tools
+            || prompt.prompt_author().is_some()
             || crate::session::is_internal_prompt_echo_id(prompt.id())
         {
             prompt

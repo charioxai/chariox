@@ -14,9 +14,12 @@ impl KernelRuntimeOwnedState {
                 crate::runtime::session_membership::scope::SessionMembershipScope::SessionId(room),
             ) = crate::runtime::session_membership::scope::request_session_scope(request)
             {
-                // A peer spawn names another room; the Room fence has admitted it by owner.
+                // The Room fence has already checked cross-Room spawns and deletions.
                 if room != actor.session_id()
-                    && !matches!(request, LocalDaemonRequest::SpawnAgent(_))
+                    && !matches!(
+                        request,
+                        LocalDaemonRequest::SpawnAgent(_) | LocalDaemonRequest::DestroyAgent(_)
+                    )
                 {
                     return Err(crate::runtime::room_tool_admission::denied(
                         "workflow target is outside the caller room",
@@ -521,7 +524,7 @@ impl KernelRuntimeOwnedState {
         endpoint_ref: &str,
         user_id: &str,
         operation: &'static str,
-    ) -> Result<(), DaemonError> {
+    ) -> Result<crate::session::WorkflowEndpointDefinition, DaemonError> {
         let sessions = self.session_store.read();
         let endpoint =
             sessions.resolve_workflow_endpoint_ref(session_id, workflow_ref, endpoint_ref)?;
@@ -529,7 +532,7 @@ impl KernelRuntimeOwnedState {
             .session_owner_user_id(session_id)
             .unwrap_or_default();
         if self.acts_for_owner_in(&room_owner, user_id, endpoint.owner_user_id()) {
-            Ok(())
+            Ok(endpoint)
         } else {
             Err(Self::deny_owner(
                 user_id,

@@ -48,7 +48,7 @@ test('MD-DISPLAY video, exact settle, dirty patches and lost base recovery', asy
 });
 test('MD-DISPLAY DPR2 protected pixel masking scales coordinates', () => {
   const data = encodePng(2560, 1600, Buffer.alloc(2560 * 1600 * 4, 255));
-  assert.throws(() => decodePng(data));
+  assert.throws(() => decodePng(encodePng(3842, 1600, Buffer.alloc(3842 * 1600 * 4, 255))));
   const result = decodePng(maskPng(data, [[200, 200, 40, 40]], 2), 2);
   assert.equal(result.pixels[(210 * 2560 + 210) * 4], 0);
   assert.equal(result.pixels[(100 * 2560 + 100) * 4], 255);

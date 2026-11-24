@@ -1,5 +1,130 @@
 use super::*;
 
+#[tokio::test]
+async fn a_folded_receipt_replaces_its_initial_history_outcome_after_reopen() {
+    let directory = crate::test_support::TestTempDir::new("folded-history-outcome");
+    let path = directory.join("history.db");
+    let context = |prompt: &str| HistoryEventTurnContext {
+        session_id: Some("room".into()),
+        agent_id: Some("child".into()),
+        turn_id: Some(prompt.into()),
+        prompt_id: Some(prompt.into()),
+        provider_run_id: Some("run".into()),
+        ..Default::default()
+    };
+    let prompt = |sequence, id: &str| {
+        HistoryEvent::transcript(
+            sequence,
+            &SessionHistoryEntry::user_prompt("room", "client", "child", id),
+            context(id),
+        )
+    };
+    let settlement = |sequence, id: &str, outcome: crate::provider::TurnOutcome| {
+        HistoryEvent::operational(
+            sequence,
+            HistoryEventKind::ProviderStatus,
+            None,
+            None,
+            BTreeMap::from([
+                (
+                    crate::history::PROMPT_SETTLED_AT_MS_METADATA_KEY.into(),
+                    serde_json::json!(sequence * 1000),
+                ),
+                (
+                    crate::history::PROMPT_SETTLEMENT_STATUS_METADATA_KEY.into(),
+                    serde_json::json!("completed"),
+                ),
+                (
+                    crate::history::TURN_OUTCOME_METADATA_KEY.into(),
+                    serde_json::json!(outcome),
+                ),
+            ]),
+            context(id),
+        )
+    };
+    let request = || GetSessionHistoryOutlineRequest {
+        session_id: "room".into(),
+        agent_ids: Some(vec!["child".into()]),
+        latest_prompt_count: Some(4),
+        after_sequence: None,
+        include_prefetched_content: true,
+        cursor: None,
+    };
+    let receipt = crate::provider::AnsweredTurnReceipt {
+        session_id: "room".into(),
+        agent_id: "child".into(),
+        prompt_id: "q".into(),
+        task_id: "task-q".into(),
+    };
+    {
+        let store = OperationalHistoryStore::open(path.clone()).unwrap();
+        store
+            .append_many(&[
+                prompt(1, "h"),
+                settlement(2, "h", crate::provider::TurnOutcome::completed()),
+                prompt(3, "q"),
+                settlement(4, "q", crate::provider::TurnOutcome::completed()),
+            ])
+            .unwrap();
+        // A client may have read H's initial provider-turn end while its task still waits.
+        execute_session_history_outline_request(store.clone(), request())
+            .await
+            .unwrap();
+        store
+            .append(&settlement(
+                5,
+                "h",
+                crate::provider::TurnOutcome::answered_in_turn(receipt.clone()),
+            ))
+            .unwrap();
+        let LocalDaemonResponse::SessionHistoryOutline { agents } =
+            execute_session_history_outline_request(store, request())
+                .await
+                .unwrap()
+        else {
+            panic!("history outline")
+        };
+        let held = agents[0]
+            .turns
+            .iter()
+            .find(|turn| turn.turn_id == "h")
+            .unwrap();
+        assert_eq!(
+            held.outcome,
+            Some(crate::provider::TurnOutcome::answered_in_turn(
+                receipt.clone()
+            ))
+        );
+    }
+    let store = OperationalHistoryStore::open(path).unwrap();
+    let LocalDaemonResponse::SessionHistoryOutline { agents } =
+        execute_session_history_outline_request(store, request())
+            .await
+            .unwrap()
+    else {
+        panic!("history outline")
+    };
+    assert_eq!(agents[0].turns.len(), 2);
+    assert_eq!(
+        agents[0]
+            .turns
+            .iter()
+            .find(|turn| turn.turn_id == "h")
+            .unwrap()
+            .outcome,
+        Some(crate::provider::TurnOutcome::answered_in_turn(receipt))
+    );
+    assert_eq!(
+        agents[0]
+            .turns
+            .iter()
+            .find(|turn| turn.turn_id == "q")
+            .unwrap()
+            .outcome,
+        Some(crate::provider::TurnOutcome::completed())
+    );
+}
+
 /// The turn as the outline reports it after the store reopens, settled as `status` with
 /// `saved` as the only other settlement metadata.
 async fn settled_turn_after_store_reopen(
@@ -58,6 +183,7 @@ async fn settled_turn_after_store_reopen(
             session_id: "session-1".into(),
             agent_ids: Some(vec!["agent-1".into()]),
             latest_prompt_count: Some(4),
+            after_sequence: None,
             include_prefetched_content: false,
             cursor: None,
         },
@@ -2545,6 +2671,7 @@ async fn outline_hides_goal_completion_check_turn() {
             session_id: "session-1".into(),
             agent_ids: Some(vec!["agent-1".into()]),
             latest_prompt_count: Some(4),
+            after_sequence: None,
             include_prefetched_content: false,
             cursor: None,
         },
@@ -2646,6 +2773,7 @@ async fn completion_check_turn_is_not_projected_into_the_outline() {
             session_id: "session-1".into(),
             agent_ids: Some(vec!["agent-1".into()]),
             latest_prompt_count: Some(4),
+            after_sequence: None,
             include_prefetched_content: false,
             cursor: None,
         },
@@ -2734,6 +2862,7 @@ async fn correction_prompt_is_not_projected_into_the_outline() {
                 session_id: "session-1".into(),
                 agent_ids: Some(vec!["agent-1".into()]),
                 latest_prompt_count: Some(4),
+                after_sequence: None,
                 include_prefetched_content: false,
                 cursor: None,
             },
@@ -2819,6 +2948,7 @@ async fn r16_inbox_only_agent_shows_its_wake_prompt_as_a_system_prompt() {
                 session_id: "session-1".into(),
                 agent_ids: Some(vec!["agent-1".into()]),
                 latest_prompt_count: Some(4),
+                after_sequence: None,
                 include_prefetched_content: false,
                 cursor: None,
             },
@@ -2885,6 +3015,7 @@ async fn a_fired_trigger_is_a_system_prompt_and_a_typed_prompt_is_not() {
                 session_id: "session-1".into(),
                 agent_ids: Some(vec!["agent-1".into()]),
                 latest_prompt_count: Some(4),
+                after_sequence: None,
                 include_prefetched_content: false,
                 cursor: None,
             },
@@ -3013,6 +3144,7 @@ async fn r16_spanning_tool_blob_never_restores_internal_turn_text() {
                 session_id: "session-1".into(),
                 agent_ids: Some(vec!["agent-1".into()]),
                 latest_prompt_count: Some(4),
+                after_sequence: None,
                 include_prefetched_content: false,
                 cursor: None,
             },
@@ -3120,6 +3252,7 @@ async fn internal_turn_outline_rehydrates_replies_without_instruction_text() {
                 session_id: "session-1".into(),
                 agent_ids: Some(vec!["agent-1".into()]),
                 latest_prompt_count: Some(4),
+                after_sequence: None,
                 include_prefetched_content: false,
                 cursor: None,
             },

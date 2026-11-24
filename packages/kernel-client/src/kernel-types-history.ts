@@ -15,7 +15,9 @@ export type SessionHistoryEntry = {
   agent_id?: string | null
   provider_run_id?: string | null
   prompt_origin?: "chariox" | "external" | string | null
+  prompt_author?: string | null
   kind: "user_prompt" | "provider_output" | "provider_reasoning" | "provider_tool" | "provider_error" | "provider_status" | "notice"
+  notice_reason?: "agent_deadline_reached"
   merge_key?: string
   source?: "external_provider_observed" | null
   external_provider?: string | null
@@ -49,12 +51,26 @@ export type SessionHistoryOutline = {
 export type SessionHistoryOutlineAgent = {
   agent_id: string
   turns: SessionHistoryOutlineTurn[]
+  delta_cursor?: SessionHistoryOutlineDeltaCursor
+  turn_deltas?: SessionHistoryOutlineTurnDelta[]
   next_cursor?: SessionHistoryOutlineCursor | null
   prefetched_blobs?: SessionHistoryBlobContent[]
 }
 
 export type SessionHistoryOutlineCursor = {
   before_sequence: number
+}
+
+export type SessionHistoryOutlineDeltaCursor = {
+  after_sequence: number
+  revision: string
+}
+
+export type SessionHistoryOutlineTurnDelta = {
+  header: SessionHistoryOutlineTurn | number
+  summary: SessionHistoryPageEntry | number | { append_to: number; suffix: SessionHistoryPageEntry } | null
+  entries: (SessionHistoryPageEntry | number)[]
+  blobs: (SessionHistoryOutlineBlob | number)[]
 }
 
 export type SessionHistoryOutlineTurn = {
@@ -78,6 +94,7 @@ export type SessionHistoryOutlineTurn = {
 
 export type SessionHistoryOutlineBlob = {
   blob_id: string
+  revision?: string
   kind: SessionHistoryEntry["kind"]
   title: string
   summary: string

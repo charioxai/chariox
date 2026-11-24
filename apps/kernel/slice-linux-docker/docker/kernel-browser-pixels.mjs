@@ -57,7 +57,7 @@ export function decodePng(data, scale = 1, viewport = null) {
       // MP-08/MP-10: the native exact raster writes indexed PNGs (exact
       // per-RGB palettes, at most 256 colours) as well as RGB/RGBA.
       channels = body[9] === 6 ? 4 : body[9] === 2 ? 3 : body[9] === 3 ? 1 : 0;
-      const fits = viewport ? width === viewport.width && height === viewport.height : width <= pageLimit.width * scale && height <= pageLimit.height * scale;
+      const fits = viewport ? width === viewport.width && height === viewport.height : width <= pageLimit.side * scale && height <= pageLimit.side * scale && width * height <= pageLimit.area * scale * scale;
       if (!width || !height || !fits || body[8] !== 8 || !channels || body[10] || body[11] || body[12]) throw new Error("MD-5: unsupported frame format");
     } else if (type === "PLTE") {
       if (!width || channels !== 1 || palette || compressed.length || !body.length || body.length % 3 || body.length > 768) throw new Error("MD-5: invalid frame palette");
@@ -230,11 +230,25 @@ export async function captureProtectedPage(browser, tab, values, targets, captur
   } catch { throw Error("MP-11: fill target capture unavailable; retry"); }
 }
 
+// MP-10: a still past its byte budget travels at half the pixel density (2x2 average), drawn at the same CSS box.
+export function halvePixels({ width, height, pixels }) {
+  const w = Math.ceil(width / 2), h = Math.ceil(height / 2), out = Buffer.alloc(w * h * 4);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) for (let c = 0; c < 4; c++) {
+    let sum = 0, n = 0;
+    for (let dy = 0; dy < 2 && 2 * y + dy < height; dy++) for (let dx = 0; dx < 2 && 2 * x + dx < width; dx++, n++) sum += pixels[((2 * y + dy) * width + 2 * x + dx) * 4 + c];
+    out[(y * w + x) * 4 + c] = Math.round(sum / n);
+  }
+  return { width: w, height: h, pixels: out };
+}
+
 // MP-08/MP-10/MP-11: one exact raster extraction path for display refinement
 // and DOM fallback. Pixels must already have crossed the protection barrier.
 export function losslessRegion(frame,x,y,width,height) {
+  return {x,y,width,height,format:'png',data_base64:encodePng(width,height,regionPixels(frame,x,y,width,height).pixels)};
+}
+export function regionPixels(frame,x,y,width,height) {
   if(![x,y,width,height].every(Number.isSafeInteger)||x<0||y<0||width<1||height<1||x+width>frame.width||y+height>frame.height)throw Error('MP-11: invalid lossless raster region');
   const pixels=Buffer.alloc(width*height*4);
   for(let row=0;row<height;row++)frame.pixels.copy(pixels,row*width*4,((y+row)*frame.width+x)*4,((y+row)*frame.width+x+width)*4);
-  return {x,y,width,height,format:'png',data_base64:encodePng(width,height,pixels)};
+  return {width,height,pixels};
 }

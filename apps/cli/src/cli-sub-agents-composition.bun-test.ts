@@ -20,7 +20,7 @@ test("AO-UI-01/02/03 F7 opens the card, arrows select, Enter opens the view on t
     let draws = 0
     sub.bindRender(() => { draws += 1 })
     await sub.controller.refresh("room")
-    assert.equal(sub.stripeFor("room")!.text, "3 agents running")
+    assert.equal(sub.stripeFor("room")!.text, "3 sub-agents running")
     assert.equal(sub.handleKey(key("x")), false, "closed: ordinary keys are the prompt's")
     assert.equal(sub.handleKey(key("f7")), true); assert.equal(sub.cardOpen(), true)
     assert.equal(sub.handleKey(key("x")), true, "the open card is modal: typing does not reach the prompt")
@@ -120,7 +120,7 @@ test("AO-UI-02 a root placed under another agent leaves the room's trees and the
     answers.b = async () => tree("b", 2, [node("a", "b", "running", 1), node("a1", "a", "running", 2)])
     await roomChanged()
     assert.equal(sub.stripeFor("a"), null, "a is no room agent any more")
-    assert.deepEqual(sub.stripeFor("b")!.text, "2 agents running")
+    assert.deepEqual(sub.stripeFor("b")!.text, "2 sub-agents running")
     assert.deepEqual(sub.controller.lines().map(row => row.id), ["a", "a1"])
     dispose()
   })

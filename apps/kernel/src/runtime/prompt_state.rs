@@ -7,9 +7,16 @@ use crate::session::{PromptQueueItem, PromptStatus, PromptSubmissionOutcome, Run
 mod archive;
 mod profile_transition;
 mod queue_promotion;
+mod skill_authority;
 pub(crate) use profile_transition::AgentProfileTransitionClaim;
 
 pub(crate) const PROMPT_QUEUE_LIMIT: usize = 128;
+
+pub(crate) enum RemotePromptDelivery<'a> {
+    Delivered(&'a str),
+    WaitingForMemory(&'a str),
+    Rejected,
+}
 
 pub(crate) fn prompt_claims_provider_run(
     prompt: &PromptQueueItem,
@@ -24,6 +31,27 @@ pub(crate) fn prompt_claims_provider_run(
         })
 }
 
+/// Whether `prompt` is the turn of `provider_run`, the one that run's end
+/// settles. An unbound prompt waits for the selected run; once that run has
+/// ended (and its end or a sweep cleared the selection) it still holds it
+/// while no later run of its agent started, so the run's end fails it with a
+/// reason instead of leaving it to a settlement that would close it as
+/// completed (m3h).
+pub(crate) fn prompt_holds_provider_run(
+    prompt: &PromptQueueItem,
+    provider_run: &crate::provider::RuntimeProviderRun,
+    session: &RuntimeSession,
+    providers: &crate::provider::ProviderProcessServiceStore,
+) -> bool {
+    if provider_run.unwritten_prompt_to_redispatch() == Some(prompt.id()) {
+        return false;
+    }
+    let unbound_run_selected = session.active_provider_run_id() == Some(provider_run.id())
+        || (provider_run.state() == crate::provider::ProviderRunState::Ended
+            && !providers.agent_started_a_later_run(provider_run));
+    prompt_claims_provider_run(prompt, provider_run.id(), unbound_run_selected)
+}
+
 #[derive(Debug, Clone, Default)]
 struct OwnedAgentPromptState {
     // Ephemeral: never copied from the durable session mirror.
@@ -33,8 +61,81 @@ struct OwnedAgentPromptState {
     // MP-08/MP-10/MP-11 A04: while a sudo window's work is open, only its
     // kernel-correlated prompts may start; others stay queued (causal fence).
     sudo_work: Option<SudoWorkHold>,
+    // Ephemeral: the provider's own turn ends with the provider process.
+    provider_turn: ProviderOwnTurn,
     active_prompt: Option<PromptQueueItem>,
     queued_prompts: VecDeque<PromptQueueItem>,
+}
+
+/// A turn the provider runs on its own, such as Claude reporting a finished background command.
+/// Each change is one step under the owner's lock that carries every field the next state needs
+/// (see `provider_turn_adoption.rs`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+enum ProviderOwnTurn {
+    #[default]
+    None,
+    /// It began while an earlier prompt was still settling; it becomes the agent's turn when that
+    /// prompt leaves, under the binding chosen when it was first reported.
+    Pending(PendingOwnTurn),
+    /// It is the agent's running turn, under this prompt.
+    Adopted {
+        provider_run_id: String,
+        prompt_id: String,
+    },
+}
+
+/// A provider's own turn waiting for adoption.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PendingOwnTurn {
+    pub(crate) provider_run_id: String,
+    pub(crate) binding: OwnTurnBinding,
+    pub(crate) output: PendingTurnOutput,
+}
+
+/// Where history records the output of a pending own turn.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PendingTurnOutput {
+    /// After the boundary of the prompt it waits behind.
+    BehindPrompt,
+    /// After its held prompt's resumed boundary.
+    HeldSegment,
+    /// A delivered prompt joined the held segment; its steering boundary stays inside that turn.
+    Folded {
+        into: Box<PromptQueueItem>,
+        output: FoldedTurnOutput,
+    },
+}
+
+/// Boundaries of a held turn whose delivered prompt joined it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum FoldedTurnOutput {
+    BeforeHeldSegment,
+    BeforeSteeringBoundary,
+    SteeringBoundary,
+}
+
+/// Which task a provider's own turn runs for, chosen once, from the batch that first reports it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum OwnTurnBinding {
+    /// A turn of its own, with its own task and answer boundary.
+    Fresh,
+    /// The notification turn of a task held for its background calls: it runs under that task's
+    /// prompt.
+    Held { prompt_id: String },
+}
+
+/// Where a turn the provider started on its own stands after one adoption attempt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ProviderTurnAdoption {
+    /// The turn runs under `prompt`, for `binding`.
+    Adopted {
+        prompt: Box<PromptQueueItem>,
+        binding: OwnTurnBinding,
+        /// The held prompt's resumed boundary was appended while the turn was pending.
+        segment_open: bool,
+    },
+    /// Another prompt is active or queued; `newly` is false when it was already waiting.
+    Pending { newly: bool },
 }
 
 #[derive(Debug, Clone, Default)]
@@ -100,6 +201,7 @@ impl OwnedAgentPromptState {
                 sudo_entry_id: None,
                 sudo_process_cutoff: None,
                 sudo_work: None,
+                provider_turn: ProviderOwnTurn::None,
                 active_prompt: state.active_prompt().cloned(),
                 queued_prompts: state.queued_prompts().clone(),
             })
@@ -122,10 +224,23 @@ impl PromptStateKey {
     }
 }
 
+/// What a submission that refuses to queue says when the agent already has a turn: the caller
+/// keeps its work and starts it at the next possible point. Nobody shows it to a sender.
+pub(crate) const TARGET_BUSY_MESSAGE: &str =
+    "target agent is busy; retry when its provider is ready";
+
 #[derive(Debug, Clone, Default)]
 pub(crate) struct PromptStateOwner {
     state: Arc<StdMutex<PromptStateOwnerState>>,
     delivery_settlement_claims: Arc<StdMutex<BTreeSet<PromptStateKey>>>,
+    provider_launch_admission: Arc<std::sync::RwLock<ProviderLaunchAdmission>>,
+    has_provider_launch_waiters: Arc<std::sync::atomic::AtomicBool>,
+}
+
+#[derive(Debug, Default)]
+struct ProviderLaunchAdmission {
+    wait: Option<String>,
+    held_turns_ready: bool,
 }
 
 pub(crate) struct PromptDeliverySettlementClaim {
@@ -152,6 +267,122 @@ struct PromptStateOwnerState {
 }
 
 impl PromptStateOwner {
+    pub(crate) fn provider_launch_wait(&self) -> Option<String> {
+        self.provider_launch_admission
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .wait
+            .clone()
+    }
+
+    pub(crate) fn set_provider_launch_wait(&self, wait: Option<String>) {
+        let mut admission = self
+            .provider_launch_admission
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        admission.wait = wait;
+        admission.held_turns_ready = false;
+    }
+
+    pub(crate) fn set_held_provider_turns_ready(&self, ready: bool) {
+        let mut admission = self
+            .provider_launch_admission
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        admission.held_turns_ready = ready && admission.wait.is_none();
+    }
+
+    pub(crate) fn queued_provider_launch_wait(&self, prompt: &PromptQueueItem) -> Option<String> {
+        let admission = self
+            .provider_launch_admission
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        admission
+            .wait
+            .as_deref()
+            .or_else(|| prompt.launch_wait().filter(|_| !admission.held_turns_ready))
+            .map(str::to_owned)
+    }
+
+    /// Only queues with a durable resource wait are retried by the resource scheduler.
+    pub(crate) fn provider_launch_waiters(&self) -> Vec<(String, String)> {
+        use std::sync::atomic::Ordering;
+        if !self.has_provider_launch_waiters.load(Ordering::Acquire) {
+            return Vec::new();
+        }
+        let owner = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut waiting: Vec<_> = owner
+            .states
+            .iter()
+            .filter_map(|(key, state)| {
+                let head = state.queued_prompts.front()?;
+                (state.active_prompt.is_none() && head.launch_wait().is_some()).then_some((
+                    !head.comes_from_person(),
+                    head.created_at_ms(),
+                    key,
+                ))
+            })
+            .collect();
+        if waiting.is_empty()
+            && !owner.states.values().any(|state| {
+                state
+                    .queued_prompts
+                    .iter()
+                    .any(|prompt| prompt.launch_wait().is_some())
+            })
+        {
+            self.has_provider_launch_waiters
+                .store(false, Ordering::Release);
+        }
+        waiting.sort_unstable();
+        waiting
+            .into_iter()
+            .map(|(_, _, key)| (key.session_id.clone(), key.agent_id.clone()))
+            .collect()
+    }
+
+    pub(crate) fn note_provider_launch_wait(
+        &self,
+        session: &RuntimeSession,
+        agent_id: &str,
+        prompt_id: &str,
+        message: &str,
+    ) -> bool {
+        let mut owner = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let state = owner.ensure_agent_state(session, agent_id);
+        let queue = &mut state.queued_prompts;
+        if queue.front().is_none_or(|head| head.id() != prompt_id) {
+            return false;
+        }
+        let mut after_submitted_steer = 0;
+        let mut changed = false;
+        for (index, prompt) in queue.iter_mut().enumerate() {
+            if prompt.remote_steer_reserved() {
+                after_submitted_steer = index + 1;
+            } else if prompt.launch_wait() != Some(message) {
+                prompt.set_launch_wait(Some(message.to_owned()));
+                changed = true;
+            }
+        }
+        // No waiting turn can overtake a reserved steer or change its position.
+        let eligible = &mut queue.make_contiguous()[after_submitted_steer..];
+        if !eligible.is_sorted_by_key(|prompt| !prompt.comes_from_person()) {
+            eligible.sort_by_key(|prompt| !prompt.comes_from_person());
+            changed = true;
+        }
+        if changed {
+            self.has_provider_launch_waiters
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
+        changed
+    }
+
     /// Commit delivery settlement while admission/cancellation cannot replace
     /// this prompt. The callback must not reenter this owner.
     pub(crate) fn settle_active_remote_dispatch_if_matches(
@@ -159,9 +390,10 @@ impl PromptStateOwner {
         session: &RuntimeSession,
         agent_id: &str,
         prompt_id: &str,
-        delivered_run_id: Option<&str>,
+        delivery: RemotePromptDelivery<'_>,
         commit: impl FnOnce(
             &PromptQueueItem,
+            &VecDeque<PromptQueueItem>,
             Option<PromptQueueItem>,
             VecDeque<PromptQueueItem>,
         ) -> Result<bool, DaemonError>,
@@ -182,24 +414,61 @@ impl PromptStateOwner {
             return Ok(None);
         };
         let mut settled = current.clone();
-        let next = if let Some(run_id) = delivered_run_id {
-            settled.set_durable_delivery(
-                crate::session::DurablePromptDeliveryPhase::Delivered,
-                Some(run_id.to_string()),
-                None,
-            );
-            if settled.status() == PromptStatus::Dispatching {
-                settled.set_status(PromptStatus::Running);
+        let mut queued = state.queued_prompts.clone();
+        let next = match delivery {
+            RemotePromptDelivery::Delivered(run_id) => {
+                settled.set_durable_delivery(
+                    crate::session::DurablePromptDeliveryPhase::Delivered,
+                    Some(run_id.to_string()),
+                    None,
+                );
+                if settled.status() == PromptStatus::Dispatching {
+                    settled.set_status(PromptStatus::Running);
+                }
+                Some(settled.clone())
             }
-            Some(settled.clone())
-        } else {
-            settled.set_status(PromptStatus::Cancelled);
-            None
+            RemotePromptDelivery::WaitingForMemory(reason) => {
+                settled.set_durable_delivery(
+                    crate::session::DurablePromptDeliveryPhase::Accepted,
+                    None,
+                    None,
+                );
+                settled.set_durable_delivery_failure_pending(false);
+                settled.set_durable_delivery_reconciliation_pending(false);
+                if settled.status() == PromptStatus::Cancelling {
+                    // The worker proved that no provider turn needs to be cancelled.
+                    // Keep the durable cancellation intent for the normal finalizer.
+                    Some(settled.clone())
+                } else {
+                    settled.set_status(PromptStatus::Queued);
+                    settled.set_launch_wait(Some(reason.to_owned()));
+                    let after_submitted_steer = queued
+                        .iter()
+                        .rposition(PromptQueueItem::remote_steer_reserved)
+                        .map_or(0, |index| index + 1);
+                    queued.insert(after_submitted_steer, settled.clone());
+                    let eligible = &mut queued.make_contiguous()[after_submitted_steer..];
+                    eligible.sort_by_key(|prompt| !prompt.comes_from_person());
+                    for prompt in eligible {
+                        prompt.set_launch_wait(Some(reason.to_owned()));
+                    }
+                    None
+                }
+            }
+            RemotePromptDelivery::Rejected => {
+                settled.set_status(PromptStatus::Cancelled);
+                None
+            }
         };
-        if !commit(current, next.clone(), state.queued_prompts.clone())? {
+        if !commit(current, &state.queued_prompts, next.clone(), queued.clone())? {
             return Ok(None);
         }
-        state.active_prompt = next;
+        if settled.launch_wait().is_some() {
+            self.has_provider_launch_waiters
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
+        state.set_active_prompt(next);
+        state.queued_prompts = queued;
         Ok(Some(settled))
     }
 
@@ -354,6 +623,36 @@ impl PromptStateOwner {
             .clone()
     }
 
+    /// What the agent's turn authority holds, for a log line that explains a refused tool call:
+    /// the active prompt, how many wait behind it, and the provider's own turn.
+    pub(crate) fn turn_authority_snapshot(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> serde_json::Value {
+        let owner = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(state) = owner.states.get(&PromptStateKey::new(session_id, agent_id)) else {
+            return serde_json::json!({"active_prompt_id": null, "queued": 0, "own_turn": "none"});
+        };
+        let own_turn = match &state.provider_turn {
+            ProviderOwnTurn::None => "none".to_string(),
+            ProviderOwnTurn::Pending(pending) => format!(
+                "pending on {} ({:?}, {:?})",
+                pending.provider_run_id, pending.binding, pending.output
+            ),
+            ProviderOwnTurn::Adopted { prompt_id, .. } => format!("adopted as {prompt_id}"),
+        };
+        serde_json::json!({
+            "active_prompt_id": state.active_prompt.as_ref().map(PromptQueueItem::id),
+            "active_prompt_status": state.active_prompt.as_ref().map(|p| format!("{:?}", p.status())),
+            "queued": state.queued_prompts.len(),
+            "own_turn": own_turn,
+        })
+    }
+
     pub(crate) fn active_prompt_for_agent_snapshot(
         &self,
         session: &RuntimeSession,
@@ -407,16 +706,29 @@ impl PromptStateOwner {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        owner
-            .agent_ids_for_session(session)
-            .into_iter()
-            .any(|agent_id| {
-                owner
-                    .states
-                    .get(&PromptStateKey::new(session.id(), &agent_id))
-                    .and_then(|state| state.active_prompt.as_ref())
-                    .is_some()
-            })
+        owner.session_has_active_prompt(session)
+    }
+
+    /// Runs `operation` only while no agent of `sessions` has an active
+    /// prompt, and holds the prompt state so none can start meanwhile: a sweep
+    /// that decided from an earlier look must not end the run a new prompt
+    /// was just given. `None` when a prompt became active.
+    pub(crate) fn while_sessions_idle<R>(
+        &self,
+        sessions: &[RuntimeSession],
+        operation: impl FnOnce() -> Result<R, DaemonError>,
+    ) -> Result<Option<R>, DaemonError> {
+        let owner = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if sessions
+            .iter()
+            .any(|session| owner.session_has_active_prompt(session))
+        {
+            return Ok(None);
+        }
+        operation().map(Some)
     }
 
     pub(crate) fn active_prompt_agent_ids(&self, session: &RuntimeSession) -> Vec<String> {
@@ -501,8 +813,16 @@ impl PromptStateOwner {
         let backlog_parked = session
             .metaagent_task(&agent_id)
             .is_some_and(|task| task.status() == crate::session::MetaagentTaskStatus::Paused);
+        let state = owner.ensure_agent_state(session, &agent_id);
+        if let Some(reason) = state
+            .queued_prompts
+            .iter()
+            .find_map(PromptQueueItem::launch_wait)
+            .filter(|_| !backlog_parked)
+        {
+            prompt.set_launch_wait(Some(reason.to_owned()));
+        }
         let should_start = {
-            let state = owner.ensure_agent_state(session, &agent_id);
             // Detached queue promotion can still be preparing Project/Vault
             // inputs after a profile claim is released or a run becomes ready.
             // Its backlog reserves admission until the oldest turn is activated.
@@ -530,7 +850,7 @@ impl PromptStateOwner {
             if !allow_queue {
                 return Err(DaemonError::LocalTransport {
                     operation: "send agent message",
-                    message: "target agent is busy; retry when its provider is ready".to_string(),
+                    message: TARGET_BUSY_MESSAGE.to_string(),
                 });
             }
             let pending_prompt_id = if prompt.durable_operation_id().is_some() {
@@ -565,7 +885,20 @@ impl PromptStateOwner {
                 None,
             );
             prompt = prompt.into_pending_queue_item(pending_prompt_id);
-            if prompt.workflow_run_id().is_some() {
+            if prompt.launch_wait().is_some() {
+                self.has_provider_launch_waiters
+                    .store(true, std::sync::atomic::Ordering::Release);
+            }
+            if prompt.launch_wait().is_some() && prompt.comes_from_person() {
+                let after_submitted_steer = state
+                    .queued_prompts
+                    .iter()
+                    .rposition(PromptQueueItem::remote_steer_reserved)
+                    .map_or(0, |index| index + 1);
+                state.queued_prompts.push_back(prompt.clone());
+                state.queued_prompts.make_contiguous()[after_submitted_steer..]
+                    .sort_by_key(|queued| !queued.comes_from_person());
+            } else if prompt.workflow_run_id().is_some() {
                 state.queued_prompts.push_back(prompt.clone());
             } else {
                 let insert_at = state
@@ -1336,6 +1669,268 @@ impl PromptStateOwner {
         Ok(Some(active))
     }
 
+    /// Makes `prompt`, the provider's own turn on `provider_run_id`, the agent's running turn
+    /// only while the agent has no prompt at all, active or queued: it never displaces or
+    /// overtakes a kernel prompt. Otherwise the turn is recorded as pending, and adopted once the
+    /// agent's prompts have left (see `provider_turn_pending`).
+    ///
+    /// `binding` applies only to a turn reported for the first time: a pending turn keeps the
+    /// binding it was recorded with. A held binding runs the turn under the held task's prompt id;
+    /// a fresh one under `fresh_prompt`.
+    pub(crate) fn adopt_provider_turn(
+        &self,
+        session: &RuntimeSession,
+        fresh_prompt: PromptQueueItem,
+        provider_run_id: &str,
+        binding: OwnTurnBinding,
+    ) -> ProviderTurnAdoption {
+        let mut owner = self
+            .state
+            .lock()
+            .expect("prompt state owner lock should not be poisoned");
+        let state = owner.ensure_agent_state(session, fresh_prompt.target_agent_id());
+        let (newly, binding, output) = match &state.provider_turn {
+            ProviderOwnTurn::Pending(pending) if pending.provider_run_id == provider_run_id => {
+                (false, pending.binding.clone(), pending.output.clone())
+            }
+            _ => (true, binding, PendingTurnOutput::BehindPrompt),
+        };
+        if state.active_prompt.is_some()
+            || !state.queued_prompts.is_empty()
+            || matches!(output, PendingTurnOutput::Folded { .. })
+        {
+            state.provider_turn = ProviderOwnTurn::Pending(PendingOwnTurn {
+                provider_run_id: provider_run_id.to_string(),
+                binding,
+                output,
+            });
+            return ProviderTurnAdoption::Pending { newly };
+        }
+        let mut prompt = match &binding {
+            OwnTurnBinding::Held { prompt_id } => fresh_prompt.with_id(prompt_id.clone()),
+            OwnTurnBinding::Fresh => fresh_prompt,
+        };
+        prompt.set_status(PromptStatus::Running);
+        state.provider_turn = ProviderOwnTurn::Adopted {
+            provider_run_id: provider_run_id.to_string(),
+            prompt_id: prompt.id().to_string(),
+        };
+        state.set_active_prompt(Some(prompt.clone()));
+        ProviderTurnAdoption::Adopted {
+            prompt: Box::new(prompt),
+            binding,
+            segment_open: matches!(output, PendingTurnOutput::HeldSegment),
+        }
+    }
+
+    /// One step: a pending turn bound to a held task on `provider_run_id` whose output still
+    /// follows the prompt it waits behind now records it under the held prompt. Returns that
+    /// prompt, whose resumed boundary the caller appends before the output; `None` when the
+    /// turn is not pending, not held, or its segment is already open.
+    pub(crate) fn open_pending_held_segment(
+        &self,
+        session: &RuntimeSession,
+        agent_id: &str,
+        provider_run_id: &str,
+    ) -> Option<String> {
+        let mut owner = self
+            .state
+            .lock()
+            .expect("prompt state owner lock should not be poisoned");
+        let state = owner
+            .states
+            .get_mut(&PromptStateKey::new(session.id(), agent_id))?;
+        let ProviderOwnTurn::Pending(pending) = &mut state.provider_turn else {
+            return None;
+        };
+        let OwnTurnBinding::Held { prompt_id } = &pending.binding else {
+            return None;
+        };
+        if pending.provider_run_id != provider_run_id {
+            return None;
+        }
+        match &mut pending.output {
+            PendingTurnOutput::BehindPrompt => pending.output = PendingTurnOutput::HeldSegment,
+            PendingTurnOutput::Folded { output, .. }
+                if *output == FoldedTurnOutput::BeforeHeldSegment =>
+            {
+                *output = FoldedTurnOutput::BeforeSteeringBoundary;
+            }
+            _ => return None,
+        }
+        Some(prompt_id.clone())
+    }
+
+    /// The delivery receipt records a fold once; only output processing writes its boundaries.
+    pub(crate) fn fold_pending_held_turn(
+        &self,
+        session: &RuntimeSession,
+        agent_id: &str,
+        provider_run_id: &str,
+        prompt: &PromptQueueItem,
+    ) {
+        let mut owner = self
+            .state
+            .lock()
+            .expect("prompt state owner lock should not be poisoned");
+        let Some(state) = owner
+            .states
+            .get_mut(&PromptStateKey::new(session.id(), agent_id))
+        else {
+            return;
+        };
+        if !state
+            .active_prompt
+            .as_ref()
+            .is_some_and(|p| p.id() == prompt.id())
+        {
+            return;
+        }
+        let ProviderOwnTurn::Pending(pending) = &mut state.provider_turn else {
+            return;
+        };
+        if pending.provider_run_id != provider_run_id
+            || !matches!(pending.binding, OwnTurnBinding::Held { .. })
+        {
+            return;
+        }
+        let output = match pending.output {
+            PendingTurnOutput::BehindPrompt => FoldedTurnOutput::BeforeHeldSegment,
+            PendingTurnOutput::HeldSegment => FoldedTurnOutput::BeforeSteeringBoundary,
+            PendingTurnOutput::Folded { .. } => return,
+        };
+        pending.output = PendingTurnOutput::Folded {
+            into: Box::new(prompt.clone()),
+            output,
+        };
+    }
+
+    /// Take the boundary once, after the held segment is open and before that batch's chunks.
+    pub(crate) fn take_folded_held_boundary(
+        &self,
+        session: &RuntimeSession,
+        agent_id: &str,
+        provider_run_id: &str,
+    ) -> Option<(String, Box<PromptQueueItem>)> {
+        let mut owner = self
+            .state
+            .lock()
+            .expect("prompt state owner lock should not be poisoned");
+        let state = owner
+            .states
+            .get_mut(&PromptStateKey::new(session.id(), agent_id))?;
+        let ProviderOwnTurn::Pending(pending) = &mut state.provider_turn else {
+            return None;
+        };
+        if pending.provider_run_id != provider_run_id {
+            return None;
+        }
+        let OwnTurnBinding::Held { prompt_id } = &pending.binding else {
+            return None;
+        };
+        let PendingTurnOutput::Folded { into, output } = &mut pending.output else {
+            return None;
+        };
+        if *output != FoldedTurnOutput::BeforeSteeringBoundary {
+            return None;
+        }
+        *output = FoldedTurnOutput::SteeringBoundary;
+        Some((prompt_id.clone(), into.clone()))
+    }
+
+    /// Whether a turn on `provider_run_id` bound to the held `prompt_id` waits for adoption.
+    pub(crate) fn provider_turn_pending_for_held(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        provider_run_id: &str,
+        prompt_id: &str,
+    ) -> bool {
+        let owner = self
+            .state
+            .lock()
+            .expect("prompt state owner lock should not be poisoned");
+        owner
+            .states
+            .get(&PromptStateKey::new(session_id, agent_id))
+            .is_some_and(|state| match &state.provider_turn {
+                ProviderOwnTurn::Pending(pending) => {
+                    pending.provider_run_id == provider_run_id
+                        && matches!(&pending.binding, OwnTurnBinding::Held { prompt_id: held } if held == prompt_id)
+                }
+                _ => false,
+            })
+    }
+
+    /// Whether the provider's own turn is the agent's running turn.
+    pub(crate) fn provider_turn_running(&self, session: &RuntimeSession, agent_id: &str) -> bool {
+        let owner = self
+            .state
+            .lock()
+            .expect("prompt state owner lock should not be poisoned");
+        owner
+            .states
+            .get(&PromptStateKey::new(session.id(), agent_id))
+            .is_some_and(|state| match &state.provider_turn {
+                ProviderOwnTurn::Adopted { prompt_id, .. } => state
+                    .active_prompt
+                    .as_ref()
+                    .is_some_and(|active| active.id() == prompt_id),
+                _ => false,
+            })
+    }
+
+    /// Whether a turn the provider started on `provider_run_id` waits for adoption.
+    pub(crate) fn provider_turn_pending(
+        &self,
+        session: &RuntimeSession,
+        agent_id: &str,
+        provider_run_id: &str,
+    ) -> bool {
+        let owner = self
+            .state
+            .lock()
+            .expect("prompt state owner lock should not be poisoned");
+        owner
+            .states
+            .get(&PromptStateKey::new(session.id(), agent_id))
+            .is_some_and(|state| {
+                matches!(&state.provider_turn, ProviderOwnTurn::Pending(pending) if pending.provider_run_id == provider_run_id)
+            })
+    }
+
+    /// The provider is no longer running a turn of its own. Returns a turn that ended while it
+    /// still waited for adoption.
+    pub(crate) fn end_provider_turn(
+        &self,
+        session: &RuntimeSession,
+        agent_id: &str,
+        provider_run_id: &str,
+    ) -> Option<PendingOwnTurn> {
+        let mut owner = self
+            .state
+            .lock()
+            .expect("prompt state owner lock should not be poisoned");
+        let state = owner
+            .states
+            .get_mut(&PromptStateKey::new(session.id(), agent_id))?;
+        let same_run = match &state.provider_turn {
+            ProviderOwnTurn::Pending(pending) => pending.provider_run_id == provider_run_id,
+            ProviderOwnTurn::Adopted {
+                provider_run_id: run,
+                ..
+            } => run == provider_run_id,
+            ProviderOwnTurn::None => false,
+        };
+        if !same_run {
+            return None;
+        }
+        match std::mem::take(&mut state.provider_turn) {
+            ProviderOwnTurn::Pending(pending) => Some(pending),
+            ProviderOwnTurn::None | ProviderOwnTurn::Adopted { .. } => None,
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn activate_prompt(
         &self,
@@ -1513,6 +2108,10 @@ impl PromptStateOwner {
             .lock()
             .expect("prompt state owner lock should not be poisoned");
         let queue = &mut owner.ensure_agent_state(session, agent_id).queued_prompts;
+        if prompt.launch_wait().is_some() {
+            self.has_provider_launch_waiters
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
         queue.insert(position.min(queue.len()), prompt);
     }
 
@@ -1537,6 +2136,47 @@ impl PromptStateOwner {
         };
         queued.set_local_steer_submitted(submitted);
         true
+    }
+
+    /// Joins one more occurrence of a notification trigger to the agent's queued
+    /// prompt of that trigger, under the queue lock, so several occurrences cost one
+    /// turn. Only a prompt that is still waiting joins: never the running prompt, a
+    /// prompt being steered, or a person's or agent's prompt. Returns the prompt and
+    /// whether it changed; an occurrence it already carries leaves it as it is.
+    pub(crate) fn join_queued_notification(
+        &self,
+        session: &RuntimeSession,
+        agent_id: &str,
+        trigger_id: &str,
+        notification: crate::session::QueuedNotification,
+        deadline_ms: u64,
+        render: impl FnOnce(&[crate::session::QueuedNotification]) -> String,
+    ) -> Option<(PromptQueueItem, bool)> {
+        let mut owner = self
+            .state
+            .lock()
+            .expect("prompt state owner lock should not be poisoned");
+        let state = owner.ensure_agent_state(session, agent_id);
+        let queued = state.queued_prompts.iter_mut().find(|queued| {
+            queued.prompt_origin() == crate::session::PromptOrigin::Notification
+                && queued.agent_trigger_id() == Some(trigger_id)
+                && queued.status() == PromptStatus::Queued
+                && !queued.queued_notifications().is_empty()
+                && !queued.remote_steer_reserved()
+                && !queued.local_steer_submitted()
+        })?;
+        if queued
+            .queued_notifications()
+            .iter()
+            .any(|carried| carried.sequence == notification.sequence)
+        {
+            return Some((queued.clone(), false));
+        }
+        let mut notifications = queued.queued_notifications().to_vec();
+        notifications.push(notification.clone());
+        let text = render(&notifications);
+        queued.join_queued_notification(notification, deadline_ms, text);
+        Some((queued.clone(), true))
     }
 
     pub(crate) fn update_queued_prompt(
@@ -1626,6 +2266,14 @@ impl PromptStateOwner {
         });
         for agent_id in session.prompt_states().keys() {
             let mut restored = OwnedAgentPromptState::from_session(session, agent_id);
+            if restored
+                .queued_prompts
+                .iter()
+                .any(|prompt| prompt.launch_wait().is_some())
+            {
+                self.has_provider_launch_waiters
+                    .store(true, std::sync::atomic::Ordering::Release);
+            }
             // A live sudo hold is kernel memory, not mirror state: keep the fence.
             if let Some(previous) = owner
                 .states
@@ -1782,6 +2430,17 @@ impl PromptStateOwnerState {
         }))
     }
 
+    fn session_has_active_prompt(&self, session: &RuntimeSession) -> bool {
+        self.agent_ids_for_session(session)
+            .into_iter()
+            .any(|agent_id| {
+                self.states
+                    .get(&PromptStateKey::new(session.id(), &agent_id))
+                    .and_then(|state| state.active_prompt.as_ref())
+                    .is_some()
+            })
+    }
+
     fn agent_ids_for_session(&self, session: &RuntimeSession) -> Vec<String> {
         let mut agent_ids = session
             .agents()
@@ -1825,6 +2484,7 @@ mod tests {
         let owner = PromptStateOwner::default();
         let session = RuntimeSession::new(
             "session-direct-message",
+            crate::session::ProjectId::test(),
             None,
             "workspace-direct-message",
             "worktree-direct-message",
@@ -1870,6 +2530,7 @@ mod tests {
         let owner = PromptStateOwner::default();
         let session = RuntimeSession::new(
             "session",
+            crate::session::ProjectId::test(),
             None,
             "workspace",
             "worktree",
@@ -1912,6 +2573,7 @@ mod tests {
         let owner = PromptStateOwner::default();
         let session = RuntimeSession::new(
             "session-1",
+            crate::session::ProjectId::test(),
             None,
             "workspace-1",
             "worktree-1",
@@ -1962,6 +2624,7 @@ mod tests {
         let owner = PromptStateOwner::default();
         let session = RuntimeSession::new(
             "session-durable",
+            crate::session::ProjectId::test(),
             None,
             "workspace-1",
             "worktree-1",
@@ -2023,6 +2686,7 @@ mod tests {
         let owner = PromptStateOwner::default();
         let session = RuntimeSession::new(
             "session-delivery",
+            crate::session::ProjectId::test(),
             None,
             "workspace-1",
             "worktree-1",
@@ -2103,6 +2767,7 @@ mod tests {
         let owner = PromptStateOwner::default();
         let session = RuntimeSession::new(
             "session-1",
+            crate::session::ProjectId::test(),
             None,
             "workspace-1",
             "worktree-1",
@@ -2191,6 +2856,7 @@ mod tests {
         let owner = PromptStateOwner::default();
         let session = RuntimeSession::new(
             "session-cancel-before-dispatch",
+            crate::session::ProjectId::test(),
             None,
             "workspace-1",
             "worktree-1",
@@ -2249,6 +2915,7 @@ mod tests {
         let owner = PromptStateOwner::default();
         let session = RuntimeSession::new(
             "session-cancel-during-dispatch",
+            crate::session::ProjectId::test(),
             None,
             "workspace-1",
             "worktree-1",
@@ -2312,6 +2979,7 @@ mod tests {
         let owner = PromptStateOwner::default();
         let session = RuntimeSession::new(
             "session-1",
+            crate::session::ProjectId::test(),
             None,
             "workspace-1",
             "worktree-1",
@@ -2380,6 +3048,7 @@ mod tests {
         let owner = PromptStateOwner::default();
         let session = RuntimeSession::new(
             "session-1",
+            crate::session::ProjectId::test(),
             None,
             "workspace-1",
             "worktree-1",
@@ -2449,6 +3118,7 @@ mod tests {
         let owner = PromptStateOwner::default();
         let session = RuntimeSession::new(
             "session-remote-steer-reservation",
+            crate::session::ProjectId::test(),
             None,
             "workspace-remote-steer-reservation",
             "worktree-remote-steer-reservation",
@@ -2571,6 +3241,7 @@ mod tests {
         let owner = PromptStateOwner::default();
         let session = RuntimeSession::new(
             "session-stale-completion",
+            crate::session::ProjectId::test(),
             None,
             "workspace-stale-completion",
             "worktree-stale-completion",
@@ -2632,6 +3303,7 @@ mod tests {
         let owner = PromptStateOwner::default();
         let mut session = RuntimeSession::new(
             "session-1",
+            crate::session::ProjectId::test(),
             None,
             "workspace-1",
             "worktree-1",
@@ -2702,6 +3374,7 @@ mod tests {
         let owner = PromptStateOwner::default();
         let mut session = RuntimeSession::new(
             "session-1",
+            crate::session::ProjectId::test(),
             None,
             "workspace-1",
             "worktree-1",
@@ -2735,6 +3408,7 @@ mod tests {
         let owner = PromptStateOwner::default();
         let mut session = RuntimeSession::new(
             "session-1",
+            crate::session::ProjectId::test(),
             None,
             "workspace-1",
             "worktree-1",
@@ -2764,6 +3438,7 @@ mod tests {
         let owner = PromptStateOwner::default();
         let mut session = RuntimeSession::new(
             "session-1",
+            crate::session::ProjectId::test(),
             None,
             "workspace-1",
             "worktree-1",
@@ -2817,6 +3492,7 @@ mod tests {
         let owner = PromptStateOwner::default();
         let mut session = RuntimeSession::new(
             "session-1",
+            crate::session::ProjectId::test(),
             None,
             "workspace-1",
             "worktree-1",
@@ -2893,6 +3569,7 @@ mod tests {
         let owner = PromptStateOwner::default();
         let mut session = RuntimeSession::new(
             "session-1",
+            crate::session::ProjectId::test(),
             None,
             "workspace-1",
             "worktree-1",
@@ -2943,6 +3620,7 @@ mod tests {
         let owner = PromptStateOwner::default();
         let mut restored_with_prompt = RuntimeSession::new(
             "session-1",
+            crate::session::ProjectId::test(),
             None,
             "workspace-1",
             "worktree-1",
@@ -2967,6 +3645,7 @@ mod tests {
 
         let mut restored_without_prompt = RuntimeSession::new(
             "session-1",
+            crate::session::ProjectId::test(),
             None,
             "workspace-1",
             "worktree-1",
@@ -3001,6 +3680,7 @@ mod tests {
         let owner = PromptStateOwner::default();
         let session = RuntimeSession::new(
             "session-1",
+            crate::session::ProjectId::test(),
             None,
             "workspace-1",
             "worktree-1",
@@ -3025,6 +3705,7 @@ mod tests {
                     sudo_entry_id: None,
                     sudo_process_cutoff: None,
                     sudo_work: None,
+                    provider_turn: ProviderOwnTurn::None,
                     active_prompt: None,
                     queued_prompts: VecDeque::from([queued_prompt]),
                 },
@@ -3058,6 +3739,7 @@ mod tests {
         let owner = PromptStateOwner::default();
         let session = RuntimeSession::new(
             "session-1",
+            crate::session::ProjectId::test(),
             None,
             "workspace-1",
             "worktree-1",
@@ -3085,6 +3767,7 @@ mod tests {
         let owner = PromptStateOwner::default();
         let session = RuntimeSession::new(
             "session-1",
+            crate::session::ProjectId::test(),
             None,
             "workspace-1",
             "worktree-1",

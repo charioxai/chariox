@@ -34,7 +34,6 @@ pub(super) fn meta_agent_resume_request(
             clear_workspace_id: false,
             worktree_id: None,
             clear_worktree_id: false,
-            self_settings: None,
             usage_limit: Some(action),
             reason: None,
         },

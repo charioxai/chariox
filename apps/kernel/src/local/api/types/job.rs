@@ -34,6 +34,33 @@ pub struct RunJobRequest {
     pub wait_s: u64,
     #[serde(default)]
     pub outputs: Vec<String>,
+    /// A machine the job can use without allocating or releasing it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub machine: Option<JobMachineTarget>,
+    /// Run on the named machine without sending or returning workspace files.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub machine_only: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged, deny_unknown_fields)]
+pub enum JobMachineTarget {
+    Allocation(String),
+    Enrolled {
+        kernel: String,
+        /// An existing folder on the target, populated with chariox.files.copy if needed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        directory: Option<String>,
+    },
+}
+
+impl RunJobRequest {
+    pub(crate) fn target_directory(&self) -> Option<&str> {
+        match &self.machine {
+            Some(JobMachineTarget::Enrolled { directory, .. }) => directory.as_deref(),
+            _ => None,
+        }
+    }
 }
 
 fn job_timeout() -> u64 {
@@ -77,6 +104,18 @@ pub struct JobResult {
     pub outcome: JobOutcome,
 }
 
+/// The list keeps counts and a bounded refusal reason; status opens the full saved result.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JobResultSummary {
+    pub exit_code: Option<i32>,
+    pub reason: Option<String>,
+    pub files_back_count: u64,
+    pub conflicts_count: u64,
+    pub ran_on: JobRanOn,
+    pub duration_ms: u64,
+    pub outcome: JobOutcome,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JobView {
     pub job_id: String,
@@ -91,5 +130,6 @@ pub struct JobView {
     pub rate_per_minute: Option<JobMachineRate>,
     pub estimate_micros: Option<u64>,
     pub deleted: bool,
-    pub result: Option<JobResult>,
+    pub result: Option<JobResultSummary>,
+    pub read_error: Option<String>,
 }

@@ -225,10 +225,6 @@ impl<'a> KernelSessionService<'a> {
                 Some(workspace_id),
                 &grant.name,
             ),
-            ExtensionKind::Skill => crate::runtime::capability_registry::ensure_skill_exists(
-                Some(workspace_id),
-                &grant.name,
-            ),
             ExtensionKind::Script => {
                 let environment =
                     grant
@@ -463,6 +459,7 @@ impl<'a> KernelSessionService<'a> {
                 definition: rebound_definition,
                 validation,
                 logs: compile.logs,
+                source_sha256: compile.source_sha256,
                 source_spans: compile.source_spans,
             },
             apply,
@@ -492,32 +489,6 @@ impl<'a> KernelSessionService<'a> {
     ) -> Result<(), DaemonError> {
         let session = self.app.sessions().get_session(session_id)?;
         let registry = self.app.providers.registry();
-        let generated_agent_count = definition
-            .nodes
-            .iter()
-            .filter(|node| matches!(&node.agent, WorkflowCodeAgentBinding::Create(_)))
-            .count();
-        let current_agent_count = self
-            .app
-            .agents
-            .get_session_agents(session_id)
-            .iter()
-            .filter(|agent| !agent.archived())
-            .count();
-        if caller_metaagent_id.is_none()
-            && current_agent_count.saturating_add(generated_agent_count)
-                > session.max_agents() as usize
-        {
-            push_workflow_code_target_validation_error(
-                validation,
-                "session_agent_limit_exceeded",
-                format!(
-                    "workflow-code would create {generated_agent_count} agents but session `{session_id}` has {current_agent_count}/{} agents",
-                    session.max_agents()
-                ),
-                None,
-            );
-        }
         let runtime_queue_limit = self.app.config().max_workflow_queues_per_workflow();
         let materialized_queue_count =
             crate::workflow_code::workflow_code_materialized_queue_count(definition);
@@ -730,45 +701,10 @@ impl<'a> KernelSessionService<'a> {
     pub(crate) fn detach(&mut self, attachment_id: &str) -> Result<RuntimeAttachment, DaemonError> {
         let session_store = self.app.session_state_store();
         let mut sessions = session_store.write();
-        let (attachment, effect) = self
-            .app
-            .attachments
-            .detach_with_effect(&mut sessions, attachment_id)?;
+        let attachment = self.app.attachments.detach(&mut sessions, attachment_id)?;
         drop(sessions);
-        let removed_queued_prompt_count = effect.removed_queued_prompt_count;
         let session_after_detach = SessionStateReader::new(self.app.session_state_store())
             .get_session(attachment.session_id())?;
-
-        if removed_queued_prompt_count > 0 {
-            self.app.record_notice(
-                attachment.session_id(),
-                None,
-                self.app
-                    .attachments
-                    .list_session_attachment_ids(attachment.session_id()),
-                format!(
-                    "Removed {removed_queued_prompt_count} queued prompt(s) from detached attachment `{attachment_id}`."
-                ),
-            );
-        }
-
-        if effect.removed_active_prompt {
-            self.app.record_notice(
-                attachment.session_id(),
-                None,
-                self.app
-                    .attachments
-                    .list_session_attachment_ids(attachment.session_id()),
-                format!(
-                    "Removed the active prompt from detached attachment `{attachment_id}` and advanced the queue."
-                ),
-            );
-            if let Some(agent_id) = session_after_detach.focused_agent_id() {
-                let _ = self
-                    .app
-                    .advance_next_queued_prompt(attachment.session_id(), agent_id)?;
-            }
-        }
 
         let remaining_attachment_ids = self
             .app
@@ -827,8 +763,6 @@ impl<'a> KernelSessionService<'a> {
             serde_json::json!({
                 "session_id": attachment.session_id(),
                 "attachment_id": attachment.id(),
-                "removed_queued_prompts": effect.removed_queued_prompt_count,
-                "removed_active_prompt": effect.removed_active_prompt,
                 "remaining_attachment_ids": remaining_attachment_ids,
             }),
         );

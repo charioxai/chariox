@@ -49,9 +49,11 @@ async fn kernel(url: &str, offer: bool) -> (Socket, bool) {
         .is_some_and(|value| value == UPLOAD_CHUNKS);
     socket
         .send(Message::Text(
-            serde_json::to_string(&RelayEnvelope::DaemonRegister {
-                registration: test_registration("daemon-a", "machine-1", "Linux", 10),
-            })
+            serde_json::to_string(&signed_register(
+                url,
+                &response,
+                test_registration("daemon-a", "machine-1", "Linux", 10),
+            ))
             .unwrap()
             .into(),
         ))

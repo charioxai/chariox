@@ -11,6 +11,7 @@
     "lint": "node scripts/oss-boundary-guard.mjs && node scripts/lint-kernel-blocking.mjs && pnpm lint:rules && pnpm -r --workspace-concurrency=1 run lint",
     "start:cli": "node scripts/start-cli.mjs",
     "test": "node --test scripts/*.test.mjs scripts/checks/*.test.mjs && pnpm run test:review-regressions && pnpm run test:slice-provisioner && pnpm -r --workspace-concurrency=1 run test",
+    "check:drill-containers": "node scripts/sweep-drill-containers.mjs --check",
     "lint:rules": "node scripts/checks/run.mjs",
     "lint:process-signals": "node scripts/lint-process-signals.mjs",
     "test:process-signals": "node --test scripts/lint-process-signals.test.mjs scripts/owned-process-signals.test.mjs scripts/owned-process-signals-python.test.mjs",

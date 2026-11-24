@@ -1,9 +1,7 @@
-use crate::runtime::bounded_process::BoundedCommandExt as _;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use crate::app::{DaemonApp, TrackedProviderProcess};
-use crate::config::DaemonConfig;
 use crate::error::DaemonError;
 use crate::provider::{
     AgentEndpointMode, ProviderProcessInfo, ProviderRunState, RuntimeProviderRun,
@@ -307,7 +305,6 @@ impl<'a> ProviderProcessTracker<'a> {
         &mut self,
         now_ms: u64,
         idle_ttl_ms: u64,
-        orphan_ttl_ms: u64,
     ) -> Result<ProviderProcessReapSummary, DaemonError> {
         let mut summary = ProviderProcessReapSummary::default();
         let safe_processes = Self::snapshot(self.app)
@@ -321,30 +318,17 @@ impl<'a> ProviderProcessTracker<'a> {
             summary.tracked_processes_reaped += 1;
         }
 
-        let orphan_process_ids = owned_orphan_provider_process_ids(
-            self.app.config(),
-            &tracked_provider_pids(self.app),
-            orphan_ttl_ms,
-        );
-        for pid in orphan_process_ids {
-            if crate::runtime::process_health::terminate_process_tree(pid) {
-                summary.orphan_processes_reaped += 1;
-                crate::logging::warn_with_fields(
-                    "daemon.provider_process_gc",
-                    "reaped orphaned managed provider process",
-                    serde_json::json!({
-                        "pid": pid,
-                    }),
-                );
-            }
-        }
+        summary.orphan_processes_reaped = stop_processes_left_by_dead_kernels();
 
         self.app
             .update_provider_process_projection(Self::snapshot(self.app));
         Ok(summary)
     }
 
-    fn reap_tracked_process(&mut self, process: &ProviderProcessInfo) -> Result<(), DaemonError> {
+    pub(super) fn reap_tracked_process(
+        &mut self,
+        process: &ProviderProcessInfo,
+    ) -> Result<(), DaemonError> {
         let (process_key, run_ids, pid) = {
             let tracking = self.app.provider_process_tracking.read();
             let Some((process_key, tracked)) = tracking
@@ -361,23 +345,51 @@ impl<'a> ProviderProcessTracker<'a> {
             )
         };
 
+        let live_runs = run_ids
+            .iter()
+            .filter_map(|run_id| self.app.providers.get_run(run_id).ok())
+            .filter(|run| run.state() != ProviderRunState::Ended)
+            .collect::<Vec<_>>();
+        let sessions = live_runs
+            .iter()
+            .filter_map(|run| self.app.sessions.get_session(run.session_id()).ok())
+            .collect::<Vec<_>>();
+        // The process looked idle when the sweep began; a prompt given to one
+        // of its runs since then keeps it.
+        let providers = &self.app.providers;
+        let Some(ended) = self
+            .app
+            .prompt_state_owner
+            .while_sessions_idle(&sessions, || {
+                Ok(live_runs
+                    .iter()
+                    .filter_map(|run| {
+                        providers
+                            .terminate_run_provider_only(run.session_id(), run.id())
+                            .ok()
+                    })
+                    .collect::<Vec<_>>())
+            })?
+        else {
+            crate::logging::info_with_fields(
+                "daemon.provider_process_gc",
+                "kept idle managed provider process: a prompt became active",
+                serde_json::json!({
+                    "process_id": process.process_id,
+                    "owner_provider_run_ids": run_ids,
+                }),
+            );
+            return Ok(());
+        };
+        for outcome in ended {
+            clear_active_provider_run_session_pointer(
+                self.app,
+                outcome.run().session_id(),
+                outcome.run().id(),
+            )?;
+            self.app.update_provider_run_projection(outcome.into_run());
+        }
         for run_id in &run_ids {
-            if let Ok(run) = self.app.providers.get_run(run_id) {
-                if run.state() != ProviderRunState::Ended {
-                    if let Ok(outcome) = self
-                        .app
-                        .providers
-                        .terminate_run_provider_only(run.session_id(), run.id())
-                    {
-                        clear_active_provider_run_session_pointer(
-                            self.app,
-                            run.session_id(),
-                            outcome.run().id(),
-                        )?;
-                        self.app.update_provider_run_projection(outcome.into_run());
-                    }
-                }
-            }
             let _ = self.remove_run(run_id);
         }
 
@@ -558,161 +570,9 @@ fn claude_native_tui_cleanup_root(run: &RuntimeProviderRun) -> Option<PathBuf> {
     Some(root.to_path_buf())
 }
 
-fn tracked_provider_pids(app: &DaemonApp) -> BTreeSet<u32> {
-    app.provider_process_tracking
-        .read()
-        .processes
-        .values()
-        .filter_map(|process| process.pid)
-        .collect()
-}
-
-fn owned_orphan_provider_process_ids(
-    config: &DaemonConfig,
-    tracked_pids: &BTreeSet<u32>,
-    orphan_ttl_ms: u64,
-) -> Vec<u32> {
-    let output = match crate::process_spawn::command("ps")
-        .args(["-axo", "pid=,ppid=,pgid=,etimes=,command="])
-        .bounded_output()
-    {
-        Ok(output) => output,
-        Err(_) => return Vec::new(),
-    };
-    let ps_output = String::from_utf8_lossy(&output.stdout);
-    let mcp_url = format!(
-        "http://{}:{}/mcp",
-        config.runtime_mcp_host, config.runtime_mcp_port
-    );
-    let mut orphans = owned_orphan_provider_process_ids_from_ps_output(
-        &ps_output,
-        std::process::id(),
-        tracked_pids,
-        orphan_ttl_ms,
-        &mcp_url,
-    );
-    orphans.extend(processes_left_by_dead_kernels());
-    orphans
-}
-
-fn processes_left_by_dead_kernels() -> Vec<u32> {
-    dead_kernel_leftovers::left_by_dead_kernels(
-        dead_kernel_leftovers::launches_in_this_scope(&std::env::temp_dir()),
-        std::process::id(),
-        dead_kernel_leftovers::is_alive,
-    )
-}
-
-/// Ends the provider runs a dead kernel left behind, with every process they started. A restored
-/// kernel calls this before it resumes an interrupted turn, so that the resumed provider cannot
-/// run a command that an earlier copy is still running.
+/// End the previous kernel's abandoned provider work before resuming interrupted turns.
 pub(crate) fn stop_processes_left_by_dead_kernels() -> usize {
-    processes_left_by_dead_kernels()
-        .into_iter()
-        .filter(|pid| crate::runtime::process_health::terminate_process_tree(*pid))
-        .count()
-}
-
-#[derive(Debug)]
-struct ProviderProcessSnapshot {
-    pid: u32,
-    parent_pid: u32,
-    process_group_id: u32,
-    age_secs: u64,
-    command: String,
-}
-
-fn owned_orphan_provider_process_ids_from_ps_output(
-    ps_output: &str,
-    current_pid: u32,
-    tracked_pids: &BTreeSet<u32>,
-    orphan_ttl_ms: u64,
-    mcp_url: &str,
-) -> Vec<u32> {
-    let min_age_secs = orphan_ttl_ms.div_ceil(1_000);
-    let processes = ps_output
-        .lines()
-        .filter_map(|line| {
-            let mut parts = line.split_whitespace();
-            let pid = parts.next()?.parse::<u32>().ok()?;
-            let parent_pid = parts.next()?.parse::<u32>().ok()?;
-            let process_group_id = parts.next()?.parse::<u32>().ok()?;
-            let age_secs = parts.next()?.parse::<u64>().ok()?;
-            let command = parts.collect::<Vec<_>>().join(" ");
-            Some(ProviderProcessSnapshot {
-                pid,
-                parent_pid,
-                process_group_id,
-                age_secs,
-                command,
-            })
-        })
-        .map(|process| (process.pid, process))
-        .collect::<BTreeMap<_, _>>();
-    let tracked_process_group_ids = tracked_pids
-        .iter()
-        .filter_map(|pid| processes.get(pid))
-        .map(|process| process.process_group_id)
-        .filter(|process_group_id| *process_group_id > 0)
-        .collect::<BTreeSet<_>>();
-    let current_process_ancestors = process_ancestor_ids(current_pid, &processes);
-
-    processes
-        .values()
-        .filter_map(|process| {
-            if process.pid == current_pid
-                || tracked_pids.contains(&process.pid)
-                || tracked_process_group_ids.contains(&process.process_group_id)
-                || current_process_ancestors.contains(&process.pid)
-                || has_protected_process_ancestor(process, &processes, tracked_pids, current_pid)
-                || process.age_secs < min_age_secs
-                || !process.command.contains("codex app-server")
-                || !process.command.contains("mcp_servers.chariox.url")
-                || !process.command.contains(mcp_url)
-            {
-                return None;
-            }
-            Some(process.pid)
-        })
-        .collect()
-}
-
-fn process_ancestor_ids(
-    current_pid: u32,
-    processes: &BTreeMap<u32, ProviderProcessSnapshot>,
-) -> BTreeSet<u32> {
-    let mut ancestors = BTreeSet::new();
-    let mut parent_pid = processes
-        .get(&current_pid)
-        .map(|process| process.parent_pid)
-        .unwrap_or_default();
-    while parent_pid > 0 && ancestors.insert(parent_pid) {
-        let Some(parent) = processes.get(&parent_pid) else {
-            break;
-        };
-        parent_pid = parent.parent_pid;
-    }
-    ancestors
-}
-
-fn has_protected_process_ancestor(
-    process: &ProviderProcessSnapshot,
-    processes: &BTreeMap<u32, ProviderProcessSnapshot>,
-    tracked_pids: &BTreeSet<u32>,
-    current_pid: u32,
-) -> bool {
-    let mut parent_pid = process.parent_pid;
-    let mut visited = BTreeSet::new();
-    while parent_pid > 0 && visited.insert(parent_pid) {
-        if parent_pid == current_pid || tracked_pids.contains(&parent_pid) {
-            return true;
-        }
-        let Some(parent) = processes.get(&parent_pid) else {
-            break;
-        };
-        parent_pid = parent.parent_pid;
-    }
-    false
+    dead_kernel_leftovers::stop()
 }
 
 fn clear_active_provider_run_session_pointer(
@@ -764,140 +624,7 @@ impl DaemonApp {
         &mut self,
         now_ms: u64,
         idle_ttl_ms: u64,
-        orphan_ttl_ms: u64,
     ) -> Result<ProviderProcessReapSummary, DaemonError> {
-        ProviderProcessTracker::new(self).reap_idle_processes(now_ms, idle_ttl_ms, orphan_ttl_ms)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::owned_orphan_provider_process_ids_from_ps_output;
-    use crate::config::DaemonConfig;
-    use std::collections::BTreeSet;
-
-    const MCP_URL: &str = "http://127.0.0.1:49999/mcp";
-
-    fn codex_command(port: u16) -> String {
-        format!(
-            "codex app-server -c mcp_servers.chariox.url=\"{MCP_URL}\" --listen ws://127.0.0.1:{port}"
-        )
-    }
-
-    #[test]
-    fn test_config_never_reaps_another_live_kernels_provider_process() {
-        let config = DaemonConfig::for_tests();
-        let mcp_url = format!(
-            "http://{}:{}/mcp",
-            config.runtime_mcp_host, config.runtime_mcp_port
-        );
-        let ps_output = format!(
-            "200 943303 200 45 /opt/codex codex app-server -c mcp_servers.chariox.url=\"{mcp_url}\" --listen ws://127.0.0.1:50002\n"
-        );
-
-        let orphan_ids = owned_orphan_provider_process_ids_from_ps_output(
-            &ps_output,
-            999,
-            &BTreeSet::new(),
-            config.provider_process_orphan_ttl_ms,
-            &mcp_url,
-        );
-
-        assert!(
-            orphan_ids.is_empty(),
-            "a test kernel must not reap a live kernel's provider process"
-        );
-    }
-
-    #[test]
-    fn orphan_scan_preserves_children_and_process_group_members_of_tracked_launchers() {
-        let ps_output = format!(
-            "100 1 100 45 node {}\n\
-             101 100 100 44 /opt/codex {}\n\
-             102 101 102 43 /opt/codex {}\n\
-             103 1 100 42 /opt/codex {}\n\
-             200 1 200 41 /opt/codex {}\n",
-            codex_command(50001),
-            codex_command(50001),
-            codex_command(50001),
-            codex_command(50001),
-            codex_command(50002),
-        );
-
-        let orphan_ids = owned_orphan_provider_process_ids_from_ps_output(
-            &ps_output,
-            999,
-            &BTreeSet::from([100]),
-            30_000,
-            MCP_URL,
-        );
-
-        assert_eq!(orphan_ids, vec![200]);
-    }
-
-    #[test]
-    fn orphan_scan_preserves_processes_parented_by_the_current_kernel() {
-        let ps_output = format!(
-            "300 999 300 45 node {}\n\
-             301 300 300 44 /opt/codex {}\n\
-             400 1 400 43 /opt/codex {}\n",
-            codex_command(50001),
-            codex_command(50001),
-            codex_command(50002),
-        );
-
-        let orphan_ids = owned_orphan_provider_process_ids_from_ps_output(
-            &ps_output,
-            999,
-            &BTreeSet::new(),
-            30_000,
-            MCP_URL,
-        );
-
-        assert_eq!(orphan_ids, vec![400]);
-    }
-
-    #[test]
-    fn orphan_scan_preserves_processes_ancestors_of_the_current_kernel() {
-        let ps_output = format!(
-            "600 1 600 45 /usr/bin/node\n\
-             601 600 601 44 /opt/codex {}\n\
-             999 601 999 1 test-kernel\n\
-             700 1 700 43 /opt/codex {}\n",
-            codex_command(50001),
-            codex_command(50002),
-        );
-
-        let orphan_ids = owned_orphan_provider_process_ids_from_ps_output(
-            &ps_output,
-            999,
-            &BTreeSet::new(),
-            30_000,
-            MCP_URL,
-        );
-
-        assert_eq!(orphan_ids, vec![700]);
-    }
-
-    #[test]
-    fn orphan_scan_requires_age_managed_command_and_runtime_mcp_url() {
-        let ps_output = format!(
-            "200 1 200 29 /opt/codex {}\n\
-             201 1 201 30 /opt/codex codex app-server --listen ws://127.0.0.1:50002\n\
-             202 1 202 30 /opt/codex codex app-server -c mcp_servers.chariox.url=\"http://127.0.0.1:49998/mcp\"\n\
-             203 1 203 30 /opt/codex {}\n",
-            codex_command(50001),
-            codex_command(50003),
-        );
-
-        let orphan_ids = owned_orphan_provider_process_ids_from_ps_output(
-            &ps_output,
-            999,
-            &BTreeSet::new(),
-            30_000,
-            MCP_URL,
-        );
-
-        assert_eq!(orphan_ids, vec![203]);
+        ProviderProcessTracker::new(self).reap_idle_processes(now_ms, idle_ttl_ms)
     }
 }

@@ -46,6 +46,7 @@ impl KernelRuntimeOwnedState {
         pending.insert(
             id.clone(),
             super::super::PendingInteraction {
+                codex_approval_transfer: None,
                 checking_answer: Default::default(),
                 goal_approval: None,
                 async_task_id: None,
@@ -288,6 +289,7 @@ mod tests {
         let room = |id: &str, owner: &str, prompt_at_ms: u64| {
             let mut room = crate::session::RuntimeSession::new(
                 id,
+                crate::session::ProjectId::test(),
                 None,
                 "workspace",
                 "worktree",
@@ -321,6 +323,7 @@ mod tests {
         let state = fixture();
         let mut room = crate::session::RuntimeSession::new(
             "unrelated-room",
+            crate::session::ProjectId::test(),
             None,
             "workspace",
             "worktree",

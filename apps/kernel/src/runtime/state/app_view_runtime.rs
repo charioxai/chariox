@@ -839,18 +839,12 @@ impl KernelRuntimeState {
         // tool or host action (clipboard, links) runs.
         let authority = crate::runtime::app_view_authority::AppViewAuthority::new(
             self.owned.agent_store.clone(),
-            match &caller {
-                ViewCaller::Agent(agent) => Some(*agent),
-                ViewCaller::Owner(_) => None,
-            },
+            caller.agent(),
             &binding.installation,
-            tracked.browser_grant(),
-            match &caller {
-                ViewCaller::Agent(agent) => {
-                    Some(self.app_binding_epoch(agent.id(), &binding.installation))
-                }
-                ViewCaller::Owner(_) => None,
-            },
+            tracked.run_fence(),
+            caller
+                .agent()
+                .map(|agent| self.app_binding_epoch(agent.id(), &binding.installation)),
         );
         authority.check()?;
         let cancelled = authority.clone();
@@ -907,11 +901,15 @@ impl KernelRuntimeState {
             .try_admit()
             .map_err(|_| coded(app_call_errors::admission_busy()))?;
         let store = self.owned.durable_state_store.clone();
-        let turn = match &caller {
-            ViewCaller::Agent(agent) => self.view_agent_turn(agent),
-            ViewCaller::Owner(_) => None,
-        };
+        let turn = caller.agent().and_then(|agent| self.view_agent_turn(agent));
+        let approved = matches!(caller, ViewCaller::ApprovedAgent(_));
         let caller = view_caller(binding, caller, turn);
+        // Held until the call is answered or dropped: the approval is for this call alone.
+        let _approval = approved.then(|| {
+            self.app_control()
+                .approved_operations()
+                .approve(&caller.operation_id)
+        });
         let tool_name = tool;
         let still_granted = authority.clone();
         let response = tokio::task::spawn_blocking(move || {
@@ -969,6 +967,18 @@ impl KernelRuntimeState {
 pub(super) enum ViewCaller<'a> {
     Owner(Option<&'a str>),
     Agent(&'a crate::agent::AgentInstance),
+    /// The agent's call, after a person approved this exact action: still the agent's
+    /// grant and attribution, with the person's authority over routing for this call.
+    ApprovedAgent(&'a crate::agent::AgentInstance),
+}
+
+impl<'a> ViewCaller<'a> {
+    pub(super) fn agent(&self) -> Option<&'a crate::agent::AgentInstance> {
+        match self {
+            Self::Owner(_) => None,
+            Self::Agent(agent) | Self::ApprovedAgent(agent) => Some(agent),
+        }
+    }
 }
 
 /// A Room view, or a user view its owner drives, runs as the owner (V-SDK-04:
@@ -988,7 +998,7 @@ fn view_caller(
             task_id: None,
             turn_id: None,
         },
-        ViewCaller::Agent(agent) => CallerContext {
+        ViewCaller::Agent(agent) | ViewCaller::ApprovedAgent(agent) => CallerContext {
             actor: Actor::Agent(agent.id().into()),
             room_id: Some(agent.session_id().into()),
             operation_id,

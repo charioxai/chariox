@@ -156,6 +156,7 @@ fn only_the_room_owner_reaches_terminals_and_drivers_do_not_collide() {
                 rows: 30,
                 title: None,
                 command: None,
+                stdin: None,
             },
         )
         .await
@@ -225,10 +226,38 @@ fn only_the_room_owner_reaches_terminals_and_drivers_do_not_collide() {
         let a = Some(agent_a.id());
         let b = Some(agent_b.id());
         assert!(
-            type_text(&router, &session_id, &id, a, "cat\r")
-                .await
-                .accepted
+            type_text(
+                &router,
+                &session_id,
+                &id,
+                a,
+                "sh -c 'echo terminal-ready-$((6*7)); exec cat'\r",
+            )
+            .await
+            .accepted
         );
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let result = terminal_request(
+                &router,
+                DEFAULT_LOCAL_USER_ID,
+                &session_id,
+                a,
+                RoomTerminalOperation::Snapshot {
+                    terminal_id: id.clone(),
+                },
+            )
+            .await
+            .expect("read terminal");
+            let RoomTerminalResult::Snapshot { snapshot } = result else {
+                panic!("unexpected terminal result: {result:?}");
+            };
+            if snapshot.screen_text.contains("terminal-ready-42") {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "cat did not start");
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
         until_driver(
             &router,
             &session_id,
@@ -537,7 +566,7 @@ fn room_exec_uses_exactly_the_room_terminal_owner_gate() {
 
 // A one-shot `GetSessionState` carries the process rows the live feed shows.
 #[test]
-fn a_one_shot_session_state_lists_the_rooms_processes() {
+fn a_one_shot_machine_resources_read_lists_the_rooms_processes() {
     run("room-state-processes", || async {
         let worktree = crate::test_support::TestWorktree::new("room_state_processes");
         let app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon boots");
@@ -558,6 +587,7 @@ fn a_one_shot_session_state_lists_the_rooms_processes() {
                 rows: 24,
                 title: None,
                 command: Some(vec!["/bin/sleep".into(), "8897".into()]),
+                stdin: None,
             },
         )
         .await
@@ -566,18 +596,19 @@ fn a_one_shot_session_state_lists_the_rooms_processes() {
             panic!("unexpected result");
         };
         let rows = || async {
-            let request =
-                LocalDaemonRequest::GetSessionState(crate::local::GetSessionStateRequest {
+            let request = LocalDaemonRequest::GetMachineRoomResources(
+                crate::local::GetMachineRoomResourcesRequest {
                     session_id: session_id.clone(),
-                });
+                },
+            );
             let response = router
                 .dispatch(
                     remote_command_for_request(&request, Some(DEFAULT_LOCAL_USER_ID)),
                     request,
                 )
                 .await
-                .expect("one-shot session state");
-            serde_json::to_value(response).unwrap()["SessionState"]["processes"].clone()
+                .expect("one-shot Room resources");
+            serde_json::to_value(response).unwrap()["MachineRoomResources"]["processes"].clone()
         };
         let mut found = serde_json::Value::Null;
         for _ in 0..100 {
@@ -604,7 +635,7 @@ fn a_one_shot_session_state_lists_the_rooms_processes() {
         let row = found
             .as_array()
             .and_then(|rows| rows.first())
-            .unwrap_or_else(|| panic!("the one-shot state lists no process: {found}"));
+            .unwrap_or_else(|| panic!("the one-shot Room resources list no process: {found}"));
         assert_eq!(row["owner"]["kind"], "terminal");
         assert_eq!(row["owner"]["id"], terminal.terminal_id.as_str());
     });
@@ -638,6 +669,7 @@ async fn agent_deletion_ends_a_detached_terminal_job(close_first: bool, name: &s
             rows: 30,
             title: None,
             command: Some(vec!["/bin/sh".into(), "-c".into(), script]),
+            stdin: None,
         },
     )
     .await

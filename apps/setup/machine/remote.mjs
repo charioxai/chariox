@@ -30,7 +30,10 @@ async function metadata(path) {
 }
 async function directory(path, create) {
   let m = await metadata(path)
-  if (!m && create) { await mkdir(path, { mode: 0o700 }); m = await lstat(path) }
+  if (!m && create) {
+    try { await mkdir(path, { mode: 0o700 }) } catch (error) { if (error.code !== "EEXIST") throw error }
+    m = await lstat(path)
+  }
   if (!m || !m.isDirectory() || m.isSymbolicLink() || m.uid !== process.getuid() || (m.mode & 0o022)) fail("install path must be a user-owned directory without links or shared write access")
 }
 export async function tree(home, relative, create = true) {
@@ -38,7 +41,7 @@ export async function tree(home, relative, create = true) {
   for (const part of relative.split("/")) { p = join(p, part); await directory(p, create) }
   return p
 }
-async function existingTree(home, relative) {
+export async function existingTree(home, relative) {
   let p = home
   for (const part of relative.split("/")) {
     p = join(p, part)
@@ -88,14 +91,33 @@ export async function ensureSystemdUserPersistence(invoke = command, uid = proce
   } catch { /* Keep host/service diagnostics bounded and value-free. */ }
   fail(`The user service would stop after logout. Ask the host administrator to run sudo loginctl enable-linger ${user}, then retry Setup. No enrollment code was consumed.`)
 }
+// The kernel starts agents only inside Bubblewrap, so they cannot read its secrets. Setup adds the
+// bubblewrap package when it runs as root; otherwise it names the administrator command. It never elevates.
+export async function ensureBubblewrap(invoke = command, uid = process.getuid()) {
+  const confines = () => invoke("bwrap", ["--dev-bind", "/", "/", "--", "/bin/true"]).then(() => true, () => false)
+  if (await confines()) return
+  if (await invoke("bwrap", ["--version"]).then(() => true, () => false)) {
+    fail("Bubblewrap cannot make a mount namespace for this user, and agents run inside it. Ask the host administrator to allow unprivileged user namespaces for bwrap, then retry Setup. No enrollment code was consumed.")
+  }
+  if (uid !== 0) {
+    fail("Agents run inside Bubblewrap, which is not installed. Ask the host administrator to run sudo apt-get install -y bubblewrap (or sudo dnf install -y bubblewrap), then retry Setup. No enrollment code was consumed.")
+  }
+  const env = { ...process.env, DEBIAN_FRONTEND: "noninteractive" }
+  for (const steps of [[["apt-get", ["update"]], ["apt-get", ["install", "-y", "--no-install-recommends", "bubblewrap"]]], [["dnf", ["install", "-y", "bubblewrap"]]]]) {
+    try { for (const [program, args] of steps) await invoke(program, args, false, undefined, env) } catch { continue }
+    if (await confines()) return
+  }
+  fail("Agents run inside Bubblewrap, and Setup could not install it with apt-get or dnf. Install the bubblewrap package, then retry Setup. No enrollment code was consumed.")
+}
 function quote(value) {
   if (typeof value !== "string" || /[\x00-\x1f\x7f]/.test(value)) fail("invalid user service environment")
   return `"${value.replaceAll("%", "%%").replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`
 }
 // MP-07 / MP-11: an install must not inherit another kernel's state or transport.
 export const isolatedKernelEnvironment = ["CHARIOX_MANAGED_PROVIDER_TOPOLOGY", "CHARIOX_MANAGED_BOOTSTRAP_RECEIPT", "CHARIOX_CAPABILITY_ISOLATION_ROOT", "CHARIOX_MANAGED_PROVIDER_ISOLATION", "CHARIOX_MANAGED_PROVIDER_ISOLATION_ACTIVE", "CHARIOX_MANAGED_PROVIDER_BWRAP", "CHARIOX_MANAGED_PROVIDER_HOME", "CHARIOX_SLICE_ROOT", "CHARIOX_SLICE_DOCKER_BROKER_SOCKET", "CHARIOX_SLICE_DOCKER_BROKER_FD", "CHARIOX_SLICE_DOCKER_BROKER_REQUIRED", "CHARIOX_RELAY_TOKEN", "CHARIOX_CLOUD_RELAY_CONFIG_JSON", "CHARIOX_CLOUD_RELAY_CONFIG_PATH", "CHARIOX_DAEMON_ID", "CHARIOX_MACHINE_ID", "CHARIOX_DAEMON_ALIAS", "CHARIOX_MACHINE_ALIAS", "CHARIOX_KERNEL_LOCAL_AUTH_TOKEN", "CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE", "CHARIOX_LOG_DIR", "CHARIOX_PUBLICATION_CONTROL_STATE_DIR", "CHARIOX_DAEMON_SOCKET", "CHARIOX_SESSION_HISTORY_DIR", "CHARIOX_RELAY_URL", "CHARIOX_MANAGED_SLICE_RELAY_OWNER_PUBLIC_KEY", "CHARIOX_KERNEL_RUNTIME_ROLE", "CHARIOX_REMOTE_LEASE_CAPACITY", "CHARIOX_LEASE_WORKER_HOME_CALLER", "CHARIOX_SLICE_OWNER_MACHINE_ID", "CHARIOX_AEDS_URL", "CHARIOX_EVENT_ENVIRONMENT_ID", "CHARIOX_EVENT_REGISTRY_URL", "CHARIOX_AEGS_MANAGEMENT_TARGETS_FILE", "CHARIOX_AEGS_MANAGEMENT_TARGETS_JSON"]
-export function unitFor(home, r, root, kernelPath = "usr/local/bin/chariox-kernel") {
-  return `[Unit]\nDescription=Chariox machine ${r.installId}\n\n[Service]\nType=simple\nEnvironment=${quote(`HOME=${home}`)}\nEnvironment=${quote(`CHARIOX_HOME=${home}/.chariox/dev/machines/${r.installId}`)}\nEnvironment=${quote(`PATH=${process.env.PATH}`)}\nEnvironment=CHARIOX_KERNEL_HOST=127.0.0.1\nEnvironment=CHARIOX_KERNEL_PORT=${r.port}\nEnvironment=CHARIOX_MCP_HOST=127.0.0.1\nEnvironment=CHARIOX_MCP_PORT=${r.port + 1}\nUnsetEnvironment=${isolatedKernelEnvironment.join(" ")}\nExecStart=${quote(`${root}/current/${kernelPath}`)}\nRestart=on-failure\nRestartSec=3\n\n[Install]\nWantedBy=default.target\n`
+export function unitFor(home, r, root, kernelPath = "usr/local/bin/chariox-kernel", serviceEnvironment = {}) {
+  const additionalEnvironment = Object.entries(serviceEnvironment).map(([key, value]) => `Environment=${quote(`${key}=${value}`)}\n`).join("")
+  return `[Unit]\nDescription=Chariox machine ${r.installId}\n\n[Service]\nType=simple\nEnvironment=${quote(`HOME=${home}`)}\nEnvironment=${quote(`CHARIOX_HOME=${home}/.chariox/dev/machines/${r.installId}`)}\nEnvironment=${quote(`PATH=${process.env.PATH}`)}\nEnvironment=CHARIOX_KERNEL_HOST=127.0.0.1\nEnvironment=CHARIOX_KERNEL_PORT=${r.port}\nEnvironment=CHARIOX_MCP_HOST=127.0.0.1\nEnvironment=CHARIOX_MCP_PORT=${r.port + 1}\n${additionalEnvironment}UnsetEnvironment=${isolatedKernelEnvironment.join(" ")}\nExecStart=${quote(`${root}/current/${kernelPath}`)}\nRestart=on-failure\nRestartSec=3\n\n[Install]\nWantedBy=default.target\n`
 }
 async function verifyImage(image, digest, pins, stage) {
   await command("node", [join(stage, "verify-rootfs.mjs"), image, digest, join(pins, "release-public-pin"), join(pins, "builder-public-pin")])
@@ -182,7 +204,7 @@ async function preflightMachine(r, home, stage, serviceManager) {
   return prior
 }
 // serviceManager is a test seam, never supplied by serialized requests or environment flags.
-export async function runMachine(r, { home = process.env.HOME, stage = here, enrollment, enrollKernel, kernelCommand, releaseAdapter, serviceDefinition, servicePersistence = ensureSystemdUserPersistence, serviceManager = (args, capture) => command("systemctl", ["--user", ...args], capture) } = {}) {
+export async function runMachine(r, { home = process.env.HOME, stage = here, enrollment, enrollKernel, kernelCommand, releaseAdapter, serviceDefinition, prepareServiceEnvironment, servicePersistence = ensureSystemdUserPersistence, agentConfinement = ensureBubblewrap, serviceManager = (args, capture) => command("systemctl", ["--user", ...args], capture) } = {}) {
   validateRequest(r)
   const verify = releaseAdapter?.verify ?? verifyImage
   const kernelPath = releaseAdapter?.kernelPath ?? "usr/local/bin/chariox-kernel"
@@ -196,9 +218,12 @@ export async function runMachine(r, { home = process.env.HOME, stage = here, enr
     if (releaseAdapter || serviceDefinition) fail("inspection requires the original image/service contract")
     return r.action === "preflight" ? preflightMachine(r, home, stage, serviceManager) : inspectMachine(r, home, stage, serviceManager)
   }
-  if (!serviceDefinition && ["start", "upgrade", "repair"].includes(r.action)) await servicePersistence()
+  if (!serviceDefinition && ["start", "upgrade", "repair"].includes(r.action)) {
+    await servicePersistence()
+    await agentConfinement()
+  }
   const service = serviceDefinition?.name ?? `chariox-machine-${r.installId}.service`
-  const renderUnit = () => serviceDefinition?.render(home, r, root, kernelPath) ?? unitFor(home, r, root, kernelPath)
+  const renderUnit = environment => serviceDefinition?.render(home, r, root, kernelPath) ?? unitFor(home, r, root, kernelPath, environment)
   const installParent = await tree(home, ".local/share/chariox/machines", installing)
   const root = join(installParent, r.installId)
   const unitDir = await tree(home, serviceDefinition?.relativeDirectory ?? ".config/systemd/user", installing)
@@ -312,9 +337,9 @@ export async function runMachine(r, { home = process.env.HOME, stage = here, enr
     const protocol = (await command(join(image, kernelPath), ["--print-local-daemon-protocol-version"], true)).trim()
     if (!/^\d+$/.test(protocol) || Number(protocol) < 479) fail("chosen release requires owner-managed bootstrap protocol 479 or newer")
     const manifest = JSON.parse(await readFile(join(image, manifestPath)))
-    const unit = renderUnit()
     // Keep staging and the exclusive install lock through activation or rollback.
     if (marker) return await upgradeRelease({ root, markerPath, marker, r, image, manifest, stage, verify, serviceManager, kernelCommand, kernelPath, env: kernelEnvironment(home, stateRelative, r), service })
+    const unit = renderUnit(await prepareServiceEnvironment?.())
     const state = await tree(home, stateRelative)
     if (!oldState) await writeFile(join(state, "machine-install-owner.json"), JSON.stringify({ format: FORMAT, installId: r.installId, port: r.port, service }), { flag: "wx", mode: 0o600 })
     const pending = join(scratch, "install")

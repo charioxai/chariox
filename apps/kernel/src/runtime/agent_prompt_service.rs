@@ -159,8 +159,8 @@ impl AgentPromptCommandService {
 
     pub(crate) async fn steer_active_prompt(
         &self,
-        request: crate::local::SteerActivePromptRequest,
-    ) -> Result<PromptQueueItem, DaemonError> {
+        request: &crate::local::SteerActivePromptRequest,
+    ) -> Result<Option<(String, PromptQueueItem)>, DaemonError> {
         self.state
             .with_external_command_authority(self.request_authority())
             .steer_active_prompt(request)
@@ -247,13 +247,15 @@ impl AgentPromptCommandService {
         self.state.session_task_lane_busy(session_id)
     }
 
-    pub(crate) fn enqueue_metaagent_task(
+    // MP-08 / MP-10 / MP-11: carry admitted user selections through ordinary Meta queueing.
+    pub(crate) fn enqueue_metaagent_task_with_skills(
         &self,
         session_id: &str,
         metaagent_id: &str,
         source_attachment_id: &str,
         task_markdown: &str,
         attachments: Vec<crate::session::PromptAttachment>,
+        skill_intent: crate::session::SkillIntent,
     ) -> Result<
         (
             crate::session::QueuedMetaagentTask,
@@ -261,12 +263,13 @@ impl AgentPromptCommandService {
         ),
         DaemonError,
     > {
-        self.state.enqueue_metaagent_task(
+        self.state.enqueue_metaagent_task_with_skills(
             session_id,
             metaagent_id,
             source_attachment_id,
             task_markdown,
             attachments,
+            skill_intent,
         )
     }
 
@@ -289,13 +292,6 @@ impl AgentPromptCommandService {
             provider_run_id,
             trace_id,
         );
-    }
-
-    pub(crate) fn agent_activity_for_session(
-        &self,
-        session: &crate::session::RuntimeSession,
-    ) -> std::collections::BTreeMap<String, crate::runtime::projection::AgentRuntimeActivity> {
-        self.state.agent_activity_for_session(session)
     }
 
     pub(crate) fn inject_metaagent_turn_completion_event(

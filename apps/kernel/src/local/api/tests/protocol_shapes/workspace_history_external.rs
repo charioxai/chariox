@@ -116,6 +116,7 @@ fn local_daemon_protocol_workspace_live_sync_status_shape_is_versioned() {
     };
     let mut mode_session = crate::session::RuntimeSession::new(
         "session-1",
+        crate::session::ProjectId::test(),
         None,
         "/repo",
         "/repo",
@@ -186,7 +187,7 @@ fn local_daemon_protocol_workspace_live_sync_status_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "2310a9554cc05659266f076da039e0e5a445bf7de5957a9634e7e3bb3e33099b"
+        "0a444d46ff63f4f6be8776ea245eb4db58b62148dcd87cf5b9f3d7fefa30b38d"
     );
 }
 
@@ -200,6 +201,7 @@ fn local_daemon_protocol_session_history_outline_shape_is_versioned() {
     let request = LocalDaemonRequest::GetSessionHistoryOutline(
         crate::local::GetSessionHistoryOutlineRequest {
             session_id: "session-1".to_string(),
+            after_sequence: None,
             include_prefetched_content: false,
             agent_ids: Some(vec!["agent-1".to_string(), "agent-2".to_string()]),
             latest_prompt_count: Some(4),
@@ -263,6 +265,8 @@ fn local_daemon_protocol_session_history_outline_shape_is_versioned() {
     blob_entry.entry.prompt_origin = Some(crate::session::PromptOrigin::External);
     let outline = LocalDaemonResponse::SessionHistoryOutline {
         agents: vec![crate::local::SessionHistoryOutlineAgent {
+            delta_cursor: None,
+            turn_deltas: None,
             agent_id: "agent-1".to_string(),
             prefetched_blobs: None,
             turns: vec![crate::local::SessionHistoryOutlineTurn {
@@ -282,6 +286,7 @@ fn local_daemon_protocol_session_history_outline_shape_is_versioned() {
                 summary: Some(summary),
                 blobs: vec![crate::local::SessionHistoryOutlineBlob {
                     blob_id: "history:11:11".to_string(),
+                    revision: "blob-revision".into(),
                     steering: false,
                     kind: crate::history::SessionHistoryEntryKind::ProviderTool,
                     title: "bash · COMPLETED".to_string(),
@@ -433,7 +438,7 @@ fn local_daemon_protocol_session_history_outline_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "ffedac9dfef1bcafbd27d812d1c536e7c0c92772f4131fa1b242d3cbb2f0c582"
+        "09f6d1706995ec244579c8f958276419d30266d0dfa1e2712d4c56825a2908c4"
     );
 }
 
@@ -823,6 +828,50 @@ fn relay_home_credential_proxy_shape_is_versioned() {
             credential_id: "desktop-password".to_string(),
             injection: crate::transport::relay_peer::RemoteCredentialSecretInjection::Computer,
         };
+    let workspace_secret_request =
+        crate::transport::relay_peer::RelayPeerRequest::ResolveHomeCredentialSecret {
+            context: context.clone(),
+            credential_id: "deploy-token".to_string(),
+            injection: crate::transport::relay_peer::RemoteCredentialSecretInjection::Workspace {
+                target: crate::config::VaultUseTarget::CommandEnvironment {
+                    name: "DEPLOY_TOKEN".to_string(),
+                    origin: "https://deploy.example.com".to_string(),
+                },
+            },
+        };
+    let capture_binding = crate::config::VaultUseBinding {
+        target: crate::config::VaultUseTarget::CommandEnvironment {
+            name: "DEPLOY_TOKEN".to_string(),
+            origin: "https://deploy.example.com".to_string(),
+        },
+        value_kind: crate::config::VaultValueKind::Secret,
+    };
+    let capture_prepare_request =
+        crate::transport::relay_peer::RelayPeerRequest::CaptureForHomeVault {
+            context: context.clone(),
+            capture: crate::transport::relay_peer::HomeVaultCapture::Prepare {
+                request_id: "deploy".to_string(),
+                host: "deploy.example.com".to_string(),
+                use_binding: capture_binding.clone(),
+            },
+        };
+    let capture_store_request =
+        crate::transport::relay_peer::RelayPeerRequest::CaptureForHomeVault {
+            context: context.clone(),
+            capture: crate::transport::relay_peer::HomeVaultCapture::Store {
+                request_id: "deploy".to_string(),
+                host: "deploy.example.com".to_string(),
+                label: Some("Deploy token".to_string()),
+                use_binding: capture_binding,
+                secret: crate::transport::relay_peer::RemoteCredentialSecretInput::new(
+                    "redacted-by-test-fixture".to_string(),
+                ),
+            },
+        };
+    let capture_prepared_response =
+        crate::transport::relay_peer::RelayPeerResponse::HomeVaultCapturePrepared {
+            committed: None,
+        };
     let list_response =
         crate::transport::relay_peer::RelayPeerResponse::HomeCredentialToolHandled {
             result: crate::transport::runtime_tools::RuntimeToolResult {
@@ -848,7 +897,11 @@ fn relay_home_credential_proxy_shape_is_versioned() {
         computer_secret_request,
         pty_secret_request,
         list_response,
-        secret_response
+        secret_response,
+        workspace_secret_request,
+        capture_prepare_request,
+        capture_store_request,
+        capture_prepared_response
     ]);
     assert_eq!(
         snapshot.pointer("/0/kind"),
@@ -867,6 +920,29 @@ fn relay_home_credential_proxy_shape_is_versioned() {
         Some(&serde_json::json!("pty"))
     );
     assert_eq!(
+        snapshot.pointer("/6/injection"),
+        Some(&serde_json::json!({
+            "kind": "workspace",
+            "target": {
+                "kind": "command_environment",
+                "name": "DEPLOY_TOKEN",
+                "origin": "https://deploy.example.com"
+            }
+        }))
+    );
+    assert_eq!(
+        snapshot.pointer("/7/capture/kind"),
+        Some(&serde_json::json!("prepare"))
+    );
+    assert_eq!(
+        snapshot.pointer("/8/capture/kind"),
+        Some(&serde_json::json!("store"))
+    );
+    assert_eq!(
+        snapshot.pointer("/9/kind"),
+        Some(&serde_json::json!("home_vault_capture_prepared"))
+    );
+    assert_eq!(
         snapshot.pointer("/4/kind"),
         Some(&serde_json::json!("home_credential_tool_handled"))
     );
@@ -879,7 +955,7 @@ fn relay_home_credential_proxy_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "1db26e45df57ec3bc21aeba0aed6ca232352a75163d331398ab4bac2b98e51d5"
+        "77b093fcbb801f9056558d5c72f81a1b39f0a49e8fe76917e7a1882145acbe7c"
     );
 }
 
@@ -933,12 +1009,6 @@ fn local_daemon_protocol_extension_install_shape_is_versioned() {
             tools: Default::default(),
         },
     });
-    let skill = LocalDaemonRequest::UpsertSkill(crate::local::UpsertSkillRequest {
-        workspace_id: Some("/repo".to_string()),
-        source: crate::local::SkillInstallSource::Url {
-            url: "https://github.com/example/skills/tree/main/review".to_string(),
-        },
-    });
     let connector = LocalDaemonRequest::UpsertConnector(crate::local::UpsertConnectorRequest {
         connector: crate::connector::CharioxConnectorDefinition {
             kind: "connector".to_string(),
@@ -968,26 +1038,22 @@ fn local_daemon_protocol_extension_install_shape_is_versioned() {
             limit: Some(10),
         });
 
-    let snapshot = serde_json::json!([mcp, skill, connector, sync, audit]);
+    let snapshot = serde_json::json!([mcp, connector, sync, audit]);
     assert_eq!(
         snapshot
             .pointer("/0/InstallMcpServer/config/transport/credential_env/GITHUB_TOKEN/credential"),
         Some(&serde_json::json!("github-token"))
     );
     assert_eq!(
-        snapshot.pointer("/1/UpsertSkill/source/type"),
-        Some(&serde_json::json!("url"))
-    );
-    assert_eq!(
-        snapshot.pointer("/2/UpsertConnector/connector/operations/0/config/path"),
+        snapshot.pointer("/1/UpsertConnector/connector/operations/0/config/path"),
         Some(&serde_json::json!("/status"))
     );
     assert_eq!(
-        snapshot.pointer("/3/SyncRemoteExtensionManifest/agent_ref"),
+        snapshot.pointer("/2/SyncRemoteExtensionManifest/agent_ref"),
         Some(&serde_json::json!("agent-1"))
     );
     assert_eq!(
-        snapshot.pointer("/4/ListHomeExtensionAudit/limit"),
+        snapshot.pointer("/3/ListHomeExtensionAudit/limit"),
         Some(&serde_json::json!(10))
     );
     let serialized =
@@ -995,7 +1061,7 @@ fn local_daemon_protocol_extension_install_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "2409b4d10bab0b296bd880e060b8931116f30f2452e5c9205e7701f9ccbe0108"
+        "f9dd28137e7e3ccc6f12f0eec4c9c9adc6351f3d00bb414ed444e7eec9a1bd2d"
     );
 }
 
@@ -1041,10 +1107,6 @@ fn local_daemon_protocol_session_process_memory_outcomes_are_versioned() {
         "relay_peer_protocol_version": crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
         "shapes": [
         crate::transport::kernel_protocol::KernelEvent::SessionProcessesChanged {
-            disk_usage: vec![crate::runtime::disk_usage::DiskUsageEntry {
-                id: "/work/repo".into(), path: Some("/work/repo".into()), used_bytes: Some(8192),
-                sampled_at_ms: 10000, owner: None, process_id: None,
-            }],
             session_id: "room-1".into(),
             processes: vec![SessionProcess {
                 remote_available: false, remote_refusal: None, estimate: None, placement: None,
@@ -1187,6 +1249,6 @@ fn local_daemon_protocol_session_process_memory_outcomes_are_versioned() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "c57c6885a4f1a15d5184a8cef138cbccc0702e835a73653652455d5ef9b61dfb"
+        "6cb6f97e96ff50676131d3f4f1665132f4f75e7e66d55374ffbb310d0165f8d3"
     );
 }

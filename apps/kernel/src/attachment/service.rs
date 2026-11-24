@@ -2,16 +2,16 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::error::DaemonError;
-use crate::session::{PromptDetachEffect, RuntimeSession, SessionService};
+use crate::session::{RuntimeSession, SessionService};
 
-use super::{AttachRequest, ClientCapabilityLevel, RuntimeAttachment};
+use super::{AttachRequest, RuntimeAttachment};
 
 #[derive(Debug, Clone, Default)]
 pub struct AttachmentService {
     attachments: BTreeMap<String, RuntimeAttachment>,
     last_heartbeat_at_ms: BTreeMap<String, u64>,
     /// Attachments a live subscription heartbeats for: when the subscription ends they go stale whatever their level.
-    watched: BTreeSet<String>,
+    leased: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -54,14 +54,6 @@ impl AttachmentServiceStore {
         self.write().detach(sessions, attachment_id)
     }
 
-    pub fn detach_with_effect(
-        &self,
-        sessions: &mut SessionService,
-        attachment_id: &str,
-    ) -> Result<(RuntimeAttachment, PromptDetachEffect), DaemonError> {
-        self.write().detach_with_effect(sessions, attachment_id)
-    }
-
     pub(crate) fn restore_attachment(
         &self,
         sessions: &mut SessionService,
@@ -87,7 +79,11 @@ impl AttachmentServiceStore {
         sessions: &mut SessionService,
         attachment: RuntimeAttachment,
     ) -> Result<(), DaemonError> {
-        sessions.add_attachment_to_session(attachment.session_id(), attachment.id())?;
+        sessions.add_attachment_to_session(
+            attachment.session_id(),
+            attachment.id(),
+            attachment.owner_user_id(),
+        )?;
         let mut service = self.write();
         service
             .last_heartbeat_at_ms
@@ -170,14 +166,13 @@ impl AttachmentServiceStore {
     }
 
     /// A subscription's own heartbeat: from now on the attachment lives only as long as its subscription.
-    pub fn record_subscription_heartbeat(
+    pub fn renew_lease(
         &self,
         session_id: &str,
         attachment_id: &str,
         now_ms: u64,
     ) -> Result<(), DaemonError> {
-        self.write()
-            .record_subscription_heartbeat(session_id, attachment_id, now_ms)
+        self.write().renew_lease(session_id, attachment_id, now_ms)
     }
 
     pub fn stale_terminal_attachment_ids(&self, now_ms: u64, stale_after_ms: u64) -> Vec<String> {
@@ -213,7 +208,11 @@ impl AttachmentService {
             request.owner_user_id,
         );
 
-        sessions.add_attachment_to_session(&request.session_id, &attachment_id)?;
+        sessions.add_attachment_to_session(
+            attachment.session_id(),
+            attachment.id(),
+            attachment.owner_user_id(),
+        )?;
         self.attachments
             .insert(attachment_id.clone(), attachment.clone());
         self.last_heartbeat_at_ms
@@ -227,27 +226,22 @@ impl AttachmentService {
         sessions: &mut SessionService,
         attachment_id: &str,
     ) -> Result<RuntimeAttachment, DaemonError> {
-        self.detach_with_effect(sessions, attachment_id)
-            .map(|(attachment, _)| attachment)
-    }
-
-    pub fn detach_with_effect(
-        &mut self,
-        sessions: &mut SessionService,
-        attachment_id: &str,
-    ) -> Result<(RuntimeAttachment, PromptDetachEffect), DaemonError> {
-        let attachment = self.attachments.remove(attachment_id).ok_or_else(|| {
-            DaemonError::AttachmentNotFound {
-                attachment_id: attachment_id.to_string(),
-            }
-        })?;
-        self.last_heartbeat_at_ms.remove(attachment_id);
-        self.watched.remove(attachment_id);
-
-        let (_, effect) =
+        let attachment = self.get_attachment(attachment_id)?;
+        let session =
             sessions.remove_attachment_from_session(attachment.session_id(), attachment_id)?;
-
-        Ok((attachment, effect))
+        let member_still_attached = session.attachment_ids().iter().any(|id| {
+            self.attachments
+                .get(id)
+                .is_some_and(|current| current.owner_user_id() == attachment.owner_user_id())
+        });
+        if !member_still_attached {
+            sessions
+                .disconnect_attachment_actor(attachment.session_id(), attachment.owner_user_id());
+        }
+        self.attachments.remove(attachment_id);
+        self.last_heartbeat_at_ms.remove(attachment_id);
+        self.leased.remove(attachment_id);
+        Ok(attachment)
     }
 
     pub fn get_attachment(&self, attachment_id: &str) -> Result<RuntimeAttachment, DaemonError> {
@@ -324,7 +318,7 @@ impl AttachmentService {
             .iter()
             .filter_map(|attachment_id| {
                 self.last_heartbeat_at_ms.remove(attachment_id);
-                self.watched.remove(attachment_id);
+                self.leased.remove(attachment_id);
                 self.attachments.remove(attachment_id)
             })
             .collect();
@@ -350,24 +344,21 @@ impl AttachmentService {
         Ok(())
     }
 
-    pub fn record_subscription_heartbeat(
+    pub fn renew_lease(
         &mut self,
         session_id: &str,
         attachment_id: &str,
         now_ms: u64,
     ) -> Result<(), DaemonError> {
         self.record_heartbeat(session_id, attachment_id, now_ms)?;
-        self.watched.insert(attachment_id.to_string());
+        self.leased.insert(attachment_id.to_string());
         Ok(())
     }
 
     pub fn stale_terminal_attachment_ids(&self, now_ms: u64, stale_after_ms: u64) -> Vec<String> {
         self.attachments
             .values()
-            .filter(|attachment| {
-                terminal_attachment_requires_heartbeat(attachment)
-                    || self.watched.contains(attachment.id())
-            })
+            .filter(|attachment| self.leased.contains(attachment.id()))
             .filter(|attachment| {
                 self.last_heartbeat_at_ms
                     .get(attachment.id())
@@ -384,13 +375,6 @@ impl AttachmentService {
         // service must never assign one of those IDs to another client.
         format!("attachment-{:032x}", rand::random::<u128>())
     }
-}
-
-fn terminal_attachment_requires_heartbeat(attachment: &RuntimeAttachment) -> bool {
-    matches!(
-        attachment.capability_level(),
-        ClientCapabilityLevel::FullTerminal | ClientCapabilityLevel::InteractiveStructured
-    )
 }
 
 #[cfg(test)]
@@ -453,6 +437,9 @@ mod tests {
         assert_eq!(session.attachment_ids().len(), 2);
         assert!(session.has_attachment(first.id()));
         assert!(session.has_attachment(second.id()));
+        let public_session = serde_json::to_value(session).expect("session serializes");
+        assert_eq!(public_session["connected_cli_count"], 2);
+        assert!(public_session.get("attachment_ids").is_none());
     }
 
     #[test]
@@ -524,10 +511,10 @@ mod tests {
             .expect("automation attachment should attach");
 
         attachments
-            .record_heartbeat(&session_id, stale.id(), 1_000)
+            .renew_lease(&session_id, stale.id(), 1_000)
             .expect("stale heartbeat should record");
         attachments
-            .record_heartbeat(&session_id, fresh.id(), 25_000)
+            .renew_lease(&session_id, fresh.id(), 25_000)
             .expect("fresh heartbeat should record");
         attachments
             .record_heartbeat(&session_id, automation.id(), 1_000)
@@ -563,7 +550,7 @@ mod tests {
         let held = attach(&mut attachments, &mut sessions, "leased-agent");
 
         attachments
-            .record_subscription_heartbeat(&session_id, viewer.id(), 1_000)
+            .renew_lease(&session_id, viewer.id(), 1_000)
             .expect("subscription heartbeat should record");
         attachments
             .record_heartbeat(&session_id, held.id(), 1_000)
@@ -575,11 +562,52 @@ mod tests {
             "only the attachment a subscription watched goes stale"
         );
         attachments
-            .record_subscription_heartbeat(&session_id, viewer.id(), 25_000)
+            .renew_lease(&session_id, viewer.id(), 25_000)
             .expect("subscription heartbeat should record");
         assert!(attachments
             .stale_terminal_attachment_ids(31_000, 30_000)
             .is_empty());
+    }
+
+    // A driver on the local IPC socket sends commands and never subscribes to terminal output, so
+    // nothing refreshes a heartbeat for it; it stays attached until it detaches.
+    #[test]
+    fn a_terminal_level_driver_that_never_subscribed_is_not_swept() {
+        let mut sessions = session_service();
+        let session_id = create_session(&mut sessions);
+        let mut attachments = AttachmentService::new();
+        let attach = |attachments: &mut AttachmentService,
+                      sessions: &mut SessionService,
+                      client: &str,
+                      level: ClientCapabilityLevel| {
+            attachments
+                .attach(sessions, AttachRequest::new(&session_id, client, level))
+                .expect("attachment should attach")
+        };
+        let driver = attach(
+            &mut attachments,
+            &mut sessions,
+            "ipc-driver",
+            ClientCapabilityLevel::FullTerminal,
+        );
+        let terminal = attach(
+            &mut attachments,
+            &mut sessions,
+            "terminal",
+            ClientCapabilityLevel::InteractiveStructured,
+        );
+        attachments
+            .record_heartbeat(&session_id, driver.id(), 1_000)
+            .expect("command heartbeat should record");
+        attachments
+            .renew_lease(&session_id, terminal.id(), 1_000)
+            .expect("subscription heartbeat should record");
+
+        assert_eq!(
+            attachments.stale_terminal_attachment_ids(60_000, 30_000),
+            vec![terminal.id().to_string()],
+            "only the attachment that subscribed to terminal output goes stale"
+        );
     }
 
     #[test]

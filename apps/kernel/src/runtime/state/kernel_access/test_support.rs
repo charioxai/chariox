@@ -13,6 +13,7 @@ mod input_control_authority;
 mod meta_authority;
 mod native_launch_authority;
 mod notification_follows;
+mod owner_cards;
 mod pressure;
 mod session_authority;
 mod standing;
@@ -131,6 +132,8 @@ impl KernelRuntimeState {
     }
 
     pub(crate) async fn control_access_for_test(&self, action: &str, vault: &std::path::Path) {
+        // The fixture root holds the Vault's own folder and the drill's results.
+        let results = vault.parent().and_then(std::path::Path::parent).unwrap();
         if let Some(handle) = action.strip_prefix("vault-secret-sha256:") {
             use sha2::Digest;
             let user_config = self.owned.config_projection.snapshot().user_config;
@@ -141,7 +144,7 @@ impl KernelRuntimeState {
             .unwrap();
             let value = service.vault_secret_for_dictation(handle).unwrap().unwrap();
             std::fs::write(
-                vault.parent().unwrap().join("vault-secret-sha256"),
+                results.join("vault-secret-sha256"),
                 format!("{:x}", sha2::Sha256::digest(value.as_bytes())),
             )
             .unwrap();
@@ -154,7 +157,7 @@ impl KernelRuntimeState {
                 .find(|credential| credential.id == handle)
                 .unwrap();
             std::fs::write(
-                vault.parent().unwrap().join("credential-hosts"),
+                results.join("credential-hosts"),
                 credential.allowed_hosts.join("\n"),
             )
             .unwrap();
@@ -209,7 +212,7 @@ impl KernelRuntimeState {
                 .find(|credential| credential.id == handle)
                 .unwrap();
             std::fs::write(
-                vault.parent().unwrap().join("credential-record"),
+                results.join("credential-record"),
                 serde_json::to_string(&credential).unwrap(),
             )
             .unwrap();
@@ -239,10 +242,14 @@ impl KernelRuntimeState {
                 Err(DaemonError::LocalTransport { operation, .. }) => operation.to_owned(),
                 Err(other) => other.to_string(),
             };
-            std::fs::write(vault.parent().unwrap().join("credential-policy"), verdict).unwrap();
+            std::fs::write(results.join("credential-policy"), verdict).unwrap();
             return;
         }
         if self.control_credential_access_for_test(action, vault).await {
+            return;
+        }
+        if action == "owner-cards" {
+            self.raise_owner_cards_for_test(results).await;
             return;
         }
         if action == "guest" {
@@ -1032,10 +1039,10 @@ async fn grant_holder_can_choose_allow_session_on_a_routine_permission() {
     );
 }
 
-// The blocked-task decision (Resume or Cancel) belongs to the owner but not to their terminal: a holder or
-// an agent driving the room answers it. Every other kernel-operation decision stays terminal-only.
+// Kernel decisions belong to the owner but not to their terminal: a holder answers them for the person.
+// A decision whose choice needs the passkey stays terminal-only.
 #[tokio::test]
-async fn the_blocked_task_decision_is_the_one_kernel_decision_a_holder_may_answer() {
+async fn a_holder_answers_kernel_decisions_except_one_that_needs_the_passkey() {
     use crate::session::{RuntimeInteraction, RuntimeInteractionChoice};
     let workspace = crate::test_support::TestWorktree::new("blocked-task-decision");
     let mut app =
@@ -1049,7 +1056,8 @@ async fn the_blocked_task_decision_is_the_one_kernel_decision_a_holder_may_answe
             app,
         );
     let grant = state.insert_access_grant_for_test(session.id());
-    for id in ["task-blocked-t1-1", "resource-acquisition-1"] {
+    for id in ["task-blocked-t1-1", "resource-acquisition-1", "protected-1"] {
+        let resume = RuntimeInteractionChoice::new("resume", "Resume", "resume", None);
         let (tx, _rx) = tokio::sync::oneshot::channel();
         state
             .owned
@@ -1062,7 +1070,11 @@ async fn the_blocked_task_decision_is_the_one_kernel_decision_a_holder_may_answe
                     "The task is blocked",
                     vec![
                         RuntimeInteractionChoice::new("cancel", "Cancel", "cancel", None),
-                        RuntimeInteractionChoice::new("resume", "Resume", "resume", None),
+                        if id == "protected-1" {
+                            resume.requiring_passkey()
+                        } else {
+                            resume
+                        },
                     ],
                 ),
                 tx,
@@ -1080,12 +1092,14 @@ async fn the_blocked_task_decision_is_the_one_kernel_decision_a_holder_may_answe
             .unwrap(),
         )
     };
-    state
-        .authorize_external_request(&grant, &answer("task-blocked-t1-1"))
-        .expect("a holder may answer the blocked-task decision");
+    for id in ["task-blocked-t1-1", "resource-acquisition-1"] {
+        state
+            .authorize_external_request(&grant, &answer(id))
+            .expect("a holder answers a kernel decision for the person");
+    }
     let refused = state
-        .authorize_external_request(&grant, &answer("resource-acquisition-1"))
-        .expect_err("another kernel-operation decision stays terminal-only");
+        .authorize_external_request(&grant, &answer("protected-1"))
+        .expect_err("a decision that needs the passkey stays terminal-only");
     assert_eq!(
         crate::runtime::kernel_access::Refusal::of(&refused),
         crate::runtime::kernel_access::Refusal::HumanOnly

@@ -136,7 +136,7 @@ impl Terminal {
 #[tokio::test]
 async fn one_passkey_prompt_reaches_every_terminal_and_the_first_answer_closes_it() {
     let root = RuntimeTransportTempDir::new("passkey-popups");
-    let vault = root.path().join("vault.json");
+    let vault = root.path().join("vault").join("vault.json");
     crate::secret::create_chariox_encrypted_vault_for_test(&vault, PASSKEY)
         .expect("test vault should be created");
     let auth = Arc::new(local_auth::LocalTokenAuth::new(
@@ -262,7 +262,7 @@ async fn one_passkey_prompt_reaches_every_terminal_and_the_first_answer_closes_i
 #[tokio::test]
 async fn linked_cloud_owner_popup_reaches_the_local_room_list_terminal() {
     let root = RuntimeTransportTempDir::new("cloud-owner-popup");
-    let vault = root.path().join("vault.json");
+    let vault = root.path().join("vault").join("vault.json");
     crate::secret::create_chariox_encrypted_vault_for_test(&vault, PASSKEY).unwrap();
     let token = local_auth::generate_kernel_local_auth_token();
     let auth =

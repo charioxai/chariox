@@ -5,10 +5,13 @@ use super::*;
 use crate::local::SettingsApplies;
 
 /// Who asked for a settings change.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) enum SettingsOrigin {
+    #[default]
     Person,
     Agent(String),
+    /// An outside agent acting for the person through an owner grant.
+    ExternalAgent,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -55,22 +58,32 @@ impl AgentSettingsView {
 /// One agent of one session.
 type AgentKey = (String, String);
 
+/// The changes held for one agent and who asked last.
+type PendingChanges = (Vec<SettingChange>, SettingsOrigin);
+
 /// Changes accepted for a running turn that its process has not taken yet, by agent: the oldest
-/// value and the newest of each field, so one swap shows one line.
+/// value and the newest of each field, and who asked last, so one swap shows one line.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct PendingSettingsNotices {
-    inner: Arc<std::sync::Mutex<BTreeMap<AgentKey, Vec<SettingChange>>>>,
+    inner: Arc<std::sync::Mutex<BTreeMap<AgentKey, PendingChanges>>>,
 }
 
 impl PendingSettingsNotices {
-    pub(crate) fn add(&self, session_id: &str, agent_id: &str, changes: Vec<SettingChange>) {
+    pub(crate) fn add(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        changes: Vec<SettingChange>,
+        by: &SettingsOrigin,
+    ) {
         let mut pending = self
             .inner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let entry = pending
+        let (entry, last_by) = pending
             .entry((session_id.to_string(), agent_id.to_string()))
-            .or_default();
+            .or_insert_with(|| (Vec::new(), by.clone()));
+        *last_by = by.clone();
         for change in changes {
             match entry.iter_mut().find(|held| held.field == change.field) {
                 Some(held) => held.new = change.new,
@@ -80,12 +93,11 @@ impl PendingSettingsNotices {
         entry.retain(|change| change.old != change.new);
     }
 
-    pub(crate) fn take(&self, session_id: &str, agent_id: &str) -> Vec<SettingChange> {
+    pub(crate) fn take(&self, session_id: &str, agent_id: &str) -> Option<PendingChanges> {
         self.inner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(&(session_id.to_string(), agent_id.to_string()))
-            .unwrap_or_default()
     }
 }
 
@@ -95,18 +107,10 @@ impl KernelRuntimeOwnedState {
         agent: &crate::agent::AgentInstance,
     ) -> Result<AgentSettingsView, DaemonError> {
         let session = self.session_store.get_session(agent.session_id())?;
-        let agents = self.agent_store.get_session_agents(agent.session_id());
         let limit =
-            crate::session::effective_agent_execution_config_in_tree(&session, agent, &agents);
-        let owner = crate::account_profile::provider_account_authority_owner_user_id(
-            &self.config_projection.snapshot(),
-            agent.owner_user_id(),
-        );
-        let account = self
-            .provider_account_profiles
-            .get(&owner, agent.provider(), agent.provider_account_profile())
-            .map(|profile| profile.label)
-            .unwrap_or_else(|_| agent.provider_account_profile().to_string());
+            self.agent_store
+                .effective_execution_config(&session, agent, &self.session_store);
+        let account = self.account_label(agent, agent.provider_account_profile());
         Ok(AgentSettingsView {
             provider: agent.provider().to_string(),
             account,
@@ -121,6 +125,132 @@ impl KernelRuntimeOwnedState {
         })
     }
 
+    /// The account's name as people know it.
+    pub(super) fn account_label(
+        &self,
+        agent: &crate::agent::AgentInstance,
+        profile_id: &str,
+    ) -> String {
+        let owner = crate::account_profile::provider_account_authority_owner_user_id(
+            &self.config_projection.snapshot(),
+            agent.owner_user_id(),
+        );
+        self.provider_account_profiles
+            .get(&owner, agent.provider(), profile_id)
+            .map(|profile| profile.label)
+            .unwrap_or_else(|_| profile_id.to_string())
+    }
+
+    /// What the agent above allows this agent's mode and permission level, apart from any value
+    /// the agent holds itself. Only these two settings have a limit from above.
+    fn parent_cap(
+        &self,
+        agent: &crate::agent::AgentInstance,
+    ) -> Result<crate::session::EffectiveAgentExecutionConfig, DaemonError> {
+        let session = self.session_store.get_session(agent.session_id())?;
+        let mut capped = agent.clone();
+        capped.set_execution_mode_override(None);
+        capped.set_permission_level_override(None);
+        capped.set_parent_limit_waived(false);
+        Ok(self
+            .agent_store
+            .effective_execution_config(&session, &capped, &self.session_store))
+    }
+
+    /// Refuses a mode or permission level an agent asks for above what the agent above allows,
+    /// and says so on the pane. The person's own request is never refused: it is applied and
+    /// holds against that limit.
+    pub(super) fn refuse_above_parent_cap(
+        &self,
+        agent: &crate::agent::AgentInstance,
+        origin: &SettingsOrigin,
+        mode: Option<crate::provider::AgentExecutionMode>,
+        level: Option<crate::provider::AgentPermissionLevel>,
+    ) -> Result<(), DaemonError> {
+        if !matches!(origin, SettingsOrigin::Agent(_)) {
+            return Ok(());
+        }
+        let cap = self.parent_cap(agent)?;
+        let agents = self.agent_store.list_agents();
+        let limiting =
+            |holds_lower: &dyn Fn(&crate::session::EffectiveAgentExecutionConfig) -> bool| {
+                if agent.peer_spawn_limit().as_ref().is_some_and(holds_lower) {
+                    return "the spawning agent".to_string();
+                }
+                for parent in crate::agent::authority_limit::ancestors(agent, &agents) {
+                    let Ok(room) = self.session_store.get_session(parent.session_id()) else {
+                        break;
+                    };
+                    let own = crate::session::effective_agent_execution_config(&room, Some(parent));
+                    if holds_lower(&own) {
+                        return parent
+                            .alias()
+                            .unwrap_or_else(|| parent.agent_ref())
+                            .to_string();
+                    }
+                    if parent.parent_limit_waived() {
+                        break;
+                    }
+                }
+                "the room".to_string()
+            };
+        let mut refused = Vec::new();
+        if let Some(mode) = mode.filter(|mode| !cap.mode.permits(*mode)) {
+            let name = limiting(&|own| !own.mode.permits(mode));
+            refused.push(format!(
+                "mode {mode:?} refused: limited by {name} to {:?}",
+                cap.mode
+            ));
+        }
+        if let Some(level) = level.filter(|level| !cap.permission_level.permits(*level)) {
+            let name = limiting(&|own| !own.permission_level.permits(level));
+            refused.push(format!(
+                "permission {level:?} refused: limited by {name} to {:?}",
+                cap.permission_level
+            ));
+        }
+        if refused.is_empty() {
+            return Ok(());
+        }
+        let message = format!(
+            "{}; the person can raise it",
+            refused.join("; ").to_lowercase()
+        );
+        self.record_notice_for_agent(
+            agent.session_id(),
+            None,
+            Some(agent.id()),
+            self.attachment_store
+                .list_session_attachment_ids(agent.session_id()),
+            message.clone(),
+        );
+        Err(DaemonError::LocalTransport {
+            operation: "agent settings",
+            message,
+        })
+    }
+
+    /// Whether the person's mode or permission level for this agent sits above what the agent
+    /// above allows, so it must hold against that limit.
+    pub(super) fn person_raised_above_parent_cap(
+        &self,
+        agent: &crate::agent::AgentInstance,
+        mode: Option<Option<crate::provider::AgentExecutionMode>>,
+        level: Option<Option<crate::provider::AgentPermissionLevel>>,
+    ) -> Result<bool, DaemonError> {
+        let session = self.session_store.get_session(agent.session_id())?;
+        let mut next = agent.clone();
+        if let Some(mode) = mode {
+            next.set_execution_mode_override(mode);
+        }
+        if let Some(level) = level {
+            next.set_permission_level_override(level);
+        }
+        let own = crate::session::effective_agent_execution_config(&session, Some(&next));
+        let cap = self.parent_cap(agent)?;
+        Ok(!cap.mode.permits(own.mode) || !cap.permission_level.permits(own.permission_level))
+    }
+
     /// The durable record of an accepted change: old -> new, who asked, why, and when it applies.
     pub(super) fn record_settings_change(
         &self,
@@ -133,6 +263,7 @@ impl KernelRuntimeOwnedState {
         let who = match origin {
             SettingsOrigin::Person => serde_json::json!({"kind": "person"}),
             SettingsOrigin::Agent(id) => serde_json::json!({"kind": "agent", "agent_id": id}),
+            SettingsOrigin::ExternalAgent => serde_json::json!({"kind": "external_agent"}),
         };
         let payload = serde_json::json!({
             "agent_id": agent_id,
@@ -160,13 +291,32 @@ impl KernelRuntimeOwnedState {
         }
     }
 
-    /// The pane line of a change: "Model changed to X, continuing." once the process took it,
-    /// "Model changes to X when this turn ends." while it waits for the turn to end.
+    /// Who asked, as the pane line names them.
+    fn settings_origin_name(&self, origin: &SettingsOrigin) -> String {
+        match origin {
+            SettingsOrigin::Person => "you".to_string(),
+            SettingsOrigin::ExternalAgent => "an outside agent, for you".to_string(),
+            SettingsOrigin::Agent(id) => self
+                .agent_store
+                .get_agent(id)
+                .map(|agent| {
+                    agent
+                        .alias()
+                        .unwrap_or_else(|| agent.agent_ref())
+                        .to_string()
+                })
+                .unwrap_or_else(|_| id.clone()),
+        }
+    }
+
+    /// The pane line of a change: "Model changed to X by you, continuing." once the process took it,
+    /// "Model changes to X by you when this turn ends." while it waits for the turn to end.
     pub(super) fn announce_settings_change(
         &self,
         session_id: &str,
         agent_id: &str,
         changes: &[SettingChange],
+        by: &SettingsOrigin,
         waiting_for_turn_end: bool,
         continuing: bool,
     ) {
@@ -185,6 +335,7 @@ impl KernelRuntimeOwnedState {
             })
             .collect::<Vec<_>>();
         let mut line = parts.join(", ");
+        line.push_str(&format!(" by {}", self.settings_origin_name(by)));
         if waiting_for_turn_end {
             line.push_str(" when this turn ends");
         } else if continuing {
@@ -246,6 +397,15 @@ impl SettingsContext {
         }
     }
 
+    pub(crate) fn external_agent(reason: Option<String>) -> Self {
+        Self {
+            origin: SettingsOrigin::ExternalAgent,
+            reason: reason
+                .map(|reason| reason.trim().to_string())
+                .filter(|reason| !reason.is_empty()),
+        }
+    }
+
     pub(crate) fn agent(agent_id: &str, reason: Option<String>) -> Self {
         Self {
             origin: SettingsOrigin::Agent(agent_id.to_string()),
@@ -297,18 +457,23 @@ impl KernelRuntimeState {
                 agent.session_id(),
                 agent.id(),
                 &changes,
+                &context.origin,
                 false,
                 false,
             ),
             SettingsApplies::AtStepBoundary => {
-                owned
-                    .pending_settings_notices
-                    .add(agent.session_id(), agent.id(), changes);
+                owned.pending_settings_notices.add(
+                    agent.session_id(),
+                    agent.id(),
+                    changes,
+                    &context.origin,
+                );
             }
             SettingsApplies::AtTurnEnd => owned.announce_settings_change(
                 agent.session_id(),
                 agent.id(),
                 &changes,
+                &context.origin,
                 true,
                 false,
             ),
@@ -379,24 +544,52 @@ mod tests {
     #[test]
     fn several_changes_of_a_step_keep_the_first_old_and_the_last_new_value() {
         let pending = PendingSettingsNotices::default();
-        pending.add("s", "a", vec![change("model", "haiku", "sonnet")]);
-        pending.add("s", "a", vec![change("model", "sonnet", "opus")]);
-        pending.add("s", "a", vec![change("effort", "low", "high")]);
+        pending.add(
+            "s",
+            "a",
+            vec![change("model", "haiku", "sonnet")],
+            &SettingsOrigin::Person,
+        );
+        pending.add(
+            "s",
+            "a",
+            vec![change("model", "sonnet", "opus")],
+            &SettingsOrigin::Person,
+        );
+        pending.add(
+            "s",
+            "a",
+            vec![change("effort", "low", "high")],
+            &SettingsOrigin::Person,
+        );
+        let (changes, by) = pending.take("s", "a").expect("changes are pending");
         assert_eq!(
-            pending.take("s", "a"),
+            changes,
             vec![
                 change("model", "haiku", "opus"),
                 change("effort", "low", "high")
             ]
         );
-        assert!(pending.take("s", "a").is_empty());
+        assert_eq!(by, SettingsOrigin::Person);
+        assert!(pending.take("s", "a").is_none());
     }
 
     #[test]
     fn a_change_taken_back_before_the_step_ends_shows_nothing() {
         let pending = PendingSettingsNotices::default();
-        pending.add("s", "a", vec![change("model", "haiku", "sonnet")]);
-        pending.add("s", "a", vec![change("model", "sonnet", "haiku")]);
-        assert!(pending.take("s", "a").is_empty());
+        pending.add(
+            "s",
+            "a",
+            vec![change("model", "haiku", "sonnet")],
+            &SettingsOrigin::Person,
+        );
+        pending.add(
+            "s",
+            "a",
+            vec![change("model", "sonnet", "haiku")],
+            &SettingsOrigin::Person,
+        );
+        let (changes, _) = pending.take("s", "a").unwrap_or_default();
+        assert!(changes.is_empty());
     }
 }

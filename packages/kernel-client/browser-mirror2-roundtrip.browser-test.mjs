@@ -14,6 +14,7 @@ const tools=process.env.MIRROR_LAB_NODE_MODULES;
 assert(tools&&path.isAbsolute(tools),'MP-10: public Playwright/esbuild tool directory required');
 const {chromium}=createRequire(path.join(tools,'x.js'))('playwright-core');
 let scratch,browser,viewerServer,viewerUrl;
+const fontBytes=await readFile(process.env.MIRROR_LAB_FONT??'/usr/share/fonts/truetype/liberation/LiberationSerif-Regular.ttf');
 before(async()=>{
   scratch=await mkdtemp(path.join(tmpdir(),'mirror2-roundtrip-'));
   const outfile=path.join(scratch,'renderer.js');
@@ -24,19 +25,20 @@ before(async()=>{
   browser=await chromium.launch({executablePath:process.env.MIRROR_LAB_CHROME??'/opt/google/chrome/chrome',headless:true,chromiumSandbox:true});
 });
 after(async()=>{await browser?.close();if(viewerServer)await new Promise(r=>viewerServer.close(r));if(scratch)await rm(scratch,{recursive:true,force:true});});
-async function roundtrip(html,child,run){
+async function roundtrip(html,child,run,{dpr=1}={}){
   const root=await mkdtemp(path.join(scratch,'source-'));
   const childSource=html.includes('CHILDPORT')?createServer((req,res)=>{res.setHeader('Content-Type','text/html');res.end(child);}):null;
   if(childSource)await new Promise(r=>childSource.listen(0,'127.0.0.1',r));
-  const source=createServer((req,res)=>{res.setHeader('Content-Type','text/html');res.end((req.url.startsWith('/child')?child:html).replaceAll('CHILDPORT',String(childSource?.address().port)).replaceAll('PORT',String(source.address().port)));});
+  const source=createServer((req,res)=>{if(req.url.startsWith('/font-')){res.setHeader('Content-Type','font/ttf');res.end(fontBytes);return;}if(req.url.startsWith('/fill-')){res.setHeader('Content-Type','image/svg+xml');res.end(`<svg xmlns="http://www.w3.org/2000/svg" width="100" height="10"><path fill="#${req.url.slice(6,12)}" d="M0 0h100v10H0z"/></svg>`);return;}res.setHeader('Content-Type','text/html');res.end((req.url.startsWith('/child')?child:html).replaceAll('CHILDPORT',String(childSource?.address().port)).replaceAll('PORT',String(source.address().port)));});
   await new Promise(r=>source.listen(0,'127.0.0.1',r));
-  const host=new KernelBrowserHost(root);let context,page,sequence=0;
+  const apps=await mkdtemp(path.join(scratch,'apps-'));// a managed-policy browser requires a WASM App storage root outside its temporary directory
+  const host=new KernelBrowserHost(root,{appStorageRoot:apps});let context,page,sequence=0;
   try{
     const opened=await host.request({op:'open',url:`http://127.0.0.1:${source.address().port}/source`});
     const evaluate=async expression=>{const tab=host.tabs.get(opened.tab_id);const {connection,sessionId}=await host.browser.resolvePageTarget(tab.target_id);const reply=await connection.send('Runtime.evaluate',{expression,returnByValue:true,awaitPromise:true},sessionId);assert(!reply.exceptionDetails,'MP-10: source fixture evaluation');return reply.result.value;};
     for(let i=0;i<200&&!(await evaluate("location.pathname==='/source'&&document.readyState==='complete'").catch(()=>false));i++)await new Promise(r=>setTimeout(r,25));
     await host.request({op:'state'});
-    const {subscription_id}=await host.request({op:'mirror_subscribe',tab_id:opened.tab_id,generation:opened.generation,device_scale_factor:1,wire:2});
+    const {subscription_id}=await host.request({op:'mirror_subscribe',tab_id:opened.tab_id,generation:opened.generation,device_scale_factor:dpr,wire:2});
     let compression=Buffer.alloc(0),base;
     // The product client restores the compact delta's binding and unchanged header.
     const next=async(reset=false)=>{
@@ -57,7 +59,7 @@ async function roundtrip(html,child,run){
       }
       base=packet;return packet;
     };
-    context=await browser.newContext({viewport:{width:1400,height:900}});await context.grantPermissions(['clipboard-read','clipboard-write'],{origin:viewerUrl});page=await context.newPage();await page.goto(viewerUrl);
+    context=await browser.newContext({viewport:{width:1400,height:900},deviceScaleFactor:dpr});await context.grantPermissions(['clipboard-read','clipboard-write'],{origin:viewerUrl});page=await context.newPage();await page.goto(viewerUrl);
     const actions=[],errors=[];
     await page.exposeFunction('sourceAction',async action=>{actions.push(action);try{return await host.request({op:'input',tab_id:opened.tab_id,generation:opened.generation,document_id:host.tabs.get(opened.tab_id).document_id,input:{kind:'mirror',subscription_id,sequence,action}});}catch(error){errors.push(error.message);throw error;}});
     await page.evaluate(async()=>{window.r=new Mirror2.BrowserMirror2Renderer(document.getElementById('viewer'),action=>window.sourceAction(action));await window.r.ready();});
@@ -122,9 +124,38 @@ for(const origin of ['localhost:PORT','127.0.0.1:CHILDPORT'])test(`MP-08/MP-10: 
     for(let i=0;i<6&&!await replaced();i++)await apply(await next());
     assert(await replaced(),'MP-10: replacement child snapshot also carries its closed region');
     await evaluate("(()=>{const f=document.querySelector('iframe');f.style.width='1100px';f.style.height='700px';f.contentWindow.postMessage('large','*');return true})()");
-    let large=await next();for(let i=0;i<4&&large.fallback!=='region_area';i++)large=await next();
-    assert.equal(large.fallback,'region_area','MP-11: the same closed region obeys the opaque-area video handoff');
+    // Over most of the viewport the region's video lease carries it; a browser without a display of its own keeps its still.
+    let tiles=0;for(let i=0;i<4;i++){const large=await next();assert.equal(large.fallback,undefined);tiles+=large.tiles?.length??0;}
+    if(host.chromium.display)assert.equal(tiles,0,'MP-11: the same closed region obeys the opaque-area video handoff');
+    else assert(tiles>0,'MP-11: a headless browser keeps the still of the same closed region over most of the viewport');
   }));
+
+// Review 5956294075: a closed root's content can paint outside its host's box (a fixed consent banner in a 0x0 or small host).
+// The kernel places a still and the viewer's click offset relative to the host's border box: a bordered (and padded) host
+// shows the still where the page paints it, and a click lands at the native point under it.
+const closedHost=(host,content)=>`<!doctype html><style>body{margin:0;height:3000px}</style><p>page</p><div id="h" style="position:fixed;z-index:9;${host}"></div><script>h.attachShadow({mode:"closed"}).innerHTML=\'${content}\'</script>`;
+const button='<b onclick="window.clicked=[event.clientX,event.clientY]" style="display:block;width:40px;height:20px;background:rgb(0,0,255)"></b>';
+const closedHostCases=[
+  ['0x0 host, banner outside it','',`<div style="position:fixed;left:100px;top:200px;width:300px;height:120px;background:rgb(255,0,0)">${button}</div>`,[100,200]],
+  ['20x20 host, banner outside it','width:20px;height:20px',`<div style="position:fixed;left:100px;top:200px;width:300px;height:120px;background:rgb(255,0,0)">${button}</div>`,[100,200]],
+  ['bordered, padded 20x20 host, banner outside it','width:20px;height:20px;border:10px solid rgb(0,128,0);padding:5px',`<div style="position:fixed;left:100px;top:200px;width:300px;height:120px;background:rgb(255,0,0)">${button}</div>`,[100,200]],
+  ['bordered, padded host, content inside it','left:50px;top:300px;width:100px;height:60px;border:10px solid rgb(0,128,0);padding:4px;background:rgb(255,0,0)',button,[64,314]],
+];
+for(const [name,host,content,[bx,by]] of closedHostCases)for(const dpr of [1,2])test(`MP-10: a closed ${name}: the still is drawn where the page paints it and a click lands under it at DPR${dpr}`,()=>roundtrip(
+  closedHost(host,content),
+  '',async({page,next,apply,evaluate})=>{
+    const painted=()=>page.evaluate(()=>{const h=window.r.frame.contentDocument.getElementById('h');return !!h&&(h.style.backgroundImage.startsWith('url(')||!!h.querySelector('[data-chariox-region-ink]'));});
+    for(let i=0;i<10&&!await painted();i++)await apply(await next());
+    assert(await painted(),'MP-10: the closed host carries its still');
+    const frame=await page.evaluate(()=>{const r=window.r.frame.getBoundingClientRect();return {x:r.x,y:r.y};});
+    const pixel=async(x,y)=>{const png=(await page.screenshot({clip:{x:frame.x+x,y:frame.y+y,width:1,height:1},scale:'css'})).toString('base64');
+      return page.evaluate(async png=>{const img=new Image();img.src=`data:image/png;base64,${png}`;await img.decode();const c=document.createElement('canvas');c.width=c.height=1;const ctx=c.getContext('2d');ctx.drawImage(img,0,0);return [...ctx.getImageData(0,0,1,1).data.slice(0,3)];},png);};
+    for(const [x,y] of [[bx+1,by+1],[bx+38,by+18]])assert.deepEqual(await pixel(x,y),[0,0,255],`MP-10: the button is drawn at (${x},${y})`);
+    for(const [x,y] of [[bx+42,by+5],[bx+5,by+22]])assert.deepEqual(await pixel(x,y),[255,0,0],`MP-10: the button ends at (${x},${y})`);
+    await page.mouse.click(frame.x+bx+36,frame.y+by+16);
+    for(let i=0;i<80&&!await evaluate('!!window.clicked');i++)await page.waitForTimeout(25);
+    assert.deepEqual(await evaluate('window.clicked'),[bx+36,by+16],'MP-08: the click reaches the native point under the drawn button');
+  },{dpr}));
 
 // MP-08/MP-10/MP-11: review a44f1afce F1, layout and pixels belong to the same opaque box.
 for(const tag of ['canvas','x-opaque'])test(`MP-10: opaque ${tag} preserves author position, display and transform across class/style deltas`,()=>roundtrip(
@@ -141,12 +172,27 @@ for(const tag of ['canvas','x-opaque'])test(`MP-10: opaque ${tag} preserves auth
 
 test('MP-08/MP-10: ordinary typing invokes the native page keyboard contract',()=>roundtrip(
   '<input id="field"><script>window.keys=[];document.addEventListener("keydown",e=>window.keys.push(e.key))</script>','',async({page,next,apply,evaluate})=>{
-    await apply(await next()); const field=page.frameLocator('iframe[title="Mirrored kernel browser page"]').locator('#field');
+    await apply(await next()); const field=page.frameLocator('iframe[title="Mirrored kernel browser page"]:not([inert])').locator('#field');
     await field.click(); await page.waitForTimeout(150);await page.keyboard.type('Chariox',{delay:60});
     for(let i=0;i<30&&await evaluate('document.querySelector("#field").value')!=='Chariox';i++){await apply(await next());await page.waitForTimeout(25);}
     assert.deepEqual(await evaluate('window.keys'),[...'Chariox'],'ordinary keys must reach native keydown listeners');
     assert.equal(await evaluate('document.querySelector("#field").value'),'Chariox');
   }));
+
+// A CSS image-set() is drawn from the candidate the viewer's own density picks (r10: Chrome's `url("a")` serialization
+// had wrapped each candidate in a second url(), and the background vanished at every density).
+for(const dpr of [1,2])test(`MP-10: a density-${dpr} viewer draws an image-set() background from its density's candidate`,()=>roundtrip(
+  '<!doctype html><div id="x" style="width:100px;height:10px;background-image:image-set(url(/fill-ff0000.svg) 1x, url(/fill-0000ff.svg) 2x)"></div>','',async({page,next,apply})=>{
+    const drawn=async()=>{
+      const box=await page.evaluate(()=>{const element=window.r.frame.contentDocument.getElementById('x'),frame=window.r.frame.getBoundingClientRect(),own=element?.getBoundingClientRect();return own?{x:frame.x+own.x+50,y:frame.y+own.y+5}:null;});
+      if(!box)return null;
+      const png=(await page.screenshot({clip:{...box,width:1,height:1},scale:'css'})).toString('base64');
+      return page.evaluate(async png=>{const img=new Image();img.src=`data:image/png;base64,${png}`;await img.decode();const c=document.createElement('canvas');c.width=c.height=1;const ctx=c.getContext('2d');ctx.drawImage(img,0,0);return [...ctx.getImageData(0,0,1,1).data.slice(0,3)];},png);
+    };
+    const expected=dpr===2?[0,0,255]:[255,0,0];
+    for(let n=0;n<20&&JSON.stringify(await drawn())!==JSON.stringify(expected);n++)await apply(await next());
+    assert.deepEqual(await drawn(),expected);
+  },{dpr}));
 
 // MP-08/MP-10/MP-11 M2: real source + unmodified product renderer consume
 // the ordinary wire incrementally. Anonymous fixture; not live acceptance.
@@ -161,6 +207,37 @@ test('MP-10 M2: the renderer paints the prefix and retains it while ordinary chi
     assert.equal(await page.evaluate(()=>window.r.frame.contentDocument.getElementById('first')?.textContent),'Viewport first');
   }));
 
+// A density-2 viewer draws a srcset image from its 2x candidate at that candidate's intrinsic size (the kernel's page draws at 1).
+test('MP-10: a density-2 viewer draws the 2x srcset candidate at its density-2 size',()=>roundtrip(
+  '<!doctype html><img id="x" srcset="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIzMCIgaGVpZ2h0PSI0MCI+PHBhdGggZmlsbD0iI2ZmMDAwMCIgZD0iTTAgMGgzMHY0MEgweiIvPjwvc3ZnPg== 1x, data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI2MCIgaGVpZ2h0PSI4MCI+PHBhdGggZmlsbD0iIzAwMDBmZiIgZD0iTTAgMGg2MHY4MEgweiIvPjwvc3ZnPg== 2x">','',async({page,next,apply})=>{
+    const drawn=()=>page.evaluate(()=>{const image=window.r.frame.contentDocument.getElementById('x');const source=image?.currentSrc??'';return image?.complete&&source?[image.getBoundingClientRect().width,/fill="#(\w+)"/.exec(atob(source.slice(source.indexOf(',')+1)))?.[1]]:null;});
+    for(let n=0;n<20&&JSON.stringify(await drawn())!==JSON.stringify([30,'0000ff']);n++)await apply(await next());
+    assert.deepEqual(await drawn(),[30,'0000ff']);
+  },{dpr:2}));
+
+// A source size is read as the page's browser reads it: a math function (min()) sizes a w-descriptor image as on the page.
+const wideSvg=(width,fill)=>`data:image/svg+xml;base64,${Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="10"><path fill="#${fill}" d="M0 0h${width}v10H0z"/></svg>`).toString('base64')}`;
+for(const dpr of [1,2])test(`MP-10: a density-${dpr} viewer draws a min() source-size image at the page's size`,()=>roundtrip(
+  `<!doctype html><img id="x" srcset="${wideSvg(600,'ff0000')} 600w, ${wideSvg(1200,'0000ff')} 1200w" sizes="min(100vw, 600px)">`,'',async({page,next,apply,evaluate})=>{
+    const look=`(image=>{const source=image?.currentSrc??'';return image?.complete&&source?[image.getBoundingClientRect().width,/fill="#(\\w+)"/.exec(atob(source.slice(source.indexOf(',')+1)))?.[1]]:null;})`;
+    const drawn=()=>page.evaluate(`${look}(window.r.frame.contentDocument.getElementById('x'))`);
+    // The page's own drawing (its candidate at its density); a density-2 viewer draws the 2x candidate at the page's size.
+    const [width,color]=await evaluate(`${look}(document.getElementById('x'))`),expected=[width,dpr===2?'0000ff':color];
+    assert.equal(width,600,"the page sizes the image by its min() source size");
+    for(let n=0;n<20&&JSON.stringify(await drawn())!==JSON.stringify(expected);n++)await apply(await next());
+    assert.deepEqual(await drawn(),expected);
+  },{dpr}));
+// A font-relative source size (ch, ex) is read at the initial font, as the page's browser reads it, not as the viewport width.
+for(const dpr of [1,2])for(const sizes of ['75ch','80ex'])test(`MP-10: a density-${dpr} viewer draws a ${sizes} source-size image at the page's size`,()=>roundtrip(
+  `<!doctype html><style>html{font:40px monospace}</style><img id="x" srcset="${wideSvg(600,'ff0000')} 600w, ${wideSvg(1200,'0000ff')} 1200w" sizes="${sizes}">`,'',async({page,next,apply,evaluate})=>{
+    const look=`(image=>{const source=image?.currentSrc??'';return image?.complete&&source?[image.getBoundingClientRect().width,/fill="#(\\w+)"/.exec(atob(source.slice(source.indexOf(',')+1)))?.[1]]:null;})`;
+    const drawn=()=>page.evaluate(`${look}(window.r.frame.contentDocument.getElementById('x'))`);
+    const [width,color]=await evaluate(`${look}(document.getElementById('x'))`),expected=[width,dpr===2?'0000ff':color];
+    assert(width>300&&width<900&&width!==await evaluate('innerWidth'),`the page sizes the image by its ${sizes} source size at the initial font (${width} px)`);
+    for(let n=0;n<20&&JSON.stringify(await drawn())!==JSON.stringify(expected);n++)await apply(await next());
+    assert.deepEqual(await drawn(),expected);
+  },{dpr}));
+
 // MP-08/MP-10/MP-11 M2: WHATWG's explanatory title attributes contain a
 // javascript: literal away from the start; the strict client rejects them.
 test('MP-10/MP-11 M2: descriptive scheme literals cannot poison a continuation',()=>roundtrip(
@@ -168,4 +245,22 @@ test('MP-10/MP-11 M2: descriptive scheme literals cannot poison a continuation',
     await apply(await next());let done=false;
     for(let n=0;n<200&&!done;n++){await apply(await next());done=await page.evaluate(()=>window.r.frame.contentDocument.getElementById('scheme')?.textContent==='javascript: stays visible text');}
     assert(done);assert.equal(await page.evaluate(()=>window.r.frame.contentDocument.getElementById('scheme').getAttribute('title')),null);
+  }));
+
+// A web font served as the failing sites serve it: one family in unicode-range subsets, each its own file, of which the page's
+// text needs only the Latin one. Chromium leaves the other faces `unloaded`; the mirror must not turn them into `error`.
+test('MP-10: web font subsets the page text does not use stay unloaded in the mirror, as in the source',()=>roundtrip(
+  `<!doctype html><style>
+@font-face{font-family:Subset;font-display:swap;src:url(/font-cyrillic.ttf) format("truetype");unicode-range:U+0400-045F,U+0490-0491}
+@font-face{font-family:Subset;font-display:swap;src:url(/font-greek.ttf) format("truetype");unicode-range:U+0370-03FF}
+@font-face{font-family:Subset;font-display:swap;src:url(/font-latin.ttf) format("truetype");unicode-range:U+0000-00FF}
+body{font:16px Subset,serif}</style><p id="text">Hello subsets</p>`,'',async({page,next,apply,evaluate})=>{
+    const statuses=expression=>`JSON.stringify([...${expression}.fonts].map(f=>[f.unicodeRange,f.status]))`;
+    for(let i=0;i<30&&JSON.parse(await evaluate(statuses('document'))).filter(([,status])=>status==='loaded').length!==1;i++)await page.waitForTimeout(100);
+    const native=JSON.parse(await evaluate(statuses('document')));
+    assert.deepEqual(native.map(([,status])=>status).sort(),['loaded','unloaded','unloaded'],'MP-10: the source loads only the face its text needs');
+    const mirror=()=>page.evaluate(()=>[...window.r.frame.contentDocument.fonts].map(f=>[f.unicodeRange,f.status]));
+    for(let i=0;i<12;i++){await apply(await next(i===0));await page.waitForTimeout(100);}
+    const byRange=list=>Object.fromEntries(list.map(([range,status])=>[range.replace(/\s+/g,'').toUpperCase(),status]));
+    assert.deepEqual(byRange(await mirror()),byRange(native),'MP-10: the mirror loads the same faces as the source and fails none');
   }));

@@ -115,6 +115,9 @@ impl AuthoritySet {
                 atoms.insert(format!("event-routing:{}:{event}", routing.generator));
             }
         }
+        if let Some(workspace) = &capabilities.workspace {
+            atoms.insert(format!("workspace:{}", workspace.credential));
+        }
         for action in actions {
             for route in &action.effect_routes {
                 let key = format!(

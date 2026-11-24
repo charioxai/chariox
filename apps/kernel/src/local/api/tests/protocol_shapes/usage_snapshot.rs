@@ -1,4 +1,4 @@
-//! MP-08/MP-10/MP-11: account and agent references at local 932 / peer 381.
+//! Account and agent usage contract, including model totals.
 use super::*;
 use sha2::{Digest, Sha256};
 
@@ -7,7 +7,7 @@ fn usage_snapshot_770_contract_roundtrips_without_private_profiles() {
     let bytes = include_bytes!("usage-snapshot-770.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "9c8a03a9b9a5cfae1de92039428c59ea6b4cd250dd29d22fc54175e0a3d61e3f"
+        "2480227d14e1bcd366d7d2ca01d4e117521715d8834a127f4e746f00fa6aad2b"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     for request in fixture["requests"].as_array().unwrap() {
@@ -19,9 +19,9 @@ fn usage_snapshot_770_contract_roundtrips_without_private_profiles() {
         assert_eq!(serde_json::to_value(decoded).unwrap(), *response);
     }
     const {
-        assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 810);
+        assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 1013);
     };
     const {
-        assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 360);
+        assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 450);
     };
 }

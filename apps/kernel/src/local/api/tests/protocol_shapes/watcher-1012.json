@@ -1,0 +1,21 @@
+{
+  "local": 1014,
+  "relayPeer": 451,
+  "requests": [
+    {"Watcher": {"create": {"session_id": "room-1", "manifest": {"name": "Build status", "sentence": "Tells you when the nightly build fails.", "mode": {"poll": {"every_s": 1800}}, "command": ["python3", "watch.py"], "events": [{"name": "failed", "keyed": true}], "coalesce": "latest_per_key", "debounce_s": 0}, "script": {"file_name": "watch.py", "text": "print('{}')"}}}},
+    {"Watcher": {"update": {"watcher_id": "w1", "manifest": {"name": "Build log", "sentence": "Tells you when the log says ERROR.", "mode": "stream", "command": ["sh", "tail.sh"], "events": [{"name": "error", "keyed": false}], "coalesce": "every", "debounce_s": 30}, "script": {"file_name": "tail.sh", "text": "tail -F build.log"}}}},
+    {"Watcher": {"dry_run": {"watcher_id": "w1"}}},
+    {"Watcher": {"activate": {"watcher_id": "w1"}}},
+    {"Watcher": {"pause": {"watcher_id": "w1", "paused": true}}},
+    {"Watcher": {"check_now": {"watcher_id": "w1"}}},
+    {"Watcher": {"rename": {"watcher_id": "w1", "name": "Nightly build"}}},
+    {"Watcher": {"remove": {"watcher_id": "w1"}}},
+    {"Watcher": {"list": {}}}
+  ],
+  "responses": [
+    {"Watcher": {"watcher": {"watcher_id": "w1", "source_id": "watcher_w1", "kernel_id": "k1", "session_id": "room-1", "creator_agent_id": "a1", "manifest": {"name": "Build status", "sentence": "Tells you when the nightly build fails.", "mode": {"poll": {"every_s": 1800}}, "command": ["python3", "watch.py"], "events": [{"name": "failed", "keyed": true}], "coalesce": "latest_per_key", "debounce_s": 0}, "state": "active", "health": {"state": "failing", "since_ms": 10, "reason": "exit 1"}, "reading": "red", "last_check_ms": 10, "last_fired_ms": null, "fired_count": 0, "dry_run": {"reading": "green", "history": true, "events": [{"event": "failed", "key": "n1", "text": "Nightly 812 failed"}]}}}},
+    {"Watchers": {"watchers": [{"watcher_id": "w2", "source_id": "watcher_w2", "kernel_id": "k1", "session_id": "room-1", "creator_agent_id": null, "manifest": {"name": "Build log", "sentence": "Tells you when the log says ERROR.", "mode": "stream", "command": ["sh", "tail.sh"], "events": [{"name": "error", "keyed": false}], "coalesce": "every", "debounce_s": 30}, "state": "draft", "health": {"state": "ok"}, "reading": null, "last_check_ms": null, "last_fired_ms": null, "fired_count": 0, "dry_run": null}], "followers": [{"subscription_id": "sub-reviewer", "source_id": "watcher_w2", "owner_user_id": "owner-1", "created_by_user_id": "owner-1", "target_kernel_id": "k2", "target_kind": "agent", "session_id": "room-b", "workflow_id": "", "publication_id": "trigger-1", "endpoint_id": "reviewer", "queue_id": "", "source_available": true, "source_kernel_id": "k1", "agent_id": "reviewer", "trigger_id": "trigger-1"}]}},
+    {"WatcherDryRun": {"result": {"reading": "€1,649.00", "history": false, "events": []}}},
+    {"WatcherRemoved": {"watcher_id": "w1"}}
+  ]
+}

@@ -96,7 +96,10 @@ impl KernelRuntimeState {
                 self.persist_recovered_provider_session(agent, &adapter_key, provider_session_id)?;
             }
         }
-        let changes = owned.pending_settings_notices.take(session_id, agent_id);
+        let (changes, by) = owned
+            .pending_settings_notices
+            .take(session_id, agent_id)
+            .unwrap_or_default();
         // Unbind the turn before the old process ends, so its exit cannot settle it.
         owned.mark_active_prompt_delivery(
             session_id,
@@ -142,7 +145,7 @@ impl KernelRuntimeState {
                 .await?;
             return Err(failure.error);
         }
-        owned.announce_settings_change(session_id, agent_id, &changes, false, true);
+        owned.announce_settings_change(session_id, agent_id, &changes, &by, false, true);
         Ok(())
     }
 }

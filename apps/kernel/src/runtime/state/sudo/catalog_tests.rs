@@ -323,10 +323,10 @@ async fn sudo_catalog_readiness_budget_counts_only_the_refresh() {
             None,
         ),
         (
-            "vault popup ignored until it expires",
+            "vault popup ignored past the reload's wait",
             Kind::VaultClaude,
             &[Busy, Approve, LockVault, Idle, Sleep(61)],
-            Some("provider catalog refresh failed: Chariox vault unlock timed out"),
+            Some("provider catalog refresh failed: The Vault is locked. The unlock card is open in this Room: try again once the Vault is unlocked."),
         ),
         (
             "vault relocks between retries",
@@ -570,8 +570,8 @@ async fn catalog_row(
             );
         }
     }
-    // No popup may outlive the request: an open vault popup would
-    // silently discard a passphrase typed after the window ended.
+    // No popup may outlive the request, except the Vault unlock card: its own kernel wait
+    // still takes a passphrase typed after the window ended.
     let open = f
         .state
         .owned
@@ -581,6 +581,7 @@ async fn catalog_row(
         .active_interactions()
         .iter()
         .map(|i| i.title().unwrap_or_default().to_owned())
+        .filter(|title| title != "Unlock Chariox Vault")
         .collect::<Vec<_>>();
     assert!(open.is_empty(), "{name}: popups left open: {open:?}");
     assert!(f.state.passkey_prompts_for("local").is_empty(), "{name}");

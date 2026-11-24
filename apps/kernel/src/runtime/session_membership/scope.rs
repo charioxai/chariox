@@ -53,6 +53,18 @@ pub(crate) fn request_session_scope(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
         LocalDaemonRequest::IssueOwnMachineEnrollment(_) => None,
+        LocalDaemonRequest::SkillsV2(request) => {
+            use crate::skill::v2::SkillsV2Request;
+            match request {
+                SkillsV2Request::Loads { session_id, .. }
+                | SkillsV2Request::List { session_id, .. }
+                | SkillsV2Request::Load { session_id, .. }
+                | SkillsV2Request::Submit { session_id, .. } => {
+                    Some(SessionMembershipScope::SessionId(session_id.clone()))
+                }
+                _ => None,
+            }
+        }
         LocalDaemonRequest::PrepareBrowserImport(request) => Some(
             SessionMembershipScope::SessionId(request.selection.session_id.clone()),
         ),
@@ -250,6 +262,12 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::GetSessionState(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
+        LocalDaemonRequest::ListFinishedRoomTasks(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::GetMachineRoomResources(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
         LocalDaemonRequest::GetRoomEnvironmentState(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
@@ -265,6 +283,8 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::RoomTerminal(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
+        // The kernel's own terminals belong to no Room: no Room membership gates them.
+        LocalDaemonRequest::KernelTerminal(_) => None,
         LocalDaemonRequest::RoomBrowserArtifact(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
@@ -703,6 +723,7 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::RemoteEnvironmentOperation(_)
         | LocalDaemonRequest::CancelEnvironmentOperation(_)
         | LocalDaemonRequest::GetProjectEnvironment(_)
+        | LocalDaemonRequest::Watcher(_)
         | LocalDaemonRequest::QueryFreshRemoteMachineKernels(_)
         | LocalDaemonRequest::RestoreAppDataSnapshot(_)
         | LocalDaemonRequest::RevokeAppFileGrants(_)
@@ -714,6 +735,7 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::GetKernelAccessStatus(_)
         | LocalDaemonRequest::CoverKernelAccessProcess(_)
         | LocalDaemonRequest::ListKernelAccessGrants(_)
+        | LocalDaemonRequest::ListOwnerInteractions(_)
         | LocalDaemonRequest::RevokeKernelAccessGrant(_)
         | LocalDaemonRequest::SubscribeEvents(_)
         | LocalDaemonRequest::UnsubscribeEvents(_)
@@ -730,6 +752,8 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::ListKernelDirectory(_)
         | LocalDaemonRequest::ReadKernelFile(_)
         | LocalDaemonRequest::WriteKernelFile(_)
+        | LocalDaemonRequest::TrashKernelFiles(_)
+        | LocalDaemonRequest::RestoreKernelTrash(_)
         | LocalDaemonRequest::StartFileTransfer(_)
         | LocalDaemonRequest::GetFileTransfer(_)
         | LocalDaemonRequest::ListFileTransfers
@@ -778,6 +802,7 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::ListProjects(_)
         | LocalDaemonRequest::SuggestSessionAlias(_)
         | LocalDaemonRequest::SetProjectPinned(_)
+        | LocalDaemonRequest::CreateProject(_)
         | LocalDaemonRequest::RenameProject(_)
         | LocalDaemonRequest::UpdateProjectWorkspaces(_)
         | LocalDaemonRequest::ArchiveProject(_)
@@ -789,6 +814,7 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::ListMetaagentEvents(_)
         | LocalDaemonRequest::ReadMetaagentEvent(_)
         | LocalDaemonRequest::AckMetaagentEvents(_)
+        | LocalDaemonRequest::GetAgentReleaseNotes { .. }
         | LocalDaemonRequest::GetTerminalCommandCatalog(_)
         | LocalDaemonRequest::GetDaemonHealth(_)
         | LocalDaemonRequest::GetKernelResourceTelemetry(_)
@@ -844,13 +870,6 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::GetConnector(_)
         | LocalDaemonRequest::ListConnectors(_)
         | LocalDaemonRequest::TestConnector(_)
-        | LocalDaemonRequest::UpsertSkill(_)
-        | LocalDaemonRequest::InstallSkill(_)
-        | LocalDaemonRequest::UpdateSkill(_)
-        | LocalDaemonRequest::UninstallSkill(_)
-        | LocalDaemonRequest::ImportSkills(_)
-        | LocalDaemonRequest::GetSkill(_)
-        | LocalDaemonRequest::ListSkills(_)
         | LocalDaemonRequest::RelayStatus(_)
         | LocalDaemonRequest::ConfigureRelay(_)
         | LocalDaemonRequest::CloudRelayStatus(_)
@@ -899,6 +918,15 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::ListRemoteMachines(_)
         | LocalDaemonRequest::ListRemoteMachineKernels(_)
         | LocalDaemonRequest::GetRoomListSnapshot(_)
+        | LocalDaemonRequest::OwnerView(_)
+        | LocalDaemonRequest::GetPersonInbox(_)
+        | LocalDaemonRequest::SetInboxCardState(_)
+        | LocalDaemonRequest::SetInboxMute(_)
+        | LocalDaemonRequest::ListNotificationSubscriptions(_)
+        | LocalDaemonRequest::UpdateNotificationSubscription(_)
+        | LocalDaemonRequest::RemoveNotificationSubscription(_)
+        | LocalDaemonRequest::TestNotificationSubscription(_)
+        | LocalDaemonRequest::ReadNotificationTrace(_)
         | LocalDaemonRequest::ListRoomListSessions(_)
         | LocalDaemonRequest::ListExternalProviderSessions(_)
         | LocalDaemonRequest::RefreshExternalProviderSessions(_)
@@ -908,15 +936,12 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::ListWorkspaceWorktrees(_)
         | LocalDaemonRequest::CreateWorkspaceWorktree(_)
         | LocalDaemonRequest::DeleteWorkspaceWorktree(_)
-        | LocalDaemonRequest::CreateWorkspacePullRequest(_)
         | LocalDaemonRequest::GetWorkspaceGitOverview(_)
         | LocalDaemonRequest::ListWorkspaceFiles(_)
         | LocalDaemonRequest::GetWorkspaceFileContent(_)
         | LocalDaemonRequest::RunAgentUtility(_)
         | LocalDaemonRequest::GenerateWorkspaceCommitMessage(_)
         | LocalDaemonRequest::CommitWorkspaceChanges(_)
-        | LocalDaemonRequest::PushWorkspaceBranch(_)
-        | LocalDaemonRequest::CommitAndPushWorkspaceChanges(_)
         | LocalDaemonRequest::ApproveRemoteMachine(_)
         | LocalDaemonRequest::ForgetRemoteMachine(_)
         | LocalDaemonRequest::CreatePairingInvite(_)
@@ -931,6 +956,7 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::StartProviderLogin(_)
         | LocalDaemonRequest::GetProviderLoginStatus(_)
         | LocalDaemonRequest::SendProviderLoginInput(_)
+        | LocalDaemonRequest::SendProviderLoginVaultEntry(_)
         | LocalDaemonRequest::CancelProviderLogin(_)
         | LocalDaemonRequest::LogoutProvider(_)
         | LocalDaemonRequest::ListProviderProcesses(_)

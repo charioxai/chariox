@@ -171,65 +171,12 @@ pub struct UsageLimitStop {
     pub state: UsageLimitStopState,
 }
 
+impl UsageLimitStop {
+    pub(crate) const DECISION_PREFIX: &str = "usage-limit-";
+}
+
 fn is_zero(value: &u32) -> bool {
     *value == 0
-}
-
-/// One setting an agent may change about itself.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SelfSettingKind {
-    Model,
-    Effort,
-    AccountProfile,
-    Directory,
-}
-
-/// What the person lets an agent change about itself without asking: the models, efforts,
-/// account profiles and directories it may switch to. `"*"` allows any value of that kind. A
-/// value outside the set takes one decision from the person, who may add it to the set.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AgentSelfSettings {
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub models: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub efforts: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub account_profiles: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub directories: Vec<String>,
-}
-
-impl AgentSelfSettings {
-    pub fn is_empty(&self) -> bool {
-        self == &Self::default()
-    }
-
-    fn entries(&self, kind: SelfSettingKind) -> &Vec<String> {
-        match kind {
-            SelfSettingKind::Model => &self.models,
-            SelfSettingKind::Effort => &self.efforts,
-            SelfSettingKind::AccountProfile => &self.account_profiles,
-            SelfSettingKind::Directory => &self.directories,
-        }
-    }
-
-    pub fn allows(&self, kind: SelfSettingKind, value: &str) -> bool {
-        self.entries(kind)
-            .iter()
-            .any(|entry| entry == "*" || entry == value)
-    }
-
-    pub fn with_allowed(mut self, kind: SelfSettingKind, value: &str) -> Self {
-        if !self.allows(kind, value) {
-            match kind {
-                SelfSettingKind::Model => self.models.push(value.to_string()),
-                SelfSettingKind::Effort => self.efforts.push(value.to_string()),
-                SelfSettingKind::AccountProfile => self.account_profiles.push(value.to_string()),
-                SelfSettingKind::Directory => self.directories.push(value.to_string()),
-            }
-        }
-        self
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -302,12 +249,26 @@ impl GridPosition {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentRef {
     agent_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    room_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    started_by: Option<String>,
 }
 
 impl AgentRef {
     pub fn local(agent_id: impl Into<String>) -> Self {
         Self {
             agent_id: agent_id.into(),
+            room_id: None,
+            started_by: None,
+        }
+    }
+
+    fn in_room(parent: &AgentInstance) -> Self {
+        Self {
+            agent_id: parent.id().to_owned(),
+            room_id: Some(parent.session_id().to_owned()),
+            started_by: Some(parent.alias().unwrap_or(parent.agent_ref()).to_owned()),
         }
     }
 
@@ -336,6 +297,8 @@ pub struct AgentInstance {
     /// an agent a person created never does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     spawn_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    peer_spawn_limit: Option<crate::session::EffectiveAgentExecutionConfig>,
     #[serde(default)]
     role: AgentRole,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -375,8 +338,10 @@ pub struct AgentInstance {
     substitutes: Vec<AgentSubstituteProfile>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     substitution_timeout_ms: Option<u64>,
-    #[serde(default, skip_serializing_if = "AgentSelfSettings::is_empty")]
-    self_settings: AgentSelfSettings,
+    /// The person raised this agent's mode or permission level above what the agent above it
+    /// allows; the person's choice then holds against that agent's limit.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    parent_limit_waived: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     usage_limit_stop: Option<UsageLimitStop>,
     #[serde(
@@ -420,6 +385,7 @@ impl AgentInstance {
             owner_user_id: default_agent_owner_user_id(),
             parent_agent_id: None,
             spawn_key: None,
+            peer_spawn_limit: None,
             role: AgentRole::Standard,
             meta_mode: None,
             alias,
@@ -441,7 +407,7 @@ impl AgentInstance {
             remote_extension_manifest_sync: None,
             substitutes: Vec::new(),
             substitution_timeout_ms: None,
-            self_settings: AgentSelfSettings::default(),
+            parent_limit_waived: false,
             usage_limit_stop: None,
             visible_in_freeform: true,
             archived: false,
@@ -475,9 +441,15 @@ impl AgentInstance {
         self.parent_agent_id.as_ref().map(AgentRef::agent_id)
     }
 
-    /// A sub-agent is a descendant of its parent, never a member of the room:
-    /// no list, snapshot or count carries it. It keeps its room id only as the
-    /// host of its worktree, history and interactions.
+    pub(crate) fn parent_room_id(&self) -> Option<&str> {
+        self.parent_agent_id.as_ref()?.room_id.as_deref()
+    }
+
+    /// A child placed in another Room is visible in its destination Room.
+    pub(crate) fn is_room_agent(&self) -> bool {
+        self.parent_agent_id.is_none() || self.parent_room_id().is_some()
+    }
+
     pub fn is_sub_agent(&self) -> bool {
         self.parent_agent_id.is_some()
     }
@@ -493,6 +465,17 @@ impl AgentInstance {
 
     pub(crate) fn set_spawn_key(&mut self, key: Option<String>) {
         self.spawn_key = key;
+    }
+
+    pub(crate) fn peer_spawn_limit(&self) -> Option<crate::session::EffectiveAgentExecutionConfig> {
+        self.peer_spawn_limit
+    }
+
+    pub(crate) fn set_peer_spawn_limit(
+        &mut self,
+        limit: Option<crate::session::EffectiveAgentExecutionConfig>,
+    ) {
+        self.peer_spawn_limit = limit;
     }
 
     /// Only spawning and the user-only `SetAgentParent` call this; no agent
@@ -609,10 +592,6 @@ impl AgentInstance {
         self.granted_extension_names(ExtensionKind::Mcp)
     }
 
-    pub fn skill_grants(&self) -> Vec<String> {
-        self.granted_extension_names(ExtensionKind::Skill)
-    }
-
     pub fn script_grants(&self) -> Vec<ExtensionGrant> {
         self.extension_grants
             .iter()
@@ -648,12 +627,39 @@ impl AgentInstance {
         self.substitution_timeout_ms
     }
 
-    pub fn self_settings(&self) -> &AgentSelfSettings {
-        &self.self_settings
+    pub fn parent_limit_waived(&self) -> bool {
+        self.parent_limit_waived
     }
 
     pub fn usage_limit_stop(&self) -> Option<&UsageLimitStop> {
         self.usage_limit_stop.as_ref()
+    }
+
+    pub(crate) fn usage_limit_wait(&self) -> Option<&UsageLimitStop> {
+        self.usage_limit_stop().filter(|stop| {
+            self.matches_usage_limit_profile(&stop.provider, &stop.account_profile)
+                && matches!(
+                    stop.state,
+                    UsageLimitStopState::Asking | UsageLimitStopState::Armed { .. }
+                )
+        })
+    }
+
+    pub(crate) fn matches_usage_limit_profile(
+        &self,
+        provider: &str,
+        account_profile: &str,
+    ) -> bool {
+        let selected = self.provider_account_profile();
+        // The default selector can resolve to a named account when the provider starts.
+        self.provider() == provider && (selected == "default" || selected == account_profile)
+    }
+
+    pub(crate) fn without_inactive_usage_limit_stop(mut self) -> Self {
+        if self.usage_limit_wait().is_none() {
+            self.usage_limit_stop = None;
+        }
+        self
     }
 
     pub fn state(&self) -> AgentState {
@@ -734,7 +740,7 @@ impl AgentInstance {
         self.extension_grants.clear();
         self.substitutes.clear();
         self.substitution_timeout_ms = None;
-        self.self_settings = AgentSelfSettings::default();
+        self.parent_limit_waived = false;
         self.usage_limit_stop = None;
         self
     }
@@ -955,14 +961,6 @@ impl AgentInstance {
         self.revoke_extension(ExtensionKind::Mcp, name);
     }
 
-    pub fn grant_skill(&mut self, name: impl Into<String>) {
-        self.grant_extension(ExtensionGrant::new(ExtensionKind::Skill, name));
-    }
-
-    pub fn revoke_skill(&mut self, name: &str) {
-        self.revoke_extension(ExtensionKind::Skill, name);
-    }
-
     pub fn grant_script(&mut self, name: impl Into<String>, environment: impl Into<String>) {
         self.grant_extension(ExtensionGrant::script(name, environment));
     }
@@ -1030,13 +1028,13 @@ impl AgentInstance {
         self.last_activity_at_ms = crate::session::unix_epoch_ms();
     }
 
-    pub fn set_usage_limit_stop(&mut self, stop: Option<UsageLimitStop>) {
-        self.usage_limit_stop = stop;
+    pub fn set_parent_limit_waived(&mut self, waived: bool) {
+        self.parent_limit_waived = waived;
         self.last_activity_at_ms = crate::session::unix_epoch_ms();
     }
 
-    pub fn set_self_settings(&mut self, self_settings: AgentSelfSettings) {
-        self.self_settings = self_settings;
+    pub fn set_usage_limit_stop(&mut self, stop: Option<UsageLimitStop>) {
+        self.usage_limit_stop = stop;
         self.last_activity_at_ms = crate::session::unix_epoch_ms();
     }
 
@@ -1127,6 +1125,8 @@ pub struct CreateAgentRequest {
     pub parent_agent_id: Option<AgentRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spawn_key: Option<String>,
+    #[serde(skip)]
+    pub(crate) peer_spawn_limit: Option<crate::session::EffectiveAgentExecutionConfig>,
     #[serde(default)]
     pub role: AgentRole,
     pub alias: Option<String>,
@@ -1151,6 +1151,7 @@ impl CreateAgentRequest {
             owner_user_id: default_agent_owner_user_id(),
             parent_agent_id: None,
             spawn_key: None,
+            peer_spawn_limit: None,
             role: AgentRole::Standard,
             alias: None,
             provider: provider.into(),
@@ -1183,6 +1184,15 @@ impl CreateAgentRequest {
 
     pub fn with_parent_agent_id(mut self, parent: impl Into<String>) -> Self {
         self.parent_agent_id = Some(AgentRef::local(parent));
+        self
+    }
+
+    pub(crate) fn with_parent(mut self, parent: &AgentInstance) -> Self {
+        self.parent_agent_id = Some(if parent.session_id() == self.session_id {
+            AgentRef::local(parent.id())
+        } else {
+            AgentRef::in_room(parent)
+        });
         self
     }
 

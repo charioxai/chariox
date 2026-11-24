@@ -20,11 +20,10 @@ function session(overrides: Partial<RuntimeSession> = {}): RuntimeSession {
     workspace_id: "workspace",
     worktree_id: "worktree",
     active_provider_run_id: null,
-    attachment_ids: [],
+    connected_cli_count: 0,
     active_prompt: null,
     queued_prompts: [],
     focused_agent_id: null,
-    max_agents: 1,
     agents: [],
     config_state: { version: 1, values: {} },
     ...overrides,
@@ -209,7 +208,7 @@ test("workspace shell submit controller binds submit dependencies", async () => 
 test("workspace commands use the recovered attachment and cannot restore a stale one", async () => {
   let attachment = "recovered-attachment"
   let context = createDefaultShellContext({ sessionId: "s1", attachmentId: "retired-attachment" })
-  const current = session({ attachment_ids: [attachment] })
+  const current = session({ connected_cli_count: 1 })
   const result = await submitWorkspaceShellCommand("@ session status", {
     client: {} as LocalIpcClient,
     attachmentId: () => attachment,

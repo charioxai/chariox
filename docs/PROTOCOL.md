@@ -16,6 +16,70 @@ apply these machine-local settings immediately through the kernel. Runtime
 clients and forwarded requests read the same values. See
 [Resource protection](RESOURCE_PROTECTION.md) for their behavior and public drill.
 
+### Relay registration proof (relay peer 449)
+
+A relay token and a kernel's public key do not make a kernel. The relay answers
+every WebSocket upgrade with a fresh 32-byte challenge in the
+`x-chariox-registration-challenge` response header. `daemon_register` carries
+`proof`: the kernel identity key's P-256 ECDSA signature (SHA-256, 64-byte
+`r‖s`, base64) over the JSON array `["chariox-relay-registration-v1", <relay
+address>, <kernel id>, <hex SHA-256 of the relay token>, <challenge>]`. The relay
+address is the upgrade's `Host` header, lowercased: the kernel takes it from the
+relay URL it dials and the relay reads it from the same request, so a proof made
+for one relay is refused by another.
+
+The relay verifies the proof against the registration's `public_key` after the
+token check and before it binds a realm, admits the kernel or displaces the live
+connection of the same kernel. A refused proof closes only the refused socket,
+with the reason, and logs `relay_registration_proof_refused`. One challenge
+admits one registration: a second `daemon_register` on the same socket is closed
+with `relay connection already registered; reconnect to register again`. A
+heartbeat renews the token but cannot change the proven key; a heartbeat
+registration with another `public_key` closes the socket with `daemon identity
+key changed; reconnect to register it`. A kernel refuses a relay that offers no
+challenge. The relay stays blind to traffic: it learns nothing it can decrypt.
+
+### A kernel too old for the relay (relay peer 450)
+
+A `daemon_register` the relay cannot read (a kernel older than the relay, such as
+one that sends no `proof`) carries no traffic, as before. If its first frame still
+names a kernel (`registration.auth_token`, `daemon_id`, `machine_id`,
+`public_key`, a kernel capability and the optional `local_protocol`), the relay
+runs the same token and identity checks as a real registration and, when they
+pass, records the refusal for 150 seconds (an old kernel retries at least once a
+minute; a live registration of the same kernel clears it). It closes the socket
+with `update needed: this kernel runs protocol N (or reports no protocol) and is
+older than the relay; update Chariox on this machine and restart the kernel` and
+logs `relay_registration_update_needed`. The relay's machine list names each
+such kernel under its machine as `update_needed_kernels: [{kernel_id,
+local_protocol?}]`; a machine with only refused kernels is listed with
+`kernel_count: 0`. The kernel's machine presence adds them to the machine's
+`kernels` with that protocol, so clients show Update needed on the machine's own
+entry, and never routes to or probes them. Cloud has such a kernel offline, so the
+machine-list grant names every kernel the account links; kernel queries are still
+granted the online ones.
+
+### Relay registration result (local 1014, relay peer 451)
+
+Deploy the acknowledging relay before upgrading kernels to this version. A
+kernel waits up to ten seconds for `{"kind":"daemon_registered"}` and publishes
+connected status and online Cloud presence only after receiving it. An older
+relay that never acknowledges registration leaves an actionable refusal in
+`RelayStatus`.
+
+The relay checks `registration.local_protocol` before decoding the proof and
+refuses versions below 1012 or registrations with no version. A refused or
+malformed registration receives a `close` envelope with a reason before the
+socket closes. For a kernel that declares protocol 1014 or later, the relay
+queues the acknowledgment before the socket becomes routable. Earlier supported
+kernels keep receiving their existing wire messages during the relay rollout.
+
+While registration is refused, `RelayStatus.registration_refused` gives the
+reason, next step, first refusal time and scheduled retry time in Unix
+milliseconds. The kernel announces the refusal once to the attached owner
+and backs off consecutive identical refusals. Rejected credentials use the
+existing credential renewal path.
+
 ### MP-08 / MP-09 / MP-10 / MP-11 artifact read pages (local993 / peer432)
 
 `chariox.read_artifact` accepts optional `offset_bytes` (default 0) and
@@ -113,42 +177,22 @@ Draft protocol aligned with `docs/spec-v1.md`.
 Apps Phase 1 protocol numbers were renumbered above release F on 2026-10-03 (local
 N → N + 9 for 368–406, relay 58 → 69); see [PROTOCOL_PHASE1_RENUMBERING.md](PROTOCOL_PHASE1_RENUMBERING.md).
 
-## MP-08 / MP-11: user-domain grant contract (local 432 / relay 78)
+## MP-08 / MP-11: user-domain access (no grants)
 
-The owner-approved multidomain access contract is specified in
-[MULTIDOMAIN_USER_DOMAIN_ACCESS.md](MULTIDOMAIN_USER_DOMAIN_ACCESS.md).
-MP-11: authenticated human-terminal focus grants resource-scoped authority.
-Agent-originated focus, attach, cycle and alias-routed prompts preserve session
-orchestration without creating or refreshing browser/Notes grants. Changing
-human focus does not revoke prior
-holders. Existing kernel turn/wake state retains grants until fully idle expiry,
-session/agent end or explicit revocation. Authenticated owner terminals use
-`KernelBrowser` operations `list_grants`, `subscribe_grants` and `revoke_grants`;
-agent tools cannot invoke these owner controls. Snapshots carry the live cursor,
-holders and non-focused-use notice. Revocation cancels grant epochs and idle
-subscriptions. MP-11: retained holders have the same input and mutations as
-focused agents on granted resources, including typing, keys, Tab and clicks.
-Explicit start/open is allowed; open grants its newly created tab. Claiming an
-unrelated existing resource requires focus. Loading a capability requires focus
-or the A05 owner approval described below. Vault,
-protected regions, sensitive approvals and App/passkey validation keep their
-shared protections. Ordinary input has no retained/focused classification;
-revoke and idle lapse still cancel authority immediately. Observation reads,
-including state, never start/restart Chromium or its controller for any caller;
-stopped/unavailable reads require explicit start/open (`browser_unavailable`).
-Browser/App window projections identify the owning kernel and focused-agent
-reachability; cross-kernel control is refused. Consumers of these new fields and
-commands require local 432. Existing multidomain feature minima remain 427.
-The focused MP-10 drill and protocol snapshots cover these changes; they do not
-alone establish ordinary/managed parity or official-provider wait behavior.
-
-MP-08 / MP-11: ordinary text and text-producing key events use the same
-Vault-only protected-target check, including password/OTP fields, focused
-frames and open nested shadow fields, for both focused and retained holders.
-Successful browser results are bound to the exact admission epoch under the
-grant lock before resource/subscription registration or inventory projection;
-revocation followed by refocus cannot adopt an old call's result into a fresh
-grant. A final live cancellation/provider-run check fences returned results.
+The owner's agents use the owner's kernel browser, Computer and App views with no
+grant, focus, epoch or lifetime; see
+[MULTIDOMAIN_USER_DOMAIN_ACCESS.md](MULTIDOMAIN_USER_DOMAIN_ACCESS.md). The loader
+tools take no arguments and `chariox.kernel_browser_share` is gone. The owner
+terminal's `KernelBrowser` commands `list_grants`, `subscribe_grants` and
+`revoke_grants` now carry only the Room Computer switches: the
+`user_domain_grants_changed` snapshot holds `cursor` and `room_computer`. Browser
+and App window projections no longer carry `kernel_id`, `kernel_name`,
+`focused_agent_kernel_id` or `reachable_by_focused_agent`, and `UserAppView.access`
+is removed. Vault, protected regions, sensitive approvals and App/passkey
+validation keep their protections; ordinary text and text-producing key events use
+the same Vault-only protected-target check. Observation reads never start or
+restart Chromium for any caller; a stopped browser needs an explicit start/open
+(`browser_unavailable`).
 
 ### MP-08 / MP-09 / MP-10 / MP-11: one-use Vault capture (local 963 / peer 412)
 
@@ -170,56 +214,24 @@ See [capture and use](KERNEL_SUDO.md#vault-capture-and-use-by-command-and-file-v
 Local 469 combines A04 (460) and A05 (462); relay peer 87 combines peer 82 and
 86. A06 adds no serialized request or event shape: the MCP tool
 `chariox.vault.generate` replaces `chariox.create_generated_credential`, and
-`chariox.kernel_browser_paste_secret` accepts a live sudo window in place of
-focus for a retained grant. See [Sudo windows](KERNEL_SUDO.md).
+`chariox.kernel_browser_paste_secret` accepts a live sudo window. See [Sudo windows](KERNEL_SUDO.md).
 
 MP-08 / MP-09 / MP-10 / MP-11, local 956 / peer 405: Vault generation is an ordinary agent tool. Generated and captured entries persist `metadata.use_binding` with one exact destination and a value kind. Browser/HTTP site uses compare canonical origins (scheme, host, effective port), not host suffixes. Environment/stdin, file, TOTP and WebAuthn bindings are distinct uses. Bindings and card kind cannot be changed by overwriting or aliasing a handle. Payment-card values require one owner interaction per operation; ordinary values need no task approval or sudo. Only the encrypted Vault's actual setup/unlock still requires its key. `chariox_kernel_request` remains sudo-only.
 
-### MP-08 / MP-10 / MP-11: A05 capability acquisition (local 462)
-
-A running prompt submitted by the owner
-through a human attachment supplies acquisition causation. Agent messages,
-workflows, schedules and continuations do not. A new App binding or kernel
-browser grant also requires the owner's resource-specific `RuntimeInteraction`
-reply; a human prompt alone cannot authorize unrelated resources. Owner Deny
-and a missing owner request return the typed `user_domain_not_requested`
-refusal; a revoke reaching that agent while its decision is pending returns
-`user_domain_not_granted`. Other holders' grant changes do not affect a pending
-decision. Provider MCP errors carry the same code. Existing focus grants remain
-available through the shared browser authority path; focus is the owner's live
-act, so focus grants have no absolute lifetime (no `expires_at_ms`) and retire
-through idle, revocation or session/agent end.
-Explicit owner focus promotes an existing requested or delegated browser grant
-to that focus lifecycle without retiring its resources, subscriptions or epoch.
-
-Browser loader arguments may request `lifetime_hours` from 1 through 24; the
-default is 8 hours. A prompt grant covers newly opened tabs, while claiming an
-existing resource and Vault-sensitive actions retain the focus checks.
-`chariox.kernel_browser_share` transfers an explicit nonempty resource subset
-to a direct local child. A delegated grant cannot open additional tabs, outlive
-its source or survive source revocation. Grant projections include absolute
-`expires_at_ms` and optional prompt/delegation attribution. Absolute and idle
-expiry have live kernel wakes that cancel in-flight work and subscription scopes.
+### App bindings
 
 App bindings use the existing trusted installation, admitted publisher key and
-capability checks. Issued bindings carry an optional `app_grant` generation,
+capability checks; an agent binds a trusted installation itself, with no card. Issued bindings carry an optional `app_grant` generation,
 absolute expiry and prompt/delegation attribution; agents cannot submit this
 issued authority as grant input. App grants default to 8 hours and child
 bindings inherit the parent's deadline. Revocation removes only bindings
 actually delegated from that generation, wakes retained calls and prevents an
 old call or expiry wake from adopting a replacement binding. Recovery rearms
-absolute expiry; an untimed legacy binding needs fresh owner approval in room
-mode, and recovery without a live expiry executor fails closed. Recovery
+absolute expiry; recovery without a live expiry executor fails closed. Recovery
 removals record the normal `agent.extension_revoked` event and
-`home_extension.grant.revoked` audit. Leased, remote and slice agents cannot acquire these user-domain
-resources; they use their Room Browser/Computer route.
+`home_extension.grant.revoked` audit. Leased, remote and slice agents use their Room Browser/Computer route.
 
-Clients consuming this metadata require local 462; relay peer shapes are
-unchanged. The focused A05 drill exercises the built TUI, kernel and official
-Codex resource-approval path: owner Deny with the typed refusal code, owner
-Allow with the 462 grant projection over the real client transport, and the
-live absolute-expiry wake. Source refusal and protocol snapshot tests are
-supplementary and do not establish hosted, public-site or managed acceptance.
+
 
 ## 1. Scope
 
@@ -301,6 +313,29 @@ content budget. Other details remain available through the existing blob
 requests. The outline's `steering` flag identifies budgeted steering prompts;
 observed and recovery prompt envelopes retain their collapsed, on-demand role.
 Clients that omit the request flag retain the earlier outline and blob paths.
+
+Local protocol 1014 (provisional) adds latest-page deltas to `GetSessionHistoryOutline`.
+An `after_sequence` map keys each agent ID to the previous reply's
+`delta_cursor { after_sequence, revision }`. An empty map asks for a full page
+and a cursor. The sequence is the highest projected sequence on the page and
+the revision is an opaque witness for its rows. An expired, missing, or
+out-of-window cursor returns the ordinary full latest page and a fresh cursor.
+`AttachSessionView.history` and a latest read with both prefetch and an empty
+map also return a full page with cursors. Older-page requests use
+`cursor.before_sequence` and return the full requested page.
+
+A delta agent has an empty `turns` array, the current `next_cursor`, and
+`turn_deltas` in page order. Each turn lists its header (the ordinary turn
+with empty entries and blobs and no summary), optional summary, entries, and
+blobs. A number is an index into the previous page, flattened in this same
+order for each turn with absent summaries skipped. An object replaces the
+part in that position. A growing summary may be
+`{ append_to, suffix }`: take the previous summary's text at that index and
+append `suffix.entry.text`, using the suffix row's other fields. Missing
+parts disappear from the page. A blob's revision changes when its contents
+change even if its sequence range and display metadata are identical.
+The caller applies the result as an ordinary outline before merging it into
+the displayed transcript.
 
 MP-08 / MP-10 / MP-11: `AttachSessionView` was introduced in 508/116 and
 its first-screen behavior is updated in the allocated 518/126 bump. It
@@ -538,13 +573,16 @@ must confirm `exact_prompt_cancellation_v499` in the attached kernel's existing
 the cancellation. Peer 101 is the paired admission generation; worker aborts
 retain the existing lease, home-prompt and provider-run fences.
 
-MP-08 / MP-10: local protocol **491** adds `SteerActivePrompt` with session,
-attachment, agent, required `expected_active_prompt_id`, visible prompt and
-attachments. The home agent actor admits it only against that exact running
-Chariox prompt; stale, cancelled, external or settled targets fail without
-creating a turn or a backlog item. `ActivePromptSteered { prompt }` reports
-admission through shared prompt assembly/history and local or leased provider
-dispatch. Relay peer 101 carries the exact home target.
+SteerActivePrompt takes a session, attachment, agent, the client-observed
+`expected_active_prompt_id`, visible prompt and attachments. Ordinary steering
+selects the current running Chariox prompt at admission. If there is no eligible
+turn, or delivery was definitively declined, the kernel submits the input as the
+next prompt. `ActivePromptSteered` reports the actual turn and steer IDs.
+`PromptSubmitted` confirms the next prompt was queued or started. An uncertain
+provider result never creates a second prompt. Native controls set
+`require_exact_turn: true` to admit only the named running prompt and never
+submit a new one. The worker still checks the exact home turn selected by the
+kernel.
 Codex native `turn/steer` maps both reply and projected display turn IDs to
 home prompt IDs; its response retains the display turn ID. Utility threads
 keep their provider-native controls. `thread/compact/start` resolves the live
@@ -594,6 +632,7 @@ Semantics:
 - prompts from Chariox clients are forwarded through the kernel-managed provider run so the provider TUI observes the same turns
 - MP-08 / MP-10 / MP-11: a queued prompt retains its kernel-owned identity when promoted to active work; promotion clears its pending marker without replacing its ID, so native display turns, permissions and exact-prompt controls keep one binding
 - native TUI provider runs are marked with `client_interface = native_tui`
+- Claude's own folder-trust question on a native terminal (it appears when the folder is the person's home or the root, since a launch trusts the agent's chosen workspace itself) is one kernel-owned `RuntimeInteraction` per provider run, "Trust this Claude Code workspace?" with `Trust workspace` and `Don't trust`, in the session's active interactions: every client sees it, including one that attaches later. An answer from any client is typed into Claude's selector; answering in Claude's terminal withdraws the card. No serialized shape changes. Codex's and OpenCode's own first-run dialogs and the model-retirement dialog are drawn by the provider's terminal and have no card yet.
 - Chariox clients must treat model/variant controls for those runs as provider-controlled; provider-native changes may be recorded when observable, but Chariox-side parameter mutation is disabled for the active native TUI run
 - daemon health reports `duplicate_chariox_agent_bindings` when more than one active Chariox provider run is bound to one session/agent, and `multi_interface_agent_bindings` when active Chariox and native TUI provider runs are bound to the same session/agent
 - daemon health `provider_catalog` reports whether provider/model metadata is cached, expired, and how old it is; clients should surface stale catalog state near provider/session launch diagnostics
@@ -615,21 +654,36 @@ Remote native TUI composition:
 - relay peer protocol v7 correlates projected completions with `home_prompt_id`. Workers retain the latest settled completion for pull-based replay, and home kernels MUST ignore a stale replay when that prompt is no longer active. This makes a completion recoverable when a fire-and-forget worker projection is lost without allowing the replay to settle a later queued turn.
 - relay peer protocol 383 (local 934) acknowledges pulled projections; both kernels must speak 383. Each `drain_leased_runtime_projection` carries the required `acknowledged_projection_sequence`, the last projection sequence the home applied for that leased agent (persisted by the home). A worker answering with `projection_sequence` keeps that projection and answers every later drain with it until a drain acknowledges it, then drains new output. A reply lost on the way home (a relay writer closing at reconnect, a home timeout) is therefore answered again: no output is lost, and the home applies each sequence once. The worker no longer pushes a projection after a steer; the home's next drain carries it. A home recovering a settled worker receipt (restart, cancellation) applies and acknowledges the retained output of that run before its completion.
 - relay peer protocol 384 (local 935) binds `complete_leased_prompt` to the exact prompt it completes: the request carries `home_prompt_id` and `worker_provider_run_id`, like `cancel_leased_prompt`. The worker completes the leased agent's prompt only when it is still that home prompt on that worker run; a completion of an earlier or already finished prompt is refused with `leased_prompt_not_current` and changes nothing, so the current turn keeps running. A home treats that refusal as the prompt having settled on the worker. When the home prompt is still the one running but on another provider run (a relaunch the home has not followed yet), the worker refuses with the distinct code `leased_prompt_run_changed`; that prompt has not settled, so the home keeps its turn active and retries the completion once it follows the successor run. Both kernels must speak 217.
-- relay peer protocol v8 carries an optional exact worker-local skill requirement set for native TUI launch and prompt submission. Standard workers validate matching local package hashes without receiving package payloads; home-managed slices may materialize packages first. Workers project the validated set onto the leased backing agent so per-prompt hidden skill context stays worker-local and grant revocations cannot leave stale skills active.
+- MP-08 / MP-10 / MP-11: Skills v2 (local 533 / peer 141) replaces the v8 skill-grant requirement contract. Home-selected instruction packages and scope/state/revision follow every leased execution placement through `EnsureRemoteSkillPackages`. Both request and receipt require the current `execution_lease_id`; each materialization binds its stable `skill_id` and complete digest. Received packages must not synthesize agent grants or become a worker catalog. The older standard-worker no-copy exception does not apply to skills. MCP requirements and placement are unchanged.
 - relay peer protocol v9 adds idempotent queued-prompt steering for leased agents. The home kernel keeps queue/history authority and removes the queued prompt only after the worker acknowledges provider delivery; the worker keys delivery by the home queued prompt ID, rejects stale active-turn targets, and replays acknowledgements without injecting duplicate provider input.
 - relay peer protocol v10 forwards provider-targeted terminal resizes to leased worker PTYs. The worker validates that the requested provider run belongs to the leased agent and acknowledges the applied dimensions; the home kernel does not report a remote resize as successful before that acknowledgement.
 - the provider-native proxy/launcher MAY translate home-kernel session output back into provider-native UI protocol or PTY rendering, but it must not become a session authority or bypass the home kernel prompt queue
 - the relay remains transport-only and must not inspect or transform provider-native prompts, outputs, attachments, permissions, or history
 - slice-backed native TUI mode follows the same contract: provider TUIs and Chariox TUIs attach to the home kernel session, `slice_ref` selects a home-managed worker execution environment, and the slice worker uses the same worker-owned provider adapter/server path as remote leased agents
 
+MP-08 / MP-10 / MP-11, Skills v2 local 533 / peer 141: `native_details`
+accepts the focused agent and a provider/account/execution/inventory-bound native
+selection, never a client-chosen native root. Its read-only projection carries
+source provenance, the file manifest and declared version; unavailable bodies
+remain explicitly unavailable. Catalog `preview` returns a home review receipt
+binding the mutation hash, resolved source revisions and complete-content digests.
+`mutate` requires that receipt ID. Home must verify its owner, scope, revision,
+expiry and reviewed staged bytes; approval must not fetch newer source content.
+
+MP-08 / MP-10 / MP-11: Project-scoped skills bind the Project ID, independent
+of Workspace membership. Local 533 adds `CreateProject { name }` /
+`ProjectCreated { project }` through the ordinary Project service/actor. A named
+Project can have `workspace_ids: []`; its legacy `workspace_id` shadow is empty,
+never an executable cwd. A session chooses a valid execution cwd separately; choosing it does not add a Project folder.
+
 Native TUI MCP and skill placement:
 
-- local native TUI provider runs use the same agent-scoped grant filtering as ordinary local provider runs, so only MCPs and skills granted to that agent are injected or rendered for that run
+- MP-08 / MP-10 / MP-11: local native TUI provider runs use the same agent-scoped MCP grant filtering and home-owned Skills v2 resolver as ordinary local provider runs; skill state and explicit selection control instruction delivery, independently of grants
 - standard home-worker native TUI may expose home-authorized remote extension manifests to the worker. Home-owned active extensions remain grant/revoke authoritative on the home kernel and execute on home through relay peer calls; the worker only advertises the manifest and forwards calls. Each forwarded call carries `invocation_id`, optional `provider_tool_call_id`, `attempt`, and optional `idempotency_key`; home reconstructs the current tool definition before execution and rejects stale or forged worker metadata, including calls from a worker provider run that is not the current remote binding.
 - when an extension is explicitly worker-local, the home kernel may still compute grant-derived remote MCP requirements and pass those requirements to the worker launch/prompt path so the worker can fail fast on missing or mismatched local worker definitions before provider execution
-- slice-backed native TUI may synchronize Chariox skill packages from the home kernel to the child worker because the slice is home-managed; this is not a general remote-machine install mechanism
+- MP-08 / MP-10 / MP-11: every execution placement, including standard leased/native workers and slices, receives the effective home-selected Auto/Manual Skills v2 packages through `EnsureRemoteSkillPackages`; Off is not newly transferred. Verified revision/digest receipts bind to the current home/session/agent/lease/Project before dispatch. Received packages remain lease-private materializations, never a shadow worker catalog
 - slice-backed native TUI still executes worker-local MCP commands on the worker side, so worker-local MCP commands and environment must be available in the slice image or injected slice environment; Chariox vault credentials remain home-owned and are exposed to slice workers only through home-authorized credential proxy calls and one-operation secret injection
-- capability grants remain agent-scoped in all modes; native TUI launch must not expose ungranted local/user MCPs or skills just because the provider CLI can see them natively
+- capability grants remain agent-scoped in all modes; native TUI launch must not expose ungranted MCPs. Provider-native skills remain independent, read-only `From <Provider>` entries; complete-content dedupe and conflict projection follow the home Skills v2 resolver, without modifying native sources
 
 Native TUI permissions:
 
@@ -652,12 +706,13 @@ Provider-native credential enrollment callback bridge (local daemon protocol 241
 
 Native TUI hidden context:
 
-- granted skill prompt context and other Chariox-only prompt injections MUST be delivered on the provider-facing path without becoming visible provider-TUI text
+- MP-08 / MP-10 / MP-11: state-selected Skills v2 instruction context and other Chariox-only prompt injections MUST be delivered on the provider-facing path without becoming visible provider-TUI text
 - Codex native TUI hidden context MUST use Codex `thread/inject_items` developer messages before `turn/start` or `turn/steer`, preserving the attached thread and keeping `input` limited to visible user text and attachments. Resumed threads use the same bridge; newly created ordinary threads retain `thread/start.developerInstructions`. Injection failures MUST fail the prompt rather than fall back to visible user input.
 - OpenCode native TUI hidden context MUST use the same OpenCode prompt request `system` field as ordinary OpenCode provider runs
 - Claude Code native TUI MUST use the `UserPromptSubmit` hook `additionalContext` path for hidden context; the hook emits a scoped context request id, and the Chariox CLI bridge or worker kernel writes the matching context response before the hook returns
 - Claude hook context responses are scoped to the session, agent, and provider run; they must not expose broad kernel authority or accept arbitrary provider-origin file paths
 - if a Claude hook context response is unavailable before timeout, the provider-facing hidden context is empty and the native TUI remains coherent; Chariox MUST NOT fall back to visible PTY prompt injection for skill bodies or system prompt blocks
+- MP-08 / MP-10 / MP-11: ordinary prompt text containing an unresolved `$word` is not evidence of a skill selection or missing skill context. Only a kernel-resolved selection failure may produce the explicit hidden selection-error response and refuse that turn; stale source-bound selections remain actionable errors.
 - local Claude native TUI can answer hook context requests through the launcher bridge and home kernel; remote/slice Claude native TUI answers them on the provider-execution side so worker-local or slice-isolated skill material is used
 
 Provider-specific transport:
@@ -735,7 +790,9 @@ permission level or mode. Only the user changes the edge, with
 refused. A Room agent controls its subtree with `agent cancel`, `agent deadline
 set|get`, `agent children`, `agent steer`, `agent message`, `agent promote` and `agent spawn`, and reads `agent usage` and
 `agent profiles`. A message that is not urgent waits in its receiver's queue and never starts or steers a turn: a session lists it in
-`queued_agent_messages` (`id` `agent-message-<n>`, `agent_id`, `sender`, `prompt`), and the person cancels it or sends it now with
+`queued_agent_messages` (`id` `agent-message-<n>`, `agent_id`, `sender`, `preview`: the first 200 characters, secrets redacted,
+`truncated`: the message is longer; at most the next ten per agent, so a Room's state stays small; the recipient reads the whole
+text from its inbox), and the person cancels it or sends it now with
 `CancelQueuedPrompt` / `SteerQueuedPrompt` on that id; its sender promotes it with `agent promote <message-id>`. `agent spawn` takes `--account-profile`, `--permission
 required|yolo`, `--deadline 90s|30m|2h|1d` and `--command-id`; a child never
 has a higher permission level or mode than its parent, and a retry with the
@@ -761,6 +818,13 @@ deadline on the backing agent of the leased agent, so its own scheduler stops th
 the home offline. The deadline-edit protocol makes `deadline_ms` required and nullable on both
 local and peer requests: a time extends or shortens, and null clears. The worker
 confirms the edit before the home commits it. Reached deadlines cannot be reset.
+A deadline counts kernel uptime. The deadline tick leaves a heartbeat while a deadline is armed;
+a starting kernel moves every armed deadline later by the time since that heartbeat, so `agent
+deadline get` shows the remaining time continuing where it stopped, and the home sends each
+leased agent's worker the shifted `SetLeasedAgentDeadline`, to every worker at once, until the
+worker confirms. The worker kept counting while the home was stopped and enforces the value it
+holds: a worker that refuses for good (a non-retryable answer, such as a deadline it already
+reached) keeps it, so the home goes back to that deadline and says why in the room.
 
 Local daemon protocol 1000 makes a
 sub-agent's decision one card with one holder. The kernel keeps the holder (the
@@ -789,9 +853,9 @@ as `resolution.via = "parent_agent"` and writes an `interaction.answered` audit 
 `answered_by_agent` names the parent and `child_agent_id` the child that raised it. The relay peer protocol needs no change for it.
 
 Agents may spawn without room agent-count limits, message any current room
-agent, create workflows, and observe/run peers' workflows. Agent rename/delete
-requires the caller's direct spawned child in the same room; self, peers,
-parents and grandchildren are denied. Workflow mutations require the caller
+agent, create workflows, and observe/run peers' workflows. A parent can delete
+agents below it, including a child placed in another Room on this kernel.
+Workflow mutations require the caller
 or its direct child as immutable object creator. A peer workflow invocation
 creates a separately caller-owned run, without changing definition ownership.
 Running a peer's saved source may create a caller-owned definition/run; it
@@ -801,11 +865,9 @@ owner-admitted capability paths remain separate until the capability-grants PR.
 Current room, run/lease and creator fences apply after waits before effects;
 a replaced provider run cannot receive an asynchronous room-tool result.
 
-A peer a room agent creates with `agent spawn --room` (in another room of this kernel, or
-on another kernel with `--kernel`) ends with its creator. The kernel records the link when
-it creates the peer (for another kernel, before the request goes out, named by the spawn
-`request_id`; an offline retry of the same spawn never takes back a link an earlier attempt
-wrote). When the creator is deleted, or its room ends or is deleted, the kernel deletes
+A peer a Room agent creates on another kernel with `agent spawn --room --kernel` ends
+with its creator. Before sending the request, the kernel records the link under the spawn
+`request_id`. An offline retry keeps the earlier attempt's link. When the creator is deleted, or its room ends or is deleted, the kernel deletes
 each peer it created through the ordinary agent delete, audited as `agent.deleted`; on another
 kernel that is the same-owner `DeleteRoomPeer` request (relay peer 442), which names only the spawn's
 `request_id`: the receiving kernel finds the peer by the spawn key, whatever its room is called
@@ -815,6 +877,13 @@ nothing; `RoomPeerDeleted` answers both. A link stays until its delete is done, 
 unreachable kernel or a restart only delays it; a pass every 30 s and at start finishes what is
 left, and a link older than seven days is dropped with an error log. Agents the creator only
 messaged or followed, and sub-agents (which follow their parent), are not touched.
+
+An agent may give a new agent its first prompt with `agent spawn --task '<text>'`.
+The spawn carries the task to the kernel that owns the new agent. Admission
+uses the new agent’s authority, limited by the spawner. Across kernels the agent
+keeps the admitted mode and permission ceiling for agent-initiated settings
+changes. The transcript records the spawner as `prompt_author`. Replaying the same spawn does not start
+another prompt. A message sent separately to a peer remains an inbox message.
 
 Before delegation, message submission or workflow invocation, the kernel
 persists `room.obligation.registered` with actor/room/run/prompt, kind and
@@ -852,14 +921,10 @@ An agent changes its own settings, or those of an agent below it, with the room 
 `agent settings set [<agent>] [--model M] [--effort E | --clear-effort] [--account-profile P]
 [--provider P] [--reason TEXT]` or, in a second command, `[--mode build|plan] [--permission
 required|yolo] [--dir PATH]`; the command is the `UpdateAgentProfile` / `UpdateAgentConfig` request
-with `reason` and the caller as the origin, so there is no other authority. The person's allowed set is
-`AgentInstance.self_settings` `{models, efforts, account_profiles, directories}` (`"*"` allows any),
-changed only by the person with `UpdateAgentConfig.self_settings`. An agent changing itself within
-the set applies at once; a value outside it, a provider change or a higher mode or permission level
-takes one kernel-operation card ("<agent> wants to change its model to X", Allow once / Allow always /
-Deny; Allow always adds the value to the set, a /sudo task needs no card), and a level above what its
-parent chain allows is refused. The agents above an agent choose its settings without the set, as
-when they start it. The result of the command reads "applied, continuing" once the process takes the
+with `reason` and the caller as the origin, so there is no other authority and no allowed set: an agent
+changes its own settings, and an agent above it those of the agents below, exactly as the person does, with no
+refusal and no card. The change applies mid-turn as above and stays; `agent.settings_changed` records who
+asked (the origin of the call) and the pane line names them. The result of the command reads "applied, continuing" once the process takes the
 change after the command's own tool call ends.
 
 When a turn ends with the usage-limit outcome, the kernel records `AgentInstance.usage_limit_stop`
@@ -1041,6 +1106,13 @@ the tool returns `{interaction_id, registration_id}` immediately. Its ordinary
 that field and answer using the unchanged `RespondToInteraction` request.
 No additional card or client request is introduced.
 
+Local protocol **1012**: the reply to `RespondToInteraction` is a small acknowledgement,
+`InteractionResponded {interaction_id, choice_id, outcome}` with `outcome` `answered`; it no
+longer carries the Room `session`. A Room can be larger than the most a state-changing request
+through the kernel gateway may return (the request ran, yet the caller was told it failed). A
+client reads the Room after an answer from its events, or with `GetSessionState`. An answer to a
+card someone already closed is still an error that says so, never an outcome.
+
 An async question is the `interaction` kind of the existing durable wake
 registry. The asking task owns its obligation and completion registration;
 `events.yield` may include that registration alongside other sources. A turn
@@ -1115,23 +1187,37 @@ then blocks if still invalid. Unfinished work without a live wake source is
 corrected or shown as blocked, never silently left idle. The kernel sweeps every
 30 seconds. Timer acknowledgements and repeated continuations do not limit
 automatic wakes. Fifteen minutes waiting without progress
-produces a notice. Unconfirmed provider delivery blocks within two minutes and
-requires reconciliation of the original receipt; uncertainty never permits
-blind replay. Damaged ledger/source rows are retained and quarantined.
+produces a notice. A delivery a kernel restart or a lost turn interrupted is settled
+by the kernel before each sweep, never by a person: when the receiving turn took the
+event (a queued or running prompt, or a task of its own) it is accepted; otherwise the
+same event and sequence return to pending with a fresh refusal budget (receipt state
+`recovered`) and the normal inbox path delivers it to a later turn at most once. A
+steer is always put back. Damaged ledger/source rows are retained and quarantined; a
+damaged interrupted row is skipped and logged without stopping the pass. A task whose
+only open work is finished sources with an unacknowledged outcome ends done after the
+one correction instead of blocking.
 MP-08/MP-10/MP-11: each admitted delivery gets a full two-minute receipt
-window. Repeated refusals while idle have a separate bounded escalation clock;
+window. Repeated refusals while idle have a separate bounded retry clock;
 an active recipient turn clears that clock. Unsupported or refused steering
 stays queued through long turns and retries when the recipient becomes idle.
 Steer rejections do not start the idle-refusal clock; idle refusals start it at
-receipt time. A damaged refusal clock is retained and quarantines only its
+receipt time. An exhausted idle refusal ends as a failed delivery, with a receipt
+for the sender or wake and without an owner decision. A damaged refusal clock is
+retained and quarantines only its
 own delivery through the owner-action path; supervision of other Rooms continues.
 
-`chariox.send_agent_message` defaults to nonurgent and no reply. Nonurgent
+`chariox.send_agent_message` defaults to nonurgent and no reply. A send returns at once
+with the message id (`status` `queued`, or `steering` for an urgent one); delivery runs
+on the kernel's own account afterwards, so a busy receiver or a change to the sender
+never fails or duplicates it. Nonurgent
 messages wait behind active work; idle/yielded receivers wake. Urgent messages
 use the existing exact-turn steer path, with rejected/unsupported steering
 retained for a later wake and uncertainty pinned. Explicitly stopped receivers
 keep pending items. `reply_requested=true` creates one correlated reply
-obligation; ordinary messages must not produce courtesy feedback loops.
+obligation. An answer comes from the task started by the request. If the
+recipient handles the request in another task, the sender receives a
+`source_lost` event with `public_answer.kind = "no_answer"` and a reason. Ordinary
+messages do not settle requested replies or create courtesy feedback loops.
 
 Blocked tasks create one kernel-owned **Agent needs your action** interaction.
 A helper's decision goes first to its nearest eligible parent as an urgent
@@ -1733,6 +1819,7 @@ Current slice-management surface:
 - `slice.logs.get` returns structured log entries for local Docker slice provisioner actions and recent container logs. Clients should render these as diagnostics only and must not treat log text as control data.
 - Slice provider auth import/login/alias/remove requests are scoped by provider and the kernel owns displayed provider auth summaries. Removal purges the slice-side provider credential files and clears matching auth summaries from kernel state; `opencode` removes all `opencode:*` account summaries for that slice.
 - Local daemon protocol v770 / relay peer v320 exposes `GetProviderUsageSnapshot {}` with opaque `account_id`, provider/profile id/label, `auth_state`, safe configured `services`, and provider-observed usage meters. Account identities group provider-reported email identities across kernels; profiles without such an identity group only when the machine and native credential scope match. Identity hashes never use credentials. Unobserved/unconfigured native defaults without usage are omitted; explicit profiles retain their status. Clients group by account identity, keep fixed order and select each meter's latest observation. No credential/profile locations leave the kernel. `GetAgentUsageSnapshot {session_id, agent_id}` still requires Room membership and returns observed context and execution route without remote admission credentials. Usage references require protocol 770; missing balances/windows are never estimated.
+- Local daemon protocol v1013 adds the `models` array to `GetAgentUsageSnapshot`. Each row gives the provider family, model ID, and that agent's observed input, output, cache-read and cache-write token totals. Input includes both cache categories. The kernel calculates `api_equivalent_nanodollars` at standard short-context API list rates and the shortest cache-write TTL. Clients receive the integer as a decimal string, or `null` when the kernel has no applicable rate. The current accounting sources are Codex App Server usage updates and Claude Code result model totals. Relay peer v450 carries the worker's measured model totals with the matching leased prompt completion.
 
 - Local daemon protocol v267 adds kernel-owned provider-account CRUD, profile-scoped auth/login/logout/status, provider-neutral usage meters, and account-aware catalog requests. Room list projections expose safe profile metadata and materialization state, never profile paths or credential payloads.
 - `GetProviderCatalog` carries provider/profile overrides plus `local`, `worker`, or `slice` execution location. Cache identity includes owner, request/profile selection, and location. Worker/slice requests require a matching kernel-projected materialization record.
@@ -2806,6 +2893,23 @@ turn count for the caller, so a client holding another group or turn count, or n
 history (`known_revision: null`), gets the full history. Live Room events stay on
 the session subscription with `resume_from_event_id`.
 
+### Owner Web view
+
+The authenticated owner terminal watches the `owner_view` kernel resource to show
+the names of agents who are watching. The browser publishes the visible Navigator
+and Settings labels over its encrypted kernel connection after drawing the
+indicator. The kernel accepts publications for the current viewer generation
+from one tab, which the browser can resume after a reload. Its status projection
+carries watcher names and the tab identity. The presentation itself is kept in
+memory.
+
+An authenticated provider agent uses `chariox.owner_view` with `watch`, `read`,
+or `leave`. The kernel checks that the agent and its Room belong to the enrolled
+owner. The response contains the presentation and its publication time. The
+owner terminal's `end` operation revokes the agent's grant in the kernel's
+durable state. The agent's request vocabulary supports observation and detach.
+The relay carries encrypted messages as it does for other kernel resources.
+
 ## 4.2 Planned Command-Dispatch Surface
 
 The current local API baseline does not yet expose slash-command discovery/invocation, but the protocol should reserve room for it.
@@ -3387,6 +3491,8 @@ Workflow trigger and deployment direction:
   as the event payload, deduplicated by the source occurrence id.
   `AppInboxRouteSummary` shows the `connection`. The route grants the App no
   use of the connection beyond receiving these occurrences.
+- relay peer 449: an agent that runs on a slice generates, copies, captures and removes Vault entries in the home Vault, as the home's agent. `chariox.vault.generate`, `copy_for_use` and `remove_capture` go through `InvokeHomeCredentialTool`; `capture_command` and `capture_file` run on the slice and store through `CaptureForHomeVault {context, capture}`, whose `Prepare {request_id, host, use_binding}` is answered `HomeVaultCapturePrepared {committed}` (the entry the home already stored under that request, so a retry does not run again) and whose `Store {request_id, host, label, use_binding, secret}` is answered `HomeCredentialToolHandled`. The local protocol is unchanged.
+- relay peer 449: `ResolveHomeCredentialSecret.injection` accepts `{kind: "workspace", target}` (a Vault use target) so an agent that runs on a slice fills `chariox.vault.use_env` and `chariox.vault.write_file` from the home Vault; the local protocol is unchanged.
 - protocol 1011 / relay peer 448: event routing. `SetAppInboxRoutePaused
   {installation_id, route_id, paused}` and `PauseAppAutomation {installation_id, automation_id,
   expected_revision}` give the owner a pause that outlives a deployment handover
@@ -3404,6 +3510,26 @@ Workflow trigger and deployment direction:
   entry must be made for HTTP use at the destination's origin, and the value is never part of
   any reply. `capabilities.network[].credential` and `routes` plus the required feature
   `credentialed-http` declare the destination (`APPS_V2_CONTRACTS.md` §10).
+- protocol 1012: an agent's `active_turn.phase` is `thinking` while the model reasons and streams nothing a
+  person can read (Claude reports only a thinking-token count then); `awaiting_first_output` is the provider still
+  reading the context. Clients show "Thinking" or "Reading context" with the time since `started_at_ms`, not a bare spinner.
+- protocol 1012: machine list membership and renewal. `RemoteMachineRecord` and
+  `OfflineMachineRecord` carry `directory`, the Cloud directory (API, account, realm) whose live list
+  first recorded the machine; absent for a machine of a private relay, a pairing or an approval. A
+  kernel forgets a remembered machine of a directory once two consecutive reads of that directory
+  omit it (Remove unlinks it in Cloud), and never a machine of another directory or of a private relay.
+  A client applies the account's membership only to machines with a `directory`. `ListRemoteMachines`
+  on a stale list renews it first; when the renewal outlasts the answer budget the answer is the last
+  list with `renewing: true` (omitted when false), the renewal goes on, and its list follows as
+  `remote_machines_changed`. Relay registrations carry each kernel's local protocol at peer 449.
+- protocol 1012 / relay peer 449: `OwnerVault {action: "update", id, kind, use_binding}` changes an owner-made entry's Kind
+  and Use in place: the id and the saved value stay, the new Use takes effect at once and the entry's Activity records who
+  changed it from what to what. A Payment card and a 2FA setup key keep their Kind, and no other entry can become one: the
+  kernel answers why. An API key entry sends `Authorization: Bearer <value>` to exactly its site origin. A refusal of a
+  credential used for the wrong purpose names the Kind that serves it ("change Kind to API key in the Vault").
+- protocol 1012 / relay peer 449: `AppConfirmationFrame.input`, the exact input
+  the kernel runs when the person confirms (sorted pretty JSON, cut with a "N more bytes" note
+  past 4096 bytes), written by the kernel and required in every `app_confirmation`.
 - protocol 1011 / relay peer 448: standing permissions and a backend preview. `GrantAppStanding
   {installation_id, account, repo, class: merge|close|delete_branch|review, expires_at_ms?}`, `RevokeAppStanding
   {installation_id, standing_id}` and `ListAppStanding {installation_id}` answer `AppStanding {installation_id,
@@ -3413,6 +3539,16 @@ Workflow trigger and deployment direction:
   them (absent when none). `app_confirmation.preview` (`[{label, value}]`, 1 to 12 rows of plain text) carries the
   rows a backend-served App answered when no App Tab shows the preview; the card then has no `view`. A direct tool
   call of an action that needs approval or confirmation is refused with `USE_APP_VIEW_INVOKE`.
+- protocol 1012: sign in to a provider from a Vault entry. `SendProviderLoginVaultEntry {login_id, credential_id}`
+  answers `ProviderLoginVaultEntrySent {login_id}`. The login must be a running terminal API-key login
+  (`opencode_go_api_key`, `opencode_zen_api_key`); the kernel waits for the provider's "Enter your API key" prompt,
+  types the entry's value into the login PTY itself and the provider finishes the login. The answer and the login
+  status never carry the value, and the login record masks it if the provider echoes it. The entry must be a
+  secret bound to the provider's own site (`provider_enrollment_vault_origin`, today `https://opencode.ai`), allowed
+  for browser or HTTP use; an entry made by `chariox.vault.copy_for_use` for that site counts. Any other entry is
+  refused with `credential_policy` and the site to bind it to. A locked Vault answers `credential_vault_locked` for a
+  client without a session and shows the usual unlock card to an agent. One entry per login: a second is refused.
+  Person and owner-agent callers only. Web requires 1012 for "Use a Vault entry".
 - protocol 359: App connection grants. `GrantAppConnection {installation_id,
   generator_id, connection_id}`, `RevokeAppConnection {installation_id,
   connection_id}` and `ListAppConnections {installation_id}` answer
@@ -4106,6 +4242,26 @@ Workflow trigger and deployment direction:
   processes across a kernel restart, each re-checked by identity. A process that forks
   twice gets a new pid and can't be named. CLI: `chariox access cover --pid PID`.
 
+  Protocol 1012: a grant holder answers the person's cards for them. `RespondToInteraction`
+  from a local grant holder, from the same agent forwarded through the person's gateway, or
+  from an agent driving a Room through reach settles any open card of the person, in any of
+  their Rooms and from any agent depth, except the cards the person keeps for every choice:
+  secret entry (credential prompts, secret inputs, hand-offs), Vault unlock, passkey choices
+  (access grants, sudo, critical approvals), Vault card payments and any card marked critical.
+  Those are refused with
+  `kernel_access_human_only` and stay open; outside events carry them as pointers and every
+  other card as a question. `ListOwnerInteractions {}` (terminals and local grant holders)
+  answers `OwnerInteractionsListed { interactions }`, oldest first: each `OwnerInteraction` has
+  `session_id` (absent for a card outside any Room, such as an App's host offer while a user view
+  is open, which the holder answers with `AnswerUserDomainInteraction`), `interaction_id`,
+  `title`, `message`, `choices` (`id`, `label`),
+  `reply_choice_id` for a text reply and `person_only` (the reason) on a card only the person
+  answers. An answer for the person adds a Room notice `<agent> answered "<title>" on the
+  owner's behalf: <choice>.` (a card outside any Room has no Room to tell), and
+  `interaction.answered` records `answered_for_owner_by`.
+  CLI: `chariox interaction list`, `chariox interaction answer ID CHOICE [--reply TEXT]`
+  (both take `--kernel NAME`).
+
   Kernel user config settings are live runtime policy. Set/unset is supported;
   unset restores the default. An extension popup is raised at the notice
   time and a verified answer starts a new term. These terms apply to
@@ -4587,7 +4743,10 @@ action, done, or owner-cancelled. Cancellation is never successful completion.
 
 Obligation/registration, wait intent, event admission and delivery intent commit
 through the shared SQLite writer. Native provider settlement commits the wait;
-a result racing it remains in the inbox. Done requires public output and no
+a result racing it remains in the inbox. In the same running turn after yield,
+`inbox` and `ack` still work. A second yield or a new timer is refused with the
+accepted wait's reason. If the agent handles the last outcome before the turn
+ends, settlement can finish the wait immediately. Done requires public output and no
 unresolved obligation, except open watched processes, jobs, terminal watches and
 delegates: the turn ends done and their end wakes the agent as an `after_turn`
 event. For any other unresolved obligation one persisted correction is permitted;
@@ -4657,7 +4816,7 @@ A local-dev browser terminal (`CHARIOX_RELAY_URL`/`CHARIOX_RELAY_TOKEN`, no Clou
 ### Provider account portability preflight, protocol 491 (MP-08 / MP-10 / MP-11)
 
 `PreflightProviderAccountPortability` accepts only `providerAccounts` selection
-metadata. The ordinary kernel owner gate applies to local and relay callers;
+metadata and, since local 1013, the launch's `kernelContext`. The ordinary kernel owner gate applies to local and relay callers;
 shared-session membership, another realm, and kernel peers cannot use it. The
 kernel checks the selected accounts through the existing provider-native managed
 context exporter and discards the exported bytes. Success is
@@ -5342,6 +5501,13 @@ icons, every two seconds). The viewer keeps the state it read last and waits aft
 The same release lets an idle viewer park one `state_wait` and one `mirror_next` credit for up to 10000 ms (2000 before), so a quiet
 Browser view asks the kernel once per wait; a change still answers the parked request at once.
 
+Local 1012: every Tab in a Browser reply names its icon by `favicon_hash` (16 lowercase hex characters of the
+PNG's SHA-256, `null` without an icon) instead of carrying the PNG. A `state_wait` lists the hashes whose PNG the viewer holds in
+`known_favicons` (at most 128; a longer or malformed list is refused) and carries `favicon_png_base64` only for a Tab whose hash
+is not listed; `state` and every other reply never carry it (the link probe and the CLI show no icons). A viewer keeps the icons
+of the Tabs it lists by hash and reads with `state_wait`, `wait_ms: 0` when it must read at once. Eleven Tabs' icons were about
+12.5 KB on every read. `browser-favicon-cache-1012.json` pins the shape (`mp08_mp10_browser_favicon_cache_1012_shape_and_hash`).
+
 MP-08 / MP-10 / MP-11: allocated 560/168 adds the `display_subscribe` target
 `{kind:"browser_window", window_generation}`: the owner's view of the Chrome window's page area. It
 is bound to the window epoch (the same `window_generation` as `chrome_window`), not to a Tab or
@@ -5533,7 +5699,7 @@ authority for its own sessions, agents, terminals and files.
   interrupted reservation returns `kernel_outcome_unknown` and never runs again; a different request under the same
   id is `duplicate_command_conflict`; a full or unreadable ledger is `ledger_unavailable` and nothing ran.
 - Errors (code, one sentence, next step): `kernel_unknown`, `kernel_ambiguous`, `kernel_offline`,
-  `kernel_unreachable`, `kernel_unpaired`, `kernel_incompatible`, `kernel_request_timeout` (30 s),
+  `kernel_unreachable`, `kernel_unpaired`, `kernel_incompatible`, `kernel_update_needed` (the target runs protocol N and needs M), `kernel_request_timeout` (30 s),
   `kernel_connection_lost`, `kernel_outcome_unknown`, `kernel_not_available`. Nothing falls back to local or to
   another kernel. Grant revoke, expiry and holder exit stop forwarding at once; work already started on the
   target keeps running.
@@ -5761,8 +5927,7 @@ the official one-operation response before registering another interaction.
 They do not authorize responding to arbitrary RuntimeInteractions. Leased
 watched commands revalidate the current home window through the existing
 leased kernel-request path, including before execution. Startup workspace trust
-may reuse an approved exact-workspace launch without making a queued sudo task
-live for tools. Scope expansion, missing authentication values, identity choices,
+is never answered by a sudo window. Scope expansion, missing authentication values, identity choices,
 revocation, sandboxing, tenant/owner checks and once-only effects keep their
 normal fences. This is kernel policy on existing shapes; no protocol shape or
 version changes.
@@ -5901,6 +6066,37 @@ Both are served by the generator's `POST /v1/events/query` and `/v1/events/repla
 management routes (docs/AEGS_SDK.md). Clients need kernel protocol ≥551 for either
 request (`integrationReceivedEventsMinimumProtocolVersion`); other minimums stay.
 Relay peer 159 only pairs the embedded local response union with local 551.
+
+### Kernel terminals — local 1012 / relay peer 449
+
+A kernel has terminals of its own that belong to no Room: the same PTY terminals as a Room's, owned by
+`TerminalScope::Kernel`. One request, `KernelTerminal { directory?, operation }`, carries the Room terminal's
+`operation` (`open`, `list`, `snapshot`, `input`, `resize`, `read_output`, `wait`, `close`) and answers with the
+same `RoomTerminal { result }`. `directory` is where `open` starts (the kernel user's home folder when absent) and
+is refused on any other operation. The `exec_*` operations belong to a Room and are refused. A terminal summary
+carries `scope` (`room` or `kernel`); `session_id` is present for a Room's terminal only. The output stream is the
+Room terminal stream (`subscription_scope` `kernel_terminal`, `attachment_id` `<terminal_id>`, no Room id: the relay
+requires a `session_id`, so the client sends the sentinel `__kernel_terminal__`, which the kernel does not read). The kernel advertises
+`kernel_terminal_v1` in `RelayStatus.capabilities`.
+
+Who may use them is decided in one place, `authorize_kernel_terminal`: the kernel owner's own clients, which includes
+an external agent working under the owner's kernel-access grant. A Room agent (its `reach:` grant), a Room guest or
+member, a peer kernel and a hosted service are refused, and a Room's terminal list never shows a kernel terminal.
+A kernel terminal lives until it is closed or the kernel stops; it survives web reloads, other clients and a hot
+reload (the same handover as a Room terminal). Closing it, or the kernel stopping, ends its whole process tree.
+`chariox terminal [--kernel K] open|list|send|read|wait|close` and `chariox exec [--kernel K] -- argv` (no `--session`,
+no `--workspace`) use it; the one-shot opens a terminal running the argv, waits for it, reads its output and closes it.
+
+`open` with `command` also takes `stdin`, the program's standard input: `{ kind: "inline", data_base64 }` (at most
+64 KiB decoded) or `{ kind: "file", path }` (a file already on that kernel, for example from `chariox files put`;
+a relative path starts at the terminal's folder). The program reads that file as fd 0 and sees end-of-file where it
+ends; without `stdin` it reads the terminal. Inline input is staged in a private file the kernel removes as
+soon as the program holds it open; a named file is read as it is and left. `stdin` without `command`, input over the
+limit, bad base64 and a missing file are refused naming the limit or the file and the other way to pass it. An
+argument over 4096 bytes is refused naming stdin and the stdin file. `chariox exec` sends its own stdin inline when it
+is not a terminal (over 64 KiB it is refused before sending, naming `files put` and `--stdin-file KERNEL_PATH`);
+`--stdin-file` sends the file reference. Clients need kernel protocol ≥1014 for `stdin`
+(`programStdinMinimumProtocolVersion`, provisional number; an older kernel would ignore the field).
 
 ### Room terminals — carried by local 570 / relay peer 178 (formerly provisional 569 / 177)
 
@@ -6075,7 +6271,7 @@ grants"); their occurrences arrive as `notification` events, and `ListNotificati
 `UnsubscribeEvents { targets, sources, all }`, `GetEventSubscription`, `ListEvents
 { since?, limit }`, `WaitEvents { since?, timeout_ms, limit }` and `AckEvents
 { cursor }` share one grant-owned inbox. A wait returns pending records immediately
-or an empty timed-out batch, with a maximum wait of fifteen minutes. Batches are
+or an empty timed-out batch, with a maximum wait of nine minutes (540 s): a longer `timeout_ms` is refused at once with `events_refused`, and the CLI refuses a longer `--timeout` before sending it. Batches are
 oldest first, limited to 1,000 records and the existing relay envelope budget.
 Omitting `since` starts after the acknowledged cursor. Cursor expiry returns
 `EventsCursorExpired { oldest_cursor }` rather than skipping missing records.
@@ -6101,31 +6297,38 @@ value appears in the three places a reader looks:
 
 `kind` is a closed list: `completed`, `cancelled`, `interrupted_by_restart`,
 `overloaded`, `usage_limit`, `sign_in_required`, `provider_crashed`, `network`,
-`other`. A client that meets a `kind` it does not know, because a newer kernel added
+`model_refused`, `stream_ended`, and `other`. A client that meets a `kind` it does not know, because a newer kernel added
 one, reads it as `unknown` and still shows `reason`. `completed` and `cancelled` are
 not errors: the agent is `idle` and the turn is not failed. Every other kind is an
 error and the agent is in the `error` state. `retryable` is whether a later attempt
 may succeed without anyone changing anything (overload, crash, network loss, a plain
 HTTP 429 and `interrupted_by_restart` are; an exhausted plan, a missing sign-in and an
 unrecognised error are not). A reader decides to retry or stop from `kind` and
-`retryable` only. `reason` is text for people: a controlled explanation of the
-provider failure, such as `The provider is at capacity.`; it is empty for
-`completed` and `cancelled`. Kernel-authored failures can retain specific recovery
-details, such as a missing workspace path. Native provider diagnostics are retained
-in kernel logs with credentials redacted, rather than copied into public reasons. Except for the usage-limit resume of local 1011 (see "Settings change while a turn runs, and a usage limit"), Chariox adds no retry or backoff policy; the
-provider's own behaviour is unchanged and the orchestrating agent decides.
+`retryable` only. `reason` carries the provider's message with credentials masked
+and its first nonempty line bounded. An error without a provider message uses a Chariox explanation.
+The reason is empty for `completed` and `cancelled`. Kernel-authored failures can
+include specific recovery details such as a missing workspace path.
+Chariox resumes usage-limit stops according to the Room settings and leaves other
+retry decisions to the orchestrating agent.
 
 The kernel types a failure once from the harness's native error: Codex
 `codexErrorInfo` codes, Claude `result` errors and `StopFailure` kinds, OpenCode
 error names with their HTTP status and native `isRetryable` flag, then the words of
-the error; a process exit, signal or transport loss is `provider_crashed` or
-`network` without any text. A failure the provider reported without a protocol
-frame is typed from its text. Rejected Codex dispatches retain structured
-`error.data.codexErrorInfo` when present. `explicit_provider_error` records the
-termination provenance; `provider_termination.failure` carries the typed cause and
-matches the settled turn outcome. If native sign-in recovery is declined, the
-failed turn retains its original kind and controlled public reason while the
-existing recovery notice explains what happened.
+the error. The outcome distinguishes `model_refused`, `stream_ended`, a process
+exit or signal (`provider_crashed`), and a transport failure (`network`). The reason
+for a CLI exit includes its status when the kernel observed it. Rejected Codex
+dispatches retain structured `error.data.codexErrorInfo` when present.
+`explicit_provider_error` records the termination provenance.
+`provider_termination.failure` carries the typed cause. A declined sign-in recovery
+preserves the original typed cause and message.
+
+The error entry and settled-turn history record the failure. The parent's
+`child_finished` receipt carries its `outcome` and `finished_at_ms`.
+`chariox.get_session_agent` and `chariox.list_session_agents` include the last failure
+and its timestamp for an agent in Error. Inspection reads the durable settlement
+after a restart. A completed deadline stop takes precedence over an earlier Error.
+Agent inspection returns `ended (deadline)` and session activity returns
+`ended_deadline`.
 
 `interrupted_by_restart` is a turn the kernel restarted in the middle of and could
 not resume (its reason names only what the kernel observed, such as a locked Vault
@@ -6170,8 +6373,8 @@ this metadata too; relay peer 181 is unchanged.
 A steer is observable by the outside agent that sent it. When `SteerActivePrompt`
 has been taken by the agent's provider (the home provider or the leased worker),
 the kernel records `{ "type": "steer", "value": { "steer_id" } }` for the agent,
-where `steer_id` is the prompt id in the `ActivePromptSteered` reply. A refused,
-stale or rejected steer records nothing. If the event cannot be recorded after
+where `steer_id` is the prompt id in the `ActivePromptSteered` reply. A refused or rejected steer records nothing. A steer admitted as the next
+prompt produces the normal prompt lifecycle events. If the event cannot be recorded after
 delivery, the request fails with the code `prompt_steer_event_unrecorded` and a
 message that names the steer id, says it was delivered and must not be sent again;
 it is distinct from `prompt_steer_rejected`, which means nothing was delivered.
@@ -6560,6 +6763,26 @@ Metrics contain no request payloads, identifiers, paths or credentials. The heal
 response samples timing entries when necessary, with the full kind count in
 `sample_counts.request_timings`. Relay peer shapes are unchanged.
 
+### Room state, finished tasks and machine resources
+
+`GetSessionState`, the state inside `AttachSessionView`, and `session_snapshot` publish
+the Room's current read model. Workflow labels, endpoints and controls come from
+`room_workflows`. Read full definitions with `ListWorkflows` or `ResolveWorkflow` when
+opening the workflow editor and read run history with `ListWorkflowRuns`. A Room
+reports `connected_cli_count`. Attachments are created with `AttachToSession` or
+`AttachSessionView`, and the creating client receives its own attachment ID.
+
+`ListFinishedRoomTasks {session_id, before}` reads finished tasks visible to the
+caller, 32 at a time from newest to oldest. Omit `before` for the first page. Use
+`FinishedRoomTasks.next_before` unchanged for the next page, or stop when it is
+null. The cursor identifies a position in that Room's durable task order and
+survives a kernel reload. New tasks can arrive above a page already displayed.
+
+Room process rows belong to its visible agents. Machines reads `GetMachineRoomResources
+{session_id}` on demand for process and disk samples grouped by Room. The
+`machine_room_resources` kernel resource uses the same request and parameters.
+The resource sends updates while a client watches it.
+
 ### MP-08 / MP-09 / MP-10 / MP-11: process rows in `SessionState` — local 913 / relay peer 364
 
 The `SessionState` response (`GetSessionState`, and the `state` of
@@ -6584,6 +6807,22 @@ and the termination name the same cause. The managed-upgrade list is
 (including `local_daemon_protocol_session_process_memory_outcomes_are_versioned` and
 `local_daemon_protocol_received_event_shape_is_versioned`) and
 `node --test scripts/protocol-versions.test.mjs`.
+
+### Durable local jobs across a kernel restart
+
+A hot reload hands over a running local job and its output reader. After a full
+kernel restart, an interrupted local job settles under the original job ID.
+`chariox.jobs.status` returns a finished result with a null exit code, the
+restart reason, and retry guidance. The result includes a bounded tail of the
+saved output and a path to the retained log when one exists. An orderly stop
+drains already captured output before closing the reader. After an abrupt
+stop, the log contains output the previous kernel had already saved.
+
+Multi-step commands can print a line such as `Completed: validate inputs`
+after each successful step. Use those lines to identify reported completions.
+Check the affected files and systems for partial work before retrying. Only
+repeat work once the original process has stopped and its effects are safe to
+repeat.
 
 ### MP-08 / MP-09 / MP-10 / MP-11: a hot reload's relay close — local 925 / peer 376
 
@@ -6938,7 +7177,11 @@ a member's agent with this room's sources only. `AppInstallationSummary.events` 
 release's outgoing events (`name`, `label`). The envelope is `{source_id, display_name, occurrence_id,
 output, ancestry, deadline_ms}`; there is no status, subject or fields. An agent subscribes itself with
 `CreateAgentTrigger` and source `{kind:"notification", source:{workflow:{source_id}}}`: `busy_policy` is
-now optional on the request, a notification trigger refuses a value, and the trigger summary is
+now optional on the request (local 1012: a notification trigger takes `queue`, the default, or `steer` on create
+and update, and `NotificationSubscriptionRow.mode`, `NotificationSubscriptionChange::Mode` and
+`ReplacedListener.busy_policy` carry it; the prompt of an agent notification carries only a one-line notice
+with the title, the source and the inbox position, and the agent's inbox, kind `notification`, holds the
+occurrence payload, for every source), and the trigger summary is
 `{kind:"notification", source, subscription_id, display_name}` (local 1003 adds `source_available`). Prompts of this kind carry
 origin `notification`. Peer 433 renames `SubscribeWorkflowNotifications.source_workflow_ref` to `source_id`,
 carries the exit fields in `ListWorkflowNotificationSources` and admits an agent `target_ref`. The
@@ -7148,8 +7391,8 @@ and `node scripts/drills/process-admission-live.mjs --scenario temp|trim|runaway
 
 ### MP-08 / MP-09 / MP-10 / MP-11: current disk occupancy — local 991 / peer 430
 
-`SessionState` and `session_processes_changed` carry `disk_usage` beside the
-existing CPU, memory and cumulative I/O process samples. Each allocation has
+The Machines resource carries `disk_usage` beside CPU, memory and cumulative
+I/O process samples. Each allocation has
 `id`, nullable `path`, nullable `used_bytes`, `sampled_at_ms`, nullable `owner`
 and nullable `process_id`. Directory entries describe the Room worktree and
 each agent's worktree, scratch and configured provider state directories.
@@ -7302,7 +7545,8 @@ its own Vault under the Project scope, so presence differs per machine and is co
   than that or has ended, so a state change reaches the reader within a round trip and nothing is polled.
 - Room tools `chariox.environment.read` (names and states), `chariox.environment.setup` (runs the saved Setup
   in the room's checkout; returns the operation id) and `chariox.environment.check` (the kernel's own comparison).
-  None returns a value.
+  None returns a value. `chariox.environment.save` with `revision: 0` on a Project with no Environment is the owner's
+  first `SaveProjectEnvironment` (revision 1, owner check and validation unchanged); `check` and `propose` work after it.
 - `RunRemoteProjectEnvironmentSetup { projectId, operationId, targetKernelId, checkoutPath? }` runs Setup on
   another kernel of the same authenticated owner (a leased worker included), in the checkout that kernel
   holds for the Project; `RemoteEnvironmentOperation { operationId, targetKernelId, stop? }` reads or stops
@@ -7394,8 +7638,8 @@ Local daemon protocol 1000 adds `ListDescendants { session_id, agent_id }`, answ
 carries `state` (starting|running|waiting|idle|ended|error|unreachable), `outcome` (how its latest turn ended, null
 while it runs or before it ran) and `needs_user` (the user holds a pending decision of that node;
 `totals.needs_user` counts them; `totals.live` counts the nodes starting, running, waiting or unreachable, so an idle node, finished or not started, is not live); no holder, path or card. A node also carries `execution_mode` (build|plan) and `permission_level` (required|yolo), the values its approvals really use after the limit of its parent chain, and `effort` (omitted when it has none); all three are omitted for a collaborator who may not view parameters. `rev` moves only when the read differs. The follow event
-`agent_tree { root, rev }` is published once per change of the tree below `root`. Sub-agents are never listed, counted
-or announced as room members.
+`agent_tree { root, rev }` is published once per change of the tree below `root`.
+A child appears in the tree and, when placed across Rooms, in its destination Room.
 
 ### A Vault provider login travels with a new managed machine — local 1000 / relay peer 439
 
@@ -7416,7 +7660,12 @@ omitted when absent; no protocol number of its own): an export whose start names
 held unlock and, when it has to ask again, shows the unlock card in the session that ran that launch's preflight, so
 two launches in flight never ask in each other's room whichever machine is ready first. Without a `launchId` the hold is
 found by the launching session, else the latest launch. Focused check:
-`each_export_asks_in_the_room_of_its_launch_in_either_ready_order`. A package that carries Vault logins and reaches a machine whose Vault is not open
+`each_export_asks_in_the_room_of_its_launch_in_either_ready_order`. Local 1013: preflight also carries the launch's
+required `kernelContext` (`empty`, `source_kernel` or `source_kernel_without_credentials`). A copy of this kernel
+(`source_kernel`) exports its Vault even with no login selected, so its preflight finds the Vault unlocked and holds
+that unlock for the export exactly as for a Vault login, and the export of a `source_kernel` package takes the hold.
+Clients preflight every copy. Focused checks: `a_copy_of_this_kernel_holds_the_unlock_for_its_vault_export_without_a_login`
+and `the_export_opens_the_vault_for_a_vault_login_or_a_copy_of_this_kernel_until_prepared`. A package that carries Vault logins and reaches a machine whose Vault is not open
 is refused whole, before anything is imported, with `target_vault_locked` (unless the package installs that Vault
 itself); the retry after the owner unlocks completes. The `omittedProviderAccounts` receipt (relay peer
 `omitted_provider_accounts`, import `providerAccounts.omitted`) is retired with local 1002 / relay peer 441. Focused
@@ -7447,6 +7696,22 @@ Following it uses the same outside grant, subscription, receipt and acknowledgem
 kinds; the notification text is the event text. Snapshot: `protocol_shapes/outside-events.json`.
 Focused check: `cargo test -p chariox-kernel --lib -- app_event outside_events_snapshot`.
 
+### A watcher as a notification source — local 1012
+
+NC-14 / NC-15 / NC-21: `NotificationSourceKind` gains `watcher`. A watcher is a script this kernel runs
+for the owner; it has one source (`source_id` `watcher_<id>`, `workflow_id` the watcher id,
+`exit_node_id` `event`, `name` / `display_name` the watcher's name, `session_id` the Room it was made in),
+enabled while the watcher exists. `Watcher(WatcherRequest)` with `create {session_id, manifest, script}`,
+`update {watcher_id, manifest, script}` (back to draft), `dry_run`, `activate`, `pause {paused}`,
+`check_now`, `rename {watcher_id, name}` (keeps its dry run), `remove {watcher_id}` and `list {}` answers `Watcher {watcher}`, `WatcherDryRun {result}`,
+`WatcherRemoved {watcher_id}` or `Watchers {watchers, followers}`. `followers` are the owner's
+subscriptions to these watchers that this kernel holds, on any kernel and in any Room. A summary's `dry_run` is the last dry run of the
+current revision (null after a change); activation requires it. A run's events, cursor, reading and health commit in one write; occurrence ids are
+`<run>.<commit>:<n>`. Health is `ok | failing | gap | noisy` (30 events in 10 minutes, then one a minute);
+entering a non-ok state wakes the creating agent once with a `watcher_health` inbox event. Agent tools:
+`chariox.watcher.create|dry_run|activate|status|remove`. Focused check:
+`cargo test -p chariox-kernel --lib watcher`.
+
 ### A tool call's picture count in the outline preview — local 1000
 
 MP-08 / MP-10: a `ProviderTool` blob's `preview` in `SessionHistoryOutline` leaves the call's `images`
@@ -7476,6 +7741,24 @@ spawn --room`, messages, steer, cancel and follow of an ordinary agent of anothe
 inbox kind), the room clients' `agent_tree_changed` event and the typed `kernel_access_sub_agent`
 refusal. Relay peer 440 carries the same peers across kernels of one owner, below. Managed upgrades
 admit 1000 and 1001.
+
+### Sub-agents in another Room
+
+On the same kernel, `agent spawn --room <room>` creates a child in another
+Room of the same owner. The persisted parent edge contains
+`{"agent_id", "room_id", "started_by"}` for this placement. `started_by` is
+the parent's name when it started the child. Only the owner sees the source
+Room or its parent label in the destination Room. The child continues to
+receive instructions from its parent and reports `child_finished` to the
+parent's Room. `agent cancel`, `agent deadline` and `agent delete` accept
+`--room <room>` to reach the child.
+
+The destination Room's folders must be within the parent's permitted folder
+scope. Permission and mode use the current authority of each ancestor in its
+own Room. The parent-side `ListDescendants` tree reports children in other
+Rooms with `room_id`, optional `room_alias` and `started_by`. The destination
+Room also lists the child. Peers placed through another kernel use the existing
+peer protocol.
 
 ### Workflow entry gates, held launch placement and the sub-agent node's settings — local 1002
 
@@ -7586,15 +7869,18 @@ A signed `schemas/ui-actions.json` action may have `effect: "person_confirmed"` 
 the person confirms the exact input on one card. The card is an agent interaction (`app-confirm-*`, kind
 `choice`, `Confirm` / `Cancel`, 300 s, default `cancel`) with two additions a client reads:
 
-- `app_confirmation`: `{installation_id, app_id, app_name, publisher_id, publisher_name, action_name}`,
-  written by the kernel from the verified release (all six present, none other). A client frames the
-  preview with these words and never with text the App supplied.
+- `app_confirmation`: `{installation_id, app_id, app_name, publisher_id, publisher_name, action_name, input}`,
+  written by the kernel from the verified release and the call (all seven present, none other). A client
+  frames the preview with the six words and never with text the App supplied. `input` is the exact input the
+  kernel runs on Confirm, formatted once by the kernel: sorted-key pretty JSON, secret-shaped values and
+  secret-named fields masked as `[redacted:<kind>]`, and cut at 4096 bytes with a final `… N more bytes` line.
+  A client shows it beside the App's preview and never rebuilds it.
 - `app_confirmation.preview`: for an App whose backend serves its view and so has no Tab, the rows its
   backend answered (`[{label, value}]`, at most 12, plain text); the card then carries no `view`, and a client
   that shows the rows offers Confirm.
 - `view.browser_region`: the App's own preview, found by the browser host (not the App or the agent) in the
   App's Tab, shown through the existing protected card region. A client that cannot show it offers no
-  Confirm; the card's `message` carries the exact input (at most 2000 characters) for clients that read text.
+  Confirm; the card's `message` repeats `input` for clients that read text.
 
 Only the person answers: no agent holder or owner agent, `/sudo`, session approval or earlier answer stands
 in for it. `AppViewAction.effect` in a catalog may be `person_confirmed`, with `confirmationView`. Relay peer
@@ -7652,12 +7938,52 @@ the client or agent that asked carries no bytes and may go away:
   `chariox.files.read` (a page of at most 64 KiB), `chariox.files.copy { source: { machine?, path },
   destination: { machine?, folder, name? }, conflict?, move?, wait_seconds? }` and
   `chariox.files.transfer { job_id, machine?, cancel?, wait_seconds? }`. A copy result is the job
-  without its start time; no file content ever reaches the model.
+  without its start time; no file content ever reaches the model. `chariox.files.trash` and
+  `chariox.files.restore` are described under "Move to Trash and Undo".
 
 Peer 444 also renames the 442 answers `leased_agent_file_read` and `leased_agent_file_refused` to
 `file_slice_read` and `file_refused`, since both file services use them. Managed upgrades admit
 1002 and 1003. Focused checks: `cargo test -p chariox-kernel --lib -- machine_files kernel_files
 agent_file_copy file_copy_tool machine_file_requests protocol_shapes::machine_files`.
+
+### Files: Move to Trash and Undo — local 1012 / relay peer 449
+
+`TrashKernelFiles { paths }` moves files and folders (absolute or `~/` paths, one or many) to the machine's own trash and
+never deletes for good. The answer is `KernelFilesTrashed { trashed: [{ path, trash_path }], failed: [{ path, message }] }`:
+`path` is where the item was, `trash_path` where it is now. Items the kernel could not move are in `failed` with a reason
+the person can act on; when none could be moved the request itself fails (`file_not_found`, `file_state_protected`,
+`file_path_invalid`, `file_trash_failed`). A path with a `..` part is refused (`file_path_invalid`): name the full
+path. A folder and something inside it, named together, moves once; the inner item is reported in `trashed` only when it is
+found in the moved folder (through real folders, not links), with its `trash_path` inside the folder's. One that is not there
+is a `failed` entry ("does not exist"). The kernel's own state and Vault, a folder that holds them, the home folder and
+anything already in the trash are refused.
+
+`RestoreKernelTrash { items: [{ path, trash_path }] }` puts items back and answers `KernelTrashRestored { restored:
+[path], failed }`. It creates missing parent folders and never overwrites: an item whose `path` is taken stays in the trash
+and fails with `file_restore_conflict` ("... is taken, so the item stays in the Trash"); an item that is not in a trash
+folder, is gone from it, or whose record names another path fails with `file_not_in_trash`. An item reported inside a moved
+folder restores on its own: its place is the folder's recorded place plus the path inside it (Linux; macOS renames it from
+its trash path). The kernel reads where an item is from its position, never from folder names below the trash folder:
+the trash folder (the home trash, or `.Trash-$uid` / `.Trash/$uid` at the top of a filesystem; on macOS `~/.Trash` or
+`.Trashes/$uid` at the mount point of the item's volume, wherever it is mounted), then `files/`, the entry with the record, and the path inside it, whose folders may
+have any names (`files`, `info`, `.Trash-$uid`). A `trash_path` that is not absolute or has a `..` part, and the trash folder
+itself, fail with `file_not_in_trash`; a folder of the user's own named `.Trash` or `.Trash-$uid` below the top of a
+filesystem is not a trash.
+
+Linux follows the freedesktop.org Trash specification: `$XDG_DATA_HOME/Trash` (`~/.local/share/Trash`) with `files/` and
+`info/<name>.trashinfo` (`Path=` percent-encoded, `DeletionDate=`); a name that is taken gets `.1`, `.2`, ...; a name too
+long for its record is cut in `files/` between characters (so `trash_path` names it exactly; a name that is not UTF-8
+is cut by bytes) and keeps its full name in `Path=`. An item on
+another filesystem than the home trash goes to that filesystem's `$topdir/.Trash/$uid` when the administrator made it
+(sticky, not a link), else `$topdir/.Trash-$uid`, with `Path=` relative to `$topdir`; where neither can be made the move
+fails with `file_trash_failed` and nothing moves. macOS moves the item with `NSFileManager trashItemAtURL` (run through
+`osascript -l JavaScript`) and restores by renaming it back (`renamex_np` with `RENAME_EXCL`); Linux restores with
+`renameat2(RENAME_NOREPLACE)`.
+
+Agent tools, same rules: `chariox.files.trash { machine?, paths }` and `chariox.files.restore { machine?, items }`. Between
+kernels of one owner (relay peer 449) they travel as `TrashMachineFiles { paths }` / `RestoreMachineTrash { items }` with the
+answers `MachineFilesTrashed` and `MachineTrashRestored`. Shape pinned by `protocol_shapes/kernel_trash.rs`; behaviour by
+`runtime::kernel_trash::tests`, `an_agent_moves_files_to_the_trash_here_and_on_another_machine_and_undoes_it_without_overwriting`.
 
 ### Files: what a link points to — local 1011 / relay peer 448
 
@@ -7688,7 +8014,7 @@ room of another kernel of the same owner (design: `docs/design/sub-agents.md` 7.
 `deliver_peer_agent_outcome` (a followed peer's `event` or the `reply` to a message), and five
 responses: `peer_agent_accepted`, `peer_agent_subscribed`, `room_peer_spawned`,
 `peer_agent_outcome_ack` and `peer_agent_refused` with a typed `refusal` (`room_unavailable`,
-`agent_unavailable`, `ambiguous`, `more_authority`, `sub_agent_caller`, `room_full`,
+`agent_unavailable`, `ambiguous`, `more_authority`, `sub_agent_caller`,
 `attachments_local_only`). Each request is admitted only between kernels of one authenticated
 Cloud owner, and its `sender` stamp must name the authenticated sending kernel. The caller's
 `caller_authority` is lowered to the receiving kernel's record of the target room before the
@@ -7834,9 +8160,8 @@ to their caller. Other Room Terminal result variants remain ordinary JSON.
 The same 1006 subscription contract distinguishes view interests:
 `session_terminal` carries terminal data without session projection samples;
 `session_metadata` carries Room state and admission-wait changes without terminal
-bytes or periodic process samples; `session_metadata_processes` additionally keeps
-the process/disk sample feed used by Health. Ordinary `session` subscriptions keep
-their full feed. Private provider-run changes do not repeat an unchanged public
+bytes or periodic process samples. Machines follows the `machine_room_resources`
+kernel resource. Private provider-run changes do not repeat an unchanged public
 projection. Activity timestamps accompany the next state or usage update instead
 of resending the whole run on their own. Ordinary metadata sends only admission
 waits, including on its initial projection; full process and disk samples stay on
@@ -7898,6 +8223,208 @@ numbers advance. `resource-protection-1006.json` and its SHA-256 test pin the sh
 The implementation uses notify's native inotify/FSEvents backend, non-recursive directories and their parents, with a bounded one-slot queue and20ms coalescing. Parent watches cover atomic replacement and removal/recreation; overflow invalidates the whole interest set. A native backend failure never selects a polling backend.
 
 For a remote machine the home kernel sends `WatchMachineFiles{subscription_id,paths}` over the authenticated same-owner encrypted peer link. The worker pushes `MachineFilesChanged{subscription_id}`; the home acknowledges with `MachineFilesWatched{created:false}` and forwards a resource invalidation to its client. Registration returns `created:true` after worker restart, forcing resync.30s lease renewals perform no filesystem reads;90s expiry bounds abandoned workers, and `UnwatchMachineFiles{subscription_id}` releases promptly. Each worker bounds clients per peer to16 and total clients to256, with64 paths each. Lost event acknowledgements retry; reconnect/native overflow resyncs complete interests.
+### Skills v2 wire contract — MP-08 / MP-10 / MP-11
+
+Local daemon **533**, relay peer **141** reserve the Skills v2 instruction
+catalog contract; local **571** / peer **179** add the leased-worker native
+inventory request below (no client-visible shape changed; the client minimum
+stays 533/141). Local **581** / peer **189** add the `resolve_repository_update`
+request and its `repository_update` result; local **586** / peer **192** add
+`compaction_ids` to the leased-worker native inventory response (the IDs of native
+compactions the worker's harness observed, which the home records once to reload
+skills). A peer below 192 cannot report them, so the home refuses to dispatch to
+that binding until it is rebound, instead of assuming its loads were retained; a kernel that supports them also
+advertises the `skills_repository_update_v581` capability next to
+`skills_v2_runtime`, and clients send the request only when both are present
+(an older kernel gets the message "update the kernel", never a decode error).
+`SkillsV2` wraps a tagged `action` request and a tagged `kind` result. The
+canonical Rust shapes are `skill/v2.rs`; shared TypeScript and Swift
+bindings mirror them. Skills are instructions, never Extension grants.
+
+`catalog`, `get`, `native_inventory` and `loads` supply management projections.
+`preview` and `mutate` take the same reviewed action batch, typed scope
+(`chariox` or a kernel Project ID) and expected home-wide revision. A batch
+publishes one revision or no change. A null state removes the override.
+`list` and `load` are the model discovery/load surface; the kernel, rather than
+caller-supplied flags, records explicit Manual selections. `submit` carries
+source-bound selections alongside the ordinary prompt/attachment identities.
+A native selection includes kernel entry ID, provider, account, execution place
+and inventory revision; no client skill path or body is accepted.
+
+`catalog` lists, besides the focused agent's run, the skills of every installed
+provider for the Project with no run (local 1012): Claude's skill folders, and
+Codex `skills/list` and OpenCode `/skill` on the managed account server, each
+under the caller's default account of that provider. The provider's own home
+on the machine holds the host owner's accounts: a Room member with no account of
+their own there sees none of its skills. A focused agent's provider is left out
+only when its run lists it. Their execution id is
+`installed:<provider>:<kernel id>:<Project id>`, so `native_details` (its
+`agent_id` is null then) and an `install` from that selection list the same
+skills again. Only the focused run decides how a skill reaches a turn: the
+`skills` rows resolve delivery from its inventory alone. Only the owner imports
+them.
+
+`resolve_repository` (the home owner from Skills, or an agent through
+`chariox.manage_skills` action `resolve_repository`) fetches a public git
+repository with the machine's `git` and answers its current commit and every
+SKILL.md directory (`repository` response: `locator`, `revision`, `skills`,
+`skipped`). Nothing is installed. The owner then reviews a batch of `install`
+actions with `source.kind = "repository"` (`url`, full commit `revision`, member
+`path`) plus one `create_package`. Each install is fetched at exactly that
+commit, and the kernel itself records the commit as `source_revision` on every
+member and on the package, with `upstream_members` mapping path to skill ID. A
+revision is never accepted from a client label: a repository package refuses
+members from another commit and cannot join a custom package. Credentials in
+the URL and private or auth-required repositories are refused. An agent previews
+and publishes the same batch through `manage_skills` (normal ask/yolo approval);
+its repository URL must be a public `https` host that resolves only to public
+addresses, the boundary of agent URL downloads, so an agent cannot reach a
+local path or a private network host through the home kernel's `git`.
+
+MP-08 / MP-10 / MP-11: the unpublished Skills allocation 571/179 also carries
+`resolve_repository_update { package_id }` for the home owner (an agent:
+`manage_skills` action `resolve_repository_update`). Its
+`repository_update` response contains the old and resolved commits, changed,
+added, removed, unchanged and skipped members, plus one revision-bound mutation.
+The owner reviews and confirms that mutation through the usual path; confirmation
+uses staged bytes and never fetches again. Remaining source-package members must
+advance together to one attested commit. Member IDs, state overrides and original
+install times remain stable; members moved to custom packages and directories
+left unselected at install are skipped. Invalid current members refuse the whole
+update. Empty repositories and updates removing every remaining member require
+explicit removal or ungrouping instead. The normal 512-action limit applies.
+The TUI exposes `/skills repo-update <package>`; the Web update entry point is
+not implemented by this addition.
+
+
+Local **1014** adds `source: { kind: "recorded_folder" }` to the reviewed
+`update` action. Use the installed skill ID, expected digest, and catalog
+revision in the ordinary preview and publish requests. The home kernel reads
+the folder already recorded for that skill and previews the added, removed,
+and changed file manifests in `file_changes`. An unchanged folder reports
+that the skill is already current and needs no publish. If the recorded
+`SKILL.md` is unavailable, restore it at the reported path and preview again.
+The same owner and approval rules apply. Publish uses the reviewed package
+and the next turn can load its new digest.
+
+`SkillProjection.delivery` distinguishes Chariox delivery, verified native
+provision, content conflict and unverified native exposure. Equal complete
+content and compatible exposure produce one Chariox picker row with
+`also_in_provider`; clients omit that native row. Conflicting content retains
+the Chariox revision for Chariox selection. Native availability is not a load
+receipt. `skills_changed` is session-scoped and carries catalog revision
+invalidation or acknowledged load records. Every dispatch must still compare
+the durable catalog revision after a missed event.
+
+`EnsureRemoteSkillPackages` requires a revision/Project/state/digest manifest.
+Its receipt echoes the authenticated home/session/agent/lease context and exact
+manifest. The sender must reject mismatched receipts. Payload files include
+executable bits in their complete content identity. Old peers cannot omit the
+manifest: they require an upgrade before a v2 transfer or skill-using turn.
+For a leased worker the home builds the delivery at submit time from its own
+catalog revision, awaits the verified receipt, and prepends hidden context that
+names the worker's verified roots (Auto skills point to their SKILL.md there;
+selected bodies are inline). The worker holds no catalog and never resolves
+skills itself; Chariox list/load_skill/manage_skills and load receipts are
+forwarded to and recorded on the home (see peer 179 below); a failed transfer
+refuses the turn.
+Peer 179 adds `ReadLeasedSkillNativeInventory` (home to its leased worker; the
+authenticated lease home only) answered by `LeasedSkillNativeInventory`, which
+carries the worker harness's native entries (and, on request, one entry's
+Details). The home uses it for the Skills screen, the `$` picker, dispatch-time
+dedupe and `list_skills`/`load_skill` of a leased agent; `inventory: null`
+means the provider has not started on the worker. Its optional
+`provider_run_id` names the worker run the lease has when the home reads it
+before a turn; a run other than the one holding earlier loads (or none) makes
+the home attach those loads again on that turn. Chariox `list_skills`,
+`load_skill` and `manage_skills` of a leased agent are the existing
+`ForwardCapabilityRuntimeTool` forwarding: the home keeps a per-turn authority
+keyed by the lease (`leased:<leased_agent_id>`), `load_skill` names the root
+the worker verified for that skill. Admission and returning a tool body never
+record Loaded. After the official harness acknowledges prompt delivery or a
+completed `load_skill` result, the worker forwards the internal
+`_chariox_skill_delivery_ack` through the same authenticated
+`ForwardCapabilityRuntimeTool` path. It is absent from the model/client tool
+catalog. The home checks the current peer/session/agent/lease/provider-run and
+exact home prompt binding, then commits only its pinned prompt-body records or
+the acknowledged tool skill ID and full digest. A cancelled/held turn or lost
+tool response cannot create load history. Provider completion settlement retains
+failed acknowledgement work for retry; replay is idempotent. A skill the
+worker's harness already exposes is neither listed twice nor transferred.
+`SubmitLeasedPrompt.native_skill_selections` (peer 179, omitted when empty)
+carries the source-bound `From <Provider>` selections the home validated against
+that inventory, with the `catalog_revision` that inventory was read at (a
+selection's identity includes the inventory binding). The worker applies its own harness invocation to them (Claude
+`/name task`, a Codex skill input item with the worker-verified path, the
+OpenCode skill tool instruction) when that prompt reaches the provider; a
+selection that no longer matches the worker inventory refuses the turn, and no
+native package is ever copied. The selections and their catalog revision live
+in the worker prompt's private durable state from admission through queueing,
+capacity holds and restart; public prompt JSON cannot supply them.
+`EnsureRemoteSkillPackages.skill_names` (peer 179, omitted when no transferred
+skill can be typed) is the home's name view for a `$name` typed in Claude's own
+composer on that lease's worker: `{ catalog_revision, skills: [{ skill_id, name,
+digest }] }`, one entry per effective Auto or Manual Chariox skill (Off and
+harness-provided rows are absent; the first row of a name wins, as at home).
+Auto and Manual packages are both transferred, and the view must name only
+skills of the same manifest and revision, or the request is refused. Turn hidden
+context still advertises Auto skills only. The worker keeps the newest view on
+its leased agent (it is no catalog and grants nothing). The home sends it with
+every leased turn and when a leased native provider launches, so a native
+composer works before any dispatched turn.
+
+MP-08 / MP-10 / MP-11: every typed Claude composer turn asks the owning home for
+its current context through the private `_chariox_prepare_native_skill_turn`
+operation on `ForwardCapabilityRuntimeTool`. It uses the authenticated lease and
+live native run, without claiming an unrelated dispatched home prompt. The
+request carries the prompt, execution-bound native inventory, verified cached
+digests and whether the worker still holds its pre-compaction context. The home
+uses its normal resolver, active-load history, metadata budget and native dedupe
+rules; an ordinary `continue` therefore restores an updated active Manual body
+and receives Auto discovery metadata. The reply carries only required package
+bytes, the current name view and pinned body identities. The worker verifies and
+materializes them in this lease's cache, reads the body there, and renders
+metadata with worker paths. It never opens a worker catalog or calls back to the
+worker while handling this preparation request.
+
+Confirmed worker-native selections, including folded equal-content Chariox
+rows, use the existing `/name task` adapter and its original turn identity. The
+retry retains its delivery receipts until the real native invocation's hook
+confirms consumption. After that acknowledgement the worker sends
+`_chariox_skill_delivery_ack`: `typed` carries the prompt, Chariox ID, full digest
+and load reason; `typed_native` carries the prompt and the confirmed native
+entry. The home rechecks lease/run admission and current Chariox state/digest,
+or the native entry's provider, execution and complete digest, before recording
+Loaded. Native entries carry no execution-local paths or credential settings.
+Unknown dollar prose remains ordinary text; a resolved delivery failure blocks
+the hook visibly. The private preparation and receipt operations do not grant
+ordinary forwarded-tool authority, which still needs the exact running home
+turn. These unreleased operations use the reserved local 571 / peer 179 pair;
+public client request/response shapes are unchanged by them.
+Environment snapshots carry Project records, package membership, overrides and
+only their required Chariox dependencies separately from Extension grants.
+
+MP-08 / MP-10 / MP-11: clients require both local protocol >=533 and the
+`skills_v2_runtime` capability in kernel status/relay discovery before routing
+Skills actions to V2. The unreleased 533/141 foundation does not advertise that
+capability: wire decoding alone is not a working list/load/dispatch runtime.
+
+MP-08 / MP-10 / MP-11: owning kernel startup completes the durable reset,
+exact product-owned legacy-copy cleanup and owned workflow artifact regeneration
+before admitting runtime work. The home journal ownership pin also serializes
+global cleanup with catalog publication. Other named kernel journals retire
+their own replayable state after the home owner completes; they cannot rewrite
+newly authored home artifacts. The overall checkpoint precedes the writer epoch
+fence, so an interrupted startup resumes before launches and an old writer
+connection cannot restore retired authority. Repo/native sources, other grants,
+credentials, Vaults and keys are outside this cleanup. Immutable old publications
+and archives needing legacy decoding require recreate/republish/re-export.
+
+The wire foundation alone is not an implemented catalog, destructive reset,
+provider delivery path or acceptance claim. Runtime rollout removes the old
+skill-grant contracts without a compatibility decoder. Skills v2 clients gate
+these operations at 533/141; unrelated clients need no minimum bump solely for
+this feature.
 
 ### What a waiting agent waits on, and questions to the owner — local 1011
 
@@ -7972,3 +8499,101 @@ agent's kernel reads or changes a workflow of a Room on another kernel) and
 `ApplyWorkflowResponsible{action:"attach"|"detach", workflow, source, agent}` (the
 workflow's kernel asks the agent's kernel to keep or drop the agent's trigger, which
 subscribes through the existing notification path).
+
+### Every agent has the kernel browser — local 1012 / relay peer 449
+
+The kernel browser, the Computer and the owner's trusted Apps need no card: an
+agent's `chariox.load_kernel_browser` grants and loads at once, in any turn and
+at any depth. Task `owner_action` is only `"question"`; `"browser_access"`, the
+`allow_browser` choice and `chariox.events.blocked` `owner_action` are gone.
+`UserDomainGrant` and `AppCapabilityGrant` drop `prompt_id`. The
+`user-domain-access-507.json` and `extension_apps` hashes pin the shapes.
+
+### The person's Inbox and subscriptions — local 1012 / relay peer 449
+
+`GetPersonInbox` answers `PersonInbox{cards, mutes}` (kernel resource `person_inbox`). A card is
+`{card_id, session_id, snoozed_until_ms, body}`, and `body` is one of `needs_you{interaction}` (a pending
+interaction of the Room, answered with the same `RespondToInteraction`), `notice{…}` (sent by an agent with
+`chariox.notify_person`), `workflow{workflow_id, workflow_name, run_id, run_number, outcome, at_ms}` (a failed
+or waiting run of a workflow whose responsible is the person; it leaves when the person opens the run or a newer
+run starts) or `flag{subscription_id, subscriber_name, source_name, health, at_ms}` (a subscription that stopped
+delivering; it leaves when the subscription is fixed or removed). `SetInboxCardState{card_ids, change}` reads,
+snoozes and wakes cards, and `SetInboxMute{origin:{session_id, agent_id}, muted}` mutes one agent's notices; needs-you cards cannot be muted.
+
+`ListNotificationSubscriptions` answers `NotificationSubscriptions{subscriptions, responsibilities}`: one row per
+subscription whose subscriber lives on this kernel (`subscription`, `source` or null when it is gone,
+`subscriber_name`, `prompt`, `options`, `once`, `paused`, `fired`, `last_fired_at_ms`, `loop_stopped_at_ms`,
+`responsible_for`, `health`), and one row per workflow whose runs that need the person come to the Inbox.
+`health` is `ok`, `paused`, `loop_stopped`, `options_changed`, `subscriber_gone` or `source_gone`.
+`UpdateNotificationSubscription{subscription_id, change}` pauses (`paused{paused}`) or moves the subscription to
+another agent of the same Room (`subscriber{agent_id}`), and `RemoveNotificationSubscription{subscription_id}`
+removes it; both answer the new list. `TestNotificationSubscription{subscription_id}` is a dry run of the
+source's latest occurrence, answered `NotificationSubscriptionTested{result}`: it names who would be woken,
+sends nothing and moves no counter. `ReadNotificationTrace{subscription_id}` answers
+`NotificationTrace{subscription_id, lines}`, one line per recent occurrence with its `outcome` (`delivered`,
+`filtered`, `paused`, `options_changed`, `loop_stopped`), `title`, `detail` and the `turn` a delivery queued
+(`{agent_id, prompt_id}`: the agent that took it, which stays when the subscription moves). An occurrence a pause
+holds before its prompt is queued reads `paused` and waits for resume or expiry. An agent's listener on an App
+event is a row too, keyed by its App automation, with its App installation as `source`; every operation acts on
+it. A subscription that follows a workflow's responsible agent refuses a move and a removal: change who is
+responsible instead. A move onto an agent that already listens to the same source is refused. Every trace line
+moves the `person_inbox` revision.
+
+A source may declare `options` (`{name, label, type, field}`, from an installed App event's `x-chariox-options`);
+a subscription picks values for them (`{name, value}`) and only occurrences whose `data` carries exactly those
+values wake the subscriber. A pick the source does not declare is refused when subscribing; when the source later
+drops a picked option the subscription holds delivery with `options_changed`. `once` ends the subscription after
+its first delivery. On one kernel a subscription to the subscriber's own source, or one that closes a cycle, is
+refused; across kernels a delivery caused by the subscription itself is answered `LoopDropped` and flagged.
+Relay peer 449 carries the source's `options` and the subscription's `options` and `once` between kernels.
+`person-inbox-1012.json` and its SHA-256 test pin the shape.
+
+### Model names — local 1012
+
+A model of a provider catalog (`GetProviderCatalog`, the `provider_catalog_changed` event) may list
+`aliases`: the other names the provider's own tool accepts for it, as its catalog gives them (the Claude
+picker's `sonnet`, a Codex picker id). The field is absent when a model has none. An agent spawn (single
+or batch), a model change and a new Room's defaults take any of: the catalog id, the id behind a provider
+qualifier of the account's family (`claude/…`, `claude-p/…`, `claude-headless/…`, `codex/…`), an alias, or
+an OpenCode model id without its provider. They store the catalog id the name resolves to; a name that
+resolves to none is refused with the models to use. `provider-catalog-aliases-1012.json` and its SHA-256
+test pin the shape.
+
+### What a grant follows, and taking over an earlier grant's targets — local 1012
+
+A grant that has not subscribed follows nothing, and says so: `GetKernelAccessStatus` answers `follows`
+(the count of targets and notification sources its event subscription follows, zero for a new grant,
+absent without a grant), and `GetEventSubscription` answers an empty subscription instead of a refusal.
+`WaitEvents` and `ListEvents` on a subscription that follows nothing and holds nothing unread are refused at
+once with `events_refused` and the commands that fix it, rather than running out the timeout or answering
+empty for ever; unread records are still read, and an ended subscription still answers with its ending. `SubscribeEvents { like: <grant id> }`, sent without `targets` or `sources`,
+follows the targets an earlier live grant of the same owner follows. The follows are added to the grant's
+own (a retry changes nothing); the earlier grant keeps its own, and ending it does not touch the new one.
+An id that is unknown, ended, another owner's, the caller's own, or a grant that follows no targets is
+refused with `events_refused` naming what to run instead. `event-follow-1012.json` and its SHA-256 test pin
+the shapes.
+
+### Remote jobs per project, Room and agent — local 1013
+
+`GetRemoteJobPolicy` and `SetRemoteJobPolicy` take `{session_id, agent_id?, project?}`. `project: true` reads or writes the
+setting of the Room's project (not with `agent_id`); an agent's own setting wins over its Room's, and the Room's over its
+project's. The answer's `source` is `agent`, `session` or `project`; nothing set anywhere answers `project` with `off`.
+`fixtures/remote-jobs-protocol.json` pins the shapes.
+
+### Agent creation without count limits — local 1013 / relay peer 450
+
+Room session state omits `max_agents`. Kernel user configuration omits
+`workflow.session_default_max_agents`, and a remote peer spawn no longer
+returns `room_full`. Spawn and placement preserve the parent's authority and
+reject cycles.
+
+### Provider turns waiting for memory — local 1013 / relay peer 450
+
+A queued prompt can include `launch_wait`, the reason it is waiting to start.
+The kernel persists this reason with the prompt and promotes a person's queued
+turn ahead of queued automated turns when memory becomes available.
+
+A worker under memory pressure records `waiting_for_memory` for the home prompt
+and execution lease before reporting `provider_memory_wait` to the home kernel.
+The receipt carries no worker provider run. The home kernel can recover a lost
+response by querying this receipt, then return the same prompt to its queue.

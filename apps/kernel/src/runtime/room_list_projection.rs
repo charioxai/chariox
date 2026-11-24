@@ -17,7 +17,7 @@ use crate::local::{
 use crate::runtime::metaagent_event::MetaagentEventStore;
 use crate::runtime::projection::DaemonConfigProjectionStore;
 use crate::runtime::room_list_activity::{
-    room_list_agent_activity_summary, room_list_session_activity_summary,
+    counted_in_room, room_list_agent_activity_summary, room_list_session_activity_summary,
     room_list_workflow_activity_summary,
 };
 use crate::runtime::room_list_launch_directory::{
@@ -982,7 +982,7 @@ fn room_list_agent_summaries(
     let mut agents = session
         .agents()
         .iter()
-        .filter(|agent| !agent.archived())
+        .filter(|agent| counted_in_room(agent))
         .map(|agent| {
             let effective_config = crate::session::effective_agent_execution_config_in_tree(
                 session,
@@ -1472,6 +1472,7 @@ mod tests {
             session_id: Some("session-slice".to_string()),
             session_ids: vec!["session-slice".to_string()],
             agent_ids: vec![agent_id.to_string()],
+            delete_when_unused: false,
             backend: crate::slice::SliceBackendKind::LocalDocker,
             os: "linux".to_string(),
             display_mode: crate::slice::SliceDisplayMode::Headless,
@@ -1510,6 +1511,7 @@ mod tests {
             configured: false,
             connected: false,
             relay_url: None,
+            registration_refused: None,
             relay_token_configured: false,
             daemon_id: "daemon".to_string(),
             machine_id: "machine".to_string(),
@@ -1521,6 +1523,7 @@ mod tests {
     fn stopped_slice_agents_project_error_consistently_in_room_list() {
         let mut session = RuntimeSession::new(
             "session-slice",
+            crate::session::ProjectId::test(),
             Some("slice session".to_string()),
             "workspace",
             "worktree",
@@ -1586,6 +1589,7 @@ mod tests {
         ] {
             let mut session = RuntimeSession::new(
                 "session-slice",
+                crate::session::ProjectId::test(),
                 None,
                 "workspace",
                 "worktree",
@@ -1637,13 +1641,13 @@ mod tests {
     fn archived_project_retains_ended_rows_while_ordinary_ended_rows_stay_hidden() {
         let mut session = RuntimeSession::new(
             "session-project",
+            crate::session::ProjectId::new("project-1").unwrap(),
             Some("project-session".to_string()),
             "workspace",
             "worktree",
             "machine",
             "daemon",
         );
-        assert!(session.assign_project_id("project-1"));
         session.touch();
         let initial_activity_at_ms = Some(session.last_activity_at_ms());
         let mut project = RuntimeProject::new(
@@ -1655,13 +1659,13 @@ mod tests {
         );
         let mut ordinary_ended_session = RuntimeSession::new(
             "ordinary-ended-session",
+            crate::session::ProjectId::new("project-2").unwrap(),
             Some("ordinary-ended".to_string()),
             "workspace",
             "ordinary-worktree",
             "machine",
             "daemon",
         );
-        assert!(ordinary_ended_session.assign_project_id("project-2"));
         assert!(ordinary_ended_session.transition_to(SessionStatus::Ended));
         let ordinary_active_project = RuntimeProject::new(
             "project-2",
@@ -1789,8 +1793,15 @@ mod tests {
 
     #[test]
     fn archive_agent_disappears_from_room_list_rows_and_activity() {
-        let mut session =
-            RuntimeSession::new("room", None, "workspace", "worktree", "machine", "kernel");
+        let mut session = RuntimeSession::new(
+            "room",
+            crate::session::ProjectId::test(),
+            None,
+            "workspace",
+            "worktree",
+            "machine",
+            "kernel",
+        );
         let make = |id| {
             crate::agent::AgentInstance::new(
                 id,
@@ -1826,9 +1837,53 @@ mod tests {
     }
 
     #[test]
+    fn sub_agents_are_not_room_list_agents() {
+        let mut session = RuntimeSession::new(
+            "room",
+            crate::session::ProjectId::test(),
+            None,
+            "workspace",
+            "worktree",
+            "machine",
+            "kernel",
+        );
+        let make = |id| {
+            crate::agent::AgentInstance::new(
+                id,
+                id,
+                "room",
+                None,
+                "codex",
+                None,
+                None,
+                None,
+                crate::agent::GridPosition::new(0, 0, 1, 1),
+            )
+        };
+        let mut lane = make("lane");
+        lane.set_parent_agent(Some(crate::agent::AgentRef::local("orch")));
+        session.set_agents(vec![make("orch"), lane, make("idle")]);
+        let rows = room_list_session_summaries(
+            vec![session],
+            &MetaagentEventStore::default(),
+            &local_caller(),
+        );
+        assert_eq!(
+            rows[0]
+                .agents
+                .iter()
+                .map(|agent| agent.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["idle", "orch"]
+        );
+        assert_eq!(rows[0].activity.agent_count, 2);
+    }
+
+    #[test]
     fn room_list_session_summaries_project_workspace_metadata() {
         let mut session = RuntimeSession::new(
             "session-1",
+            crate::session::ProjectId::test(),
             Some("alias".to_string()),
             "workspace",
             "worktree",
@@ -1861,6 +1916,7 @@ mod tests {
     fn room_list_session_summaries_project_metaagent_event_counts() {
         let mut session = RuntimeSession::new(
             "session-1",
+            crate::session::ProjectId::test(),
             None,
             "workspace",
             "worktree",
@@ -1959,6 +2015,7 @@ mod tests {
     fn room_list_session_summaries_project_workflow_prompt() {
         let mut session = RuntimeSession::new(
             "session-1",
+            crate::session::ProjectId::test(),
             None,
             "workspace",
             "worktree",
@@ -1985,6 +2042,7 @@ mod tests {
         fn session_with_workflow_status(status: WorkflowRunStatus) -> RuntimeSession {
             let mut session = RuntimeSession::new(
                 "session-1",
+                crate::session::ProjectId::test(),
                 None,
                 "workspace",
                 "worktree",
@@ -2070,6 +2128,7 @@ mod tests {
     fn session_summary_projection_builds_once_per_logical_revision() {
         let sessions = vec![Arc::new(RuntimeSession::new(
             "session-1",
+            crate::session::ProjectId::test(),
             None,
             "workspace",
             "worktree",
@@ -2136,6 +2195,7 @@ mod tests {
     fn session_summary_projection_tracks_external_observed_work() {
         let mut session = RuntimeSession::new(
             "session-external",
+            crate::session::ProjectId::test(),
             None,
             "workspace",
             "worktree",
@@ -2195,6 +2255,7 @@ mod tests {
     fn session_summary_cache_keys_external_work_at_same_session_revision() {
         let mut session = RuntimeSession::new(
             "session-external-cache",
+            crate::session::ProjectId::test(),
             None,
             "workspace",
             "worktree",
@@ -2247,6 +2308,7 @@ mod tests {
     fn public_snapshot_projection_is_shared_across_subscribers_for_one_revision() {
         let sessions = vec![Arc::new(RuntimeSession::new(
             "session-1",
+            crate::session::ProjectId::test(),
             None,
             "workspace",
             "worktree",
@@ -2262,6 +2324,7 @@ mod tests {
             configured: false,
             connected: false,
             relay_url: None,
+            registration_refused: None,
             relay_token_configured: false,
             daemon_id: "daemon".to_string(),
             machine_id: "machine".to_string(),
@@ -2334,6 +2397,7 @@ mod tests {
         let changed_sessions = vec![Arc::new({
             let mut session = RuntimeSession::new(
                 "session-1",
+                crate::session::ProjectId::test(),
                 None,
                 "workspace",
                 "worktree",
@@ -2373,6 +2437,7 @@ mod tests {
         let snapshot = build_room_list_snapshot(
             vec![RuntimeSession::new(
                 "session-1",
+                crate::session::ProjectId::test(),
                 None,
                 "workspace",
                 "worktree",
@@ -2390,21 +2455,24 @@ mod tests {
                 configured: false,
                 connected: false,
                 relay_url: None,
+                registration_refused: None,
                 relay_token_configured: false,
                 daemon_id: "daemon".to_string(),
                 machine_id: "machine".to_string(),
                 machine_alias: None,
             },
             vec![RemoteMachineRecord {
+                directory: None,
                 machine_id: "machine-peer".to_string(),
                 machine_alias: Some("peer".to_string()),
                 display_name: "peer".to_string(),
                 trust_status: RemoteMachineTrustStatus::Approved,
-                online: true,
+                presence: crate::local::RemoteMachinePresence::Online,
                 pending: false,
                 kernel_count: 1,
                 available_providers: vec!["dev-stub".to_string()],
                 provider_accounts: Vec::new(),
+                kernels: Vec::new(),
             }],
             vec![RelayKernelPresence {
                 kernel_id: "kernel-peer".to_string(),
@@ -2419,6 +2487,7 @@ mod tests {
                 leased_agent_count: 0,
                 local_session_count: 0,
                 public_key: "peer-public-key".to_string(),
+                local_protocol: None,
             }],
             vec![crate::local::TerminalRecord {
                 terminal_id: "terminal-1".to_string(),
@@ -2451,6 +2520,7 @@ mod tests {
         let metaagent_events = MetaagentEventStore::default();
         let mut session = RuntimeSession::new(
             "session-1",
+            crate::session::ProjectId::test(),
             None,
             "workspace",
             "worktree",

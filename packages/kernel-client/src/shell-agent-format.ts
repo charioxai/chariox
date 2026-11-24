@@ -1,6 +1,8 @@
 import type { AgentInstance, RuntimeSession, SliceRecord } from "./kernel-types.js"
 import {
+  AGENT_ENDED_DEADLINE_LABEL,
   sessionAgentLedgerStatus,
+  type AgentRuntimeState,
   sessionAgentRuntimeState,
 } from "./session-runtime-status.js"
 import { agentLegacyProcessingStateIsBusy } from "./agent-activity.js"
@@ -369,21 +371,20 @@ function agentIsBusyForSessionContext(
     ?? (agentRuntimeStateForSessionContext(agent, sessionContext) === "Working")
 }
 
-// A retained wait or block belongs to an earlier task; a running turn on the
-// same agent is the current fact and must not be masked by it.
+// Current activity takes precedence over a retained wait or block.
 function agentStatusLabelForSessionContext(
   agent: AgentInstance,
   sessionContext: ShellAgentSessionContext,
 ): string {
   const runtimeState = agentRuntimeStateForSessionContext(agent, sessionContext)
-  if (runtimeState === "Working") return runtimeState
+  if (runtimeState === AGENT_ENDED_DEADLINE_LABEL || runtimeState === "Working") return runtimeState
   return sessionAgentLedgerStatus(sessionContext.session, agent.id)?.label ?? runtimeState
 }
 
 function agentRuntimeStateForSessionContext(
   agent: AgentInstance,
   sessionContext: ShellAgentSessionContext,
-): AgentInstance["state"] {
+): AgentRuntimeState {
   if (sessionContext.session) {
     return sessionAgentRuntimeState(sessionContext.session, agent)
   }

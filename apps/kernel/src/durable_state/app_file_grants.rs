@@ -7,7 +7,7 @@
 //! asked: an update of the same App keeps them for the new release (whose
 //! broker still requires the user-selected capability), and old-generation
 //! workers are fenced where the import publishes. Uninstalling ends them.
-use super::{DurableKernelStateStore, DurableWriterRequest};
+use super::{DurableKernelStateStore, DurableWriterRequest, FINISHED_RETENTION_MS};
 use rusqlite::{params, Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
 use std::sync::mpsc;
@@ -25,7 +25,6 @@ pub(crate) const MAX_TOTAL_BYTES: usize = 512 * 1024;
 const MAX_NAME_BYTES: usize = 255;
 /// Unfinished picks per installation.
 const MAX_OPEN: i64 = 4;
-const FINISHED_RETENTION_MS: u64 = 24 * 60 * 60 * 1000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PickState {

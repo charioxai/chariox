@@ -263,6 +263,7 @@ async fn owned_user_prompt_history_enqueues_archive_outbox_when_external_archive
             None,
             None,
             None,
+            None,
         )
         .expect("owned prompt history should append");
 
@@ -308,6 +309,7 @@ async fn owned_user_prompt_history_does_not_write_the_legacy_jsonl_store() {
             &[],
             crate::session::PromptOrigin::Chariox,
             Some("prompt-owned-legacy-history-fail"),
+            None,
             None,
             None,
             None,
@@ -360,6 +362,7 @@ async fn owned_user_prompt_history_preserves_external_prompt_origin() {
             &[],
             crate::session::PromptOrigin::External,
             Some("prompt-external-user-history"),
+            None,
             None,
             None,
             None,
@@ -612,4 +615,102 @@ async fn projection_only_subscription_does_not_wait_for_the_app_lock() {
         if records.is_empty() && snapshot.is_some()),
         "projection-only watch waited for the app lock"
     );
+}
+
+#[tokio::test]
+async fn pty_model_refusal_history_keeps_only_the_redacted_diagnostic() {
+    let logs = crate::logging::capture::start();
+    let worktree = crate::test_support::TestWorktree::new("history-projection-pty-refusal");
+    let mut app =
+        DaemonApp::bootstrap(crate::DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .expect("Room should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "refusal-history-reader",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("reader should attach");
+    let run = app
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "dev-stub",
+                "default",
+                "provider-failure-stderr",
+            )
+            .with_agent_id(agent.id()),
+        )
+        .expect("provider fixture should launch");
+    app.submit_prompt(
+        session.id(),
+        attachment.id(),
+        Some(agent.id()),
+        "trigger the synthetic refusal\n",
+        Vec::new(),
+    )
+    .expect("prompt should start");
+
+    let history_store = app.history_store();
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            runtime
+                .pump_owned_provider_output(
+                    session.id(),
+                    run.id(),
+                    vec![attachment.id().to_string()],
+                    false,
+                )
+                .await
+                .expect("provider output should pump");
+            if runtime
+                .owned
+                .session_snapshot(session.id())
+                .expect("Room should remain readable")
+                .active_prompt_for_agent(agent.id())
+                .is_none()
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the provider refusal should settle the turn");
+
+    let outline = crate::runtime::history_executor::execute_history_request(
+        history_store,
+        runtime.owned.operational_history_store.clone(),
+        &runtime,
+        &runtime.owned.config_projection,
+        crate::local::LocalDaemonRequest::GetSessionHistoryOutline(
+            crate::local::GetSessionHistoryOutlineRequest {
+                session_id: session.id().to_string(),
+                agent_ids: Some(vec![agent.id().to_string()]),
+                latest_prompt_count: None,
+                after_sequence: None,
+                cursor: None,
+                include_prefetched_content: true,
+            },
+        ),
+    )
+    .await
+    .expect("Room history should load");
+    let history = serde_json::to_string(&outline).expect("Room history should serialize");
+    assert!(history.contains("unsupported model for the failure fixture"));
+    assert!(history.contains("[redacted]"));
+    assert!(!history.contains("ghp_notarealproviderfailurefixture"));
+
+    let record = logs
+        .records()
+        .into_iter()
+        .find(|record| record.contains(run.id()) && record.contains("Error: unsupported model"))
+        .expect("kernel log should keep the provider's original diagnostic");
+    assert!(record.contains("[redacted]"));
+    assert!(!record.contains("ghp_notarealproviderfailurefixture"));
 }

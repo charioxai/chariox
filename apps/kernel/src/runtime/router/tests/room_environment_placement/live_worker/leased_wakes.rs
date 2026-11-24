@@ -106,6 +106,12 @@ async fn leased_run(fixture: &LiveWorker, room: &str, agent: &str) -> String {
     .expect("leased turn projects a running worker run")
 }
 
+/// A wake that carried the event's text settles it on receipt, so "delivered" is any state past
+/// the submission.
+fn is_delivered(state: &str) -> bool {
+    matches!(state, "accepted" | "acknowledged" | "handled")
+}
+
 async fn eventually<T>(what: &str, mut probe: impl FnMut() -> Option<T>) -> T {
     timeout(Duration::from_secs(15), async {
         loop {
@@ -537,7 +543,7 @@ async fn wake_to_leased_agent_is_home_ordered_with_one_worker_run() {
         store
             .agent_event_for_prompt(&room, &leased, &prompt)
             .unwrap()
-            .filter(|event| event.state == "accepted")
+            .filter(|event| is_delivered(&event.state))
     })
     .await;
     // Redelivery attempts are idempotent while the turn runs.
@@ -579,7 +585,7 @@ async fn wake_to_leased_agent_is_home_ordered_with_one_worker_run() {
             &receipt.worker_provider_run_id
         )
     );
-    assert_eq!(after.map(|event| event.state), Some("accepted".to_string()));
+    assert!(after.is_some_and(|event| is_delivered(&event.state)));
 }
 
 #[test]
@@ -623,7 +629,7 @@ async fn urgent_message_steers_a_busy_leased_turn() {
     fixture.stop().await;
     delivered.expect("urgent delivery to a busy leased agent");
     let after = after.expect("the urgent message event");
-    assert_eq!(after.state, "accepted", "{after:?}");
+    assert!(is_delivered(&after.state), "{after:?}");
     assert_eq!(
         after.target_prompt_id.as_deref(),
         Some(running.as_str()),
@@ -696,7 +702,7 @@ async fn inline_parent_brief_steered_into_a_busy_leased_turn_counts_as_read() {
     fixture.stop().await;
     delivered.expect("urgent brief to a busy leased sub-agent");
     let after = after.expect("the brief event");
-    assert_eq!(after.state, "accepted", "{after:?}");
+    assert!(is_delivered(&after.state), "{after:?}");
     assert_eq!(
         after.target_prompt_id.as_deref(),
         Some(running.as_str()),
@@ -794,7 +800,7 @@ async fn lost_urgent_steer_reply_is_reconciled_from_the_worker_receipt() {
         store
             .agent_event_for_prompt(&room, &leased, &steer)
             .unwrap()
-            .filter(|event| event.state == "accepted")
+            .filter(|event| is_delivered(&event.state))
     })
     .await;
     let second = urgent_message(&store, &room, &leased, "a10-urgent-next");
@@ -856,7 +862,7 @@ async fn lost_urgent_steer_reply_is_reconciled_from_the_worker_receipt() {
     );
     next.expect("the next urgent event is delivered");
     let next_event = next_event.expect("the next urgent event");
-    assert_eq!(next_event.state, "accepted", "{next_event:?}");
+    assert!(is_delivered(&next_event.state), "{next_event:?}");
     assert_eq!(
         next_event.target_prompt_id.as_deref(),
         Some(running.as_str())
@@ -1162,7 +1168,7 @@ async fn wake_reaches_a_leased_agent_after_its_worker_restarts() {
         let current = store.agent_inbox(&room, &leased, 0).unwrap();
         if let Some(event) = current
             .iter()
-            .find(|event| event.state == "accepted" && event.prompt_id.as_deref() == Some(&prompt))
+            .find(|event| is_delivered(&event.state) && event.prompt_id.as_deref() == Some(&prompt))
         {
             break event.clone();
         }
@@ -1620,6 +1626,70 @@ async fn leased_room_tools_act_at_home_with_the_lease_origin() {
 }
 
 #[test]
+fn a_leased_agents_run_call_delegates_in_the_home_room_under_the_lease() {
+    run_test(leased_agents_run_delegates_at_home);
+}
+
+/// A leased caller's `chariox.agents.run` belongs to the home room and parent tree: its worker
+/// joins the home room as the leased agent's child. Base: the call ran against the worker's
+/// own context and refused the turn.
+async fn leased_agents_run_delegates_at_home() {
+    let _tools = with_room_tools();
+    let mut fixture = LiveWorker::start().await;
+    let worker = start_agent_worker(&fixture, agent_worker_state(&fixture)).await;
+    let room = fixture.rooms[0].clone();
+    let attachment = owner_attachment(&fixture, &room).await;
+    let leased = spawn_on_agent_worker(&mut fixture, &room).await;
+    run_turn(
+        &fixture,
+        &room,
+        &attachment,
+        &leased,
+        "MP-10 leased agents.run",
+    )
+    .await;
+    let task = store(&fixture)
+        .await
+        .agent_tasks(Some(&room), Some(&leased))
+        .unwrap()
+        .pop()
+        .expect("the home admitted the leased turn's task");
+    let run = worker.run_for(&fixture, &leased, &task.prompt_id).await;
+    let token = run.runtime_mcp_auth_token().unwrap().to_string();
+    let call = worker.router.dispatch_authenticated_runtime_tool_call(
+        &token,
+        "chariox.agents.run",
+        json!({
+            "workers": [{"name": "leasedw", "brief": "MP-10 leased worker"}],
+            "origin_prompt_id": task.prompt_id,
+        }),
+    );
+    let at_home = async {
+        eventually_async(
+            "the worker joins the home room under the leased agent",
+            || async {
+                let agents = fixture.home.runtime_state.session_agents(&room);
+                agents
+                    .iter()
+                    .find(|agent| agent.alias() == Some("leasedw"))
+                    .map(|agent| agent.parent_agent_id().map(str::to_owned))
+            },
+        )
+        .await
+    };
+    let outcome = tokio::select! {
+        result = call => Err(result),
+        parent = at_home => Ok(parent),
+    };
+    worker.stop().await;
+    fixture.stop().await;
+    match outcome {
+        Ok(parent) => assert_eq!(parent.as_deref(), Some(leased.as_str())),
+        Err(result) => panic!("the call ended before the home room had its worker: {result:?}"),
+    }
+}
+
+#[test]
 fn mp10_a10_elevated_leased_work_continues_after_a_wake() {
     run_test(elevated_leased_work_continues_after_a_wake);
 }
@@ -1778,7 +1848,7 @@ async fn leased_work_continues_after_a_wake(restart_worker: bool) {
         let inbox = store.agent_inbox(&room, &agent, 0).unwrap();
         if let Some(e) = inbox
             .iter()
-            .find(|e| e.sequence == event.sequence && e.state == "accepted")
+            .find(|e| e.sequence == event.sequence && is_delivered(&e.state))
         {
             break e.clone();
         }
@@ -2411,3 +2481,133 @@ mod process_requests;
 
 #[cfg(target_os = "linux")]
 mod watched_process_fences;
+
+#[test]
+fn placed_agent_jobs_use_the_worker_run() {
+    run_test(placed_agent_jobs);
+}
+
+async fn placed_agent_jobs() {
+    let _tools = with_room_tools();
+    let mut fixture = LiveWorker::start().await;
+    let worker = start_agent_worker(&fixture, agent_worker_state(&fixture)).await;
+    let room = fixture.rooms[0].clone();
+    let attachment = owner_attachment(&fixture, &room).await;
+    let agent =
+        spawn_on_agent_worker_with_model(&mut fixture, &room, "controlled-cancel-idle").await;
+    run_turn(&fixture, &room, &attachment, &agent, "placed jobs").await;
+    let store = store(&fixture).await;
+    let task = store
+        .agent_tasks(Some(&room), Some(&agent))
+        .unwrap()
+        .pop()
+        .unwrap();
+    let run = worker.run_for(&fixture, &agent, &task.prompt_id).await;
+    let token = run.runtime_mcp_auth_token().unwrap();
+    let call = |name, args: serde_json::Value| {
+        let mut args = args;
+        args["task_id"] = json!(task.task_id);
+        args["origin_prompt_id"] = json!(task.prompt_id);
+        worker
+            .router
+            .dispatch_authenticated_runtime_tool_call(token, name, args)
+    };
+    let workspace = run.working_directory().unwrap();
+    let marker = workspace.join("placed-job-marker");
+    let started = call("chariox.jobs.run", json!({
+        "command": ["/bin/sh", "-c", "printf placed > placed-job-marker; printf 'placed-result\\n'"],
+        "wait_s": 5
+    })).await;
+    if let Ok(result) = &started {
+        assert!(result.ok, "{result:?}");
+        let id = result.payload["job_id"].as_str().expect("job ID");
+        let status = call("chariox.jobs.status", json!({"job_id": id}))
+            .await
+            .unwrap();
+        assert_eq!(status.payload["result"]["exit_code"], 0);
+        assert_eq!(status.payload["result"]["output_tail"], "placed-result\n");
+        let list = call("chariox.jobs.list", json!({})).await.unwrap();
+        assert!(list.payload["jobs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|job| job["job_id"] == id));
+        assert_eq!(std::fs::read_to_string(marker).unwrap(), "placed");
+        let refused = call(
+            "chariox.jobs.run",
+            json!({
+                "command": ["/bin/true"], "cwd": "no-such-directory"
+            }),
+        )
+        .await
+        .unwrap();
+        assert!(!refused.ok, "{refused:?}");
+        assert_eq!(refused.payload["retryable"], false);
+        assert!(
+            refused.payload["error"]
+                .as_str()
+                .unwrap()
+                .contains("directory"),
+            "{refused:?}"
+        );
+        let pinned = call(
+            "chariox.jobs.run",
+            json!({"command": ["/bin/true"], "machine": "another-machine"}),
+        )
+        .await
+        .unwrap();
+        assert!(!pinned.ok);
+        assert_eq!(pinned.payload["retryable"], false);
+        assert!(pinned.payload["error"]
+            .as_str()
+            .unwrap()
+            .contains("omit the machine argument"));
+
+        let running = call(
+            "chariox.jobs.run",
+            json!({"command": ["/bin/sleep", "60"], "wait_s": 0}),
+        )
+        .await
+        .unwrap();
+        assert!(running.ok, "{running:?}");
+        let id = running.payload["job_id"].as_str().unwrap();
+        timeout(Duration::from_secs(10), async {
+            loop {
+                let status = call("chariox.jobs.status", json!({"job_id": id}))
+                    .await
+                    .unwrap();
+                if status.payload["state"] == "running" {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        })
+        .await
+        .expect("the placed job should be running before the stop");
+
+        dispatch_json(
+            &fixture.home,
+            json!({"StopSessionProcesses":{"session_id":room,"target":{"kind":"process","process_id":id}}}),
+        )
+        .await
+        .expect("Room owner stops the placed job");
+
+        timeout(Duration::from_secs(10), async {
+            loop {
+                let status = call("chariox.jobs.status", json!({"job_id": id}))
+                    .await
+                    .unwrap();
+                if !status.payload["result"].is_null() {
+                    assert_eq!(status.payload["result"]["outcome"], "cancelled");
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        })
+        .await
+        .expect("the placement should confirm that the process stopped");
+    }
+    worker.stop().await;
+    fixture.stop().await;
+    assert!(started.is_ok(), "{started:?}");
+}

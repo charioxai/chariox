@@ -7,7 +7,6 @@ use super::*;
 
 #[derive(Clone)]
 pub(super) struct RemoteQueuedPromptSteerPreparation {
-    pub(super) agent: crate::agent::AgentInstance,
     pub(super) remote_execution: crate::agent::RemoteAgentBinding,
     pub(super) target_active_prompt_id: String,
     pub(super) provider_run_id: String,
@@ -365,19 +364,30 @@ impl KernelRuntimeOwnedState {
             return Err(error);
         }
         if let Some(provider_run_id) = prompt.durable_delivery_provider_run_id() {
-            let owns_prompt_run = self
+            let run = self
                 .provider_store
                 .get_run(provider_run_id)
-                .is_ok_and(|run| {
+                .ok()
+                .filter(|run| {
                     run.session_id() == session_id && run.agent_instance_id() == Some(agent_id)
                 });
-            if owns_prompt_run {
+            if let Some(run) = run {
+                if phase == crate::session::DurablePromptDeliveryPhase::Delivered {
+                    self.settle_usage_limit_on_delivery(agent_id, prompt_id, &run)?;
+                }
                 self.structured_output_records
                     .reset_poll_failures_if_prompt_changed(
                         provider_run_id,
                         prompt.id(),
                         crate::session::unix_epoch_ms(),
                     );
+            }
+        }
+        if phase == crate::session::DurablePromptDeliveryPhase::Delivered {
+            self.acknowledge_agent_release_note(agent_id, prompt_id);
+            if let Some(run) = prompt.durable_delivery_provider_run_id() {
+                self.prompt_state_owner
+                    .fold_pending_held_turn(&session, agent_id, run, &prompt);
             }
         }
         Ok(prompt)
@@ -522,33 +532,6 @@ impl KernelRuntimeOwnedState {
         Ok(prompt)
     }
 
-    pub(super) fn mirror_prompt_owner_session_state(
-        &self,
-        session_id: &str,
-    ) -> Result<(), DaemonError> {
-        let mut agent_ids = self
-            .agent_store
-            .get_session_agents(session_id)
-            .into_iter()
-            .map(|agent| agent.id().to_string())
-            .collect::<Vec<_>>();
-        let session = self.session_store.get_session(session_id)?;
-        agent_ids.extend(session.prompt_states().keys().cloned());
-        agent_ids.sort();
-        agent_ids.dedup();
-        for agent_id in agent_ids {
-            let (active_prompt, queued_prompts) =
-                self.prompt_state_owner.state_parts(&session, &agent_id);
-            self.mirror_prompt_owner_agent_state(
-                session_id,
-                &agent_id,
-                active_prompt,
-                queued_prompts,
-            )?;
-        }
-        Ok(())
-    }
-
     pub(super) fn remove_queued_prompts_for_agent(
         &self,
         session_id: &str,
@@ -609,6 +592,7 @@ impl KernelRuntimeOwnedState {
         Ok(removed)
     }
 
+    #[cfg(test)]
     pub(super) fn activate_next_queued_prompt_for_agent(
         &self,
         session_id: &str,
@@ -621,14 +605,19 @@ impl KernelRuntimeOwnedState {
             crate::session::unix_epoch_ms(),
         )?;
         let session = self.session_store.get_session(session_id)?;
-        if self
+        let Some(next) = self
             .prompt_state_owner
             .peek_next_queued_prompt(&session, agent_id)
-            .is_none_or(|prompt| prompt.remote_steer_reserved())
+            .filter(|prompt| !prompt.remote_steer_reserved())
+        else {
+            return Ok(None);
+        };
+        let agent = self.agent_store.get_agent(agent_id)?;
+        if agent.remote_execution().is_none()
+            && self.hold_queued_provider_turn(&session, agent_id, &next)?
         {
             return Ok(None);
         }
-        let agent = self.agent_store.get_agent(agent_id)?;
         if !self.provider_account_allows_queued_prompt_advance(
             session_id,
             &agent,
@@ -703,6 +692,9 @@ impl KernelRuntimeOwnedState {
             if next_prompt.remote_steer_reserved()
                 || expected_queue_id.is_some_and(|id| id != next_prompt.id())
             {
+                return Ok(None);
+            }
+            if self.hold_queued_provider_turn(&session, agent_id, &next_prompt)? {
                 return Ok(None);
             }
             let workflow_is_runnable =
@@ -1028,7 +1020,6 @@ impl KernelRuntimeOwnedState {
             return Ok(None);
         };
         Ok(Some(RemoteQueuedPromptSteerPreparation {
-            agent: context.agent,
             remote_execution,
             target_active_prompt_id: context.active_prompt.id().to_string(),
             provider_run_id: context.provider_run_id,
@@ -2012,6 +2003,109 @@ impl KernelRuntimeOwnedState {
         );
         let session = self.session_snapshot(session_id)?;
         Ok(crate::app::KernelQueuedPromptCancellation { prompt, session })
+    }
+
+    /// A queued prompt whose Vault unlock timed out, was declined or was cancelled cannot start
+    /// without the owner, and nothing else will start it: it ends with the reason in the Room,
+    /// so the prompts behind it still get their turn.
+    /// Answers the prompt it ended, `None` when it was already gone.
+    pub(super) fn end_queued_prompt_without_vault(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        prompt_id: &str,
+        refusal: &DaemonError,
+    ) -> Result<Option<crate::session::PromptQueueItem>, DaemonError> {
+        let session = self.session_store.get_session(session_id)?;
+        let Some(mut prompt) = self
+            .prompt_state_owner
+            .remove_queued_prompt(&session, agent_id, prompt_id)
+        else {
+            return Ok(None);
+        };
+        prompt.set_status(crate::session::PromptStatus::Cancelled);
+        let (active_prompt, queued_prompts) =
+            self.prompt_state_owner.state_parts(&session, agent_id);
+        self.mirror_prompt_owner_agent_state(session_id, agent_id, active_prompt, queued_prompts)?;
+        self.record_notice(
+            session_id,
+            None,
+            self.attachment_store.list_session_attachment_ids(session_id),
+            format!(
+                "Queued prompt `{}` for agent `{agent_id}` ended without running: {refusal} Send it again once the Vault is unlocked.",
+                prompt.id()
+            ),
+        );
+        Ok(Some(prompt))
+    }
+
+    /// While the agent is busy, an occurrence of a notification trigger joins that
+    /// trigger's prompt already waiting in the agent's queue instead of queueing a turn
+    /// of its own. Returns the prompt that now delivers it and whether it joined just
+    /// now, or `None` when no such prompt waits and the occurrence needs its own.
+    pub(super) fn join_queued_agent_notification(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        trigger_id: &str,
+        notification: crate::session::QueuedNotification,
+        deadline_ms: u64,
+    ) -> Result<Option<(String, bool)>, DaemonError> {
+        let session = self.session_store.get_session(session_id)?;
+        let Some(trigger) = session
+            .agent_triggers()
+            .iter()
+            .find(|trigger| trigger.id() == trigger_id)
+        else {
+            return Ok(None);
+        };
+        // A workflow's responsible agent gets the kernel's own text per run; a steering
+        // trigger joins the running turn instead of waiting.
+        // A trigger that is off admits nothing, joined or not.
+        if !trigger.enabled()
+            || trigger.busy_policy() != crate::session::AgentTriggerBusyPolicy::Queue
+            || trigger.responsible_for().is_some()
+        {
+            return Ok(None);
+        }
+        let base = trigger.prompt().to_string();
+        let Some((prompt, changed)) = self.prompt_state_owner.join_queued_notification(
+            &session,
+            agent_id,
+            trigger_id,
+            notification,
+            deadline_ms,
+            |notifications| {
+                format!(
+                    "{base}\n\n{}",
+                    super::agent_inbox_wake_text::coalesced_notification_notice(notifications)
+                )
+            },
+        ) else {
+            return Ok(None);
+        };
+        if changed {
+            let (active_prompt, queued_prompts) =
+                self.prompt_state_owner.state_parts(&session, agent_id);
+            self.mirror_prompt_owner_agent_state(
+                session_id,
+                agent_id,
+                active_prompt,
+                queued_prompts,
+            )?;
+            crate::logging::info_with_fields(
+                "daemon.agent_notifications",
+                "notification joined the agent's queued notification prompt",
+                serde_json::json!({
+                    "session_id": session_id,
+                    "agent_id": agent_id,
+                    "trigger_id": trigger_id,
+                    "prompt_id": prompt.id(),
+                    "occurrences": prompt.queued_notifications().len(),
+                }),
+            );
+        }
+        Ok(Some((prompt.id().to_string(), changed)))
     }
 
     pub(super) fn update_queued_prompt(

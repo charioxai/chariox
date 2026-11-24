@@ -37,6 +37,9 @@ impl ProviderProcessService {
         reserved_run_id: String,
         mut request: LaunchProviderRequest,
     ) -> Result<ProviderRunStartedOutcome, DaemonError> {
+        if request.adapter_key == "dev-stub" && !registry.dev_stub_enabled {
+            return Err(DaemonError::ProviderDevStubDisabled);
+        }
         if let Some(checkpoint) = request.native_checkpoint.as_ref() {
             request.resume_state = Some(
                 checkpoint
@@ -77,16 +80,7 @@ impl ProviderProcessService {
                 hook();
             }
         }
-        let mut launch_result = adapter.connect(&request)?;
-        // Everything the kernel starts for the agent writes its scratch in the agent's own folder.
-        if let Some(agent_id) = request.agent_id.as_deref() {
-            for (name, value) in crate::agent_temp::environment(&request.session_id, agent_id) {
-                launch_result
-                    .pty_env
-                    .entry(name.to_string())
-                    .or_insert(value);
-            }
-        }
+        let launch_result = adapter.connect(&request)?;
 
         crate::logging::info_with_fields(
             "daemon.provider",
@@ -450,6 +444,20 @@ impl ProviderProcessService {
             .cloned()
     }
 
+    /// The run an agent's tool calls speak for: its live run, else the run a hot reload handed
+    /// over whose process still calls the kernel's tools before a recovered prompt claims it.
+    /// Only tool authority takes the second: restart recovery must not see a live run in it.
+    pub fn get_tool_run_for_agent(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Option<RuntimeProviderRun> {
+        let run = self.get_run_for_agent(session_id, agent_id);
+        #[cfg(unix)]
+        let run = run.or_else(|| crate::hot_reload::unclaimed_run_for_agent(session_id, agent_id));
+        run
+    }
+
     pub fn get_latest_run_for_agent(
         &self,
         session_id: &str,
@@ -491,14 +499,21 @@ impl ProviderProcessService {
     }
 
     pub fn get_runs_by_runtime_mcp_auth_token(&self, auth_token: &str) -> Vec<RuntimeProviderRun> {
-        self.runs
+        let runs: Vec<_> = self
+            .runs
             .values()
             .filter(|run| {
                 run.runtime_mcp_auth_token() == Some(auth_token)
                     && run.state() != ProviderRunState::Ended
             })
             .cloned()
-            .collect()
+            .collect();
+        // A hot reload kept the run's process; its tool token works before a prompt claims it.
+        #[cfg(unix)]
+        if runs.is_empty() {
+            return crate::hot_reload::unclaimed_runs_for_token(auth_token);
+        }
+        runs
     }
 
     pub(crate) fn terminate_session_runs_provider_only(
@@ -540,6 +555,8 @@ impl ProviderProcessService {
                 provider_run_id: run_id.to_string(),
             });
         }
+        #[cfg(unix)]
+        crate::hot_reload::release_retained_goal_approval(run_id);
         if run_snapshot.state() == ProviderRunState::Ended {
             self.clear_runtime(run_id);
             super::super::mcp_proxy::shutdown_provider_mcp_proxy_run(run_id);

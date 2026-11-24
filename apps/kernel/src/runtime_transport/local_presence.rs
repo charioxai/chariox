@@ -47,6 +47,17 @@ impl LocalKernelPresenceLease {
         // Watch before the first read, so a connection made in between is not missed.
         let mut relay_connection = router.relay_connection_changes().await;
         let relay_status = router.transport_relay_status_snapshot().await;
+        let machine_presence =
+            match super::machine_kernel_presence::MachineKernelPresenceLease::start(
+                router.kernel_identity(&relay_status),
+                &relay_status,
+            ) {
+                Ok(lease) => Some(lease),
+                Err(error) => {
+                    log_machine_presence_error(&error);
+                    None
+                }
+            };
         let now_ms = now_unix_ms();
         let record = LocalKernelPresenceRecord {
             schema_version: ACTIVE_KERNEL_LEASE_SCHEMA_VERSION,
@@ -82,6 +93,7 @@ impl LocalKernelPresenceLease {
         let heartbeat_router = Arc::clone(router);
         let heartbeat_task = tokio::spawn(async move {
             let mut record = record;
+            let mut machine_presence = machine_presence;
             loop {
                 // Local browsers pick only a kernel that is on the relay, so a
                 // (re)connection is published at once, not at the next heartbeat.
@@ -90,6 +102,14 @@ impl LocalKernelPresenceLease {
                     Ok(()) = relay_connection.changed() => {}
                 }
                 let relay_status = heartbeat_router.transport_relay_status_snapshot().await;
+                if let Some(lease) = machine_presence.as_ref() {
+                    if let Err(error) =
+                        lease.update(heartbeat_router.kernel_identity(&relay_status))
+                    {
+                        log_machine_presence_error(&error);
+                        machine_presence = None;
+                    }
+                }
                 record.heartbeat_at_ms = now_unix_ms();
                 record.machine_alias = relay_status.machine_alias;
                 record.relay_url = relay_status.relay_url;
@@ -130,6 +150,14 @@ impl Drop for LocalKernelPresenceLease {
             }
         }
     }
+}
+
+fn log_machine_presence_error(error: &std::io::Error) {
+    crate::logging::warn_with_fields(
+        "daemon.local_presence",
+        "failed to publish machine kernel identity",
+        serde_json::json!({"error": error.to_string()}),
+    );
 }
 
 fn active_kernel_path(kernel_id: &str) -> PathBuf {

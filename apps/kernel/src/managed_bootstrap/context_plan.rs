@@ -13,6 +13,7 @@ use crate::managed_context::package::{
     ManagedContextDevelopmentSelection, ManagedContextEventConnectionSelection,
     ManagedContextGitCredentialSelection, ManagedContextKernelSelection, ManagedContextPlanBinding,
     ManagedContextProviderAccount, ManagedContextProviderAccountSelection,
+    ManagedContextSourceProject, MAX_MANAGED_CONTEXT_PROJECTS,
 };
 
 const MAX_CONTEXT_PLAN_BYTES: usize = 72 * 1024;
@@ -70,10 +71,16 @@ enum ManagedKernelContextSelection {
 )]
 enum ManagedKernelDevelopmentSetup {
     Empty,
-    SourceProject {
-        project_id: String,
-        repositories: Vec<ManagedKernelRepositorySelection>,
+    SourceProjects {
+        projects: Vec<ManagedKernelSourceProject>,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ManagedKernelSourceProject {
+    project_id: String,
+    repositories: Vec<ManagedKernelRepositorySelection>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -201,7 +208,7 @@ impl ManagedKernelContextPlan {
         let source_required = self.kernel_context != ManagedKernelContextSelection::Empty
             || matches!(
                 self.development_setup,
-                ManagedKernelDevelopmentSetup::SourceProject { .. }
+                ManagedKernelDevelopmentSetup::SourceProjects { .. }
             )
             || matches!(
                 self.provider_accounts,
@@ -232,10 +239,13 @@ impl ManagedKernelContextPlan {
             })
     }
 
-    pub(crate) fn source_project_id(&self) -> Option<&str> {
+    pub(crate) fn source_project_ids(&self) -> Vec<&str> {
         match &self.development_setup {
-            ManagedKernelDevelopmentSetup::SourceProject { project_id, .. } => Some(project_id),
-            ManagedKernelDevelopmentSetup::Empty => None,
+            ManagedKernelDevelopmentSetup::SourceProjects { projects } => projects
+                .iter()
+                .map(|project| project.project_id.as_str())
+                .collect(),
+            ManagedKernelDevelopmentSetup::Empty => Vec::new(),
         }
     }
 
@@ -255,27 +265,32 @@ impl ManagedKernelContextPlan {
             },
             development: match &self.development_setup {
                 ManagedKernelDevelopmentSetup::Empty => ManagedContextDevelopmentSelection::Empty,
-                ManagedKernelDevelopmentSetup::SourceProject {
-                    project_id,
-                    repositories,
-                } => ManagedContextDevelopmentSelection::SourceProject {
-                    project_id: project_id.clone(),
-                    repositories: repositories
-                        .iter()
-                        .map(|repository| DevelopmentSourceRepositoryBinding {
-                            role: match repository.role {
-                                ManagedKernelRepositoryRole::Primary => {
-                                    DevelopmentRepositoryRole::Primary
-                                }
-                                ManagedKernelRepositoryRole::Supporting => {
-                                    DevelopmentRepositoryRole::Supporting
-                                }
-                            },
-                            workspace_id: repository.workspace_id.clone(),
-                            worktree_id: repository.worktree_id.clone(),
-                        })
-                        .collect(),
-                },
+                ManagedKernelDevelopmentSetup::SourceProjects { projects } => {
+                    ManagedContextDevelopmentSelection::SourceProjects {
+                        projects: projects
+                            .iter()
+                            .map(|project| ManagedContextSourceProject {
+                                project_id: project.project_id.clone(),
+                                repositories: project
+                                    .repositories
+                                    .iter()
+                                    .map(|repository| DevelopmentSourceRepositoryBinding {
+                                        role: match repository.role {
+                                            ManagedKernelRepositoryRole::Primary => {
+                                                DevelopmentRepositoryRole::Primary
+                                            }
+                                            ManagedKernelRepositoryRole::Supporting => {
+                                                DevelopmentRepositoryRole::Supporting
+                                            }
+                                        },
+                                        workspace_id: repository.workspace_id.clone(),
+                                        worktree_id: repository.worktree_id.clone(),
+                                    })
+                                    .collect(),
+                            })
+                            .collect(),
+                    }
+                }
             },
             provider_accounts: match &self.provider_accounts {
                 ManagedKernelProviderAccounts::None => ManagedContextProviderAccountSelection::None,
@@ -313,37 +328,43 @@ impl ManagedKernelContextPlan {
     }
 
     fn validate_development(&self) -> Result<(), &'static str> {
-        let ManagedKernelDevelopmentSetup::SourceProject {
-            project_id,
-            repositories,
-        } = &self.development_setup
+        let ManagedKernelDevelopmentSetup::SourceProjects { projects } = &self.development_setup
         else {
             return Ok(());
         };
-        if !valid_identifier(project_id) || repositories.is_empty() {
+        if projects.is_empty() || projects.len() > MAX_MANAGED_CONTEXT_PROJECTS {
             return Err("managed context development selection is invalid");
         }
-        let mut primary_count = 0;
-        let mut identities = HashSet::new();
-        for repository in repositories {
-            if repository.role == ManagedKernelRepositoryRole::Primary {
-                primary_count += 1;
-            }
-            if !valid_reference(&repository.workspace_id)
-                || repository
-                    .worktree_id
-                    .as_deref()
-                    .is_some_and(|value| !valid_reference(value))
-                || !identities.insert((
-                    repository.workspace_id.as_str(),
-                    repository.worktree_id.as_deref(),
-                ))
+        let mut project_ids = HashSet::new();
+        for project in projects {
+            if !valid_identifier(&project.project_id)
+                || project.repositories.is_empty()
+                || !project_ids.insert(project.project_id.as_str())
             {
-                return Err("managed context repository selection is invalid");
+                return Err("managed context development selection is invalid");
             }
-        }
-        if primary_count != 1 {
-            return Err("managed context repository selection must have one primary");
+            let mut primary_count = 0;
+            let mut identities = HashSet::new();
+            for repository in &project.repositories {
+                if repository.role == ManagedKernelRepositoryRole::Primary {
+                    primary_count += 1;
+                }
+                if !valid_reference(&repository.workspace_id)
+                    || repository
+                        .worktree_id
+                        .as_deref()
+                        .is_some_and(|value| !valid_reference(value))
+                    || !identities.insert((
+                        repository.workspace_id.as_str(),
+                        repository.worktree_id.as_deref(),
+                    ))
+                {
+                    return Err("managed context repository selection is invalid");
+                }
+            }
+            if primary_count != 1 {
+                return Err("managed context repository selection must have one primary");
+            }
         }
         Ok(())
     }
@@ -439,12 +460,14 @@ impl ManagedKernelContextPlan {
                 key_thumbprint: source_key_thumbprint.to_string(),
             }),
             kernel_context: ManagedKernelContextSelection::SourceKernel,
-            development_setup: ManagedKernelDevelopmentSetup::SourceProject {
-                project_id: project_id.to_string(),
-                repositories: vec![ManagedKernelRepositorySelection {
-                    role: ManagedKernelRepositoryRole::Primary,
-                    workspace_id: "workspace-primary".to_string(),
-                    worktree_id: None,
+            development_setup: ManagedKernelDevelopmentSetup::SourceProjects {
+                projects: vec![ManagedKernelSourceProject {
+                    project_id: project_id.to_string(),
+                    repositories: vec![ManagedKernelRepositorySelection {
+                        role: ManagedKernelRepositoryRole::Primary,
+                        workspace_id: "workspace-primary".to_string(),
+                        worktree_id: None,
+                    }],
                 }],
             },
             provider_accounts: ManagedKernelProviderAccounts::None,
@@ -478,25 +501,27 @@ impl ManagedKernelContextPlan {
                 key_thumbprint: source_key_thumbprint.to_string(),
             }),
             kernel_context: ManagedKernelContextSelection::Empty,
-            development_setup: ManagedKernelDevelopmentSetup::SourceProject {
-                project_id: project_id.to_string(),
-                repositories: repositories
-                    .into_iter()
-                    .map(
-                        |(role, workspace_id, worktree_id)| ManagedKernelRepositorySelection {
-                            role: match role {
-                                DevelopmentRepositoryRole::Primary => {
-                                    ManagedKernelRepositoryRole::Primary
-                                }
-                                DevelopmentRepositoryRole::Supporting => {
-                                    ManagedKernelRepositoryRole::Supporting
-                                }
+            development_setup: ManagedKernelDevelopmentSetup::SourceProjects {
+                projects: vec![ManagedKernelSourceProject {
+                    project_id: project_id.to_string(),
+                    repositories: repositories
+                        .into_iter()
+                        .map(
+                            |(role, workspace_id, worktree_id)| ManagedKernelRepositorySelection {
+                                role: match role {
+                                    DevelopmentRepositoryRole::Primary => {
+                                        ManagedKernelRepositoryRole::Primary
+                                    }
+                                    DevelopmentRepositoryRole::Supporting => {
+                                        ManagedKernelRepositoryRole::Supporting
+                                    }
+                                },
+                                workspace_id,
+                                worktree_id,
                             },
-                            workspace_id,
-                            worktree_id,
-                        },
-                    )
-                    .collect(),
+                        )
+                        .collect(),
+                }],
             },
             provider_accounts: ManagedKernelProviderAccounts::None,
             git_credentials: ManagedKernelGitCredentials::None,
@@ -531,6 +556,25 @@ impl ManagedKernelContextPlan {
                 })
                 .collect(),
         };
+        plan.plan_digest = plan.compute_digest().expect("test plan digest");
+        plan
+    }
+
+    /// A copy of the source kernel itself, selecting no login.
+    #[cfg(test)]
+    pub(crate) fn source_kernel_for_tests(
+        context_id: &str,
+        source_kernel_id: &str,
+        source_key_thumbprint: &str,
+    ) -> Self {
+        let mut plan = Self::provider_accounts_for_tests(
+            context_id,
+            source_kernel_id,
+            source_key_thumbprint,
+            &[],
+        );
+        plan.provider_accounts = ManagedKernelProviderAccounts::None;
+        plan.kernel_context = ManagedKernelContextSelection::SourceKernel;
         plan.plan_digest = plan.compute_digest().expect("test plan digest");
         plan
     }
@@ -572,10 +616,11 @@ impl fmt::Debug for ManagedKernelContextPlan {
             .field("kernel_context", &self.kernel_context)
             .field(
                 "development_kind",
-                &self
-                    .source_project_id()
-                    .map(|_| "source_project")
-                    .unwrap_or("empty"),
+                &if self.source_project_ids().is_empty() {
+                    "empty"
+                } else {
+                    "source_projects"
+                },
             )
             .finish_non_exhaustive()
     }
@@ -632,7 +677,7 @@ mod tests {
         );
         assert_eq!(
             plan.plan_digest,
-            "sha256:a824b83bf0ebad38bfb6e5966d194ff6fdf70b53575257792d0328b59eb1c426"
+            "sha256:3f09aafde3e001417083cd68a611ff8a3d0b881fdcc71d33ab5585993167462a"
         );
         plan.validate().expect("valid Cloud-compatible plan");
     }
@@ -663,11 +708,140 @@ mod tests {
     }
 
     #[test]
+    fn context_plan_carries_several_source_projects() {
+        let mut plan: ManagedKernelContextPlan = serde_json::from_value(serde_json::json!({
+            "schemaVersion": 1,
+            "contextId": "managed_ctx_projects",
+            "planDigest": format!("sha256:{}", "0".repeat(64)),
+            "source": {
+                "sourceTargetId": "source-target-test",
+                "relayRealmId": "realm-1",
+                "machineId": "source-machine-test",
+                "kernelId": "source-kernel",
+                "keyThumbprint": "a".repeat(64),
+            },
+            "kernelContext": "empty",
+            "developmentSetup": {
+                "kind": "source_projects",
+                "projects": [
+                    {
+                        "projectId": "project-cloud",
+                        "repositories": [
+                            { "role": "primary", "workspaceId": "/repo/cloud", "worktreeId": null },
+                        ],
+                    },
+                    {
+                        "projectId": "project-oss",
+                        "repositories": [
+                            { "role": "primary", "workspaceId": "/repo/oss", "worktreeId": "feature" },
+                            { "role": "supporting", "workspaceId": "/repo/docs", "worktreeId": null },
+                        ],
+                    },
+                ],
+            },
+            "providerAccounts": { "kind": "none" },
+            "gitCredentials": { "kind": "none" },
+        }))
+        .expect("parse a plan with several Projects");
+        plan.plan_digest = plan.compute_digest().expect("digest");
+        plan.validate()
+            .expect("a plan with several Projects is valid");
+        assert_eq!(
+            plan.source_project_ids(),
+            vec!["project-cloud", "project-oss"]
+        );
+        let ManagedContextDevelopmentSelection::SourceProjects { projects } =
+            plan.package_binding().development
+        else {
+            panic!("the binding carries the Projects");
+        };
+        assert_eq!(projects.len(), 2);
+        assert_eq!(projects[1].repositories.len(), 2);
+    }
+
+    fn plan_with_projects(projects: serde_json::Value) -> ManagedKernelContextPlan {
+        let mut plan: ManagedKernelContextPlan = serde_json::from_value(serde_json::json!({
+            "schemaVersion": 1,
+            "contextId": "managed_ctx_projects",
+            "planDigest": format!("sha256:{}", "0".repeat(64)),
+            "source": {
+                "sourceTargetId": "source-target-test",
+                "relayRealmId": "realm-1",
+                "machineId": "source-machine-test",
+                "kernelId": "source-kernel",
+                "keyThumbprint": "a".repeat(64),
+            },
+            "kernelContext": "empty",
+            "developmentSetup": { "kind": "source_projects", "projects": projects },
+            "providerAccounts": { "kind": "none" },
+            "gitCredentials": { "kind": "none" },
+        }))
+        .expect("parse a plan");
+        plan.plan_digest = plan.compute_digest().expect("digest");
+        plan
+    }
+
+    fn project(id: &str, roles: &[&str]) -> serde_json::Value {
+        serde_json::json!({
+            "projectId": id,
+            "repositories": roles.iter().enumerate().map(|(index, role)| serde_json::json!({
+                "role": role,
+                "workspaceId": format!("/repo/{id}/{index}"),
+                "worktreeId": null,
+            })).collect::<Vec<_>>(),
+        })
+    }
+
+    #[test]
+    fn context_plan_rejects_invalid_project_lists() {
+        let invalid = Err("managed context development selection is invalid");
+        let no_primary = Err("managed context repository selection must have one primary");
+        assert_eq!(
+            plan_with_projects(serde_json::json!([])).validate(),
+            invalid
+        );
+        assert_eq!(
+            plan_with_projects(serde_json::json!([
+                project("a", &["primary"]),
+                project("a", &["primary"])
+            ]))
+            .validate(),
+            invalid
+        );
+        let seventeen: Vec<_> = (0..17)
+            .map(|index| project(&format!("p{index}"), &["primary"]))
+            .collect();
+        assert_eq!(
+            plan_with_projects(serde_json::json!(seventeen)).validate(),
+            invalid
+        );
+        let sixteen: Vec<_> = (0..16)
+            .map(|index| project(&format!("p{index}"), &["primary"]))
+            .collect();
+        plan_with_projects(serde_json::json!(sixteen))
+            .validate()
+            .expect("sixteen Projects are the limit");
+        assert_eq!(
+            plan_with_projects(serde_json::json!([
+                project("a", &["primary"]),
+                project("b", &["supporting"])
+            ]))
+            .validate(),
+            no_primary
+        );
+        assert_eq!(
+            plan_with_projects(serde_json::json!([project("a", &["primary", "primary"])]))
+                .validate(),
+            no_primary
+        );
+    }
+
+    #[test]
     fn context_plan_parses_the_complete_cloud_wire_shape() {
         let plan: ManagedKernelContextPlan = serde_json::from_value(serde_json::json!({
             "schemaVersion": 1,
             "contextId": "managed_ctx_complete",
-            "planDigest": "sha256:c6f2783e1b75d88360fe4e2b4fb8431f827fa05e4dc365f6c98602555ceb168c",
+            "planDigest": "sha256:8e070806811bea4b3bd3bcccb27f2e26eb09789e1eef7ab13c7a8226d213c7e8",
             "source": {
                 "sourceTargetId": "source-target-test",
                 "relayRealmId": "realm-1",
@@ -677,20 +851,22 @@ mod tests {
             },
             "kernelContext": "source_kernel",
             "developmentSetup": {
-                "kind": "source_project",
-                "projectId": "project-chariox",
-                "repositories": [
-                    {
-                        "role": "primary",
-                        "workspaceId": "/repo/cloud",
-                        "worktreeId": "feature-cloud",
-                    },
-                    {
-                        "role": "supporting",
-                        "workspaceId": "/repo/oss",
-                        "worktreeId": null,
-                    },
-                ],
+                "kind": "source_projects",
+                "projects": [{
+                    "projectId": "project-chariox",
+                    "repositories": [
+                        {
+                            "role": "primary",
+                            "workspaceId": "/repo/cloud",
+                            "worktreeId": "feature-cloud",
+                        },
+                        {
+                            "role": "supporting",
+                            "workspaceId": "/repo/oss",
+                            "worktreeId": null,
+                        },
+                    ],
+                }],
             },
             "providerAccounts": {
                 "kind": "selected",
@@ -715,14 +891,13 @@ mod tests {
         ));
         assert!(matches!(
             binding.development,
-            ManagedContextDevelopmentSelection::SourceProject {
-                ref project_id,
-                ref repositories,
-            } if project_id == "project-chariox"
-                && repositories.len() == 2
-                && repositories[0].workspace_id == "/repo/cloud"
-                && repositories[0].worktree_id.as_deref() == Some("feature-cloud")
-                && repositories[1].role == DevelopmentRepositoryRole::Supporting
+            ManagedContextDevelopmentSelection::SourceProjects { ref projects }
+                if projects.len() == 1
+                    && projects[0].project_id == "project-chariox"
+                    && projects[0].repositories.len() == 2
+                    && projects[0].repositories[0].workspace_id == "/repo/cloud"
+                    && projects[0].repositories[0].worktree_id.as_deref() == Some("feature-cloud")
+                    && projects[0].repositories[1].role == DevelopmentRepositoryRole::Supporting
         ));
         assert!(matches!(
             binding.provider_accounts,

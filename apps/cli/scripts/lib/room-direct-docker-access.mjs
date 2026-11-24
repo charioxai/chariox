@@ -1,3 +1,4 @@
+import { drillDockerLabels } from "../../../../scripts/lib/drill-docker-owner.mjs"
 import assert from "node:assert/strict"
 
 export async function verifyDirectDockerEngineAccess({ target, writable, platform, managedRootlessEngine = false, imageId, runCommand }) {
@@ -19,6 +20,7 @@ export async function verifyDirectDockerEngineAccess({ target, writable, platfor
   const result = await runCommand("docker", [
     "run", "--rm", "--pull", "never", "--network", "none", "--read-only",
     "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+    ...drillDockerLabels(import.meta.url),
     "--memory", "128m", "--cpus", "0.25", "--pids-limit", "32",
     "--user", "slice", "--entrypoint", "/bin/sh", "--mount", mount,
     imageId, "-c", `test -x /chariox-drill-access${writable ? " && test -w /chariox-drill-access" : ""}`,

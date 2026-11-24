@@ -8,6 +8,39 @@ use crate::local::{
 };
 use crate::transport::kernel_protocol::{KernelEvent, KernelIncomingFrame, KernelOutgoingFrame};
 
+#[test]
+fn gateway_write_receipt_shapes() {
+    use crate::runtime::kernel_gateway::write_receipt::compact;
+    use serde_json::json;
+
+    let session = json!({"id": "room", "agents": ["unrelated"]});
+    let prompt = json!({
+        "id": "prompt", "target_agent_id": "agent", "status": "Running",
+        "prompt": "user text", "attachments": [{"url": "data:image/png;base64,large"}],
+    });
+    let workflow = json!({"id": "workflow", "alias": "build"});
+    let mut receipts = [
+        json!({"PromptSubmitted": {
+            "session": session, "agent_activity": {"other": {}}, "agent_activity_revision": 42,
+            "outcome": {"Started": {"prompt": prompt}},
+        }}),
+        json!({"ActivePromptSteered": {"prompt": prompt}}),
+        json!({"WorkflowCreated": {"session": session, "workflow": workflow}}),
+        json!({"ProjectRestored": {"project": {"id": "project"}, "sessions": [session]}}),
+        json!(LocalDaemonResponse::GatewayWriteCompleted {
+            response_kind: "ShellCommandCompleted".into(),
+            session_id: Some("room".into()),
+            exit_code: Some(17),
+        }),
+    ];
+    for receipt in &mut receipts {
+        compact(receipt);
+    }
+    let expected: serde_json::Value =
+        serde_json::from_str(include_str!("gateway-write-receipts.json")).unwrap();
+    assert_eq!(json!(receipts), expected);
+}
+
 // EA2-04/05: the shapes an external agent and a forwarding kernel depend on.
 #[test]
 fn kernel_gateway_protocol_568_shapes_and_hash() {
@@ -229,7 +262,7 @@ fn outside_events_snapshot_and_hash() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "31c9e69b27ce7758f2ac9289b87bdb29e604d2057476456c1df51bcb2c2b2b5e"
+        "3ce1ef76c1f46b5918b70647b96b933abf5b1278fcdb51af495d7ebaa04c8aaf"
     );
 }
 
@@ -237,6 +270,7 @@ fn outside_events_snapshot_and_hash() {
 fn created_work_keeps_its_ids_and_separate_event_failure_on_the_wire() {
     let session = crate::session::RuntimeSession::new(
         "room",
+        crate::session::ProjectId::test(),
         None,
         "workspace",
         "worktree",

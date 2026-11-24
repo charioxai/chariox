@@ -1,60 +1,157 @@
 //! MCP 2025 Streamable HTTP catalog delivery. Invalidation hints contain no
 //! identities or tools; each connection compares its own authenticated catalog.
+use std::collections::BTreeSet;
 use std::sync::OnceLock;
 
-use futures_util::stream;
+use futures_util::{stream, StreamExt as _};
 use http_body_util::StreamBody;
 use hyper::body::Frame;
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::{broadcast, mpsc, watch};
 
 use super::*;
 
-/// Arms continuations and reloads for real catalog changes; notification
-/// streams compare the full listed `snapshot` instead.
+type Listing = Vec<(String, String, Value)>;
+
+/// How often the monitor compares catalogs without a change hint: some
+/// changes (a sudo window closing) send none.
+const UNHINTED_REFRESH: std::time::Duration = std::time::Duration::from_secs(15);
+
+struct Catalog {
+    listing: Listing,
+    /// Wakes this run's notification streams when its listing changes; dropped
+    /// with the entry when the run ends, which ends its streams.
+    listed: watch::Sender<()>,
+}
+
+/// The kernel's one view of every running provider's catalog. It computes
+/// each catalog once per change, beside the accept loop and off the async
+/// runtime: on a busy kernel that takes seconds, and neither a provider's
+/// first connection nor its open notification stream may wait for it. A
+/// change to a run's listing wakes its streams; a change outside the sudo
+/// tools also arms the run's reload or continuation.
 pub(super) struct CatalogMonitor {
-    changes: broadcast::Receiver<()>,
-    catalogs: std::collections::BTreeMap<String, Vec<(String, String, Value)>>,
+    catalogs: std::sync::Mutex<std::collections::BTreeMap<String, Catalog>>,
 }
 
 impl CatalogMonitor {
-    pub(super) fn new(router: &CommandRouter) -> Self {
-        let mut monitor = Self {
-            changes: changes().subscribe(),
+    pub(super) fn new() -> Self {
+        Self {
             catalogs: Default::default(),
-        };
-        monitor.observe_running(router);
-        monitor
-    }
-
-    pub(super) async fn changed(&mut self) {
-        let _ = self.changes.recv().await; // lag also requires comparing current catalogs
-    }
-
-    pub(super) fn observe_running(&mut self, router: &CommandRouter) {
-        // Seed new runs before their first MCP request; do not erase a pending
-        // difference for existing runs when a concurrent HTTP connection arrives.
-        for token in router.runtime_tool_catalog_auth_tokens() {
-            self.catalogs
-                .entry(token.clone())
-                .or_insert_with(|| router.runtime_catalog_signature(&token));
         }
     }
 
-    pub(super) fn refresh(&mut self, router: &CommandRouter) -> usize {
-        let mut changed = 0;
-        let tokens = router.runtime_tool_catalog_auth_tokens();
-        self.catalogs.retain(|token, _| tokens.contains(token));
-        for token in tokens {
-            let next = router.runtime_catalog_signature(&token);
-            if let Some(previous) = self.catalogs.insert(token.clone(), next.clone()) {
-                if previous != next {
-                    router.runtime_tool_catalog_changed_for_auth_token(&token);
-                    changed += 1;
+    /// Refreshes once at start, again after every change hint (hints that
+    /// arrive during a refresh are folded into the next one) and at least
+    /// every `UNHINTED_REFRESH`.
+    pub(super) async fn watch(self: Arc<Self>, router: Arc<CommandRouter>) -> Infallible {
+        let mut changes = changes().subscribe();
+        loop {
+            let (monitor, router) = (Arc::clone(&self), Arc::clone(&router));
+            let _ = tokio::task::spawn_blocking(move || monitor.refresh(&router)).await;
+            tokio::select! {
+                _ = changes.recv() => {} // lag also requires comparing current catalogs
+                _ = tokio::time::sleep(UNHINTED_REFRESH) => {}
+            }
+            while changes.try_recv().is_ok() {}
+        }
+    }
+
+    /// Records a run's catalog before opening its notification stream, so a
+    /// change between that listing and the next refresh is not missed.
+    pub(super) async fn seed(self: &Arc<Self>, router: &Arc<CommandRouter>, token: &str) {
+        if self.lock().contains_key(token) {
+            return;
+        }
+        let (monitor, router, token) = (Arc::clone(self), Arc::clone(router), token.to_owned());
+        let _ = tokio::task::spawn_blocking(move || {
+            if router.runtime_mcp_catalog_run(&token).is_none() {
+                return;
+            }
+            let listing = router.runtime_catalog_listing(&token);
+            monitor.lock().entry(token).or_insert_with(|| Catalog {
+                listing,
+                listed: watch::channel(()).0,
+            });
+        })
+        .await;
+    }
+
+    /// Wakes when this run's listing changes and closes when the run ends;
+    /// `None` for a token without a running run or without tools.
+    fn subscribe(&self, token: &str) -> Option<watch::Receiver<()>> {
+        self.lock()
+            .get(token)
+            .filter(|catalog| !catalog.listing.is_empty())
+            .map(|catalog| catalog.listed.subscribe())
+    }
+
+    /// Only this refresh replaces a known run's catalog; a run seeded while it
+    /// computed keeps the catalog its stream opened with. Returns
+    /// how many runs it armed a reload for.
+    pub(super) fn refresh(&self, router: &CommandRouter) -> usize {
+        let known = self.lock().keys().cloned().collect::<BTreeSet<_>>();
+        let next = router
+            .runtime_tool_catalog_auth_tokens()
+            .into_iter()
+            .map(|token| {
+                let listing = router.runtime_catalog_listing(&token);
+                (token, listing)
+            })
+            .collect::<Vec<_>>();
+        // Read after computing, so a run seeded meanwhile is not dropped.
+        let running = router
+            .runtime_tool_catalog_auth_tokens()
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        let mut changed = Vec::new();
+        {
+            let mut catalogs = self.lock();
+            catalogs.retain(|token, _| running.contains(token));
+            for (token, listing) in next {
+                if !running.contains(&token) {
+                    continue;
+                }
+                match catalogs.get_mut(&token) {
+                    Some(current) if known.contains(&token) => {
+                        if current.listing == listing {
+                            continue;
+                        }
+                        if !reload_view(&current.listing).eq(reload_view(&listing)) {
+                            changed.push(token);
+                        }
+                        current.listing = listing;
+                        current.listed.send_replace(());
+                    }
+                    Some(_) => {}
+                    None => {
+                        catalogs.insert(
+                            token,
+                            Catalog {
+                                listing,
+                                listed: watch::channel(()).0,
+                            },
+                        );
+                    }
                 }
             }
         }
-        changed
+        for token in &changed {
+            router.runtime_tool_catalog_changed_for_auth_token(token);
+        }
+        changed.len()
     }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, std::collections::BTreeMap<String, Catalog>> {
+        self.catalogs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+fn reload_view(listing: &Listing) -> impl Iterator<Item = &(String, String, Value)> {
+    listing
+        .iter()
+        .filter(|tool| crate::runtime::state::arms_catalog_reload(&tool.0))
 }
 
 fn changes() -> &'static broadcast::Sender<()> {
@@ -66,12 +163,12 @@ pub(super) fn changed() {
     let _ = changes().send(());
 }
 
-pub(super) fn snapshot(router: &CommandRouter, token: &str) -> Value {
-    let mut tools = router.runtime_tool_specs_for_auth_token(token);
-    tools.sort_by(|a, b| a.name.cmp(&b.name));
-    Value::Array(tools.into_iter().map(|tool| serde_json::json!({
-        "name": tool.name, "description": tool.description, "inputSchema": tool.input_schema,
-    })).collect())
+/// This token's listing, computed off the async runtime.
+pub(super) async fn listing(router: &Arc<CommandRouter>, token: &str) -> Option<Listing> {
+    let (router, token) = (Arc::clone(router), token.to_owned());
+    tokio::task::spawn_blocking(move || router.runtime_catalog_listing(&token))
+        .await
+        .ok()
 }
 
 fn notification() -> Value {
@@ -95,19 +192,16 @@ pub(super) fn tool_response(changed: bool, value: Value) -> Response<HttpBody> {
 }
 
 pub(super) fn stream_response(
-    router: Arc<CommandRouter>,
+    catalogs: &CatalogMonitor,
     headers: &hyper::HeaderMap,
 ) -> Response<HttpBody> {
     let Some(token) = parse_bearer_token(headers) else {
         return text_response(StatusCode::UNAUTHORIZED, "unauthorized".into());
     };
-    // Subscribe before reading the catalog so a concurrent mutation cannot be
-    // lost between the initial snapshot and the first recv.
-    let mut changes = changes().subscribe();
-    let mut catalog = snapshot(&router, &token);
-    if catalog.as_array().is_none_or(Vec::is_empty) {
+    // The monitor computes catalogs; a stream only forwards its run's changes.
+    let Some(mut listed) = catalogs.subscribe(&token) else {
         return text_response(StatusCode::UNAUTHORIZED, "unauthorized".into());
-    }
+    };
     let (sender, receiver) = mpsc::channel::<Bytes>(2);
     sender
         .try_send(Bytes::from_static(b": connected\n\n"))
@@ -116,34 +210,28 @@ pub(super) fn stream_response(
         let mut heartbeat = tokio::time::interval(std::time::Duration::from_secs(15));
         heartbeat.tick().await;
         loop {
-            let heartbeat_due = tokio::select! {
+            let bytes = tokio::select! {
                 _ = sender.closed() => break,
-                _ = changes.recv() => false, // includes lag: compare the current catalog
-                _ = heartbeat.tick() => true,
-            };
-            let next = snapshot(&router, &token);
-            if next.as_array().is_none_or(Vec::is_empty) {
-                break; // ended/replaced provider token loses its stream too
-            }
-            let bytes = if next != catalog {
-                catalog = next;
-                Bytes::from(event(&notification()))
-            } else if heartbeat_due {
-                Bytes::from_static(b": keepalive\n\n")
-            } else {
-                continue;
+                changed = listed.changed() => match changed {
+                    Ok(()) => Bytes::from(event(&notification())),
+                    Err(_) => break, // the run ended: its stream ends too
+                },
+                _ = heartbeat.tick() => Bytes::from_static(b": keepalive\n\n"),
             };
             if sender.send(bytes).await.is_err() {
                 break;
             }
         }
     });
-    let body = StreamBody::new(stream::unfold(receiver, |mut receiver| async move {
-        receiver
-            .recv()
-            .await
-            .map(|bytes| (Ok::<_, Infallible>(Frame::data(bytes)), receiver))
-    }))
+    let body = StreamBody::new(
+        stream::unfold(receiver, |mut receiver| async move {
+            receiver
+                .recv()
+                .await
+                .map(|bytes| (Ok::<_, Infallible>(Frame::data(bytes)), receiver))
+        })
+        .fuse(),
+    )
     .boxed_unsync();
     Response::builder()
         .status(StatusCode::OK)

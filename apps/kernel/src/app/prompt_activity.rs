@@ -136,7 +136,10 @@ pub(crate) fn provider_tool_phase(status: &str) -> Option<ProviderToolPhase> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ActiveTurnPhase {
     Accepted,
+    /// The prompt is with the provider, which is still reading the context.
     AwaitingFirstOutput,
+    /// The model reasons before it answers and streams nothing a person can read.
+    Thinking,
     Streaming,
     Settling,
 }
@@ -146,6 +149,7 @@ impl ActiveTurnPhase {
         match self {
             Self::Accepted => "accepted",
             Self::AwaitingFirstOutput => "awaiting_first_output",
+            Self::Thinking => "thinking",
             Self::Streaming => "streaming",
             Self::Settling => "settling",
         }
@@ -155,8 +159,9 @@ impl ActiveTurnPhase {
         match self {
             Self::Accepted => 0,
             Self::AwaitingFirstOutput => 1,
-            Self::Streaming => 2,
-            Self::Settling => 3,
+            Self::Thinking => 2,
+            Self::Streaming => 3,
+            Self::Settling => 4,
         }
     }
 }
@@ -179,6 +184,8 @@ pub(crate) struct ActiveTurnState {
     // provider end event. It belongs to this exact prompt and provider run.
     pub(crate) completion_retry_observed_at_ms: Option<u64>,
     completion_retry_attempt: u32,
+    thinking_since_ms: Option<u64>,
+    thinking_tokens: u64,
 }
 
 impl ActiveTurnState {
@@ -203,6 +210,8 @@ impl ActiveTurnState {
             settlement_requested: false,
             completion_retry_observed_at_ms: None,
             completion_retry_attempt: 0,
+            thinking_since_ms: None,
+            thinking_tokens: 0,
         }
     }
 
@@ -274,6 +283,24 @@ impl ActiveTurnStore {
         );
     }
 
+    /// The model reasons without visible output; `tokens` is the provider's
+    /// estimate so far.
+    pub(crate) fn mark_thinking(&self, provider_run_id: &str, tokens: u64) {
+        if let Some(turn) = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get_mut(provider_run_id)
+        {
+            turn.thinking_tokens = turn.thinking_tokens.max(tokens);
+            if turn.phase.rank() < ActiveTurnPhase::Thinking.rank() {
+                turn.phase = ActiveTurnPhase::Thinking;
+                turn.thinking_since_ms = Some(crate::session::unix_epoch_ms());
+                record_active_turn_event(turn, "active_turn_thinking", turn.settlement_requested);
+            }
+        }
+    }
+
     pub(crate) fn mark_streaming(&self, provider_run_id: &str) {
         self.advance_phase(
             provider_run_id,
@@ -290,6 +317,7 @@ impl ActiveTurnStore {
             .get_mut(provider_run_id)
         {
             if turn.phase.rank() < ActiveTurnPhase::Settling.rank() {
+                log_long_wait_before_output(turn, crate::session::unix_epoch_ms());
                 turn.phase = ActiveTurnPhase::Settling;
             }
             turn.settlement_requested = true;
@@ -327,6 +355,9 @@ impl ActiveTurnStore {
             .get_mut(provider_run_id)
         {
             if turn.phase.rank() < phase.rank() {
+                if phase.rank() > ActiveTurnPhase::Thinking.rank() {
+                    log_long_wait_before_output(turn, crate::session::unix_epoch_ms());
+                }
                 turn.phase = phase;
             }
             record_active_turn_event(turn, event, turn.settlement_requested);
@@ -391,6 +422,40 @@ impl ActiveTurnStore {
     }
 }
 
+/// A turn that waited longer than this before its first visible output says
+/// where the time went.
+const LONG_WAIT_BEFORE_OUTPUT_MS: u64 = 5_000;
+
+/// Logs, once per turn, how long the provider read the context and how long the
+/// model thought before anything a person can read arrived.
+fn log_long_wait_before_output(turn: &ActiveTurnState, now_ms: u64) {
+    if turn.phase.rank() > ActiveTurnPhase::Thinking.rank() {
+        return;
+    }
+    let waited_ms = now_ms.saturating_sub(turn.started_at_ms);
+    if waited_ms < LONG_WAIT_BEFORE_OUTPUT_MS {
+        return;
+    }
+    let reading_context_ms = turn
+        .thinking_since_ms
+        .unwrap_or(now_ms)
+        .saturating_sub(turn.started_at_ms);
+    crate::logging::info_with_fields(
+        "daemon.turn_latency",
+        "turn waited before its first visible output",
+        serde_json::json!({
+            "session_id": &turn.session_id,
+            "agent_id": &turn.agent_id,
+            "prompt_id": &turn.prompt_id,
+            "provider_run_id": &turn.provider_run_id,
+            "waited_ms": waited_ms,
+            "reading_context_ms": reading_context_ms,
+            "thinking_ms": waited_ms.saturating_sub(reading_context_ms),
+            "thinking_tokens": turn.thinking_tokens,
+        }),
+    );
+}
+
 fn record_active_turn_clear(turn: ActiveTurnState) {
     record_active_turn_event(&turn, "active_turn_clear", turn.settlement_requested);
 }
@@ -439,6 +504,8 @@ fn merge_active_turn_start(
         if existing.phase.rank() > incoming.phase.rank() {
             incoming.phase = existing.phase.clone();
         }
+        incoming.thinking_since_ms = existing.thinking_since_ms;
+        incoming.thinking_tokens = existing.thinking_tokens;
         if incoming.prompt_origin.is_none() {
             incoming.prompt_origin = existing.prompt_origin;
         }

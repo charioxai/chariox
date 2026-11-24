@@ -59,6 +59,7 @@ impl KernelRuntimeState {
         if !self.owned.publication_activation.is_active() {
             return;
         }
+        self.schedule_watchers();
         // A person's Tab takeover returns to the agent once they stop sending input; an agent waiting for
         // it continues now instead of at the next periodic sweep.
         if self.owned.kernel_browser_host.reclaim_idle_takeovers() {
@@ -141,8 +142,8 @@ impl KernelRuntimeState {
             .record_heartbeat(session_id, attachment_id, now_ms)
     }
 
-    /// The heartbeat of the subscription an attachment is watched through: it expires with that subscription.
-    pub(crate) async fn record_subscription_attachment_heartbeat(
+    /// A Room view becomes leased when its reply is ready, then its subscription renews it.
+    pub(crate) async fn renew_terminal_attachment_lease(
         &self,
         session_id: &str,
         attachment_id: &str,
@@ -150,7 +151,7 @@ impl KernelRuntimeState {
     ) -> Result<(), DaemonError> {
         self.owned
             .attachment_store
-            .record_subscription_heartbeat(session_id, attachment_id, now_ms)
+            .renew_lease(session_id, attachment_id, now_ms)
     }
 
     pub(crate) async fn sweep_stale_terminal_attachments(&self, now_ms: u64) {
@@ -218,11 +219,9 @@ impl KernelRuntimeState {
     ) -> Result<crate::app::ProviderProcessReapSummary, DaemonError> {
         let config = self.owned.config_projection.snapshot();
         let idle_ttl_ms = config.provider_process_idle_ttl_ms;
-        let orphan_ttl_ms = config.provider_process_orphan_ttl_ms;
+        self.owned.end_runs_whose_idle_process_exited(None);
         let summary = self
-            .with_app_side_effect(move |app| {
-                app.reap_idle_provider_processes(now_ms, idle_ttl_ms, orphan_ttl_ms)
-            })
+            .with_app_side_effect(move |app| app.reap_idle_provider_processes(now_ms, idle_ttl_ms))
             .await?;
         if summary.tracked_processes_reaped > 0 || summary.orphan_processes_reaped > 0 {
             crate::logging::warn_with_fields(
@@ -292,6 +291,23 @@ impl KernelRuntimeState {
         self.owned
             .session_projection
             .session_change_sequence(session_id)
+    }
+
+    pub(crate) fn person_inbox_change_sequence(&self) -> u64 {
+        self.owned.person_inbox_changes.sequence()
+    }
+
+    pub(crate) async fn wait_for_person_inbox_change_after(&self, sequence: u64) {
+        self.owned
+            .person_inbox_changes
+            .wait_for_change_after(sequence)
+            .await;
+    }
+
+    /// A notice arrived, a read, snooze or mute changed what an Inbox shows, or a subscription
+    /// changed.
+    pub(crate) fn record_person_inbox_change(&self) {
+        self.owned.person_inbox_changes.record_change();
     }
 
     pub(crate) async fn wait_for_session_projection_change_after(&self, sequence: u64) {
@@ -442,7 +458,7 @@ impl KernelRuntimeState {
         #[cfg(unix)]
         {
             crate::hot_reload::hand_over_user_domain(
-                self.owned.kernel_browser_host.hand_over_access(),
+                self.owned.kernel_browser_host.hand_over_loaded(),
             );
             self.hand_over_reach_revocations();
         }
@@ -451,6 +467,8 @@ impl KernelRuntimeState {
         let files = self.file_transfers.clone();
         let files_shutdown = tokio::spawn(async move { files.shutdown().await });
         crate::shutdown::stage("room execs");
+        self.shutdown_local_jobs(crate::hot_reload::handing_over())
+            .await;
         self.owned.room_execs.shutdown();
         crate::shutdown::stage("room terminals");
         self.owned.room_terminals.shutdown();
@@ -487,7 +505,16 @@ impl KernelRuntimeState {
             });
         crate::shutdown::stage("watched processes");
         let wakes = self.owned.agent_wakes.clone();
-        let _ = tokio::task::spawn_blocking(move || wakes.processes.shutdown()).await;
+        // A hot reload keeps them: the next program supervises them again.
+        if crate::hot_reload::handing_over() {
+            if let Ok(watched) =
+                tokio::task::spawn_blocking(move || wakes.processes.hand_over()).await
+            {
+                crate::hot_reload::hand_over_watched(watched);
+            }
+        } else {
+            let _ = tokio::task::spawn_blocking(move || wakes.processes.shutdown()).await;
+        }
         crate::shutdown::stage("session interactions");
         let sessions = self.owned.session_store.read().list_sessions();
         for session in sessions {
@@ -607,7 +634,6 @@ impl KernelRuntimeState {
             self.agent_activity_for_session_with_unread(&session, unread_for_user_id);
         Ok(crate::runtime::projection::SessionSnapshotProjection {
             jobs: self.session_jobs(session_id),
-            disk_usage: self.session_disk_usage(session_id),
             processes: self.session_processes(session_id),
             room_workflows: crate::runtime::projection::RoomWorkflowInventory::project(
                 &session,

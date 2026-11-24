@@ -109,16 +109,10 @@ async function unlock(r) {
   const made = (await r.rpc({ CreateSession: { workspace_id: join(r.dir, "work"), worktree_id: join(r.dir, "work"), alias: "health-drill-owner" } })).SessionCreated
   const att = (await r.rpc({ AttachToSession: { session_id: made.session.id, client_id: "health-drill", capability_level: "FullTerminal" } })).SessionAttached
   await r.client.subscribeToKernelEvents(made.session.id, att.attachment.id)
-  const pending = r.rpc({ ManageCredentialVault: { session_id: made.session.id, agent_id: made.agent.id } })
-  pending.catch(() => {})
-  let interaction
-  await until(async () => {
-    const st = (await r.rpc({ GetSessionState: { session_id: made.session.id } })).SessionState.session
-    interaction = st.active_interactions?.find(x => x.id.startsWith("vault-unlock-"))
-    return interaction
-  }, "disposable vault prompt")
-  await r.rpc({ RespondToInteraction: { session_id: made.session.id, interaction_id: interaction.id, choice_id: "passphrase", custom_reply: r.passkey } })
-  await pending
+  await r.rpc({ CreateCredentialVault: { origin: { kind: "passphrase", passphrase: r.passkey } } })
+  await r.rpc({ UnlockCredentialVault: {
+    passphrase: r.passkey, duration: { kind: "until_kernel_stops" }, surface: "terminal",
+  } })
   r.client.onKernelEvent(async event => {
     if (event.event !== "passkey_prompts_changed") return
     for (const prompt of event.prompts || []) if (prompt.kind === "access_grant") {
@@ -182,7 +176,7 @@ try {
     assert(!r.value.Error)
     return r.value
   }
-  const newSession = async alias => (await remote({ CreateSession: { workspace_id: join(worker.dir, "work"), worktree_id: join(worker.dir, "work"), alias, no_subscribe: true } })).SessionCreated.session.id
+  const newSession = async alias => (await remote({ CreateSession: { workspace_id: join(worker.dir, "work"), worktree_id: join(worker.dir, "work"), alias, no_subscribe: true } })).SessionCreated.session_id
   const lane = await newSession("stale-lane"), doomed = await newSession("stale-doomed")
   const agent = (await remote({ SpawnAgent: { session_id: lane, provider: "codex", alias: null, model: null, effort: null, execution_mode: null, permission_level: null, worktree_id: null, kernel_ref: null, slice_ref: null, worktree_placement: null, no_subscribe: true } })).AgentSpawned.agent.id
   for (const extra of [[], ["--agent", agent]]) {

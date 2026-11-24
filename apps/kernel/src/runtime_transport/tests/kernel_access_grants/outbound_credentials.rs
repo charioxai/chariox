@@ -1,6 +1,6 @@
 //! MP-08 / MP-10 / MP-11: actual Unix delivery, initial/update/replay and owner control.
 use super::*;
-pub(super) const CANARY: &str = "MP-11-worker-admission-test-only";
+pub(super) const CANARY: &str = "sk-ant-api03-worker-admission-test-only";
 
 // MP-08 / MP-11: real router -> executor -> mapper -> Unix socket delivery,
 // not an already-mapped frame injected into the outbound policy.

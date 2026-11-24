@@ -114,7 +114,16 @@ function checkRow(run, input) {
         const [mark, color] = step.status !== 'completed' ? ['dot-fill', 'color-fg-attention'] : result[step.conclusion] ?? ['alert', 'color-fg-attention'];
         detail.append(h('div.d-flex.flex-items-center.mt-1', { 'data-step': step.name }, icon(mark, { size: 16, className: `${color} mr-2 flex-shrink-0` }), h('span.flex-auto.text-mono', {}, step.name), step.startedAt && step.completedAt ? h('span.color-fg-muted.ml-2', {}, duration(step.startedAt, step.completedAt)) : null));
       }
-      if (!output.title && !output.annotations.length && !output.steps.length) detail.append('This check reported no details. Its log is on GitHub.');
+      const log = output.log;
+      if (log?.unavailable) {
+        detail.append(h('p.mt-2.mb-0', {}, 'Job log unavailable. Check the job on GitHub for details.'));
+      } else if (log) {
+        const label = log.truncated ? 'Job log tail' : 'Job log';
+        detail.append(h('div.mt-2.text-bold', {}, label),
+          h('pre.check-log.mt-1.mb-0.p-2.color-bg-subtle.color-fg-default.text-mono', { tabindex: 0, 'aria-label': label }, log.tail));
+      } else if (!output.title && !output.annotations.length && !output.steps.length) {
+        detail.append('This check reported no details. Its log is on GitHub.');
+      }
     } catch (error) { clear(detail).append(error.message); }
   });
   return row;

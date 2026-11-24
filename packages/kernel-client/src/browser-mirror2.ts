@@ -1,4 +1,4 @@
-import { mirror2AbsentFont, mirror2PendingFontSource, Mirror2FontStyle, mirror2RenderedFontReady, mirror2DocumentFontsReady } from './browser-mirror2-fonts.js'
+import { mirror2AbsentFont, Mirror2FontStyle, mirror2RenderedFontReady, mirror2DocumentFontsReady } from './browser-mirror2-fonts.js'
 import { Mirror2SheetCache } from './browser-mirror2-sheets.js'
 import { Mirror2FontCache } from './browser-mirror2-font-cache.js'
 import { Mirror2Retention } from './browser-mirror2-retention.js'
@@ -9,6 +9,7 @@ import { rememberMirror2Range, restoreMirror2Range } from './browser-mirror2-sel
 import { validateMirror2Packet, decodeMirror2Packet, resolveMirror2Sheets, mirror2SandboxCsp, validMirror2Sprite } from './browser-mirror2-security.js'
 import { Mirror2Wheel } from './browser-mirror2-wheel.js'
 import { Mirror2Navigation } from './browser-mirror2-navigation.js'
+import { isTileInk, paddingOrigin, paintTileInk, tileOutsideBox } from './browser-mirror2-tile-ink.js'
 import type { Mirror2Action, Mirror2Form, Mirror2Op, Mirror2Packet, Mirror2Record, Mirror2Resource, Mirror2State, Mirror2Tile, Mirror2WirePacket } from './browser-mirror2-types.js'
 export * from './browser-mirror2-types.js'
 export { mirror2SandboxCsp, validateMirror2Packet, decodeMirror2Packet } from './browser-mirror2-security.js'
@@ -18,6 +19,21 @@ export const browserMirror2MinimumProtocolVersion = 550
 const NS = { svg: 'http://www.w3.org/2000/svg', math: 'http://www.w3.org/1998/Math/MathML' } as const
 const resourcePattern = /url\("mr:(r[0-9]{1,9})"\)/g
 const styledResourcePattern = /url\("mr:(r[0-9]{1,9})"\)(\s*(?:format\(\s*(?:"[^"]*"|'[^']*'|[^)]*)\s*\)\s*)?(?:tech\(\s*(?:"[^"]*"|'[^']*'|[^)]*)\s*\))?)?/g
+// The mirror document runs no scripts, so `(scripting: none)` matches in it while the kernel page runs scripts: a
+// page's no-JS variants (Tailwind `js-disabled:`) would show and its scripted ones hide. The viewer evaluates each
+// scripting test as the kernel page does: none -> enabled (false here), enabled or bare -> none (true here).
+const scriptingFeature = /\(\s*scripting\s*(?::\s*(none|enabled)\s*)?\)/gi
+export function kernelScriptingMedia(media: string): string {
+  return media.replace(scriptingFeature, (_match, value?: string) => value?.toLowerCase() === 'none' ? '(scripting: enabled)' : '(scripting: none)')
+}
+// CSS text from the kernel is CSSOM-serialized: a condition sits in an `@media ... {` prelude (imports and adopted media lists
+// arrive wrapped as one); selectors and declarations are left alone. Quoted strings (content, attribute selector values) and
+// comments are matched first and kept as they are, so @media-like text inside them is the page's text.
+const mediaPreludes = /"(?:[^"\\]|\\[\s\S])*"|'(?:[^'\\]|\\[\s\S])*'|\/\*[\s\S]*?\*\/|@media\b[^{};"']*\{/g
+export function kernelScriptingCss(css: string): string {
+  return css.includes('scripting') ? css.replace(mediaPreludes, token => token.startsWith('@') && token.includes('scripting') ? kernelScriptingMedia(token) : token) : css
+}
+const attrValue = (element: Element, name: string, value: string): string => name === 'popover' ? 'manual' : name === 'media' && element.localName === 'style' ? kernelScriptingMedia(value) : value
 // One packet answers one credit and the kernel waits for credits, so a page that changes every frame is limited to
 // window / round trip packets a second: 4 credits over a 74 ms round trip were 54 a second (the drill's DOM mirror
 // animated at 49 against Selkies' 60). Eight cover 60 a second up to 130 ms. The window shrinks to the old four
@@ -35,6 +51,10 @@ const DELETIONS: Record<string, string[]> = {
 // as named mirror keys from protocol 530 (before: the document-bound display_input key with 517 modifiers).
 type Chord = { kind: 'key'; key: string; modifiers: number }
 type Mirror2Input = Mirror2Action | Chord
+// The most one forwarded wheel step may move per axis (kernel-browser-input.mjs refuses larger steps).
+const WHEEL_STEP_MAX = 10000
+// B3: the pointer's own actions (a hover move, a leave): the newest replaces a queued one, and nothing waits for them.
+const pointerOnly = (action: Mirror2Input): boolean => action.kind === 'move' || action.kind === 'leave'
 const HISTORY: Record<string, Chord> = { historyUndo: { kind: 'key', key: 'z', modifiers: 2 }, historyRedo: { kind: 'key', key: 'z', modifiers: 10 } }
 // Controls whose state the viewer's own UI commits (its popup or picker); protocol 492 `set` carries the result.
 const PICKED = new Set('date time datetime-local month week color range'.split(' '))
@@ -54,6 +74,18 @@ async function digest(bytes: Uint8Array): Promise<string> {
 
 export type Mirror2Timing = { stage: string; duration_ms: number; ended_ms: number }
 
+/**
+ * The mirror runs no scripts, so Chromium gives every video, and every audio with `controls`, its own player, even with
+ * controls=false. A mirrored media tile shows the kernel's pixels (or its poster), which already hold the page's controls:
+ * the viewer's player would cover them and take input meant for the kernel.
+ */
+function hideViewerControls(media: Element): void {
+  if (media.querySelector(':scope > style[data-chariox-region-controls]')) return
+  const style = media.ownerDocument.createElement('style')
+  style.setAttribute('data-chariox-region-controls', '')
+  style.textContent = 'video::-webkit-media-controls,audio::-webkit-media-controls{display:none!important}'
+  media.append(style)
+}
 export class BrowserMirror2Renderer {
   private navigation: Mirror2Navigation
   get frame(): HTMLIFrameElement { return this.navigation.frame }
@@ -76,13 +108,14 @@ export class BrowserMirror2Renderer {
   private slices = new Map<string, Mirror2Resource>() // resources still arriving in slices
   private styled = new Map<string, Styled>()
   private tileUrls = new Map<string, string>()
+  private placeholderTiles = new WeakSet<Element>() // tiles showing the black placeholder (neither still nor poster)
   private tileBoxes = new Map<string, Pick<Mirror2Tile, "x" | "y" | "width" | "height">>()
   private selects: Array<[Element, Mirror2Form]> = []
   private states: Element[] = [] // UA state to apply once this packet's DOM is attached
   private targeted = new WeakMap<Document, Element>() // per document, the element its fragment names (`:target`)
   private frameDocuments = new Set<string>() // frame document records (protocol 503: each has its own fragment)
   private bound = new WeakSet<Document>() // a retired frame document is not kept alive by its binding
-  private empty: string
+  private placeholders = new Map<string, string>() // per document, an empty Blob URL for each resource whose bytes have not arrived
   private absentFont: string
   sequence = 0
   documentId = ''
@@ -99,11 +132,18 @@ export class BrowserMirror2Renderer {
   // before it applied: those still naming the old kernel focus leave the viewer's alone (until the window passes).
   private focusHold: { id: string, previous: string | null, until: number } | null = null
   private kernelFocus: string | null = null // the latest packet's focus
+  private kernelFocusVisible = false // whether the page draws a focus ring on it (it matches :focus-visible there)
+  private pageWheel = false // Y3-C1a: the page's own script takes the wheel; every wheel over its document goes to the kernel's page
+  private pageWheelRest: [number, number] = [0, 0] // the sub-pixel part of those wheels not sent yet
   private focusWithheld: string | null | undefined // a packet's focus not taken while inputs were pending
   private resetSerial = 0 // local only: IDs and cached focus never cross a snapshot
   private queue: Array<{ resetSerial: number; action: Mirror2Input; epoch: { sequence: number; document_id: string } }> = []
   private sending = false
   private inputReplies = new Set<Promise<void>>() // MP-10: at most two written, unacknowledged inputs
+  // B3: hover moves are not inputs a click, a key or the kernel's focus waits for: one unanswered move at a time, its own set.
+  private moveReplies = new Set<Promise<void>>()
+  private queueWake: (() => void) | undefined
+  private leaveTimer: ReturnType<typeof setTimeout> | undefined
   // Viewer-owned scroll (plan 4.1): kernel echoes wait until the viewer settles.
   private localScrollAt = -Infinity
   private localRootScrollAt = -Infinity
@@ -117,7 +157,6 @@ export class BrowserMirror2Renderer {
   onEmptyPaint: (() => void) | undefined
   constructor(private container: HTMLElement, private send: (action: Mirror2Input, epoch: { sequence: number; document_id: string }, onWritten?: () => void) => Promise<unknown>, _failure?: (error: unknown) => void, private retention?: Mirror2Retention) {
     this.sheetCache = retention?.sheets ?? new Mirror2SheetCache(); this.fontCache = retention?.fonts ?? new Mirror2FontCache()
-    this.empty = URL.createObjectURL(new Blob([]))
     this.absentFont = URL.createObjectURL(mirror2AbsentFont())
     this.navigation = new Mirror2Navigation(container, () => { if (!this.disposed) { this.navigationPaint(); this.onEmptyPaint?.() } })
     const owner = container.ownerDocument
@@ -154,10 +193,18 @@ export class BrowserMirror2Renderer {
     const epoch = { sequence: this.sequence, document_id: this.documentId }
     // Ordered; a queued scroll position for the same scroller is replaced, not appended.
     const last = this.queue.at(-1)
+    // Only the newest pointer position matters: a queued move is replaced, so moves never pile up behind a slow reply.
+    if (pointerOnly(action) && last && pointerOnly(last.action)) { last.action = action; last.epoch = epoch; last.resetSerial = this.resetSerial; return }
     if (action.kind === 'scroll_to' && last?.action.kind === 'scroll_to' && last.action.node_id === action.node_id) { last.action = action; last.epoch = epoch; last.resetSerial = this.resetSerial; return }
+    // Wheel steps for the kernel's page waiting behind a reply add up into one step at the newest point, up to the most the
+    // kernel takes in one step; past that the new step queues as the next one.
+    if (action.kind === 'scroll' && last?.action.kind === 'scroll' && last.action.node_id === action.node_id) {
+      const delta_x = last.action.delta_x + action.delta_x, delta_y = last.action.delta_y + action.delta_y
+      if (Math.abs(delta_x) <= WHEEL_STEP_MAX && Math.abs(delta_y) <= WHEEL_STEP_MAX) { last.action = { ...action, delta_x, delta_y }; last.epoch = epoch; last.resetSerial = this.resetSerial; return }
+    }
     if (action.kind === 'selection' && this.records.get(action.anchor_id)?.kind === 'text') { this.selectionSent = JSON.stringify(action); this.selectionHold = { key: this.selectionSent, until: Infinity, epoch: epoch.sequence }; this.selectionFailure = false }
-    this.queue.push({ action, epoch, resetSerial: this.resetSerial }); this.pendingInputs++
-    void this.pump()
+    this.queue.push({ action, epoch, resetSerial: this.resetSerial }); if (!pointerOnly(action)) this.pendingInputs++
+    this.queueWake?.(); void this.pump()
   }
   // Rust bounds UTF-8 bytes; never split a code point across ordered actions.
   private enqueueText(text: string): void {
@@ -175,7 +222,10 @@ export class BrowserMirror2Renderer {
     this.sending = true
     try {
       while (this.queue.length && !this.disposed) {
-        if (this.inputReplies.size >= 2) await Promise.race(this.inputReplies)
+        const move = this.queue[0] !== undefined && pointerOnly(this.queue[0].action)
+        // B3: a move waits for the previous move's reply only while nothing follows it; an input queued behind it sends it at once.
+        if (move && this.moveReplies.size && this.queue.length === 1) { await Promise.race([...this.moveReplies, new Promise<void>(resolve => { this.queueWake = resolve })]); this.queueWake = undefined; continue }
+        if (!move && this.inputReplies.size >= 2) await Promise.race(this.inputReplies)
         const next = this.queue.shift(); if (!next || this.disposed) break
         const before = this.kernelFocus
         if (next.action.kind === 'scroll_to') { this.scrollReplies.add(next); if (next.action.node_id === null) this.rootScrollReplies.add(next) }
@@ -189,10 +239,10 @@ export class BrowserMirror2Renderer {
         }).then(() => { if (!this.disposed && next.resetSerial === this.resetSerial) { this.holdFocus(next.action, before); if (next.action.kind === 'selection' && this.selectionHold?.key === JSON.stringify(next.action) && this.selectionHold.epoch === next.epoch.sequence && next.epoch.document_id === this.documentId) this.selectionHold.until = this.sequence + CREDIT_WINDOW } })
           .catch(() => { if (next.resetSerial === this.resetSerial && next.action.kind === 'selection' && this.selectionHold?.key === JSON.stringify(next.action) && this.selectionHold.epoch === next.epoch.sequence && next.epoch.document_id === this.documentId) { this.selectionFailure = true; this.selectionHold = null; this.selectionSent = '' } if (!this.disposed) this.frame.dataset.mirrorRefusals = String(Number(this.frame.dataset.mirrorRefusals ?? 0) + 1) })
           .finally(() => {
-            this.inputReplies.delete(replied); this.rootScrollReplies.delete(next); if (this.scrollReplies.delete(next)) this.scrollAnsweredAt = performance.now(); this.pendingInputs = Math.max(0, this.pendingInputs - 1)
+            this.inputReplies.delete(replied); this.moveReplies.delete(replied); this.rootScrollReplies.delete(next); if (this.scrollReplies.delete(next)) this.scrollAnsweredAt = performance.now(); if (!move) this.pendingInputs = Math.max(0, this.pendingInputs - 1)
             written(); this.settleFocus()
           })
-        this.inputReplies.add(replied)
+        ;(move ? this.moveReplies : this.inputReplies).add(replied)
         await sent
       }
     } finally { this.sending = false; this.settleFocus() }
@@ -227,8 +277,13 @@ export class BrowserMirror2Renderer {
     const outside = this.frame.ownerDocument.activeElement, elsewhere = !!outside && outside !== this.frame && outside !== this.frame.ownerDocument.body
     const focused = id && !elsewhere ? this.dom.get(id) as HTMLElement | undefined : undefined, active = this.active() as HTMLElement | null
     this.focusSent = id
+    // The copy draws a focus ring only where the page does: a script focus() alone would draw one after a mouse press.
+    // Focusing the focused element again changes nothing, so a ring that turns on or off takes a blur first.
+    // (TypeScript's DOM types do not name FocusOptions.focusVisible yet; Chrome, Firefox and Safari take it.)
+    const ring = this.kernelFocusVisible
+    if (focused && active === focused && focused.matches(':focus-visible') !== ring) focused.blur()
     // A control built while detached could not take its caret: restore it once focused.
-    if (focused && active !== focused) { focused.focus?.({ preventScroll: true }); const form = this.records.get(id!)?.form; if (form) this.caret(focused as HTMLInputElement, form) }
+    if (focused && this.active() !== focused) { focused.focus?.({ preventScroll: true, focusVisible: ring } as FocusOptions); const form = this.records.get(id!)?.form; if (form) this.caret(focused as HTMLInputElement, form) }
     // The kernel's focus left (blur, a protected field): the viewer's control blurs too.
     else if (!id && !elsewhere && active && this.ids.has(active) && active !== active.ownerDocument.body && active !== active.ownerDocument.documentElement) active.blur()
   }
@@ -291,7 +346,22 @@ export class BrowserMirror2Renderer {
     // A press whose gesture forwards no click (a drag, a select or picker, a release elsewhere) sends its focus now.
     on('pointerup', () => { this.syncSelection(doc); this.releasePointer(); origin = null; setTimeout(() => { const id = this.pointerFocus; this.pointerFocus = null; if (id && !this.disposed) { this.focusSent = id; this.enqueue({ kind: 'focus', node_id: id }) } }, 0) })
     on('pointercancel', () => { this.releasePointer(); origin = null; this.pointerFocus = null; pressed = null; dragged = false })
-    on('pointermove', event => { const e = event as PointerEvent; if (origin && (e.buttons & 1) && Math.hypot(e.clientX - origin.x, e.clientY - origin.y) > 4) dragged = true })
+    on('pointermove', event => {
+      const e = event as PointerEvent
+      if (origin && (e.buttons & 1) && Math.hypot(e.clientX - origin.x, e.clientY - origin.y) > 4) dragged = true
+      // B3: a pointer with no button held hovers the kernel's page where the viewer's pointer is (Chromium already coalesces
+      // pointermove to one per frame).
+      if (this.leaveTimer !== undefined) { clearTimeout(this.leaveTimer); this.leaveTimer = undefined }
+      const hit = e.buttons ? null : element(event); if (hit) this.enqueue({ kind: 'move', node_id: hit.id, ...offset(hit.el, e) })
+    })
+    // B3: the pointer left this document with no button held: the kernel's mouse leaves the page too (mouseleave runs, :hover
+    // ends), unless a move inside the copy follows in the same input (from a nested document back to its parent).
+    on('mouseleave', event => {
+      if (event.target !== doc || (event as MouseEvent).buttons || this.leaveTimer !== undefined) return
+      this.leaveTimer = setTimeout(() => { this.leaveTimer = undefined; if (!this.disposed) this.enqueue({ kind: 'leave' }) }, 0)
+    })
+    // B4: the page's own context menu, not the viewer's browser menu over the copy.
+    on('contextmenu', event => { event.preventDefault(); const hit = element(event); if (hit) this.enqueue({ kind: 'click', node_id: hit.id, ...offset(hit.el, event as MouseEvent), button: 'right' }) })
     const selecting = (el: Element): boolean => { if (el.closest('input,textarea,button,select,[contenteditable]')) return false; const s = doc.getSelection(); return Boolean(s && !s.isCollapsed && (el.contains(s.anchorNode) || el.contains(s.focusNode))) }
     // A drag inside a text control focused it here only: its range goes now (the kernel focuses the control with it).
     // A select or picker opens the viewer's own UI; its committed state goes as `set` (the kernel's popup never opens).
@@ -319,6 +389,16 @@ export class BrowserMirror2Renderer {
     // Local scrolling, eased per frame (MP-10); opaque regions (canvas, video, foreign stills) take the wheel themselves.
     on('wheel', event => {
       const hit = element(event), wheel = event as WheelEvent
+      // Y3-C1a: the page's own script takes the wheel (a smooth-scroll or full-page library): as in its browser, every wheel over
+      // its document reaches it (the kernel's page), never the copy's own scrolling; the copy follows the page's positions.
+      // A protected field (a mask: no node the viewer may name) keeps the copy's own scrolling, as before the page took the wheel.
+      if (doc === this.doc && this.pageWheel && !wheel.ctrlKey && wheel.deltaMode === 0 && hit && this.records.get(hit.id)?.kind !== 'tile') {
+        event.preventDefault()
+        const x = this.pageWheelRest[0] + wheel.deltaX, y = this.pageWheelRest[1] + wheel.deltaY, dx = Math.trunc(x), dy = Math.trunc(y)
+        this.pageWheelRest = [x - dx, y - dy]
+        if (hit && (dx || dy)) this.enqueue({ kind: 'scroll', node_id: hit.id, ...offset(hit.el, wheel), delta_x: dx, delta_y: dy })
+        return
+      }
       if (!hit || this.records.get(hit.id)?.kind !== 'tile') {
         const view = doc.defaultView!, x = view.scrollX, y = view.scrollY
         if (this.wheel.take(wheel, target(event))) event.preventDefault()
@@ -407,12 +487,16 @@ export class BrowserMirror2Renderer {
     })
   }
   // ---- resources
-  private substitute(raw: string): string { return raw.replace(styledResourcePattern, (_match, key: string, suffix: string, offset: number) => {
-    const resource = this.resources.get(key)
-    if (resource) return `url("${resource}")${suffix ?? ''}`
-    const pending = mirror2PendingFontSource(raw, offset, this.empty)
-    return pending ?? `url("${this.empty}")${suffix ?? ''}`
-  }) }
+  // A face whose bytes have not arrived points at an empty Blob: Chromium fetches a face only for text in its unicode-range,
+  // so the faces the native page never loaded stay `unloaded` as there, and only a face the text needs fails until its bytes arrive.
+  // Each resource has its own Blob: Chromium shares a font fetch by URL, so one failed face would fail every face naming the same URL.
+  private substitute(raw: string): string { return kernelScriptingCss(raw).replace(styledResourcePattern, (_match, key: string, suffix: string) => `url("${this.resources.get(key) ?? this.placeholder(key)}")${suffix ?? ''}`) }
+  private placeholder(key: string): string {
+    let url = this.placeholders.get(key)
+    if (!url) { url = URL.createObjectURL(new Blob([])); this.placeholders.set(key, url) }
+    return url
+  }
+  private clearPlaceholders(): void { for (const url of this.placeholders.values()) URL.revokeObjectURL(url); this.placeholders.clear() }
   private keysOf(raw: string): string[] { return [...raw.matchAll(resourcePattern)].map(m => m[1]!) }
   private async addResource(resource: Mirror2Resource): Promise<void> {
     const bytes = bytesOf(resource.data_base64)
@@ -497,12 +581,13 @@ export class BrowserMirror2Renderer {
     for (const [name, value] of Object.entries(record.attrs ?? {})) {
       if (name === 'style') this.setStyled(record.id, { kind: 'attr', raw: value, node: element, keys: [] })
       // The kernel opens and closes popovers (state ops): the viewer's copy never light-dismisses itself.
-      else try { element.setAttribute(name, name === 'popover' ? 'manual' : value) } catch { /* invalid names were refused by validation */ }
+      else try { element.setAttribute(name, attrValue(element, name, value)) } catch { /* invalid names were refused by validation */ }
     }
     if (record.state) this.states.push(element)
     if (record.kind === 'element' && record.tag === 'style') this.setStyled(record.id, { kind: 'css', raw: record.css ?? '', node: element, keys: [] })
     if (record.res !== undefined) this.image(record.id, element, record.res)
     this.opaqueLayout(record, element)
+    if (record.kind === 'tile' && (record.tag === 'video' || record.tag === 'audio') && !record.ns) hideViewerControls(element)
     if (record.kind === 'frame') { element.setAttribute('sandbox', 'allow-same-origin'); element.setAttribute('referrerpolicy', 'no-referrer') }
     // A select's state waits for its options (the build appends children after their parent).
     if (record.form) { if (element.localName === 'select') this.selects.push([element, record.form]); else this.form(element, record.form) }
@@ -514,10 +599,12 @@ export class BrowserMirror2Renderer {
       const [width, height] = record.size ?? [0, 0]
       style.setProperty('box-sizing', 'border-box', 'important'); style.setProperty('width', `${width}px`, 'important'); style.setProperty('height', `${height}px`, 'important')
       style.setProperty('overflow', 'hidden', 'important'); style.setProperty('color', 'transparent', 'important')
-      if (record.kind === 'mask' || !this.tileUrls.has(record.id)) style.setProperty('background-color', 'black', 'important')
+      // The black placeholder stands only while a tile has neither its still nor a poster to show.
+      if (record.kind === 'mask' || !this.tileUrls.has(record.id) && !this.posterUrl(record)) { style.setProperty('background-color', 'black', 'important'); this.placeholderTiles.add(element) }
+      else this.placeholderTiles.delete(element)
       // A mask keeps the protected box: inline/contents boxes become inline blocks of the source size.
       if (record.kind === 'mask') { style.setProperty('display', record.display === 'none' ? 'none' : !record.display || ['inline', 'contents'].includes(record.display) ? 'inline-block' : record.display, 'important'); style.setProperty('background-image', 'none', 'important'); element.setAttribute('aria-label', 'Protected content') }
-      if (record.kind === 'tile') { if (element.localName === 'iframe') element.setAttribute('sandbox', ''); this.paintTile(record.id, element as HTMLElement) }
+      if (record.kind === 'tile') { if (element.localName === 'iframe') element.setAttribute('sandbox', ''); else if (element.localName === 'video') this.tilePoster(record, element as HTMLElement); this.paintTile(record.id, element as HTMLElement) }
     }
   }
   private uaState(element: Element): void {
@@ -566,10 +653,35 @@ export class BrowserMirror2Renderer {
   }
   private image(id: string, element: Element, key: string | null): void {
     const url = key ? this.resources.get(key) ?? null : null
-    if (element.localName === 'img') { if (url) element.setAttribute('src', url); else element.removeAttribute('src') }
+    // A candidate at another density (`chariox-density`, the kernel's pick for this viewer) keeps that intrinsic size.
+    if (element.localName === 'img') {
+      const density = Number(this.records.get(id)?.attrs?.['chariox-density'] ?? 1), srcset = url && density !== 1 ? `${url} ${density}x` : null
+      if (srcset) element.setAttribute('srcset', srcset); else element.removeAttribute('srcset')
+      if (url && !srcset) element.setAttribute('src', url); else element.removeAttribute('src')
+    }
     else if (element.localName === 'use') { const file = url && key ? this.sprite(key) : null; if (file) element.setAttribute('href', `${file}${this.records.get(id)?.attrs?.href ?? ''}`); else element.removeAttribute('href') }
     else if (element.namespaceURI === NS.svg) { if (url) element.setAttribute('href', url); else element.removeAttribute('href') }
     const record = this.records.get(id); if (record) { if (key) record.res = key; else delete record.res }
+    if (record?.kind === 'tile' && element.localName === 'video') this.tilePoster(record, element as HTMLElement)
+  }
+  // A video tile without a still (a transformed or cross-origin video) shows its poster, what Chrome draws before playback,
+  // over the page's own background for it; with a still the still alone shows (a playing video never shows a frozen poster).
+  private posterUrl(record: Mirror2Record): string | null {
+    return record.kind === 'tile' && record.tag === 'video' && !this.tileUrls.has(record.id) && record.res ? this.resources.get(record.res) ?? null : null
+  }
+  private tilePoster(record: Mirror2Record, element: HTMLElement): void {
+    const url = this.posterUrl(record)
+    if (url) element.setAttribute('poster', url); else element.removeAttribute('poster')
+    // A poster that comes after the placeholder replaces it with the page's own background; one that goes brings the placeholder back.
+    if (url && this.placeholderTiles.has(element)) this.restoreAuthored(record, element)
+    else if (!url && !this.tileUrls.has(record.id) && !this.placeholderTiles.has(element)) this.opaqueLayout(record, element)
+  }
+  // The author's inline style again (shorthand and variable backgrounds included), then the tile's layout and paint over it.
+  private restoreAuthored(record: Mirror2Record, element: HTMLElement): void {
+    const authored = this.styled.get(`${record.id}#style`)
+    if (authored?.kind === 'attr') element.setAttribute('style', this.substitute(authored.raw))
+    else element.removeAttribute('style')
+    this.opaqueLayout(record, element)
   }
   private form(element: Element, form: Mirror2Form): void {
     // An option of a multiple select carries its own selectedness (`checked`).
@@ -735,10 +847,10 @@ export class BrowserMirror2Renderer {
       if (box.width <= 0 || box.height <= 0 || box.right <= 0 || box.bottom <= 0 || box.left >= this.frame.clientWidth || box.top >= this.frame.clientHeight) continue
       const style = element.ownerDocument.defaultView?.getComputedStyle(element)
       if (legacyChecks.has(element.ownerDocument) && style && !mirror2RenderedFontReady(element, style)) { this.handoverDiagnostic('wait_fonts'); return false }
-      if (imageHold && style?.visibility === 'visible' && [style.backgroundImage, style.maskImage, style.borderImageSource, style.listStyleImage].some(value=>value.includes(this.empty))) { this.handoverDiagnostic('wait_css_image'); return false }
+      if (imageHold && style?.visibility === 'visible' && [style.backgroundImage, style.maskImage, style.borderImageSource, style.listStyleImage].some(value=>[...value.matchAll(/blob:[^")\s]+/g)].some(url=>[...this.placeholders.values()].includes(url[0])))) { this.handoverDiagnostic('wait_css_image'); return false }
     }
-    if ([...doc.images].some(image=>image.hasAttribute('src')&&!image.complete)) this.handoverDiagnostic('wait_decode')
-    await Promise.all([...doc.images].filter(image=>image.hasAttribute('src')).map(image=>image.decode().catch(()=>{})))
+    if ([...doc.images].some(image=>(image.hasAttribute('src')||image.hasAttribute('srcset'))&&!image.complete)) this.handoverDiagnostic('wait_decode')
+    await Promise.all([...doc.images].filter(image=>image.hasAttribute('src')||image.hasAttribute('srcset')).map(image=>image.decode().catch(()=>{})))
     const ready = !this.disposed && this.doc === doc && this.documentId === documentId && this.sequence === proofSequence && fontVersion === this.fontRequirementsVersion && !this.slices.size
     this.handoverDiagnostic(ready ? 'ready' : 'wait_document')
     return ready
@@ -761,7 +873,7 @@ export class BrowserMirror2Renderer {
     this.sheetCache.remember(wire.sheets)
     // Resource keys are per document; a new document starts an empty map. A
     // reset restarts resources still in slices (the kernel sends them again).
-    if (packet.reset && packet.document_id !== this.documentId) { for (const url of [...this.resources.values(), ...this.sprites.values()]) if (url.startsWith('blob:')) URL.revokeObjectURL(url); this.resources.clear(); this.sprites.clear() }
+    if (packet.reset && packet.document_id !== this.documentId) { for (const url of [...this.resources.values(), ...this.sprites.values()]) if (url.startsWith('blob:')) URL.revokeObjectURL(url); this.resources.clear(); this.sprites.clear(); this.clearPlaceholders() }
     if (packet.reset && this.documentId && packet.document_id !== this.documentId) {
       this.wheel.cancel(); this.scrollTargets.clear()
       if (this.scrollFrame) { cancelAnimationFrame(this.scrollFrame); this.scrollFrame = 0 }
@@ -833,7 +945,7 @@ export class BrowserMirror2Renderer {
       if (packet.document_id !== this.documentId) this.documentAt = performance.now()
       this.sequence = packet.sequence; this.documentId = packet.document_id
       // A focus taken by a pointer still pressed is pending input too (it is sent with its click or drag end).
-      this.kernelFocus = packet.focused
+      this.kernelFocus = packet.focused; this.kernelFocusVisible = packet.focus_visible === true; this.pageWheel = packet.page_wheel === true
       rangeRestored = restoreMirror2Range(this.doc, savedRange, node => this.ids.has(node), node => this.records.get(this.ids.get(node) ?? '')?.kind === 'mask')
       const selectionKey = packet.selection ? JSON.stringify({kind:'selection',anchor_id:packet.selection.anchor_id,anchor_offset:packet.selection.anchor_offset,focus_id:packet.selection.focus_id,focus_offset:packet.selection.focus_offset}) : ''
       if (this.selectionHold && (selectionKey === this.selectionHold.key || packet.sequence > this.selectionHold.until)) this.selectionHold = null
@@ -924,7 +1036,7 @@ export class BrowserMirror2Renderer {
         }
         const keep = new Set(desired)
         // Forgotten before removal: a detached iframe no longer exposes its document.
-        for (const child of Array.from(container.childNodes)) if (!keep.has(child) && (this.ids.has(child) || child.nodeType !== 1 || !(child as Element).matches?.('meta[http-equiv]'))) { this.forgetTree(child); container.removeChild(child) }
+        for (const child of Array.from(container.childNodes)) if (!keep.has(child) && !isTileInk(child) && (this.ids.has(child) || child.nodeType !== 1 || !(child as Element).matches?.('meta[http-equiv]'))) { this.forgetTree(child); container.removeChild(child) }
         for (let i = 0; i < desired.length; i++) if (container.childNodes[i] !== desired[i]) container.insertBefore(desired[i]!, container.childNodes[i] ?? null)
         for (const id of shadowIds) { const record = this.records.get(id)!; const fragment = fresh.get(id); if (fragment && node.nodeType === 1) this.attachShadow(node as Element, record, fragment as DocumentFragment) }
         if (node.nodeType === 9 && !(node as Document).head?.querySelector('meta[http-equiv]')) this.csp(node as Document)
@@ -938,9 +1050,10 @@ export class BrowserMirror2Renderer {
         const element = node as Element; const record = this.records.get(op.id)!
         record.attrs ??= {}
         if (op.value === null) { delete record.attrs[op.name]; if (op.name === 'style') this.styled.delete(`${op.id}#style`); element.removeAttribute(op.name) }
-        else { record.attrs[op.name] = op.value; if (op.name === 'style') this.setStyled(op.id, { kind: 'attr', raw: op.value, node: element, keys: [] }); else element.setAttribute(op.name, op.name === 'popover' ? 'manual' : op.value) }
+        else { record.attrs[op.name] = op.value; if (op.name === 'style') this.setStyled(op.id, { kind: 'attr', raw: op.value, node: element, keys: [] }); else element.setAttribute(op.name, attrValue(element, op.name, op.value)) }
         if (op.name === 'style' && op.value === null) this.opaqueLayout(record, element)
         if (op.name === 'href' && record.res !== undefined && element.localName === 'use') this.image(op.id, element, record.res) // its sprite file + the new fragment
+        if (op.name === 'chariox-density' && record.res !== undefined && element.localName === 'img') this.image(op.id, element, record.res)
         break
       }
       case 'text': node.textContent = op.text; this.records.get(op.id)!.text = op.text; break
@@ -963,18 +1076,18 @@ export class BrowserMirror2Renderer {
     this.tileBoxes.set(tile.node_id, { x: tile.x, y: tile.y, width: tile.width, height: tile.height })
     const record = this.records.get(tile.node_id)
     if (!old && record?.kind === 'tile') {
-      // Remove the placeholder by restoring author CSS, including shorthand/variable backgrounds.
-      const authored = this.styled.get(`${tile.node_id}#style`)
-      if (authored?.kind === 'attr') element.setAttribute('style', this.substitute(authored.raw))
-      else element.removeAttribute('style')
-      this.opaqueLayout(record, element)
+      // Remove the placeholder (or a poster's) by restoring author CSS.
+      this.restoreAuthored(record, element)
     } else this.paintTile(tile.node_id, element)
   }
   private paintTile(id: string, element: HTMLElement): void {
     const tile = this.tileBoxes.get(id), url = this.tileUrls.get(id); if (!tile || !url) return
-    const style = element.style
+    const outside = tileOutsideBox(tile, this.records.get(id)?.size ?? [0, 0])
+    paintTileInk(element, tile, outside ? url : null); if (outside) return
+    const style = element.style, [left, top] = paddingOrigin(element)
     style.setProperty('background-image', `url("${url}")`, 'important'); style.setProperty('background-repeat', 'no-repeat', 'important')
-    style.setProperty('background-position', `${tile.x}px ${tile.y}px`, 'important'); style.setProperty('background-size', `${tile.width}px ${tile.height}px`, 'important')
+    style.setProperty('background-origin', 'padding-box', 'important'); style.setProperty('background-clip', 'border-box', 'important')
+    style.setProperty('background-position', `${tile.x - left}px ${tile.y - top}px`, 'important'); style.setProperty('background-size', `${tile.width}px ${tile.height}px`, 'important')
   }
   close(options?:{preserveFrame?:boolean}): void {
     this.disposed = true; this.onEmptyPaint = undefined; this.onTiming = undefined; if (!this.retention) { this.sheetCache.clear(); this.fontCache.clear() } this.sheets.clear(); this.releasePointer(); this.queue=[]; this.pendingInputs=0; this.wheel.close()
@@ -986,7 +1099,7 @@ export class BrowserMirror2Renderer {
     this.doc = null
     for (const url of [...this.resources.values(), ...this.sprites.values()]) if (url.startsWith('blob:')) URL.revokeObjectURL(url)
     for (const url of this.tileUrls.values()) URL.revokeObjectURL(url)
-    URL.revokeObjectURL(this.absentFont); URL.revokeObjectURL(this.empty); this.wheel.close(); this.sprites.clear(); this.deferred.clear(); this.resources.clear(); this.slices.clear(); this.tileUrls.clear(); this.tileBoxes.clear(); this.dom.clear(); this.records.clear(); this.styled.clear(); this.navigation.close()
+    URL.revokeObjectURL(this.absentFont); this.clearPlaceholders(); this.wheel.close(); this.sprites.clear(); this.deferred.clear(); this.resources.clear(); this.slices.clear(); this.tileUrls.clear(); this.tileBoxes.clear(); this.dom.clear(); this.records.clear(); this.styled.clear(); this.navigation.close()
   }
 }
 
@@ -1050,9 +1163,9 @@ export async function attachBrowserMirror2(transport: Mirror2Transport, containe
       return packet
     }
     if (!base) throw Error('MP-08: mirror lost base')
-    const header = (name: 'scroll' | 'focused' | 'selection' | 'fragment' | 'snapshot_complete' | 'font_failures') => Object.hasOwn(body, name) ? body[name] : base![name] ?? (name === 'snapshot_complete' ? false : name === 'font_failures' ? [] : null)
+    const header = (name: 'scroll' | 'focused' | 'focus_visible' | 'page_wheel' | 'selection' | 'fragment' | 'snapshot_complete' | 'font_failures') => Object.hasOwn(body, name) ? body[name] : base![name] ?? (name === 'snapshot_complete' || name === 'focus_visible' || name === 'page_wheel' ? false : name === 'font_failures' ? [] : null)
     return decodeMirror2Packet({ ...body, ...media, subscription_id, tab_id: binding.tab_id, generation: binding.generation, document_id: base.document_id, base_sequence: wire.sequence - 1, reset: false,
-      css_width: base.css_width, css_height: base.css_height, device_scale_factor: base.device_scale_factor, scroll: header('scroll'), focused: header('focused'), selection: header('selection'), fragment: header('fragment'), snapshot_complete: header('snapshot_complete'), font_failures: header('font_failures') } as Mirror2Packet)
+      css_width: base.css_width, css_height: base.css_height, device_scale_factor: base.device_scale_factor, scroll: header('scroll'), focused: header('focused'), focus_visible: header('focus_visible'), page_wheel: header('page_wheel'), selection: header('selection'), fragment: header('fragment'), snapshot_complete: header('snapshot_complete'), font_failures: header('font_failures') } as Mirror2Packet)
   }
   // MP-08/MP-11: undo/redo keep the mirror's frame, focus and epoch admission.
   const renderer = createRenderer(container, async (action, epoch, onWritten) => { activeAt = performance.now(); fill(); try { return await request({ op: 'mirror_input', tab_id: binding.tab_id, generation: binding.generation, document_id: epoch.document_id, subscription_id, sequence: epoch.sequence, action: 'modifiers' in action ? { kind: 'key', key: action.modifiers & 8 ? 'Ctrl+Shift+Z' : 'Ctrl+Z' } : action },onWritten) } catch(error) { if(!closed){handlers.diagnostic?.('mirror_input_refused',error,epoch.sequence);handlers.inputFailure?.(error)} throw error } }, retention)

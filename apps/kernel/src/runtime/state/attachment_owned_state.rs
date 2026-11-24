@@ -95,67 +95,32 @@ impl KernelRuntimeOwnedState {
         &self,
         attachment_id: &str,
     ) -> Result<crate::attachment::RuntimeAttachment, DaemonError> {
-        let mut sessions = self.session_store.write();
-        let (attachment, effect) = self
-            .attachment_store
-            .detach_with_effect(&mut sessions, attachment_id)?;
-        drop(sessions);
+        let (attachment, session) = {
+            let mut sessions = self.session_store.write();
+            let attachment = self.attachment_store.detach(&mut sessions, attachment_id)?;
+            let session = sessions.get_session(attachment.session_id())?;
+            (attachment, session)
+        };
         self.terminal_stream
-            .remove_attachment(attachment.session_id(), attachment_id);
-
-        self.mirror_prompt_owner_session_state(attachment.session_id())?;
-        let removed_queued_prompt_count = effect.removed_queued_prompt_count;
-        let session_after_detach = self.session_store.get_session(attachment.session_id())?;
-
-        if removed_queued_prompt_count > 0 {
-            self.record_notice(
-                attachment.session_id(),
-                None,
-                self.attachment_store
-                    .list_session_attachment_ids(attachment.session_id()),
-                format!(
-                    "Removed {removed_queued_prompt_count} queued prompt(s) from detached attachment `{attachment_id}`."
-                ),
-            );
+            .remove_attachment(session.id(), attachment_id);
+        if self
+            .session_projection
+            .update_attachment_membership(&session)
+        {
+            self.runtime_projection_changes.record_change();
         }
-
-        if effect.removed_active_prompt {
-            self.record_notice(
-                attachment.session_id(),
-                None,
-                self.attachment_store
-                    .list_session_attachment_ids(attachment.session_id()),
-                format!(
-                    "Removed the active prompt from detached attachment `{attachment_id}` and advanced the queue."
-                ),
-            );
-            if let Some(agent_id) = session_after_detach.focused_agent_id() {
-                let _ = self.activate_next_queued_prompt_for_agent(
-                    attachment.session_id(),
-                    agent_id,
-                    None,
-                )?;
-            }
+        if session.attachment_ids().is_empty() {
+            self.park_detached_idle_provider_run(session.id())?;
         }
-
-        let remaining_attachment_ids = self
-            .attachment_store
-            .list_session_attachment_ids(attachment.session_id());
-        self.park_detached_idle_provider_run(attachment.session_id())?;
-
         crate::logging::info_with_fields(
             "daemon.session",
             "attachment left session",
             serde_json::json!({
-                "session_id": attachment.session_id(),
+                "session_id": session.id(),
                 "attachment_id": attachment.id(),
-                "removed_queued_prompts": removed_queued_prompt_count,
-                "removed_active_prompt": effect.removed_active_prompt,
-                "remaining_attachment_ids": remaining_attachment_ids,
+                "remaining_attachments": session.attachment_ids().len(),
             }),
         );
-        self.session_snapshot(attachment.session_id())?;
-
         Ok(attachment)
     }
 }
@@ -227,6 +192,10 @@ impl KernelRuntimeState {
         {
             request.capability_level = crate::attachment::ClientCapabilityLevel::AutomationOnly;
         }
-        self.attach(request, terminal_caller).await
+        let attachment = self.attach(request).await?;
+        if terminal_caller {
+            self.owned.announce_agent_release_to_client(&attachment);
+        }
+        Ok(attachment)
     }
 }

@@ -11,6 +11,8 @@ import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+// browser-mirror2.ts CREDIT_WINDOW: a held local focus or range outlasts every packet in flight at its reply.
+const CREDIT_WINDOW = 8;
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const tools = process.env.MIRROR_LAB_NODE_MODULES;
@@ -176,6 +178,53 @@ for (const authored of ['', 'background:rgb(12,34,56)', 'background-color:rgb(12
     assert.equal(await color(), 'rgb(70, 80, 90)', 'MP-08: author style updates keep their background under the still');
     await apply(page, delta(4, [{ op: 'attr', id: 'n5', name: 'style', value: null }]));
     assert.equal(await color(), 'rgba(0, 0, 0, 0)', 'MP-08: removing author style restores transparency without a new placeholder');
+  } finally { await page.close(); }
+});
+
+// A video tile without a still (the kernel sends none for a transformed or cross-origin video, airbnb's icons) shows its poster,
+// what Chrome draws before playback, with the page beneath its transparent pixels; a still then replaces the poster.
+test('MP-08/MP-10: a video tile without a still shows its poster over the page beneath; a still replaces it uncovered; no poster stays black', async () => {
+  const page = await viewer();
+  try {
+    const ring = '<svg xmlns="http://www.w3.org/2000/svg" width="36" height="36"><circle cx="18" cy="18" r="13" fill="none" stroke="rgb(220,0,0)" stroke-width="8"/></svg>';
+    const bytes = Buffer.from(ring), poster = { key: 'r1', resource_id: createHash('sha256').update(bytes).digest('hex'), mime_type: 'image/svg+xml', data_base64: bytes.toString('base64') };
+    await apply(page, { ...snapshot([{ id: 'n1', parent: null, kind: 'document' }, { id: 'n2', parent: 'n1', kind: 'element', tag: 'html' }, { id: 'n3', parent: 'n2', kind: 'element', tag: 'body', attrs: { style: 'margin:0' } },
+      { id: 'n4', parent: 'n3', kind: 'element', tag: 'div', attrs: { style: 'position:absolute;left:0;top:0;width:100px;height:40px;background:rgb(200,200,0)' } },
+      { id: 'n5', parent: 'n3', kind: 'tile', tag: 'video', attrs: { style: 'position:absolute;left:0;top:0;width:36px;height:36px;object-fit:contain' }, size: [36, 36], res: 'r1' },
+      { id: 'n6', parent: 'n3', kind: 'tile', tag: 'video', attrs: { style: 'position:absolute;left:50px;top:0;width:36px;height:36px' }, size: [36, 36] },
+      { id: 'n7', parent: 'n3', kind: 'tile', tag: 'video', attrs: { style: 'position:absolute;left:0;top:60px;width:36px;height:36px;object-fit:contain;background:rgb(12,34,56)' }, size: [36, 36], res: 'r1' }]), resources: [poster] });
+    await frames(); await new Promise(resolve => setTimeout(resolve, 200));
+    // The poster tile's box in page px (the viewer scales the 1280 px page into its frame).
+    const box = await page.evaluate(() => { const o = window.r.frame.getBoundingClientRect(), s = o.width / window.r.frame.contentDocument.defaultView.innerWidth, b = window.r.frame.contentDocument.querySelector('video').getBoundingClientRect(); return [o.x + b.x * s, o.y + b.y * s, b.width * s, b.height * s]; });
+    const pixel = async (fx, fy) => { const shot = await page.screenshot({ clip: { x: Math.round(box[0] + fx * box[2]), y: Math.round(box[1] + fy * box[3]), width: 1, height: 1 } }); return page.evaluate(async b64 => { const img = new Image(); img.src = 'data:image/png;base64,' + b64; await img.decode(); const c = document.createElement('canvas'); c.width = c.height = 1; const g = c.getContext('2d'); g.drawImage(img, 0, 0); return [...g.getImageData(0, 0, 1, 1).data.slice(0, 3)]; }, shot.toString('base64')); };
+    const state = () => page.evaluate(() => [...window.r.frame.contentDocument.querySelectorAll('video')].map(v => [v.getAttribute('poster')?.slice(0, 5) ?? null, getComputedStyle(v).backgroundColor]));
+    assert.deepEqual((await state()).slice(0, 2), [['data:', 'rgba(0, 0, 0, 0)'], [null, 'rgb(0, 0, 0)']], 'MP-10: the poster shows on a transparent tile; a tile with no poster stays a black placeholder');
+    assert.deepEqual(await pixel(0.5, 0.5), [200, 200, 0], `MP-10: the page beneath shows through the poster's transparent middle (box ${box})`);
+    const authored = await page.evaluate(() => { const o = window.r.frame.getBoundingClientRect(), s = o.width / window.r.frame.contentDocument.defaultView.innerWidth, b = window.r.frame.contentDocument.querySelectorAll('video')[2].getBoundingClientRect(); return [o.x + (b.x + b.width / 2) * s, o.y + (b.y + b.height / 2) * s]; });
+    const behind = await page.evaluate(async b64 => { const img = new Image(); img.src = 'data:image/png;base64,' + b64; await img.decode(); const c = document.createElement('canvas'); c.width = c.height = 1; const g = c.getContext('2d'); g.drawImage(img, 0, 0); return [...g.getImageData(0, 0, 1, 1).data.slice(0, 3)]; }, (await page.screenshot({ clip: { x: Math.round(authored[0]), y: Math.round(authored[1]), width: 1, height: 1 } })).toString('base64'));
+    assert.deepEqual(behind, [12, 34, 56], 'MP-10: an authored background stays behind the poster (review 5986714841)');
+    const red = await pixel(0.5, 0.2); assert(red[0] > 180 && red[1] < 60, `MP-10: the poster's ring is drawn (${red})`);
+    const png = await page.evaluate(() => { const c = document.createElement('canvas'); c.width = c.height = 36; const g = c.getContext('2d'); g.fillStyle = 'rgb(0,160,0)'; g.fillRect(0, 0, 36, 36); return c.toDataURL('image/png').split(',')[1]; });
+    await apply(page, { ...delta(2), tiles: [{ node_id: 'n5', x: 0, y: 0, width: 36, height: 36, data_base64: png }] });
+    await frames(); await new Promise(resolve => setTimeout(resolve, 200));
+    assert.equal((await state())[0][0], null, 'MP-10: a still replaces the poster (a playing video never shows a frozen poster)');
+    assert.deepEqual(await pixel(0.5, 0.5), [0, 160, 0], 'MP-10: the still shows, not covered by Chromium\'s own empty player');
+  } finally { await page.close(); }
+});
+
+// The mirror runs no scripts, so Chromium gives an audio with `controls` its own player: the kernel's still already holds the
+// page's player, and the viewer's would cover it (and take presses meant for the kernel).
+test('MP-08/MP-10: an audio tile with controls shows its still, not Chromium\'s own player', async () => {
+  const page = await viewer();
+  try {
+    await apply(page, snapshot(page2([{ id: 'n4', parent: 'n3', kind: 'tile', tag: 'audio', attrs: { controls: '', style: 'display:block;width:300px;height:54px' }, size: [300, 54] }])));
+    const png = await page.evaluate(() => { const c = document.createElement('canvas'); c.width = 300; c.height = 54; const g = c.getContext('2d'); g.fillStyle = 'rgb(241,243,244)'; g.fillRect(0, 0, 300, 54); return c.toDataURL('image/png').split(',')[1]; });
+    await apply(page, { ...delta(2), tiles: [{ node_id: 'n4', x: 0, y: 0, width: 300, height: 54, data_base64: png }] });
+    await frames(); await new Promise(resolve => setTimeout(resolve, 300));
+    const box = await page.evaluate(() => { const o = window.r.frame.getBoundingClientRect(), s = o.width / window.r.frame.contentDocument.defaultView.innerWidth, b = window.r.frame.contentDocument.querySelector('audio').getBoundingClientRect(); return [o.x + b.x * s, o.y + b.y * s, b.width * s, b.height * s]; });
+    const shot = await page.screenshot({ clip: { x: box[0], y: box[1], width: box[2], height: box[3] } });
+    const off = await page.evaluate(async b64 => { const img = new Image(); img.src = 'data:image/png;base64,' + b64; await img.decode(); const c = document.createElement('canvas'); c.width = img.width; c.height = img.height; const g = c.getContext('2d'); g.drawImage(img, 0, 0); const d = g.getImageData(0, 0, c.width, c.height).data; let n = 0; for (let i = 0; i < d.length; i += 4) if (Math.abs(d[i] - 241) > 12 || Math.abs(d[i + 1] - 243) > 12 || Math.abs(d[i + 2] - 244) > 12) n++; return n; }, shot.toString('base64'));
+    assert.equal(off, 0, `MP-10: every audio box pixel is its still (${off} differ: Chromium's player)`);
   } finally { await page.close(); }
 });
 
@@ -384,7 +433,7 @@ test('MP-08: protocol 492 a viewer focus change reaches the kernel as `focus`, a
     assert.deepEqual(first[0], { kind: 'focus', node_id: 'n5' }, 'MP-08: the viewer\'s focus moved to the second control');
     // The kernel's focus goes back to the first control (after the packets in flight at the focus reply,
     // which could predate it); the same drag repeats the same (cached) range.
-    for (let sequence = 2; sequence <= 7; sequence++) await apply(page, delta(sequence, [], { focused: 'n4' }));
+    for (let sequence = 2; sequence <= 2 + CREDIT_WINDOW; sequence++) await apply(page, delta(sequence, [], { focused: 'n4' }));
     assert.deepEqual(await sent(), []);
     await drag(); await page.keyboard.type('x'); await frames();
     const second = await sent();
@@ -411,6 +460,25 @@ test('MP-08: protocol 492 the kernel\'s blur (focused: null) blurs the viewer\'s
     const box = await page.evaluate(() => { const f = window.r.frame.getBoundingClientRect(), t = window.r.frame.contentDocument.querySelector('p').getBoundingClientRect(); return [f.x + t.x + 3, f.y + t.y + 3]; });
     await page.mouse.click(box[0], box[1]); await frames();
     assert.deepEqual((await sent()).filter(action => action.kind === 'blur'), [{ kind: 'blur', node_id: 'n4' }], 'MP-08: clicking plain text leaves the control in the kernel too');
+  } finally { await page.close(); }
+});
+
+// browserfidelity r14 (F7): the kernel's focus_visible decides the copy's focus ring; a script focus() alone draws one.
+test('MP-08: the viewer focuses the kernel\'s focus with its ring only where the page draws one (focus_visible), also when only the ring changes; nothing is echoed', async () => {
+  const page = await viewer();
+  try {
+    await apply(page, { ...snapshot(page2([{ id: 'n4', parent: 'n3', kind: 'element', tag: 'button' }, { id: 'n5', parent: 'n3', kind: 'element', tag: 'div', attrs: { tabindex: '0' } }])), focused: 'n4', focus_visible: false });
+    const ring = () => page.evaluate(() => { const e = window.r.frame.contentDocument.activeElement; return [e.localName, e.matches(':focus-visible')]; });
+    const sent = () => page.evaluate(() => window.sent.splice(0).filter(action => action.kind !== 'scroll_to'));
+    assert.deepEqual(await ring(), ['button', false], 'MP-08: a focus the page took by a mouse press draws no ring');
+    await apply(page, delta(2, [], { focused: 'n4', focus_visible: true }));
+    assert.deepEqual(await ring(), ['button', true], 'MP-08: a key on the page turns the ring on, the focus unchanged');
+    await apply(page, delta(3, [], { focused: 'n5', focus_visible: true }));
+    assert.deepEqual(await ring(), ['div', true], 'MP-08: Tab moves the focus with its ring');
+    await apply(page, delta(4, [], { focused: 'n5', focus_visible: false }));
+    assert.deepEqual(await ring(), ['div', false], 'MP-08: a press on the focused element turns the ring off');
+    await frames();
+    assert.deepEqual(await sent(), [], 'MP-08: the kernel-driven focus and ring changes are not echoed');
   } finally { await page.close(); }
 });
 
@@ -457,7 +525,8 @@ test('MP-08: protocol 492 a click on a focusable control is forwarded alone (the
   const page = await viewer();
   try {
     await apply(page, snapshot(page2([{ id: 'n4', parent: 'n3', kind: 'element', tag: 'input', attrs: { style: 'width:200px' }, form: textForm('one', 3) }, { id: 'n5', parent: 'n3', kind: 'element', tag: 'button', attrs: { style: 'width:100px;height:30px' } }, { id: 'n6', parent: 'n5', kind: 'text', text: 'go' }])));
-    const sent = () => page.evaluate(() => window.sent.splice(0).filter(action => action.kind !== 'scroll_to').map(action => action.kind + ':' + action.node_id));
+    // B3: the pointer's hover moves to the control are forwarded too; this test is about the click and focus.
+    const sent = () => page.evaluate(() => window.sent.splice(0).filter(action => !['scroll_to', 'move'].includes(action.kind)).map(action => action.kind + ':' + action.node_id));
     for (const selector of ['input', 'button']) {
       const box = await page.evaluate(selector => { const f = window.r.frame.getBoundingClientRect(), t = window.r.frame.contentDocument.querySelector(selector).getBoundingClientRect(); return [f.x + t.x + 5, f.y + t.y + 5]; }, selector);
       await page.mouse.click(box[0], box[1]); await frames(); await frames();
@@ -511,7 +580,7 @@ test('MP-08: a packet drained before the kernel applied the viewer\'s focus (it 
     const active = () => page.evaluate(() => { const d = window.r.frame.contentDocument; return [...d.querySelectorAll('input')].indexOf(d.activeElement); });
     const box = await page.evaluate(() => { const f = window.r.frame.getBoundingClientRect(), t = window.r.frame.contentDocument.querySelectorAll('input')[1].getBoundingClientRect(); return { x: f.x + t.x + 40, y: f.y + t.y + 9 }; });
     await page.mouse.click(box.x, box.y); await frames();
-    assert.deepEqual((await page.evaluate(() => window.sent.splice(0))).map(a => a.kind), ['click'], 'MP-08: the click carries the focus');
+    assert.deepEqual((await page.evaluate(() => window.sent.splice(0))).map(a => a.kind).filter(kind => kind !== 'move'), ['click'], 'MP-08: the click carries the focus (after the pointer\'s hover moves)');
     // The reply came back; a packet the kernel drained before applying the click still names the old focus.
     await apply(page, delta(2, [], { focused: 'n4' })); await frames();
     assert.equal(await active(), 1, 'MP-08: the viewer keeps the control it focused');
@@ -627,6 +696,63 @@ test('MP-10: protocol 501 an external <use> sprite renders from a validated blob
   } finally { await page.close(); }
 });
 
+// browserfidelity r18 (Y3-C1a): a page whose own script takes the wheel (page_wheel) gets every wheel step, as in its browser;
+// the copy never scrolls itself. When the page gives the wheel back, the viewer scrolls its copy again.
+test('Y3-C1a: with page_wheel every wheel over the document goes to the kernel\'s page and the copy stays; without it the copy scrolls', async () => {
+  const page = await viewer();
+  try {
+    await apply(page, { ...snapshot([{ id: 'n1', parent: null, kind: 'document' }, { id: 'n2', parent: 'n1', kind: 'element', tag: 'html' }, { id: 'n3', parent: 'n2', kind: 'element', tag: 'body', attrs: { style: 'margin:0' } }, { id: 'n4', parent: 'n3', kind: 'element', tag: 'div', attrs: { style: 'height:4000px' } }]), page_wheel: true });
+    const box = await page.evaluate(() => { const b = window.r.frame.getBoundingClientRect(); return { x: b.left + 300, y: b.top + 300 }; });
+    await page.mouse.move(box.x, box.y);
+    for (let i = 0; i < 3; i++) { await page.mouse.wheel(0, 300); await page.waitForTimeout(30); }
+    await page.waitForTimeout(500);
+    const taken = await page.evaluate(() => ({ y: window.r.frame.contentWindow.scrollY, scrolls: window.sent.filter(a => a.kind === 'scroll').map(a => [a.node_id, a.delta_y]), positions: window.sent.filter(a => a.kind === 'scroll_to').length }));
+    assert.equal(taken.y, 0, `Y3-C1a: the copy does not scroll itself (${JSON.stringify(taken)})`);
+    assert.equal(taken.scrolls.reduce((n, [, dy]) => n + dy, 0), 900, `Y3-C1a: every step reaches the kernel's page (${JSON.stringify(taken)})`);
+    assert.equal(taken.positions, 0, 'Y3-C1a: no position is written');
+    await apply(page, delta(2, [], { page_wheel: false }));
+    await page.evaluate(() => { window.sent.length = 0; });
+    await page.mouse.wheel(0, 300); await page.waitForTimeout(600);
+    const local = await page.evaluate(() => ({ y: window.r.frame.contentWindow.scrollY, scrolls: window.sent.filter(a => a.kind === 'scroll').length }));
+    assert.ok(local.y >= 298 && local.scrolls === 0, `Y3-C1a: page_wheel false gives the wheel back to the copy (${JSON.stringify(local)})`);
+  } finally { await page.close(); }
+});
+
+// Y3-C1a review 2: a protected field (a mask record, no node the viewer may name) under the pointer on a page that takes the
+// wheel: the wheel scrolls the copy as before (nothing about the field is sent), instead of being swallowed.
+test('Y3-C1a: with page_wheel a wheel over a protected field still scrolls the copy', async () => {
+  const page = await viewer();
+  try {
+    await apply(page, { ...snapshot([{ id: 'n1', parent: null, kind: 'document' }, { id: 'n2', parent: 'n1', kind: 'element', tag: 'html' }, { id: 'n3', parent: 'n2', kind: 'element', tag: 'body', attrs: { style: 'margin:0' } },
+      { id: 'n4', parent: 'n3', kind: 'mask', tag: 'textarea', size: [600, 400] }, { id: 'n5', parent: 'n3', kind: 'element', tag: 'div', attrs: { style: 'height:4000px' } }]), page_wheel: true });
+    const box = await page.evaluate(() => { const b = window.r.frame.getBoundingClientRect(); return { x: b.left + 100, y: b.top + 100 }; });
+    await page.evaluate(() => { window.sent.length = 0; });
+    await page.mouse.move(box.x, box.y); await page.mouse.wheel(0, 300); await page.waitForTimeout(600);
+    const out = await page.evaluate(() => ({ y: window.r.frame.contentWindow.scrollY, sent: window.sent.filter(a => a.kind === 'scroll').length }));
+    assert.ok(out.y >= 298 && out.sent === 0, `the copy scrolled locally and nothing named the field (${JSON.stringify(out)})`);
+  } finally { await page.close(); }
+});
+
+// Y3-C1a review: wheel steps waiting behind a slow reply add up, but the kernel takes at most 10000 px per axis in one step:
+// past that the rest waits as the next step, so the whole movement arrives and no step is refused.
+test('Y3-C1a: wheel steps held behind replies add up to at most 10000 px per step, and their sum is the whole movement', async () => {
+  const page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
+  try {
+    await page.goto(url);
+    await page.evaluate(async () => { window.sent = []; window.release = []; window.r = new Mirror2.BrowserMirror2Renderer(document.getElementById('c'), action => new Promise(resolve => { window.sent.push(action); window.release.push(resolve); })); await window.r.ready(); });
+    await apply(page, { ...snapshot([{ id: 'n1', parent: null, kind: 'document' }, { id: 'n2', parent: 'n1', kind: 'element', tag: 'html' }, { id: 'n3', parent: 'n2', kind: 'element', tag: 'body', attrs: { style: 'margin:0' } }, { id: 'n4', parent: 'n3', kind: 'element', tag: 'div', attrs: { style: 'height:40000px' } }]), page_wheel: true });
+    const box = await page.evaluate(() => { const b = window.r.frame.getBoundingClientRect(); return { x: b.left + 300, y: b.top + 300 }; });
+    await page.mouse.move(box.x, box.y);
+    // Replies held: two steps go out, the other 38 x 300 px queue behind them.
+    for (let i = 0; i < 40; i++) await page.mouse.wheel(0, 300);
+    await page.waitForTimeout(300);
+    for (let i = 0; i < 10; i++) { await page.evaluate(() => { for (const resolve of window.release.splice(0)) resolve(); }); await page.waitForTimeout(50); }
+    const steps = await page.evaluate(() => window.sent.filter(a => a.kind === 'scroll').map(a => a.delta_y));
+    assert.ok(steps.every(dy => Math.abs(dy) <= 10000), `Y3-C1a: every step is one the kernel takes (${steps})`);
+    assert.equal(steps.reduce((n, dy) => n + dy, 0), 12000, `Y3-C1a: the whole movement arrives (${steps})`);
+  } finally { await page.close(); }
+});
+
 // MP-10 strict Selkies scroll gap: precise wheel steps every 50 ms (a CDP pixel wheel) jumped once per step, so the
 // viewer presented one change per step (~20 fps) where a browser animating its wheel ticks presents every frame.
 // The viewer eases each step over the frames until the next one and ends exactly where the native steps would.
@@ -700,18 +826,22 @@ test('MP-08: an echo that names a new focus before its click\'s reply arrives fo
   const page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
   try {
     await page.goto(url);
-    // Replies are held until the test releases them, like a slow input round trip.
-    await page.evaluate(async () => { window.sent = []; window.release = []; window.r = new Mirror2.BrowserMirror2Renderer(document.getElementById('c'), action => { window.sent.push(action); return new Promise(resolve => window.release.push(resolve)); }); await window.r.ready(); });
+    // Replies are held until the test releases them, like a slow input round trip; each input is written at once (as the
+    // live transport reports), so the pointer's unanswered hover moves on the way to the button must not hold the click back.
+    await page.evaluate(async () => { window.sent = []; window.release = []; window.r = new Mirror2.BrowserMirror2Renderer(document.getElementById('c'), (action, _epoch, written) => { window.sent.push(action); written?.(); return new Promise(resolve => window.release.push(resolve)); }); await window.r.ready(); });
     await apply(page, { ...snapshot(page2([{ id: 'n4', parent: 'n3', kind: 'element', tag: 'button', attrs: { style: 'width:200px;height:30px;display:block' } }, { id: 'n5', parent: 'n4', kind: 'text', text: 'Search' },
       { id: 'n6', parent: 'n3', kind: 'element', tag: 'input', attrs: { style: 'width:300px;display:block' }, form: textForm('', 0) }])), focused: null });
     const box = await page.evaluate(() => { const f = window.r.frame.getBoundingClientRect(), t = window.r.frame.contentDocument.querySelector('button').getBoundingClientRect(); return { x: f.x + t.x + 20, y: f.y + t.y + 10 }; });
+    // Replies are released by action kind (sent and release are pushed together): the pointer's hover moves come back first.
+    await page.evaluate(() => { window.releaseKind = kind => window.sent.forEach((a, i) => { if (a.kind === kind && window.release[i]) { const done = window.release[i]; window.release[i] = null; done(); } }); });
     await page.mouse.click(box.x, box.y); await frames();
-    assert.deepEqual(await page.evaluate(() => window.sent.map(a => a.kind)), ['click']);
+    assert.deepEqual(await page.evaluate(() => window.sent.map(a => a.kind).filter(kind => kind !== 'move')), ['click']);
+    await page.evaluate(() => window.releaseKind('move')); await frames();
     await apply(page, delta(2, [], { focused: 'n6' })); await frames(); // the echo, before the reply
-    await page.evaluate(() => window.release.shift()()); await frames();
+    await page.evaluate(() => window.releaseKind('click')); await frames();
     assert.equal(await page.evaluate(() => window.r.frame.contentDocument.activeElement?.localName), 'input', 'MP-08: the kernel\'s new focus is taken once the input settles');
     await page.keyboard.type('c'); await frames();
-    assert.deepEqual(await page.evaluate(() => window.sent.slice(1).map(a => [a.kind, a.key])), [['key', 'c']], 'MP-08: typing reaches the kernel');
+    assert.deepEqual(await page.evaluate(() => window.sent.filter(a => !['click', 'move'].includes(a.kind)).map(a => [a.kind, a.key])), [['key', 'c']], 'MP-08: typing reaches the kernel');
   } finally { await page.close(); }
 });
 
@@ -999,7 +1129,7 @@ test('MP-10: a selection echo cannot move an in-progress pointer range',async()=
   await page.evaluate(()=>window.r.frame.contentDocument.querySelector('p').dispatchEvent(new PointerEvent('pointerup',{bubbles:true,button:0,buttons:0})));
   await apply(page,delta(3,[],{selection:{anchor_id:'n5',anchor_offset:0,focus_id:'n5',focus_offset:3}}));
   assert.equal(await page.evaluate(()=>window.r.frame.contentDocument.getSelection().toString()),'The full released','released endpoint survives stale in-flight prefixes');
-  for(let sequence=4;sequence<=7;sequence++)await apply(page,delta(sequence,[],{selection:{anchor_id:'n5',anchor_offset:0,focus_id:'n5',focus_offset:3}}));
+  for(let sequence=4;sequence<=2+CREDIT_WINDOW;sequence++)await apply(page,delta(sequence,[],{selection:{anchor_id:'n5',anchor_offset:0,focus_id:'n5',focus_offset:3}}));
   assert.equal(await page.evaluate(()=>window.r.frame.contentDocument.getSelection().toString()),'The','after the bounded credit window another actor’s selection still projects');
  }finally{await page.close()}
 });
@@ -1015,7 +1145,7 @@ test('MP-10: a cancelled or externally released drag cannot keep later kernel se
    if(release==='navigation')await apply(page,{...snapshot(nodes),document_id:'replacement',selection:{anchor_id:'n5',anchor_offset:0,focus_id:'n5',focus_offset:3}});
    else{
     await page.evaluate(release=>{if(release==='cancel')window.r.frame.contentDocument.querySelector('p').dispatchEvent(new PointerEvent('pointercancel',{bubbles:true}));else if(release==='outside')document.dispatchEvent(new PointerEvent('pointerup',{bubbles:true}));else window.dispatchEvent(new Event('blur'))},release);
-    for(let sequence=2;sequence<=7;sequence++)await apply(page,delta(sequence,[],{selection:{anchor_id:'n5',anchor_offset:0,focus_id:'n5',focus_offset:3}}));
+    for(let sequence=2;sequence<=2+CREDIT_WINDOW;sequence++)await apply(page,delta(sequence,[],{selection:{anchor_id:'n5',anchor_offset:0,focus_id:'n5',focus_offset:3}}));
    }
    assert.equal(await page.evaluate(()=>window.r.frame.contentDocument.getSelection().toString()),'The',release);
   }finally{await page.close()}
@@ -1454,6 +1584,21 @@ test('MP-08/MP-10/MP-11 native font requirements ignore a failed unused fallback
  }finally{await page.close()}
 });
 
+// A family served in unicode-range subsets whose Latin bytes have not arrived: Chromium shares a font fetch by URL, so a placeholder
+// shared by every pending resource would fail the unused Cyrillic subset with the Latin face the text needs.
+test('MP-10: a pending face the text needs fails alone; an unused subset of its family stays unloaded',async()=>{
+ const page=await viewer();try{
+  const css='@font-face{font-family:Pending;src:url("mr:r1") format("truetype"),url("mr:r2") format("woff2")}@font-face{font-family:Pending;unicode-range:U+400-4FF;src:url("mr:r3") format("woff2")}body{font-family:Pending,monospace}';
+  const nodes=[{id:'n1',parent:null,kind:'document'},{id:'n2',parent:'n1',kind:'element',tag:'html'},{id:'n3',parent:'n2',kind:'element',tag:'head'},{id:'n4',parent:'n3',kind:'element',tag:'style',css:''},{id:'n5',parent:'n2',kind:'element',tag:'body'},{id:'n6',parent:'n5',kind:'text',text:'Latin text'}];
+  const statuses=()=>page.evaluate(async()=>{const d=window.r.frame.contentDocument;d.body.getBoundingClientRect();await d.fonts.load('16px Pending','Latin').catch(()=>{});await d.fonts.ready;return Object.fromEntries([...d.fonts].map(f=>[f.unicodeRange,f.status]))});
+  // The viewer applies the first reset as soon as its frame is ready, so the faces load while the frame is fresh.
+  await page.evaluate(async packet=>{window.r.close();window.r=new Mirror2.BrowserMirror2Renderer(document.getElementById('c'),async()=>{});await window.r.ready();await window.r.apply(packet)},{...snapshot(nodes),ops:[{op:'css',id:'n4',css}]});
+  assert.deepEqual(await statuses(),{'U+0-10FFFF':'error','U+400-4FF':'unloaded'},'only the face the text needs fails while its bytes are pending');
+  await apply(page,delta(2,[{op:'css',id:'n4',css:css+'p{color:red}'}]));
+  assert.deepEqual(await statuses(),{'U+0-10FFFF':'error','U+400-4FF':'unloaded'},'a restyled sheet keeps the unused subset unloaded');
+ }finally{await page.close()}
+});
+
 test('MP-08/MP-10/MP-11 an absent-font shadow never decodes the empty-page sentinel',async()=>{
  const page=await viewer(),warnings=[];page.on('console',message=>{if(message.type()==='warning')warnings.push(message.text())});try{
   const nodes=[{id:'n1',parent:null,kind:'document'},{id:'n2',parent:'n1',kind:'element',tag:'html'},{id:'n3',parent:'n2',kind:'element',tag:'head'},{id:'n4',parent:'n2',kind:'element',tag:'body',attrs:{style:'font-family:MissingMirror,monospace'}},{id:'n5',parent:'n4',kind:'text',text:'\u{10ffff}'}];
@@ -1483,7 +1628,7 @@ test('MP-08/MP-10/MP-11 native font requirements belong to each document and ret
 });
 
 test('MP-08/MP-10/MP-11 required font bytes hydrate a previously failed face and preload an offscreen native face',async()=>{
- const page=await viewer(),warnings=[];page.on('console',message=>{if(message.type()==='warning')warnings.push(message.text())});try{
+ const page=await viewer();try{
   const bytes=await readFile(process.env.MIRROR_LAB_FONT??'/usr/share/fonts/truetype/liberation/LiberationSerif-Regular.ttf');
   const signature=createHash('sha256').update(JSON.stringify(['requiredmirror','normal','400','100%','U+0-10FFFF'])).digest('hex');
   await apply(page,snapshot(page2([{id:'n4',parent:'n3',kind:'text',text:'old page'}])));await page.evaluate(()=>window.r.holdForHandover());
@@ -1493,7 +1638,6 @@ test('MP-08/MP-10/MP-11 required font bytes hydrate a previously failed face and
   await apply(page,{...delta(3),document_id:'requirements',resources:[{key:'r1',resource_id:createHash('sha256').update(bytes).digest('hex'),mime_type:'font/ttf',data_base64:bytes.toString('base64')}]});
   assert.equal(await page.evaluate(()=>window.r.readyForHandover()),true,'materialized native font preloads even without local text using it');
   assert.equal(await page.evaluate(()=>[...window.r.frame.contentDocument.fonts][0].status),'loaded');
-  assert.deepEqual(warnings.filter(value=>value.includes('Failed to decode downloaded font')),[],'pending font URLs use an unavailable source instead of decoding the empty image placeholder');
  }finally{await page.close()}
 });
 
@@ -1553,3 +1697,87 @@ test('MP-08/MP-10/MP-11: a font the native machine lacks does not style the view
   } finally { await page.close(); }
 });
 
+
+// B3/B4: the viewer's pointer hovers the kernel's page (one move per position, the newest wins behind unanswered replies), a right
+// click reaches the page as a right click instead of opening the viewer browser's menu, and a viewer that is not interactive sends neither.
+test('B3/B4: a hover sends the newest move, a right click sends a right click (no viewer menu), and a non-interactive viewer sends neither', async () => {
+  const page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
+  try {
+    await page.goto(url);
+    await page.evaluate(async () => { window.sent = []; window.release = []; window.r = new Mirror2.BrowserMirror2Renderer(document.getElementById('c'), action => new Promise(resolve => { window.sent.push(action); window.release.push(resolve); })); await window.r.ready(); });
+    await apply(page, snapshot([{ id: 'n1', parent: null, kind: 'document' }, { id: 'n2', parent: 'n1', kind: 'element', tag: 'html' }, { id: 'n3', parent: 'n2', kind: 'element', tag: 'body', attrs: { style: 'margin:0' } },
+      { id: 'n4', parent: 'n3', kind: 'element', tag: 'div', attrs: { style: 'width:400px;height:40px' } }]));
+    await page.waitForFunction(() => window.r.acceptsInput, {}, { timeout: 3000 });
+    const box = await page.evaluate(() => { const r = window.r.frame.getBoundingClientRect(); return { x: r.x, y: r.y }; });
+    const sent = () => page.evaluate(() => window.sent.filter(a => a.kind !== 'scroll_to'));
+    const releaseAll = () => page.evaluate(() => { for (const resolve of window.release.splice(0)) resolve(); });
+    await page.mouse.move(box.x + 10, box.y + 20); await frames();
+    assert.deepEqual(await sent(), [{ kind: 'move', node_id: 'n4', x: 10, y: 20 }], 'B3: a hover sends a move at the pointer');
+    // Two replies may be outstanding; later positions wait and only the newest of them is sent.
+    for (let x = 20; x <= 200; x += 10) await page.mouse.move(box.x + x, box.y + 20);
+    await frames();
+    const held = (await sent()).length;
+    assert.ok(held <= 3, `B3: moves do not pile up behind unanswered replies (${held} sent)`);
+    await releaseAll(); await frames(); await releaseAll(); await frames();
+    const moves = (await sent()).filter(a => a.kind === 'move');
+    assert.deepEqual(moves.at(-1), { kind: 'move', node_id: 'n4', x: 200, y: 20 }, 'B3: the newest position is the last move sent');
+    assert.ok(moves.length <= 4, `B3: one move per position kept (${moves.length})`);
+    await page.evaluate(() => { window.sent = []; window.r.frame.contentWindow.addEventListener('contextmenu', e => { window.menuPrevented = e.defaultPrevented; }); });
+    await page.mouse.click(box.x + 30, box.y + 10, { button: 'right' }); await frames(); await releaseAll(); await frames();
+    const right = (await sent()).filter(a => a.kind === 'click');
+    assert.deepEqual(right, [{ kind: 'click', node_id: 'n4', x: 30, y: 10, button: 'right' }], 'B4: one right click, no left click');
+    assert.equal(await page.evaluate(() => window.menuPrevented), true, 'B4: the viewer browser\'s own menu does not open over the copy');
+    await page.evaluate(() => { window.sent = []; window.r.setInteractive(false); });
+    await page.mouse.move(box.x + 50, box.y + 20); await page.mouse.click(box.x + 60, box.y + 10, { button: 'right' }); await frames();
+    assert.deepEqual(await sent(), [], 'B3/B4: a hidden or handed-over viewer sends no move and no right click');
+  } finally { await page.close(); }
+});
+
+// B3 review: the pointer leaving the viewer straight from a hovered node leaves the kernel's page too (its mouseleave and :hover
+// end); behind an unanswered move the leave replaces the queued position, so the page is not hovered again after it.
+test('B3: leaving the viewer from a hovered node sends a leave, which replaces a queued move behind an unanswered one', async () => {
+  const page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
+  try {
+    await page.goto(url);
+    await page.evaluate(async () => { window.sent = []; window.release = []; window.r = new Mirror2.BrowserMirror2Renderer(document.getElementById('c'), (action, _epoch, written) => { window.sent.push(action); written?.(); return new Promise(resolve => window.release.push(resolve)); }); await window.r.ready(); });
+    await apply(page, snapshot([{ id: 'n1', parent: null, kind: 'document' }, { id: 'n2', parent: 'n1', kind: 'element', tag: 'html' }, { id: 'n3', parent: 'n2', kind: 'element', tag: 'body', attrs: { style: 'margin:0' } },
+      { id: 'n4', parent: 'n3', kind: 'element', tag: 'div', attrs: { style: 'width:400px;height:40px' } }]));
+    await page.waitForFunction(() => window.r.acceptsInput, {}, { timeout: 3000 });
+    const box = await page.evaluate(() => { const r = window.r.frame.getBoundingClientRect(); return { x: r.x, y: r.y, outside: r.y > 10 ? { x: r.x + 10, y: r.y - 5 } : { x: r.x + 10, y: r.bottom + 5 } }; });
+    const sent = () => page.evaluate(() => window.sent.filter(a => a.kind !== 'scroll_to').map(a => a.kind === 'move' ? `move:${a.x}` : a.kind));
+    const releaseAll = () => page.evaluate(() => { for (const resolve of window.release.splice(0)) resolve(); });
+    await page.mouse.move(box.x + 10, box.y + 20); await frames(); await releaseAll();
+    await page.mouse.move(box.outside.x, box.outside.y); await frames(); await frames();
+    assert.deepEqual(await sent(), ['move:10', 'leave'], 'B3: the move, then the leave once the pointer is out of the viewer');
+    await releaseAll(); await page.evaluate(() => { window.sent = []; }); await frames();
+    // A move unanswered, the next position queued behind it: leaving now replaces that queued move.
+    await page.mouse.move(box.x + 30, box.y + 20); await frames();
+    await page.mouse.move(box.x + 60, box.y + 20); await frames();
+    await page.mouse.move(box.outside.x, box.outside.y); await frames(); await frames();
+    assert.deepEqual(await sent(), ['move:30'], 'the first move is unanswered; the rest waits');
+    await releaseAll(); await frames(); await frames(); await releaseAll(); await frames();
+    assert.deepEqual(await sent(), ['move:30', 'leave'], 'B3: the leave replaced the queued move; the page is not hovered again after it');
+  } finally { await page.close(); }
+});
+
+// B3: hover moves never hold a click, a key or the kernel's focus back. With replies slow (held) and each input written at once,
+// a click right after the pointer moved is written next, and an unanswered move is no pending input for the kernel's focus.
+test('B3: a click right after unanswered hover moves is written at once, and the kernel focus still applies while moves are unanswered', async () => {
+  const page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
+  try {
+    await page.goto(url);
+    await page.evaluate(async () => { window.sent = []; window.release = []; window.r = new Mirror2.BrowserMirror2Renderer(document.getElementById('c'), (action, _epoch, written) => { window.sent.push(action); written?.(); return new Promise(resolve => window.release.push(resolve)); }); await window.r.ready(); });
+    await apply(page, { ...snapshot(page2([{ id: 'n4', parent: 'n3', kind: 'element', tag: 'button', attrs: { style: 'width:300px;height:30px;display:block' } },
+      { id: 'n5', parent: 'n3', kind: 'element', tag: 'input', attrs: { style: 'width:300px;display:block' }, form: textForm('', 0) }])), focused: null });
+    await page.waitForFunction(() => window.r.acceptsInput, {}, { timeout: 3000 });
+    const box = await page.evaluate(() => { const f = window.r.frame.getBoundingClientRect(), t = window.r.frame.contentDocument.querySelector('button').getBoundingClientRect(); return { x: f.x + t.x, y: f.y + t.y + 10 }; });
+    for (let x = 10; x <= 200; x += 10) await page.mouse.move(box.x + x, box.y);
+    await frames();
+    assert.ok(await page.evaluate(() => window.sent.filter(a => a.kind === 'move').length) >= 1, 'the moves were sent and are unanswered');
+    await page.evaluate(() => window.r.frame.contentWindow.focus());
+    await apply(page, delta(2, [], { focused: 'n5' })); await frames();
+    assert.equal(await page.evaluate(() => window.r.frame.contentDocument.activeElement?.localName), 'input', 'B3: unanswered moves do not withhold the kernel\'s focus');
+    await page.mouse.down(); await page.mouse.up(); await frames();
+    assert.deepEqual(await page.evaluate(() => window.sent.filter(a => a.kind !== 'move' && a.kind !== 'scroll_to').map(a => a.kind)), ['click'], 'B3: the click is written behind unanswered moves');
+  } finally { await page.close(); }
+});

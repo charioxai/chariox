@@ -252,6 +252,8 @@ impl OperationalHistoryStore {
         sequence_end: u64,
     ) -> Result<Vec<HistoryEvent>, DaemonError> {
         self.delay_read_if_configured();
+        #[cfg(test)]
+        self.count_agent_history_load();
         let connection = self.lock_read_connection(Some(session_id))?;
         let mut statement = connection
             .prepare(
@@ -387,6 +389,23 @@ impl OperationalHistoryStore {
         agent_id: &str,
         prompt_id: &str,
     ) -> Result<Option<HistoryEvent>, DaemonError> {
+        self.load_settlement_event(session_id, agent_id, Some(prompt_id))
+    }
+
+    pub(crate) fn load_latest_agent_settlement_event(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Result<Option<HistoryEvent>, DaemonError> {
+        self.load_settlement_event(session_id, agent_id, None)
+    }
+
+    fn load_settlement_event(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        prompt_id: Option<&str>,
+    ) -> Result<Option<HistoryEvent>, DaemonError> {
         self.delay_read_if_configured();
         let connection = self.lock_read_connection(Some(session_id))?;
         let mut statement = connection
@@ -395,9 +414,9 @@ impl OperationalHistoryStore {
                  FROM history_events
                  WHERE session_id = ?1
                    AND agent_id = ?2
-                   AND prompt_id = ?3
+                   AND (?3 IS NULL OR prompt_id = ?3)
                    AND kind = 'provider_status'
-                   AND event_json LIKE ?4
+                   AND json_extract(event_json, ?4) IS NOT NULL
                  ORDER BY sequence DESC
                  LIMIT 1",
             )
@@ -411,7 +430,7 @@ impl OperationalHistoryStore {
                 session_id,
                 agent_id,
                 prompt_id,
-                format!("%\"{}\"%", super::PROMPT_SETTLED_AT_MS_METADATA_KEY),
+                format!("$.metadata.{}", super::PROMPT_SETTLED_AT_MS_METADATA_KEY),
             ])
             .map_err(|error| DaemonError::SessionHistoryFailed {
                 session_id: Some(session_id.to_string()),
@@ -429,6 +448,10 @@ impl OperationalHistoryStore {
         agent_id: Option<&str>,
     ) -> Result<Vec<HistoryEvent>, DaemonError> {
         self.delay_read_if_configured();
+        #[cfg(test)]
+        if agent_id.is_some() {
+            self.count_agent_history_load();
+        }
         let connection = self.lock_read_connection(Some(session_id))?;
         let sql = if agent_id.is_some() {
             "SELECT event_json FROM history_events WHERE session_id = ?1 AND agent_id = ?2 ORDER BY sequence ASC"
@@ -473,6 +496,37 @@ impl OperationalHistoryStore {
         prompt_id: &str,
     ) -> Result<Vec<SessionHistoryEntry>, DaemonError> {
         self.load_provider_tool_entries(session_id, provider_run_id, Some(prompt_id))
+    }
+
+    pub(crate) fn foreground_command_interrupted_by_restart(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        prompt_id: &str,
+    ) -> Result<bool, DaemonError> {
+        let connection = self.lock_read_connection(Some(session_id))?;
+        connection
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM history_events
+                    WHERE session_id=?1 AND agent_id=?2 AND prompt_id=?3 AND kind='provider_tool'
+                      AND CASE WHEN json_valid(json_extract(event_json,'$.content'))
+                               THEN json_extract(json_extract(event_json,'$.content'),'$.error')=?4
+                          END
+                )",
+                params![
+                    session_id,
+                    agent_id,
+                    prompt_id,
+                    crate::app::FOREGROUND_COMMAND_RESTART_REASON
+                ],
+                |row| row.get(0),
+            )
+            .map_err(|error| DaemonError::SessionHistoryFailed {
+                session_id: Some(session_id.to_owned()),
+                operation: "read foreground command restart outcome",
+                message: error.to_string(),
+            })
     }
 
     fn load_provider_tool_entries(

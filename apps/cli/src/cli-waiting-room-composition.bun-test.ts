@@ -11,12 +11,10 @@ test("production Waiting Room composition forwards slice Project development set
     worktreeId: "/primary-worktree",
     workspaceMount: "/primary-worktree",
     developmentSetup: {
-      kind: "source_project",
-      projectId: "project-1",
-      repositories: [
+      kind: "source_projects", projects: [{ projectId: "project-1", repositories: [
         { role: "primary", workspaceId: "/primary", worktreeId: "/primary-worktree" },
         { role: "supporting", workspaceId: "/supporting", worktreeId: null },
-      ],
+      ] }],
     },
   }), {
     name: "project-slice",
@@ -25,12 +23,10 @@ test("production Waiting Room composition forwards slice Project development set
     worktreeId: "/primary-worktree",
     workspaceMount: "/primary-worktree",
     developmentSetup: {
-      kind: "source_project",
-      projectId: "project-1",
-      repositories: [
+      kind: "source_projects", projects: [{ projectId: "project-1", repositories: [
         { role: "primary", workspaceId: "/primary", worktreeId: "/primary-worktree" },
         { role: "supporting", workspaceId: "/supporting", worktreeId: null },
-      ],
+      ] }],
     },
   })
 })

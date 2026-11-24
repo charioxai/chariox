@@ -6,7 +6,9 @@ use crate::{DaemonApp, DaemonConfig, DaemonError};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+mod account_models;
 pub(crate) mod allocation;
+pub(crate) use account_models::{seed_account_models, seed_default_account_models};
 #[cfg(unix)]
 mod claude_executable;
 #[cfg(unix)]
@@ -21,6 +23,7 @@ mod pre_exec_child;
 mod room_turn;
 mod runtime_mcp;
 pub(crate) mod secret_scan;
+mod skill_catalog;
 pub(crate) mod task_delta;
 mod task_subscription;
 #[cfg(target_os = "linux")]
@@ -34,6 +37,7 @@ pub(crate) use environment::{environment_test_isolated, isolate_environment_test
 pub(crate) use pre_exec_child::PreExecChild;
 pub(crate) use room_turn::admit_room_test_turn;
 pub(crate) use runtime_mcp::TestRuntimeMcp;
+pub(crate) use skill_catalog::install_skill_through_requests;
 pub(crate) use task_subscription::mixed_task_subscription_updates;
 #[cfg(target_os = "linux")]
 pub(crate) use thread_stack::{
@@ -54,6 +58,69 @@ macro_rules! isolated_env_test {
     };
 }
 pub(crate) use isolated_env_test;
+
+/// A private libtest executable cannot re-exec after a root probe drops to UID 65534.
+#[cfg(target_os = "linux")]
+pub(crate) fn test_binary_allows_other_execute() -> bool {
+    use std::os::unix::fs::PermissionsExt as _;
+    let mode = std::fs::metadata("/proc/self/exe")
+        .unwrap()
+        .permissions()
+        .mode()
+        & 0o777;
+    if mode & 0o001 != 0 {
+        return true;
+    }
+    report_skipped(&format!(
+        "UID 65534 needs execute permission on the test binary (mode {mode:04o}); build with umask 0022"
+    ));
+    false
+}
+
+pub(crate) fn has_user_namespaces() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        use crate::runtime::bounded_process::BoundedCommandExt as _;
+        let output = std::process::Command::new("bwrap")
+            .args(["--dev-bind", "/", "/", "--", "/bin/true"])
+            .bounded_output();
+        let output = match output {
+            Ok(output) => output,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                report_skipped("needs Bubblewrap; install bwrap and run in a systemd unit");
+                return false;
+            }
+            Err(error) => panic!("could not run Bubblewrap namespace probe: {error}"),
+        };
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if (stderr.contains("No permissions to create") && stderr.contains("namespace"))
+                || (stderr.contains("namespace") && stderr.contains("Operation not permitted"))
+            {
+                report_skipped("needs user namespaces; run in a systemd unit");
+                return false;
+            }
+            panic!(
+                "Bubblewrap namespace probe failed ({}): {stderr}",
+                output.status
+            );
+        }
+    }
+    true
+}
+
+#[cfg(target_os = "linux")]
+fn report_skipped(reason: &str) {
+    if environment_test_isolated() {
+        // The parent adds the name when it forwards the child’s skip message.
+        eprintln!("SKIP {reason}");
+    } else {
+        eprintln!(
+            "SKIP {}: {reason}",
+            std::thread::current().name().unwrap_or("test")
+        );
+    }
+}
 
 static TEST_WORKTREE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -120,9 +187,26 @@ pub(crate) struct TestWorktree {
 pub(crate) fn test_workspace_root() -> PathBuf {
     let root = std::env::var_os("CHARIOX_TEST_WORKTREE_ROOT")
         .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir);
+        .unwrap_or_else(session_workspace_temp_dir);
     assert!(root.is_absolute(), "test workspace parent must be absolute");
     root
+}
+
+/// A test started as a Chariox job gets a TMPDIR inside the lane's `~/.chariox` state. A session
+/// workspace there is refused at launch ("inside protected Chariox service state"), so every
+/// fixture that runs a command would end with no exit status. Those tests take a workspace
+/// parent that is not service state, which `CHARIOX_TEST_WORKTREE_ROOT` still overrides.
+fn session_workspace_temp_dir() -> PathBuf {
+    let temp = std::env::temp_dir();
+    match crate::git_worktree_placement::preflight_working_directory(
+        &temp,
+        "test workspace",
+        false,
+        &[],
+    ) {
+        Ok(_) => temp,
+        Err(_) => PathBuf::from("/var/tmp"),
+    }
 }
 
 impl TestWorktree {

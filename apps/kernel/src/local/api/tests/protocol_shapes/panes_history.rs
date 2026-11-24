@@ -18,7 +18,7 @@ fn panes_history_508_range_steering_and_initial_content_snapshot() {
         ),
         (
             include_str!("../../types/history.rs"),
-            "658ba76d15dd4ab5fcd3d11a2722dedd21301b4ea99319ca6a9d4d992637f4da",
+            "fabd4cb4472bc386a24ee484dffcb2b50791cd12423c48f1e20bd8ddb3f85f5d",
         ),
         (
             include_str!("../../../../terminal/stream/records.rs"),
@@ -35,7 +35,7 @@ fn panes_history_508_range_steering_and_initial_content_snapshot() {
         "page": {"entry_index": 10, "sequence_end": 13, "sequence_indices": [10,12,13], "sequence_byte_lengths": [2, 3, 2], "fragment_start": 0, "fragment_end": 3, "total_chars": 3, "entry": {"session_id":"s", "provider_run_id":"r", "agent_id":"a", "source_attachment_id":null, "kind":"provider_output", "merge_key":"m", "text":"é中é", "timestamp_ms":1}},
         "request": {"GetSessionHistoryOutline": {"session_id": "s", "agent_ids": ["a"], "latest_prompt_count": 4, "include_prefetched_content": true}},
         "agent": {"agent_id": "a", "turns": [], "prefetched_blobs": []},
-        "blob": {"blob_id": "history:10:10", "kind": "user_prompt", "title": "prompt", "summary": "steer", "sequence_start": 10, "sequence_end": 10, "entry_count": 1, "total_chars": 5, "timestamp_ms": 1, "steering": true},
+        "blob": {"blob_id": "history:10:10", "revision": "blob-revision", "kind": "user_prompt", "title": "prompt", "summary": "steer", "sequence_start": 10, "sequence_end": 10, "entry_count": 1, "total_chars": 5, "timestamp_ms": 1, "steering": true},
         "output": {"record_id": 1, "sequence": 10, "sequence_end": 11, "sequence_byte_lengths": [2, 3], "timestamp_ms": 1, "session_id": "s", "provider_run_id": "r", "kind": "provider_output", "recipient_attachment_ids": ["c"], "pending_recipient_attachment_ids": ["c"], "bytes": [195,169,228,184,173]}
     });
     let page: crate::session_history_page::SessionHistoryPageEntry =
@@ -52,7 +52,7 @@ fn panes_history_508_range_steering_and_initial_content_snapshot() {
     let hash = Sha256::digest(serde_json::to_vec(&snapshot).unwrap());
     assert_eq!(
         format!("{hash:x}"),
-        "0cc528d63467dc46965fdf51075ad217ddc494199eb1388c888f602673443879"
+        "cb68babf038bb9f0cfc09ee681b9d1d96b1f8c6e902291dc369ef578867a4d0a"
     );
 
     // Missing optional metadata preserves the legacy shapes.

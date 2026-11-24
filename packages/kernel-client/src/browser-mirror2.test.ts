@@ -5,7 +5,7 @@ import { createDeflateRaw, constants as zlib } from 'node:zlib'
 import { setFlagsFromString } from 'node:v8'
 import { runInNewContext } from 'node:vm'
 import { validateMirror2Packet, validateMirror2Record, validateMirror2Css, mirror2SandboxCsp, decodeMirror2Records, resolveMirror2Sheets } from './browser-mirror2-security.js'
-import { Mirror2Inflater, browserMirror2MinimumProtocolVersion, attachBrowserMirror2, BrowserMirror2Renderer } from './browser-mirror2.js'
+import { Mirror2Inflater, browserMirror2MinimumProtocolVersion, attachBrowserMirror2, BrowserMirror2Renderer, kernelScriptingCss, kernelScriptingMedia } from './browser-mirror2.js'
 import { RelayFrameReceiver } from './relay-frame-transport.js'
 import type { Mirror2Packet, Mirror2Record } from './browser-mirror2-types.js'
 
@@ -37,10 +37,30 @@ test('MIRROR-P2: a retained resource is a font named by its digest alone', () =>
   for (const extra of [{ data_base64: 'AAAA' }, { mime_type: 'image/png' }, { offset: 0, total: 4 }, { retained: false }]) assert.throws(() => validateMirror2Packet(named(extra), previous), /executable/, JSON.stringify(extra))
 })
 
+test('F17: scripting media tests evaluate as in the kernel page (scripts on), not the script-free mirror document', () => {
+  assert.equal(kernelScriptingMedia('(scripting: none)'), '(scripting: enabled)')
+  assert.equal(kernelScriptingMedia('(scripting: enabled)'), '(scripting: none)')
+  assert.equal(kernelScriptingMedia('(scripting)'), '(scripting: none)')
+  assert.equal(kernelScriptingMedia('not all and (scripting: none)'), 'not all and (scripting: enabled)')
+  assert.equal(kernelScriptingMedia('(scripting: initial-only)'), '(scripting: initial-only)')
+  assert.equal(kernelScriptingMedia('screen and (min-width: 40rem)'), 'screen and (min-width: 40rem)')
+  const css = '@layer utilities { @media (scripting: none) { .js-disabled\\:hidden { display: none; } } }\n@media (scripting) and (min-width: 40rem) { .a { color: red; } }\n'
+  assert.equal(kernelScriptingCss(css), '@layer utilities { @media (scripting: enabled) { .js-disabled\\:hidden { display: none; } } }\n@media (scripting: none) and (min-width: 40rem) { .a { color: red; } }\n')
+  // F17i: selectors, declarations and strings outside @media preludes keep the text.
+  const other = '.scripting\\:\\(scripting\\) { content: "(scripting: none)"; }\n:is(scripting) { color: red; }\n'
+  assert.equal(kernelScriptingCss(other), other)
+  const plain = '.a { color: red; }'
+  assert.equal(kernelScriptingCss(plain), plain)
+  // #1514 review 5994946228: @media-like text inside quoted content and attribute selector values stays the page's text.
+  const quoted = '.a::after { content: "@media (scripting: none) {"; }\n[data-q=\'@media (scripting) {\'] { color: red; }\n.b::before { content: "x\\" @media (scripting: none) {"; }\n@media (scripting: none) { .c { color: blue; } }'
+  assert.equal(kernelScriptingCss(quoted), '.a::after { content: "@media (scripting: none) {"; }\n[data-q=\'@media (scripting) {\'] { color: red; }\n.b::before { content: "x\\" @media (scripting: none) {"; }\n@media (scripting: enabled) { .c { color: blue; } }')
+})
+
 test('MP-10: protocol 629 mirror accepts the full shared resize range', () => {
-  for (const [css_width, css_height] of [[320, 200], [900, 600], [1920, 1080]] as const)
+  // BH: up to the largest kernel page bound, 3840 per side and 3840x2400 in area.
+  for (const [css_width, css_height] of [[320, 200], [900, 600], [1920, 1080], [2560, 1600], [1452, 1866], [3840, 2400], [1600, 3840]] as const)
     assert.doesNotThrow(() => validateMirror2Packet(base(tree(), { css_width, css_height }), new Map()))
-  for (const [css_width, css_height] of [[319, 200], [320, 199], [1921, 1080], [1920, 1081], [900.5, 600]] as const)
+  for (const [css_width, css_height] of [[319, 200], [320, 199], [3842, 1080], [1920, 3842], [3840, 2402], [900.5, 600]] as const)
     assert.throws(() => validateMirror2Packet(base(tree(), { css_width, css_height }), new Map()), /mirror packet bounds/)
 })
 

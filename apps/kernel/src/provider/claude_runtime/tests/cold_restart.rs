@@ -4,6 +4,37 @@ use crate::provider::{
     AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult, ProviderResumeState,
 };
 
+#[test]
+fn idle_child_exit_refuses_the_next_prompt_before_writing() {
+    let worktree = crate::test_support::TestWorktree::new("claude-idle-exit");
+    let run = RuntimeProviderRun::new(
+        "idle-exit-run",
+        &LaunchProviderRequest::new("room", "claude", "claude", "default", "sonnet"),
+        ProviderLaunchResult {
+            endpoint_mode: AgentEndpointMode::External,
+            process_label: "claude-idle-exit".into(),
+            pty_target: None,
+            pty_program: Some("/bin/sh".into()),
+            pty_args: vec!["-c".into(), "exec cat >/dev/null".into()],
+            pty_env: BTreeMap::new(),
+            pty_env_remove: Vec::new(),
+            working_directory: Some(worktree.path().into()),
+            structured_endpoint: None,
+        },
+    );
+    let mut binding = initialize_claude_runtime(&run).unwrap();
+    stop_child(&mut binding.state.child);
+    assert!(binding.state.child.try_wait().unwrap().is_some());
+    let envelope = crate::prompt_assembly::PromptEnvelope::new(
+        "next prompt",
+        "",
+        Vec::new(),
+        crate::prompt_assembly::PromptManifest::current(),
+    );
+    assert!(submit_claude_prompt(&run, &mut binding.state, &envelope).is_err());
+    assert!(binding.state.active_turn_id.is_none());
+}
+
 fn restarted_session_arguments(existing: Option<&str>, submitted: bool) -> (String, String) {
     let worktree = crate::test_support::TestWorktree::new("claude-cold-restart");
     let trace = worktree.path().join("argv.log");

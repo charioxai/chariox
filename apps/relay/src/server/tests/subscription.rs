@@ -30,14 +30,16 @@ async fn subscription_ids_are_owned_by_connected_client() {
     });
 
     let url = format!("ws://{}:{}", addr.ip(), addr.port());
-    let (mut daemon_socket, _) = connect_async_with_retry(&url)
+    let (mut daemon_socket, daemon_socket_handshake) = connect_async_with_retry(&url)
         .await
         .expect("daemon should connect");
     daemon_socket
         .send(Message::Text(
-            serde_json::to_string(&RelayEnvelope::DaemonRegister {
-                registration: test_registration("daemon-1", "machine-1", "Linux", 10),
-            })
+            serde_json::to_string(&signed_register(
+                &url,
+                &daemon_socket_handshake,
+                test_registration("daemon-1", "machine-1", "Linux", 10),
+            ))
             .expect("register should serialize")
             .into(),
         ))
@@ -353,14 +355,16 @@ async fn disconnecting_client_drops_pending_requests_before_reconnect() {
     });
 
     let url = format!("ws://{}:{}", addr.ip(), addr.port());
-    let (mut daemon_socket, _) = connect_async_with_retry(&url)
+    let (mut daemon_socket, daemon_socket_handshake) = connect_async_with_retry(&url)
         .await
         .expect("daemon should connect");
     daemon_socket
         .send(Message::Text(
-            serde_json::to_string(&RelayEnvelope::DaemonRegister {
-                registration: test_registration("daemon-1", "machine-1", "Linux", 10),
-            })
+            serde_json::to_string(&signed_register(
+                &url,
+                &daemon_socket_handshake,
+                test_registration("daemon-1", "machine-1", "Linux", 10),
+            ))
             .expect("register should serialize")
             .into(),
         ))
@@ -589,7 +593,7 @@ async fn close_heard_by_subscriber(
             .expect("relay server should run");
     });
     let url = format!("ws://{}:{}", addr.ip(), addr.port());
-    let (mut daemon_socket, _) = connect_async_with_retry(&url)
+    let (mut daemon_socket, daemon_socket_handshake) = connect_async_with_retry(&url)
         .await
         .expect("daemon should connect");
     let send = |envelope: &RelayEnvelope| {
@@ -600,9 +604,11 @@ async fn close_heard_by_subscriber(
         )
     };
     daemon_socket
-        .send(send(&RelayEnvelope::DaemonRegister {
-            registration: test_registration("daemon-1", "machine-1", "Linux", 10),
-        }))
+        .send(send(&signed_register(
+            &url,
+            &daemon_socket_handshake,
+            test_registration("daemon-1", "machine-1", "Linux", 10),
+        )))
         .await
         .expect("register should send");
     sleep(Duration::from_millis(50)).await;

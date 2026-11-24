@@ -76,7 +76,7 @@ impl KernelRuntimeState {
         record_remote_prompt_dispatch_test_stage(&dispatch.prompt_id, "durable_dispatching_marked");
         #[cfg(test)]
         record_remote_prompt_dispatch_test_stage(&dispatch.prompt_id, "agent_lookup_started");
-        let agent = match self.owned.agent_store.get_agent(&dispatch.agent_id) {
+        let _agent = match self.owned.agent_store.get_agent(&dispatch.agent_id) {
             Ok(agent) => agent,
             Err(error) => {
                 let _ = self
@@ -87,22 +87,7 @@ impl KernelRuntimeState {
         };
         #[cfg(test)]
         record_remote_prompt_dispatch_test_stage(&dispatch.prompt_id, "agent_lookup_ready");
-        #[cfg(test)]
-        record_remote_prompt_dispatch_test_stage(&dispatch.prompt_id, "skill_context_started");
-        let (prompt, _) = match self
-            .prepare_remote_prompt_skill_context(&agent, &dispatch.prompt)
-            .await
-        {
-            Ok(context) => context,
-            Err(error) => {
-                let _ = self
-                    .finish_remote_prompt_dispatch(dispatch, Err(error))
-                    .await;
-                return None;
-            }
-        };
-        #[cfg(test)]
-        record_remote_prompt_dispatch_test_stage(&dispatch.prompt_id, "skill_context_ready");
+        let prompt = dispatch.prompt.clone();
         let attachments = dispatch.attachments.clone();
         #[cfg(test)]
         record_remote_prompt_dispatch_test_stage(
@@ -154,6 +139,9 @@ impl KernelRuntimeState {
                     "remote_provider_run_id": provider_run_id,
                 }),
             ),
+            Err(error)
+                if super::provider_turn_admission::provider_memory_wait_reason(error).is_some() => {
+            }
             Err(error) => crate::logging::warn_with_fields(
                 "daemon.remote_prompt_dispatch",
                 "remote prompt dispatch failed",
@@ -210,8 +198,10 @@ impl KernelRuntimeState {
                 }
             }
             Err(error) => {
+                let waiting_for_memory =
+                    super::provider_turn_admission::provider_memory_wait_reason(&error).is_some();
                 if let Err(settlement_error) = self
-                    .finish_remote_prompt_dispatch(dispatch, Err(error))
+                    .finish_remote_prompt_dispatch(dispatch.clone(), Err(error))
                     .await
                 {
                     crate::logging::warn_with_fields(
@@ -219,6 +209,13 @@ impl KernelRuntimeState {
                         "remote prompt failure could not be settled",
                         serde_json::json!({"error": settlement_error.to_string()}),
                     );
+                    if waiting_for_memory
+                        && self
+                            .remote_prompt_receipt_prompt_is_current(&dispatch)
+                            .unwrap_or(false)
+                    {
+                        return Some(dispatch);
+                    }
                 }
             }
         }

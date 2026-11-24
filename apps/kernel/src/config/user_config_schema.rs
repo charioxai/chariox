@@ -46,6 +46,7 @@ pub(super) fn entries() -> Vec<UserConfigSchemaEntry> {
     vec![
         entry("web_bot_auth.projects", "string", &[], true, true, "runtime_config", "live", "JSON array of project ids whose agent HTTP and browser requests identify this operator using Web Bot Auth."),
         entry("web_bot_auth.signature_agent", "string", &[], true, true, "runtime_config", "live", "Self-hosted public HTTPS origin serving the kernel's Web Bot Auth key directory. Cloud-enrolled kernels use their enrolled issuer."),
+        entry("skills.metadata_budget_percent", "number", &[], true, true, "runtime_config", "next_turn", "Percentage of resolved model context reserved for Auto skill metadata (default 1%)."),
         entry(
             "providers.workspace_live_sync",
             "enum",
@@ -125,7 +126,6 @@ pub(super) fn entries() -> Vec<UserConfigSchemaEntry> {
         entry("kernel.runtime_mcp_host", "string", &[], true, true, "restart_required", "boot", "Runtime MCP bind host."),
         entry("kernel.runtime_mcp_port", "port", &[], true, true, "restart_required", "boot", "Runtime MCP bind port."),
         entry("workflow.max_queues_per_workflow", "u32", &[], true, true, "restart_required", "boot", "Maximum number of prompt queues allowed for one workflow."),
-        entry("workflow.session_default_max_agents", "u32", &[], true, true, "restart_required", "boot", "Default maximum number of agents allowed in a newly created session."),
         entry("workflow.code.max_concurrent", "u32", &[], true, true, "restart_required", "boot", "Maximum workflow-code scheduler concurrency accepted by the kernel."),
         entry("workflow.code.max_nodes", "u32", &[], true, true, "restart_required", "boot", "Maximum nodes accepted in one workflow-code artifact."),
         entry("workflow.code.max_agents", "u32", &[], true, true, "restart_required", "boot", "Maximum generated or bound agents accepted in one workflow-code artifact."),

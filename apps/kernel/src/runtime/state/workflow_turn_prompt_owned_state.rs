@@ -200,37 +200,23 @@ impl KernelRuntimeOwnedState {
         node_id: &str,
         node_instructions: Option<&str>,
     ) -> Option<String> {
-        let root = self
-            .config_projection
-            .snapshot()
-            .workflow_runtime_artifact_root()
-            .join(session_id)
-            .join(workflow_run_id)
-            .join("workflow-instructions");
-        let path = root.join(format!("node-{node_id}.md"));
-        if !path.exists() || node_instructions.is_some() {
-            if let Err(error) = std::fs::create_dir_all(&root) {
-                tracing::debug!(
-                    ?error,
-                    "Failed to create workflow instruction directory at {:?}",
-                    root
-                );
-                return None;
-            }
-            let content = node_instructions.map(str::to_string).unwrap_or_else(|| {
-                format!(
-                    "# Workflow Node Instructions\n\nThis file is daemon-managed. Update node instructions through workflow configuration tooling.\n\nNode: {node_id}\n"
-                )
-            });
-            if let Err(error) = std::fs::write(&path, content) {
-                tracing::debug!(
-                    ?error,
-                    "Failed to write workflow instruction file at {:?}",
-                    path
-                );
-                return None;
-            }
+        // A cancellation must take the session write lock before committing
+        // and deleting the files. Do not recreate them after that transition.
+        let sessions = self.session_store.read();
+        let session = sessions.get_session(session_id).ok()?;
+        if session
+            .workflow_run(workflow_run_id)?
+            .status()
+            .is_terminal()
+        {
+            return None;
         }
-        Some(path.to_string_lossy().to_string())
+        crate::workflow_node_instructions::node_instruction_file(
+            &self.config_projection.snapshot(),
+            session_id,
+            workflow_run_id,
+            node_id,
+            node_instructions,
+        )
     }
 }

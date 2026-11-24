@@ -10,6 +10,21 @@ managed kernel implementation. The change adds no activity lease, shutdown-polic
 branch or protocol shape. Focused regressions exercise both source Room operations;
 they do not establish the full hosted, App-source or managed acceptance matrix.
 
+## MP-08 / MP-09 / MP-10 / MP-11 individual process signals (2026-11-12)
+
+Linux individual cleanup signals carry the retained process birth to the signal
+boundary, open a pidfd, and recheck that birth after opening it. Signals use the
+handle so exit and numeric PID reuse after verification cannot redirect them.
+The same pinning and sending helpers serve the existing retained process handles.
+Missing or exited processes need no signal; inspection and pinning failures
+remain explicit errors. Ordinary and managed kernels use this shared path.
+
+The focused regression exercises individual signaling, child termination and
+tree cleanup on real children from a disposable thread whose seccomp policy
+rejects numeric `kill`. Cleanup and reaping run outside that thread. A separate
+KVM process fixture cancels a Room command with a detached child while allowing
+group kills and process-handle signals. These checks cover this signal seam;
+they do not close the complete MP-10 matrix or the MP-11 security-anchor review.
 
 ## MP-08 / MP-09 / MP-10 / MP-11 disk maintenance isolation (2026-11-05)
 
@@ -454,6 +469,17 @@ accepted work running. No managed-placement branch or shutdown trigger changed.
 Focused source/Chromium checks and cost samples do not close S1-05, managed
 parity, hosted continuity or independent security-anchor review. The lane's
 external handoff records exact heads and which live cells were actually run.
+## MP-08 / MP-10 / MP-11 Skills catalog owner identity (2026-10-26)
+
+Client Skills operations retain their authenticated caller kind, source, user
+and realm through catalog review and publication. Owner checks reuse the Cloud
+authority check, including its local transport rule and remote principal/realm
+pin. Kernel-owned agent and attachment identities retain their existing internal
+authorization path. A matching user ID from another realm or a relay peer cannot
+authorize catalog mutations. This is shared kernel behavior with no placement
+branch or protocol change. Router regressions cover those identities and unchanged
+catalog state; they do not close hosted collaborator acceptance or the broader
+MP-10 matrix. The authorization anchor needs current independent semantic review.
 
 ## MP-08 / MP-10 / MP-11 owned preloaded observation world (2026-10-16)
 
@@ -757,8 +783,7 @@ owner's Stop of a non-terminal run under the 17:12 amendment. New runs
 retain atomic invoking-user proof and their ordinary control path. Web/TUI
 project the historical label; native clients receive the same shared marker.
 
-This is common kernel behavior, not a managed-only policy. Managed upgrade pins
-retain506 as an explicit predecessor and the consuming web floor follows513.
+This is common kernel behavior, not a managed-only policy. The consuming web floor is 513.
 Focused regressions, real pre-proof upgrade cells HW-01/HW-02/HW-03/HW-04 in the agent
 model plan, and current semantic review of this admission anchor are separate
 requirements. No MP item gains acceptance from this inventory alone.

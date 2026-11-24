@@ -13,7 +13,8 @@ import { DatabaseSync } from 'node:sqlite'
 import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
-import { laneChecks, rssSlopeAfterWarmup, verdictOf } from './multi-agent-verdict.mjs'
+import { budgetChecks, laneChecks, rssSlopeAfterWarmup, verdictOf } from './multi-agent-verdict.mjs'
+import { seedRetainedWakes } from './retained-wakes.mjs'
 
 const CLOCK_TICKS_PER_SECOND = 100
 
@@ -64,6 +65,14 @@ function countTaskStates(root) {
   const db = new DatabaseSync(join(root, 'chariox/state.db'), { readOnly: true })
   try { return Object.fromEntries(db.prepare('SELECT state, count(*) AS n FROM agent_tasks GROUP BY state').all().map(row => [row.state ?? 'unreadable', row.n])) } finally { db.close() }
 }
+// The stall watchdog's line (apps/kernel/src/runtime/stall_watchdog.rs) in every kernel log file of the run.
+function countStalls(path) {
+  try {
+    const stat = statSync(path)
+    if (stat.isDirectory()) return readdirSync(path).reduce((sum, name) => sum + countStalls(join(path, name)), 0)
+    return readFileSync(path, 'utf8').split('kernel operation stalled').length - 1
+  } catch { return 0 }
+}
 function countEvents(root) {
   const db = new DatabaseSync(join(root, 'chariox/state.db'), { readOnly: true })
   try { return db.prepare('SELECT count(*) AS n FROM durable_state_events').get().n } finally { db.close() }
@@ -107,11 +116,12 @@ export async function measureMultiAgentLoad({ rpc, connect, root, mcpUrl, pid, s
   for (let i = 0; i < o.leftover; i++) leftover.push((await rpc({ CreateSession: { workspace_id: work, worktree_id: work, alias: `leftover-${i}` } })).SessionCreated.session.id)
   out.leftover_sessions = leftover.length
   const kernel = (await rpc({ RelayStatus: null })).RelayStatus.status.daemon_id
-  if (o.subscriptions.length) {
+  if (o.subscriptions.length || o.retainedWakes > 0) {
     await mainClient.close()
     await stop()
     const targets = [...out.lanes.map(l => l.session_id), ...leftover]
     out.seeded_subscriptions = seedSubscriptions(root, kernel, o.subscriptions, targets, out.lanes.map(l => [l.session_id, l.agent_id]), o.padding)
+    if (o.retainedWakes > 0) out.retained_wakes = seedRetainedWakes(root, out.lanes[0].session_id, o.retainedWakes, o.retainedWakeBytes)
     out.restart_ms = await start()
     // Attachments do not survive a restart; the lanes re-attach like a reconnecting client.
     for (const [i, lane] of out.lanes.entries()) {
@@ -122,6 +132,22 @@ export async function measureMultiAgentLoad({ rpc, connect, root, mcpUrl, pid, s
   // The session the probes read: a lane when there is one, otherwise a leftover session.
   const probeSession = out.lanes[0]?.session_id ?? leftover[0]
   assert(probeSession, 'the drill needs at least one lane or leftover session')
+  const subscribers = []
+  out.client_events = { subscribers: o.subscribers ?? 0, received: 0, transport_closed: 0, sweep_stall_notices: 0, kernel_request_timeouts: 0 }
+  for (let index = 0; index < (o.subscribers ?? 0); index++) {
+    const client = connect()
+    const attached = (await rpc({ AttachToSession: { session_id: probeSession, client_id: `kernelstall-subscriber-${index}`, capability_level: 'FullTerminal' } })).SessionAttached
+    subscribers.push({ client, attachment: attached.attachment.id })
+    client.onKernelEvent(event => {
+      out.client_events.received++
+      if (event.event === 'transport_closed') out.client_events.transport_closed++
+      const text = JSON.stringify(event)
+      if (/supervision sweep stalled|wake delivery checks are degraded/i.test(text)) out.client_events.sweep_stall_notices++
+      if (text.includes('kernel_request_timeout')) out.client_events.kernel_request_timeouts++
+    })
+    await client.subscribeToKernelEvents(probeSession, attached.attachment.id)
+  }
+  save()
   const path = join(work, 'kr06.bin')
   await send({ WriteKernelFile: { path, offset: 0, total_size: 1, data_base64: 'eA==', overwrite: true } }).catch(async () => {
     await probe.send({ WriteKernelFile: { path, offset: 0, total_size: 1, data_base64: 'eA==', overwrite: true } }) })
@@ -158,7 +184,7 @@ export async function measureMultiAgentLoad({ rpc, connect, root, mcpUrl, pid, s
         let n = 0
         tasks.push(paced(o.readerHz, () => { const i = n++ % 3
           return guarded('reader', () => i === 0 ? client.send({ RelayStatus: null })
-            : i === 1 ? client.send({ GetSessionState: { session_id: out.lanes.length ? out.lanes[n % out.lanes.length].session_id : leftover[n % leftover.length] } })
+            : i === 1 ? client.send({ GetSessionState: { session_id: o.retainedWakes > 0 ? probeSession : out.lanes.length ? out.lanes[n % out.lanes.length].session_id : leftover[n % leftover.length] } })
             : client.send({ ReadKernelFile: { path, offset: 0, length: 1 } })) }))
       }
       // Coordinator-like list every two seconds.
@@ -167,7 +193,7 @@ export async function measureMultiAgentLoad({ rpc, connect, root, mcpUrl, pid, s
       // Durable toggles on leftover sessions.
       const toggler = connect(), t = timed(timings, 'SetRoomPinned')
       let pins = 0
-      tasks.push(paced(o.toggleHz, () => guarded('toggle', () => t(() => toggler.send({ SetRoomPinned: { session_id: leftover[pins % leftover.length], pinned: (pins++ & 1) === 0 } })))))
+      tasks.push(paced(o.toggleHz, () => guarded('toggle', () => t(() => toggler.send({ SetRoomPinned: { session_id: o.retainedWakes > 0 ? probeSession : leftover[pins % leftover.length], pinned: (pins++ & 1) === 0 } })))))
       // Lanes: prompts start and are cancelled, so each lane's run state keeps changing.
       for (const [i, lane] of out.lanes.entries()) {
         if (!lane.launch) continue
@@ -209,6 +235,7 @@ export async function measureMultiAgentLoad({ rpc, connect, root, mcpUrl, pid, s
     const rssSamples = []
     // How big the probed Room's state reads, once per five seconds: a Room that keeps its finished turns grows it.
     const stateBytes = []
+    const attachBytes = []
     const end = performance.now() + seconds * 1000
     while (performance.now() < end) {
       const next = performance.now() + 250
@@ -216,6 +243,20 @@ export async function measureMultiAgentLoad({ rpc, connect, root, mcpUrl, pid, s
       await guarded('probe', () => timed(timings, 'GetSessionState')(async () => { const state = await probe.send({ GetSessionState: { session_id: probeSession } }); if (n % 20 === 0) stateBytes.push([performance.now(), JSON.stringify(state).length]); return state }))
       await guarded('probe', () => timed(timings, 'ListSessions')(() => probe.send({ ListSessions: {} })))
       if (n % 4 === 0) {
+        // What a client pays to open a Room: its history outline and one attach view (then the detach).
+        await guarded('probe', () => timed(timings, 'GetSessionHistoryOutline')(async () => {
+          const outline = await probe.send({ GetSessionHistoryOutline: { session_id: probeSession, latest_prompt_count: 20, include_prefetched_content: true } })
+          if (outline.Error) throw new Error(`GetSessionHistoryOutline: ${outline.Error.code}`)
+          return outline }))
+        await guarded('probe', async () => {
+          const view = await timed(timings, 'AttachSessionView')(() => probe.send({ AttachSessionView: { session_id: probeSession, client_id: 'kr06-probe', capability_level: 'FullTerminal' } }))
+          if (!view.SessionViewAttached) throw new Error(`AttachSessionView: ${view.Error?.code ?? Object.keys(view)[0]}`)
+          if (n % 20 === 0) attachBytes.push(JSON.stringify(view).length)
+          // The kernel may have detached a view that stopped pumping already; that is not a load error.
+          await probe.send({ DetachFromSession: { attachment_id: view.SessionViewAttached.attachment.id } }).catch(error => {
+            if (!String(error.message).includes('was not found')) throw error
+          })
+        })
         await guarded('probe', () => timed(timings, 'GetDaemonHealth')(() => probe.send({ GetDaemonHealth: null })))
         await guarded('probe', () => timed(timings, 'McpInitialize')(async () => {
           const response = await fetch(mcpUrl, { method: 'POST', headers: { authorization: 'Bearer responsiveness-probe', 'content-type': 'application/json' },
@@ -237,6 +278,7 @@ export async function measureMultiAgentLoad({ rpc, connect, root, mcpUrl, pid, s
       writer_cpu_percent: +(100 * (after.writer - before.writer) / CLOCK_TICKS_PER_SECOND / elapsed).toFixed(1),
       process_cpu_percent: +(100 * (after.process - before.process) / CLOCK_TICKS_PER_SECOND / elapsed).toFixed(1),
       rss_kb_start: before.rss_kb, rss_kb_end: after.rss_kb, rss_slope_mb_per_min: +((after.rss_kb - before.rss_kb) / 1024 / (elapsed / 60)).toFixed(2),
+      attach_view_bytes_max: attachBytes.length ? Math.max(...attachBytes) : null,
       state_bytes_per_minute: load ? perMinute(stateBytes.map(([at, bytes]) => [at, bytes]), before.at).map(v => v && v.p99_ms) : undefined,
       rss_slope_after_warmup_mb_per_min: load ? rssSlopeAfterWarmup(rssSamples, o.rssWarmupSeconds) : null, rss_samples: load ? rssSamples : undefined,
       log_bytes_per_s: Math.round((after.log_bytes - before.log_bytes) / elapsed), db_bytes_per_s: Math.round((after.db_bytes - before.db_bytes) / elapsed),
@@ -256,6 +298,7 @@ export async function measureMultiAgentLoad({ rpc, connect, root, mcpUrl, pid, s
     const tasks = (await probe.send({ GetSessionState: { session_id: lane.session_id } })).SessionState.session.agent_tasks ?? []
     lane.unsettled_tasks = tasks.filter(task => task.state !== 'done' && task.state !== 'cancelled').length
   }
+  out.stalled_operations = countStalls(logPath)
   const { idle, load } = out.phases
   const p99 = (ph, kind) => ph.latency[kind]?.p99_ms ?? 0
   const checks = {
@@ -275,10 +318,21 @@ export async function measureMultiAgentLoad({ rpc, connect, root, mcpUrl, pid, s
     durable_writer_unreported: { value: load.durable_writer?.committed_batches > 0 ? 0 : 1, limit: 0 },
     load_errors: { value: Object.entries(load.errors).filter(([k]) => !k.endsWith('_last')).reduce((n, [, v]) => n + v, 0), limit: 0 },
     ...laneChecks(out.lanes),
+    ...budgetChecks(JSON.parse(readFileSync(new URL('../../../perf-budgets/kernel.json', import.meta.url), 'utf8')), load.latency, out.stalled_operations),
+    ...(o.subscribers > 0 ? {
+      subscriber_events_missing: { value: out.client_events.received > 0 ? 0 : 1, limit: 0 },
+      subscriber_sweep_stall_notices: { value: out.client_events.sweep_stall_notices, limit: 0 },
+      subscriber_kernel_request_timeouts: { value: out.client_events.kernel_request_timeouts, limit: 0 },
+      subscriber_transport_closed: { value: out.client_events.transport_closed, limit: 0 },
+    } : {}),
   }
   out.checks = checks
   Object.assign(out, verdictOf(checks))
   save()
+  for (const { client, attachment } of subscribers) {
+    await client.close()
+    await rpc({ DetachFromSession: { session_id: probeSession, attachment_id: attachment } }).catch(() => {})
+  }
   for (const lane of out.lanes) await rpc({ EndSession: { session_id: lane.session_id } }).catch(() => { out.lane_cleanup_failed = true })
   await probe.close().catch(() => {})
   return out

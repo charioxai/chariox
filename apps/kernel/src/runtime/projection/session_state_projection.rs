@@ -110,17 +110,20 @@ impl SessionStateProjectionStore {
             .is_some()
     }
 
-    pub(crate) fn update(&self, session: RuntimeSession) -> bool {
+    pub(crate) fn update(&self, mut session: RuntimeSession) -> bool {
         if session.status() == SessionStatus::Ended {
             return self.remove(session.id());
         }
         let session_id = session.id().to_string();
-        let session = Arc::new(session);
         let changed = {
             let mut state = self
                 .state
                 .write()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(current) = state.session_states.get(&session_id) {
+                session.preserve_newer_attachment_membership(current);
+            }
+            let session = Arc::new(session);
             let external_activity_changed =
                 prune_external_observed_activity(&mut state, session.as_ref());
             let list_changed = upsert_session(&mut state.session_list, session.clone());
@@ -151,19 +154,60 @@ impl SessionStateProjectionStore {
 
     /// Patch metadata without re-entering prompt or managed-activity ownership.
     pub(crate) fn note_session_activity(&self, session_id: &str, timestamp_ms: u64) {
+        self.patch_session(session_id, |current| {
+            if timestamp_ms <= current.last_activity_at_ms() {
+                return None;
+            }
+            let mut session = current.clone();
+            session.note_activity_at(timestamp_ms);
+            Some(session)
+        });
+    }
+
+    pub(crate) fn update_attachment_membership(&self, source: &RuntimeSession) -> bool {
+        self.patch_session(source.id(), |current| {
+            let mut session = current.clone();
+            session
+                .preserve_newer_attachment_membership(source)
+                .then_some(session)
+        })
+    }
+
+    pub(crate) fn clear_parked_provider_run(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+    ) -> bool {
+        self.patch_session(session_id, |current| {
+            if current.active_provider_run_id() != Some(provider_run_id) {
+                return None;
+            }
+            let mut session = current.clone();
+            session.set_active_provider_run(None);
+            if session.status() == SessionStatus::Active {
+                session.transition_to(SessionStatus::Parked);
+            }
+            Some(session)
+        })
+    }
+
+    fn patch_session(
+        &self,
+        session_id: &str,
+        patch: impl FnOnce(&RuntimeSession) -> Option<RuntimeSession>,
+    ) -> bool {
         {
             let mut state = self
                 .state
                 .write()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let Some(current) = state.session_states.get(session_id) else {
-                return;
+            let Some(session) = state
+                .session_states
+                .get(session_id)
+                .and_then(|current| patch(current))
+            else {
+                return false;
             };
-            if timestamp_ms <= current.last_activity_at_ms() {
-                return;
-            }
-            let mut session = current.as_ref().clone();
-            session.note_activity_at(timestamp_ms);
             let session = Arc::new(session);
             upsert_session(&mut state.session_list, session.clone());
             state.session_states.insert(session_id.to_owned(), session);
@@ -171,13 +215,13 @@ impl SessionStateProjectionStore {
         }
         self.changes.record_change();
         self.session_change_signal(session_id).record_change();
+        true
     }
 
     pub(crate) fn update_list(&self, sessions: Vec<RuntimeSession>) {
-        let sessions = sessions
+        let mut sessions = sessions
             .into_iter()
             .filter(|session| session.status() != SessionStatus::Ended)
-            .map(Arc::new)
             .collect::<Vec<_>>();
         let changed_session_ids = sessions
             .iter()
@@ -190,6 +234,12 @@ impl SessionStateProjectionStore {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             let mut changed = false;
             let mut external_activity_changed = false;
+            for session in &mut sessions {
+                if let Some(current) = state.session_states.get(session.id()) {
+                    session.preserve_newer_attachment_membership(current);
+                }
+            }
+            let sessions = sessions.into_iter().map(Arc::new).collect::<Vec<_>>();
             for session in &sessions {
                 external_activity_changed |=
                     prune_external_observed_activity(&mut state, session.as_ref());
@@ -689,7 +739,15 @@ mod tests {
     use crate::{DaemonApp, DaemonConfig};
 
     fn session(id: &str) -> RuntimeSession {
-        RuntimeSession::new(id, None, "workspace", "worktree", "machine", "daemon")
+        RuntimeSession::new(
+            id,
+            crate::session::ProjectId::test(),
+            None,
+            "workspace",
+            "worktree",
+            "machine",
+            "daemon",
+        )
     }
 
     fn agent(session_id: &str, agent_id: &str) -> crate::agent::AgentInstance {

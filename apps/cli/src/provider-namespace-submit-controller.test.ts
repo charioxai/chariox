@@ -44,11 +44,10 @@ test("provider namespace submit forwards commands and applies submission state",
           Started: {
             prompt: {
               id: "prompt-started",
-              source_attachment_id: "attachment-started",
               target_agent_id: "agent-submitted",
-              prompt: "/session list\n",
-              status: "running",
-              prompt_origin: " External ",
+              status: "Running",
+              created_at_ms: 1,
+              updated_at_ms: 1,
             },
           },
         },
@@ -72,8 +71,6 @@ test("provider namespace submit forwards commands and applies submission state",
     text: "/opencode session list\n",
     agentId: "agent-submitted",
     promptId: "prompt-started",
-    sourceAttachmentId: "attachment-started",
-    promptOrigin: "external",
   }])
   assert.equal(harness.appliedSessions().at(-1)?.id, "session-submitted")
   assert.deepEqual(harness.streamingAgentIds(), ["agent-submitted"])
@@ -340,8 +337,6 @@ function promptSubmissionResult(sessionId: string, targetAgentId: string | null)
     payload: {
       outcome: {},
       session: runtimeSession(sessionId),
-      agent_activity: {},
-      agent_activity_revision: 1,
     },
     targetAgentId,
     outcomeName: "PromptSubmitted",
@@ -357,11 +352,10 @@ function runtimeSession(id: string, overrides: Partial<RuntimeSession> = {}): Ru
     created_at_ms: 1,
     status: "Created",
     active_provider_run_id: null,
-    attachment_ids: [],
+    connected_cli_count: 0,
     active_prompt: null,
     queued_prompts: [],
     focused_agent_id: null,
-    max_agents: 1,
     agents: [],
     config_state: {
       version: 1,

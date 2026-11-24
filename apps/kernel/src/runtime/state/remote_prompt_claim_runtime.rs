@@ -363,7 +363,10 @@ impl KernelRuntimeState {
                     }
                 }
                 Err(error) => {
-                    if remote_prompt_receipt_is_rejected(&error) {
+                    if remote_prompt_receipt_is_rejected(&error)
+                        || super::provider_turn_admission::provider_memory_wait_reason(&error)
+                            .is_some()
+                    {
                         if let Err(settle_error) = self
                             .settle_verified_remote_prompt_rejection(&dispatch, error)
                             .await
@@ -623,21 +626,7 @@ impl KernelRuntimeState {
             )? {
                 return Ok(());
             }
-            let agent = self.owned.agent_store.get_agent(agent_id)?;
-            let (prompt, _) = match self
-                .prepare_remote_prompt_skill_context(&agent, &dispatch.prompt)
-                .await
-            {
-                Ok(context) => context,
-                Err(error) => {
-                    attempt = attempt.saturating_add(1);
-                    self.log_remote_prompt_recovery_retry(
-                        session_id, agent_id, &dispatch, attempt, &error,
-                    );
-                    tokio::time::sleep(remote_prompt_recovery_delay(attempt)).await;
-                    continue;
-                }
-            };
+            let prompt = dispatch.prompt.clone();
             let attachments = dispatch.attachments.clone();
             let attachments = match tokio::task::spawn_blocking(move || {
                 crate::app::serialize_remote_prompt_attachments(&attachments)
@@ -1284,7 +1273,11 @@ impl KernelRuntimeState {
                     }
                 }
                 Err(DaemonError::NoActivePrompt { .. }) => return,
-                Err(error) if remote_prompt_receipt_is_rejected(&error) => {
+                Err(error)
+                    if remote_prompt_receipt_is_rejected(&error)
+                        || super::provider_turn_admission::provider_memory_wait_reason(&error)
+                            .is_some() =>
+                {
                     match self
                         .settle_verified_remote_prompt_rejection(dispatch, error)
                         .await

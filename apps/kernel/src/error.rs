@@ -1,14 +1,44 @@
 use thiserror::Error;
 mod actionable_refusals;
 mod provider_profile_refusal;
+pub(crate) mod runtime_tool;
 mod user_domain_refusal;
-pub(crate) use actionable_refusals::message as actionable_refusal_message;
+pub(crate) use actionable_refusals::{
+    message as actionable_refusal_message, PROVIDER_DEV_STUB_DISABLED_CODE,
+};
 pub use provider_profile_refusal::ProviderProfileRefusal;
 pub(crate) use user_domain_refusal::HostFailure;
 pub use user_domain_refusal::UserDomainRefusalReason;
 
 use crate::provider::ProviderRunState;
 use crate::session::SessionStatus;
+
+pub(crate) const AGENT_DEADLINE_REACHED: &str = "agent_deadline_reached";
+
+pub(crate) fn agent_deadline_refusal(deadline_ms: u64) -> DaemonError {
+    let message = i64::try_from(deadline_ms)
+        .ok()
+        .and_then(chrono::DateTime::from_timestamp_millis)
+        .map_or_else(
+            || external_request_failure_message(AGENT_DEADLINE_REACHED).into(),
+            |deadline| {
+                let time = deadline.format("%Y-%m-%d %H:%M:%S UTC");
+                format!("This agent’s time limit ended at {time}. Start a new agent for new work.")
+            },
+        );
+    DaemonError::MachineRequest {
+        code: AGENT_DEADLINE_REACHED.into(),
+        message,
+    }
+}
+
+pub(crate) fn is_agent_deadline_refusal(error: &DaemonError) -> bool {
+    matches!(
+        error,
+        DaemonError::MachineRequest { code, .. } | DaemonError::RelayTransport { code, .. }
+            if code == AGENT_DEADLINE_REACHED
+    )
+}
 
 // MP-08 / MP-11: code-based explanations contain no provider/parser values.
 // Keep executor, MCP and final socket/cache projections consistent.
@@ -24,34 +54,8 @@ pub(crate) fn external_request_failure_message(code: &str) -> &'static str {
         "leased_backing_session_refused" => {
             "this session backs a leased agent; use its home session on the kernel that holds the lease"
         }
-        _ => "external request failed; details are available only in the host terminal",
+        _ => "the kernel refused this request without a reason; update the kernel and try again",
     }
-}
-
-/// A session alias the caller chose that cannot be used: the kernel's own sentence names
-/// only what the caller sent and the session that holds the alias. Only that exact shape
-/// qualifies, so no other text can ride on these codes.
-pub(crate) fn is_session_alias_refusal(code: &str, message: &str) -> bool {
-    matches!(code, "session_alias_conflict" | "invalid_session_alias")
-        && message.starts_with("session alias `")
-}
-
-const STEER_UNRECORDED_SUFFIX: &str =
-    "` was delivered but its event was not recorded; do not send it again";
-
-/// The steer a provider holds whose event was not recorded: the kernel's own sentence
-/// names only the steer id it generated. Only that exact shape qualifies.
-pub(crate) fn is_steer_unrecorded_refusal(code: &str, message: &str) -> bool {
-    code == "prompt_steer_event_unrecorded"
-        && message
-            .strip_prefix("steer `")
-            .and_then(|rest| rest.strip_suffix(STEER_UNRECORDED_SUFFIX))
-            .is_some_and(|id| {
-                !id.is_empty()
-                    && id
-                        .bytes()
-                        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
-            })
 }
 
 #[derive(Debug, Error)]
@@ -93,10 +97,14 @@ pub enum DaemonError {
         operation: &'static str,
         message: String,
     },
-    /// MP-08 / MP-11: preserve mapped executor semantics for external grants
-    /// and sudo without retaining any diagnostic values or source error.
-    #[error("{}", external_request_failure_message(.code))]
-    ExternalRequestFailed { code: String, retryable: bool },
+    /// MP-08 / MP-11: preserve mapped executor semantics for external grants and sudo.
+    /// `message` is the kernel's own text with secret-shaped values cut out.
+    #[error("{message}")]
+    ExternalRequestFailed {
+        code: String,
+        message: String,
+        retryable: bool,
+    },
     #[error(
         "relay transport `{operation}` failed with code `{code}` (retryable={retryable}): {message}"
     )]
@@ -305,6 +313,7 @@ pub enum DaemonError {
         worktree_id: String,
         existing_session_id: String,
         existing_operation: Box<String>,
+        existing_workflow_run_id: Option<Box<String>>,
         requested_session_id: String,
         requested_operation: Box<String>,
     },
@@ -374,6 +383,11 @@ pub enum DaemonError {
         resource: String,
         operation: &'static str,
     },
+    #[error("{source}. {action}")]
+    WorkflowStartRefused {
+        source: Box<DaemonError>,
+        action: &'static str,
+    },
     #[error("session-scoped request `{operation}` requires authenticated user identity")]
     MissingSessionCallerIdentity { operation: String },
     #[error("session `{session_id}` has no active prompt")]
@@ -382,6 +396,8 @@ pub enum DaemonError {
     ConfigChangeRejectedWhilePromptRunning { session_id: String },
     #[error("provider adapter `{adapter_key}` was not found")]
     ProviderAdapterNotFound { adapter_key: String },
+    #[error("{}", actionable_refusals::PROVIDER_DEV_STUB_DISABLED_MESSAGE)]
+    ProviderDevStubDisabled,
     #[error("provider adapter `{adapter_key}` does not support managed workspace live sync write enforcement: {message}")]
     ProviderWorkspaceLiveSyncUnsupported {
         adapter_key: String,
@@ -417,6 +433,11 @@ pub enum DaemonError {
     NoActiveProviderRun { session_id: String },
     #[error("provider run `{provider_run_id}` has no PTY process")]
     PtyProcessNotFound { provider_run_id: String },
+    #[error("idle provider process for run `{provider_run_id}` exited before prompt submission")]
+    IdleProviderProcessExited { provider_run_id: String },
+
+    #[error("OpenCode rejected the steering prompt with HTTP 409 Conflict")]
+    OpenCodeSteerConflict,
 
     /// Internal proof that a steer was not submitted or was explicitly rejected.
     /// Unclassified errors may follow a provider write and cannot authorize replay.
@@ -547,11 +568,19 @@ pub enum DaemonError {
     },
     #[error("agent alias `{alias}` is already in use for session `{session_id}`")]
     AgentAliasConflict { session_id: String, alias: String },
-    #[error("session `{session_id}` has reached the maximum of {max_agents} agents")]
-    AgentLimitReached { session_id: String, max_agents: i32 },
 }
 
 impl DaemonError {
+    pub(crate) fn workspace_claim_holding_run_id(&self) -> Option<&str> {
+        match self {
+            Self::WorkspaceClaimConflict {
+                existing_workflow_run_id,
+                ..
+            } => existing_workflow_run_id.as_deref().map(String::as_str),
+            _ => None,
+        }
+    }
+
     pub(crate) fn steer_not_submitted(self, steering: bool) -> Self {
         if steering {
             Self::ProviderPromptSteerRejected {
@@ -606,6 +635,19 @@ impl DaemonError {
                 code,
                 ..
             } if code != "target_disconnected"
+        )
+    }
+
+    /// The worker's browser controller answered `ok: false`: a final answer to
+    /// the action, so no receipt recovery has anything to find.
+    pub(crate) fn is_browser_controller_failure(&self) -> bool {
+        matches!(
+            self,
+            Self::RelayTransport {
+                operation: "read relay peer response",
+                code,
+                ..
+            } if code == crate::runtime::browser_controller_process::BROWSER_CONTROLLER_FAILED_CODE
         )
     }
 

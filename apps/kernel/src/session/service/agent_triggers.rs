@@ -134,6 +134,7 @@ impl SessionService {
         subscription_id: String,
         display_name: String,
         prompt: Option<String>,
+        busy_policy: AgentTriggerBusyPolicy,
     ) -> Result<AgentTrigger, DaemonError> {
         self.get_session(session_id)?;
         let prompt = prompt
@@ -152,6 +153,7 @@ impl SessionService {
             subscription_id,
             display_name,
             prompt,
+            busy_policy,
             unix_epoch_ms(),
         );
         Ok(self
@@ -185,6 +187,7 @@ impl SessionService {
             subscription_id,
             display_name,
             Some(prompt),
+            AgentTriggerBusyPolicy::Queue,
         )?;
         let stored = self
             .agent_trigger_session_mut(session_id)?
@@ -223,6 +226,7 @@ impl SessionService {
             prompt: trigger.prompt().into(),
             busy_policy: trigger.busy_policy(),
             responsible: trigger.responsible_for().is_some(),
+            notification: None,
         }))
     }
 
@@ -250,17 +254,6 @@ impl SessionService {
             .iter_mut()
             .find(|trigger| trigger.id() == trigger_id)
             .ok_or_else(|| agent_trigger_not_found(session_id, trigger_id))?;
-        if busy_policy.is_some()
-            && matches!(
-                trigger.source(),
-                crate::session::AgentTriggerSource::Notification { .. }
-            )
-        {
-            return Err(DaemonError::LocalTransport {
-                operation: "agent trigger update",
-                message: "a notification trigger always queues; it has no busy policy".to_string(),
-            });
-        }
         trigger.update(busy_policy, prompt, enabled, unix_epoch_ms());
         Ok(trigger.clone())
     }
@@ -319,6 +312,7 @@ impl SessionService {
                         prompt: trigger.prompt().to_string(),
                         busy_policy: trigger.busy_policy(),
                         responsible: false,
+                        notification: None,
                     });
                 }
             }
@@ -393,6 +387,22 @@ impl SessionService {
         };
         trigger.defer_dispatch(now_ms);
         Ok(Some(trigger.clone()))
+    }
+
+    pub(crate) fn count_agent_trigger_joined_occurrence(
+        &mut self,
+        session_id: &str,
+        trigger_id: &str,
+    ) -> Result<(), DaemonError> {
+        let session = self.agent_trigger_session_mut(session_id)?;
+        if let Some(trigger) = session
+            .agent_triggers_mut()
+            .iter_mut()
+            .find(|trigger| trigger.id() == trigger_id)
+        {
+            trigger.count_joined_occurrence();
+        }
+        Ok(())
     }
 
     pub(crate) fn mark_agent_trigger_coalesced(

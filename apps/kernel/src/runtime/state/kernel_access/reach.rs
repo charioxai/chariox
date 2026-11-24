@@ -74,10 +74,12 @@ pub(crate) fn reach_need(request: &LocalDaemonRequest) -> ReachNeed {
     // the acquisition setting. Kernel-wide file access and every other kernel mutation need /sudo.
     if matches!(
         request,
-        LocalDaemonRequest::ListGatewayKernels(_)
+        LocalDaemonRequest::GetAgentReleaseNotes { .. }
+            | LocalDaemonRequest::ListGatewayKernels(_)
             | LocalDaemonRequest::ListSessions(_)
             | LocalDaemonRequest::ResolveSession(_)
             | LocalDaemonRequest::GetSessionState(_)
+            | LocalDaemonRequest::ListFinishedRoomTasks(_)
             | LocalDaemonRequest::CreateSession(_)
             | LocalDaemonRequest::ListAgents(_)
             | LocalDaemonRequest::QueryRecall(_)
@@ -262,5 +264,19 @@ fn reach_error(message: &str) -> DaemonError {
     DaemonError::LocalTransport {
         operation: "agent reach",
         message: message.into(),
+    }
+}
+
+#[cfg(test)]
+mod kernel_terminal_tests {
+    use super::*;
+
+    #[test]
+    fn a_room_agents_reach_grant_does_not_cover_the_kernels_terminals() {
+        let request = LocalDaemonRequest::KernelTerminal(crate::local::KernelTerminalRequest {
+            directory: None,
+            operation: crate::local::RoomTerminalOperation::List,
+        });
+        assert_ne!(reach_need(&request), ReachNeed::Room);
     }
 }

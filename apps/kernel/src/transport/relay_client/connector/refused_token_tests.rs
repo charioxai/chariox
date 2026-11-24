@@ -165,7 +165,9 @@ async fn connection_the_relay_drops_after_registration_backs_off() {
             counter.fetch_add(1, Ordering::SeqCst);
             tokio::spawn(async move {
                 use futures_util::StreamExt;
-                if let Ok(mut socket) = tokio_tungstenite::accept_async(stream).await {
+                if let Ok(mut socket) =
+                    crate::transport::relay_socket_connect::accept_as_relay(stream).await
+                {
                     let _ = socket.next().await;
                     let _ = socket.close(None).await;
                 }
@@ -195,9 +197,11 @@ async fn silent_relay_socket_is_replaced_without_a_kernel_restart() {
             let (stream, _) = listener.accept().await.unwrap();
             let registered = registered_tx.clone();
             peers.spawn(async move {
-                use futures_util::StreamExt;
-                let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
-                let _ = socket.next().await;
+                let mut socket = crate::transport::relay_socket_connect::accept_as_relay(stream)
+                    .await
+                    .unwrap();
+                crate::transport::relay_socket_connect::acknowledge_test_registration(&mut socket)
+                    .await;
                 let _ = registered.send(());
                 // Retain both halves without reading or replying, like a half-open link.
                 std::future::pending::<()>().await;
@@ -353,4 +357,37 @@ async fn token_refused_by_one_relay_is_tried_at_the_corrected_relay() {
         registered,
         "the kernel never tried the corrected relay with the token the first relay refused"
     );
+}
+
+#[test]
+fn refusal_the_reader_holds_counts_when_another_branch_ends_the_connection() {
+    // The reader's exit closes the writer, so a heartbeat can fail before the
+    // connection loop reads the relay's reason; that reason must still count.
+    use socket_thread::ReaderEnd;
+    use tokio_tungstenite::tungstenite::protocol::{frame::coding::CloseCode, CloseFrame};
+    let left_by_reader = |end: ReaderEnd| {
+        let (sender, mut reader_end) = oneshot::channel();
+        let _ = sender.send(end);
+        let refused = reader_end_refused_token(&mut reader_end);
+        // A verdict is read once; the connection never counts it twice.
+        assert!(!reader_end_refused_token(&mut reader_end));
+        refused
+    };
+    assert!(left_by_reader(ReaderEnd::RelayClose(
+        "invalid relay token".into()
+    )));
+    assert!(left_by_reader(ReaderEnd::SocketClose(Some(CloseFrame {
+        code: CloseCode::Policy,
+        reason: "relay token expired".into(),
+    }))));
+    assert!(!left_by_reader(ReaderEnd::RelayClose(
+        "relay connection idle timeout".into()
+    )));
+    assert!(!left_by_reader(ReaderEnd::SocketClose(None)));
+    assert!(!left_by_reader(ReaderEnd::Failed(
+        "relay read failed or ended"
+    )));
+
+    let (_still_reading, mut reader_end) = oneshot::channel::<ReaderEnd>();
+    assert!(!reader_end_refused_token(&mut reader_end));
 }

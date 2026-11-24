@@ -86,26 +86,20 @@ impl SourceError {
 
 /// The kernel the entries come from.
 pub(crate) trait EnvironmentSource: Send + Sync {
-    fn read(
-        &self,
-        project_id: &str,
-    ) -> impl Future<Output = Result<SourceSnapshot, SourceError>> + Send;
+    fn read(&self) -> impl Future<Output = Result<SourceSnapshot, SourceError>> + Send;
     fn pull_secret(
         &self,
-        project_id: &str,
         name: &str,
     ) -> impl Future<Output = Result<Option<Zeroizing<String>>, SourceError>> + Send;
     /// The slice of a file at `offset`, or `None` when the source has no such file.
     fn pull_file(
         &self,
-        project_id: &str,
         path: &str,
         offset: u64,
     ) -> impl Future<Output = Result<Option<FileSlice>, SourceError>> + Send;
     /// The registration of an MCP or skill entry, or `None` when the source has none of that name.
     fn pull_registration(
         &self,
-        project_id: &str,
         kind: EnvironmentEntryKind,
         name: &str,
     ) -> impl Future<Output = Result<Option<Registration>, SourceError>> + Send;
@@ -329,7 +323,7 @@ pub(crate) async fn run_import<S: EnvironmentSource>(
     requested: Option<Vec<EnvironmentEntryRef>>,
 ) {
     let snapshot = tokio::select! {
-        snapshot = source.read(target.project_id) => snapshot,
+        snapshot = source.read() => snapshot,
         _ = handle.stopped() => return,
     };
     let snapshot = match snapshot {
@@ -486,7 +480,7 @@ async fn import_entry<S: EnvironmentSource>(
                 return Err(ImportFailure::Entry("Already in the Vault".into()));
             }
             let value = source
-                .pull_secret(target.project_id, &entry.name)
+                .pull_secret(&entry.name)
                 .await
                 .map_err(ImportFailure::from)?
                 .ok_or_else(missing_at_source)?;
@@ -518,7 +512,7 @@ async fn import_entry<S: EnvironmentSource>(
                 return Err(ImportFailure::Entry("Already registered here".into()));
             }
             let registration = source
-                .pull_registration(target.project_id, entry.kind, &entry.name)
+                .pull_registration(entry.kind, &entry.name)
                 .await
                 .map_err(ImportFailure::from)?
                 .ok_or_else(missing_at_source)?;
@@ -540,7 +534,7 @@ async fn import_entry<S: EnvironmentSource>(
             if file_here(target, &entry.name) {
                 return Err(ImportFailure::Entry("Already present here".into()));
             }
-            let first = pull_slice(source, target, &entry.name, 0, missing_at_source).await?;
+            let first = pull_slice(source, &entry.name, 0, missing_at_source).await?;
             let size = first.size_bytes;
             if size > MAX_IMPORT_FILE_BYTES
                 || landed_bytes.saturating_add(size) > MAX_IMPORT_TOTAL_BYTES
@@ -562,7 +556,7 @@ async fn import_entry<S: EnvironmentSource>(
                 .map(|offset| async move {
                     (
                         offset,
-                        pull_slice(source, target, &entry.name, offset, missing_at_source).await,
+                        pull_slice(source, &entry.name, offset, missing_at_source).await,
                     )
                 })
                 .buffered(SLICES_IN_FLIGHT);
@@ -592,13 +586,12 @@ async fn import_entry<S: EnvironmentSource>(
 
 async fn pull_slice<S: EnvironmentSource>(
     source: &S,
-    target: &ImportTarget<'_>,
     path: &str,
     offset: u64,
     missing_at_source: impl FnOnce() -> ImportFailure,
 ) -> Result<FileSlice, ImportFailure> {
     source
-        .pull_file(target.project_id, path, offset)
+        .pull_file(path, offset)
         .await
         .map_err(ImportFailure::from)?
         .ok_or_else(missing_at_source)
@@ -685,7 +678,8 @@ mod tests {
     use super::*;
     use crate::local::{EnvironmentOperationKind, EnvironmentOperationView};
     use crate::mcp::{CharioxMcpRegistry, CharioxMcpServerConfig};
-    use crate::skill::CharioxSkillRegistry;
+    use crate::skill::service::SkillCatalogService;
+    use crate::skill::storage::SkillCatalogStorage;
     use std::collections::HashMap;
     use std::sync::atomic::Ordering;
     use std::sync::{Arc, Mutex};
@@ -768,14 +762,21 @@ mod tests {
     /// The registrations of the kernel under test on disk, written the way the user's are.
     struct DiskRegistrations {
         mcps: CharioxMcpRegistry,
-        skills: CharioxSkillRegistry,
+        skills: SkillCatalogService,
     }
+
+    const PROJECT: &str = "project-1";
 
     impl DiskRegistrations {
         fn under(root: &Path) -> Self {
+            let home = root.join("home");
+            std::fs::create_dir_all(&home).unwrap();
+            let durable =
+                crate::durable_state::DurableKernelStateStore::open(root.join("kernel.db"))
+                    .unwrap();
             Self {
                 mcps: CharioxMcpRegistry::new(vec![root.join("mcps")]),
-                skills: CharioxSkillRegistry::new(vec![root.join("skills")]),
+                skills: SkillCatalogService::new(SkillCatalogStorage::new(&home, durable).unwrap()),
             }
         }
     }
@@ -784,7 +785,12 @@ mod tests {
         fn has(&self, kind: EnvironmentEntryKind, name: &str) -> bool {
             match kind {
                 EnvironmentEntryKind::Mcp => self.mcps.get(name).unwrap().is_some(),
-                EnvironmentEntryKind::Skill => self.skills.get(name).unwrap().is_some(),
+                EnvironmentEntryKind::Skill => self
+                    .skills
+                    .project_skill_names(PROJECT)
+                    .unwrap()
+                    .iter()
+                    .any(|held| held == name),
                 EnvironmentEntryKind::Secret | EnvironmentEntryKind::File => false,
             }
         }
@@ -792,7 +798,12 @@ mod tests {
             Ok(None)
         }
         fn install_if_absent(&self, registration: Registration) -> Result<bool, String> {
-            super::super::registrations::install_if_absent(&self.mcps, &self.skills, registration)
+            super::super::registrations::install_if_absent(
+                &self.mcps,
+                Some(&self.skills),
+                PROJECT,
+                registration,
+            )
         }
     }
 
@@ -852,14 +863,10 @@ mod tests {
     }
 
     impl EnvironmentSource for FakeSource {
-        async fn read(&self, _: &str) -> Result<SourceSnapshot, SourceError> {
+        async fn read(&self) -> Result<SourceSnapshot, SourceError> {
             self.snapshot.clone()
         }
-        async fn pull_secret(
-            &self,
-            _: &str,
-            name: &str,
-        ) -> Result<Option<Zeroizing<String>>, SourceError> {
+        async fn pull_secret(&self, name: &str) -> Result<Option<Zeroizing<String>>, SourceError> {
             self.pulls.lock().unwrap().push(name.into());
             if let Some(gate) = &self.secret_gate {
                 gate.notified().await;
@@ -871,7 +878,6 @@ mod tests {
         }
         async fn pull_registration(
             &self,
-            _: &str,
             kind: EnvironmentEntryKind,
             name: &str,
         ) -> Result<Option<Registration>, SourceError> {
@@ -889,7 +895,6 @@ mod tests {
         }
         async fn pull_file(
             &self,
-            _: &str,
             path: &str,
             offset: u64,
         ) -> Result<Option<FileSlice>, SourceError> {
@@ -1734,31 +1739,30 @@ mod tests {
     async fn a_skill_saved_while_its_import_is_pending_is_kept_byte_for_byte() {
         let rig = Rig::new();
         let host = DiskRegistrations::under(&rig.root);
-        let origin = CharioxSkillRegistry::new(vec![rig.root.join("origin")]);
-        let write_skill = |dir: &Path, name: &str, body: &str| {
-            std::fs::create_dir_all(dir).unwrap();
+        let staging = rig.root.join("staging");
+        let package = |name: &str, body: &str| {
+            let dir = staging.join(format!("{name}-{:032x}", rand::random::<u128>()));
+            std::fs::create_dir_all(&dir).unwrap();
             std::fs::write(
                 dir.join("SKILL.md"),
                 format!("---\nname: {name}\ndescription: {body}\n---\n{body}\n"),
             )
             .unwrap();
+            crate::skill::package_skill_directory(&dir).unwrap()
         };
-        let staging = rig.root.join("staging");
         let mut pulled = Vec::new();
         for name in ["late", "free", "broken"] {
-            write_skill(&staging.join(name), name, "from the source");
-            origin.upsert_from_path(&staging.join(name)).unwrap();
-            let mut package = origin.package(name).unwrap().unwrap();
+            let mut pulled_package = package(name, "from the source");
             if name == "broken" {
-                package.files[0].sha256 = "0".repeat(64);
+                pulled_package.files[0].sha256 = "0".repeat(64);
             }
             pulled.push((
                 EnvironmentEntryKind::Skill,
                 name.to_string(),
-                Registration::Skill(package),
+                Registration::Skill(pulled_package),
             ));
         }
-        let local_dir = rig.root.join("skills").join("late");
+        let local = package("late", "typed locally");
         let view = import_while_saving(
             &rig,
             &host,
@@ -1766,8 +1770,10 @@ mod tests {
             &["late", "free", "broken"],
             pulled,
             || {
-                write_skill(&local_dir, "late", "typed locally");
-                std::fs::write(local_dir.join("notes.txt"), "mine").unwrap();
+                assert!(host
+                    .skills
+                    .install_project_skill_if_absent(PROJECT, &local)
+                    .unwrap());
             },
         )
         .await;
@@ -1787,18 +1793,19 @@ mod tests {
             Some("Already registered here")
         );
         assert_eq!(
-            std::fs::read_to_string(local_dir.join("SKILL.md")).unwrap(),
-            "---\nname: late\ndescription: typed locally\n---\ntyped locally\n"
+            host.skills
+                .project_skill_package(PROJECT, "late")
+                .unwrap()
+                .unwrap()
+                .version_hash,
+            local.version_hash
         );
+        let mut names = host.skills.project_skill_names(PROJECT).unwrap();
+        names.sort();
         assert_eq!(
-            std::fs::read_to_string(local_dir.join("notes.txt")).unwrap(),
-            "mine"
-        );
-        assert!(host.skills.get("free").unwrap().is_some());
-        assert_eq!(
-            entries_in(&rig.root.join("skills")),
+            names,
             vec!["free".to_string(), "late".into()],
-            "the refused and the failed entries leave no directory behind, not even a backup"
+            "the refused and the failed entries leave no skill behind"
         );
     }
 }

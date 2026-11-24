@@ -29,6 +29,7 @@ pub(super) struct Team {
     pub(super) child_run: String,
     pub(super) task: crate::durable_state::agent_lifecycle::AgentTaskExecution,
     pub(super) correction: bool,
+    _worktree: crate::test_support::TestWorktree,
 }
 
 /// A parent and its child in one room; the child has an active turn and a task, not yet settled.
@@ -47,6 +48,7 @@ pub(super) async fn team_with(
         room,
         parent,
         mut kids,
+        _worktree,
         ..
     } = family(label, 1, settle_cancelled, parent_running).await;
     let Kid {
@@ -65,6 +67,7 @@ pub(super) async fn team_with(
         child_run,
         task,
         correction,
+        _worktree,
     }
 }
 
@@ -125,12 +128,31 @@ async fn family_in(
     with_spawn_key: bool,
     history_root: Option<std::path::PathBuf>,
 ) -> Family {
-    let worktree = crate::test_support::TestWorktree::new(label);
     let mut config = crate::config::DaemonConfig::for_tests();
-    config.room_agent_tools = true;
     if let Some(root) = history_root {
         config = config.with_session_history_root(root);
     }
+    family_from_config(
+        label,
+        children,
+        settle_cancelled,
+        parent_running,
+        with_spawn_key,
+        config,
+    )
+    .await
+}
+
+async fn family_from_config(
+    label: &str,
+    children: usize,
+    settle_cancelled: Option<bool>,
+    parent_running: bool,
+    with_spawn_key: bool,
+    mut config: crate::config::DaemonConfig,
+) -> Family {
+    let worktree = crate::test_support::TestWorktree::new(label);
+    config.room_agent_tools = true;
     let mut app = DaemonApp::bootstrap(config).unwrap();
     let (session, parent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(worktree.session_request())
@@ -327,6 +349,197 @@ async fn a_child_stopped_by_its_deadline_says_so() {
 }
 
 #[tokio::test]
+async fn provider_failure_reason_reaches_the_parent() {
+    let team = team_with("provider-failure-reason", None, true).await;
+    let runtime = &team.runtime;
+    let parent_run = runtime
+        .owned
+        .provider_store
+        .get_run_for_agent(&team.room, &team.parent)
+        .expect("the parent has an active run");
+    let token = parent_run
+        .runtime_mcp_auth_token()
+        .expect("parent's tool auth");
+    let get_child = || {
+        runtime.dispatch_authenticated_runtime_tool_call(
+            token,
+            crate::transport::runtime_tools::GET_SESSION_AGENT_TOOL,
+            serde_json::json!({"agent": "@child"}),
+        )
+    };
+    let reason = "The selected model refused this request.";
+    runtime
+        .fail_owned_provider_prompt(&team.room, &team.child_run, reason, true)
+        .await
+        .unwrap();
+
+    let events = child_finished(&team);
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].payload["outcome"]["reason"], reason);
+    assert_eq!(events[0].payload["outcome"]["kind"], "model_refused");
+    assert!(events[0].payload["finished_at_ms"].as_u64().is_some());
+    let child = get_child().await.unwrap();
+    assert!(child.ok, "{:?}", child.payload);
+    assert_eq!(child.payload["agent"]["state"], "error");
+    assert_eq!(
+        child.payload["agent"]["failure"]["outcome"]["reason"],
+        reason
+    );
+    assert!(child.payload["agent"]["failure"]["finished_at_ms"]
+        .as_u64()
+        .is_some());
+}
+
+#[tokio::test]
+async fn provider_failure_reason_deadline_overrides_the_last_error() {
+    let team = team_with("provider-failure-deadline", None, true).await;
+    let runtime = &team.runtime;
+    runtime
+        .fail_owned_provider_prompt(
+            &team.room,
+            &team.child_run,
+            "Connection closed unexpectedly.",
+            true,
+        )
+        .await
+        .unwrap();
+    let parent_run = runtime
+        .owned
+        .provider_store
+        .get_run_for_agent(&team.room, &team.parent)
+        .expect("the parent has an active run");
+    let token = parent_run
+        .runtime_mcp_auth_token()
+        .expect("parent's tool auth");
+    let get_child = || {
+        runtime.dispatch_authenticated_runtime_tool_call(
+            token,
+            crate::transport::runtime_tools::GET_SESSION_AGENT_TOOL,
+            serde_json::json!({"agent": "@child"}),
+        )
+    };
+    assert_eq!(
+        get_child().await.unwrap().payload["agent"]["state"],
+        "error"
+    );
+    let store = &runtime.owned.durable_state_store;
+    let now = crate::session::unix_epoch_ms();
+    store
+        .agent_lifecycle(Operation::SetDeadline {
+            room: team.room.clone(),
+            agent: team.child.clone(),
+            deadline: Some(now),
+            inherited: Vec::new(),
+        })
+        .unwrap();
+    runtime.tick_agent_deadlines(now).await.unwrap();
+    let child = get_child().await.unwrap();
+    assert_eq!(child.payload["agent"]["state"], "ended (deadline)");
+    assert!(child.payload["agent"]["failure"].is_null());
+    let listed = runtime
+        .dispatch_authenticated_runtime_tool_call(
+            token,
+            crate::transport::runtime_tools::LIST_SESSION_AGENTS_TOOL,
+            serde_json::json!({}),
+        )
+        .await
+        .unwrap();
+    let child = listed.payload["agents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|agent| agent["alias"] == "child")
+        .unwrap();
+    assert_eq!(child["state"], "ended (deadline)");
+    let session = runtime
+        .session_agent_snapshot(&team.room, &team.parent)
+        .unwrap()
+        .0;
+    let activity = runtime.agent_activity_for_session(&session);
+    assert_eq!(
+        serde_json::to_value(&activity[&team.child]).unwrap()["status"],
+        "ended_deadline"
+    );
+}
+
+#[test]
+fn provider_failure_reason_survives_kernel_restart() {
+    let root = crate::test_support::TestTempDir::new("provider-failure-restart");
+    let mut config =
+        crate::config::DaemonConfig::for_tests().with_session_history_root(root.join("history"));
+    config.room_agent_tools = true;
+    config.user_config.state.path = Some(root.join("state.db").display().to_string());
+    config.user_config.history.operational.path =
+        Some(root.join("events.db").display().to_string());
+    config.user_config.credential_vault.path = root.join("vault.json").display().to_string();
+    let executor = || {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+    };
+    let reason = "Connection closed while waiting for the provider.";
+
+    let (room, parent, worktree, ended_at) = executor().block_on(async {
+        let Family {
+            runtime,
+            room,
+            parent,
+            parent_run,
+            kids,
+            _worktree,
+        } = family_from_config("provider-failure-cold", 1, None, true, true, config.clone()).await;
+        let kid = &kids[0];
+        runtime
+            .fail_owned_provider_prompt(&room, &kid.child_run, reason, true)
+            .await
+            .unwrap();
+        let settlement = runtime
+            .owned
+            .operational_history_store
+            .load_prompt_settlement_event(&room, &kid.child, kid.child_prompt.id())
+            .unwrap()
+            .unwrap();
+        let ended_at =
+            settlement.metadata[crate::history::PROMPT_SETTLED_AT_MS_METADATA_KEY].clone();
+        runtime
+            .owned
+            .complete_local_prompt_without_advance(&room, &parent, Some(&parent_run))
+            .unwrap()
+            .expect("the parent ends its inspection turn before restarting");
+        (room, parent, _worktree, ended_at)
+    });
+
+    // Stop the first runtime's background tasks as well as dropping its kernel state.
+    executor().block_on(async {
+        let mut app = DaemonApp::bootstrap(config).unwrap();
+        crate::test_support::admit_room_test_turn(&mut app, &room, &parent);
+        let parent_run = app.providers().get_run_for_agent(&room, &parent).unwrap();
+        let token = parent_run.runtime_mcp_auth_token().unwrap();
+        let app = Arc::new(Mutex::new(app));
+        let runtime = owned_runtime_state(&app).await;
+        let child = runtime
+            .dispatch_authenticated_runtime_tool_call(
+                token,
+                crate::transport::runtime_tools::GET_SESSION_AGENT_TOOL,
+                serde_json::json!({"agent": "@child"}),
+            )
+            .await
+            .unwrap();
+        assert!(child.ok, "{:?}", child.payload);
+        assert_eq!(child.payload["agent"]["state"], "error");
+        assert_eq!(
+            child.payload["agent"]["failure"],
+            serde_json::json!({
+                "outcome": { "kind": "network", "reason": reason, "retryable": true },
+                "finished_at_ms": ended_at,
+            })
+        );
+    });
+    drop(worktree);
+}
+
+#[tokio::test]
 async fn a_finish_wakes_a_parked_parent_in_the_same_second() {
     let team = team("child-finished-wake", false, false).await;
     let started = std::time::Instant::now();
@@ -363,6 +576,48 @@ async fn a_finish_steers_a_running_parent() {
     );
 }
 
+/// The wake carries the child's report, and the kernel closes the event the parent no longer has to
+/// read: the parent finishes on the wake alone, with no inbox read or acknowledgement.
+#[tokio::test]
+async fn a_finish_wake_carries_the_childs_report_and_closes_its_event() {
+    let team = team("child-finished-inline", false, true).await;
+    team.runtime
+        .finish_agent_task_settlement(
+            Some((team.task.clone(), team.correction)),
+            &team.child_prompt,
+        )
+        .await
+        .unwrap();
+    let event = &child_finished(&team)[0];
+    let prompt_id = event.prompt_id.clone().expect("the wake prompt");
+    let entries = team
+        .runtime
+        .owned
+        .operational_history_store
+        .load_session_history_entries(&team.room, Some(&team.parent))
+        .unwrap();
+    let wake = entries
+        .iter()
+        .find(|entry| {
+            entry.merge_key.as_deref()
+                == Some(crate::history::steering_prompt_merge_key(&prompt_id).as_str())
+        })
+        .unwrap_or_else(|| panic!("no steered wake row: {entries:?}"));
+    for expected in [
+        "a sub-agent of yours: a report",
+        "\"success\":true",
+        &team.task.task_id,
+    ] {
+        assert!(
+            wake.text.contains(expected),
+            "missing {expected}: {}",
+            wake.text
+        );
+    }
+    assert!(!wake.text.contains("chariox.events.inbox"), "{}", wake.text);
+    assert_eq!(event.state, "handled", "{event:?}");
+}
+
 /// The steered wake reaches the provider as a user message of the running turn.
 /// The kernel must own it in history: otherwise the transcript observer imports
 /// that message as an external turn and stores the turn's answer a second time.
@@ -392,10 +647,7 @@ async fn a_steering_finish_is_recorded_as_a_kernel_owned_prompt() {
                     == Some(crate::history::steering_prompt_merge_key(&prompt_id).as_str())
         })
         .unwrap_or_else(|| panic!("the steered wake has no kernel-owned prompt row: {entries:?}"));
-    assert!(
-        steer.text.starts_with("Inbox: at least 1 new event"),
-        "{steer:?}"
-    );
+    assert!(steer.text.starts_with("Inbox: 1 new event"), "{steer:?}");
     assert_ne!(
         steer.prompt_origin,
         Some(crate::session::PromptOrigin::External),
@@ -463,6 +715,7 @@ async fn a_steering_finish_is_not_shown_to_clients_as_a_user_prompt() {
                     agent_ids: Some(vec![team.parent.clone()]),
                     latest_prompt_count: Some(4),
                     include_prefetched_content,
+                    after_sequence: None,
                     cursor: None,
                 },
             )
@@ -690,6 +943,69 @@ async fn a_cancelled_child_tells_the_parent_once_whichever_route_ends_it() {
     assert_eq!(events[0].payload["success"], false);
     assert_eq!(events[0].payload["outcome"]["kind"], "cancelled");
     assert!(events[0].urgent);
+}
+
+/// Case H: the owner's cancel of a child's card reached the parent as `child_finished`
+/// "cancelled" with an empty reason; every cancel outcome says why.
+#[tokio::test]
+async fn a_cancelled_childs_finish_says_why() {
+    let team = team_with("child-finished-cancel-reason", None, false).await;
+    let Outcome::Task(cancelled) = team
+        .runtime
+        .owned
+        .durable_state_store
+        .agent_lifecycle(Operation::CancelTask {
+            task: team.task.task_id.clone(),
+            owner: "local".into(),
+            revision: team.task.revision,
+        })
+        .unwrap()
+    else {
+        panic!("cancelled")
+    };
+    assert!(!cancelled.reason.is_empty());
+    team.runtime
+        .cancel_agent_task_resources(&cancelled)
+        .await
+        .unwrap();
+    team.runtime
+        .owned
+        .complete_local_prompt_without_advance(&team.room, &team.child, Some(&team.child_run))
+        .unwrap();
+    team.runtime
+        .finish_agent_task_settlement(Some((cancelled.clone(), false)), &team.child_prompt)
+        .await
+        .unwrap();
+    let events = child_finished(&team);
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0].payload["outcome"]["kind"], "cancelled");
+    assert_eq!(
+        events[0].payload["outcome"]["reason"],
+        cancelled.reason.as_str(),
+        "{events:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_child_turn_cancelled_by_its_provider_says_why() {
+    let team = team("child-finished-turn-cancel-reason", true, false).await;
+    assert_eq!(
+        team.task.state,
+        crate::durable_state::agent_lifecycle::ExecutionState::Cancelled
+    );
+    team.runtime
+        .finish_agent_task_settlement(
+            Some((team.task.clone(), team.correction)),
+            &team.child_prompt,
+        )
+        .await
+        .unwrap();
+    let events = child_finished(&team);
+    assert_eq!(events.len(), 1, "{events:?}");
+    let reason = events[0].payload["outcome"]["reason"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(!reason.is_empty(), "{events:?}");
 }
 
 async fn end_kid(family: &Family, kid: &Kid) {

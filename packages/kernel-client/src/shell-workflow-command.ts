@@ -293,7 +293,7 @@ export async function executeWorkflowCommand(
       if (!nextValue) {
         return { ok: false, message: "usage: workflow max-turns <count|off>" }
       }
-      const attachmentId = await resolveShellAttachmentId(context, deps)
+      const attachmentId = resolveShellAttachmentId(context)
       if (!attachmentId.ok) {
         return { ok: false, message: attachmentId.message }
       }

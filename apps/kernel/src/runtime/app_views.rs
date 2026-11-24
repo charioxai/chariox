@@ -175,22 +175,17 @@ pub(crate) struct ViewCall {
     session: String,
     number: u64,
     cancelled: tokio::sync::watch::Receiver<()>,
-    browser_grant: Option<super::kernel_browser_host::KernelBrowserResourceGrant>,
+    run_fence: Option<super::kernel_browser_host::AgentRunFence>,
     /// A call that no Tab hosts is cancelled by its caller dropping it, never by a Tab going away.
     _detached: Option<tokio::sync::watch::Sender<()>>,
 }
 
 impl ViewCall {
-    pub(crate) fn retain_browser_grant(
-        &mut self,
-        grant: super::kernel_browser_host::KernelBrowserResourceGrant,
-    ) {
-        self.browser_grant = Some(grant);
+    pub(crate) fn retain_run_fence(&mut self, grant: super::kernel_browser_host::AgentRunFence) {
+        self.run_fence = Some(grant);
     }
-    pub(crate) fn browser_grant(
-        &self,
-    ) -> Option<super::kernel_browser_host::KernelBrowserResourceGrant> {
-        self.browser_grant.clone()
+    pub(crate) fn run_fence(&self) -> Option<super::kernel_browser_host::AgentRunFence> {
+        self.run_fence.clone()
     }
     pub(crate) fn is_cancelled(&self) -> bool {
         self.cancelled.has_changed().is_err()
@@ -206,7 +201,7 @@ impl ViewCall {
             crate::runtime::app_operation_budget::AppOperationBudget::from_supervisor(move || {
                 cancelled.has_changed().is_err()
             });
-        match self.browser_grant.clone() {
+        match self.run_fence.clone() {
             Some(grant) => budget.with_resource(grant),
             None => budget,
         }
@@ -870,7 +865,7 @@ impl AppViews {
             session: session.to_owned(),
             number,
             cancelled,
-            browser_grant: None,
+            run_fence: None,
             _detached: None,
         }
     }
@@ -883,7 +878,7 @@ impl AppViews {
             session: String::new(),
             number: self.2.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1,
             cancelled,
-            browser_grant: None,
+            run_fence: None,
             _detached: Some(keep),
         }
     }

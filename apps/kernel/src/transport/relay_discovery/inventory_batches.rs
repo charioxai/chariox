@@ -13,11 +13,12 @@ pub(super) async fn query(
         .cloud_relay
         .as_ref()
         .ok_or_else(|| invalid("Cloud profile missing"))?;
-    let targets: Vec<_> = authorization::visible_targets(profile)
-        .await?
-        .ok_or_else(|| invalid("kernel inventory missing"))?
-        .into_iter()
-        .collect();
+    let targets: Vec<_> =
+        authorization::granted_targets(profile, authorization::GrantedKernels::for_query(&query))
+            .await?
+            .ok_or_else(|| invalid("kernel inventory missing"))?
+            .into_iter()
+            .collect();
     let mut combined = None;
     for targets in targets.chunks(64) {
         let token = authorization::cloud_metadata_token_for_targets(
@@ -84,6 +85,11 @@ fn merge(into: &mut RelayEnvelope, next: RelayEnvelope) -> Result<(), DaemonErro
                     }
                 }
                 existing.available_providers.sort();
+                for kernel in machine.update_needed_kernels {
+                    if !existing.update_needed_kernels.contains(&kernel) {
+                        existing.update_needed_kernels.push(kernel);
+                    }
+                }
             } else {
                 all.push(machine);
             }
@@ -167,6 +173,7 @@ mod tests {
                     organization_name: Some(organization.into()),
                     subscription_type: None,
                 }],
+                update_needed_kernels: Vec::new(),
             }]),
             kernels: None,
             kernel: None,

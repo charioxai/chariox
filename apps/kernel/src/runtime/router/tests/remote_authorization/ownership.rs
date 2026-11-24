@@ -179,6 +179,8 @@ async fn remote_owned_session_objects_record_caller_user_inner() {
     let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
 
     let spawn_one = LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+        initial_task: None,
+        peer_spawn: None,
         max_context_tokens: None,
         no_subscribe: false,
         account_profile: None,
@@ -209,6 +211,8 @@ async fn remote_owned_session_objects_record_caller_user_inner() {
     assert_eq!(agent_one.owner_user_id(), "user-2");
 
     let spawn_two = LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+        initial_task: None,
+        peer_spawn: None,
         max_context_tokens: None,
         no_subscribe: false,
         account_profile: None,
@@ -531,6 +535,14 @@ async fn remote_user_cannot_control_other_users_agents_or_endpoint_inner() {
         .await
         .expect("collaborator should create an endpoint for the node they inserted");
 
+    let mute = LocalDaemonRequest::SetInboxMute(crate::local::SetInboxMuteRequest {
+        origin: crate::local::PersonInboxOrigin {
+            session_id: session_id.clone(),
+            agent_id: local_agent_id.clone(),
+        },
+        muted: true,
+    });
+
     let invoke = LocalDaemonRequest::InvokeWorkflowEndpoint(InvokeWorkflowEndpointRequest {
         session_id: session_id.clone(),
         workflow_ref: workflow_id.clone(),
@@ -539,16 +551,53 @@ async fn remote_user_cannot_control_other_users_agents_or_endpoint_inner() {
         queue_ref: None,
         publication_invocation: None,
     });
-    assert_ownership_denied(
-        router
-            .dispatch(remote_command_for_request(&invoke, Some("user-2")), invoke)
+    for muted in [false, true] {
+        if muted {
+            router
+                .dispatch(
+                    KernelCommand::from_local_request("mute-entry-agent", None, None, &mute),
+                    mute.clone(),
+                )
+                .await
+                .expect("Room owner should be able to mute the entry agent");
+        }
+        let refusal = router
+            .dispatch(
+                remote_command_for_request(&invoke, Some("user-2")),
+                invoke.clone(),
+            )
             .await
-            .expect_err("other user should not invoke local endpoint"),
-        "user-2",
-        DEFAULT_LOCAL_USER_ID,
-    );
+            .expect_err("other user should not invoke local endpoint");
+        let DaemonError::WorkflowStartRefused { source, action } = refusal else {
+            panic!("expected workflow start refusal with a next step, got {refusal:?}");
+        };
+        assert!(action.contains("endpoint owner’s account"));
+        assert_ownership_denied(*source, "user-2", DEFAULT_LOCAL_USER_ID);
+
+        let read = LocalDaemonRequest::GetPersonInbox(crate::local::GetPersonInboxRequest);
+        let LocalDaemonResponse::PersonInbox { cards, .. } = router
+            .dispatch(
+                KernelCommand::from_local_request("read-owner-inbox", None, None, &read),
+                read,
+            )
+            .await
+            .expect("Room owner should be able to read the Inbox")
+        else {
+            panic!("expected Inbox");
+        };
+        let [card] = cards.as_slice() else {
+            panic!("expected one refusal notice, got {cards:?}");
+        };
+        let crate::local::PersonInboxCardBody::Notice(notice) = &card.body else {
+            panic!("expected refusal notice, got {card:?}");
+        };
+        assert_eq!(notice.agent_id, local_agent_id);
+        assert_eq!(notice.read, muted);
+    }
 
     let spawn_user_two = LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+        initial_task: None,
+        peer_spawn: None,
         max_context_tokens: None,
         no_subscribe: false,
         account_profile: None,

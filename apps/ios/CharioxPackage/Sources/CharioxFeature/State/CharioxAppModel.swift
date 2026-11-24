@@ -22,7 +22,7 @@ public final class CharioxAppModel {
   public internal(set) var providerCatalog: ProviderCatalog?
   public internal(set) var providerAuthStatuses: [String: ProviderAuthStatus]
   public internal(set) var mcpServers: [CharioxMcpServerConfig]
-  public internal(set) var skills: [CharioxSkillMetadata]
+  public internal(set) var skills: [SkillProjection]
   public internal(set) var eventStreamState: EventStreamState
   public internal(set) var connectionState: ConnectionState
   public internal(set) var statusMessage: String
@@ -282,13 +282,22 @@ public final class CharioxAppModel {
 
   public func refreshSkills() async {
     await perform("Loading skills") {
+      // MP-08 / MP-10 / MP-11: old protocol foundations do not imply runtime support.
+      let status = try await client.send(.runtimeCapabilities, to: try endpointURL())
+      guard case .runtimeCapabilities(let capabilities) = status,
+            capabilities.contains(skillsRuntimeCapability) else {
+        skills = []
+        return "Skills v2 requires an updated kernel runtime."
+      }
       let response = try await client.send(
-        .listSkills(workspaceID: workspacePath.nilIfBlank),
+        .skillsV2(.catalog(.init(project_id: selectedSession?.projectID,
+                                agent_id: selectedSession?.focusedAgentID))),
         to: try endpointURL()
       )
-      guard case .skillsListed(let nextSkills) = response else {
+      guard case .skillsV2(.catalog(let catalog)) = response else {
         throw KernelClientError.unexpectedResponse(String(describing: response))
       }
+      let nextSkills = catalog.skills
       skills = nextSkills
       return "Loaded \(nextSkills.count) skill\(nextSkills.count == 1 ? "" : "s")."
     }
@@ -373,12 +382,14 @@ public final class CharioxAppModel {
         ),
         to: try endpointURL()
       )
-      guard case .promptSubmitted(let updatedSession) = response else {
+      guard case .promptSubmitted(let sessionID) = response, sessionID == session.id else {
         throw KernelClientError.unexpectedResponse(String(describing: response))
       }
-      upsert(updatedSession)
-      selectedSessionID = updatedSession.id
       promptDraft = ""
+      if let state = try? await client.send(.getSessionState(sessionID: sessionID), to: endpointURL()),
+         case .sessionState(let updatedSession) = state {
+        upsert(updatedSession)
+      }
       return "Prompt submitted."
     }
   }
@@ -424,8 +435,16 @@ public final class CharioxAppModel {
         ),
         to: try endpointURL()
       )
-      guard case .interactionResponded(_, let updatedSession) = response else {
+      guard case .interactionResponded = response else {
         throw KernelClientError.unexpectedResponse(String(describing: response))
+      }
+      // The answer is an acknowledgement; the Room is read from the kernel.
+      let state = try await client.send(
+        .getSessionState(sessionID: session.id),
+        to: try endpointURL()
+      )
+      guard case .sessionState(let updatedSession) = state else {
+        throw KernelClientError.unexpectedResponse(String(describing: state))
       }
       upsert(updatedSession)
       selectedSessionID = updatedSession.id

@@ -542,6 +542,7 @@ pub(super) async fn serve_connection(
             socket,
             KernelConnectionClass::Unauthenticated,
             Some(peer),
+            None,
         )
         .await;
     }

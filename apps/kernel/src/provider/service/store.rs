@@ -21,6 +21,8 @@ pub struct ProviderProcessServiceStore {
     inner: Arc<CheckedMutex<ProviderProcessService>>,
     spawn_lanes: ProviderRunOperationLanes,
     agent_move_admission: Arc<CheckedMutex<Option<crate::agent_move::AgentMoveStore>>>,
+    skill_prompt_bridge:
+        Arc<CheckedMutex<Option<Arc<dyn crate::provider::skill_delivery::SkillPromptBridge>>>>,
     managed_admission_gate:
         Arc<CheckedMutex<Option<Arc<crate::runtime::state::ManagedKernelQuiescenceGate>>>>,
 }
@@ -51,6 +53,7 @@ impl ProviderProcessServiceStore {
             inner: Arc::new(CheckedMutex::new("provider_service", service)),
             spawn_lanes: Default::default(),
             agent_move_admission: Arc::new(CheckedMutex::new("provider_move_admission", None)),
+            skill_prompt_bridge: Arc::new(CheckedMutex::new("provider_skill_prompt_bridge", None)),
             managed_admission_gate: Arc::new(CheckedMutex::new("provider_managed_admission", None)),
         }
     }
@@ -78,6 +81,16 @@ impl ProviderProcessServiceStore {
             Some(store) => store.with_admission(session, agent, preparation, action),
             None => action(),
         }
+    }
+
+    pub(crate) fn set_skill_prompt_bridge(
+        &self,
+        bridge: Arc<dyn crate::provider::skill_delivery::SkillPromptBridge>,
+    ) {
+        *self
+            .skill_prompt_bridge
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(bridge);
     }
 
     pub(crate) fn set_managed_kernel_admission_gate(
@@ -169,6 +182,12 @@ impl ProviderProcessServiceStore {
         &self,
     ) -> crate::provider::ProviderRunActorCompletionSignal {
         self.read().run_actor_completion_signal()
+    }
+
+    /// Claude runs (all, or `only` that one) whose process ended while idle,
+    /// each with whether it ended before it took any turn.
+    pub(crate) fn claude_runs_exited_while_idle(&self, only: Option<&str>) -> Vec<(String, bool)> {
+        self.read().claude_runs_exited_while_idle(only)
     }
 
     /// A per-run execution permit orders credential-bearing spawn against retirement.
@@ -450,6 +469,30 @@ impl ProviderProcessServiceStore {
         self.write().terminate_run_provider_only(session_id, run_id)
     }
 
+    pub(crate) fn retire_run_before_prompt_write(
+        &self,
+        session_id: &str,
+        run_id: &str,
+        prompt_id: &str,
+    ) -> Result<RuntimeProviderRun, DaemonError> {
+        let _spawn = self.acquire_spawn_permit(run_id)?;
+        let mut service = self.write();
+        service.terminate_run_provider_only(session_id, run_id)?;
+        service
+            .get_run_mut(run_id)?
+            .preserve_unwritten_prompt(prompt_id);
+        service.get_run(run_id)
+    }
+
+    pub(crate) fn run_ids_for_session(&self, session_id: &str) -> Vec<String> {
+        self.read()
+            .runs
+            .values()
+            .filter(|run| run.session_id() == session_id)
+            .map(|run| run.id().to_owned())
+            .collect()
+    }
+
     pub(crate) fn run_owners_for_session(&self, session_id: &str) -> Vec<(String, String)> {
         self.read()
             .runs
@@ -493,12 +536,30 @@ impl ProviderProcessServiceStore {
         self.read().get_run_for_agent(session_id, agent_id)
     }
 
+    pub fn get_tool_run_for_agent(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Option<RuntimeProviderRun> {
+        self.read().get_tool_run_for_agent(session_id, agent_id)
+    }
+
     pub fn get_latest_run_for_agent(
         &self,
         session_id: &str,
         agent_id: &str,
     ) -> Option<RuntimeProviderRun> {
         self.read().get_latest_run_for_agent(session_id, agent_id)
+    }
+
+    /// An unbound prompt waits for its agent's newest run, so a run that a
+    /// later one has replaced cannot hold it.
+    pub(crate) fn agent_started_a_later_run(&self, run: &RuntimeProviderRun) -> bool {
+        self.read().runs.values().any(|other| {
+            other.session_id() == run.session_id()
+                && other.agent_instance_id() == run.agent_instance_id()
+                && other.start_order() > run.start_order()
+        })
     }
 
     pub fn get_session_run_for_provider(
@@ -723,6 +784,35 @@ impl ProviderProcessServiceStore {
         self.write().clear_runtime(provider_run_id)
     }
 
+    pub(crate) fn prepare_skill_prompt(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        prompt_id: &str,
+        origin_prompt_id: &str,
+        run: &RuntimeProviderRun,
+        mut envelope: crate::prompt_assembly::PromptEnvelope,
+    ) -> Result<crate::prompt_assembly::PromptEnvelope, DaemonError> {
+        let bridge = self
+            .skill_prompt_bridge
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        if let Some(bridge) = bridge {
+            if let Some(delivery) = bridge.prepare(
+                run,
+                session_id,
+                agent_id,
+                prompt_id,
+                origin_prompt_id,
+                &envelope,
+            )? {
+                envelope = envelope.with_skill_delivery(delivery);
+            }
+        }
+        Ok(envelope)
+    }
+
     #[allow(
         clippy::too_many_arguments,
         reason = "Preserve the existing enqueue_structured_prompt_submit operation signature and explicit context arguments"
@@ -741,10 +831,47 @@ impl ProviderProcessServiceStore {
         mode: PromptAssemblyMode,
         private_assessment_evidence: Option<crate::prompt_assembly::AssessmentEvidence>,
         steering: bool,
+        render_handoff: Option<&crate::provider::switch_turn::RenderHandoff<'_>>,
     ) -> Result<
         tokio::sync::oneshot::Receiver<crate::provider::ProviderPromptSubmitReceipt>,
         DaemonError,
     > {
+        let envelope = super::prompt_envelope::assemble(
+            run,
+            prompt,
+            hidden_system_context,
+            attachments,
+            mode,
+            private_assessment_evidence,
+            steering,
+            origin_prompt_id,
+        )?;
+        let envelope = if let Some(render_handoff) = render_handoff {
+            let (mut envelope, handoff) = self.prepare_switch_skill_prompt(
+                run,
+                &prompt_id,
+                origin_prompt_id,
+                envelope,
+                false,
+                render_handoff,
+            )?;
+            if let Some(handoff) = handoff {
+                envelope.visible_user_prompt = crate::provider::encode_account_handoff(
+                    &handoff.text,
+                    &envelope.visible_user_prompt,
+                );
+            }
+            envelope
+        } else {
+            self.prepare_skill_prompt(
+                &session_id,
+                &agent_id,
+                &prompt_id,
+                origin_prompt_id,
+                run,
+                envelope,
+            )?
+        };
         let move_session = session_id.clone();
         let move_agent = agent_id.clone();
         self.with_agent_move_admission(&move_session, Some(&move_agent), None, || {
@@ -753,14 +880,8 @@ impl ProviderProcessServiceStore {
                 provider_run_id,
                 agent_id,
                 prompt_id,
-                origin_prompt_id,
                 run,
-                prompt,
-                hidden_system_context,
-                attachments,
-                mode,
-                private_assessment_evidence,
-                steering,
+                envelope,
             )
         })
     }
@@ -900,6 +1021,83 @@ impl ProviderProcessServiceStore {
             .bind_opencode_runtime_for_test(run_id, endpoint, session_id);
     }
 
+    pub(crate) fn acknowledge_skill_prompt_delivery(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        prompt_id: &str,
+        provider_run_id: &str,
+    ) -> Result<(), DaemonError> {
+        let bridge = self
+            .skill_prompt_bridge
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        if let Some(bridge) = bridge {
+            let run = self.get_run(provider_run_id)?;
+            bridge.acknowledge_prompt(&run, session_id, agent_id, prompt_id)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn acknowledge_skill_hook_delivery(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        prompt_id: &str,
+        provider_run_id: &str,
+    ) -> Result<(), DaemonError> {
+        let bridge = self
+            .skill_prompt_bridge
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        if let Some(bridge) = bridge {
+            let run = self.get_run(provider_run_id)?;
+            bridge.acknowledge_hook_context(&run, session_id, agent_id, prompt_id)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn prepare_typed_leased_skills(
+        &self,
+        run: &RuntimeProviderRun,
+        context: &crate::transport::relay_peer::RemoteWorkspaceLiveSyncContext,
+        prompt: &crate::session::PromptQueueItem,
+        lease_id: &str,
+        names: Option<&crate::skill::leased_names::LeasedSkillNames>,
+    ) -> Result<crate::provider::skill_delivery::ProviderSkillDelivery, DaemonError> {
+        let bridge = self
+            .skill_prompt_bridge
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "prepare native worker skills",
+                message: "Skills startup is incomplete; reattach the native provider".into(),
+            })?;
+        bridge.prepare_typed_leased(run, context, prompt, lease_id, names)
+    }
+
+    pub(crate) fn acknowledge_typed_leased_skills(
+        &self,
+        provider_run_id: &str,
+        context: &crate::transport::relay_peer::RemoteWorkspaceLiveSyncContext,
+        prompt_id: &str,
+        skills: &[crate::provider::skill_delivery::TypedSkillLoad],
+    ) -> Result<(), DaemonError> {
+        let bridge = self
+            .skill_prompt_bridge
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        if let Some(bridge) = bridge {
+            let run = self.get_run(provider_run_id)?;
+            bridge.acknowledge_typed_leased(&run, context, prompt_id, skills)?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn apply_prompt_submit_acknowledgement(
         &self,
         provider_run_id: &str,
@@ -950,6 +1148,15 @@ impl ProviderProcessServiceStore {
         provider_run_id: &str,
         batch: &ProviderPromptSignalBatch,
     ) -> Result<(), DaemonError> {
+        let bridge = self
+            .skill_prompt_bridge
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        if let Some(bridge) = bridge {
+            let run = self.get_run(provider_run_id)?;
+            bridge.acknowledge_tools(&run, batch)?;
+        }
         self.write()
             .apply_structured_output_metadata(provider_run_id, batch)
     }

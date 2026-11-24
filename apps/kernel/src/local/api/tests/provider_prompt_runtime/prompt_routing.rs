@@ -55,7 +55,6 @@ fn local_request_api_rejects_config_updates_for_native_tui_provider_agents() {
                 worktree_id: None,
                 clear_worktree_id: false,
                 reason: None,
-                self_settings: None,
                 usage_limit: None,
             },
         ))
@@ -194,6 +193,8 @@ fn focusing_another_agent_during_a_prompt_keeps_the_working_run_active() {
 
     let spawned = match harness
         .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            initial_task: None,
+            peer_spawn: None,
             max_context_tokens: None,
             no_subscribe: false,
             account_profile: None,
@@ -384,6 +385,8 @@ fn spawning_agent_during_active_prompt_keeps_snapshot_on_working_run() {
         .expect("prompt should start");
     let spawned = match harness
         .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            initial_task: None,
+            peer_spawn: None,
             max_context_tokens: None,
             no_subscribe: false,
             account_profile: None,
@@ -467,9 +470,13 @@ fn local_request_api_auto_launches_provider_run_for_prompt() {
     match response {
         LocalDaemonResponse::PromptSubmitted {
             outcome: PromptSubmissionOutcome::Started { prompt },
-            session,
-            ..
+            session_id,
         } => {
+            let session = harness.wait_for_session_where(
+                &session_id,
+                "started prompt in Room state",
+                |session| session.active_prompt_for_agent(prompt_agent.id()).is_some(),
+            );
             assert_eq!(prompt.status(), crate::session::PromptStatus::Running);
             assert!(session.active_provider_run_id().is_some());
             assert!(session.active_prompt_for_agent(prompt_agent.id()).is_some());
@@ -518,6 +525,15 @@ fn local_request_api_rejects_prompt_for_unavailable_provider_account() {
         crate::account_profile::ProviderAccountAuthState::NotConfigured
     );
 
+    harness.with_app(|app| {
+        crate::test_support::seed_account_models(
+            &app.provider_catalog_projection_store(),
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            "codex",
+            &unavailable_account.profile_id,
+            &["gpt-5.4"],
+        )
+    });
     harness
         .dispatch(LocalDaemonRequest::UpdateAgentProfile(
             UpdateAgentProfileRequest {
@@ -704,7 +720,10 @@ fn local_request_api_rejects_prompt_for_fresh_exhausted_provider_account() {
         message.contains("usage allowance and credits are exhausted"),
         "{message}"
     );
-    assert!(message.contains("refresh"), "{message}");
+    assert!(
+        message.contains("select another account in Provider Accounts"),
+        "{message}"
+    );
     assert!(
         !message.contains(&exhausted_account.profile_id),
         "the public error must not expose the stable internal account id: {message}"
@@ -748,6 +767,15 @@ fn local_request_api_rejects_new_prompt_when_busy_agent_account_becomes_unavaila
             &account.profile_id,
         )
         .expect("account should become authenticated")
+    });
+    harness.with_app(|app| {
+        crate::test_support::seed_account_models(
+            &app.provider_catalog_projection_store(),
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            "codex",
+            &account.profile_id,
+            &["gpt-5.4"],
+        )
     });
     harness
         .dispatch(LocalDaemonRequest::UpdateAgentProfile(
@@ -847,7 +875,10 @@ fn local_request_api_rejects_new_prompt_when_busy_agent_account_becomes_unavaila
         .expect_err("an expired account must block a new queued prompt");
     let message = error.to_string();
     assert!(message.contains("Busy account"), "{message}");
-    assert!(message.contains("reconnect"), "{message}");
+    assert!(
+        message.contains("choose Sign in for this account in Provider Accounts"),
+        "{message}"
+    );
 
     let session_state = harness.with_app(|app| {
         app.sessions()

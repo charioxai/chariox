@@ -209,7 +209,6 @@ export type UserAppView = {
   generation: string
   origin: string
   browser?: { tab_id: string; generation: number }
-  access?: import("./kernel-types-kernel-browser.js").UserDomainWindowAccess
 }
 
 export type AppFrontendBundle = {

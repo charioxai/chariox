@@ -127,8 +127,8 @@ v2 follows rrweb's model instead of a per-credit computed-style dump:
   its arrival (below the client's 8 s request timeout).
 - **Compact wire (489).** A reset packet carries the binding and header
   (`subscription_id`, `tab_id`, `generation`, `document_id`, `css_width`,
-  `css_height`, `device_scale_factor`, `scroll`, `focused`, `selection`,
-  `fragment` (492)). A
+  `css_height`, `device_scale_factor`, `scroll`, `focused`, `focus_visible`, `page_wheel`,
+  `selection`, `fragment` (492)). A
   delta carries `wire`, `sequence`, its ops, and only the header fields that
   differ from its base (an explicit `null` replaces); its base is
   `sequence - 1`, and the viewer restores the rest from its binding and the
@@ -193,6 +193,8 @@ v2 follows rrweb's model instead of a per-credit computed-style dump:
   reconciled every drain. A frame document is laid out in the compat mode of its source (981): the viewer builds it
   in standards mode unless its record says `compat: "quirks"` (a frame's initial viewer document is quirks mode, which
   stretches `height: 100%` tables such as an image grid's rows); a top-level quirks page stays in the standards-mode sandbox.
+  The sandbox runs no scripts while the kernel page does, so the viewer evaluates `scripting` media tests as the kernel
+  page does: in `@media` preludes and `<style media>` it reads `(scripting: none)` as false and `(scripting)`/`(scripting: enabled)` as true.
 - **UA state (492).** State without an attribute footprint is sampled from a
   declared set (elements with `popover`, dialogs, checkboxes, custom elements)
   on toggle/close/input/change, attribute changes, morphs and the 2 s cursor:
@@ -212,7 +214,17 @@ v2 follows rrweb's model instead of a per-credit computed-style dump:
   Focus transitions travel explicitly (492): viewer `focusin` sends `focus`,
   focus leaving to nothing while the mirror keeps focus sends `blur` (the
   kernel blurs only while that control is still its live focus), and a kernel
-  header `focused: null` blurs the viewer's control. The caret (a collapsed
+  header `focused: null` blurs the viewer's control. `focus_visible` is whether
+  the page's focused element matches `:focus-visible` (a key moved or followed
+  the focus, not a mouse press); the viewer focuses its copy with the same
+  `focusVisible`, so it draws the focus ring only where the page does. `page_wheel`
+  (1014) is whether the page's own script takes the wheel: a non-passive `wheel`/
+  `mousewheel` listener on window, document, html or body (a smooth-scroll or
+  full-page library), read with DevTools from the page's main world on a snapshot
+  and, at most once a second, after the page changed its DOM. With it the viewer
+  sends every wheel over the document to the kernel's page as `scroll` (steps
+  waiting behind a reply add up) and never scrolls its copy itself; the copy
+  follows the page's positions. Without it the viewer scrolls its copy. The caret (a collapsed
   selection) travels inside editable content only. A press's focus/selection
   waits up to 50 ms for the rest of its click, so a menu the page renders a
   frame later shares the packet; after an acknowledged viewer focus, packets
@@ -451,7 +463,10 @@ client must select the existing display transport.
 
 Tiles use the same protected compositor capture as display, bounded to visible
 regions and cropped by the kernel. Native controls, canvas/video/WebGL/plugin content, unavailable resources,
-closed shadows and cross-origin frames use opaque tiles. Structured mirror
+closed shadows and cross-origin frames use opaque tiles. A video tile carries its
+poster as a resource key (as an image's source): while the tile has no still (a
+transformed or cross-origin video gets none) the client shows the poster, which is
+what Chrome draws before playback; a still replaces it. Structured mirror
 capture inspects open shadow descendants using trusted CDP metadata; Chromium
 user-agent shadow roots do not turn ordinary controls into secret fields.
 Same-origin frame tile bounds are translated into root compositor coordinates.

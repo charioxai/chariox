@@ -42,7 +42,21 @@ impl crate::app::DaemonApp {
                         .into(),
                 });
             }
-            return Ok(lease.owner_user_id.clone());
+            return match agent.as_ref().and_then(|agent| {
+                crate::provider::canonical_provider_family(agent.provider())
+                    .map(|provider| (agent, provider))
+            }) {
+                Some((agent, provider)) => {
+                    crate::account_profile::provider_account_authority_owner_for_lease(
+                        &self.config,
+                        &self.provider_account_profiles,
+                        &lease.owner_user_id,
+                        provider,
+                        agent.provider_account_profile(),
+                    )
+                }
+                None => Ok(lease.owner_user_id.clone()),
+            };
         }
         Ok(crate::account_profile::provider_account_authority_owner_user_id(&self.config, owner))
     }

@@ -170,7 +170,7 @@ pub(super) fn external_session_or_refresh(
         || crate::app::discover_external_provider_sessions(provider),
         |runtime_state| {
             crate::app::discover_external_provider_sessions_for_profiles(
-                &registered_external_provider_profile_roots(runtime_state, None),
+                &registered_external_provider_profile_roots(runtime_state),
                 provider,
             )
         },

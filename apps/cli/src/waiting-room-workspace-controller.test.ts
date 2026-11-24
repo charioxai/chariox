@@ -4,11 +4,11 @@ import { NEW_MACHINE_ALLOCATION_REF } from "./waiting-room-machine-allocation.js
 import assert from "node:assert/strict"
 import test from "node:test"
 import { createWaitingRoomWorkspaceController, createWaitingRoomWorkspacePlacementController, waitingRoomWorkspaceSelection } from "./waiting-room-workspace-controller.js"
-import type { WaitingRoomInventory } from "./waiting-room-inventory-api.js"
+import type { KernelInventory } from "./kernel-inventory-api.js"
 import { clearWaitingRoomWorktreeInventory, describeWaitingRoomWorktreeSelection, normalizeWaitingRoomWorktreeSelectionId, resolvePendingWaitingRoomWorktreePath, stageWaitingRoomWorktreeSelection, waitingRoomWorktreeDisabledHint, waitingRoomWorktreeOptions } from "./waiting-room-worktrees.js"
 
-function inventory(machineId: string, path: string): WaitingRoomInventory {
-  return { machineId, kernelId: `${machineId}-1`, sessions: [], launchTarget: { workspaceId: path, worktreeId: path } } as unknown as WaitingRoomInventory
+function inventory(machineId: string, path: string): KernelInventory {
+  return { machineId, kernelId: `${machineId}-1`, sessions: [], launchTarget: { workspaceId: path, worktreeId: path } } as unknown as KernelInventory
 }
 
 function harness(repositoryState: "ready" | "not-repository" | "unborn" = "ready") {
@@ -245,7 +245,7 @@ for (const change of ["workspace edit", "kernel ABA", "machine ABA"] as const) {
       send: async <T>() => { reads++; return { WorkspaceWorktreesListed: { worktrees: [{ path: workspace, branch: "fresh", current: true }] } } as T },
     })
     const old = inventory("a", workspace)
-    let finish!: (snapshot: WaitingRoomInventory) => void
+    let finish!: (snapshot: KernelInventory) => void
     const pending = controller.readInventory(() => new Promise(resolve => { finish = resolve }))
     try {
       if (change === "workspace edit") {

@@ -13,8 +13,8 @@ pub(crate) fn finish_response(
     if command.external_grant_id().is_none() {
         return result;
     }
-    // Parser/provider diagnostics can echo stored values. Preserve the shared
-    // mapper's public code/retryability before discarding those diagnostics.
+    // Provider and parser diagnostics can echo stored values: the shared mapper's code and
+    // retryability stay, and the message passes through the secret scrubber.
     let response = result.map_err(protect_error)?;
     project(response)
 }
@@ -64,9 +64,17 @@ fn protect_error(error: DaemonError) -> DaemonError {
     ) {
         return error;
     }
+    // Any other refusal keeps the kernel's own words so the caller and the owner can act
+    // on the reason; only secret-shaped text is cut out. A code with a written remediation
+    // says that instead, since its own text may name what the caller sent.
     let mapped = crate::transport::kernel_protocol::map_kernel_error(&error);
+    let message = match crate::error::actionable_refusal_message(&mapped.code) {
+        Some(remediation) => remediation.to_string(),
+        None => crate::secret_redaction::redact_secrets(&mapped.message).into_owned(),
+    };
     DaemonError::ExternalRequestFailed {
         code: mapped.code,
+        message,
         retryable: mapped.retryable,
     }
 }
@@ -125,6 +133,8 @@ response_policies! {
         CredentialsListed,
     ],
     Withhold => [
+        MachineRoomResources,
+        OwnerViewStatus,
         OwnerVault,
         CredentialVaultKeySealed,
         SessionViewAttached,
@@ -179,7 +189,6 @@ response_policies! {
         Notes,
         Dictation,
         VisibleRegionCaptured,
-        UserDomainInteractionAnswered,
     ],
     Public => [
         ControlPlane,
@@ -194,9 +203,14 @@ response_policies! {
         WorkflowNotificationAttached,
         WorkflowNotificationDetached,
         WorkflowNotifications,
+        Watcher,
+        Watchers,
+        WatcherDryRun,
+        WatcherRemoved,
         HandoffResolved,
         RoomWorkflowRunsControlled,
         ActivePromptSteered,
+        GatewayWriteCompleted,
         CloudRelayLoggedOut,
         // MP-08 / MP-11: protection-filtered like ScreenshotCaptured and RoomBrowserArtifact.
         KernelSudoRequested,
@@ -207,6 +221,8 @@ response_policies! {
         KernelAccessStatus,
         KernelAccessCovered,
         KernelAccessGrantsListed,
+        OwnerInteractionsListed,
+        UserDomainInteractionAnswered,
         KernelAccessRevoked,
         KernelSudoRequesterRenewed,
         GatewayKernelsListed,
@@ -217,6 +233,8 @@ response_policies! {
         KernelDirectoryListed,
         KernelFileChunk,
         KernelFileWritten,
+        KernelFilesTrashed,
+        KernelTrashRestored,
         FileTransfer,
         FileTransfers,
         RoomBrowserArtifact,
@@ -269,6 +287,7 @@ response_policies! {
         ProjectsListed,
         ProjectPinned,
         RoomPinned,
+        ProjectCreated,
         ProjectRenamed,
         ProjectWorkspacesUpdated,
         ProjectArchived,
@@ -282,6 +301,7 @@ response_policies! {
         SessionsListed,
         SessionResolved,
         SessionState,
+        FinishedRoomTasks,
         AgentTaskUpdated,
         RoomEnvironmentState,
         BrowserImportConsent,
@@ -326,13 +346,7 @@ response_policies! {
         Script,
         ScriptsListed,
         ConnectorTested,
-        Skill,
-        SkillInstalled,
-        SkillUpserted,
-        SkillUpdated,
-        SkillUninstalled,
-        SkillsImported,
-        SkillsListed,
+        SkillsV2,
         RelayStatus,
         RelayConfigured,
         UserConfig,
@@ -368,6 +382,10 @@ response_policies! {
         FreshRemoteMachineKernelsObserved,
         RoomListSessionsListed,
         RoomListSnapshot,
+        PersonInbox,
+        NotificationSubscriptions,
+        NotificationSubscriptionTested,
+        NotificationTrace,
         ExternalProviderSessionsListed,
         ExternalProviderSessionsRefreshed,
         ExternalProviderSessionImported,
@@ -377,7 +395,6 @@ response_policies! {
         WorkspaceWorktreesListed,
         WorkspaceWorktreeCreated,
         WorkspaceWorktreeDeleted,
-        WorkspacePullRequestCreated,
         WorkspaceGitOverview,
         WorkspaceFilesListed,
         WorkspaceFileContent,
@@ -393,6 +410,7 @@ response_policies! {
         PairedClientRevoked,
         ProviderAuthStatus,
         ProviderLoginInputSent,
+        ProviderLoginVaultEntrySent,
         ProviderLoggedOut,
         ProviderUsageSnapshot,
         AgentUsageSnapshot,
@@ -432,6 +450,7 @@ response_policies! {
         RecallEvents,
         SemanticRecallEvents,
         RuntimeNotices,
+        AgentReleaseNotes,
         KernelAccessDecisionResponded,
         InteractionResponded,
         DeploymentCredentialEnrollmentArmed,

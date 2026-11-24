@@ -30,7 +30,7 @@ mod provider_focus;
 mod provider_launch_failure_retry;
 mod provider_launch_policy;
 mod provider_launch_request;
-pub(crate) use provider_launch_request::handed_over_credentials;
+pub(crate) use provider_launch_request::{chosen_workspace, handed_over_credentials};
 mod provider_liveness;
 pub(crate) mod provider_output;
 mod provider_output_claude_native;
@@ -64,7 +64,8 @@ mod workflow_workspace_claims;
 
 pub(crate) use attachment_artifacts::{attachment_artifact_root, attachment_artifact_roots};
 pub(crate) use external_provider_session_discovery::{
-    discover_external_provider_sessions, discover_external_provider_sessions_for_profiles,
+    claude_compaction_turn_id, discover_external_provider_sessions,
+    discover_external_provider_sessions_for_profiles,
     external_provider_session_candidate_paths_for_profiles,
     external_provider_session_discovery_candidate_paths,
     external_provider_session_discovery_signature_for_candidates,
@@ -91,15 +92,22 @@ pub(crate) use prompt_lifecycle::{
 pub(crate) use provider_output_claude_native::clear_claude_context_delivery_for_settled_prompt;
 #[cfg(test)]
 pub(crate) use provider_output_claude_native::tests::{startup_readiness_run, StartupTrustBridge};
+#[cfg(test)]
+pub(crate) use provider_output_claude_native::ProviderOutputClaudeNativeBridge;
 pub(crate) use provider_output_claude_native::{
-    claude_headless_prompt_queued_behind_running_turn, claude_native_pending_prompt_cancel_input,
-    claude_native_recent_terminal_failure, claude_permission_title,
-    claude_workspace_trust_declined, format_claude_permission_message, ClaudeNativeDispatchAttempt,
-    ClaudeNativeProcessOutcome, NativePromptHandoffPolicy, CLAUDE_NATIVE_CONTEXT_REJECTION_MESSAGE,
+    claude_headless_owner_decision_pending, claude_headless_prompt_queued_behind_running_turn,
+    claude_headless_prompt_written, claude_headless_stuck_screen_line,
+    claude_native_pending_prompt_cancel_input, claude_native_recent_terminal_failure,
+    claude_native_trust_dialog_update, claude_native_trust_interaction_id,
+    claude_native_trust_keys, claude_permission_title, claude_workspace_trust_declined,
+    format_claude_permission_message, ClaudeNativeDispatchAttempt, ClaudeNativeProcessOutcome,
+    ClaudeTrustDialog, ClaudeTrustKeys, NativePromptHandoffPolicy,
+    CLAUDE_NATIVE_CONTEXT_REJECTION_MESSAGE,
 };
 pub(crate) use provider_tool_close::{
-    background_calls, ended_background_provider_tool_rows, ended_open_provider_tool_rows,
-    is_work_of_a_turn, BackgroundCalls, EndedProviderToolRow, ProviderToolEnding,
+    background_calls, ended_background_call_ids, ended_background_provider_tool_rows,
+    ended_open_provider_tool_rows, interrupted_foreground_provider_tool_rows, is_work_of_a_turn,
+    BackgroundCalls, EndedProviderToolRow, ProviderToolEnding, FOREGROUND_COMMAND_RESTART_REASON,
 };
 pub(crate) use provider_tracking::{
     ProviderCatalogCacheStore, ProviderProcessTrackingStore, TrackedProviderProcess,
@@ -269,6 +277,7 @@ impl DaemonApp {
         let validate_started = Instant::now();
         config.validate()?;
         crate::runtime::process_resources::configure(config.user_config.kernel.resource_protection);
+        crate::provider::state_confinement::configure(&config)?;
         if config.user_config.credential_vault.backend
             == crate::config::CredentialVaultBackend::CharioxEncrypted
         {
@@ -319,7 +328,8 @@ impl DaemonApp {
         );
 
         let durable_state_started = Instant::now();
-        let durable_state = DurableKernelStateStore::open_owned(config.durable_state_path())?;
+        let durable_state = DurableKernelStateStore::open_kernel_owned(&config)?;
+        crate::agent_temp::clear_after_restart();
         let worker_prompt_receipts =
             crate::durable_state::worker_prompt_receipts::WorkerPromptReceiptStore::restore(
                 durable_state.clone(),
@@ -402,7 +412,11 @@ impl DaemonApp {
             room_terminals: crate::room_terminal::RoomTerminalService::new(
                 config.private_runtime_state_root().join("room-terminals"),
             )?,
-            providers: ProviderProcessServiceStore::new(ProviderProcessService::new()),
+            providers: ProviderProcessServiceStore::new(if config.test_state_root.is_some() {
+                ProviderProcessService::with_test_fixtures()
+            } else {
+                ProviderProcessService::new()
+            }),
             provider_catalog_cache: ProviderCatalogCacheStore::default(),
             provider_process_tracking: ProviderProcessTrackingStore::default(),
             provider_launch_failure_retries: ProviderLaunchFailureRetryStore::default(),
@@ -437,11 +451,14 @@ impl DaemonApp {
                 config.user_config.credential_vault.clone(),
                 config.daemon_id.clone(),
             ),
-            durable_state,
+            durable_state: durable_state.clone(),
             worker_prompt_receipts,
             worker_steer_receipts,
             agent_moves,
-            room_setup: Default::default(),
+            room_setup: crate::session::RoomSetupStore::durable(
+                durable_state.clone(),
+                &config.daemon_id,
+            )?,
             managed_context_transfers,
             managed_context_outbound,
             managed_kernel_registration,
@@ -908,6 +925,7 @@ mod tests {
         let mut config_b = DaemonConfig::for_tests();
         config_b.daemon_id = "kernel-b".to_string();
         config_b.user_config.state.path = Some(state_path.display().to_string());
+        config_b.user_config_path = config_a.user_config_path.clone();
         let app_b = DaemonApp::bootstrap(config_b).expect("kernel b should boot");
         assert!(app_b.sessions().list_sessions().is_empty());
         drop(app_b);
@@ -989,6 +1007,7 @@ mod tests {
         let mut config_b = DaemonConfig::for_tests();
         config_b.daemon_id = "kernel-b".to_string();
         config_b.user_config.state.path = Some(state_path.display().to_string());
+        config_b.user_config_path = config_a.user_config_path.clone();
         let app_b = DaemonApp::bootstrap(config_b).expect("kernel b should boot");
         assert!(app_b.slices().list().is_empty());
         drop(app_b);
@@ -1054,6 +1073,7 @@ mod tests {
         let mut config_b = DaemonConfig::for_tests();
         config_b.daemon_id = "kernel-b".to_string();
         config_b.user_config.state.path = Some(state_path.display().to_string());
+        config_b.user_config_path = config_a.user_config_path.clone();
         {
             let mut app = DaemonApp::bootstrap(config_b).expect("kernel b should boot");
             app.create_session(second_worktree.session_request())

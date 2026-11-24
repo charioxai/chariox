@@ -18,6 +18,7 @@ mod operation_lanes;
 mod refusal_tests;
 mod runtime_slots;
 mod worker;
+pub(crate) use command_execution::run_room_commands_on_fresh_claude;
 use finished_jobs::push_finished_output_poll;
 use finished_jobs::{
     drain_finished_aborts, drain_finished_output_polls, drain_finished_selection_syncs,
@@ -30,7 +31,8 @@ pub(crate) use finished_jobs::{
 };
 use in_flight::ProviderRunInFlightState;
 pub(crate) use native_interaction::{
-    setup_turn_origin, ProviderNativeInteractionBridge, ProviderNativeInteractionBridgeStore,
+    setup_turn_origin, CodexApprovalHandover, CodexApprovalOutcome, NativeApprovalGoal,
+    ProviderNativeInteractionBridge, ProviderNativeInteractionBridgeStore,
     ProviderNativeInteractionResolution,
 };
 pub(crate) use operation_lanes::{ProviderRunOperationLanes, ProviderRunOperationPermit};
@@ -140,6 +142,10 @@ impl ProviderRunActorMailbox {
         crate::runtime::kernel_access::process::ProcessIdentity,
     )> {
         self.runtime_registry.claude_process_identities()
+    }
+
+    pub(crate) fn claude_runs_exited_while_idle(&self, only: Option<&str>) -> Vec<(String, bool)> {
+        self.runtime_registry.claude_runs_exited_while_idle(only)
     }
 
     pub(crate) fn insert_claude_runtime(&self, run_id: String, state: ClaudeRuntimeState) {

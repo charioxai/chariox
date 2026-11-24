@@ -1,10 +1,10 @@
 //! MP-08 / MP-09 / MP-10 / MP-11 (ON-17, ON-18): an outside agent's grant follows the owner's
-//! notification sources on this kernel. Occurrences reach the grant's own event stream and
+//! notification sources on the owner's kernels. Occurrences reach the grant's own event stream and
 //! nowhere else; the grant, never a destination, is the subscriber.
 use super::*;
 use crate::durable_state::workflow_notifications::{
-    outside_agent::MAX_FOLLOWED_SOURCES, NotificationOperation, NotificationOutcome,
-    SourceAdmission,
+    outside_agent::MAX_FOLLOWED_SOURCES, remote_install::Generation, NotificationOperation,
+    NotificationOutcome, SourceAdmission,
 };
 use crate::local::*;
 
@@ -13,15 +13,52 @@ fn refused(message: &'static str) -> DaemonError {
 }
 
 impl KernelRuntimeState {
+    pub(crate) async fn list_outside_notification_sources(
+        &self,
+        owner: &str,
+    ) -> Result<Vec<WorkflowNotificationSourceSummary>, DaemonError> {
+        self.refresh_peer_notification_sources(owner).await?;
+        let mut sources = self.followable_notification_sources(owner)?;
+        sources.extend(
+            self.owned
+                .durable_state_store
+                .notification_cached_sources(owner)?
+                .into_iter()
+                .filter(|source| source.available),
+        );
+        Ok(sources)
+    }
+
+    pub(crate) async fn install_outside_notification_follows(
+        &self,
+        grant: &str,
+        owner: &str,
+        source_ids: &[String],
+    ) -> Result<(), DaemonError> {
+        use futures_util::{stream, StreamExt, TryStreamExt};
+        let remote = self.follow_notification_sources(grant, owner, source_ids)?;
+        stream::iter(remote)
+            .map(|(sub, generation)| async move {
+                if self.install_on_source(&sub, generation).await? {
+                    Ok(())
+                } else {
+                    Err(super::source_not_available())
+                }
+            })
+            .buffer_unordered(4)
+            .try_for_each(|()| async { Ok(()) })
+            .await
+    }
+
     /// Makes `grant` the subscriber of each source, or of none: every source is checked first.
-    /// A source the owner cannot see, on another kernel or already gone is "not available",
+    /// A source the owner cannot see or that is already gone is "not available",
     /// whether or not its id exists.
     pub(crate) fn follow_notification_sources(
         &self,
         grant: &str,
         owner: &str,
         source_ids: &[String],
-    ) -> Result<(), DaemonError> {
+    ) -> Result<Vec<(WorkflowNotificationSubscription, Generation)>, DaemonError> {
         if source_ids.len() as i64 > MAX_FOLLOWED_SOURCES {
             return Err(refused("event source limit"));
         }
@@ -31,17 +68,19 @@ impl KernelRuntimeState {
             ));
         }
         let home = self.owned.config_projection.snapshot().daemon_id;
-        self.owned
+        if source_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let remote = self
+            .owned
             .durable_state_store
             .with_workflow_runtime_transition_lock(|| {
                 let sessions = self.owned.session_store.read();
                 let mut subscriptions = Vec::new();
                 for source_id in source_ids {
                     let source = self
-                        .attachable_source(&sessions, owner, source_id, true)
-                        .ok()
-                        .filter(|source| source.kernel_id == home)
-                        .ok_or_else(super::source_not_available)?;
+                        .attachable_source(&sessions, owner, source_id, false)
+                        .map_err(|_| super::source_not_available())?;
                     subscriptions.push(WorkflowNotificationSubscription {
                         subscription_id: format!("wf_subscription_{:032x}", rand::random::<u128>()),
                         source_id: source.source_id,
@@ -55,7 +94,7 @@ impl KernelRuntimeState {
                         endpoint_id: grant.into(),
                         queue_id: "grant".into(),
                         source_available: true,
-                        source_kernel_id: home.clone(),
+                        source_kernel_id: source.kernel_id,
                         agent_id: None,
                         trigger_id: None,
                     });
@@ -67,17 +106,17 @@ impl KernelRuntimeState {
                         grant: grant.into(),
                         subscriptions,
                     }) {
-                    Ok(_) => {}
-                    Err(error) => return Err(public_follow_error(error)),
+                    Ok(NotificationOutcome::RemoteFollows(installs)) => Ok(installs),
+                    Ok(_) => Err(super::source_not_available()),
+                    Err(error) => Err(public_follow_error(error)),
                 }
-                Ok(())
             })?;
         // A grant that ended while attaching takes what it attached with it.
         if self.access_grant_summary(grant).is_none() {
             self.retire_notification_grants(Some(grant));
             return Err(refused("grant revoked or expired"));
         }
-        Ok(())
+        Ok(remote)
     }
 
     /// Ends the grant's follow of the named sources, or of all of them. Occurrences already in
@@ -89,7 +128,6 @@ impl KernelRuntimeState {
         owner: &str,
         sources: Option<&[String]>,
     ) -> Result<(), DaemonError> {
-        let home = self.owned.config_projection.snapshot().daemon_id;
         let (_, subscriptions, _) = self
             .owned
             .durable_state_store
@@ -99,13 +137,28 @@ impl KernelRuntimeState {
                 && sub.endpoint_id == grant
                 && sources.is_none_or(|named| named.contains(&sub.source_id))
         }) {
-            self.owned
+            let outcome = self
+                .owned
                 .durable_state_store
                 .notify(NotificationOperation::Detach {
-                    subscription_id: sub.subscription_id,
+                    subscription_id: sub.subscription_id.clone(),
                     owner: owner.into(),
-                    kernel: home.clone(),
+                    kernel: sub.target_kernel_id.clone(),
                 })?;
+            if let (
+                NotificationOutcome::Detached {
+                    generation: Some(generation),
+                },
+                true,
+            ) = (outcome, sub.source_kernel_id != sub.target_kernel_id)
+            {
+                let runtime = self.clone();
+                tokio::spawn(async move {
+                    if let Err(error) = runtime.drop_from_source(&sub, generation).await {
+                        tracing::warn!(%error, "notification source detach will be reconciled");
+                    }
+                });
+            }
         }
         Ok(())
     }
@@ -197,21 +250,29 @@ impl KernelRuntimeState {
             source.enabled = true;
         }
         let summaries = super::workflow_notification_router::summaries(&sessions, &sources);
+        let cached = self
+            .owned
+            .durable_state_store
+            .notification_cached_sources(&owner)?;
         Ok(followed
             .into_iter()
             .filter_map(|sub| {
-                let summary = summaries
-                    .iter()
-                    .find(|summary| summary.source_id == sub.source_id)?;
+                let summary = summaries.iter().chain(&cached).find(|summary| {
+                    summary.source_id == sub.source_id && summary.kernel_id == sub.source_kernel_id
+                })?;
                 Some(EventSourceFollow {
                     source_id: summary.source_id.clone(),
                     display_name: summary.display_name.clone(),
                     kind: summary.kind,
                     session_id: summary.session_id.clone(),
                     subscription_id: sub.subscription_id,
-                    available: usable
-                        .iter()
-                        .any(|(id, usable)| *usable && *id == sub.source_id),
+                    available: if sub.source_kernel_id == sub.target_kernel_id {
+                        usable
+                            .iter()
+                            .any(|(id, usable)| *usable && *id == sub.source_id)
+                    } else {
+                        summary.available
+                    },
                 })
             })
             .collect())

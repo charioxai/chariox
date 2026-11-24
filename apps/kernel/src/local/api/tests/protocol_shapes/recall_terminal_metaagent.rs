@@ -179,7 +179,6 @@ fn local_daemon_protocol_agent_config_workspace_shape_is_versioned() {
         worktree_id: Some("/repo-feature".to_string()),
         clear_worktree_id: false,
         reason: None,
-        self_settings: None,
         usage_limit: None,
     });
     let snapshot = serde_json::to_value(request).expect("request should serialize");
@@ -550,6 +549,7 @@ fn local_daemon_protocol_metaagent_event_shape_is_versioned() {
     let acked = LocalDaemonResponse::MetaagentEventsAcked { acked: vec![event] };
     let mut task_session = crate::session::RuntimeSession::new(
         "session-1",
+        crate::session::ProjectId::test(),
         None,
         "/repo",
         "/repo",
@@ -683,7 +683,7 @@ fn local_daemon_protocol_metaagent_event_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "fa5e8dc117725530ae1c69adc96ae7e6e355b59d7fca97bb722059c78b5a58b5"
+        "f701bf0fdb534982eb4621507ec66c8a61cc3436fde59c3fd408c0d63f9348e8"
     );
 }
 
@@ -707,15 +707,17 @@ fn local_daemon_protocol_remote_inventory_provider_accounts_shape_is_versioned()
         alias: Some("remote-codex".to_string()),
     };
     let machine = crate::local::RemoteMachineRecord {
+        directory: None,
         machine_id: "machine-1".to_string(),
         machine_alias: Some("workstation".to_string()),
         display_name: "builder".to_string(),
         trust_status: RemoteMachineTrustStatus::Approved,
-        online: true,
+        presence: crate::local::RemoteMachinePresence::Online,
         pending: false,
         kernel_count: 1,
         available_providers: vec!["codex".to_string()],
         provider_accounts: vec![account.clone()],
+        kernels: Vec::new(),
     };
     let kernel = RelayKernelPresence {
         kernel_id: "kernel-1".to_string(),
@@ -730,10 +732,14 @@ fn local_daemon_protocol_remote_inventory_provider_accounts_shape_is_versioned()
         leased_agent_count: 1,
         local_session_count: 2,
         public_key: "public-key".to_string(),
+        local_protocol: Some(1012),
     };
     let snapshot = serde_json::json!([
         LocalDaemonResponse::RemoteMachinesListed {
+            renewing: false,
+            directory: None,
             machines: vec![machine],
+            offline_machines: Vec::new(),
         },
         LocalDaemonResponse::RemoteMachineKernelsListed {
             machine_ref: "builder".to_string(),
@@ -753,7 +759,7 @@ fn local_daemon_protocol_remote_inventory_provider_accounts_shape_is_versioned()
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "73bccaf90d54eca04bb6875c3783d70dab39c9d97c9b2a2c47e0291e591b27d0"
+        "d3221c43ac71ba37d4d091c19a5691bee55dfdc6d8e2adf199baaff7a8a49004"
     );
 }
 

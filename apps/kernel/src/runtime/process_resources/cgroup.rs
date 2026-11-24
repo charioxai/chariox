@@ -6,6 +6,8 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
+use super::OomKill;
+
 /// Accounting and ownership for every workload of a pool.
 pub(super) struct Budget {
     path: PathBuf,
@@ -29,12 +31,20 @@ impl Drop for Unit {
     }
 }
 
+/// Agent and terminal work yields the CPU to the kernel. Under contention the
+/// kernel's own cgroup (default weight 100) gets ten times the share of all of
+/// it together, so a busy host slows agents, never the kernel's relay link.
+const WORKLOAD_CPU_WEIGHT: &str = "10\n";
+
 impl Budget {
     pub fn create() -> Option<Arc<Self>> {
         // A systemd scope has internal processes: use a sibling under its already
         // delegated parent. Do not change controllers on any existing directory.
-        let parent = delegated_parent()?;
-        remove_leftovers(&parent);
+        Self::create_under(&delegated_parent()?)
+    }
+
+    fn create_under(parent: &Path) -> Option<Arc<Self>> {
+        remove_leftovers(parent);
         let path = parent.join(format!(
             "chariox-{}-{}",
             std::process::id(),
@@ -46,12 +56,13 @@ impl Budget {
             units: Mutex::default(),
         });
         (|| -> std::io::Result<()> {
-            // Accounting and ownership only. Ancestor limits and the OS OOM
-            // killer remain authoritative; no private throttle or memory cap.
+            // Workload swap can keep physical headroom above the emergency
+            // margin while allocations stall in reclaim. Keep it off.
             std::fs::write(budget.path.join("cgroup.subtree_control"), "+memory")?;
-            Ok(())
+            std::fs::write(budget.path.join("memory.swap.max"), "0")
         })()
         .ok()?;
+        weigh_cpu(parent, &budget.path);
         Some(budget)
     }
 
@@ -217,11 +228,65 @@ fn parse_members(procs: &str) -> Vec<u32> {
     procs.lines().filter_map(|line| line.parse().ok()).collect()
 }
 
+/// OOM kills the memory controller counted for the owner's unit. A command's
+/// own directory carries no memory files, so every kill of its processes is
+/// charged to the unit above it, whichever ancestor's limit fired.
+pub(super) fn oom_kills(command: &Path) -> u64 {
+    command
+        .parent()
+        .and_then(|unit| std::fs::read_to_string(unit.join("memory.events")).ok())
+        .and_then(|events| {
+            events
+                .lines()
+                .find_map(|line| line.strip_prefix("oom_kill ")?.trim().parse().ok())
+        })
+        .unwrap_or(0)
+}
+
+/// What the controller killed in the unit of `command` since it counted
+/// `baseline` kills, and the limit that bound it.
+pub(super) fn oom_kill(command: &Path, baseline: u64) -> Option<OomKill> {
+    let kills = oom_kills(command)
+        .checked_sub(baseline)
+        .filter(|n| *n > 0)?;
+    let unit = command.parent()?;
+    let read = |dir: &Path, file: &str| {
+        std::fs::read_to_string(dir.join(file))
+            .ok()
+            .and_then(|text| text.trim().parse::<u64>().ok())
+    };
+    let limit = unit
+        .ancestors()
+        .take_while(|dir| dir.starts_with("/sys/fs/cgroup"))
+        .filter_map(|dir| read(dir, "memory.max"))
+        .min();
+    let bytes = limit.or_else(|| read(unit, "memory.peak")).unwrap_or(0);
+    Some(OomKill { kills, bytes })
+}
+
 /// What runs in a process domain right now; none when it is gone.
 pub(super) fn members(path: &Path) -> Vec<u32> {
     std::fs::read_to_string(path.join("cgroup.procs"))
         .map(|procs| parse_members(&procs))
         .unwrap_or_default()
+}
+
+/// The weight applies only where the parent delegates the CPU controller.
+fn weigh_cpu(parent: &Path, budget: &Path) {
+    let delegated = std::fs::read_to_string(parent.join("cgroup.subtree_control"))
+        .is_ok_and(|controllers| controllers.split_whitespace().any(|name| name == "cpu"));
+    let outcome = if delegated {
+        std::fs::write(budget.join("cpu.weight"), WORKLOAD_CPU_WEIGHT).map_err(|e| e.to_string())
+    } else {
+        Err("the parent cgroup does not delegate the cpu controller".into())
+    };
+    if let Err(error) = outcome {
+        crate::logging::warn_with_fields(
+            "process_resources.cgroup",
+            "agent work keeps the kernel's CPU share; give the kernel's service Delegate=cpu",
+            serde_json::json!({"parent": parent.display().to_string(), "error": error}),
+        );
+    }
 }
 
 fn own() -> Option<PathBuf> {
@@ -354,6 +419,25 @@ mod tests {
         .unwrap();
         std::fs::write(own.join("memory.max"), "1073741824\n").unwrap();
         (root, own)
+    }
+
+    // b3, 2026-11-18: cargo in agent terminals held every CPU and the kernel's
+    // relay link dropped. Agent work runs at a tenth of the kernel's weight.
+    #[test]
+    fn agent_work_yields_the_cpu_to_the_kernel_where_cpu_is_delegated() {
+        let (root, own) = service();
+        let parent = own.parent().unwrap();
+        std::fs::write(parent.join("cgroup.subtree_control"), "cpu memory\n").unwrap();
+        let budget = Budget::create_under(parent).expect("budget");
+        assert_eq!(
+            std::fs::read_to_string(budget.path.join("cpu.weight")).unwrap(),
+            WORKLOAD_CPU_WEIGHT
+        );
+        std::fs::write(parent.join("cgroup.subtree_control"), "memory\n").unwrap();
+        let memory_only = Budget::create_under(parent).expect("budget");
+        assert!(!memory_only.path.join("cpu.weight").exists());
+        drop((budget, memory_only));
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

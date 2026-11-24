@@ -433,9 +433,14 @@ async fn unexpected_owned_provider_exit_promotes_queued_prompt_once_on_replaceme
     let mut app =
         crate::test_support::bootstrap_authenticated_app(crate::DaemonConfig::for_tests())
             .expect("daemon should boot");
-    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+    let (session, _) = crate::app::KernelSessionService::new(&mut app)
         .create_session(worktree.session_request())
         .expect("session should be created");
+    let agent = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            crate::agent::CreateAgentRequest::new(session.id(), "dev-stub").with_model("default"),
+        )
+        .expect("test agent should spawn");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
             session.id(),
@@ -448,9 +453,9 @@ async fn unexpected_owned_provider_exit_promotes_queued_prompt_once_on_replaceme
             crate::provider::LaunchProviderRequest::new(
                 session.id(),
                 "dev-stub",
-                "codex",
+                "dev-stub",
                 "default",
-                "gpt-5",
+                "default",
             )
             .with_agent_id(agent.id()),
         )
@@ -693,9 +698,14 @@ async fn owned_liveness_reconciliation_settles_already_ended_active_prompt() {
     let mut app =
         crate::test_support::bootstrap_authenticated_app(crate::DaemonConfig::for_tests())
             .expect("daemon should boot");
-    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+    let (session, _) = crate::app::KernelSessionService::new(&mut app)
         .create_session(worktree.session_request())
         .expect("session should be created");
+    let agent = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            crate::agent::CreateAgentRequest::new(session.id(), "dev-stub").with_model("default"),
+        )
+        .expect("test agent should spawn");
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
             session.id(),
@@ -708,9 +718,9 @@ async fn owned_liveness_reconciliation_settles_already_ended_active_prompt() {
             crate::provider::LaunchProviderRequest::new(
                 session.id(),
                 "dev-stub",
-                "codex",
+                "dev-stub",
                 "default",
-                "gpt-5",
+                "default",
             )
             .with_agent_id(agent.id()),
         )
@@ -788,6 +798,474 @@ async fn owned_liveness_reconciliation_settles_already_ended_active_prompt() {
     assert!(
         !app.active_turn_store().snapshot().contains_key(run.id()),
         "already-ended provider reconciliation should clear active turn state"
+    );
+}
+
+#[tokio::test]
+async fn ended_run_reconciliation_fails_an_accepted_prompt_instead_of_completing_it() {
+    // m3h: a Room's first prompt was accepted (not yet bound to its run) when
+    // that run ended; reconciliation closed the turn as completed with no
+    // output, so the person's prompt was lost as if it had succeeded.
+    let worktree = crate::test_support::TestWorktree::new("cleanup-accepted-prompt");
+    let mut app =
+        crate::test_support::bootstrap_authenticated_app(crate::DaemonConfig::for_tests())
+            .expect("daemon should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .expect("session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-1",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let run = app
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "dev-stub",
+                "default",
+                "default",
+            )
+            .with_agent_id(agent.id()),
+        )
+        .expect("provider should launch");
+    app.update_provider_run_projection(run.clone());
+    let prompt = crate::session::PromptQueueItem::new(
+        "first-prompt",
+        attachment.id(),
+        agent.id(),
+        "first prompt\n",
+        crate::session::PromptStatus::Queued,
+    );
+    let crate::session::PromptSubmissionOutcome::Started { prompt } = app
+        .prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
+        .expect("first prompt should be admitted")
+    else {
+        panic!("first prompt should start");
+    };
+    assert!(prompt.durable_delivery_provider_run_id().is_none());
+    // A failed launch ends the run and clears the selection before delivery.
+    let ended = app
+        .providers_mut()
+        .mark_run_ended_provider_only(session.id(), run.id())
+        .expect("provider run should be marked ended")
+        .into_run();
+    app.update_provider_run_projection(ended);
+    app.sessions
+        .set_active_provider_run(session.id(), None)
+        .expect("selection should clear");
+
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    runtime
+        .reconcile_provider_run_exit(session.id(), run.id())
+        .await
+        .expect("already-ended liveness reconciliation should succeed");
+
+    let completed = runtime
+        .owned
+        .completed_git_turn_snapshots
+        .latest_projection_for_agent(session.id(), agent.id())
+        .expect("the ended run's prompt should be settled");
+    let outcome = serde_json::to_value(&completed).expect("turn serializes")["outcome"].clone();
+    assert_ne!(outcome["kind"], "completed", "{outcome}");
+    assert_eq!(outcome["retryable"], true, "{outcome}");
+    assert!(
+        !outcome["reason"].as_str().unwrap_or_default().is_empty(),
+        "{outcome}"
+    );
+}
+
+#[tokio::test]
+async fn runs_started_in_one_millisecond_leave_their_accepted_prompt_to_the_later_one() {
+    // Two runs of the agent started in the same millisecond must not each count
+    // as the later one: the unbound prompt would then belong to neither and stay
+    // active after both ended.
+    let worktree = crate::test_support::TestWorktree::new("cleanup-same-ms-runs");
+    let mut app =
+        crate::test_support::bootstrap_authenticated_app(crate::DaemonConfig::for_tests())
+            .expect("daemon should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .expect("session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-1",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let first = app
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "dev-stub",
+                "default",
+                "default",
+            )
+            .with_agent_id(agent.id()),
+        )
+        .expect("provider should launch");
+    let mut second = serde_json::to_value(&first).expect("run serializes");
+    let second_id = format!(
+        "provider-run-{}",
+        first
+            .id()
+            .strip_prefix("provider-run-")
+            .and_then(|number| number.parse::<u64>().ok())
+            .expect("run ids are numbered")
+            + 1
+    );
+    second["id"] = second_id.clone().into();
+    let second = serde_json::from_value::<crate::provider::RuntimeProviderRun>(second)
+        .expect("run deserializes")
+        .with_started_at_ms_for_test(first.started_at_ms());
+    app.providers_mut().insert_run_for_test(second);
+    let prompt = crate::session::PromptQueueItem::new(
+        "first-prompt",
+        attachment.id(),
+        agent.id(),
+        "first prompt\n",
+        crate::session::PromptStatus::Queued,
+    );
+    let crate::session::PromptSubmissionOutcome::Started { prompt } = app
+        .prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
+        .expect("first prompt should be admitted")
+    else {
+        panic!("first prompt should start");
+    };
+    assert!(prompt.durable_delivery_provider_run_id().is_none());
+    for run_id in [first.id(), second_id.as_str()] {
+        let ended = app
+            .providers_mut()
+            .mark_run_ended_provider_only(session.id(), run_id)
+            .expect("provider run should be marked ended")
+            .into_run();
+        app.update_provider_run_projection(ended);
+    }
+    app.sessions
+        .set_active_provider_run(session.id(), None)
+        .expect("selection should clear");
+
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    for run_id in [first.id(), second_id.as_str()] {
+        runtime
+            .reconcile_provider_run_exit(session.id(), run_id)
+            .await
+            .expect("already-ended liveness reconciliation should succeed");
+    }
+
+    let session_state = runtime
+        .owned
+        .session_snapshot(session.id())
+        .expect("session snapshot should exist");
+    assert!(
+        session_state.active_prompt_for_agent(agent.id()).is_none(),
+        "the later run's end must settle the accepted prompt"
+    );
+    let completed = runtime
+        .owned
+        .completed_git_turn_snapshots
+        .latest_projection_for_agent(session.id(), agent.id())
+        .expect("the later run's prompt should be settled");
+    let outcome = serde_json::to_value(&completed).expect("turn serializes")["outcome"].clone();
+    assert_ne!(outcome["kind"], "completed", "{outcome}");
+    assert_eq!(outcome["retryable"], true, "{outcome}");
+}
+
+async fn agent_with_accepted_prompt_on_live_run(
+    label: &str,
+) -> (
+    crate::test_support::TestWorktree,
+    DaemonApp,
+    crate::session::RuntimeSession,
+    String,
+    crate::provider::RuntimeProviderRun,
+    String,
+    String,
+) {
+    let worktree = crate::test_support::TestWorktree::new(label);
+    let mut app =
+        crate::test_support::bootstrap_authenticated_app(crate::DaemonConfig::for_tests())
+            .expect("daemon should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .expect("session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-1",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let run = app
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "dev-stub",
+                "default",
+                "default",
+            )
+            .with_agent_id(agent.id()),
+        )
+        .expect("provider should launch");
+    app.update_provider_run_projection(run.clone());
+    let prompt = crate::session::PromptQueueItem::new(
+        "second-prompt",
+        attachment.id(),
+        agent.id(),
+        "second prompt\n",
+        crate::session::PromptStatus::Queued,
+    );
+    let crate::session::PromptSubmissionOutcome::Started { prompt } = app
+        .prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
+        .expect("prompt should be admitted")
+    else {
+        panic!("prompt should start");
+    };
+    assert!(prompt.durable_delivery_provider_run_id().is_none());
+    let attachment_id = attachment.id().to_string();
+    let prompt_id = prompt.id().to_string();
+    (
+        worktree,
+        app,
+        session,
+        agent.id().to_string(),
+        run,
+        attachment_id,
+        prompt_id,
+    )
+}
+
+#[tokio::test]
+async fn provider_exit_between_turns_retires_its_run_and_keeps_the_next_prompt() {
+    // V2 on the L12 union: the idle provider was killed, its exit was seen with
+    // no turn running, and the prompt sent right after failed with it.
+    let (_worktree, app, session, agent_id, run, _, prompt_id) =
+        agent_with_accepted_prompt_on_live_run("cleanup-idle-exit").await;
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    runtime
+        .apply_owned_structured_output_batch(
+            session.id(),
+            run.id(),
+            Vec::new(),
+            crate::provider::ProviderPromptSignalBatch {
+                terminal_failure: Some(
+                    "Claude Code exited before completing the active turn: signal: 9 (SIGKILL)"
+                        .to_string(),
+                ),
+                ..crate::provider::ProviderPromptSignalBatch::default()
+            },
+        )
+        .await
+        .expect("the idle exit should be accepted");
+
+    assert_eq!(
+        runtime
+            .owned
+            .provider_store
+            .get_run(run.id())
+            .expect("run should remain stored")
+            .state(),
+        crate::provider::ProviderRunState::Ended,
+        "a provider that exited between turns retires its run"
+    );
+    let session_state = runtime
+        .owned
+        .session_snapshot(session.id())
+        .expect("session snapshot should exist");
+    assert_eq!(
+        session_state
+            .active_prompt_for_agent(&agent_id)
+            .map(|prompt| prompt.id().to_string())
+            .as_deref(),
+        Some(prompt_id.as_str()),
+        "the prompt that never reached the exited provider stays to run on a fresh one"
+    );
+}
+
+#[tokio::test]
+async fn dispatch_moves_to_a_live_run_after_a_stale_idle_poll_reports_exit() {
+    let (_worktree, app, session, agent_id, exited, attachment_id, prompt_id) =
+        agent_with_accepted_prompt_on_live_run("cleanup-idle-exit-dispatch").await;
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    // The poll started while the provider was idle. Its result reaches the
+    // output pump after the next prompt has been admitted.
+    runtime
+        .owned
+        .structured_output_records
+        .mark_poll_enqueued(exited.id(), None);
+    runtime
+        .owned
+        .provider_store
+        .write()
+        .push_finished_structured_output_poll_for_test(
+            exited.id().to_string(),
+            Ok(Some(crate::provider::ProviderPromptSignalBatch {
+                terminal_failure: Some(
+                    "Claude Code exited before completing the active turn: signal: 9 (SIGKILL)"
+                        .to_string(),
+                ),
+                ..Default::default()
+            })),
+        );
+    runtime
+        .pump_owned_structured_provider_output(session.id(), exited.id(), Vec::new())
+        .await
+        .expect("the idle exit should be drained");
+    assert_eq!(
+        runtime
+            .owned
+            .provider_store
+            .get_run(exited.id())
+            .unwrap()
+            .state(),
+        crate::provider::ProviderRunState::Ended,
+        "the stale poll still reports that the idle provider exited"
+    );
+    let live = {
+        let mut app = app.lock().await;
+        let live = app
+            .launch_provider(
+                crate::provider::LaunchProviderRequest::new(
+                    session.id(),
+                    "dev-stub",
+                    "dev-stub",
+                    "default",
+                    "default",
+                )
+                .with_agent_id(&agent_id),
+            )
+            .expect("a fresh provider should launch");
+        app.update_provider_run_projection(live.clone());
+        live
+    };
+    let dispatch = crate::app::KernelPromptDispatch {
+        session_id: session.id().to_string(),
+        provider_run_id: exited.id().to_string(),
+        agent_id: agent_id.clone(),
+        prompt_id,
+        target_active_prompt_id: None,
+        source_attachment_id: attachment_id,
+        prompt: "second prompt\n".to_string(),
+        hidden_system_context: String::new(),
+        attachments: Vec::new(),
+        prompt_origin: crate::session::PromptOrigin::Chariox,
+        external_provider: None,
+        external_provider_session_id: None,
+        external_provider_turn_id: None,
+        steering: false,
+    };
+    runtime
+        .enqueue_prompt_dispatch(&dispatch)
+        .await
+        .expect("a dispatch to an ended run should move to a live run");
+
+    let session_state = runtime
+        .owned
+        .session_snapshot(session.id())
+        .expect("session snapshot should exist");
+    let prompt = session_state
+        .active_prompt_for_agent(&agent_id)
+        .expect("the prompt should stay active");
+    assert_eq!(prompt.durable_delivery_provider_run_id(), Some(live.id()));
+}
+
+#[tokio::test]
+async fn idle_process_submit_rejection_retires_the_run_and_redispatches_the_prompt() {
+    let (_worktree, app, session, agent_id, old, _, prompt_id) =
+        agent_with_accepted_prompt_on_live_run("cleanup-idle-submit-exit").await;
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    runtime
+        .owned
+        .mark_active_prompt_delivery(
+            session.id(),
+            &agent_id,
+            &prompt_id,
+            crate::session::DurablePromptDeliveryPhase::Dispatching,
+            Some(old.id().to_string()),
+            None,
+        )
+        .unwrap();
+    runtime
+        .owned
+        .provider_store
+        .write()
+        .push_finished_structured_prompt_submit_for_test(
+            session.id().to_string(),
+            old.id().to_string(),
+            agent_id.clone(),
+            prompt_id.clone(),
+            Err(DaemonError::IdleProviderProcessExited {
+                provider_run_id: old.id().to_string(),
+            }),
+        );
+    let follow_ups = runtime.owned.reap_structured_prompt_jobs();
+    assert_eq!(
+        runtime
+            .owned
+            .provider_store
+            .get_run(old.id())
+            .unwrap()
+            .state(),
+        crate::provider::ProviderRunState::Ended
+    );
+    let [dispatch] = follow_ups.local.as_slice() else {
+        panic!("expected one redispatch");
+    };
+    assert_eq!(dispatch.prompt_id, prompt_id);
+    // A completion-driven output pump can reconcile the ended run before
+    // the replacement dispatch acquires its lane.
+    assert!(runtime
+        .reconcile_provider_run_exit(session.id(), old.id())
+        .await
+        .unwrap());
+    assert_eq!(
+        runtime
+            .owned
+            .session_snapshot(session.id())
+            .unwrap()
+            .active_prompt_for_agent(&agent_id)
+            .unwrap()
+            .id(),
+        prompt_id
+    );
+    let fresh = app
+        .lock()
+        .await
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "dev-stub",
+                "default",
+                "default",
+            )
+            .with_agent_id(&agent_id),
+        )
+        .unwrap();
+    app.lock()
+        .await
+        .update_provider_run_projection(fresh.clone());
+    runtime.enqueue_prompt_dispatch(dispatch).await.unwrap();
+    assert_eq!(
+        runtime
+            .owned
+            .session_snapshot(session.id())
+            .unwrap()
+            .active_prompt_for_agent(&agent_id)
+            .unwrap()
+            .durable_delivery_provider_run_id(),
+        Some(fresh.id())
     );
 }
 
@@ -1301,7 +1779,6 @@ fn mixed_authoritative_state(
             agent_activity,
             agent_activity_revision,
             processes: _,
-            disk_usage: _,
             jobs: _,
         } => MixedAuthoritativeState {
             room_workflows,
@@ -1413,6 +1890,179 @@ fn assert_mixed_old_provider_runtime_cleared(runtime: &KernelRuntimeState, provi
             .contains(provider_run_id),
         "stale provider output timer should be stopped"
     );
+}
+
+/// The message was stored when the send returned; its delivery runs on its own.
+async fn wait_for_message_state(
+    runtime: &KernelRuntimeState,
+    session_id: &str,
+    agent_id: &str,
+    sequence: u64,
+    state: &str,
+) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let current = runtime
+            .owned
+            .durable_state_store
+            .agent_inbox(session_id, agent_id, 0)
+            .unwrap()
+            .into_iter()
+            .find(|event| event.sequence == sequence)
+            .map(|event| event.state);
+        if current.as_deref() == Some(state) {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "message {sequence} stayed {current:?}, wanted {state}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+}
+
+#[test]
+/// An urgent send to an agent whose provider lane is held (a turn deep in a long tool call) hands
+/// back its message id at once and delivers when the lane frees; the sender never waits for the
+/// receiver's provider.
+fn urgent_send_to_a_busy_receiver_returns_at_once_and_delivers_when_it_frees() {
+    urgent_send_to_a_busy_receiver("urgent-send-busy-receiver", |_, _| {});
+}
+
+#[test]
+/// The stored message outlives its sender's turn: the sender's provider run ends after the send
+/// returned and before the receiver's provider admits the message, and the healthy receiver
+/// still takes it. The receiver is neither reported as failed to start nor sent a second copy.
+fn a_deferred_urgent_delivery_survives_the_sender_epoch_changing() {
+    urgent_send_to_a_busy_receiver("urgent-send-sender-epoch", |app, sender_run| {
+        let ended = app
+            .providers_mut()
+            .terminate_run_provider_only(sender_run.session_id(), sender_run.id())
+            .expect("sender run should end")
+            .into_run();
+        app.update_provider_run_projection(ended);
+    });
+}
+
+fn urgent_send_to_a_busy_receiver(
+    name: &'static str,
+    change_sender: impl FnOnce(&mut DaemonApp, &crate::provider::RuntimeProviderRun) + Send + 'static,
+) {
+    run_kernel_mixed_01_with_large_stack(name, move || async move {
+        let worktree = crate::test_support::TestWorktree::new(name);
+        let mut config = crate::DaemonConfig::for_tests();
+        config.room_agent_tools = true;
+        let mut app =
+            crate::test_support::bootstrap_authenticated_app(config).expect("daemon should boot");
+        let (session, sender) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(worktree.session_request())
+            .unwrap();
+        let session_id = session.id().to_string();
+        let receiver = crate::app::KernelSessionService::new(&mut app)
+            .spawn_agent(
+                crate::agent::CreateAgentRequest::new(session.id(), "dev-stub")
+                    .with_alias("receiver"),
+            )
+            .unwrap();
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(crate::attachment::AttachRequest::new(
+                session.id(),
+                "client-urgent-send",
+                crate::attachment::ClientCapabilityLevel::FullTerminal,
+            ))
+            .unwrap();
+        let sender_run = mixed_launch_provider(&mut app, &session_id, sender.id(), "sender");
+        let receiver_run = mixed_launch_provider(&mut app, &session_id, receiver.id(), "receiver");
+        let (sender_prompt, _) = mixed_submit_active_and_queued_prompts(
+            &mut app,
+            &session_id,
+            attachment.id(),
+            sender.id(),
+            "sender turn\n",
+            "sender queued\n",
+        );
+        mixed_submit_active_and_queued_prompts(
+            &mut app,
+            &session_id,
+            attachment.id(),
+            receiver.id(),
+            "receiver turn\n",
+            "receiver queued\n",
+        );
+        spawn_inert_pty_for_run(&mut app, receiver_run.id());
+        let app = Arc::new(Mutex::new(app));
+        let _pty_cleanup = InertPtyCleanup {
+            app: Arc::clone(&app),
+            provider_run_id: receiver_run.id().to_string(),
+        };
+        let router = crate::runtime::router::CommandRouter::with_interactive_capacity_from_app(
+            Arc::clone(&app),
+            4,
+        );
+        let runtime = router.runtime_state();
+        let token = sender_run.runtime_mcp_auth_token().unwrap().to_string();
+        // The receiver's turn holds its lane for as long as its tool call runs.
+        let lane = runtime
+            .provider_runtime_lanes
+            .acquire(receiver_run.id())
+            .await;
+
+        let started = std::time::Instant::now();
+        let sent = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            runtime.dispatch_authenticated_runtime_tool_call(
+                &token,
+                crate::transport::runtime_tools::SEND_AGENT_MESSAGE_TOOL,
+                serde_json::json!({
+                    "agent": "@receiver",
+                    "message": "stop and report",
+                    "origin_prompt_id": sender_prompt,
+                    "urgent": true,
+                }),
+            ),
+        )
+        .await
+        .expect("the send must return within a second while the receiver's lane is held")
+        .unwrap();
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+        assert!(sent.ok, "{:?}", sent.payload);
+        assert_eq!(sent.payload["status"], "steering");
+        let sequence = sent.payload["sequence"].as_u64().unwrap();
+        assert_eq!(sent.payload["message_id"], sequence.to_string());
+        let held = runtime
+            .owned
+            .durable_state_store
+            .agent_inbox(&session_id, receiver.id(), 0)
+            .unwrap()[0]
+            .state
+            .clone();
+        assert!(
+            held != "accepted" && held != "acknowledged",
+            "the receiver's provider has not taken it while its lane is held: {held}"
+        );
+
+        change_sender(&mut *app.lock().await, &sender_run);
+        drop(lane);
+        // A message its wake delivered is settled with the delivery.
+        wait_for_message_state(
+            &runtime,
+            &session_id,
+            receiver.id(),
+            sequence,
+            "acknowledged",
+        )
+        .await;
+        assert_eq!(
+            runtime
+                .owned
+                .durable_state_store
+                .agent_inbox(&session_id, receiver.id(), 0)
+                .unwrap()
+                .len(),
+            1,
+            "one copy of the message, however the sender changed"
+        );
+    });
 }
 
 #[test]
@@ -1534,11 +2184,20 @@ async fn kernel_mixed_01_reconciles_two_stale_providers_without_touching_healthy
         .await
         .expect("agent message should dispatch through the kernel");
     assert!(first_message.ok, "{:?}", first_message.payload);
-    assert_eq!(first_message.payload["status"], "durable");
+    assert_eq!(first_message.payload["status"], "steering");
     let message_sequence = first_message.payload["sequence"]
         .as_u64()
         .expect("message should return a durable inbox sequence");
     let runtime = router.runtime_state();
+    // A message its wake delivered is settled with the delivery.
+    wait_for_message_state(
+        &runtime,
+        &session_id,
+        &stale_b_id,
+        message_sequence,
+        "acknowledged",
+    )
+    .await;
     let b_inbox_after_first = runtime
         .owned
         .durable_state_store
@@ -1549,7 +2208,7 @@ async fn kernel_mixed_01_reconciles_two_stale_providers_without_touching_healthy
     assert_eq!(message.sequence, message_sequence);
     assert_eq!(message.source_id, healthy_agent_id);
     assert_eq!(message.kind, "message");
-    assert_eq!(message.state, "accepted");
+    assert_eq!(message.state, "acknowledged");
     let message_prompt_id = message
         .prompt_id
         .clone()

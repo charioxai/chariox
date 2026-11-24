@@ -5,13 +5,33 @@ use super::*;
 use crate::local::VaultUnlockSurface;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock, Weak};
+use std::sync::{Arc, Mutex, OnceLock};
 use tokio::sync::{watch, Mutex as AsyncMutex};
 
 struct VaultRequests {
     mutation: Arc<AsyncMutex<()>>,
-    sessions: Mutex<BTreeMap<String, Weak<AsyncMutex<()>>>>,
+    /// Each Room's open unlock card, which every Vault use in that Room joins.
+    rooms: Mutex<BTreeMap<String, watch::Receiver<Option<RoomUnlockEnd>>>>,
     unlocked: watch::Sender<Option<VaultUnlockSurface>>,
+}
+
+/// How a Room's unlock card ended, for every use that waited on it.
+#[derive(Clone)]
+pub(super) enum RoomUnlockEnd {
+    /// Unlocked, naming the window when a person unlocked outside the card.
+    Unlocked(Option<VaultUnlockSurface>),
+    Refused(Arc<DaemonError>),
+}
+
+/// A Vault use's place at its Room's unlock card.
+pub(super) enum RoomUnlock {
+    /// A card is already open in the Room: wait for its end.
+    Joined(watch::Receiver<Option<RoomUnlockEnd>>),
+    /// No card is open: this use opens it and reports its end through the sender.
+    Opened(
+        watch::Sender<Option<RoomUnlockEnd>>,
+        watch::Receiver<Option<RoomUnlockEnd>>,
+    ),
 }
 
 fn requests(path: &Path) -> Arc<VaultRequests> {
@@ -25,7 +45,7 @@ fn requests(path: &Path) -> Arc<VaultRequests> {
         .or_insert_with(|| {
             Arc::new(VaultRequests {
                 mutation: Arc::new(AsyncMutex::new(())),
-                sessions: Mutex::new(BTreeMap::new()),
+                rooms: Mutex::new(BTreeMap::new()),
                 unlocked: watch::channel(None).0,
             })
         })
@@ -36,19 +56,17 @@ pub(super) fn vault_unlock_request_lock(path: &Path) -> Arc<AsyncMutex<()>> {
     requests(path).mutation.clone()
 }
 
-pub(super) fn vault_unlock_session_request_lock(path: &Path, session: &str) -> Arc<AsyncMutex<()>> {
+/// Joins the Room's open unlock card, or opens it: one card per Room and Vault at a time.
+pub(super) fn room_unlock(path: &Path, session: &str) -> RoomUnlock {
     let requests = requests(path);
-    let mut sessions = requests
-        .sessions
-        .lock()
-        .expect("vault session requests poisoned");
-    sessions.retain(|_, lock| lock.strong_count() > 0);
-    if let Some(lock) = sessions.get(session).and_then(Weak::upgrade) {
-        return lock;
+    let mut rooms = requests.rooms.lock().expect("vault room requests poisoned");
+    rooms.retain(|_, end| end.borrow().is_none() && end.has_changed().is_ok());
+    if let Some(end) = rooms.get(session) {
+        return RoomUnlock::Joined(end.clone());
     }
-    let lock = Arc::new(AsyncMutex::new(()));
-    sessions.insert(session.to_owned(), Arc::downgrade(&lock));
-    lock
+    let (sender, end) = watch::channel(None);
+    rooms.insert(session.to_owned(), end.clone());
+    RoomUnlock::Opened(sender, end)
 }
 
 pub(super) fn vault_unlock_notifications(
@@ -71,7 +89,6 @@ pub(super) fn notify_vault_unlocked(path: &Path, surface: VaultUnlockSurface) {
 impl KernelRuntimeState {
     /// A successful unlock in another session resumes this wait through the
     /// same authority path and withdraws only this wait's obsolete prompt.
-    #[allow(clippy::too_many_arguments)]
     pub(super) async fn await_vault_unlock_interaction(
         &self,
         session_id: &str,
@@ -79,7 +96,6 @@ impl KernelRuntimeState {
         operation: &'static str,
         vault_path: &Path,
         unlocks: &mut watch::Receiver<Option<VaultUnlockSurface>>,
-        deadline: tokio::time::Instant,
         card: &mut Option<CloseInteractionOnDrop>,
     ) -> Result<VaultUnlockWait, DaemonError> {
         let id = interaction.id().to_owned();
@@ -108,7 +124,7 @@ impl KernelRuntimeState {
             receiver,
             operation,
             "vault unlock",
-            Some(deadline),
+            None,
         );
         tokio::pin!(wait);
         let result = loop {
@@ -117,14 +133,14 @@ impl KernelRuntimeState {
                 result = &mut wait => break result.map(VaultUnlockWait::Answered),
                 Ok(()) = unlocks.changed() => {
                     let surface = (*unlocks.borrow_and_update()).unwrap_or(VaultUnlockSurface::Card);
-                    match crate::secret::chariox_encrypted_vault_status(vault_path) {
-                        Ok(status) if status.unlocked => {
+                    match super::runtime_vault_unlock_state::vault_open_to_every_use(vault_path) {
+                        Ok(true) => {
                             break self
                                 .owned
                                 .settle_vault_unlocked(session_id, &id, surface)
                                 .map(|()| VaultUnlockWait::UnlockedElsewhere(surface));
                         }
-                        Ok(_) => {}
+                        Ok(false) => {}
                         Err(error) => break Err(error),
                     }
                 }
@@ -132,7 +148,7 @@ impl KernelRuntimeState {
         };
         let refusal = match &result {
             Ok(VaultUnlockWait::Answered(resolution)) if resolution.status == "timed_out" => {
-                Some("The Vault unlock timed out".to_owned())
+                Some("The Vault unlock card closed without an answer".to_owned())
             }
             Ok(VaultUnlockWait::Answered(resolution)) if !matches!(resolution.choice_id.as_deref(), Some(choice) if choice != "cancel") => {
                 Some("The Vault unlock was declined".to_owned())

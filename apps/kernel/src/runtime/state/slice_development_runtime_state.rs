@@ -111,10 +111,10 @@ impl KernelRuntimeState {
                     worktree_id: None,
                 }),
         );
-        let selection = ManagedContextDevelopmentSelection::SourceProject {
-            project_id: project.id().to_string(),
+        let selection = ManagedContextDevelopmentSelection::source_project(
+            project.id().to_string(),
             repositories,
-        };
+        );
         self.validate_slice_development_selection(
             Some(&selection),
             &crate::slice::SliceBackendKind::LocalDocker,
@@ -136,10 +136,16 @@ impl KernelRuntimeState {
         if let Some(source_ref) = source_slice_ref {
             self.validate_source_slice_export(source_ref, development)?;
         }
-        let Some(ManagedContextDevelopmentSelection::SourceProject {
-            project_id,
-            repositories,
-        }) = development
+        if matches!(
+            development,
+            Some(ManagedContextDevelopmentSelection::SourceProjects { projects }) if projects.len() != 1
+        ) {
+            return Err(slice_development_error(
+                "a slice works on exactly one Project",
+            ));
+        }
+        let Some((project_id, repositories)) =
+            development.and_then(|development| development.single_source_project())
         else {
             return Ok(());
         };
@@ -197,17 +203,20 @@ impl KernelRuntimeState {
                 &publication_parent,
                 slice.development_publication.as_ref(),
             )?,
-            ManagedContextDevelopmentSelection::SourceProject {
-                project_id,
-                repositories,
-            } => materialize_slice_development_publication_with_access(
-                &publication_parent,
-                project_id,
-                repositories,
-                slice.development_publication.as_ref(),
-                update_managed_publication_access,
-                resolved,
-            )?,
+            development @ ManagedContextDevelopmentSelection::SourceProjects { .. } => {
+                let (project_id, repositories) =
+                    development.single_source_project().ok_or_else(|| {
+                        slice_development_error("a slice works on exactly one Project")
+                    })?;
+                materialize_slice_development_publication_with_access(
+                    &publication_parent,
+                    project_id,
+                    repositories,
+                    slice.development_publication.as_ref(),
+                    update_managed_publication_access,
+                    resolved,
+                )?
+            }
         };
         if slice
             .development_publication
@@ -241,10 +250,10 @@ impl KernelRuntimeState {
             }
             return empty_development::cleanup(&slice_development_storage_root(slice)?);
         }
-        let Some(ManagedContextDevelopmentSelection::SourceProject {
-            project_id,
-            repositories,
-        }) = slice.development.as_ref()
+        let Some((project_id, repositories)) = slice
+            .development
+            .as_ref()
+            .and_then(|development| development.single_source_project())
         else {
             return Ok(());
         };
@@ -648,6 +657,76 @@ mod tests {
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
     use super::*;
+
+    #[test]
+    fn slice_worktree_copies_linked_checkout_with_its_local_changes() {
+        let root = crate::test_temp_dir::TestTempDir::new("slice-linked-worktree");
+        let workspace = root.join("workspace");
+        init_repository(&workspace, "source.txt", "workspace commit\n");
+        let worktree = root.join("lane\ncheckout").join("worktree");
+        git(
+            &workspace,
+            &["worktree", "add", "-b", "lane", worktree.to_str().unwrap()],
+        );
+        fs::write(worktree.join("source.txt"), "lane commit\n").unwrap();
+        git(&worktree, &["commit", "-am", "lane commit"]);
+        git(&workspace, &["symbolic-ref", "HEAD", "refs/heads/unborn"]);
+        fs::write(worktree.join("source.txt"), "staged lane change\n").unwrap();
+        git(&worktree, &["add", "source.txt"]);
+        fs::write(worktree.join("source.txt"), "unstaged lane change\n").unwrap();
+        fs::write(worktree.join("untracked.txt"), "untracked lane file\n").unwrap();
+
+        let repositories = [DevelopmentSourceRepositoryBinding {
+            role: DevelopmentRepositoryRole::Primary,
+            workspace_id: workspace.to_str().unwrap().into(),
+            worktree_id: Some(worktree.to_str().unwrap().into()),
+        }];
+        let publication_parent = root.join("publication");
+        let publication = materialize_slice_development_publication_with_access(
+            &publication_parent,
+            "project-1",
+            &repositories,
+            None,
+            |_, _, _| Ok(()),
+            None,
+        )
+        .expect("copy the registered linked worktree even if the Workspace checkout has no HEAD");
+        let copy = Path::new(&publication.primary_repository_path);
+        let git_read = |path: &Path, args: &[&str]| {
+            let output = crate::process_spawn::command("git")
+                .args(args)
+                .current_dir(path)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{output:?}");
+            output.stdout
+        };
+        assert_ne!(copy, worktree);
+        assert_eq!(
+            git_read(copy, &["rev-parse", "HEAD"]),
+            git_read(&worktree, &["rev-parse", "HEAD"])
+        );
+        assert_eq!(
+            git_read(copy, &["show", ":source.txt"]),
+            b"staged lane change\n"
+        );
+        assert_eq!(
+            fs::read(copy.join("source.txt")).unwrap(),
+            b"unstaged lane change\n"
+        );
+        assert_eq!(
+            fs::read(copy.join("untracked.txt")).unwrap(),
+            b"untracked lane file\n"
+        );
+
+        cleanup_slice_development_publication(&publication_parent, "project-1", &repositories)
+            .expect("remove the slice copy");
+        assert!(!publication_parent.exists());
+        assert_eq!(
+            fs::read(worktree.join("source.txt")).unwrap(),
+            b"unstaged lane change\n"
+        );
+    }
 
     #[test]
     fn slice_development_materializes_recovers_and_cleans_two_repositories() {

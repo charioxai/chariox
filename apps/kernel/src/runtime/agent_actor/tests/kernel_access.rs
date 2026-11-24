@@ -210,6 +210,8 @@ async fn kernel_access_revocation_refuses_a_cold_prompt_waiting_for_app_lock() {
                 operation_id: "stack-budget".into(),
                 operation_fingerprint: "stack-budget".into(),
                 response_mode: super::super::command_lane::PromptSubmitResponseMode::Full,
+                skill_selections: Vec::new(),
+                user_skill_syntax: false,
             })
         ) <= 1_024,
         "agent lane handler must fit the ordinary stack budget"

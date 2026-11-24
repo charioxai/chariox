@@ -1,9 +1,10 @@
 //! A new Room's setup: the kernel runs the steps the person asked for in the background and
 //! every client sees their progress in the Room's projection. Prompts wait for the steps that
 //! prepare the folder (see `RoomSetupStore`).
+use super::room_setup_git::init_with_first_commit;
 use super::room_setup_publish::short_reason;
 use super::*;
-use crate::runtime::workspace_git_common::{git_command_output, run_git};
+use crate::runtime::workspace_git_common::git_command_output;
 use crate::runtime::workspace_worktrees::create_workspace_worktree;
 use crate::session::{RoomSetupRequest, RoomSetupStepId};
 
@@ -71,7 +72,10 @@ impl KernelRuntimeState {
         step: RoomSetupStepId,
         work: impl std::future::Future<Output = Result<(), String>>,
     ) -> bool {
-        self.owned.room_setup.start(session_id, step);
+        if let Err(error) = self.owned.room_setup.start(session_id, step) {
+            self.room_setup_progress_failed(session_id, step, &error);
+            return false;
+        }
         self.publish_room_setup(session_id);
         let result = work.await;
         let succeeded = result.is_ok();
@@ -83,9 +87,23 @@ impl KernelRuntimeState {
                 "room setup step failed"
             );
         }
-        self.owned.room_setup.finish(session_id, step, result);
+        if let Err(error) = self.owned.room_setup.finish(session_id, step, result) {
+            self.room_setup_progress_failed(session_id, step, &error);
+            return false;
+        }
         self.publish_room_setup(session_id);
         succeeded
+    }
+
+    fn room_setup_progress_failed(
+        &self,
+        session_id: &str,
+        step: RoomSetupStepId,
+        error: &DaemonError,
+    ) {
+        tracing::error!(session_id, %error, "room setup progress could not be saved; repair kernel storage, then retry or dismiss setup");
+        self.owned.room_setup.progress_failed(session_id, step);
+        self.publish_room_setup(session_id);
     }
 
     /// Shows the current setup to every client of the Room.
@@ -123,7 +141,7 @@ impl KernelRuntimeState {
                         .to_string(),
                 );
             }
-            run_git(std::path::Path::new(&folder), &["init"]).map_err(|error| {
+            init_with_first_commit(std::path::Path::new(&folder)).map_err(|error| {
                 format!(
                     "git init failed: {}; initialize Git in the folder yourself, then dismiss",
                     setup_reason(&error)
@@ -213,7 +231,7 @@ impl KernelRuntimeState {
         caller_user_id: &str,
     ) -> Result<crate::session::RuntimeSession, DaemonError> {
         self.ensure_room_control(session_id, caller_user_id)?;
-        let dismissed = self.owned.room_setup.dismiss(session_id);
+        let dismissed = self.owned.room_setup.dismiss(session_id)?;
         let session = self.owned.session_snapshot(session_id)?;
         if dismissed {
             self.release_room_prompts(session_id);

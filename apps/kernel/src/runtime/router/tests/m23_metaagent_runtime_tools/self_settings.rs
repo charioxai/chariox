@@ -3,22 +3,6 @@
 use super::subtree::{error_text, room_command, world, World};
 use super::*;
 
-async fn allow_models(world: &World, agent: &str, models: &[&str]) {
-    world
-        .app
-        .lock()
-        .await
-        .agents()
-        .set_agent_self_settings(
-            &world.ids[agent],
-            crate::agent::AgentSelfSettings {
-                models: models.iter().map(|model| model.to_string()).collect(),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-}
-
 async fn model_of(world: &World, agent: &str) -> Option<String> {
     world
         .app
@@ -32,16 +16,15 @@ async fn model_of(world: &World, agent: &str) -> Option<String> {
 }
 
 #[test]
-fn an_agent_changes_its_own_model_inside_the_set_with_the_room_command() {
+fn an_agent_changes_its_own_model_with_the_room_command() {
     run_large_stack_async_test(
-        "self-settings-in-set",
-        an_agent_changes_its_own_model_inside_the_set_with_the_room_command_body,
+        "self-settings-own-model",
+        an_agent_changes_its_own_model_with_the_room_command_body,
     );
 }
 
-async fn an_agent_changes_its_own_model_inside_the_set_with_the_room_command_body() {
-    let world = world("self-settings-in-set").await;
-    allow_models(&world, "b", &["m-x"]).await;
+async fn an_agent_changes_its_own_model_with_the_room_command_body() {
+    let world = world("self-settings-own-model").await;
 
     let result = room_command(
         &world,
@@ -72,9 +55,7 @@ fn an_agent_reaches_itself_and_the_agents_below_it_and_no_other() {
 
 async fn an_agent_reaches_itself_and_the_agents_below_it_and_no_other_body() {
     let world = world("self-settings-reach").await;
-    allow_models(&world, "b", &["m-y"]).await;
-
-    // The agent above chooses a child's settings without the child's set.
+    // The agent above chooses a child's settings.
     let above = room_command(&world, "a", "agent settings set b --model m-below").await;
     assert!(above.ok, "{above:?}");
     assert_eq!(model_of(&world, "b").await.as_deref(), Some("m-below"));

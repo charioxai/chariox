@@ -579,9 +579,8 @@ impl SessionRuntimeStore {
         self.state.authorize_room_agent_request(actor_id, request)
     }
 
-    /// The caller is an owned agent of this room. The one exception is a room agent creating a
-    /// peer here from another room (M2 P3): `SpawnAgent` only, admitted by the Room fence, with
-    /// the owner named as this room knows it (`local` or the enrolled owner).
+    /// Cross-Room spawn and deletion enter the destination Room's command queue.
+    /// The Room fence below checks the ownership and parent edge before either mutation.
     pub(super) async fn verify_metaagent_caller(
         &self,
         session_id: &str,
@@ -596,7 +595,10 @@ impl SessionRuntimeStore {
                     agent.owner_user_id() == caller_user_id
                 } else {
                     self.state.room_agent_tools_enabled()
-                        && matches!(request, LocalDaemonRequest::SpawnAgent(_))
+                        && matches!(
+                            request,
+                            LocalDaemonRequest::SpawnAgent(_) | LocalDaemonRequest::DestroyAgent(_)
+                        )
                         && self.state.same_owner(agent.owner_user_id(), caller_user_id)
                 }
         }) else {
@@ -708,6 +710,22 @@ impl SessionRuntimeStore {
         (result, None)
     }
 
+    pub(super) async fn create_project(
+        &self,
+        request: crate::local::CreateProjectRequest,
+        caller_user_id: String,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<SessionProjectionAction>,
+    ) {
+        let result = self
+            .state
+            .create_project(request.name, &caller_user_id)
+            .await
+            .map(|project| LocalDaemonResponse::ProjectCreated { project });
+        (result, None)
+    }
+
     pub(super) async fn rename_project(
         &self,
         request: RenameProjectRequest,
@@ -808,16 +826,11 @@ impl SessionRuntimeStore {
             request.capability_level,
             member_user_id,
         );
-        let result = match self
+        let result = self
             .state
             .attach_for_caller(attach_request, terminal_caller)
             .await
-        {
-            Ok(attachment) => self
-                .reconcile_room_environment_actors_if_started(attachment.session_id())
-                .map(|()| LocalDaemonResponse::SessionAttached { attachment }),
-            Err(error) => Err(error),
-        };
+            .map(|attachment| LocalDaemonResponse::SessionAttached { attachment });
         self.with_session_projection_action_result(result).await
     }
 
@@ -835,13 +848,18 @@ impl SessionRuntimeStore {
         {
             return (Err(error), None);
         }
-        let result = match self.state.detach(&request.attachment_id).await {
-            Ok(attachment) => self
-                .reconcile_room_environment_actors_if_started(attachment.session_id())
-                .map(|()| LocalDaemonResponse::SessionDetached { attachment }),
-            Err(error) => Err(error),
-        };
-        self.with_session_projection_action_result(result).await
+        let result = self
+            .state
+            .detach_attachment(&request.attachment_id)
+            .map(|attachment| LocalDaemonResponse::SessionDetached { attachment });
+        (result, None)
+    }
+
+    pub(super) async fn finish_attachment_detach(
+        &self,
+        attachment: &crate::attachment::RuntimeAttachment,
+    ) -> Result<(), DaemonError> {
+        self.state.refresh_kernel_browser_audience(attachment).await
     }
 
     /// MP-08 / MP-11: an attachment is one member's client, so only who acts for that member
@@ -871,19 +889,13 @@ impl SessionRuntimeStore {
         &self,
         request: FocusAgentRequest,
         caller_user_id: String,
-        terminal_caller: bool,
     ) -> (
         Result<LocalDaemonResponse, DaemonError>,
         Option<SessionProjectionAction>,
     ) {
         let result = self
             .state
-            .focus_agent(
-                &request.session_id,
-                &request.agent_id,
-                &caller_user_id,
-                terminal_caller,
-            )
+            .focus_agent(&request.session_id, &request.agent_id, &caller_user_id)
             .await
             .map_err(|error| match error {
                 DaemonError::AgentNotFound { agent_id } => DaemonError::AgentNotInSession {
@@ -936,14 +948,13 @@ impl SessionRuntimeStore {
         &self,
         request: CycleAgentFocusRequest,
         caller_user_id: String,
-        terminal_caller: bool,
     ) -> (
         Result<LocalDaemonResponse, DaemonError>,
         Option<SessionProjectionAction>,
     ) {
         let result = self
             .state
-            .cycle_agent_focus(&request.session_id, &caller_user_id, terminal_caller)
+            .cycle_agent_focus(&request.session_id, &caller_user_id)
             .await
             .map(|agent| LocalDaemonResponse::AgentFocusCycled { agent });
         self.with_session_projection_action_result(result).await
@@ -1074,7 +1085,7 @@ impl SessionRuntimeStore {
             passkey_remember_minutes,
         } = request;
         let custom_reply = custom_reply.map(zeroize::Zeroizing::new);
-        let result = match self
+        if let Err(error) = self
             .state
             .answer_terminal_runtime_interaction(
                 &session_id,
@@ -1088,17 +1099,24 @@ impl SessionRuntimeStore {
             )
             .await
         {
-            Ok(()) => self
-                .state
-                .session_snapshot(&session_id)
-                .await
-                .map(|session| LocalDaemonResponse::InteractionResponded {
-                    interaction_id,
-                    session,
-                }),
-            Err(error) => Err(error),
-        };
-        self.with_session_projection_action_result(result).await
+            return (Err(error), None);
+        }
+        // The Room state reaches every client through the projection and its events; the
+        // reply only says what happened to this answer.
+        let projection_action = self
+            .state
+            .session_snapshot(&session_id)
+            .await
+            .ok()
+            .map(SessionProjectionAction::Update);
+        (
+            Ok(LocalDaemonResponse::InteractionResponded {
+                interaction_id,
+                choice_id,
+                outcome: crate::local::InteractionOutcome::Answered,
+            }),
+            projection_action,
+        )
     }
 
     pub(super) async fn alias_session(
@@ -1218,7 +1236,6 @@ impl SessionRuntimeStore {
             .map(|session| LocalDaemonResponse::SessionDeleted { session });
         self.with_session_projection_action_result(result).await
     }
-
     fn reconcile_room_environment_actors_if_started(
         &self,
         session_id: &str,

@@ -9,6 +9,7 @@ async fn offload_job_on_a_default_kernel_asks_the_machine_service_and_raises_no_
         .set_remote_job_policy(
             &task.room_id,
             Some(&task.agent_id),
+            false,
             &task.owner_user_id,
             Some(crate::local::OffloadPolicy::AlwaysHeavy),
         )
