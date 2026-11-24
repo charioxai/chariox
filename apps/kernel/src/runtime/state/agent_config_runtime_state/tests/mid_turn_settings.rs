@@ -539,3 +539,27 @@ async fn a_process_that_runs_a_background_call_is_not_swapped_at_a_step_boundary
     assert!(!swapped);
     assert_eq!(turn.live_run().unwrap().id(), turn.failed_run_id);
 }
+
+/// Row 525, found by the live drill: a model switch of an agent between turns ended its provider
+/// process at once, and the background command that process ran with it (and the notification).
+#[tokio::test]
+async fn a_model_switch_between_turns_keeps_the_process_that_runs_a_background_call() {
+    let turn = running_turn().await;
+    track_activity(&turn);
+    launch_background_call(&turn).await;
+    turn.runtime
+        .settle_owned_provider_prompt(&turn.session_id, &turn.failed_run_id, true, false, true)
+        .await
+        .expect("the turn completes");
+    assert!(turn.active_prompt().is_none());
+
+    change_model(&turn, NEXT_MODEL).await;
+
+    let run = turn.live_run().expect("the agent still has its run");
+    assert_eq!(run.id(), turn.failed_run_id);
+    assert_ne!(
+        run.state(),
+        ProviderRunState::Ended,
+        "the process that runs the command is not ended by the switch"
+    );
+}
