@@ -969,19 +969,21 @@ mod tests {
     #[test]
     fn a_chunk_that_starts_ahead_of_the_one_before_it_waits_for_it() {
         let dir = scratch();
-        let target = dir.join("early.bin");
-        let sha = format!("{:x}", Sha256::digest(b"abcdef"));
-        let first = chunk(&target, 0, b"abc", 6, Some(&sha));
-        let second = chunk(&target, 3, b"def", 6, Some(&sha));
-        let late = std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(100));
-            write(&first)
-        });
-        let outcome = written(write(&second).unwrap());
-        assert_eq!(outcome.0, 6);
-        assert!(outcome.1);
-        assert_eq!(written(late.join().unwrap().unwrap()).0, 3);
-        assert_eq!(std::fs::read(&target).unwrap(), b"abcdef");
+        // The second target sits under folders that only the first chunk creates.
+        for target in [dir.join("early.bin"), dir.join("new/nested/early.bin")] {
+            let sha = format!("{:x}", Sha256::digest(b"abcdef"));
+            let first = chunk(&target, 0, b"abc", 6, Some(&sha));
+            let second = chunk(&target, 3, b"def", 6, Some(&sha));
+            let late = std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(100));
+                write(&first)
+            });
+            let outcome = written(write(&second).unwrap());
+            assert_eq!(outcome.0, 6);
+            assert!(outcome.1);
+            assert_eq!(written(late.join().unwrap().unwrap()).0, 3);
+            assert_eq!(std::fs::read(&target).unwrap(), b"abcdef");
+        }
     }
 
     // On a slow uplink the chunk ahead can land seconds after the one behind it.
