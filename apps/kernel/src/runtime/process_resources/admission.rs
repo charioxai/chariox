@@ -1563,25 +1563,27 @@ fn writers<'a>(members: &'a [Arc<Mutex<Observation>>]) -> Vec<Writer<'a>> {
     writers
 }
 
-/// Gives each writer its rate: file growth where it is seen; otherwise a share
-/// of what its volume lost beyond that growth, shared between the commands
-/// writing new files there, so one loss is never spent twice.
+/// Gives each writer its rate: the growth seen in its open files, plus its share of what its
+/// volume lost beyond all growth seen (the loss no file explains), shared between the commands
+/// writing new files there so one loss is never spent twice. A share never exceeds what the
+/// command wrote beyond its seen growth.
 fn apportion(writers: &mut Vec<Writer<'_>>, lost: &BTreeMap<u64, u64>) {
     let mut grown = BTreeMap::<u64, u64>::new();
-    let mut whole = BTreeMap::<u64, u64>::new();
+    let mut beyond = BTreeMap::<u64, u64>::new();
     for writer in writers.iter() {
         *grown.entry(writer.volume).or_default() += writer.rate;
-        *whole.entry(writer.volume).or_default() += writer.whole;
+        *beyond.entry(writer.volume).or_default() += writer.whole.saturating_sub(writer.rate);
     }
     for writer in writers.iter_mut() {
+        let own = writer.whole.saturating_sub(writer.rate);
         let unexplained = lost
             .get(&writer.volume)
             .copied()
             .unwrap_or_default()
             .saturating_sub(grown[&writer.volume]);
-        let all = whole[&writer.volume].max(1);
-        let share = (writer.whole as u128 * unexplained as u128 / all as u128) as u64;
-        writer.rate = writer.rate.max(share.min(writer.whole));
+        let all = beyond[&writer.volume].max(1);
+        let share = (own as u128 * unexplained as u128 / all as u128) as u64;
+        writer.rate += share.min(own);
     }
     writers.retain(|writer| writer.rate >= GROWING);
 }

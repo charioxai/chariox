@@ -5,6 +5,16 @@ use std::collections::BTreeMap;
 #[cfg(target_os = "linux")]
 use std::path::PathBuf;
 
+/// Miguel 11-24: 5 s btime window. A file counts as new allocation only if its birth time
+/// (statx btime) is within this long of the sample. Opening a file that already existed, and
+/// rewriting it, allocates nothing, however fast.
+#[cfg(target_os = "linux")]
+const BIRTH_WINDOW_MS: u64 = 5_000;
+/// Miguel 11-24: 2 s carry. Between two files of a copy no file is open: the last sighting of a
+/// newly born file stands for this long, and no longer.
+#[cfg(target_os = "linux")]
+const BIRTH_CARRY_MS: u64 = 2_000;
+
 #[derive(Default)]
 pub(in crate::runtime::process_resources) struct WriteGrowth {
     #[cfg(target_os = "linux")]
@@ -15,6 +25,9 @@ pub(in crate::runtime::process_resources) struct WriteGrowth {
     /// output elsewhere.
     #[cfg(target_os = "linux")]
     last: Option<(u64, PathBuf)>,
+    /// When (sample time, ms) a file born within `BIRTH_WINDOW_MS` was last seen, by volume.
+    #[cfg(target_os = "linux")]
+    born: BTreeMap<u64, u64>,
 }
 
 #[cfg(target_os = "linux")]
@@ -22,6 +35,16 @@ struct FileGrowth {
     allocated: u64,
     at: u64,
     written: u64,
+}
+
+/// Whether the file's birth time is within the birth window of now. A filesystem that does not
+/// report one proves nothing.
+#[cfg(target_os = "linux")]
+fn born_recently(meta: &std::fs::Metadata) -> bool {
+    meta.created()
+        .ok()
+        .and_then(|born| std::time::SystemTime::now().duration_since(born).ok())
+        .is_some_and(|age| age.as_millis() as u64 <= BIRTH_WINDOW_MS)
 }
 
 impl WriteGrowth {
@@ -111,7 +134,11 @@ impl WriteGrowth {
                     fresh: false,
                 });
                 volume.open.insert(key.1);
-                volume.fresh |= before.is_none();
+                // First seen now AND born just now: opening an old file is not allocation.
+                if before.is_none() && born_recently(&meta) {
+                    volume.fresh = true;
+                    self.born.insert(key.0, at);
+                }
                 let stream = fd
                     .file_name()
                     .to_str()
@@ -129,7 +156,7 @@ impl WriteGrowth {
             }
         }
         self.files = files;
-        self.remember(&mut volumes, &outputs);
+        self.remember(&mut volumes, &outputs, at);
         volumes.into_values().collect()
     }
 
@@ -141,6 +168,7 @@ impl WriteGrowth {
         &mut self,
         volumes: &mut BTreeMap<u64, VolumeWrites>,
         outputs: &BTreeMap<u64, PathBuf>,
+        at: u64,
     ) {
         match outputs.iter().next() {
             None => {
@@ -159,8 +187,12 @@ impl WriteGrowth {
                 });
                 volume.path = dir.clone();
                 volume.receiving = true;
-                // Between two files: nothing it holds says it only rewrites.
-                volume.fresh = true;
+                // Between two files nothing is open to show allocation: only a newly born
+                // file seen a moment ago carries over.
+                volume.fresh = self
+                    .born
+                    .get(id)
+                    .is_some_and(|seen| at.saturating_sub(*seen) <= BIRTH_CARRY_MS);
             }
             Some((id, output)) if outputs.len() == 1 => {
                 // The descriptor closes soon; its directory stays measurable.
