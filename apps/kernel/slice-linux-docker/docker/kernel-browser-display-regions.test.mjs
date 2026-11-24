@@ -11,7 +11,8 @@ function fixture(kind='region') {
   isAlive:()=>alive,isCurrent:async()=>{calls.push('live');return alive;},close:async()=>{alive=false;},
   attachDisplay:s=>host.displays.set(s.subscription_id,s),resolveInput:async()=>({guard:async()=>{calls.push('hit');},input:{kind:'click',x:11,y:22}})};
  const binding={browser_generation:2,window_generation:7,role:'tabbed',xid:42,bounds:{width:2560,height:1774},content_top:174,page_rect:{left:0,top:174,width:2560,height:1600},scale:2,isCurrent:()=>alive,isPageCurrent:async target=>alive&&(target===undefined||target===front)};
- const host={generation:2,protection:{unknown:false},displays:new Map(),scales:new Map([['t',2]]),tabs:new Map([['t',tab]]),timing:()=>{},
+ const downloads={bound:[],bind(tab,session){if(typeof session==='string'&&session)this.bound.push([tab.tab_id,session]);}};
+ const host={generation:2,downloads,protection:{unknown:false},displays:new Map(),scales:new Map([['t',2]]),tabs:new Map([['t',tab]]),timing:()=>{},
   chromium:{display:{},child:{pid:42},scale:2,policy:'managed'},browser:{inputCapture:{hold:async()=>async()=>{}},resolvePageTarget:async()=>({connection:{},sessionId:'s'})},
   displayTarget:async()=>tab,displayScreenshot:async()=>{},armDisplayExpiry:()=>{},
   mirror:{v2:{regions:{resolve:async(target,scope)=>{calls.push([target,scope]);return lease;}}}},
@@ -165,6 +166,20 @@ test('MP-08/MP-10/MP-11 page crop clips to the actual native viewport before inw
 });
 
 // Protocol 530: a popup of the band's window (menu, omnibox dropdown, extension popup) by its kernel id.
+test('MP-08/MP-10 region and chrome input bind the person\'s Room before they dispatch',async()=>{
+ const f=fixture();await subscribeRegion(f.host,f.command,'terminal:a',undefined,{Capture:f.Capture});
+ const command={op:'input',tab_id:'t',generation:2,document_id:'doc',binding_id:'opaque',sequence:3,input:{kind:'click',x:1,y:2}};
+ f.host.dispatchRegionInput=async(_s,resolved)=>{await resolved.guard();};
+ await regionInput(f.host,{...command,_download_session:'room-b'},'terminal:a');
+ assert.deepEqual(f.host.downloads.bound,[['t','room-b']]);
+ await regionInput(f.host,command,'terminal:a');
+ assert.equal(f.host.downloads.bound.length,1,'input without a Room leaves the binding alone');
+ const band=fixture('browser_chrome');const r=await subscribeRegion(band.host,band.command,'terminal:a',undefined,{Capture:band.Capture});
+ band.host.arbiter={input:async()=>({dispatched:true})};
+ const chrome={op:'input',tab_id:'t',generation:2,document_id:r.document_id,binding_id:r.binding_id,sequence:r.sequence,input:{kind:'click',x:3,y:4},_download_session:'room-b'};
+ await regionInput(band.host,chrome,'terminal:a');
+ assert.deepEqual(band.host.downloads.bound,[['t','room-b']]);
+});
 test('MP-08/MP-11 a band popup subscribes by kernel id, retires with the popup and takes input through the arbiter',async()=>{
  const f=fixture('browser_auxiliary');let listed=true,watched=0;
  const popup={auxiliary_id:4,role:'auxiliary',xid:77,parent_xid:42,bounds:{x:2000,y:140,width:496,height:800},isCurrent:()=>listed};

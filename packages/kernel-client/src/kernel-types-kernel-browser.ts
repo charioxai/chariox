@@ -14,7 +14,7 @@ export type KernelBrowserDisplayTarget =
   // Protocol 530: a popup of the band's window, by its id in the state's chrome_window.auxiliary.
   | { kind: "browser_auxiliary"; window_generation: number; auxiliary_id: number }
   | { kind: "browser_window"; window_generation: number }
-export type KernelBrowserCommand =
+export type KernelBrowserPlainCommand =
   | { op: "paste_secret"; credential_id: string; tab_id: string; generation: number }
 
   | { op: "grant_leased_computer"; agent_id: string; target: KernelDesktopTarget }
@@ -52,6 +52,15 @@ export type KernelBrowserCommand =
   | { op: "cancel_download"; tab_id: string; generation: number; download_id: string }
   | { op: "dialog"; tab_id: string; generation: number; document_id: string; dialog_id: string; action: "accept" | "dismiss"; prompt_text?: string }
   | { op: "unsubscribe"; subscription_id: string; generation: number }
+// A person's navigation or input in a Room: downloads it starts belong to that Room.
+export type KernelBrowserRoomCommand = Extract<KernelBrowserPlainCommand, { op: "open" | "navigate" | "input" | "mirror_input" | "display_input" }>
+export type KernelBrowserCommand =
+  | KernelBrowserPlainCommand
+  | { op: "room"; session_id: string; command: KernelBrowserRoomCommand }
+  // Finished downloads of the Room; `after` is the `revision` the caller holds ("" reads at once).
+  | { op: "downloads_wait"; session_id: string; after?: string; wait_ms: number }
+  // Show a finished download in the file manager of the kernel's own computer (`native: false` elsewhere).
+  | { op: "reveal_download"; session_id: string; download_id: string }
 export type KernelBrowserRequest = { KernelBrowser: { command: KernelBrowserCommand } }
 export type KernelBrowserFrame = {
   generation: number; tab_id: string; mime_type: "image/png" | "image/jpeg";
@@ -73,6 +82,11 @@ export type KernelBrowserDownload = {
   state: "in_progress" | "done" | "failed" | "cancelled"; bytes: number;
   path: string | null; reason?: string
 }
+export type KernelBrowserRoomDownloads = {
+  downloads: { download_id: string; name: string; path: string }[]
+  revision: string
+}
+export type KernelBrowserRevealResult = { native: boolean }
 export type KernelBrowserResult = {
   downloads?: KernelBrowserDownload[];
   active_tab_id?: string | null;
@@ -86,7 +100,7 @@ export type KernelBrowserResult = {
   unchanged?: true
   // Protocol 630/233: absent on older kernels.
   dialogs?: KernelBrowserDialog[]
-} | KernelBrowserFrame | UserDomainGrantEvent
+} | KernelBrowserRoomDownloads | KernelBrowserRevealResult | KernelBrowserFrame | UserDomainGrantEvent
 
 // MP-08 / MP-11: local446; same typed surface for MCP and terminal transports.
 export type KernelDesktopTarget = { surface_id: string; generation: string }
