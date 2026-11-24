@@ -286,8 +286,8 @@ impl KernelRuntimeState {
     }
 
     /// A start that needs the Vault while it is locked says so in the agent's pane at once, naming
-    /// the account. A start that finds the Room's unlock card already open joins it silently: the
-    /// person is told once, not on every retry.
+    /// the account. A start that finds the Room's unlock card already open, whichever agent opened it, joins
+    /// it silently: the person is told once, not on every retry.
     pub(super) fn say_launch_waits_on_vault(
         &self,
         session_id: &str,
@@ -303,9 +303,12 @@ impl KernelRuntimeState {
             .session_store
             .get_session(session_id)
             .is_ok_and(|session| {
+                // The unlock card is the Room's: an agent that needs the Vault while another
+                // agent's card is open joins it, so its own card list does not show it.
                 session
-                    .active_interaction_for_agent(agent_id)
-                    .is_some_and(|card| card.id().starts_with("vault-unlock-"))
+                    .active_interactions()
+                    .iter()
+                    .any(|card| card.id().starts_with("vault-unlock-"))
             });
         if card_open {
             return;

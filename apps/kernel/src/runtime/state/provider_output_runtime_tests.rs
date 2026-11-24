@@ -157,6 +157,7 @@ mod background_hold;
 mod background_tool_settlement;
 mod browser_import_execution_gate;
 mod child_finished;
+mod vault_notice_join;
 mod child_receipts;
 mod claude_plan;
 mod cleanup_liveness;
