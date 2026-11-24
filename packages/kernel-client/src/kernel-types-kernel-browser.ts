@@ -41,7 +41,8 @@ export type KernelBrowserCommand =
   // MP-08/MP-10: protocol 491 push acknowledgement on a relay display subscription.
   | { op: "display_ack"; subscription_id: string; generation: number; sequence: number; lost: boolean; held_ms?: number; paused?: boolean }
   | { op: "display_input"; binding_id?: string; sequence?: number; tab_id: string; generation: number; document_id: string; input: KernelBrowserInput }
-  | { op: "start" | "state" | "stop" }
+  // Row 548 (protocol 1015): `restart` stops the controller and starts a fresh one; the answer is the restored browser state.
+  | { op: "start" | "state" | "stop" | "restart" }
   | { op: "open"; url: string }
   | { op: "close" | "snapshot" | "screenshot"; tab_id: string; generation: number }
   | { op: "resize"; tab_id: string; generation: number; width: number; height: number }
