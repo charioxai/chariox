@@ -35,10 +35,17 @@ export async function displayCreditViewerStill(host,tab,stream,binding){
  stream.viewerStill={source:binding.source,document:binding.document,pixels:binding.pixels,epoch:binding.epoch,policy:binding.policy,still};
  return still;
 }
+// Row 487: a resize_rebind visible page waits while the kernel admits it on the resized window (bounded by its hold), also
+// when the resize lands while a credit is already under way (#1723 review): that credit, which emitted nothing, starts again
+// against the rebound source. A refused rebind ends the pump as a retired region does.
 export async function displayCredit(host, stream, command, signal) {
-  // Row 487: a resize_rebind visible page waits while the kernel admits it on the resized window (bounded by its hold);
-  // a refused rebind ends the pump as a retired region does.
-  if(stream.rebinding&&!await stream.rebinding.done)throw new UserDomainRefusal('stale_reference','region_retired');
+  for (;;) {
+    if (stream.rebinding && !await stream.rebinding.done) throw new UserDomainRefusal('stale_reference', 'region_retired');
+    try { return await displayCreditOnce(host, stream, command, signal); }
+    catch (error) { if (!(stream.rebinding && error?.code === 'user_domain_stale_reference')) throw error; }
+  }
+}
+async function displayCreditOnce(host, stream, command, signal) {
   const geometry=host.pageSize?.(stream.tab_id)??canonicalGeometry;
   const leased=stream.adoptLease?.(command.after_sequence);
   if(leased)host.timing.event?.('native_lease_ended',{frames:leased});

@@ -60,3 +60,43 @@ test('Row 487 resize_rebind: a viewer that did not ask is removed on the resize,
   const waiting=stream.rebinding.done;await rebindResizedDisplays(r.host);
   assert.equal(await waiting,false,'the waiting credits learn it');assert.deepEqual(r.removed,[result.subscription_id],'another document: removed, the viewer re-subscribes');}
 });
+
+test('Row 487 #1723 review 1: a resumed resize_rebind display tells the viewer it still follows rebinds',async()=>{
+ const {DisplaySessions}=await import('./kernel-display-resumption.mjs');
+ let now=1000;const lease={document_id:'d',sequence:3};
+ const stream={subscription_id:'old',source_kind:'region',observed_by:'owner',sequence:9,expires:61000,lastCreditAt:1000,document_id:'d',binding_id:'b',
+  regionLease:lease,css_width:1672,css_height:846,resizeRebind:true,invalidate(){},async close(){}};
+ const host={generation:7,protection:{},displays:new Map([['old',stream]]),armDisplayExpiry(){}};
+ const sessions=new DisplaySessions(host,{now:()=>now,clock:()=>now,id:()=>'new'});
+ const source={};await sessions.suspend('old','owner',7,()=>source);now+=500;
+ const resumed=await sessions.resume('old','owner',7,()=>source);
+ assert.equal(resumed.resize_rebind,true);assert.deepEqual([resumed.sequence,resumed.css_width,resumed.css_height],[3,1672,846],'at the epoch and size it is at now');
+});
+
+test('Row 487 #1723 review 2: a credit under way when the resize retires the window waits for the rebind instead of failing',async()=>{
+ const {displayCredit}=await import('./kernel-browser-display-credit.mjs');
+ let settle;const done=new Promise(resolve=>{settle=resolve;});let checks=0;
+ const stream={tab_id:'t',regionTarget:{kind:'visible_page'},regionLease:{isAlive:()=>true},regionWindow:{isCurrent:()=>true},adoptLease:()=>0,
+  // The first liveness check of this credit sees the window the resize just retired (and the hold it left).
+  regionSource:{valid:()=>{checks++;if(checks===1){stream.rebinding={done,settled:false};return false;}return false;},closed:false,allowed:()=>true}};
+ const host={generation:1,timing:Object.assign(()=>{},{event:()=>{}}),pageSize:()=>({width:1672,height:846}),inputEpochs:new Map(),inputChangedAt:new Map()};
+ let failed=null;const credit=displayCredit(host,stream,{generation:1,after_sequence:0},undefined).catch(error=>{failed=error;});
+ await new Promise(resolve=>setTimeout(resolve,30));
+ assert.equal(failed,null,'it waits for the rebind');
+ stream.rebinding=null;settle(false);await credit;
+ assert.equal(failed?.code,'user_domain_stale_reference','a refused rebind ends it as a retired region');
+});
+
+test('Row 487 #1723 review 3: a rebind whose last check ends after the hold timed out installs nothing and closes what it opened',async()=>{
+ const r=rig();const result=await subscribe(r,{resize_rebind:true});const stream=r.host.displays.get(result.subscription_id);const first=stream.regionSource;
+ r.resize(1672,846);
+ // The new window's page check is slow; the hold times out (and the display is removed) while it is pending.
+ let release;const slow=new Promise(resolve=>{release=resolve;});const pageCurrent=r.window.isPageCurrent;let calls=0;
+ r.window.isPageCurrent=async target=>{if(++calls>=2)await slow;return pageCurrent(target);};
+ const rebinding=rebindResizedDisplays(r.host);
+ await new Promise(resolve=>setTimeout(resolve,20));
+ stream.rebinding.settle(false);await r.host.removeDisplay(result.subscription_id);
+ release();await rebinding;
+ assert.equal(stream.regionSource,first,'nothing was swapped into the closed stream');
+ assert.deepEqual(r.closed.sort(),[1280,1672],'the old source closed with the stream, the new one at the refusal');
+});
