@@ -111,6 +111,36 @@ async fn wait_for_relay(socket: &mut Socket) {
     }
 }
 
+/// The home kernel calls a held machine ready only once it has verified access to its kernel through
+/// the gateway, and refuses a job submitted before that as "reconnecting". Submit the job again
+/// until the machine is ready; a refused job opens nothing, so every other answer is final.
+async fn run_when_the_machine_is_ready(record: &Path, arguments: Value) -> Value {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    for attempt in 0.. {
+        let suffix = format!("held-start-{attempt}");
+        let answer = codex_tools(
+            record,
+            &suffix,
+            json!({"jsonrpc": "2.0", "id": 1,
+                "method": "tools/call", "params": {"name": "chariox.jobs.run", "arguments": arguments},
+            }),
+        )
+        .await;
+        std::fs::remove_file(record.join(format!("mcp-{suffix}"))).unwrap();
+        if answer["error"].is_null() {
+            return serde_json::from_str(answer["result"]["content"][0]["text"].as_str().unwrap())
+                .unwrap_or_else(|_| panic!("{answer}"));
+        }
+        let refusal = answer["error"]["message"].as_str().unwrap_or_default();
+        assert!(
+            refusal.contains("reconnecting") && Instant::now() < deadline,
+            "the held machine job was refused: {answer}"
+        );
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+    unreachable!()
+}
+
 async fn held_job_drill(
     home: &Kernel,
     record: &Path,
@@ -121,7 +151,7 @@ async fn held_job_drill(
     wait_for_relay(&mut socket).await;
     let project = home.scratch.join("project");
     let (room, task) = open_job_room(&mut socket, &project, record).await;
-    let started = job_tool(record, "held-start", "chariox.jobs.run", json!({
+    let started = run_when_the_machine_is_ready(record, json!({
         "task_id": task, "origin_prompt_id": task, "machine": "held-job-machine", "timeout_s": 90, "wait_s": 1,
         "outputs": ["result.txt"],
         "command": ["/bin/sh", "-c", "printf 'before\\npartial-'; while [ ! -f finish ]; do sleep 0.05; done; rm -f finish; printf 'line\\nafter\\n'; printf artifact > result.txt; exit 7"],

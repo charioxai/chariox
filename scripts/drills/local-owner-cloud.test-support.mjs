@@ -23,7 +23,7 @@ export async function startOwnerCloud({ token, note, realm, relayPort, onServer,
         if (url.pathname === "/kernels/presence") {
           kernels.set(ask.kernelId, { ...kernels.get(ask.kernelId), kernelId: ask.kernelId, machineId: ask.machineId, publicKey: ask.metadata?.relay_public_key, alias: ask.kernelAlias ?? null })
           const kernel = kernels.get(ask.kernelId)
-          onPresence?.({ kernelId: kernel.kernelId, keyThumbprint: kernel.thumbprint })
+          onPresence?.({ kernelId: kernel.kernelId, keyThumbprint: kernel.thumbprint, machineId: kernel.machineId })
           return answer(res, {})
         }
         if (req.method === "GET" && url.pathname === "/v1/owner-managed-context-tickets/peers") return answer(res, { peers: [...kernels.values()].filter(k => k.publicKey && k.thumbprint).map(k => ({ targetId: k.kernelId, peer: { relayRealmId: realm, machineId: k.machineId, kernelId: k.kernelId, relayPublicKey: k.publicKey, keyThumbprint: k.thumbprint } })) })

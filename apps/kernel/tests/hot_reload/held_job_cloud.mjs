@@ -25,9 +25,11 @@ let worker;
 const cloud = await startOwnerCloud({
   token, realm, relayPort: HELD_JOB_RELAY_PORT, note: () => {},
   onServer: instance => { server = instance; },
-  onPresence: ({ kernelId, keyThumbprint }) => {
-    // The Rust fixture connects the worker before it starts the home kernel.
-    worker ??= { kernel_id: kernelId, machine_id: machine, key_thumbprint: keyThumbprint, relay_realm_id: realm };
+  onPresence: ({ kernelId, keyThumbprint, machineId }) => {
+    // The Rust fixture connects the worker before it starts the home kernel. The machine id is the
+    // one the worker registered: the home kernel checks the target against relay discovery, and a
+    // machine whose enrollment and discovery disagree is never ready.
+    worker ??= { kernel_id: kernelId, machine_id: machineId, key_thumbprint: keyThumbprint, relay_realm_id: realm };
   },
 });
 const api = server.listeners('request')[0];
