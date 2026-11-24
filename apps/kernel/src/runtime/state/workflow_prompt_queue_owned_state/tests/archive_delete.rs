@@ -43,19 +43,14 @@ fn deleting_a_workflow_removes_its_copies_agents_and_worktrees() {
         .join("instances")
         .join(&session_id);
     std::fs::create_dir_all(&instance_root).expect("instance root");
-    let instance_worktree = instance_root.join("copy-1");
-    let registered_worktree =
-        crate::git_worktree_placement::prepare_workflow_runtime_worktree_or_reuse_directory(
-            &crate::agent::GitWorktreePlacement {
-                target_directory: Some(instance_worktree.display().to_string()),
-                branch: None,
-                from_ref: Some("HEAD".to_string()),
-            },
+    let (_, registered_worktree) =
+        crate::git_worktree_placement::prepare_workflow_runtime_workspace(
             &test_root.0,
-            None,
+            &instance_root,
             "prepare archive delete test worktree",
         )
         .expect("runtime worktree should be created");
+    let instance_worktree = std::path::PathBuf::from(&registered_worktree);
     let workflow = runtime
         .owned
         .session_store

@@ -1,4 +1,5 @@
 use super::*;
+use crate::session::WorkflowQueuedPromptStatus;
 
 fn archived_service() -> (SessionService, String, TestWorkflowEndpoint) {
     let mut service = SessionService::new(&test_config());
