@@ -798,7 +798,11 @@ impl Ledger {
             // Within the fill horizon only a runaway is stopped, the fastest of them: any
             // agent command writing this fast to that volume, an overwriter too (an accepted
             // cost in a real emergency, Miguel 11-24).
-            if !(below || (near_full && writer.rate >= RUNAWAY_WRITE)) {
+            // Below half the floor, as before this rule: only a writer with evidence that it
+            // uses the room (its open files growing, or the volume visibly losing room) is a
+            // candidate; a writer that rewrites what it holds on a steady volume frees nothing.
+            let consuming = writer.grown >= GROWING || observed >= GROWING;
+            if !((below && consuming) || (near_full && writer.rate >= RUNAWAY_WRITE)) {
                 continue;
             }
             let rank = if writer.rate >= RUNAWAY_WRITE {
@@ -1467,6 +1471,8 @@ struct Writer<'a> {
     /// What it writes to the volume: all it writes when it sends output to this
     /// volume only, otherwise the growth of its open files there.
     rate: u64,
+    /// What its open files there grew by: allocation seen.
+    grown: u64,
     written: u64,
     deleted_open: u64,
 }
@@ -1536,6 +1542,11 @@ fn writers<'a>(members: &'a [Arc<Mutex<Observation>>]) -> Vec<Writer<'a>> {
                 // from one sample to the next. Otherwise only the growth of its
                 // open files counts for the volume.
                 let only_here = only == Some(output.id);
+                let grown = if output.files.is_empty() {
+                    0
+                } else {
+                    output.rate.min(command.write_rate)
+                };
                 let (rate, written) = if only_here {
                     (command.write_rate, output.written.max(command.writes))
                 } else {
@@ -1550,6 +1561,7 @@ fn writers<'a>(members: &'a [Arc<Mutex<Observation>>]) -> Vec<Writer<'a>> {
                     volume: output.id,
                     path: output.path.clone(),
                     rate,
+                    grown,
                     written,
                     deleted_open: command.deleted_open,
                 });
