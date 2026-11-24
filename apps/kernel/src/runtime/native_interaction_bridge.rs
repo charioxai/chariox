@@ -459,6 +459,20 @@ type ForwardedDecisionAnswer = Option<Result<ProviderNativeInteractionResolution
 struct ForwardedDecision {
     answer: tokio::sync::watch::Receiver<ForwardedDecisionAnswer>,
     opened_at: Instant,
+    /// When the answer was recorded: a held card can wait for hours, so its answer is kept for the
+    /// retry window from here, not from `opened_at`.
+    settled_at: Option<Instant>,
+}
+
+/// Keeps a decision while it is pending, and its answer for the retry window.
+fn prune_forwarded_decisions(decisions: &mut HashMap<ForwardedDecisionKey, ForwardedDecision>) {
+    decisions.retain(|_, decision| {
+        if decision.answer.borrow().is_some() {
+            decision.opened_at.elapsed() < FORWARDED_DECISION_RETENTION
+        } else {
+            decision.answer.has_changed().is_ok()
+        }
+    });
 }
 
 fn forwarded_decisions() -> &'static Mutex<HashMap<ForwardedDecisionKey, ForwardedDecision>> {
@@ -484,14 +498,7 @@ async fn join_forwarded_decision(
         let mut decisions = forwarded_decisions()
             .lock()
             .expect("forwarded decisions mutex poisoned");
-        // Keep a decision while it is pending, and its answer for a while.
-        decisions.retain(|_, decision| {
-            if decision.answer.borrow().is_some() {
-                decision.opened_at.elapsed() < FORWARDED_DECISION_RETENTION
-            } else {
-                decision.answer.has_changed().is_ok()
-            }
-        });
+        prune_forwarded_decisions(&mut decisions);
         match decisions.get(&key) {
             Some(decision) => Err(decision.answer.clone()),
             None => {
@@ -501,6 +508,7 @@ async fn join_forwarded_decision(
                     ForwardedDecision {
                         answer,
                         opened_at: Instant::now(),
+                        settled_at: None,
                     },
                 );
                 Ok(sender)
@@ -531,6 +539,13 @@ async fn join_forwarded_decision(
                     .map(Clone::clone)
                     .map_err(ToString::to_string),
             ));
+            if let Some(decision) = forwarded_decisions()
+                .lock()
+                .expect("forwarded decisions mutex poisoned")
+                .get_mut(&key)
+            {
+                decision.settled_at = Some(Instant::now());
+            }
             return result;
         }
         Err(answer) => answer,
@@ -731,6 +746,44 @@ mod tests {
         );
         tokio::time::advance(deadline - tokio::time::Instant::now()).await;
         assert!(tokio::time::Instant::now() >= deadline);
+    }
+
+    fn ago(seconds: u64) -> Instant {
+        Instant::now()
+            .checked_sub(Duration::from_secs(seconds))
+            .expect("the clock has run this long")
+    }
+
+    fn answered_decision(opened_ago: u64, settled_ago: u64) -> ForwardedDecision {
+        let (_sender, answer) =
+            tokio::sync::watch::channel(Some(Ok(ProviderNativeInteractionResolution {
+                status: "answered".into(),
+                choice_id: Some("allow".into()),
+                reply: None,
+            })));
+        ForwardedDecision {
+            answer,
+            opened_at: ago(opened_ago),
+            settled_at: Some(ago(settled_ago)),
+        }
+    }
+
+    /// A card the home held for half an hour and the person answered a minute ago: the worker's
+    /// retry after a lost reply must get that answer back, not open the permission again.
+    #[test]
+    fn an_answer_to_a_held_card_is_kept_for_the_retry_window_from_when_it_settled() {
+        let key = |name: &str| ("room".to_string(), "run".to_string(), name.to_string());
+        let mut decisions = HashMap::new();
+        decisions.insert(key("held-then-answered"), answered_decision(1800, 60));
+        decisions.insert(key("answered-long-ago"), answered_decision(3000, 700));
+        decisions.insert(key("answered-just-now"), answered_decision(30, 5));
+        prune_forwarded_decisions(&mut decisions);
+        let mut kept = decisions
+            .keys()
+            .map(|key| key.2.clone())
+            .collect::<Vec<_>>();
+        kept.sort();
+        assert_eq!(kept, ["answered-just-now", "held-then-answered"]);
     }
 
     #[tokio::test(start_paused = true)]
