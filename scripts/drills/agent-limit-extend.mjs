@@ -38,7 +38,7 @@ const check = (id, passed, detail) => {
   writeFileSync(join(evidence, "verdict.json"), JSON.stringify(checks, null, 2))
   note(id, { passed, detail })
 }
-const env = { PATH: process.env.PATH, IS_SANDBOX: "1", CHARIOX_ROOM_AGENT_TOOLS: "1", SHELL: "/bin/bash", ...(process.env.CHARIOX_CLAUDE_BIN ? { CHARIOX_CLAUDE_BIN: process.env.CHARIOX_CLAUDE_BIN } : {}) }
+const env = { PATH: process.env.PATH, IS_SANDBOX: "1", CHARIOX_ROOM_AGENT_TOOLS: "1", CHARIOX_PROVIDER_DEV_STUB: "1", RUST_LOG: process.env.DRILL_RUST_LOG ?? "warn", SHELL: "/bin/bash", ...(process.env.CHARIOX_CLAUDE_BIN ? { CHARIOX_CLAUDE_BIN: process.env.CHARIOX_CLAUDE_BIN } : {}) }
 async function freePort() {
   const server = createServer()
   await new Promise(r => server.listen(0, "127.0.0.1", r))
@@ -97,7 +97,10 @@ async function main() {
   await k.rpc({ SetAgentParent: { session_id: room, agent_id: kid.id, parent_agent_id: boss } })
   const attachment = (await k.rpc({ AttachToSession: { session_id: room, client_id: "extend-owner", capability_level: "FullTerminal" } })).SessionAttached.attachment.id
   const deadlineOf = async agent => (await k.rpc({ GetAgentDeadline: { session_id: room, agent_id: agent } })).AgentDeadline.deadline
-  const activity = async agent => (await k.rpc({ GetSessionState: { session_id: room } })).SessionState.agent_activity?.[agent]
+  const activity = async agent => {
+    const state = (await k.rpc({ GetSessionState: { session_id: room } })).SessionState
+    return { activity: state.agent_activity?.[agent] ?? null, prompt_state: state.session?.prompt_states?.[agent] ?? null, keys: Object.keys(state), session_keys: Object.keys(state.session ?? {}), all_activity: state.agent_activity, session_queued: state.session?.queued_prompts, session_active: state.session?.active_prompt }
+  }
   const refused = async request => { try { await k.rpc(request); return "" } catch (error) { return String(error.message) } }
 
   const limitMs = Date.now() + 60000
@@ -105,7 +108,9 @@ async function main() {
   note("parent-limit-set", { boss, limitMs })
   const later = await refused({ SetAgentDeadline: { session_id: room, agent_id: kid.id, deadline_ms: limitMs + 3600000 } })
   check("D2-a-child-limit-past-its-running-parents-is-refused-with-the-next-step", later.includes("at or before") && later.includes("agent deadline"), { later })
-  check("D2-the-refused-edit-changed-nothing", (await deadlineOf(kid.id)) === null, {})
+  // The parent's limit reaches the child as its own (inherited) limit; the refused edit leaves it alone.
+  const inherited = await deadlineOf(kid.id)
+  check("D2-the-refused-edit-changed-nothing", inherited?.state === "armed" && inherited.deadline_ms === limitMs, { inherited })
 
   await until(async () => { const d = await deadlineOf(boss); return d?.state === "reached" && !!d?.stopped_at_ms }, "the parent's limit ended and its cleanup finished", 120000)
   check("D3-the-parent-limit-ended-its-run", (await deadlineOf(boss))?.state === "reached", {})
@@ -117,14 +122,20 @@ async function main() {
   check("D1-the-child-takes-a-new-limit-under-an-ended-parent", (await deadlineOf(kid.id))?.state === "armed" && (await deadlineOf(boss))?.state === "reached", {})
   const accepted = await refused(submitPromptRequest(room, attachment, kid.id, "Reply EXT_DRILL_CHILD_WORK", []))
   check("D1-the-revived-child-takes-a-prompt", accepted === "", { accepted })
-  const before = await activity(kid.id)
-  note("child-activity-after-prompt", { before })
-  // The scheduler ticks every second: the parent's finished cleanup sees the child's new work many times.
-  await delay(8000)
-  const after = await activity(kid.id)
-  note("child-activity-after-8s", { after })
-  check("P1-the-revived-childs-new-turn-is-not-stopped-by-the-parents-ended-limit",
-    !!before && !!after && after.status !== "ended_deadline" && JSON.stringify(after.active_turn ?? null) === JSON.stringify(before.active_turn ?? null) && (await deadlineOf(kid.id))?.state === "armed", { before, after })
+  // The stub answers within a second: the revived child's turn runs to its end under the ended parent,
+  // and the scheduler's later ticks (every second) leave its limit and its answer alone.
+  const history = () => {
+    const db = join(k.dir, "chariox/history/operational.db")
+    if (!existsSync(db)) return []
+    return JSON.parse(execFileSync("sqlite3", ["-readonly", "-json", db, "SELECT sequence, kind, agent_id, substr(event_json,1,400) AS e FROM history_events ORDER BY sequence"], { maxBuffer: 16e6 }).toString() || "[]")
+  }
+  await until(() => history().some(row => row.agent_id === kid.id && row.kind === "provider_output"), "the revived child's answer", 20000)
+  await delay(5000)
+  const rows = history().filter(row => row.agent_id === kid.id)
+  const kidDeadline = await deadlineOf(kid.id)
+  check("P1-the-revived-child-ran-a-turn-under-the-ended-parent-and-kept-its-new-limit",
+    rows.some(row => row.kind === "provider_output") && !rows.some(row => /cancel|stopped|ended/i.test(row.kind)) && kidDeadline?.state === "armed" && (await deadlineOf(boss))?.state === "reached",
+    { kinds: rows.map(row => row.kind), kidDeadline })
 
   // The finished parent takes a new limit (none) and then a prompt.
   await k.rpc({ SetAgentDeadline: { session_id: room, agent_id: boss, deadline_ms: null } })

@@ -823,10 +823,18 @@ async fn a_revived_sub_agents_new_work_survives_its_parents_ended_deadline() {
         .tick_agent_deadlines(crate::session::unix_epoch_ms())
         .await
         .unwrap();
-    let parent_receipt = store.agent_deadline(&team.room, &team.parent).unwrap().unwrap();
+    let parent_receipt = store
+        .agent_deadline(&team.room, &team.parent)
+        .unwrap()
+        .unwrap();
     assert!(parent_receipt.stopped_at_ms.is_some(), "{parent_receipt:?}");
     assert_eq!(
-        runtime.owned.provider_store.get_run(&team.child_run).unwrap().state(),
+        runtime
+            .owned
+            .provider_store
+            .get_run(&team.child_run)
+            .unwrap()
+            .state(),
         crate::provider::ProviderRunState::Ended
     );
 
@@ -883,7 +891,10 @@ async fn a_revived_sub_agents_new_work_survives_its_parents_ended_deadline() {
         .tick_agent_deadlines(crate::session::unix_epoch_ms())
         .await
         .unwrap();
-    assert!(work(runtime), "the parent's old deadline stopped the revived child's new work");
+    assert!(
+        work(runtime),
+        "the parent's old deadline stopped the revived child's new work"
+    );
 }
 
 /// The parent's `child_finished`, read until `done` holds.
