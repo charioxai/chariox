@@ -166,6 +166,12 @@ impl KernelRuntimeOwnedState {
         {
             return Ok(false);
         }
+        // The protected history reads the prompt state, so it is prepared before the prompt-state
+        // fence below is taken. Prompt admission is already held by the pending profile.
+        let before = self.agent_store.get_agent(agent_id)?;
+        if let Some(pending) = before.pending_profile() {
+            self.protect_deferred_window_downshift(session.id(), &before, pending)?;
+        }
         let applied = self
             .prompt_state_owner
             .with_active_prompt(session, agent_id, |active| {
@@ -177,7 +183,6 @@ impl KernelRuntimeOwnedState {
                     return Ok(false);
                 };
                 let source_account = self.agent_profile_source_account(&agent);
-                self.protect_deferred_window_downshift(session.id(), &agent, pending)?;
                 if let Some(run) = self
                     .provider_store
                     .get_run_for_agent(session.id(), agent_id)
