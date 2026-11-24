@@ -183,11 +183,24 @@ impl KernelRuntimeState {
         session: &crate::session::RuntimeSession,
     ) -> BTreeMap<String, crate::runtime::projection::AgentRuntimeActivity> {
         self.agent_activity_projected(session, None, &|| {
-            crate::runtime::process_resources::waiting_for_session_without_waiting(
-                session.id(),
-                &self.owned.provider_store,
-                &self.owned.room_terminals,
-            )
+            // Each agent's run, from the projection that never waits on the provider store.
+            let agent_runs = session
+                .agents()
+                .iter()
+                .filter_map(|agent| {
+                    let run = self
+                        .owned
+                        .provider_store
+                        .try_get_agent_run_for_projection(session.id(), agent.id())
+                        .or_else(|| {
+                            self.owned
+                                .provider_run_projection
+                                .get_for_agent(session.id(), agent.id())
+                        })?;
+                    Some((agent.id().to_owned(), run.id().to_owned()))
+                })
+                .collect::<Vec<_>>();
+            crate::runtime::process_resources::waiting_for_session_without_waiting(&agent_runs)
         })
     }
 

@@ -138,20 +138,18 @@ pub(crate) fn for_session(
 
 /// The commands of a session that wait for room, read without ever waiting on the registry lock: the agent tree
 /// is published by the wake scheduler, which must not wait with a stuck cleanup that holds it. A pass that finds the
-/// registry (or a workload's observation) held reads nothing of it; the next change republishes.
+/// registry (or a workload's observation) held reads nothing of it; the next change republishes. `agent_runs` pairs
+/// each agent with its provider run, read from the non-blocking run projection: the provider store itself is held
+/// by whatever waits on the registry.
 pub(crate) fn waiting_for_session_without_waiting(
-    session_id: &str,
-    providers: &crate::provider::ProviderProcessServiceStore,
-    terminals: &crate::room_terminal::RoomTerminalService,
+    agent_runs: &[(String, String)],
 ) -> Vec<SessionProcess> {
     waiting_rows_without_waiting(|observed_keys| {
-        let mut keys = providers
-            .observed_run_owners_for_session(session_id, observed_keys)
-            .into_iter()
-            .map(|(agent, run)| (SessionProcessOwner::Agent(agent), run))
-            .collect::<Vec<_>>();
-        keys.extend(terminals.process_keys(session_id));
-        keys
+        agent_runs
+            .iter()
+            .filter(|(_, run)| observed_keys.contains(run))
+            .map(|(agent, run)| (SessionProcessOwner::Agent(agent.clone()), run.clone()))
+            .collect()
     })
 }
 
