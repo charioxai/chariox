@@ -221,9 +221,8 @@ async fn delegate_reply_failed_start_settles_without_deletion() {
 /// was told "delegate gone: failed_start" about an agent that was alive on that task.
 #[tokio::test]
 async fn redelivery_of_an_event_whose_task_exists_does_not_report_the_delegate_gone() {
-    let f = Fixture::new();
+    let f = Fixture::with_child_provider("dev-stub");
     let event = f.request("already-started");
-    let capture = crate::logging::capture::start();
     f.runtime
         .owned
         .durable_state_store
@@ -236,14 +235,18 @@ async fn redelivery_of_an_event_whose_task_exists_does_not_report_the_delegate_g
             now: crate::session::unix_epoch_ms(),
         })
         .unwrap();
-    let _ = f.runtime.deliver_agent_inbox(&f.room, &f.child).await;
-    f.runtime.sweep_agent_lifecycle().await.unwrap();
+    let error = f
+        .runtime
+        .deliver_agent_inbox(&f.room, &f.child)
+        .await
+        .unwrap_err();
     assert!(
-        capture.records().iter().any(|record| record
-            .contains("superseded turn or conflicting task identity"))
-            || f.replies().is_empty(),
-        "the cell must reach the identity conflict, not another refusal"
+        error
+            .to_string()
+            .contains("superseded turn or conflicting task identity"),
+        "the cell must reach the identity conflict, not another refusal: {error}"
     );
+    f.runtime.sweep_agent_lifecycle().await.unwrap();
     assert!(
         f.replies()
             .iter()
