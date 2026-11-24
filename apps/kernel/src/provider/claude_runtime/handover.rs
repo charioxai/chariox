@@ -301,7 +301,7 @@ pub(super) fn hand_over(
         context_file: state.context_file.clone(),
         settings_file: state.settings_file.clone(),
         usage_file: state.usage_file.clone(),
-        turn: ClaudeTurn::of(state),
+        turn: ClaudeTurn::of(&mut state),
         credentials: state.provider_credential_env.clone(),
     };
     // Nothing of this program may stop the process or close its pipes: the
