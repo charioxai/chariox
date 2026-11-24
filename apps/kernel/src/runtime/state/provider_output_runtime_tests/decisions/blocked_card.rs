@@ -685,3 +685,44 @@ async fn asking_a_new_question_with_another_label_changes_the_open_card() {
     assert_eq!(after.label(), "Second label");
     assert_eq!(after.placeholder(), Some("Second label hint"));
 }
+
+/// A recovery card (Resume / Cancel) of an ordinary blocked task keeps its own kind and choices on every projection: it never grows a reply box.
+#[tokio::test]
+async fn a_recovery_card_stays_a_recovery_card_on_every_projection() {
+    let t = tree(
+        "recovery-card",
+        AgentPermissionLevel::Yolo,
+        AgentPermissionLevel::Yolo,
+    )
+    .await;
+    let task = t.blocked_task_of(&t.g, INVALID_TURN_END);
+    let id = Tree::blocked_card_id(&task);
+    let card = || {
+        t.session()
+            .active_interactions()
+            .iter()
+            .find(|card| card.id() == id)
+            .cloned()
+            .expect("the recovery card")
+    };
+    t.runtime
+        .ensure_task_owner_interaction(task.clone())
+        .await
+        .unwrap();
+    let first = card();
+    assert!(first.custom_choice().is_none());
+    t.runtime
+        .ensure_task_owner_interaction(task.clone())
+        .await
+        .unwrap();
+    let second = card();
+    assert!(
+        second.custom_choice().is_none(),
+        "no reply box appears on a later projection"
+    );
+    assert_eq!(second.choices().len(), first.choices().len());
+    assert_eq!(
+        serde_json::to_value(&second).unwrap()["kind"],
+        serde_json::to_value(&first).unwrap()["kind"]
+    );
+}

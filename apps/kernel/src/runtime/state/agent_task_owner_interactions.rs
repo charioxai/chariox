@@ -185,18 +185,21 @@ impl KernelRuntimeState {
             )
         };
         // The agent sets the box's label and placeholder; with none the card has a plain box.
-        let reply_choice = crate::session::RuntimeInteractionCustomChoice::new(
-            "reply",
-            task.question_reply
-                .as_ref()
-                .and_then(|reply| reply.label.clone())
-                .unwrap_or_default(),
-            task.question_reply
-                .as_ref()
-                .and_then(|reply| reply.placeholder.clone()),
-            Some(1),
-            None,
-        );
+        // Only an agent's question has a free-text box: a recovery card (Resume / Cancel) keeps its own kind and choices.
+        let reply_choice = question.then(|| {
+            crate::session::RuntimeInteractionCustomChoice::new(
+                "reply",
+                task.question_reply
+                    .as_ref()
+                    .and_then(|reply| reply.label.clone())
+                    .unwrap_or_default(),
+                task.question_reply
+                    .as_ref()
+                    .and_then(|reply| reply.placeholder.clone()),
+                Some(1),
+                None,
+            )
+        });
         if let Some(existing) = session.active_interactions().iter().find(|i| i.id() == id) {
             let live = self
                 .owned
@@ -215,18 +218,19 @@ impl KernelRuntimeState {
             if live {
                 if existing.message() != message
                     || existing.related_agent_id() != Some(task.agent_id.as_str())
-                    || existing.custom_choice() != Some(&reply_choice)
+                    || (question && existing.custom_choice() != reply_choice.as_ref())
                 {
                     let mutation = self.owned.begin_managed_activity_mutation();
                     let mut sessions = self.owned.session_store.write();
                     let mut latest = sessions.get_session(&task.room_id)?;
                     if let Some(current) = latest.remove_active_interaction(&id) {
-                        latest.add_active_interaction(
-                            current
-                                .with_message(message)
-                                .with_related_agent_id(task.agent_id.clone())
-                                .with_question_reply(reply_choice.clone()),
-                        );
+                        let updated = current
+                            .with_message(message)
+                            .with_related_agent_id(task.agent_id.clone());
+                        latest.add_active_interaction(match reply_choice.clone() {
+                            Some(reply) => updated.with_question_reply(reply),
+                            None => updated,
+                        });
                         sessions.restore_session(latest);
                     }
                     drop(sessions);
@@ -271,8 +275,8 @@ impl KernelRuntimeState {
         )
         .without_timeout()
         .with_related_agent_id(task.agent_id.clone());
-        if question {
-            interaction = interaction.with_question_reply(reply_choice.clone());
+        if let Some(reply) = reply_choice {
+            interaction = interaction.with_question_reply(reply);
         }
 
         let rx = self
