@@ -537,8 +537,14 @@ async fn promoting_a_notification_batches_pending_inbox_wakes_with_the_same_rece
     assert_eq!(delivered[0].state, "submitting");
 }
 
-#[tokio::test]
-async fn promoted_mixed_notifications_resume_the_timer_task_and_settle_its_receipts() {
+/// A parked task with two due timers, three workflow-exit notifications and the person's own
+/// prompt queued behind the first of them: the five inbox rows and the ids the tests follow.
+async fn parked_timers_with_mixed_notifications() -> (
+    Rig,
+    Vec<crate::durable_state::agent_lifecycle::InboxEvent>,
+    String,
+    &'static str,
+) {
     use super::super::local_prompt_dispatch_runtime::tests::runtime_with_active_prompt_and_config;
     use crate::durable_state::agent_lifecycle::{ExecutionState, Operation};
 
@@ -638,13 +644,24 @@ async fn promoted_mixed_notifications_resume_the_timer_task_and_settle_its_recei
         }
     }
     apply(Operation::FireWakes { now: now + 1_000 });
+    let arrived = store
+        .agent_inbox(&rig.session_id, &rig.agent_id, 0)
+        .unwrap();
+    assert_eq!(arrived.len(), 5, "{arrived:?}");
+    (rig, arrived, person_id, parked)
+}
+
+#[tokio::test]
+async fn promoted_mixed_notifications_resume_the_timer_task_and_settle_its_receipts() {
+    use crate::durable_state::agent_lifecycle::ExecutionState;
+
+    let (rig, arrived, person_id, parked) = parked_timers_with_mixed_notifications().await;
+    let store = &rig.runtime.owned.durable_state_store;
     let inbox = || {
         store
             .agent_inbox(&rig.session_id, &rig.agent_id, 0)
             .unwrap()
     };
-    let arrived = inbox();
-    assert_eq!(arrived.len(), 5, "{arrived:?}");
     let room = rig
         .runtime
         .owned
@@ -717,6 +734,69 @@ async fn promoted_mixed_notifications_resume_the_timer_task_and_settle_its_recei
         .expect("person's prompt runs next");
     assert_eq!(next.prompt_id, person_id);
     assert_eq!(next.prompt, "Person's separate prompt");
+}
+
+/// Review P2: a running turn that finishes with a notification queued promotes it with the pending
+/// timer wakes of a parked task. The task runs again, so its wait row must read as ended.
+#[tokio::test]
+async fn a_completion_driven_notification_batch_closes_the_wait_row_of_the_task_it_wakes() {
+    use crate::durable_state::agent_lifecycle::ExecutionState;
+
+    let (rig, _arrived, _person_id, parked) = parked_timers_with_mixed_notifications().await;
+    let store = &rig.runtime.owned.durable_state_store;
+    let task = store.agent_task(parked).unwrap().unwrap();
+    let started_at = task.wait.as_ref().expect("the task waits").started_at_ms;
+    rig.runtime.owned.record_wait_started(&task);
+    assert_eq!(
+        rig.runtime
+            .owned
+            .wait_row_status_for_test(&task, started_at)
+            .as_deref(),
+        Some("running"),
+        "the wait shows while the task is parked"
+    );
+
+    let room = rig
+        .runtime
+        .owned
+        .session_store
+        .get_session(&rig.session_id)
+        .unwrap();
+    let next = rig
+        .runtime
+        .owned
+        .prompt_state_owner
+        .state_parts(&room, &rig.agent_id)
+        .1
+        .front()
+        .cloned()
+        .expect("the notification waits behind the running turn");
+    let done = rig
+        .runtime
+        .owned
+        .complete_local_prompt_with_queued_advance(
+            &rig.session_id,
+            &rig.agent_id,
+            Some(&rig.run_id),
+            &next,
+        )
+        .unwrap()
+        .expect("the finished turn promotes the notification batch");
+    assert!(done.completion.started_next.is_some());
+
+    assert_eq!(
+        store.agent_task(parked).unwrap().unwrap().state,
+        ExecutionState::Working,
+        "the parked task runs in the promoted turn"
+    );
+    assert_eq!(
+        rig.runtime
+            .owned
+            .wait_row_status_for_test(&task, started_at)
+            .as_deref(),
+        Some("completed"),
+        "its wait row reads as ended"
+    );
 }
 
 /// The person's prompt between two notifications stays its own; a later occurrence
