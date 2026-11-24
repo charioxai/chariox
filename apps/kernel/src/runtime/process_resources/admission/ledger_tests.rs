@@ -2181,6 +2181,108 @@ fn one_volume_loss_is_shared_between_the_commands_writing_to_it() {
     );
 }
 
+/// A volume that reports the real device of the path it is asked about, starting
+/// with `free` and losing `per_second` from its first reading.
+fn losing_on_the_real_device(free: u64, per_second: u64) -> Box<Volume> {
+    let started = Instant::now();
+    Box::new(move |path: &Path| {
+        use std::os::unix::fs::MetadataExt;
+        let lost = started.elapsed().as_millis() as u64 * per_second / 1000;
+        Some(Space {
+            id: std::fs::metadata(path).ok()?.dev(),
+            free: free.saturating_sub(lost),
+            total: 100 * GIB,
+        })
+    })
+}
+
+#[test]
+fn a_writer_cycling_through_existing_files_is_not_killed_for_another_commands_allocation() {
+    use std::io::{BufRead, BufReader, Write};
+    // From the sampler to the stop: the command opens files it did not create and rewrites
+    // them at 200 MiB/s while another command allocates 400 MiB/s on the same volume.
+    let dir = std::env::temp_dir().join(format!("cycle-stop-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let files: Vec<_> = (0..3).map(|i| dir.join(format!("old-{i}"))).collect();
+    for path in &files {
+        std::fs::write(path, vec![1u8; 1024 * 1024]).unwrap();
+    }
+    std::thread::sleep(Duration::from_millis(5_300));
+    let mut child = std::process::Command::new("python3")
+        .args([
+            "-c",
+            "import sys\nfor p in sys.argv[1:]:\n f=open(p,'r+b'); f.write(bytes(65536)); f.flush(); print(p,flush=True); sys.stdin.readline(); f.close(); print('closed',flush=True); sys.stdin.readline()",
+        ])
+        .args(&files)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut input = child.stdin.take().unwrap();
+    let mut output = BufReader::new(child.stdout.take().unwrap());
+    let pid = child.id();
+    let (_, rewriter, rewriter_use) = writing(pid, 3 * GIB, 200 * MIB);
+    let current = owner("agent", true, vec![rewriter_use], vec![(pid, rewriter)]);
+    let volume = losing_on_the_real_device(900 * MIB, 400 * MIB);
+    let mut growth = disk_use::WriteGrowth::default();
+    let mut ledger = Ledger::new(None);
+    let mut line = String::new();
+    let mut at = 1000;
+    for _ in &files {
+        line.clear();
+        output.read_line(&mut line).unwrap();
+        // The sampler sees the open file, then the moment between two files.
+        for step in 0..2 {
+            let outputs = growth.sample(&[pid], at);
+            at += 250;
+            current.lock().unwrap().disk_writes.insert(pid, outputs);
+            ledger.pass(
+                std::slice::from_ref(&current),
+                &current,
+                &room(GIB, false, &*volume),
+            );
+            std::thread::sleep(Duration::from_millis(250));
+            if step == 0 {
+                input.write_all(b"close\n").unwrap();
+                line.clear();
+                output.read_line(&mut line).unwrap();
+            }
+        }
+        input.write_all(b"next\n").unwrap();
+    }
+    let fillers = ledger.take_fillers(&current);
+    drop(input);
+    child.wait().unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert!(
+        fillers.is_empty(),
+        "a writer that only rewrites existing files was stopped for another command's allocation: {fillers:?}"
+    );
+}
+
+#[test]
+fn the_unexplained_loss_is_added_to_the_growth_already_counted() {
+    // 400 MiB/s written: 200 MiB/s into a long-lived file the sampler sees growing, 200 MiB/s
+    // into short-lived files it does not. The volume loses 400 MiB/s, 1500 MiB free: under
+    // four seconds from full, so the five-second line says stop.
+    let (_, mixed, mixed_use) = writing(1, 3 * GIB, 400 * MIB);
+    let current = owner("agent", true, vec![mixed_use], vec![(1, mixed)]);
+    {
+        let mut observation = current.lock().unwrap();
+        let outputs = observation.disk_writes.get_mut(&1).unwrap();
+        outputs[0].rate = 200 * MIB;
+        outputs[0].fresh = true;
+    }
+    let volume = losing(1500 * MIB, 400 * MIB);
+    let fillers = pass_twice(std::slice::from_ref(&current), &*volume);
+    assert_eq!(fillers.len(), 1, "a writer filling the disk in four seconds kept writing");
+    assert!(
+        fillers[0].1.rate > 300 * MIB,
+        "the rate counts only the growth that was seen: {} MiB/s",
+        fillers[0].1.rate / MIB
+    );
+}
+
 #[test]
 fn a_runaway_writer_is_stopped_before_the_one_that_wrote_most() {
     // 1 GiB free; together they fill it in under five seconds.
