@@ -596,9 +596,14 @@ async fn a_question_card_shows_the_label_and_placeholder_the_agent_gave() {
 
 #[tokio::test]
 async fn a_question_card_without_a_label_from_the_agent_has_a_plain_box() {
-    for (at, reply) in [None, Some(Default::default())].into_iter().enumerate() {
-        let custom = question_card_custom_choice(&format!("question-plain-{at}"), reply).await;
-        assert_eq!(custom.label(), "", "no fixed label of the kernel's own");
-        assert_eq!(custom.placeholder(), None);
-    }
+    let custom = question_card_custom_choice("question-plain", None).await;
+    assert_eq!(custom.label(), "", "no fixed label of the kernel's own");
+    assert_eq!(custom.placeholder(), None);
+}
+
+#[tokio::test]
+async fn a_question_card_with_empty_label_and_placeholder_from_the_agent_has_a_plain_box() {
+    let custom = question_card_custom_choice("question-empty", Some(Default::default())).await;
+    assert_eq!(custom.label(), "");
+    assert_eq!(custom.placeholder(), None);
 }
