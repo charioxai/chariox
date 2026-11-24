@@ -29,6 +29,47 @@ const PARTIAL_SUFFIX: &str = ".chariox-partial";
 const TURN_WAIT: Duration = Duration::from_secs(30);
 const TURN_POLL: Duration = Duration::from_millis(2);
 
+/// Uploads whose first chunk this kernel has staged, by staging path. A later chunk that finds its
+/// folder gone can then say the folder was removed. Without the record, a chunk that starts ahead
+/// of the first one (which creates the folders) cannot tell "not started yet" from "removed", so it
+/// waits its turn instead. Bounded: an abandoned upload only costs its entry until the cap evicts it.
+static STARTED_UPLOADS: std::sync::Mutex<Option<std::collections::HashMap<PathBuf, Instant>>> =
+    std::sync::Mutex::new(None);
+const STARTED_UPLOADS_CAP: usize = 4096;
+
+fn note_upload_started(staging: &Path) {
+    let mut started = STARTED_UPLOADS.lock().unwrap_or_else(|e| e.into_inner());
+    let started = started.get_or_insert_with(Default::default);
+    if started.len() >= STARTED_UPLOADS_CAP {
+        if let Some(oldest) = started
+            .iter()
+            .min_by_key(|(_, at)| **at)
+            .map(|(path, _)| path.clone())
+        {
+            started.remove(&oldest);
+        }
+    }
+    started.insert(staging.to_path_buf(), Instant::now());
+}
+
+fn upload_started(staging: &Path) -> bool {
+    STARTED_UPLOADS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .is_some_and(|started| started.contains_key(staging))
+}
+
+fn forget_upload(staging: &Path) {
+    if let Some(started) = STARTED_UPLOADS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_mut()
+    {
+        started.remove(staging);
+    }
+}
+
 pub(super) fn fail(code: &str, message: impl Into<String>) -> DaemonError {
     DaemonError::MachineRequest {
         code: code.into(),
@@ -388,6 +429,10 @@ fn open_staging(partial: &Path, path: &Path, offset: u64) -> Result<std::fs::Fil
             .mode(0o600)
             .custom_flags(libc::O_NOFOLLOW)
             .open(partial)
+            .map(|file| {
+                note_upload_started(partial);
+                file
+            })
             .map_err(|e| upload_failure(path, &e));
     }
     let file = match std::fs::OpenOptions::new()
@@ -425,9 +470,13 @@ fn wait_for_turn(partial: &Path, path: &Path, offset: u64) -> Result<(), DaemonE
     while offset > 0 && Instant::now() < deadline {
         match std::fs::symlink_metadata(partial) {
             Ok(metadata) if metadata.len() >= offset => break,
+            // The first chunk creates the folders and may still be on its way: only an upload
+            // already started here has lost its folder.
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                if let Some(error) = missing_destination(path) {
-                    return Err(error);
+                if upload_started(partial) {
+                    if let Some(error) = missing_destination(path) {
+                        return Err(error);
+                    }
                 }
             }
             _ => {}
@@ -560,6 +609,8 @@ pub(crate) fn write_at(
         });
     }
     let sha256 = publish(&file, &partial, path, chunk.overwrite, chunk.sha256)?;
+    // Published: this upload is over. A refused publish keeps its staged bytes, so it stays known.
+    forget_upload(&partial);
     Ok(StagedWrite {
         received: end,
         sha256: Some(sha256),
@@ -576,6 +627,7 @@ pub(crate) fn staged_bytes(staging: &Path) -> u64 {
 
 /// Drops the staging file `staging` of an unfinished upload.
 pub(crate) fn discard_staging(staging: &Path) {
+    forget_upload(staging);
     let _ = std::fs::remove_file(staging);
 }
 
