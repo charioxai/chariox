@@ -461,11 +461,21 @@ impl KernelRuntimeState {
                             &e,
                         )?;
                     }
+                    // A start that will be tried again has not failed for whoever waits on it:
+                    // a reply request or a delegate obligation ends only when the attempts are
+                    // spent (or the refusal is final), not at the first refused start.
+                    let mut start_will_be_retried = false;
+                    // Refusals that waiting cannot change are final at once: a deadline that has
+                    // ended, a declined Vault unlock, and a provider account that is not signed
+                    // in. A usage limit is not final: it resets.
                     if crate::error::is_agent_deadline_refusal(&e)
                         || matches!(
                             &e,
                             DaemonError::VaultUnlock {
                                 code: "vault_unlock_declined",
+                                ..
+                            } | DaemonError::ProviderProfileRefused {
+                                reason: crate::error::ProviderProfileRefusal::Unauthenticated,
                                 ..
                             }
                         )
@@ -473,9 +483,10 @@ impl KernelRuntimeState {
                         let state = ledger::delivery_receipt_state(None, false);
                         self.record_agent_delivery_receipt(room, agent, event.sequence, state)?;
                     } else {
-                        self.record_agent_start_failure(room, agent, event.sequence, &e)?;
+                        start_will_be_retried =
+                            self.record_agent_start_failure(room, agent, event.sequence, &e)?;
                     }
-                    if !crate::error::is_agent_deadline_refusal(&e) {
+                    if !crate::error::is_agent_deadline_refusal(&e) && !start_will_be_retried {
                         self.owned
                             .settle_failed_delegate_start(room, agent, &e.to_string())?;
                     }
@@ -911,13 +922,15 @@ impl KernelRuntimeState {
     }
     /// The agent could not start for this delivery: it stays pending, says when it tries again,
     /// and the sweep ends it only after the attempts are spent.
-    fn record_agent_start_failure(
+    /// Returns whether the delivery will be tried again: attempts remain, or the start waits on
+    /// the owner. Only a spent budget lets the sweep end it.
+    pub(super) fn record_agent_start_failure(
         &self,
         room: &str,
         agent: &str,
         sequence: u64,
         error: &DaemonError,
-    ) -> Result<(), DaemonError> {
+    ) -> Result<bool, DaemonError> {
         // A locked Vault waits for the person, whose unlock card is open and was announced in the
         // pane when it opened: no attempt is spent and nothing more is said per retry.
         let waits_on_owner = super::runtime_vault_unlock_state::is_vault_unlock_card_open(error)
@@ -943,11 +956,18 @@ impl KernelRuntimeState {
             unreachable!()
         };
         self.owned.record_wake_refused(&event);
-        if let Some(failure) = self
+        let failure = self
             .owned
             .durable_state_store
-            .agent_start_failure(sequence)?
-        {
+            .agent_start_failure(sequence)?;
+        let retried = waits_on_owner
+            || failure.as_ref().is_some_and(|failure| {
+                failure.attempts
+                    < crate::durable_state::agent_lifecycle::start_failures::START_ATTEMPTS
+            });
+        // The open unlock card was announced when it opened: a retry against the same card says
+        // nothing more, or an owner who is away fills the pane with notices.
+        if let Some(failure) = failure.filter(|_| !waits_on_owner) {
             self.owned.record_notice_for_agent(
                 room,
                 None,
@@ -958,7 +978,7 @@ impl KernelRuntimeState {
                 crate::durable_state::agent_lifecycle::start_failures::retry_notice(&failure),
             );
         }
-        Ok(())
+        Ok(retried)
     }
     pub(super) fn record_agent_delivery_receipt(
         &self,

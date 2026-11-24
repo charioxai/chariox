@@ -469,14 +469,17 @@ async fn refused_one_shot_wake_settles_its_waiting_task_at_exhaustion() {
     let sequence = wake.last_sequence.expect("the one-shot timer fired");
 
     let moved = f.remove_workspace();
-    for _ in 0..2 {
-        let error = f
-            .runtime
-            .deliver_agent_inbox(&f.room, &f.child)
-            .await
-            .unwrap_err();
-        assert!(error.to_string().contains("does not exist"), "{error}");
-    }
+    let error = f
+        .runtime
+        .deliver_agent_inbox(&f.room, &f.child)
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("does not exist"), "{error}");
+    // The start is retried with growing pauses; the wake ends only when the attempts are spent.
+    assert_eq!(f.state_of(sequence), "pending");
+    f.sweep_after_delivery_window();
+    assert_eq!(f.state_of(sequence), "pending", "attempts remain");
+    f.spend_start_attempts(sequence).await;
     std::fs::rename(&moved, f._worktree.path()).unwrap();
     assert_eq!(f.state_of(sequence), "pending");
     assert_eq!(
@@ -554,8 +557,9 @@ async fn refused_wait_deadline_delivers_after_the_workspace_returns() {
         .deliver_agent_inbox(&f.room, &f.child)
         .await
         .unwrap_err();
-    std::fs::rename(moved, f._worktree.path()).unwrap();
     assert!(error.to_string().contains("does not exist"), "{error}");
+    f.spend_start_attempts(deadline.sequence).await;
+    std::fs::rename(moved, f._worktree.path()).unwrap();
 
     f.sweep_after_delivery_window();
     assert_eq!(

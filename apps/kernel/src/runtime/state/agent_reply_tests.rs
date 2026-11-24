@@ -113,7 +113,7 @@ impl Fixture {
         event
     }
 
-    fn replies(&self) -> Vec<InboxEvent> {
+    pub(super) fn replies(&self) -> Vec<InboxEvent> {
         self.runtime
             .owned
             .durable_state_store
@@ -121,7 +121,7 @@ impl Fixture {
             .unwrap()
     }
 
-    fn assert_gone(&self, count: usize) {
+    pub(super) fn assert_gone(&self, count: usize) {
         let events = self.replies();
         assert_eq!(
             events.len(),
