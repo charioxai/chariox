@@ -94,6 +94,7 @@ fn owner(
                         files: [u64::from(command.pid)].into(),
                         open: [u64::from(command.pid)].into(),
                         receiving: true,
+                        fresh: false,
                     }],
                 )
             })
@@ -1553,6 +1554,7 @@ fn the_disk_never_fills_up_while_five_builds_write_and_the_filler_goes() {
                         files: [u64::from(pid)].into(),
                         open: [u64::from(pid)].into(),
                         receiving: true,
+                        fresh: false,
                     }],
                 );
             }
@@ -1812,6 +1814,7 @@ fn a_full_volume_stops_its_own_writer_and_leaves_one_on_a_roomy_volume_alone() {
                 files: [1].into(),
                 open: [1].into(),
                 receiving: true,
+                fresh: false,
             }],
         ),
         (
@@ -1824,6 +1827,7 @@ fn a_full_volume_stops_its_own_writer_and_leaves_one_on_a_roomy_volume_alone() {
                 files: [2].into(),
                 open: [2].into(),
                 receiving: true,
+                fresh: false,
             }],
         ),
     ]
@@ -1875,6 +1879,7 @@ fn crossed_volume_writer(cwd: &str, output: &str, id: u64, should_stop: bool) {
             files: [1].into(),
             open: [1].into(),
             receiving: true,
+            fresh: false,
             path: output.into(),
             written: 6 * GIB,
             rate: 50 * MIB,
@@ -1956,6 +1961,7 @@ fn between_files() -> Vec<disk_use::VolumeWrites> {
         files: Default::default(),
         open: Default::default(),
         receiving: true,
+        fresh: true,
     }]
 }
 
@@ -2072,6 +2078,7 @@ fn a_command_logging_to_another_volume_is_not_the_filler_of_its_idle_output_volu
             files: Default::default(),
             open: [11].into(),
             receiving: true,
+            fresh: false,
         };
         let log = disk_use::VolumeWrites {
             id: 2,
@@ -2081,6 +2088,7 @@ fn a_command_logging_to_another_volume_is_not_the_filler_of_its_idle_output_volu
             files: Default::default(),
             open: [12].into(),
             receiving: false,
+            fresh: false,
         };
         observation.disk_writes.insert(1, vec![idle, log]);
     }
@@ -2096,6 +2104,80 @@ fn a_command_logging_to_another_volume_is_not_the_filler_of_its_idle_output_volu
     assert!(
         ledger.take_fillers(&current).is_empty(),
         "its log traffic was charged to the idle output volume"
+    );
+}
+
+/// A volume that starts with `free` and loses `per_second` from its first reading.
+fn losing(free: u64, per_second: u64) -> Box<Volume> {
+    let started = Instant::now();
+    Box::new(move |_| {
+        let lost = started.elapsed().as_millis() as u64 * per_second / 1000;
+        Some(Space {
+            id: 1,
+            free: free.saturating_sub(lost),
+            total: 100 * GIB,
+        })
+    })
+}
+
+fn pass_twice(members: &[Arc<Mutex<Observation>>], volume: &Volume) -> Vec<(u32, Filling)> {
+    let mut ledger = Ledger::new(None);
+    for _ in 0..2 {
+        for member in members {
+            ledger.pass(members, member, &room(GIB, false, volume));
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    members
+        .iter()
+        .flat_map(|member| ledger.take_fillers(member))
+        .collect()
+}
+
+#[test]
+fn an_overwriter_is_not_charged_the_space_another_command_allocates_on_its_volume() {
+    // Another command (a person's terminal, say) allocates 400 MiB/s on the
+    // volume; this one rewrites a file it holds open at 200 MiB/s.
+    let (_, rewriter, rewriter_use) = writing(1, 3 * GIB, 200 * MIB);
+    let current = owner("agent", true, vec![rewriter_use], vec![(1, rewriter)]);
+    {
+        let mut observation = current.lock().unwrap();
+        let outputs = observation.disk_writes.get_mut(&1).unwrap();
+        outputs[0].files.clear();
+        outputs[0].rate = 0;
+        outputs[0].open = [1].into();
+        outputs[0].fresh = false;
+    }
+    let volume = losing(900 * MIB, 400 * MIB);
+    assert!(
+        pass_twice(std::slice::from_ref(&current), &*volume).is_empty(),
+        "a writer that rewrites its own file was stopped for another command's allocation"
+    );
+}
+
+#[test]
+fn one_volume_loss_is_shared_between_the_commands_writing_to_it() {
+    // Two commands writing new files at 300 MiB/s each, the volume losing
+    // 300 MiB/s: that is the fill rate, not 600.
+    let members = [1u32, 2]
+        .map(|pid| {
+            let (_, entry, usage) = writing(pid, 3 * GIB, 300 * MIB);
+            let member = owner("agent", true, vec![usage], vec![(pid, entry)]);
+            member
+                .lock()
+                .unwrap()
+                .disk_writes
+                .insert(pid, between_files());
+            member
+        })
+        .to_vec();
+    let volume = losing(1200 * MIB, 300 * MIB);
+    let fillers = pass_twice(&members, &*volume);
+    assert_eq!(fillers.len(), 1, "{:?}", fillers.len());
+    assert!(
+        fillers[0].1.rate <= 160 * MIB,
+        "each of two writers was charged the whole loss: {}",
+        fillers[0].1.rate / MIB
     );
 }
 
@@ -2319,6 +2401,7 @@ fn a_finished_run_remembers_the_volume_that_received_most_of_its_writes() {
             files: [9].into(),
             open: [9].into(),
             receiving: true,
+            fresh: false,
         });
     }
     let mut ledger = Ledger::new(None);
@@ -2522,6 +2605,7 @@ fn unresolved_sampled_destinations_are_not_remembered_as_a_receiving_volume() {
         files: Default::default(),
         open: Default::default(),
         receiving: true,
+        fresh: false,
     };
     assert_eq!(
         ReceivingVolume::capture(&sample),

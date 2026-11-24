@@ -108,8 +108,10 @@ impl WriteGrowth {
                     files: Default::default(),
                     open: Default::default(),
                     receiving: false,
+                    fresh: false,
                 });
                 volume.open.insert(key.1);
+                volume.fresh |= before.is_none();
                 let stream = fd
                     .file_name()
                     .to_str()
@@ -153,9 +155,12 @@ impl WriteGrowth {
                     files: Default::default(),
                     open: Default::default(),
                     receiving: false,
+                    fresh: false,
                 });
                 volume.path = dir.clone();
                 volume.receiving = true;
+                // Between two files: nothing it holds says it only rewrites.
+                volume.fresh = true;
             }
             Some((id, output)) if outputs.len() == 1 => {
                 // The descriptor closes soon; its directory stays measurable.

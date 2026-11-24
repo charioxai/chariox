@@ -21,6 +21,10 @@ pub(super) struct VolumeWrites {
     /// its standard streams, or did a moment ago. A log its streams go to
     /// does not say where a copy writes.
     pub receiving: bool,
+    /// It holds no output open here, or one this sample is the first to see:
+    /// a command writing new files. A command rewriting the files it already
+    /// held open allocates nothing, whatever it writes.
+    pub fresh: bool,
 }
 
 /// Below this written, a process is not looked at: checking its descriptors
