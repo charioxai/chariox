@@ -2126,6 +2126,26 @@ fn pass_twice(members: &[Arc<Mutex<Observation>>], volume: &Volume) -> Vec<(u32,
         .collect()
 }
 
+// The below-floor stop keeps its evidence: a slow writer that only rewrites a file it holds, on a
+// volume that is not losing room, frees nothing by being stopped (reviewer 11-24, P1).
+#[test]
+fn a_slow_overwriter_on_a_volume_that_is_not_losing_room_is_left_alone_below_the_floor() {
+    // 128 MiB free is below half the 512 MiB floor; the volume is steady.
+    let (_, rewriter, rewriter_use) = writing(1, 3 * GIB, 10 * MIB);
+    let current = owner("agent", true, vec![rewriter_use], vec![(1, rewriter)]);
+    {
+        let mut observation = current.lock().unwrap();
+        let outputs = observation.disk_writes.get_mut(&1).unwrap();
+        outputs[0].files.clear();
+        outputs[0].rate = 0;
+        outputs[0].open = [1].into();
+    }
+    assert!(
+        fillers_after_two_passes(128 * MIB, 0, &current).is_empty(),
+        "a space-neutral writer was stopped below the floor on a volume that loses no room"
+    );
+}
+
 // Miguel 11-24 (row 376): within 5 s of full at the rate the volume is losing room, the fastest
 // agent writer at 128 MiB/s or more is stopped. No proof that it allocates is asked for: an
 // overwriter is stopped too, an accepted cost in a real emergency.
