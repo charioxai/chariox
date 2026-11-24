@@ -332,6 +332,14 @@ fn the_agent_tree_read_and_change_event_have_their_shapes() {
                 refused: 0,
                 state: crate::agent::UsageLimitStopState::Asking,
             }),
+            liveness: Some(
+                serde_json::from_value(serde_json::json!({
+                    "waiting_on": {"kind": "card", "detail": "'Value for the Vault'", "since_ms": 4},
+                    "waiting_events": [{"id": "i", "kind": "card", "label": "your answer on 'Value for the Vault'",
+                        "since_ms": 4, "task_id": "", "wait_started_at_ms": 4}]
+                }))
+                .unwrap(),
+            ),
         }],
     };
     assert_eq!(
@@ -345,7 +353,10 @@ fn the_agent_tree_read_and_change_event_have_their_shapes() {
                 "workspace_id":"app","worktree_id":"app-2","worker_kernel_id":"worker","depth":1,
                 "state":"waiting","outcome":null,"needs_user":true,"deadline_ms":null,"created_at_ms":5,
                 "usage_limit_stop":{"prompt_id":"p","provider":"codex","account_profile":"work",
-                    "account_label":"work","stopped_at_ms":3,"resumes_at_ms":9,"state":{"state":"asking"}}}]}}})
+                    "account_label":"work","stopped_at_ms":3,"resumes_at_ms":9,"state":{"state":"asking"}},
+                "liveness":{"waiting_on":{"kind":"card","detail":"'Value for the Vault'","since_ms":4},
+                    "waiting_events":[{"id":"i","kind":"card","label":"your answer on 'Value for the Vault'",
+                        "since_ms":4,"task_id":"","wait_started_at_ms":4}]}}]}}})
     );
     assert_eq!(
         serde_json::to_value(crate::local::OutsideEventValue::AgentTree {

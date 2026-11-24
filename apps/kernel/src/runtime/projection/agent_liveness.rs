@@ -708,6 +708,30 @@ mod tests {
         .unwrap()
     }
 
+    // W2: a timer wait says when it is due.
+    #[test]
+    fn a_timer_wait_carries_its_due_time() {
+        let mut activity = BTreeMap::from([("a".to_string(), idle_activity())]);
+        let tasks = [task("a", "t1", "waiting")];
+        let mut timer = wake("a", "t1", "timer", "scheduled", 1_000);
+        timer.next_due_ms = Some(9_000);
+        timer.label = "check review".into();
+        annotate_waits(
+            &mut activity,
+            &[],
+            &YieldedSources {
+                tasks: tasks.to_vec(),
+                wakes: vec![timer],
+                registrations: Vec::new(),
+            },
+            &SourceLabels::default(),
+        );
+        let liveness = &activity["a"].liveness;
+        assert_eq!(liveness.waiting_on.as_ref().unwrap().due_at_ms, Some(9_000));
+        assert_eq!(liveness.waiting_events[0].due_at_ms, Some(9_000));
+        assert_eq!(liveness.waiting_events[0].label, "timer check review");
+    }
+
     #[test]
     fn an_agent_that_yielded_on_a_background_command_waits_on_it_since_it_was_armed() {
         let mut activity = BTreeMap::from([("a".to_string(), idle_activity())]);

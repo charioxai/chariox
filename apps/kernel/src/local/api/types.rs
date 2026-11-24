@@ -643,4 +643,6 @@ pub use workspace::*;
 /// longer carry `kernel_id`, `kernel_name`, `focused_agent_kernel_id` or `reachable_by_focused_agent`; the loader tools
 /// take no arguments and `chariox.kernel_browser_share` is removed.
 /// 1014 adds revision-based latest Room history outline reads.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1014;
+/// 1015 (provisional): an `AgentTreeNode` carries `liveness` (what the node waits on, and a stall), a wait names its
+/// card by title (`AgentWaitKind::card`) and a timer its due time (`due_at_ms`) on `waiting_on` and `waiting_events`.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1015;
