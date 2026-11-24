@@ -146,6 +146,7 @@ pub(crate) fn initialize_claude_runtime_with_credentials(
             last_context_window: None,
             compactions: 0,
             compaction_started_at_ms: None,
+            unsent_chunks: Vec::new(),
             observed_context_model: None,
             main_stream_has_context: true,
             mcp_config_file,
@@ -329,6 +330,7 @@ pub(crate) fn drain_claude_events(
     state: &mut ClaudeRuntimeState,
 ) -> Result<ProviderPromptSignalBatch, DaemonError> {
     let mut batch = ProviderPromptSignalBatch::default();
+    batch.chunks.append(&mut state.unsent_chunks);
     for _ in 0..CLAUDE_EVENT_DRAIN_MAX_MESSAGES {
         match state.output.receiver.try_recv() {
             Ok(ClaudeRuntimeMessage::Stdout(value)) => {
@@ -701,6 +703,9 @@ fn release_detached_jobs(
     );
 }
 
+/// A restart ends the turn a compaction was running in: its row settles as failed under its own key.
+fn settle_running_compaction(_run_id: &str, _state: &mut ClaudeRuntimeState) {}
+
 fn restart_claude_runtime(
     run: &RuntimeProviderRun,
     state: &mut ClaudeRuntimeState,
@@ -923,6 +928,7 @@ mod tests {
                 last_context_window: None,
                 compactions: 0,
                 compaction_started_at_ms: None,
+                unsent_chunks: Vec::new(),
                 observed_context_model: None,
                 main_stream_has_context: true,
                 mcp_config_file: None,
@@ -2732,6 +2738,64 @@ done
                 reason: "prompt too long".into()
             }
         );
+    }
+
+    // A restart (abort, stall, terminal failure) ends the turn a compaction was running in: its row settles
+    // as failed under its own key, and the retry's compaction gets the next one.
+    #[test]
+    fn a_compaction_cut_off_by_a_restart_settles_and_the_retry_has_its_own_row() {
+        let (mut state, mut batch) = parser_state();
+        let status = json!({"type": "system", "subtype": "status", "status": "compacting", "compact_output_chars": 0});
+        apply_claude_message("run-1", &mut state, status.clone(), &mut batch);
+        super::settle_running_compaction("run-1", &mut state);
+        assert_eq!(state.compaction_started_at_ms, None);
+        // The next batch carries the settlement; the retry's start is not suppressed.
+        batch.chunks.append(&mut state.unsent_chunks);
+        apply_claude_message("run-1", &mut state, status, &mut batch);
+        apply_claude_message(
+            "run-1",
+            &mut state,
+            json!({"type": "system", "subtype": "compact_boundary", "uuid": "b9", "compact_metadata": {"trigger": "auto"}}),
+            &mut batch,
+        );
+        let rows = batch
+            .chunks
+            .iter()
+            .filter(|chunk| chunk.kind == crate::terminal::TerminalOutputKind::ContextCompacted)
+            .map(|chunk| {
+                (
+                    chunk.merge_key.clone().unwrap(),
+                    serde_json::from_slice::<crate::provider::ContextCompaction>(&chunk.bytes)
+                        .unwrap(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let keys = rows.iter().map(|row| row.0.as_str()).collect::<Vec<_>>();
+        assert_eq!(
+            keys,
+            [
+                "claude:run-1:compaction:0",
+                "claude:run-1:compaction:0",
+                "claude:run-1:compaction:1",
+                "claude:run-1:compaction:1"
+            ]
+        );
+        assert!(matches!(
+            rows[0].1,
+            crate::provider::ContextCompaction::Running { .. }
+        ));
+        assert!(matches!(
+            rows[1].1,
+            crate::provider::ContextCompaction::Failed { .. }
+        ));
+        assert!(matches!(
+            rows[2].1,
+            crate::provider::ContextCompaction::Running { .. }
+        ));
+        assert!(matches!(
+            rows[3].1,
+            crate::provider::ContextCompaction::Done { .. }
+        ));
     }
 
     #[test]

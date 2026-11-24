@@ -58,6 +58,8 @@ pub struct ClaudeRuntimeState {
     /// The compactions this run has had, so one row follows each from start to end.
     pub(super) compactions: u64,
     pub(super) compaction_started_at_ms: Option<u64>,
+    /// Rows settled outside a message of the stream (a restart cut a compaction off): the next drain sends them.
+    pub(super) unsent_chunks: Vec<crate::provider::ProviderPromptChunk>,
     pub(super) observed_context_model: Option<String>,
     pub(super) main_stream_has_context: bool,
     pub(super) active_stream_message_id: Option<String>,
