@@ -242,6 +242,19 @@ impl KernelRuntimeState {
             .owned
             .durable_state_store
             .load_subject_events_by_kind(id, "kernel.enrollment_approved", 1)?;
+        let denied = self
+            .owned
+            .durable_state_store
+            .load_subject_events_by_kind(id, "kernel.enrollment_denied", 1)?;
+        if let Some(event) = denied.first() {
+            // The owner denied. The background task is telling Cloud; only when Cloud still waits
+            // well after the answer did that fail, and then it is applied again. No second card.
+            let at = event.payload["denied_at_ms"].as_u64().unwrap_or(0);
+            if crate::session::unix_epoch_ms().saturating_sub(at) > RETRY_AFTER_MS {
+                decide(profile, &waiting.user_code, "deny").await?;
+            }
+            return Ok(());
+        }
         if let Some(event) = approved.first() {
             // The owner approved. The background task is telling Cloud; only when Cloud still waits
             // well after the answer did that fail, and then it is applied again. No second card.
@@ -279,7 +292,11 @@ impl KernelRuntimeState {
                 RuntimeInteractionChoice::new("deny", "Deny", "deny", Some(RuntimeInteractionChoiceStyle::Danger)),
             ],
         );
-        interaction = interaction.with_related_agent_id(agent.to_owned());
+        // The card stays answerable as long as this task waits for it, not for the
+        // default five minutes: a withdrawn card is not an answer.
+        interaction = interaction
+            .with_related_agent_id(agent.to_owned())
+            .with_timeout_sec(lifetime.min(MAX_WAIT).as_secs().max(1));
         let receiver = self
             .create_kernel_operation_interaction(room, session.owner_user_id(), interaction)
             .await?;
@@ -311,7 +328,20 @@ impl KernelRuntimeState {
                     }
                 }
                 Ok(Ok(answer)) if answer.status == "answered" && answer.choice_id.as_deref() == Some("deny") => {
-                    let _ = decide(&profile, &user_code, "deny").await;
+                    // Kept before it is sent: if Cloud does not get it, the next call applies it
+                    // again instead of asking the owner for the same code.
+                    if state
+                        .owned
+                        .durable_state_store
+                        .append_event(
+                            "kernel.enrollment_denied",
+                            Some(id.clone()),
+                            serde_json::json!({"owner": owner, "denied_at_ms": crate::session::unix_epoch_ms()}),
+                        )
+                        .is_ok()
+                    {
+                        let _ = decide(&profile, &user_code, "deny").await;
+                    }
                 }
                 Ok(Ok(_)) => {
                     // The kernel withdrew the unanswered card on its own timeout: nobody decided, so
