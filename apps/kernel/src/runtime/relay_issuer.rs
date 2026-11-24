@@ -131,7 +131,8 @@ fn issue_for_caller(
             ))
         }
     }
-    if config.cloud_relay.is_some() {
+    // A retained Cloud enrollment does not select the transport; an explicit private relay URL wins.
+    if super::cloud_relay_control::cloud_relay_transport_selected(config) {
         return Err(error(
             OPERATION,
             "this kernel uses a Cloud relay profile; its client tokens come from Cloud (IssueCloudRelayClientToken)",

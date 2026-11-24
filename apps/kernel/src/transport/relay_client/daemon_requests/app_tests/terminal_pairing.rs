@@ -207,3 +207,126 @@ fn a_second_pairing_link_with_one_cli_key_replaces_the_first_for_relay_admission
         .join()
         .unwrap();
 }
+
+#[test]
+fn a_retained_cloud_enrollment_with_a_private_relay_still_renews_through_relay_admission() {
+    std::thread::Builder::new()
+        .stack_size(64 * 1024 * 1024)
+        .spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(async {
+                    let root = TestRoot::new();
+                    let mut config = root.config();
+                    config.relay_url = Some("ws://127.0.0.1:1".into());
+                    config.relay_token = Some("synthetic-operator-transport".into());
+                    // The enrollment is kept, but the explicit private relay URL is the selected transport.
+                    config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+                        relay_url: "wss://cloud-relay".into(),
+                        kernel_credential: Some("synthetic-enrollment".into()),
+                        ..Default::default()
+                    });
+                    assert!(!crate::runtime::cloud_relay_control::cloud_relay_transport_selected(&config));
+                    let app = crate::DaemonApp::bootstrap(config.clone()).unwrap();
+                    let router = CommandRouter::with_interactive_capacity(
+                        Arc::new(tokio::sync::Mutex::new(app)),
+                        8,
+                    );
+                    let local = |id: &str, request: &LocalDaemonRequest| {
+                        KernelCommand::from_local_request(id, None, None, request)
+                    };
+                    let enable =
+                        LocalDaemonRequest::ConfigureRelayIssuer(ConfigureRelayIssuerRequest {
+                            step: RelayIssuerStep::Enable,
+                        });
+                    let LocalDaemonResponse::RelayIssuer {
+                        issuer: Some(issuer),
+                    } = router
+                        .dispatch(local("enable", &enable), enable)
+                        .await
+                        .unwrap()
+                    else {
+                        panic!("expected issuer")
+                    };
+                    let verifier = RelayAuthVerifier::SelfHosted(SelfHostedVerifier::new(
+                        "synthetic-operator-transport".into(),
+                        KernelIssuerKeys::parse(&issuer.relay_issuer_keys).unwrap(),
+                        None,
+                    ));
+                    let authenticated = |token: &str| -> RelayCallerIdentity {
+                        verifier
+                            .verify(RelayAuthRequest {
+                                token,
+                                action: RelayAction::ClientConnect,
+                                target: Some(&config.daemon_id),
+                            })
+                            .unwrap()
+                            .into()
+                    };
+                    let sender = relay_crypto::generate_private_key_base64();
+                    let public = relay_crypto::public_key_from_private_key_base64(&sender).unwrap();
+                    let thumbprint =
+                        crate::runtime::terminal_pairings::public_key_thumbprint(&public);
+                    let create = LocalDaemonRequest::CreateTerminalPairingLink(
+                        CreateTerminalPairingLinkRequest {
+                            terminal_type: Some(TerminalType::Cli),
+                            alias: Some("retained-cloud".into()),
+                            expires_in_ms: Some(60_000),
+                        },
+                    );
+                    let LocalDaemonResponse::TerminalPairingLinkCreated { pairing } = router
+                        .dispatch(local("create", &create), create)
+                        .await
+                        .unwrap()
+                    else {
+                        panic!("expected link")
+                    };
+                    let bootstrap = crate::runtime::invite_tokens::decode_pairing_invite_token(
+                        &pairing.pairing_link,
+                    )
+                    .unwrap();
+                    let joined = remote(
+                        &router,
+                        &sender,
+                        authenticated(&bootstrap.relay_token),
+                        LocalDaemonRequest::JoinTerminalPairingLink(
+                            JoinTerminalPairingLinkRequest {
+                                pairing_link: pairing.pairing_link,
+                                terminal_id: Some(pairing.terminal_id.clone()),
+                                terminal_type: Some(TerminalType::Cli),
+                                alias: None,
+                                public_key_thumbprint: Some(thumbprint.clone()),
+                            },
+                        ),
+                    )
+                    .await;
+                    let identity = authenticated(
+                        joined["TerminalPairingLinkJoined"]["relay_token"]
+                            .as_str()
+                            .unwrap(),
+                    );
+                    let response = remote(
+                        &router,
+                        &sender,
+                        identity.clone(),
+                        LocalDaemonRequest::IssueRelayClientToken(IssueRelayClientTokenRequest {
+                            client_id: identity.subject.clone(),
+                            public_key_thumbprint: thumbprint,
+                            scope: RelayClientTokenScope::Attach,
+                            lifetime_ms: None,
+                        }),
+                    )
+                    .await;
+                    assert!(
+                        response.get("RelayClientTokenIssued").is_some(),
+                        "a private relay selected over a retained Cloud enrollment must renew: {response}"
+                    );
+                    router.runtime_state().shutdown_cleanup().await.unwrap();
+                });
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
