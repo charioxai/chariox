@@ -11,8 +11,7 @@ use crate::runtime::pane_feed::{project_pane_feed, PaneFeedSources};
 
 use super::CommandRouter;
 
-/// How many of the newest workflow runs a pane feed reads: the latest run of each workflow and the
-/// runs still going are among them.
+/// The page size of the workflow runs a pane feed reads, newest first, until none is left.
 const PANE_WORKFLOW_RUNS: u32 = 200;
 
 impl CommandRouter {
@@ -40,7 +39,7 @@ impl CommandRouter {
             return Err(unexpected_response());
         };
         // The Room state carries no workflow details; the stripes of workflows and their runs are read
-        // through the same requests a client of the Room makes, the newest runs first.
+        // through the same requests a client of the Room makes.
         let workflows = match self
             .session_view_component(
                 command,
@@ -56,24 +55,42 @@ impl CommandRouter {
             Err(DaemonError::OwnershipAccessDenied { .. }) => Vec::new(),
             Err(error) => return Err(error),
         };
-        let workflow_runs = match self
-            .session_view_component(
-                command,
-                "pane-workflow-runs",
-                LocalDaemonRequest::ListWorkflowRuns(ListWorkflowRunsRequest {
-                    session_id: request.session_id.clone(),
-                    workflow_ref: None,
-                    cursor: None,
-                    limit: Some(PANE_WORKFLOW_RUNS),
-                }),
-            )
-            .await
-        {
-            Ok(LocalDaemonResponse::WorkflowRunsListed { workflow_runs, .. }) => workflow_runs,
-            Ok(_) => return Err(unexpected_response()),
-            Err(DaemonError::OwnershipAccessDenied { .. }) => Vec::new(),
-            Err(error) => return Err(error),
-        };
+        // Every page: an older run that still goes, or another workflow's latest failed run, may sit
+        // behind any number of newer runs of a busy workflow.
+        let mut workflow_runs = Vec::new();
+        let mut cursor = None;
+        loop {
+            match self
+                .session_view_component(
+                    command,
+                    "pane-workflow-runs",
+                    LocalDaemonRequest::ListWorkflowRuns(ListWorkflowRunsRequest {
+                        session_id: request.session_id.clone(),
+                        workflow_ref: None,
+                        cursor: cursor.take(),
+                        limit: Some(PANE_WORKFLOW_RUNS),
+                    }),
+                )
+                .await
+            {
+                Ok(LocalDaemonResponse::WorkflowRunsListed {
+                    workflow_runs: page,
+                    next_cursor,
+                }) => {
+                    workflow_runs.extend(page);
+                    match next_cursor {
+                        Some(next) => cursor = Some(next),
+                        None => break,
+                    }
+                }
+                Ok(_) => return Err(unexpected_response()),
+                Err(DaemonError::OwnershipAccessDenied { .. }) => {
+                    workflow_runs.clear();
+                    break;
+                }
+                Err(error) => return Err(error),
+            }
+        }
         let session = session.with_room_workflow_details(workflows, workflow_runs);
         let inbox = self
             .session_view_component(
