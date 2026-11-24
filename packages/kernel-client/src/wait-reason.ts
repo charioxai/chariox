@@ -40,10 +40,10 @@ const withoutNoun = (label: string, nouns: readonly string[]): string => {
 function waitOf(liveness: AgentLiveness): { readonly first: Wait; readonly more: number } | undefined {
   const events = liveness.waiting_events ?? []
   const on = liveness.waiting_on
-  // A command held or paused for room is the reason the person needs; an event that is the same command is not counted again, any other is.
+  // A command held or paused for room is the reason the person needs. The kernel gives no identity that ties it to one
+  // of the listed events, so no count of other waits is claimed beside it: the pane's wait line lists them.
   if (on && (on.kind === "command_held" || on.kind === "command_paused")) {
-    const same = (event: AgentWaitEvent) => event.kind === "background_command" && withoutNoun(event.label, ["command", "terminal"]) === (on.detail ?? "")
-    return { first: { kind: on.kind, since_ms: on.since_ms, text: on.detail ?? "", due_at_ms: on.due_at_ms, resource: on.resource }, more: events.filter(event => !same(event)).length }
+    return { first: { kind: on.kind, since_ms: on.since_ms, text: on.detail ?? "", due_at_ms: on.due_at_ms, resource: on.resource }, more: 0 }
   }
   if (events.length > 0) {
     const [first, ...rest] = events as [AgentWaitEvent, ...AgentWaitEvent[]]

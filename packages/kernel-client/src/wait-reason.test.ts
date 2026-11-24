@@ -44,8 +44,8 @@ test("W1 a held command keeps its reason and resource when its yielded event is 
   const paused: AgentLiveness = { ...held, waiting_on: { kind: "command_paused", detail: "cargo build", resource: "disk", since_ms: ago(2 * MIN) } }
   assert.equal(text(paused), "waiting: cargo build paused for disk (2 min)")
   const more: AgentLiveness = { ...held, waiting_events: [...held.waiting_events!, { id: "s", kind: "source", label: "sub-agent a", since_ms: ago(MIN), task_id: "t", wait_started_at_ms: ago(MIN) }] }
-  assert.equal(text(more), "waiting: cargo build held for memory (3 min), and 1 more")
-  // A foreground command held for room with only unrelated waits listed: every one of them is counted.
+  assert.equal(text(more), "waiting: cargo build held for memory (3 min)")
+  // No count is claimed beside a held command: no event can be tied to it (a labelled wake reads "command build").
   const foreground: AgentLiveness = {
     waiting_on: held.waiting_on!,
     waiting_events: [
@@ -53,7 +53,7 @@ test("W1 a held command keeps its reason and resource when its yielded event is 
       { id: "s1", kind: "source", label: "sub-agent a", since_ms: ago(MIN), task_id: "t", wait_started_at_ms: ago(MIN) },
     ],
   }
-  assert.equal(text(foreground), "waiting: cargo build held for memory (3 min), and 2 more")
+  assert.equal(text(foreground), "waiting: cargo build held for memory (3 min)")
 })
 
 test("W2 a timer names its label and when it is due", () => {
