@@ -123,7 +123,7 @@ impl KernelRuntimeState {
 
     /// The kernel restarted and ended its browser: the card's page comes back when the browser
     /// starts again, the same way an agent's own read would start it.
-    async fn start_card_browser(&self, agent_id: &str) -> Result<(), DaemonError> {
+    pub(crate) async fn start_card_browser(&self, agent_id: &str) -> Result<(), DaemonError> {
         let agent = self.owned.agent_store.get_agent(agent_id)?;
         let user = self.provider_account_authority_owner_user_id(agent.owner_user_id());
         self.kernel_browser_operation(
