@@ -621,9 +621,11 @@ impl DurableKernelStateStore {
             operation: "durable_state.trigger_firings",
             message: error.to_string(),
         })?;
-        acquired_machines::initialize(&connection).map_err(|error| DaemonError::LocalTransport {
-            operation: "durable_state.acquired_machines",
-            message: error.to_string(),
+        acquired_machines::initialize(&connection).map_err(|error| {
+            DaemonError::LocalTransport {
+                operation: "durable_state.acquired_machines",
+                message: error.to_string(),
+            }
         })?;
         acquire_choices::initialize(&connection).map_err(|error| DaemonError::LocalTransport {
             operation: "durable_state.acquire_choices",

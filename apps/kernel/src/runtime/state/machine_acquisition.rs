@@ -467,8 +467,8 @@ mod build_toolchain;
 mod choice;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tool_tests;
 pub(crate) mod without_asking;
 #[cfg(test)]
 mod without_asking_tests;
-#[cfg(test)]
-mod tool_tests;
