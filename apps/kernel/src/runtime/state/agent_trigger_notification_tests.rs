@@ -653,8 +653,6 @@ async fn parked_timers_with_mixed_notifications() -> (
 
 #[tokio::test]
 async fn promoted_mixed_notifications_resume_the_timer_task_and_settle_its_receipts() {
-    use crate::durable_state::agent_lifecycle::ExecutionState;
-
     let (rig, arrived, person_id, parked) = parked_timers_with_mixed_notifications().await;
     let store = &rig.runtime.owned.durable_state_store;
     let inbox = || {
