@@ -546,6 +546,18 @@ impl KernelRuntimeOwnedState {
                 "Only the owner's Chariox terminal can answer this review",
             ));
         }
+        // Accepting an App's offer, choosing its files and saving its file each hand the payload to
+        // one client by their own request; a reply never does it.
+        if !take_host
+            && matches!(
+                choice_id,
+                "accept_host_action" | "choose_files" | "save_file"
+            )
+        {
+            return Err(interaction_error(
+                "App host actions use the dedicated terminal acceptance path",
+            ));
+        }
         if take_host
             && (!pending
                 .kernel_operation_owner

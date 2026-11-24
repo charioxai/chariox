@@ -936,14 +936,14 @@ async fn only_the_owner_or_its_agents_may_open_the_vault_menu() {
 }
 
 #[tokio::test]
-async fn a_member_cannot_answer_the_vault_menu() {
+async fn a_member_cannot_answer_the_passphrase_change_prompt() {
     let f = Fixture::locked();
     f.unlock(PASSPHRASE).await.unwrap();
     let runtime = f.router.runtime_state.clone();
     let (session, agent) = (f.session.clone(), f.agent.clone());
     let menu = tokio::spawn(async move {
         runtime
-            .manage_credential_vault_unlock(&session, &agent)
+            .manage_credential_vault(&session, &agent, Some("change_passphrase"))
             .await
     });
     let prompt = tokio::time::timeout(std::time::Duration::from_secs(30), async {
@@ -960,12 +960,12 @@ async fn a_member_cannot_answer_the_vault_menu() {
         }
     })
     .await
-    .expect("the Vault menu should appear");
-    let lock_now =
+    .expect("the passphrase prompt should appear");
+    let cancel =
         LocalDaemonRequest::RespondToInteraction(crate::local::RespondToInteractionRequest {
             session_id: f.session.clone(),
             interaction_id: prompt,
-            choice_id: "lock_now".into(),
+            choice_id: "cancel".into(),
             custom_reply: None,
             passkey: None,
             passkey_remember_minutes: None,
@@ -974,10 +974,10 @@ async fn a_member_cannot_answer_the_vault_menu() {
         Some(KernelConnectionClass::Terminal),
         Some("session-member"),
     );
-    assert!(f.send_as(member, lock_now).await.is_err());
+    assert!(f.send_as(member, cancel).await.is_err());
     assert!(
         f.status().await.unlocked,
-        "the member did not lock the Vault"
+        "the member did not touch the Vault"
     );
     menu.abort();
 }

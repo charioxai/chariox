@@ -122,7 +122,12 @@ impl KernelRuntimeOwnedState {
                 "App host actions use the dedicated terminal acceptance path",
             ));
         }
-        // Host offers intentionally advertise only decline. The owner-bound
+        if matches!(choice, "choose_files" | "save_file") {
+            return Err(interaction_error(
+                "Choosing a file is done in the client's file chooser, not by a reply",
+            ));
+        }
+        // Host offers advertise Accept for clients to send the dedicated request, and Decline. The owner-bound
         // dedicated take path is their sole acceptance authority, as in Rooms.
         let (choice_id, reply) = if take_host {
             (

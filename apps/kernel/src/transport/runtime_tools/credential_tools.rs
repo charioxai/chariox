@@ -552,14 +552,14 @@ pub fn credential_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: MANAGE_CREDENTIAL_VAULT_TOOL.to_string(),
-            description: "Check, lock, or request the Chariox Vault unlock/extend popup for the current session. Passphrases and secrets are never returned to the model.".to_string(),
+            description: "Check the Chariox Vault (unlocked until when), extend or lock it, change its passphrase, or ask the person to unlock it. Passphrases and secrets are never returned to the model.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "action": {
                         "type": "string",
-                        "enum": ["status", "lock", "popup"],
-                        "description": "Defaults to popup. status returns locked/unlocked metadata; lock clears in-memory vault keys; popup asks the user to unlock, extend, lock, or dismiss."
+                        "enum": ["status", "extend", "extend_60m", "lock", "change_passphrase", "popup"],
+                        "description": "Defaults to popup. An unlocked Vault raises no card: popup and status return its state with the time it stays unlocked; extend (30 minutes) and extend_60m push that time out; lock clears in-memory vault keys; change_passphrase asks the person for the passphrases. A locked Vault asks the person to unlock it (popup)."
                     }
                 },
                 "additionalProperties": false

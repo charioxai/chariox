@@ -4630,6 +4630,11 @@ already accepted offers fail without returning a payload. No owner, URL or
 text can be supplied by the accepting client. Acceptance consumes the offer;
 a failed host action or lost reply requires a new App request.
 
+The offer's card carries **Accept** (`accept_host_action`) next to **Decline**: a client's Accept sends `AcceptAppHostAction`
+(the same request `/app host accept` sends) and does the action it returns; answering the card with that choice id through
+`RespondToInteraction` is refused. The file-share card likewise carries **Choose files** (`choose_files`, answered by
+`GrantAppFile`) and the file-save card **Save file** (`save_file`, answered by `SaveAppFileExport`); neither is a reply.
+
 The accepting terminal performs the action on its own machine. TUI users type
 `/app host accept` after closing the approval panel selects the sole pending
 host offer in the attached session only when it matches the last offer displayed

@@ -230,7 +230,7 @@ For an agent, the delivery receipt records the turn the queued prompt started (`
 
 On one kernel, the kernel refuses a cycle when the subscription is created (`workflow notification cycle`): a workflow subscribed to its own exit, and the second subscription of A to B to A, are both refused, so there is no row and no flag. Only a cycle across kernels can form, because each kernel sees only its own subscriptions; there the occurrence's ancestry stops it at delivery, answers `LoopDropped` and raises Loop stopped.
 
-A flag also raises one for-your-information card to whoever is responsible for the subscription: its creator, or the workflow's responsible.
+A flag is status on the subscription's row (`health`), never a card: it raises no Inbox card (Miguel's rule, 11-24: a card is only for an action the agent cannot take itself). Likewise a failed run of a workflow the person answers for is status on the workflow row (its outcome); only a run held on a decision stays an Inbox card.
 
 ## 7. Sources and watchers
 

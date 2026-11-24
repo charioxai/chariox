@@ -230,12 +230,14 @@ async fn a_watched_inbox_gets_a_raised_card_and_its_answer_within_two_seconds() 
     );
 }
 
-/// NC-22: a run of a workflow the person answers for that failed is a card of the Inbox; it is
-/// not marked read, and it leaves when the person opens the run.
+/// NC-22: a run of a workflow the person answers for that is held on a decision is a card of the
+/// Inbox; it is not marked read, and it leaves when the person opens the run. A failed run is
+/// status on its workflow row (its outcome), never a card.
 #[tokio::test]
-async fn a_failed_run_of_a_workflow_the_person_answers_for_is_a_card_until_the_run_is_opened() {
+async fn a_held_run_of_a_workflow_the_person_answers_for_is_a_card_until_the_run_is_opened() {
     use crate::session::{
-        WorkflowFailureEvent, WorkflowFailureKind, WorkflowRun, WorkflowRunStatus,
+        WorkflowFailureEvent, WorkflowFailureKind, WorkflowNodeRun, WorkflowNodeRunStatus,
+        WorkflowNodeWaitingReason, WorkflowRun, WorkflowRunStatus,
     };
     let app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
     let session = room(DEFAULT_LOCAL_USER_ID);
@@ -246,7 +248,11 @@ async fn a_failed_run_of_a_workflow_the_person_answers_for_is_a_card_until_the_r
         .create_workflow(&session_id, Some("release-pipeline".into()))
         .unwrap();
     let mut session = app.sessions_mut().get_session(&session_id).unwrap();
-    for (run_id, failed) in [("run-ok", false), ("run-3", true)] {
+    for (run_id, kind) in [
+        ("run-ok", "done"),
+        ("run-failed", "failed"),
+        ("run-3", "held"),
+    ] {
         let mut run = WorkflowRun::new(
             run_id,
             workflow.id(),
@@ -257,16 +263,30 @@ async fn a_failed_run_of_a_workflow_the_person_answers_for_is_a_card_until_the_r
             vec![],
             vec![],
         );
-        if failed {
-            run.add_failure_event(WorkflowFailureEvent::new(
-                WorkflowFailureKind::StepNeedsHelp,
-                "node-run",
-                vec![],
-                "the deploy step needs a person",
-            ));
-            run.set_status(WorkflowRunStatus::Failed);
-        } else {
-            run.set_status(WorkflowRunStatus::Completed);
+        match kind {
+            "failed" => {
+                run.add_failure_event(WorkflowFailureEvent::new(
+                    WorkflowFailureKind::StepNeedsHelp,
+                    "node-run",
+                    vec![],
+                    "the deploy step needs a person",
+                ));
+                run.set_status(WorkflowRunStatus::Failed);
+            }
+            "held" => {
+                let mut node_run = WorkflowNodeRun::new(
+                    "node-run-held",
+                    "node",
+                    "agent",
+                    0,
+                    WorkflowNodeRunStatus::Ready,
+                );
+                node_run
+                    .set_waiting_reason(WorkflowNodeWaitingReason::ProviderProfileUnauthenticated);
+                run.add_node_run(node_run);
+                run.set_status(WorkflowRunStatus::Running);
+            }
+            _ => run.set_status(WorkflowRunStatus::Completed),
         }
         session.create_workflow_run(run);
     }
@@ -274,7 +294,11 @@ async fn a_failed_run_of_a_workflow_the_person_answers_for_is_a_card_until_the_r
     let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1);
 
     let cards = inbox(&router).await;
-    assert_eq!(card_ids(&cards), [(session_id.as_str(), "run:run-3")]);
+    assert_eq!(
+        card_ids(&cards),
+        [(session_id.as_str(), "run:run-3")],
+        "the held run is a card; the failed run is not"
+    );
     let crate::local::PersonInboxCardBody::Workflow(run) = &cards[0].body else {
         panic!("expected a workflow card, got {:?}", cards[0].body);
     };
@@ -285,7 +309,7 @@ async fn a_failed_run_of_a_workflow_the_person_answers_for_is_a_card_until_the_r
     assert!(
         matches!(
             run.outcome,
-            crate::session::WorkflowRunOutcome::Failed { .. }
+            crate::session::WorkflowRunOutcome::Waiting { .. }
         ),
         "{:?}",
         run.outcome

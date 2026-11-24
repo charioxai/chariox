@@ -45,7 +45,7 @@ impl Rig {
         }
     }
 
-    /// The flag cards of the person's Inbox: subscription and health.
+    /// The flag cards of the person's Inbox: none any more, a stopped subscription is status on its row.
     fn flags(&self) -> Vec<(String, NotificationSubscriptionHealth)> {
         match crate::runtime::person_inbox::execute_person_inbox_request(
             &self.runtime,
@@ -246,7 +246,7 @@ async fn an_orphan_says_its_source_is_gone_and_is_removed_with_its_trigger() {
     let id = rig.rows()[0].subscription.subscription_id.clone();
     assert!(
         rig.flags().is_empty(),
-        "a healthy subscription raises no flag"
+        "a healthy subscription raises no card"
     );
     rig.set_source_enabled(&workflow, false).await;
     let row = rig.rows().remove(0);
@@ -254,23 +254,9 @@ async fn an_orphan_says_its_source_is_gone_and_is_removed_with_its_trigger() {
         (row.source.is_none(), row.health),
         (true, NotificationSubscriptionHealth::SourceGone)
     );
-    assert_eq!(
-        rig.flags(),
-        vec![(id.clone(), NotificationSubscriptionHealth::SourceGone)]
-    );
-    let read = crate::runtime::person_inbox::execute_set_inbox_card_state(
-        &rig.runtime,
-        crate::local::SetInboxCardStateRequest {
-            card_ids: vec![format!("flag:{id}")],
-            change: crate::local::InboxCardChange::Read { read: true },
-        },
-        &crate::runtime::command::KernelCaller::default(),
-    )
-    .unwrap_err()
-    .to_string();
     assert!(
-        read.contains("leaves when the subscription is fixed or removed"),
-        "{read}"
+        rig.flags().is_empty(),
+        "a subscription that cannot deliver is status on its row (health), not a card"
     );
     let moved = rig
         .runtime
@@ -295,7 +281,7 @@ async fn an_orphan_says_its_source_is_gone_and_is_removed_with_its_trigger() {
     assert!(rig.rows().is_empty(), "no stale row remains");
     assert!(
         rig.flags().is_empty(),
-        "the flag leaves with the subscription"
+        "no card is left with the subscription"
     );
     assert!(rig.subscriptions().is_empty());
     assert!(rig
@@ -588,9 +574,9 @@ async fn a_delivery_that_comes_back_to_its_subscriber_stops_the_loop_and_raises_
     let stopped = row(&rig);
     assert_eq!(stopped.health, NotificationSubscriptionHealth::LoopStopped);
     assert!(stopped.loop_stopped_at_ms.is_some());
-    assert_eq!(
-        rig.flags(),
-        vec![(id.clone(), NotificationSubscriptionHealth::LoopStopped)]
+    assert!(
+        rig.flags().is_empty(),
+        "a stopped loop is status on its row (health), not a card"
     );
     assert_eq!(
         rig.trace(&id)[0].outcome,
