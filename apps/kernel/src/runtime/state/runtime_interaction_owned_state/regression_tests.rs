@@ -600,6 +600,7 @@ async fn decisioncap_owner_list_and_admission_agree_after_room_deletion() {
         receivers.push(
             f.state
                 .create_kernel_operation_interaction(
+                    crate::runtime::state::CardKind::NativePermissionInput,
                     &lost_room,
                     DEFAULT_LOCAL_USER_ID,
                     RuntimeInteraction::for_kernel_operation(

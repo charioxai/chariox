@@ -336,6 +336,7 @@ async fn another_owners_decision_blocks_the_subject_until_abandoned() {
     let replacement = router
         .runtime_state
         .create_kernel_operation_interaction(
+            crate::runtime::state::CardKind::NativePermissionInput,
             &session,
             DEFAULT_LOCAL_USER_ID,
             decision("alice", "operation"),

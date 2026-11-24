@@ -154,7 +154,12 @@ async fn kernel_decision_metadata() {
         .with_related_agent_id(asker.into());
         receivers.push(
             state
-                .create_kernel_operation_interaction("", card_owner, decision)
+                .create_kernel_operation_interaction(
+                    crate::runtime::state::CardKind::NativePermissionInput,
+                    "",
+                    card_owner,
+                    decision,
+                )
                 .await
                 .unwrap(),
         );
