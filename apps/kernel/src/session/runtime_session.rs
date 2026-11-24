@@ -1208,6 +1208,17 @@ impl RuntimeSession {
         &self.workflows
     }
 
+    /// A Room state that was read without its workflow details, completed with the ones read apart.
+    pub(crate) fn with_room_workflow_details(
+        mut self,
+        workflows: Vec<WorkflowDefinition>,
+        workflow_runs: Vec<WorkflowRun>,
+    ) -> Self {
+        self.workflows = workflows;
+        self.workflow_runs = workflow_runs;
+        self
+    }
+
     pub(crate) fn without_room_workflow_details(mut self) -> Self {
         self.workflows.clear();
         self.workflow_runs.clear();

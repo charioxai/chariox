@@ -3,13 +3,17 @@
 use crate::error::DaemonError;
 use crate::local::{
     GetPaneFeedRequest, GetPersonInboxRequest, GetSessionStateRequest,
-    ListProviderAccountProfilesRequest, LocalDaemonRequest, LocalDaemonResponse,
-    ReportPaneSettingsRequest,
+    ListProviderAccountProfilesRequest, ListWorkflowRunsRequest, ListWorkflowsRequest,
+    LocalDaemonRequest, LocalDaemonResponse, ReportPaneSettingsRequest,
 };
 use crate::runtime::command::{command_caller_user_id, KernelCommand};
 use crate::runtime::pane_feed::{project_pane_feed, PaneFeedSources};
 
 use super::CommandRouter;
+
+/// How many of the newest workflow runs a pane feed reads: the latest run of each workflow and the
+/// runs still going are among them.
+const PANE_WORKFLOW_RUNS: u32 = 200;
 
 impl CommandRouter {
     pub(super) async fn get_pane_feed(
@@ -35,6 +39,42 @@ impl CommandRouter {
         else {
             return Err(unexpected_response());
         };
+        // The Room state carries no workflow details; the stripes of workflows and their runs are read
+        // through the same requests a client of the Room makes, the newest runs first.
+        let workflows = match self
+            .session_view_component(
+                command,
+                "pane-workflows",
+                LocalDaemonRequest::ListWorkflows(ListWorkflowsRequest {
+                    session_id: request.session_id.clone(),
+                }),
+            )
+            .await
+        {
+            Ok(LocalDaemonResponse::WorkflowsListed { workflows }) => workflows,
+            Ok(_) => return Err(unexpected_response()),
+            Err(DaemonError::OwnershipAccessDenied { .. }) => Vec::new(),
+            Err(error) => return Err(error),
+        };
+        let workflow_runs = match self
+            .session_view_component(
+                command,
+                "pane-workflow-runs",
+                LocalDaemonRequest::ListWorkflowRuns(ListWorkflowRunsRequest {
+                    session_id: request.session_id.clone(),
+                    workflow_ref: None,
+                    cursor: None,
+                    limit: Some(PANE_WORKFLOW_RUNS),
+                }),
+            )
+            .await
+        {
+            Ok(LocalDaemonResponse::WorkflowRunsListed { workflow_runs, .. }) => workflow_runs,
+            Ok(_) => return Err(unexpected_response()),
+            Err(DaemonError::OwnershipAccessDenied { .. }) => Vec::new(),
+            Err(error) => return Err(error),
+        };
+        let session = session.with_room_workflow_details(workflows, workflow_runs);
         let inbox = self
             .session_view_component(
                 command,

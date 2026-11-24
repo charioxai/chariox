@@ -304,6 +304,7 @@ async fn a_failed_run_is_a_stripe_in_the_pane_of_the_agent_whose_step_failed() {
     let app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
     let mut session = crate::session::RuntimeSession::new(
         format!("pane-workflow-{:016x}", rand::random::<u64>()),
+        crate::session::ProjectId::test(),
         None,
         "workspace",
         "worktree",
