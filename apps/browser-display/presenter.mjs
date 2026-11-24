@@ -1,4 +1,4 @@
-import {displayGeometryMatches,regionBindingCurrent,regionInputBinding,regionMinimumProtocolVersion,tabDisplayMinimumProtocolVersion,viewerDensityMinimumProtocolVersion,visiblePageMinimumProtocolVersion} from './region-binding.mjs';
+import {displayGeometryMatches,regionBindingCurrent,regionInputBinding,regionMinimumProtocolVersion,tabDisplayMinimumProtocolVersion,viewerDensityStillsCapability,visiblePageMinimumProtocolVersion} from './region-binding.mjs';
 import {StripePresenter,independentStripeCover} from './stripe-presenter.mjs';
 import {ScrollPrediction} from './scroll-prediction.mjs';
 import {WorkerVideoDecoder} from './decoder-worker.mjs';
@@ -276,7 +276,7 @@ export async function attachBrowserDisplay(canvas, transport, tab, options = {})
   if(globalThis.Worker&&globalThis.VideoDecoder){try{warmDecoder=new WorkerVideoDecoder();}catch{/* Normal presenter admission handles unavailable codecs. */}}
   // Row 341: a whole-page video above the page's density comes to rest as a still at the viewer's density (a resumed
   // subscription keeps the density it was made with: resume requires the same target and density).
-  const viewerStills=!options.desktop&&!options.target&&offer.device_scale_factor>1&&transport.kernelProtocolVersion>=viewerDensityMinimumProtocolVersion;
+  const viewerStills=!options.desktop&&!options.target&&offer.device_scale_factor>1&&Array.isArray(transport.kernelCapabilities)&&transport.kernelCapabilities.includes(viewerDensityStillsCapability);
   let subscribed;
   try{subscribed=await request(resume?{op:'display_resume',subscription_id:hint.subscription_id,generation:hint.generation}
     :options.desktop?{op:'computer',command:{op:'display_subscribe',target:tab,...offer}}:{op:'display_subscribe',...tab,...(options.target?{target:options.target}:{}),...offer,

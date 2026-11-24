@@ -3,8 +3,9 @@ export const regionMinimumProtocolVersion = 519;
 export const visiblePageMinimumProtocolVersion = 536;
 // MP-08/MP-10/MP-11 (P1): a Tab display carries the Tab's later documents on the same binding.
 export const tabDisplayMinimumProtocolVersion = 720;
-// MP-08/MP-11 (row 341): the whole-page video's still at rest may come at the viewer's own density.
-export const viewerDensityMinimumProtocolVersion = 1015;
+// MP-08/MP-11 (row 341): the whole-page video's still at rest may come at the viewer's own density. Asked for only of a
+// kernel that advertises this capability in its RelayStatus: a protocol number alone can name another kernel's work.
+export const viewerDensityStillsCapability = 'viewer_density_stills_v1';
 export function regionBindingCurrent(binding) {
  const {binding_id,document_id,sequence,css_width,css_height,device_scale_factor:scale}=binding;
  return binding.source_kind==='region'&&typeof binding_id==='string'&&binding_id.length>0&&binding_id.length<=256&&
