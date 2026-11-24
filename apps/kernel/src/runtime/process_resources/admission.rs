@@ -30,12 +30,13 @@ const AHEAD: u64 = 2;
 /// A stopped filler needs a moment to give its space back before the next
 /// one is judged.
 const FILLER_SETTLE: Duration = Duration::from_secs(2);
-/// A volume the kernel's commands fill within this many seconds is short of
-/// room now, whatever its floor: a runaway copy fills gigabytes in seconds
-/// (owner decision, docs/PROCESS_RESOURCES.md).
+/// Miguel 11-24: 5 s to full. A volume that its free space says is within this many seconds
+/// of full at the rate it is losing room is short of room now, whatever its floor: a
+/// runaway copy fills gigabytes in seconds (docs/PROCESS_RESOURCES.md).
 const FILL_HORIZON_SECONDS: u64 = 5;
-/// A command writing this fast is a runaway and is stopped first (the
-/// memory runaway rate).
+/// Miguel 11-24: 128 MiB/s. An agent command writing this fast is a runaway (the memory
+/// runaway rate): within the fill horizon the fastest of them is stopped, and no slower
+/// writer is.
 const RUNAWAY_WRITE: u64 = 128 * MIB;
 /// A volume's free space is compared over this long to tell how fast it is
 /// being used up, and over at least `FREE_LOSS_MIN`.
@@ -360,9 +361,8 @@ pub(super) struct Ledger {
     resumed_at: BTreeMap<u8, Instant>,
     /// When a command was last stopped for filling the disk.
     filler_at: Option<Instant>,
-    /// The free bytes of each volume a command sends output to, over the last
-    /// seconds: a command's whole write rate is a fill rate only as far as the
-    /// volume really lost room.
+    /// The free bytes of each volume a command works in or sends output to, over the
+    /// last seconds: how fast the volume is really being filled.
     free_seen: BTreeMap<u64, VecDeque<(Instant, u64)>>,
     /// The owner whose command started last for each reason: the next one in
     /// line is the following owner's.
@@ -782,12 +782,7 @@ impl Ledger {
             return None;
         }
         let lost = self.free_loss(members, room);
-        let mut writers = writers(members);
-        apportion(&mut writers, &lost);
-        let mut filling = BTreeMap::<u64, u64>::new();
-        for writer in &writers {
-            *filling.entry(writer.volume).or_default() += writer.rate;
-        }
+        let writers = writers(members);
         let mut chosen: Option<((bool, u64), &Writer, Filling)> = None;
         for writer in &writers {
             // A descriptor can close or be reused between samples.
@@ -796,9 +791,14 @@ impl Ledger {
             else {
                 continue;
             };
-            let rate = filling.get(&writer.volume).copied().unwrap_or_default();
-            let horizon = rate.saturating_mul(FILL_HORIZON_SECONDS);
-            if disk.free >= (disk.floor / 2).max(horizon) {
+            // The rate the volume is really being filled at: what its free space lost.
+            let observed = lost.get(&writer.volume).copied().unwrap_or_default();
+            let below = disk.free < disk.floor / 2;
+            let near_full = observed > 0 && disk.free < observed.saturating_mul(FILL_HORIZON_SECONDS);
+            // Within the fill horizon only a runaway is stopped, the fastest of them: any
+            // agent command writing this fast to that volume, an overwriter too (an accepted
+            // cost in a real emergency, Miguel 11-24).
+            if !(below || (near_full && writer.rate >= RUNAWAY_WRITE)) {
                 continue;
             }
             let rank = if writer.rate >= RUNAWAY_WRITE {
@@ -818,7 +818,7 @@ impl Ledger {
                     rate: writer.rate,
                     written: writer.written,
                     deleted_open: writer.deleted_open,
-                    full_in: (disk.free >= disk.floor / 2).then(|| disk.free / rate.max(1)),
+                    full_in: (!below).then(|| disk.free / observed.max(1)),
                 },
             ));
         }
@@ -849,6 +849,17 @@ impl Ledger {
                     disk_room(room.volume, &output.path).filter(|disk| disk.id == output.id)
                 {
                     seen.insert(output.id, disk.free);
+                }
+            }
+            // The volume each command works in is watched from the moment the command is
+            // known, so a copy's first sample already has the free space from before it began.
+            for cwd in observation
+                .admission
+                .values()
+                .filter_map(|entry| entry.seen.as_ref()?.cwd.as_deref())
+            {
+                if let Some(disk) = disk_room(room.volume, cwd) {
+                    seen.entry(disk.id).or_insert(disk.free);
                 }
             }
         }
@@ -1453,12 +1464,9 @@ struct Writer<'a> {
     pid: u32,
     volume: u64,
     path: PathBuf,
-    /// What it fills the volume by: its open files' allocated growth, or its
-    /// share of what the volume lost (`apportion`).
+    /// What it writes to the volume: all it writes when it sends output to this
+    /// volume only, otherwise the growth of its open files there.
     rate: u64,
-    /// Everything it writes, when it sends output to this volume only and is
-    /// writing new files: a rate that counts only as far as the volume lost room.
-    whole: u64,
     written: u64,
     deleted_open: u64,
 }
@@ -1523,28 +1531,17 @@ fn writers<'a>(members: &'a [Arc<Mutex<Observation>>]) -> Vec<Writer<'a>> {
                 _ => None,
             };
             for output in outputs {
-                // What the command's open files grew by is allocation seen.
-                let grown = if output.files.is_empty() {
-                    0
-                } else {
-                    output.rate.min(command.write_rate)
-                };
-                // The rest of its writes (a copy of many short-lived files) can
-                // fill the volume only if the command writes new files and only
-                // as far as the volume lost room: a rewrite of blocks it holds
-                // uses none, whoever else allocates there.
+                // A command sending output to one volume only writes all it writes
+                // there: a copy of many short-lived files shows no file growing
+                // from one sample to the next. Otherwise only the growth of its
+                // open files counts for the volume.
                 let only_here = only == Some(output.id);
-                let whole = if only_here && output.fresh {
-                    command.write_rate
+                let (rate, written) = if only_here {
+                    (command.write_rate, output.written.max(command.writes))
                 } else {
-                    0
+                    (output.rate.min(command.write_rate), output.written)
                 };
-                let written = if only_here {
-                    output.written.max(command.writes)
-                } else {
-                    output.written
-                };
-                if (grown < GROWING && whole < GROWING) || shared(output) {
+                if rate < GROWING || shared(output) || (!only_here && output.files.is_empty()) {
                     continue;
                 }
                 writers.push(Writer {
@@ -1552,8 +1549,7 @@ fn writers<'a>(members: &'a [Arc<Mutex<Observation>>]) -> Vec<Writer<'a>> {
                     pid: command.pid,
                     volume: output.id,
                     path: output.path.clone(),
-                    rate: grown,
-                    whole,
+                    rate,
                     written,
                     deleted_open: command.deleted_open,
                 });
@@ -1561,31 +1557,6 @@ fn writers<'a>(members: &'a [Arc<Mutex<Observation>>]) -> Vec<Writer<'a>> {
         }
     }
     writers
-}
-
-/// Gives each writer its rate: the growth seen in its open files, plus its share of what its
-/// volume lost beyond all growth seen (the loss no file explains), shared between the commands
-/// writing new files there so one loss is never spent twice. A share never exceeds what the
-/// command wrote beyond its seen growth.
-fn apportion(writers: &mut Vec<Writer<'_>>, lost: &BTreeMap<u64, u64>) {
-    let mut grown = BTreeMap::<u64, u64>::new();
-    let mut beyond = BTreeMap::<u64, u64>::new();
-    for writer in writers.iter() {
-        *grown.entry(writer.volume).or_default() += writer.rate;
-        *beyond.entry(writer.volume).or_default() += writer.whole.saturating_sub(writer.rate);
-    }
-    for writer in writers.iter_mut() {
-        let own = writer.whole.saturating_sub(writer.rate);
-        let unexplained = lost
-            .get(&writer.volume)
-            .copied()
-            .unwrap_or_default()
-            .saturating_sub(grown[&writer.volume]);
-        let all = beyond[&writer.volume].max(1);
-        let share = (own as u128 * unexplained as u128 / all as u128) as u64;
-        writer.rate += share.min(own);
-    }
-    writers.retain(|writer| writer.rate >= GROWING);
 }
 
 /// A volume's free bytes against its floor.

@@ -94,7 +94,6 @@ fn owner(
                         files: [u64::from(command.pid)].into(),
                         open: [u64::from(command.pid)].into(),
                         receiving: true,
-                        fresh: false,
                     }],
                 )
             })
@@ -1554,7 +1553,6 @@ fn the_disk_never_fills_up_while_five_builds_write_and_the_filler_goes() {
                         files: [u64::from(pid)].into(),
                         open: [u64::from(pid)].into(),
                         receiving: true,
-                        fresh: false,
                     }],
                 );
             }
@@ -1814,7 +1812,6 @@ fn a_full_volume_stops_its_own_writer_and_leaves_one_on_a_roomy_volume_alone() {
                 files: [1].into(),
                 open: [1].into(),
                 receiving: true,
-                fresh: false,
             }],
         ),
         (
@@ -1827,7 +1824,6 @@ fn a_full_volume_stops_its_own_writer_and_leaves_one_on_a_roomy_volume_alone() {
                 files: [2].into(),
                 open: [2].into(),
                 receiving: true,
-                fresh: false,
             }],
         ),
     ]
@@ -1879,7 +1875,6 @@ fn crossed_volume_writer(cwd: &str, output: &str, id: u64, should_stop: bool) {
             files: [1].into(),
             open: [1].into(),
             receiving: true,
-            fresh: false,
             path: output.into(),
             written: 6 * GIB,
             rate: 50 * MIB,
@@ -1961,7 +1956,6 @@ fn between_files() -> Vec<disk_use::VolumeWrites> {
         files: Default::default(),
         open: Default::default(),
         receiving: true,
-        fresh: true,
     }]
 }
 
@@ -2078,7 +2072,6 @@ fn a_command_logging_to_another_volume_is_not_the_filler_of_its_idle_output_volu
             files: Default::default(),
             open: [11].into(),
             receiving: true,
-            fresh: false,
         };
         let log = disk_use::VolumeWrites {
             id: 2,
@@ -2088,7 +2081,6 @@ fn a_command_logging_to_another_volume_is_not_the_filler_of_its_idle_output_volu
             files: Default::default(),
             open: [12].into(),
             receiving: false,
-            fresh: false,
         };
         observation.disk_writes.insert(1, vec![idle, log]);
     }
@@ -2134,10 +2126,13 @@ fn pass_twice(members: &[Arc<Mutex<Observation>>], volume: &Volume) -> Vec<(u32,
         .collect()
 }
 
+// Miguel 11-24 (row 376): within 5 s of full at the rate the volume is losing room, the fastest
+// agent writer at 128 MiB/s or more is stopped. No proof that it allocates is asked for: an
+// overwriter is stopped too, an accepted cost in a real emergency.
 #[test]
-fn an_overwriter_is_not_charged_the_space_another_command_allocates_on_its_volume() {
-    // Another command (a person's terminal, say) allocates 400 MiB/s on the
-    // volume; this one rewrites a file it holds open at 200 MiB/s.
+fn a_runaway_overwriter_is_stopped_when_the_volume_is_within_five_seconds_of_full() {
+    // It rewrites a file it holds open at 200 MiB/s, while another command allocates 400 MiB/s
+    // on the same volume: 1500 MiB free is under four seconds from full.
     let (_, rewriter, rewriter_use) = writing(1, 3 * GIB, 200 * MIB);
     let current = owner("agent", true, vec![rewriter_use], vec![(1, rewriter)]);
     {
@@ -2146,141 +2141,77 @@ fn an_overwriter_is_not_charged_the_space_another_command_allocates_on_its_volum
         outputs[0].files.clear();
         outputs[0].rate = 0;
         outputs[0].open = [1].into();
-        outputs[0].fresh = false;
-    }
-    let volume = losing(900 * MIB, 400 * MIB);
-    assert!(
-        pass_twice(std::slice::from_ref(&current), &*volume).is_empty(),
-        "a writer that rewrites its own file was stopped for another command's allocation"
-    );
-}
-
-#[test]
-fn one_volume_loss_is_shared_between_the_commands_writing_to_it() {
-    // Two commands writing new files at 300 MiB/s each, the volume losing
-    // 300 MiB/s: that is the fill rate, not 600.
-    let members = [1u32, 2]
-        .map(|pid| {
-            let (_, entry, usage) = writing(pid, 3 * GIB, 300 * MIB);
-            let member = owner("agent", true, vec![usage], vec![(pid, entry)]);
-            member
-                .lock()
-                .unwrap()
-                .disk_writes
-                .insert(pid, between_files());
-            member
-        })
-        .to_vec();
-    let volume = losing(1200 * MIB, 300 * MIB);
-    let fillers = pass_twice(&members, &*volume);
-    assert_eq!(fillers.len(), 1, "{:?}", fillers.len());
-    assert!(
-        fillers[0].1.rate <= 160 * MIB,
-        "each of two writers was charged the whole loss: {}",
-        fillers[0].1.rate / MIB
-    );
-}
-
-/// A volume that reports the real device of the path it is asked about, starting
-/// with `free` and losing `per_second` from its first reading.
-fn losing_on_the_real_device(free: u64, per_second: u64) -> Box<Volume> {
-    let started = Instant::now();
-    Box::new(move |path: &Path| {
-        use std::os::unix::fs::MetadataExt;
-        let lost = started.elapsed().as_millis() as u64 * per_second / 1000;
-        Some(Space {
-            id: std::fs::metadata(path).ok()?.dev(),
-            free: free.saturating_sub(lost),
-            total: 100 * GIB,
-        })
-    })
-}
-
-#[test]
-fn a_writer_cycling_through_existing_files_is_not_killed_for_another_commands_allocation() {
-    use std::io::{BufRead, BufReader, Write};
-    // From the sampler to the stop: the command opens files it did not create and rewrites
-    // them at 200 MiB/s while another command allocates 400 MiB/s on the same volume.
-    let dir = std::env::temp_dir().join(format!("cycle-stop-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let files: Vec<_> = (0..3).map(|i| dir.join(format!("old-{i}"))).collect();
-    for path in &files {
-        std::fs::write(path, vec![1u8; 1024 * 1024]).unwrap();
-    }
-    std::thread::sleep(Duration::from_millis(5_300));
-    let mut child = std::process::Command::new("python3")
-        .args([
-            "-c",
-            "import sys\nfor p in sys.argv[1:]:\n f=open(p,'r+b'); f.write(bytes(65536)); f.flush(); print(p,flush=True); sys.stdin.readline(); f.close(); print('closed',flush=True); sys.stdin.readline()",
-        ])
-        .args(&files)
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .spawn()
-        .unwrap();
-    let mut input = child.stdin.take().unwrap();
-    let mut output = BufReader::new(child.stdout.take().unwrap());
-    let pid = child.id();
-    let (_, rewriter, rewriter_use) = writing(pid, 3 * GIB, 200 * MIB);
-    let current = owner("agent", true, vec![rewriter_use], vec![(pid, rewriter)]);
-    let volume = losing_on_the_real_device(900 * MIB, 400 * MIB);
-    let mut growth = disk_use::WriteGrowth::default();
-    let mut ledger = Ledger::new(None);
-    let mut line = String::new();
-    let mut at = 1000;
-    for _ in &files {
-        line.clear();
-        output.read_line(&mut line).unwrap();
-        // The sampler sees the open file, then the moment between two files.
-        for step in 0..2 {
-            let outputs = growth.sample(&[pid], at);
-            at += 250;
-            current.lock().unwrap().disk_writes.insert(pid, outputs);
-            ledger.pass(
-                std::slice::from_ref(&current),
-                &current,
-                &room(GIB, false, &*volume),
-            );
-            std::thread::sleep(Duration::from_millis(250));
-            if step == 0 {
-                input.write_all(b"close\n").unwrap();
-                line.clear();
-                output.read_line(&mut line).unwrap();
-            }
-        }
-        input.write_all(b"next\n").unwrap();
-    }
-    let fillers = ledger.take_fillers(&current);
-    drop(input);
-    child.wait().unwrap();
-    std::fs::remove_dir_all(&dir).unwrap();
-    assert!(
-        fillers.is_empty(),
-        "a writer that only rewrites existing files was stopped for another command's allocation: {:?}",
-        fillers.iter().map(|(pid, _)| *pid).collect::<Vec<_>>()
-    );
-}
-
-#[test]
-fn the_unexplained_loss_is_added_to_the_growth_already_counted() {
-    // 400 MiB/s written: 200 MiB/s into a long-lived file the sampler sees growing, 200 MiB/s
-    // into short-lived files it does not. The volume loses 400 MiB/s, 1500 MiB free: under
-    // four seconds from full, so the five-second line says stop.
-    let (_, mixed, mixed_use) = writing(1, 3 * GIB, 400 * MIB);
-    let current = owner("agent", true, vec![mixed_use], vec![(1, mixed)]);
-    {
-        let mut observation = current.lock().unwrap();
-        let outputs = observation.disk_writes.get_mut(&1).unwrap();
-        outputs[0].rate = 200 * MIB;
-        outputs[0].fresh = true;
     }
     let volume = losing(1500 * MIB, 400 * MIB);
     let fillers = pass_twice(std::slice::from_ref(&current), &*volume);
-    assert_eq!(fillers.len(), 1, "a writer filling the disk in four seconds kept writing");
+    assert_eq!(fillers.len(), 1, "a runaway writer on a volume seconds from full kept writing");
+    assert_eq!(fillers[0].0, 1);
+}
+
+#[test]
+fn a_writer_below_the_runaway_rate_is_not_stopped_by_the_fill_horizon() {
+    let (_, steady, steady_use) = writing(1, 3 * GIB, 100 * MIB);
+    let current = owner("agent", true, vec![steady_use], vec![(1, steady)]);
+    let volume = losing(900 * MIB, 400 * MIB);
     assert!(
-        fillers[0].1.rate > 300 * MIB,
-        "the rate counts only the growth that was seen: {} MiB/s",
-        fillers[0].1.rate / MIB
+        pass_twice(std::slice::from_ref(&current), &*volume).is_empty(),
+        "a 100 MiB/s writer was stopped for a volume seconds from full"
+    );
+}
+
+#[test]
+fn a_volume_that_is_not_losing_room_stops_nobody_within_the_horizon() {
+    let (_, rewriter, rewriter_use) = writing(1, 3 * GIB, 200 * MIB);
+    let current = owner("agent", true, vec![rewriter_use], vec![(1, rewriter)]);
+    let volume = losing(900 * MIB, 0);
+    assert!(
+        pass_twice(std::slice::from_ref(&current), &*volume).is_empty(),
+        "a writer was stopped on a volume that loses no room"
+    );
+}
+
+#[test]
+fn the_fastest_runaway_is_stopped_not_the_one_that_wrote_most() {
+    let (_, old, old_use) = writing(1, 6 * GIB, 150 * MIB);
+    let (_, fast, fast_use) = writing(2, GIB, 400 * MIB);
+    let members = [
+        owner("agent", true, vec![old_use], vec![(1, old)]),
+        owner("agent", true, vec![fast_use], vec![(2, fast)]),
+    ];
+    let volume = losing(2500 * MIB, 550 * MIB);
+    let fillers = pass_twice(&members, &*volume);
+    assert_eq!(fillers.iter().map(|(pid, _)| *pid).collect::<Vec<_>>(), vec![2]);
+}
+
+#[test]
+fn a_copy_is_judged_at_first_sight_from_the_free_space_seen_before_it_began() {
+    // The command's directory volume is watched from the first pass, before the copy writes
+    // anything the sampler can see.
+    let (_, copy, copy_use) = writing(1, 3 * GIB, GIB);
+    let current = owner("agent", true, vec![command(1, 0, 0)], vec![(1, copy)]);
+    let volume = losing(2 * GIB + 256 * MIB, GIB);
+    let mut ledger = Ledger::new(None);
+    ledger.pass(
+        std::slice::from_ref(&current),
+        &current,
+        &room(GIB, false, &*volume),
+    );
+    std::thread::sleep(Duration::from_millis(250));
+    {
+        // Now the sampler sees the copy between two files.
+        let mut observation = current.lock().unwrap();
+        observation.commands = vec![copy_use];
+        observation.disk_writes.insert(1, between_files());
+    }
+    ledger.pass(
+        std::slice::from_ref(&current),
+        &current,
+        &room(GIB, false, &*volume),
+    );
+    assert_eq!(
+        ledger.take_fillers(&current).iter().map(|(pid, _)| *pid).collect::<Vec<_>>(),
+        vec![1],
+        "a copy first seen with the volume already losing room was not judged until a later pass"
     );
 }
 
@@ -2593,7 +2524,6 @@ fn a_finished_run_remembers_the_volume_that_received_most_of_its_writes() {
             files: [9].into(),
             open: [9].into(),
             receiving: true,
-            fresh: false,
         });
     }
     let mut ledger = Ledger::new(None);
@@ -2797,7 +2727,6 @@ fn unresolved_sampled_destinations_are_not_remembered_as_a_receiving_volume() {
         files: Default::default(),
         open: Default::default(),
         receiving: true,
-        fresh: false,
     };
     assert_eq!(
         ReceivingVolume::capture(&sample),

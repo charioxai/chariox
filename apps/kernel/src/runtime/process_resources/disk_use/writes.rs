@@ -5,16 +5,6 @@ use std::collections::BTreeMap;
 #[cfg(target_os = "linux")]
 use std::path::PathBuf;
 
-/// Miguel 11-24: 5 s btime window. A file counts as new allocation only if its birth time
-/// (statx btime) is within this long of the sample. Opening a file that already existed, and
-/// rewriting it, allocates nothing, however fast.
-#[cfg(target_os = "linux")]
-const BIRTH_WINDOW_MS: u64 = 5_000;
-/// Miguel 11-24: 2 s carry. Between two files of a copy no file is open: the last sighting of a
-/// newly born file stands for this long, and no longer.
-#[cfg(target_os = "linux")]
-const BIRTH_CARRY_MS: u64 = 2_000;
-
 #[derive(Default)]
 pub(in crate::runtime::process_resources) struct WriteGrowth {
     #[cfg(target_os = "linux")]
@@ -25,9 +15,6 @@ pub(in crate::runtime::process_resources) struct WriteGrowth {
     /// output elsewhere.
     #[cfg(target_os = "linux")]
     last: Option<(u64, PathBuf)>,
-    /// When (sample time, ms) a file born within `BIRTH_WINDOW_MS` was last seen, by volume.
-    #[cfg(target_os = "linux")]
-    born: BTreeMap<u64, u64>,
 }
 
 #[cfg(target_os = "linux")]
@@ -35,16 +22,6 @@ struct FileGrowth {
     allocated: u64,
     at: u64,
     written: u64,
-}
-
-/// Whether the file's birth time is within the birth window of now. A filesystem that does not
-/// report one proves nothing.
-#[cfg(target_os = "linux")]
-fn born_recently(meta: &std::fs::Metadata) -> bool {
-    meta.created()
-        .ok()
-        .and_then(|born| std::time::SystemTime::now().duration_since(born).ok())
-        .is_some_and(|age| age.as_millis() as u64 <= BIRTH_WINDOW_MS)
 }
 
 impl WriteGrowth {
@@ -131,14 +108,8 @@ impl WriteGrowth {
                     files: Default::default(),
                     open: Default::default(),
                     receiving: false,
-                    fresh: false,
                 });
                 volume.open.insert(key.1);
-                // First seen now AND born just now: opening an old file is not allocation.
-                if before.is_none() && born_recently(&meta) {
-                    volume.fresh = true;
-                    self.born.insert(key.0, at);
-                }
                 let stream = fd
                     .file_name()
                     .to_str()
@@ -156,7 +127,7 @@ impl WriteGrowth {
             }
         }
         self.files = files;
-        self.remember(&mut volumes, &outputs, at);
+        self.remember(&mut volumes, &outputs);
         volumes.into_values().collect()
     }
 
@@ -168,7 +139,6 @@ impl WriteGrowth {
         &mut self,
         volumes: &mut BTreeMap<u64, VolumeWrites>,
         outputs: &BTreeMap<u64, PathBuf>,
-        at: u64,
     ) {
         match outputs.iter().next() {
             None => {
@@ -183,16 +153,9 @@ impl WriteGrowth {
                     files: Default::default(),
                     open: Default::default(),
                     receiving: false,
-                    fresh: false,
                 });
                 volume.path = dir.clone();
                 volume.receiving = true;
-                // Between two files nothing is open to show allocation: only a newly born
-                // file seen a moment ago carries over.
-                volume.fresh = self
-                    .born
-                    .get(id)
-                    .is_some_and(|seen| at.saturating_sub(*seen) <= BIRTH_CARRY_MS);
             }
             Some((id, output)) if outputs.len() == 1 => {
                 // The descriptor closes soon; its directory stays measurable.
@@ -305,7 +268,6 @@ mod tests {
         let pids = [child.id()];
         let open = growth.sample(&pids, 1000);
         assert_eq!(open.len(), 1, "{open:?}");
-        assert!(open[0].fresh, "a file created a moment ago is new allocation");
         assert_eq!(open[0].id, meta.dev());
         assert!(
             open[0].open.contains(&meta.ino()),
@@ -323,77 +285,17 @@ mod tests {
         assert_eq!(between[0].id, meta.dev());
         assert_eq!(between[0].path, std::fs::canonicalize(&dir).unwrap());
         assert!(between[0].receiving && between[0].files.is_empty());
-        assert!(between[0].fresh, "a file was born two seconds ago: still new allocation");
         assert!(
             !between[0].open.contains(&meta.ino()),
             "a closed output is held"
         );
-        let later = growth.sample(&pids, 60_000);
         assert!(
-            later
+            growth
+                .sample(&pids, 60_000)
                 .iter()
                 .any(|volume| volume.receiving && volume.id == meta.dev()),
             "the volume was forgotten while the command still lives"
         );
-        assert!(
-            later.iter().all(|volume| !volume.fresh),
-            "a file born a minute ago still counts as new allocation"
-        );
-        drop(input);
-        child.wait().unwrap();
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    /// A command that opens files it did not create (without truncating them) and
-    /// rewrites them allocates nothing: none of its samples says it writes new files,
-    /// whichever file it has open or none at all.
-    #[test]
-    fn a_writer_cycling_through_existing_files_is_never_fresh() {
-        use std::io::{BufRead, BufReader};
-        let dir = std::env::temp_dir().join(format!("volume-cycle-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let files: Vec<_> = (0..3).map(|i| dir.join(format!("old-{i}"))).collect();
-        for path in &files {
-            std::fs::write(path, vec![1u8; 1024 * 1024]).unwrap();
-        }
-        // Born more than the birth window ago.
-        std::thread::sleep(std::time::Duration::from_millis(5_300));
-        let mut child = std::process::Command::new("python3")
-            .args([
-                "-c",
-                "import sys\nfor p in sys.argv[1:]:\n f=open(p,'r+b'); f.write(bytes(65536)); f.flush(); print(p,flush=True); sys.stdin.readline(); f.close(); print('closed',flush=True); sys.stdin.readline()",
-            ])
-            .args(&files)
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .spawn()
-            .unwrap();
-        let mut input = child.stdin.take().unwrap();
-        let mut output = BufReader::new(child.stdout.take().unwrap());
-        let mut growth = WriteGrowth::default();
-        let pids = [child.id()];
-        let mut line = String::new();
-        let mut at = 1000;
-        for _ in &files {
-            line.clear();
-            output.read_line(&mut line).unwrap();
-            let open = growth.sample(&pids, at);
-            assert!(
-                open.iter().all(|volume| !volume.fresh),
-                "an existing file opened for rewriting counts as new allocation: {open:?}"
-            );
-            input.write_all(b"close\n").unwrap();
-            line.clear();
-            output.read_line(&mut line).unwrap();
-            at += 500;
-            let between = growth.sample(&pids, at);
-            assert!(
-                between.iter().all(|volume| !volume.fresh),
-                "the moment between two existing files counts as new allocation: {between:?}"
-            );
-            input.write_all(b"next\n").unwrap();
-            at += 500;
-        }
         drop(input);
         child.wait().unwrap();
         std::fs::remove_dir_all(&dir).unwrap();
