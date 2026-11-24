@@ -186,7 +186,7 @@ pub(super) const COMMANDS: &[MetaCommandDoc] = &[
         policy: MetaCommandPolicy::Allow,
         authority: "owned agents only",
         routed: true,
-        description: "Delete a sub-agent below you. Add `--room <room>` for a sub-agent in another Room on this kernel. If your spawned child is already deleted (for example it was removed with its own parent), succeeds with already_deleted, deleted_at_ms and the reason. A finished child is never removed for you: handling its child_finished receipt keeps it, and only this command deletes it.",
+        description: "Delete a sub-agent below you. Add `--room <room>` for a sub-agent in another Room on this kernel. If your spawned child is already deleted (for example it was removed with its own parent), succeeds with already_deleted, deleted_at_ms and the reason. A finished child is never removed for you: handling its child_finished receipt keeps it, and only this command deletes it. For any other agent of your owner in your own Room (an ended agent of a finished run, a peer, a grandchild) `agent delete <agent>` is the owner's own Delete: it deletes that agent and every agent below it, running or not, and lists everything that went and flags the running agents, so check what runs before you delete. It refuses another owner's agent, yourself and an agent above you.",
     },
     MetaCommandDoc {
         name: "agent cancel",

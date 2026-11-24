@@ -174,6 +174,32 @@ impl CommandRouter {
                     Err(error) => meta_command_failure_result(command, error),
                 })
             }
+            // Any other agent of the owner's Room: the owner's own delete, with the subtree listed.
+            Some("delete" | "destroy" | "remove")
+                if args.len() == 1
+                    && self.runtime_state.room_agent_tools_enabled()
+                    && self
+                        .runtime_state
+                        .session_agents(session.id())
+                        .iter()
+                        .any(|agent| {
+                            (agent.id() == args[0]
+                                || agent.agent_ref() == args[0]
+                                || agent.alias() == Some(args[0].as_str()))
+                                && agent.parent_agent_id() != Some(caller.id())
+                        }) =>
+            {
+                Some(
+                    self.dispatch_meta_agent_delete_command(
+                        provider_run,
+                        session,
+                        caller,
+                        command,
+                        &args[0],
+                    )
+                    .await,
+                )
+            }
             Some("delete" | "destroy" | "remove")
                 if args.len() == 1 && self.runtime_state.room_agent_tools_enabled() =>
             {
@@ -272,6 +298,70 @@ impl CommandRouter {
             return Err(error);
         }
         Ok(())
+    }
+
+    /// `agent delete <agent>` for an agent that is not the caller's own child: the owner's delete.
+    /// The agent goes with everything below it, running or not, and the result lists all of them.
+    async fn dispatch_meta_agent_delete_command(
+        &self,
+        provider_run: Option<&crate::provider::RuntimeProviderRun>,
+        session: &crate::session::RuntimeSession,
+        caller: &crate::agent::AgentInstance,
+        command: &str,
+        reference: &str,
+    ) -> RuntimeToolResult {
+        let result = async {
+            let agents = self.runtime_state.session_agents(session.id());
+            let target = crate::runtime::room_tool_admission::resolve_agent(
+                &agents,
+                session.id(),
+                reference,
+            )?;
+            self.runtime_state.authorize_delete_scope(caller, target)?;
+            // Read before the delete: afterwards the subtree is gone.
+            let everyone = self.runtime_state.list_agents();
+            let subtree = std::iter::once(target.clone())
+                .chain(
+                    crate::agent::authority_limit::descendants(target.id(), &everyone)
+                        .into_iter()
+                        .cloned(),
+                )
+                .collect::<Vec<_>>();
+            let request = LocalDaemonRequest::DestroyAgent(DestroyAgentRequest {
+                session_id: session.id().into(),
+                agent_id: target.id().into(),
+            });
+            let response = Box::pin(
+                self.dispatch(meta_kernel_command(provider_run, caller, &request), request),
+            )
+            .await?;
+            let goes = subtree
+                .iter()
+                .map(|agent| {
+                    let mut summary = super::summary::summarize_meta_agent(agent);
+                    summary["running"] = serde_json::json!(
+                        agent.state() == crate::agent::AgentState::Working
+                            || session.active_prompt_for_agent(agent.id()).is_some()
+                    );
+                    summary
+                })
+                .collect::<Vec<_>>();
+            Ok::<_, DaemonError>((response, goes))
+        }
+        .await;
+        match result {
+            Ok((response, deleted)) => {
+                let mut result = super::result::meta_command_success_result(
+                    command,
+                    &response,
+                    caller,
+                    self.runtime_state.room_agent_tools_enabled(),
+                );
+                result.payload["response"]["deleted"] = serde_json::json!(deleted);
+                result
+            }
+            Err(error) => meta_command_failure_result(command, error),
+        }
     }
 
     /// `agent cancel <agent>` stops the active turn of an agent below the caller and keeps the agent.

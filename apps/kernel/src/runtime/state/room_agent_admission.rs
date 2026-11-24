@@ -258,7 +258,12 @@ impl KernelRuntimeState {
                 _ => false,
             };
         if !own_settings && !self.owned.agent_store.is_ancestor(actor.id(), &target) {
-            return Err(denied("only the agents above an agent can control it"));
+            // The owner's delete is open to the owner's agents in their own Room, whoever created
+            // the target: what the owner can delete, an agent of the owner can delete.
+            if !(deleting && room == actor.session_id()) {
+                return Err(denied("only the agents above an agent can control it"));
+            }
+            self.authorize_delete_scope(&actor, &target)?;
         }
         if let LocalDaemonRequest::UpdateAgentConfig(r) = request {
             self.keep_configured_folders_inside_parent(&target, r)?;
@@ -273,6 +278,47 @@ impl KernelRuntimeState {
                     "child has unsettled workflow runs; ask it to settle them first",
                 ));
             }
+        }
+        Ok(())
+    }
+}
+
+impl KernelRuntimeState {
+    /// Who may delete an agent that is not below the caller: the same owner, in the caller's own
+    /// Room, never the caller itself or an agent above it (deleting that would delete the caller).
+    pub(crate) fn authorize_delete_scope(
+        &self,
+        actor: &crate::agent::AgentInstance,
+        target: &crate::agent::AgentInstance,
+    ) -> Result<(), DaemonError> {
+        self.authorize_cleanup_scope(actor, target)?;
+        if self.owned.agent_store.is_ancestor(target.id(), actor) {
+            return Err(denied(
+                "that agent is above you; deleting it would delete you",
+            ));
+        }
+        Ok(())
+    }
+
+    /// The same owner, in the caller's own Room, never the caller itself.
+    fn authorize_cleanup_scope(
+        &self,
+        actor: &crate::agent::AgentInstance,
+        target: &crate::agent::AgentInstance,
+    ) -> Result<(), DaemonError> {
+        let room = self.owned.session_store.get_session(actor.session_id())?;
+        if target.session_id() != actor.session_id() {
+            return Err(denied("target is outside the caller room"));
+        }
+        if target.id() == actor.id() {
+            return Err(denied("an agent cannot delete itself"));
+        }
+        if !self.same_owner(actor.owner_user_id(), target.owner_user_id())
+            || self.drives_as_room_guest(&room, actor)
+        {
+            return Err(denied(
+                "an agent can only delete agents of its own owner in its Room",
+            ));
         }
         Ok(())
     }

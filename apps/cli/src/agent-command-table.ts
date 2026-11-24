@@ -17,6 +17,7 @@ const TERMINAL: Flag = { name: "--terminal", value: "TERMINAL_ID" }
 const HOST_AGENT: Flag = { name: "--host-agent", value: "AGENT_ID" }
 
 export const COMMANDS: readonly CommandSpec[] = [
+  { name: "agent delete", brief: "Delete an agent and its sub-agents", flags: [KERNEL, SESSION, { name: "--dry-run" }, SOCKET], args: ["AGENT"], summary: "delete an agent of the owner's Room, as the owner's own Delete does: the agent and every agent below it, running or not. Prints the list of what goes (running ones marked) and the result; --dry-run prints the list and deletes nothing" },
   { name: "agent deadline", brief: "Change or clear an agent deadline", flags: [KERNEL, SESSION, SOCKET], args: ["AGENT", "DURATION|none"], summary: "extend, shorten or clear an agent deadline; duration starts now (90s, 30m, 2h, 1d)" },
   { name: "exec", brief: "Run a command on this kernel, another kernel, or in a Room", flags: [KERNEL, SESSION, { name: "--workspace", value: "PATH" }, DIRECTORY, HOST_AGENT, TIMEOUT, { name: "--stdin-file", value: "KERNEL_PATH" }, SOCKET],
     summary: "run argv after --. With no --session and no --workspace it runs on the kernel itself, in no Room, in a terminal of the kernel (stdout and stderr in one stream; --directory PATH, default the kernel user's home; --timeout SECONDS to wait). Its stdin is yours up to 64 KiB (chariox exec -- bash -s < script.sh), or with --stdin-file KERNEL_PATH a file already on that kernel (chariox files put it first), so a long script goes in one call; an argument is at most 4096 bytes; with --session it runs in that Room and with --workspace in a temporary Room, without a PTY, streaming binary stdin/stdout/stderr live. Returns the command exit code" },
@@ -170,7 +171,7 @@ export const REQUEST_EXAMPLES: readonly { body: object; note: string }[] = [
   { body: { SpawnAgent: { ...spawnAgentRequest("SESSION_ID", "codex").SpawnAgent, account_profile: "PROFILE_ID" } }, note: "provider is claude, codex or opencode; use the chosen profile_id from ListProviderAccountProfiles, and set model and effort; AgentSpawned.agent.id" },
   { body: submitPromptRequest("SESSION_ID", "ATTACHMENT_ID", null, "PROMPT", []), note: "target_agent_id is an agent id, or null for the default agent" },
   { body: cancelActivePromptRequest("SESSION_ID", "ATTACHMENT_ID", null), note: "stops the running prompt" },
-  { body: destroyAgentRequest("SESSION_ID", "AGENT_ID"), note: "removes that agent from the Room; AgentDestroyed" },
+  { body: destroyAgentRequest("SESSION_ID", "AGENT_ID"), note: "removes that agent and EVERY agent below it, running or not (the owner's Delete); AgentDestroyed. `chariox agent delete` lists the subtree first and sends it" },
   {
     body: { RunShellCommand: { session_id: "SESSION_ID", attachment_id: "ATTACHMENT_ID", command: "ls", args: ["-la"], working_directory: "/PATH", timeout_ms: 60000 } },
     note: "runs on that machine; ShellCommandCompleted.result has exit_code, stdout, stderr",
