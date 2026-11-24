@@ -96,7 +96,20 @@ async fn running_step(label: &str) -> Step {
         agent.id().to_string(),
         run.id().to_string(),
     );
-    let runtime = owned_runtime_state(&Arc::new(Mutex::new(app))).await;
+    // The step runs as the agent's active turn on a real stub run, as an admitted turn does.
+    let provider_run = app
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                &room,
+                "dev-stub",
+                "claude-code",
+                "default",
+                "sonnet",
+            )
+            .with_agent_id(&agent_id),
+        )
+        .expect("the stub run launches");
+    app.update_provider_run_projection(provider_run);
     let prompt = crate::session::PromptQueueItem::new(
         format!("workflow-step:{run_id}:{node_run}"),
         crate::scheduler::runtime::workflow_prompt_source_attachment_id(&run_id),
@@ -105,19 +118,13 @@ async fn running_step(label: &str) -> Step {
         crate::session::PromptStatus::Queued,
     )
     .with_workflow_context(&run_id, &node_run);
-    runtime
-        .owned
-        .workflow_submit_prepared_prompt(
-            crate::app::KernelPreparedPromptSubmission {
-                session_id: room.clone(),
-                prompt,
-                force_queue: false,
-                refresh_projection: true,
-            },
-            &run_id,
-            &node_run,
-        )
-        .expect("the step starts");
+    let crate::session::PromptSubmissionOutcome::Started { .. } = app
+        .prompt_owner_submit_prepared_prompt(&room, prompt, false)
+        .expect("the step starts")
+    else {
+        panic!("the step starts immediately");
+    };
+    let runtime = owned_runtime_state(&Arc::new(Mutex::new(app))).await;
     Step {
         runtime,
         room,
