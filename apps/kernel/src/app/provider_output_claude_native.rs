@@ -1937,6 +1937,37 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         .then_some(merge_key)
     }
 
+    /// The prompt's newest live row that still waits for its transcript block, with the text history holds for it.
+    fn unfinished_live_row(
+        &self,
+        session_id: &str,
+        provider_run: &RuntimeProviderRun,
+        prompt_id: &str,
+    ) -> Option<live_reply::Unfinished> {
+        let context_file = provider_run
+            .pty_env()
+            .get("CHARIOX_CLAUDE_NATIVE_CONTEXT")?;
+        let run_prefix = format!("claude-transcript:{}:", provider_run.id());
+        let merge_key = awaiting_rows::newest_waiting(
+            context_file,
+            &format!("{run_prefix}assistant:live-{prompt_id}-"),
+        )?;
+        let row = self
+            .app
+            .operational_history_store()
+            .latest_transcript_by_merge_key_prefix(
+                session_id,
+                provider_run.agent_instance_id()?,
+                &merge_key,
+            )
+            .ok()??
+            .to_session_history_entry()?;
+        (row.merge_key.as_deref() == Some(merge_key.as_str())).then(|| live_reply::Unfinished {
+            merge_key_suffix: merge_key[run_prefix.len()..].to_string(),
+            text: row.text,
+        })
+    }
+
     /// Reads the terminal output of a headless run for the reply Claude is
     /// writing, and sends what is new as it appears (see `live_reply`).
     pub(crate) fn stream_reply(
@@ -1960,10 +1991,17 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                 .get("CHARIOX_CLAUDE_NATIVE_CONTEXT")
                 .is_none_or(|context_file| !claude_turn_fenced(context_file, prompt.id()))
         });
+        // A reader that starts afresh may be the one that replaced a reader lost in the middle of a block: the row
+        // that block began stays in history, still waiting for its transcript text, and the block drawn again
+        // goes on in it.
+        let unfinished = reading
+            .filter(|_| live_reply::is_fresh(provider_run_id))
+            .and_then(|prompt| self.unfinished_live_row(session_id, provider_run, prompt.id()));
         let deltas = live_reply::read_terminal(
             provider_run_id,
             reading.map(|prompt| prompt.id()),
             terminal_bytes,
+            unfinished,
         );
         if deltas.is_empty() {
             return Ok(());

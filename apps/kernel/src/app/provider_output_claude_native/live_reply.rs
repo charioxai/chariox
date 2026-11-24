@@ -31,6 +31,14 @@ pub(super) struct LiveDelta {
     pub(super) text_so_far: String,
 }
 
+/// A block of the prompt that was being streamed when the reader was lost, as history still holds it. A reader that
+/// starts afresh may go on in this row instead of beginning another one.
+#[derive(Clone, Debug)]
+pub(super) struct Unfinished {
+    pub(super) merge_key_suffix: String,
+    pub(super) text: String,
+}
+
 /// What the transcript's finished text block becomes, given what was streamed.
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum Adoption {
@@ -56,6 +64,7 @@ pub(super) fn read_terminal(
     provider_run_id: &str,
     prompt_id: Option<&str>,
     bytes: &[u8],
+    unfinished: Option<Unfinished>,
 ) -> Vec<LiveDelta> {
     let mut replies = replies();
     if !replies.contains_key(provider_run_id) && replies.len() >= RUNS {
@@ -67,10 +76,21 @@ pub(super) fn read_terminal(
             replies.remove(&oldest);
         }
     }
-    replies
+    let reply = replies
         .entry(provider_run_id.to_string())
-        .or_insert_with(|| LiveReply::new(SCREEN_ROWS, SCREEN_COLS))
-        .read(prompt_id, bytes)
+        .or_insert_with(|| LiveReply::new(SCREEN_ROWS, SCREEN_COLS));
+    if reply.is_fresh() {
+        reply.unfinished = unfinished;
+    }
+    reply.read(prompt_id, bytes)
+}
+
+/// Whether the run's reader has streamed nothing yet (it was just created, or the run has none): only such a reader
+/// can be the one that replaced a reader lost in the middle of a block.
+pub(super) fn is_fresh(provider_run_id: &str) -> bool {
+    replies()
+        .get(provider_run_id)
+        .is_none_or(LiveReply::is_fresh)
 }
 
 /// What a kernel restart does to the reader: it is in memory only.
@@ -108,6 +128,8 @@ struct LiveReply {
     /// is the previous turn's, so it is not streamed under the new prompt
     /// until the screen shows something other than it.
     left_over: Option<Vec<String>>,
+    /// The unfinished block of an earlier reader, which the first block this reader streams may go on in.
+    unfinished: Option<Unfinished>,
 }
 
 struct Block {
@@ -117,6 +139,8 @@ struct Block {
     /// Columns the last row with text used.
     last_width: usize,
     text: String,
+    /// How much of `text` clients already hold, from the row an earlier reader began: only what is beyond it is sent.
+    shown: usize,
 }
 
 struct Streamed {
@@ -142,6 +166,10 @@ fn next_reader() -> u64 {
 impl LiveReply {
     /// The merge key of this reader's `block`th block for the prompt it reads. Adoption finds a row left by an earlier
     /// reader by the prefix `live-{prompt}-`, so that stays the start of every key.
+    fn is_fresh(&self) -> bool {
+        self.blocks_started == 0 && self.block.is_none() && self.streamed.is_empty()
+    }
+
     fn block_key(&self, block: usize) -> String {
         let prompt_id = self.prompt_id.as_deref().unwrap_or_default();
         format!("assistant:live-{prompt_id}-{}.{block}:0", self.reader)
@@ -160,6 +188,7 @@ impl LiveReply {
             blocks_started: 0,
             previous_rows: HashMap::new(),
             left_over: None,
+            unfinished: None,
         }
     }
 
@@ -226,6 +255,7 @@ impl LiveReply {
                     rows: Vec::new(),
                     last_width: 0,
                     text: String::new(),
+                    shown: 0,
                 });
             }
         }
@@ -270,13 +300,31 @@ impl LiveReply {
             return None;
         }
         // Blank rows between two paragraphs come before the paragraph that follows.
-        if block.text.is_empty() {
+        let first = block.text.is_empty();
+        if first {
             delta = delta.trim_start().to_string();
         }
+        let before = block.text.len();
         block.text.push_str(&delta);
+        if first {
+            // A reader lost in the middle of a block, and this block drawn again from its start: go on in the row
+            // that was begun, and send only what clients do not hold yet. The offer is for this first piece only.
+            if let Some(earlier) = self.unfinished.take() {
+                if !earlier.text.is_empty()
+                    && (earlier.text.starts_with(&block.text) || block.text.starts_with(&earlier.text))
+                {
+                    block.merge_key_suffix = earlier.merge_key_suffix;
+                    block.shown = earlier.text.len();
+                }
+            }
+        }
+        if block.text.len() <= block.shown {
+            return None;
+        }
+        let sent_from = before.max(block.shown);
         Some(LiveDelta {
             merge_key_suffix: block.merge_key_suffix.clone(),
-            text: delta,
+            text: block.text.get(sent_from..).unwrap_or(&block.text).to_string(),
             text_so_far: block.text.clone(),
         })
     }
