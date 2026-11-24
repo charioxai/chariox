@@ -90,6 +90,12 @@ impl Diagnostic {
         self.classes.contains("address_in_use")
     }
 
+    /// The closed classes and the recovery guidance for a recognized failure, or `None` when the
+    /// output matched no known class. Safe to show: no provider output is in it.
+    pub(super) fn recognized_summary(&self) -> Option<String> {
+        (!self.classes.is_empty()).then(|| format_summary(self))
+    }
+
     pub(super) fn opencode_stderr_excerpt(&self) -> String {
         String::from_utf8_lossy(&self.prefix)
             .split_inclusive('\n')

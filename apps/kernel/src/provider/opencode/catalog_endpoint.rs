@@ -23,13 +23,14 @@ impl OpenCodeCatalogStartup {
         status: Option<ExitStatus>,
         diagnostic: &ProviderStartupDiagnostic,
     ) -> DaemonError {
-        let (bytes, stderr, address_in_use) = diagnostic.read().map_or_else(
-            || (0, String::new(), false),
+        let (bytes, stderr, address_in_use, recognized) = diagnostic.read().map_or_else(
+            || (0, String::new(), false, None),
             |output| {
                 (
                     output.bytes,
                     output.opencode_stderr_excerpt(),
                     output.addresses_conflict(),
+                    output.recognized_summary(),
                 )
             },
         );
@@ -46,7 +47,8 @@ impl OpenCodeCatalogStartup {
                 "version": self.version(),
                 "port": self.port,
                 "exit_status": status.map(|status| status.to_string()),
-                "diagnostic_class": if address_in_use { "address_in_use" } else { "unclassified" },
+                "diagnostic_class": if address_in_use { "address_in_use" } else if recognized.is_some() { "recognized" } else { "unclassified" },
+                "diagnostic_summary": recognized,
                 "stderr_bytes": bytes,
                 "stderr_excerpt": stderr,
             }),
@@ -56,6 +58,10 @@ impl OpenCodeCatalogStartup {
                 "Another program is using port {}. Retry to start OpenCode on a free port.",
                 self.port
             )
+        } else if let Some(summary) = recognized {
+            // A recognized boundary failure (for example a denied namespace) keeps the recovery
+            // guidance: retrying cannot repair that environment setting.
+            format!("OpenCode could not start its model catalog; {summary}")
         } else {
             "OpenCode could not start its model catalog. Retry starting OpenCode.".into()
         };
@@ -187,4 +193,67 @@ fn endpoint_is_healthy(base_url: &str) -> bool {
     OpenCodeClient::new("catalog", base_url)
         .and_then(|client| client.check_health())
         .is_ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn failed_start(stderr: &str) -> DaemonError {
+        let mut child = crate::process_spawn::command("sh")
+            .args(["-c", &format!("printf '%s\\n' '{stderr}' >&2; exit 1")])
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let diagnostic = ProviderStartupDiagnostic::capture(&mut child, true);
+        let status = child.wait().unwrap();
+        OpenCodeCatalogStartup {
+            executable: "opencode-test-missing".to_string(),
+            port: 1,
+        }
+        .failure(Some(status), &diagnostic)
+    }
+
+    fn message(error: DaemonError) -> String {
+        match error {
+            DaemonError::LocalTransport { operation, message } => {
+                assert_eq!(operation, OPENCODE_CATALOG_START);
+                message
+            }
+            other => panic!("unexpected error {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_namespace_denial_keeps_its_recovery_guidance() {
+        let message = message(failed_start(
+            "bwrap: Creating new namespace failed: Operation not permitted: private-fixture-marker",
+        ));
+        assert!(
+            message.contains("slices.linux.allow_provider_sandbox_compatibility"),
+            "{message}"
+        );
+        assert!(message.contains("recreate the slice"), "{message}");
+        assert!(message.contains("namespace,permission_denied"), "{message}");
+        assert!(!message.contains("private-fixture-marker"), "{message}");
+        assert!(!message.contains("Retry starting OpenCode"), "{message}");
+    }
+
+    #[test]
+    fn a_port_conflict_keeps_its_specialised_message() {
+        let message = message(failed_start("Address already in use"));
+        assert_eq!(
+            message,
+            "Another program is using port 1. Retry to start OpenCode on a free port."
+        );
+    }
+
+    #[test]
+    fn an_unrecognised_failure_says_retry_and_shows_no_provider_text() {
+        let message = message(failed_start("client_secret=private-fixture-marker"));
+        assert_eq!(
+            message,
+            "OpenCode could not start its model catalog. Retry starting OpenCode."
+        );
+    }
 }
