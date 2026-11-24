@@ -462,3 +462,80 @@ async fn a_continuation_the_new_process_refuses_fails_the_turn_on_that_process()
 
     turn.assert_turn_failed();
 }
+
+/// The provider's own `run_in_background` call: a child of the process, running.
+fn background_launch_batch() -> crate::provider::ProviderPromptSignalBatch {
+    crate::provider::ProviderPromptSignalBatch {
+        chunks: vec![crate::provider::ProviderPromptChunk {
+            kind: crate::terminal::TerminalOutputKind::ProviderTool,
+            merge_key: Some("toolu_bg".into()),
+            bytes: serde_json::to_vec(&serde_json::json!({
+                "id": "toolu_bg", "tool": "Bash", "status": "completed",
+                "started_at_ms": 1, "background": true, "finished_at_ms": null,
+                "input": {"command": "sleep 600", "run_in_background": true}
+            }))
+            .unwrap(),
+        }],
+        ..Default::default()
+    }
+}
+
+async fn launch_background_call(turn: &FailingTurn) {
+    turn.runtime
+        .apply_owned_structured_output_batch(
+            &turn.session_id,
+            &turn.failed_run_id,
+            Vec::new(),
+            background_launch_batch(),
+        )
+        .await
+        .expect("the background call starts");
+    turn.runtime
+        .flush_provider_history(&turn.failed_run_id)
+        .await
+        .expect("its row is stored");
+}
+
+/// MP-08 stall RCA (row 525): a settings switch between turns ended the process that still ran
+/// the agent's background command, and with it the command and the provider's notification.
+#[tokio::test]
+async fn a_stale_process_that_still_runs_a_background_call_is_kept_when_the_next_turn_starts() {
+    let turn = running_turn().await;
+    track_activity(&turn);
+    launch_background_call(&turn).await;
+    change_model(&turn, NEXT_MODEL).await;
+    turn.runtime
+        .settle_owned_provider_prompt(&turn.session_id, &turn.failed_run_id, true, false, true)
+        .await
+        .expect("the turn completes");
+
+    let next = turn
+        .runtime
+        .with_app_side_effect(|app| {
+            app.ensure_prompt_provider_run_for_agent(&turn.session_id, &turn.agent_id)
+        })
+        .await
+        .expect("the next turn launches");
+
+    assert_eq!(
+        next, turn.failed_run_id,
+        "the process that runs the command is not replaced while it runs"
+    );
+}
+
+#[tokio::test]
+async fn a_process_that_runs_a_background_call_is_not_swapped_at_a_step_boundary() {
+    let turn = running_turn().await;
+    track_activity(&turn);
+    change_model(&turn, NEXT_MODEL).await;
+    launch_background_call(&turn).await;
+
+    let swapped = turn
+        .runtime
+        .swap_turn_process_at_step_boundary(&turn.session_id, &turn.failed_run_id)
+        .await
+        .unwrap();
+
+    assert!(!swapped);
+    assert_eq!(turn.live_run().unwrap().id(), turn.failed_run_id);
+}

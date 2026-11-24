@@ -1842,3 +1842,111 @@ async fn restart_recovers_the_receipt_after_the_held_task_completes() {
 async fn restart_recovers_the_receipt_after_the_held_task_is_cancelled() {
     restart_recovers_a_merged_notification_receipt(true, true).await;
 }
+
+/// The child's timer ran out and told it so in a wake turn; the turn never acknowledged the event.
+fn leave_a_timer_outcome_unacknowledged(team: &Team) {
+    use crate::durable_state::agent_lifecycle::{AgentWake, WakeEnd};
+    let now = crate::session::unix_epoch_ms();
+    let wake: AgentWake = serde_json::from_value(serde_json::json!({
+        "id": "stall-timer", "task_id": team.task.task_id, "room_id": team.room,
+        "agent_id": team.child, "registration_id": "completion-stall-timer",
+        "kind": "timer", "label": "90 min backstop", "state": "", "created_at_ms": now,
+        "verified_at_ms": null, "next_due_ms": now + 1, "interval_ms": null, "command": [],
+        "match_text": null, "matched_at_ms": null, "pid": null, "exit_code": null,
+        "summary": "", "detail": null, "fire_count": 0, "missed_fires": 0,
+        "last_fired_at_ms": null, "last_sequence": null, "last_delivery": null,
+        "last_delivered_at_ms": null, "last_acknowledged_at_ms": null, "alerted_sequence": null
+    }))
+    .expect("wake parses");
+    let store = &team.runtime.owned.durable_state_store;
+    store
+        .agent_lifecycle(Operation::CreateWake {
+            task: team.task.task_id.clone(),
+            prompt: team.child_prompt.id().into(),
+            wake,
+        })
+        .expect("the wake registers");
+    store
+        .agent_lifecycle(Operation::WakeOccurred {
+            id: "stall-timer".into(),
+            occurrence: "stall-timer-ran-out".into(),
+            kind: "timer_elapsed".into(),
+            payload: serde_json::json!({}),
+            summary: None,
+            end: Some(WakeEnd::Succeeded),
+            now,
+        })
+        .expect("the timer ran out");
+    let task = store.agent_task(&team.task.task_id).unwrap().unwrap();
+    assert!(
+        task.obligations.iter().any(|o| o.status == "settling"),
+        "an outcome told to the agent and not acknowledged: {:?}",
+        task.obligations
+    );
+}
+
+/// Row 525: rebaser and p2findings started a `run_in_background` call in a turn that a timer's
+/// wake had started and ended it without acknowledging that wake. The unacknowledged outcome
+/// took the task out of the hold, it settled Done, and the call ran on with nobody told.
+#[tokio::test]
+async fn a_wake_turn_that_leaves_its_outcome_unacknowledged_is_still_held_for_its_call() {
+    let team = team_with("background-hold-unacknowledged", None, false).await;
+    leave_a_timer_outcome_unacknowledged(&team);
+    apply(
+        &team,
+        vec![
+            tool_chunk(&lifecycle("claude_background_launched")),
+            text_chunk("started the farm run"),
+        ],
+    )
+    .await;
+    team.runtime
+        .owned
+        .complete_local_prompt_without_advance(&team.room, &team.child, Some(&team.child_run))
+        .unwrap();
+    let settlement = team
+        .runtime
+        .owned
+        .settle_agent_task(
+            &team.room,
+            &team.child,
+            &team.child_prompt,
+            &team.child_run,
+            false,
+        )
+        .unwrap();
+    assert!(
+        settlement.is_none(),
+        "the turn ended with a call running: {settlement:?}"
+    );
+    assert!(working(&team));
+    assert!(team.runtime.owned.is_held_for_background_calls(&team.task.task_id));
+    sweep(&team).await;
+    assert!(working(&team));
+    assert!(child_finished(&team).is_empty());
+}
+
+/// A provider that is still running a tool cannot start the notification turn: the grace does
+/// not count against it.
+#[tokio::test]
+async fn a_busy_provider_is_not_given_up_on_after_the_grace() {
+    let team = child_with_a_call_running("background-hold-busy").await;
+    apply(
+        &team,
+        vec![ended_at(crate::session::unix_epoch_ms() - 2 * MINUTE_MS)],
+    )
+    .await;
+    // The provider is inside a foreground command (cardrule's polling loop).
+    apply(
+        &team,
+        vec![tool_chunk(&serde_json::json!({
+            "id": "toolu_poll", "tool": "Bash", "status": "running",
+            "started_at_ms": crate::session::unix_epoch_ms(),
+            "input": {"command": "until grep -q done log; do sleep 30; done"}
+        }))],
+    )
+    .await;
+    sweep(&team).await;
+    assert!(working(&team), "the child is still held");
+    assert!(child_finished(&team).is_empty());
+}
