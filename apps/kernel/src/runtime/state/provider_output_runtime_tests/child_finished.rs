@@ -850,21 +850,22 @@ async fn a_revived_sub_agents_new_work_survives_its_parents_ended_deadline() {
         .into_iter()
         .next()
         .expect("the room has an attachment");
-    // The revived child is given a prompt (queued: a test runtime has no provider to launch).
+    // The revived child is given a prompt, queued in the prompt owner: a test runtime has no
+    // provider adapter to launch a turn with.
+    let session = runtime.owned.session_store.get_session(&team.room).unwrap();
     runtime
         .owned
-        .session_store
-        .mirror_agent_prompt_state(
-            &team.room,
-            &team.child,
-            None,
-            std::collections::VecDeque::from([crate::session::PromptQueueItem::new(
+        .prompt_state_owner
+        .submit_prepared_prompt(
+            &session,
+            crate::session::PromptQueueItem::new(
                 "revived-prompt",
                 &attachment,
                 &team.child,
                 "continue",
                 crate::session::PromptStatus::Queued,
-            )]),
+            ),
+            true,
         )
         .unwrap();
     let work = |runtime: &KernelRuntimeState| {
