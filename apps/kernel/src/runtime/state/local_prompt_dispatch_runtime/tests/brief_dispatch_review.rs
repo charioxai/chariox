@@ -223,6 +223,41 @@ impl Drop for PausedBrief {
     }
 }
 
+/// Reading and preparing the brief's source is blocking work: while it is
+/// slow, unrelated tasks on the same runtime keep running.
+#[tokio::test]
+async fn a_slow_brief_source_read_never_holds_an_async_worker() {
+    let fixture = PausedBrief::new(false, false).await;
+    *crate::runtime::state::context_handoff::brief_refresh::SOURCE_DELAY
+        .lock()
+        .unwrap() = Some((fixture.session_id.clone(), 3_000));
+    let ticks = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let counter = ticks.clone();
+    let ticker = tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    });
+    let started = std::time::Instant::now();
+    fixture.prepare().await;
+    let elapsed = started.elapsed().as_millis() as u64;
+    let counted = ticks.load(std::sync::atomic::Ordering::Relaxed);
+    ticker.abort();
+    *crate::runtime::state::context_handoff::brief_refresh::SOURCE_DELAY
+        .lock()
+        .unwrap() = None;
+    fixture.release();
+    assert!(
+        elapsed >= 2_500,
+        "the source read was not slowed ({elapsed} ms)"
+    );
+    assert!(
+        counted * 10 * 2 >= elapsed,
+        "an unrelated task ran {counted} times in {elapsed} ms: the read held the runtime"
+    );
+}
+
 #[tokio::test]
 async fn a_value_registered_while_the_brief_folds_never_reaches_the_stored_brief() {
     let fixture = PausedBrief::new(false, false).await;

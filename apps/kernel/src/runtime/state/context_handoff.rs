@@ -1302,6 +1302,29 @@ mod tests {
             );
         }
 
+        /// One answer row of the turn that began with `prompt_id`.
+        fn answer_of(&self, sequence: u64, prompt_id: &str, text: &str) {
+            self.append(
+                sequence,
+                crate::history::SessionHistoryEntry::provider_output(
+                    &self.session_id,
+                    "run-old",
+                    Some(&self.agent_id),
+                    crate::terminal::TerminalOutputKind::ProviderOutput,
+                    None,
+                    text,
+                ),
+                crate::history::HistoryEventTurnContext {
+                    provider: Some("codex".to_string()),
+                    model: Some("gpt-5.5".to_string()),
+                    provider_run_id: Some("run-old".to_string()),
+                    prompt_id: Some(prompt_id.to_string()),
+                    ..crate::history::HistoryEventTurnContext::default()
+                },
+                None,
+            );
+        }
+
         fn append(
             &self,
             sequence: u64,
@@ -1643,6 +1666,37 @@ mod tests {
         }
         assert!(read[0] < 20, "older turns are left to the brief: {read:?}");
         assert_eq!(read[0], read[1], "the read does not grow with the history");
+    }
+
+    /// The newest turn's opening prompt can lie outside the bounded read: its
+    /// work stays as a leading turn that names its prompt, whether a new
+    /// prompt follows it or the same prompt is retried.
+    #[tokio::test]
+    async fn one_long_turn_whose_prompt_fell_outside_the_read_keeps_its_work() {
+        for dispatching in ["prompt-20", "prompt-1"] {
+            let fixture = DerivedHandoffFixture::new().await;
+            fixture.user(1, "carry out the long migration");
+            let filler = "y".repeat(100_000);
+            for sequence in 2..=14u64 {
+                fixture.answer_of(sequence, "prompt-1", &format!("step {sequence} {filler}"));
+            }
+            fixture.user(20, "continue");
+            let conversation = load_agent_conversation(
+                &fixture.history,
+                &fixture.session_id,
+                &fixture.agent_id,
+                Some(dispatching),
+                &fixture.runtime.owned.room_secret_observations,
+            )
+            .unwrap();
+            assert!(conversation.older_history_left_out, "{dispatching}");
+            assert!(
+                !conversation.is_empty(),
+                "the turn's work was dropped with its prompt ({dispatching})"
+            );
+            let packet = conversation.render(MAX_PROMPT_HANDOFF_BYTES as usize).unwrap();
+            assert!(packet.contains("step 14 "), "{dispatching}: {}", &packet[..200.min(packet.len())]);
+        }
     }
 
     #[tokio::test]

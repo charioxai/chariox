@@ -61,6 +61,12 @@ impl Drop for ShortBriefDeadline {
 /// Writes a Codex brief in about 5 s where the default gpt-5.5 took up to 19.
 const CODEX_BRIEF_MODEL: &str = "gpt-6-luna";
 
+/// Test hook: how long reading a Room's brief source stalls, to show that the
+/// read never holds an async worker (the Room, then milliseconds).
+#[cfg(test)]
+pub(in crate::runtime::state) static SOURCE_DELAY: std::sync::Mutex<Option<(String, u64)>> =
+    std::sync::Mutex::new(None);
+
 impl KernelRuntimeOwnedState {
     fn require_brief_source_revision(
         &self,
@@ -87,6 +93,12 @@ impl KernelRuntimeOwnedState {
         prompt_id: &str,
         loaded: Option<&[crate::history::HistoryEvent]>,
     ) -> Result<(Option<AgentHandoffBrief>, Vec<crate::history::HistoryEvent>), DaemonError> {
+        #[cfg(test)]
+        if let Some((room, millis)) = SOURCE_DELAY.lock().unwrap().clone() {
+            if room == session_id {
+                std::thread::sleep(std::time::Duration::from_millis(millis));
+            }
+        }
         let history = &self.operational_history_store;
         let stored = self.protected_stored_handoff_brief(session_id, agent_id)?;
         // Reconstruct an older-format summary from its protected source, rather
