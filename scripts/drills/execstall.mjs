@@ -3,18 +3,19 @@
 import assert from "node:assert/strict"
 import { spawn } from "node:child_process"
 import { createHmac, randomBytes, randomUUID } from "node:crypto"
-import { accessSync, closeSync, constants, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, writeFileSync, rmSync } from "node:fs"
+import { accessSync, closeSync, constants, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, writeFileSync, rmSync } from "node:fs"
 import { createServer } from "node:http"
 import { join, resolve } from "node:path"
 import { setTimeout as delay } from "node:timers/promises"
 import { LocalIpcClient } from "../../packages/kernel-client/dist/ipc.js"
+import { proveDeadHolderDoesNotSpin } from "./execstall-holder.mjs"
 import { proveParkedPeerSubscription } from "./execstall-notifications.mjs"
 import { startOwnerCloud } from "./local-owner-cloud.test-support.mjs"
 
 const [kernelArg, relayArg, stateRoot, evidence, expected = "green", scenario = "traffic", provider = "opencode"] = process.argv.slice(2)
 assert(kernelArg && relayArg && evidence && stateRoot?.startsWith("/root/.chariox/dev/"))
 assert(["red", "green"].includes(expected))
-assert(["traffic", "notification"].includes(scenario))
+assert(["traffic", "notification", "holder"].includes(scenario))
 const kernelBinary = resolve(kernelArg), relayBinary = resolve(relayArg)
 accessSync(kernelBinary, constants.X_OK)
 accessSync(relayBinary, constants.X_OK)
@@ -123,8 +124,17 @@ if (process.argv[3] === "prepare") {
   setTimeout(() => process.exit(0), 1_500)
 }
 `, { mode: 0o700 })
-  const target = await bootKernel("kernel", cloudEnv, { CHARIOX_CLI_BIN: gateway })
-  if (scenario === "notification") {
+  const holderShell = realpathSync("/bin/sh")
+  const target = await bootKernel("kernel", cloudEnv, { CHARIOX_CLI_BIN: gateway, ...(scenario === "holder" ? { CHARIOX_CLAUDE_BIN: holderShell } : {}) },
+    scenario === "holder" ? `[[kernel_access.standing_holders]]\nharness = "claude"\nexecutable = "${holderShell}"\n` : "")
+  if (scenario === "holder") {
+    const work = join(target.dir, "work")
+    const room = (await target.send({ CreateSession: { workspace_id: work, worktree_id: work, alias: "execstall" } })).SessionCreated
+    await proveDeadHolderDoesNotSpin({
+      target, room, socket: join(target.dir, "daemon.sock"), nodeExecutable: process.execPath,
+      kernelDir: target.dir, wait, logs, evidence, expected,
+    })
+  } else if (scenario === "notification") {
     const source = await bootKernel("source", cloudEnv, { CHARIOX_ROOM_AGENT_TOOLS: "1" })
     const result = await proveParkedPeerSubscription({ target, source, wait, logs, provider, expected })
     writeFileSync(join(evidence, "notification-result.json"), JSON.stringify(result, null, 2))
@@ -162,7 +172,7 @@ function logs(dir) {
     }))
 }
 
-async function bootKernel(label, cloudEnv, extra) {
+async function bootKernel(label, cloudEnv, extra, configExtra = "") {
   const dir = join(root, label)
   mkdirSync(dir, { mode: 0o700 })
   const [port, mcpPort, opencodePort, codexPort] = await Promise.all(Array.from({ length: 4 }, freePort))
@@ -174,7 +184,7 @@ path = "${home}/vault.json"
 unlock_policy = "kernel_init"
 [state]
 path = "${home}/state.db"
-`, { mode: 0o600 })
+${configExtra}`, { mode: 0o600 })
   const kernelEnv = {
     HOME: join(dir, "home"), TMPDIR: join(dir, "tmp"), CHARIOX_HOME: home, CHARIOX_LOG_DIR: join(dir, "logs"),
     CHARIOX_SESSION_HISTORY_DIR: join(dir, "history"), CHARIOX_DAEMON_SOCKET: join(dir, "daemon.sock"),
@@ -188,6 +198,7 @@ path = "${home}/state.db"
   clients.push(client)
   return {
     dir,
+    pid: () => child.pid,
     send: request => send(client, request),
     async restart() {
       await client.close()
