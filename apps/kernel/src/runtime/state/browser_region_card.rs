@@ -348,6 +348,21 @@ impl KernelRuntimeState {
                                     tokio::time::sleep(Duration::from_secs(1)).await;
                                     continue;
                                 }
+                                // The restart is not the person finishing, and the page was never
+                                // shown again: the agent is told the card is unavailable, never
+                                // that its step is done.
+                                if self
+                                    .close_unavailable_browser_region_card(
+                                        room,
+                                        id,
+                                        "Browser restarted and the page could not be shown again; take a fresh snapshot and ask again".into(),
+                                    )
+                                    .is_ok()
+                                {
+                                    return;
+                                }
+                                tokio::time::sleep(Duration::from_millis(250)).await;
+                                continue;
                             }
                         }
                     }
