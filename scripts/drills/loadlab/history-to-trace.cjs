@@ -35,26 +35,38 @@ function toolName(text) {
 function keep(row) {
   const text = typeof row.text === 'string' ? row.text : ''
   return {
-    kind: row.kind, agent_id: row.agent_id ?? '', timestamp_ms: row.timestamp_ms,
+    kind: row.kind, agent_id: row.agent_id ?? '', timestamp_ms: row.timestamp_ms, steering: row.steering === true,
     size: clampBytes(Number.isSafeInteger(row.total_chars) ? row.total_chars : text.length),
     markdown: markdownOf(text), tool: toolName(text),
   }
 }
 
-/** The history outline of GetSessionHistoryOutline (agents -> turns -> user_prompt, entries, summary) as flat rows. */
+/**
+ * The history outline of GetSessionHistoryOutline (agents -> turns -> user_prompt, entries, summary, blobs) as flat rows.
+ * A turn has one prompt, its own `user_prompt`; any other prompt in its entries or blobs is a steering prompt that belongs to the turn,
+ * so it is marked and never opens a turn of its own. When a final reply is long, the kernel keeps a truncated `summary` and forces blobs
+ * over the same events: the summary is dropped when a blob's sequence range covers it, so the reply is recorded once.
+ */
 function rowsFromOutline(outline) {
-  return outline.agents.flatMap(agent => agent.turns.flatMap(turn => [
-    ...[turn.user_prompt, ...turn.entries, ...(turn.summary ? [turn.summary] : [])]
-      .map(({ total_chars, entry }) => ({ kind: entry.kind, agent_id: agent.agent_id, timestamp_ms: entry.timestamp_ms, total_chars, text: entry.text })),
-    // A blob stands for a run of collapsed entries: its kind, size and time only (its title, summary and preview are text and are never read).
-    ...turn.blobs.map(blob => ({ kind: blob.kind, agent_id: agent.agent_id, timestamp_ms: blob.timestamp_ms, total_chars: blob.total_chars })),
-  ]))
+  const row = (agent, kind, timestamp_ms, total_chars, text, steering) => ({ kind, agent_id: agent.agent_id, timestamp_ms, total_chars, text, steering })
+  return outline.agents.flatMap(agent => agent.turns.flatMap(turn => {
+    const covered = page => Number.isSafeInteger(page.entry_index) && turn.blobs.some(blob => blob.sequence_start <= page.entry_index && page.entry_index <= blob.sequence_end)
+    const page = ({ total_chars, entry }, steering) => row(agent, entry.kind, entry.timestamp_ms, total_chars, entry.text, steering)
+    return [
+      page(turn.user_prompt, false),
+      ...turn.entries.map(entry => page(entry, entry.entry.kind === 'user_prompt')),
+      ...(turn.summary && !covered(turn.summary) ? [page(turn.summary, false)] : []),
+      // A blob stands for a run of collapsed entries: its kind, size and time only (its title, summary and preview are text and are never read).
+      ...turn.blobs.map(blob => row(agent, blob.kind, blob.timestamp_ms, blob.total_chars, undefined, blob.kind === 'user_prompt')),
+    ]
+  }))
 }
 
 function turnsOf(entries) {
   const turns = []
   let turn = null
   for (const entry of entries) {
+    if (entry.steering) continue
     if (entry.kind === 'user_prompt') {
       turn = { start: entry.timestamp_ms, rows: [entry], error: false }
       turns.push(turn)
