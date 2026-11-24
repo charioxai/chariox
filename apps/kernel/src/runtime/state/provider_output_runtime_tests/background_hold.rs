@@ -1920,7 +1920,10 @@ async fn a_wake_turn_that_leaves_its_outcome_unacknowledged_is_still_held_for_it
         "the turn ended with a call running: {settlement:?}"
     );
     assert!(working(&team));
-    assert!(team.runtime.owned.is_held_for_background_calls(&team.task.task_id));
+    assert!(team
+        .runtime
+        .owned
+        .is_held_for_background_calls(&team.task.task_id));
     sweep(&team).await;
     assert!(working(&team));
     assert!(child_finished(&team).is_empty());

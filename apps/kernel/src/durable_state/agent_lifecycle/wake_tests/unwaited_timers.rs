@@ -36,7 +36,9 @@ fn a_yield_that_leaves_a_timer_out_waits_on_the_named_one_and_keeps_the_other_op
 fn open_after_turn_events(f: &Fixture) -> usize {
     f.inbox()
         .iter()
-        .filter(|e| crate::durable_state::agent_lifecycle::is_open(e) && e.payload["after_turn"] == true)
+        .filter(|e| {
+            crate::durable_state::agent_lifecycle::is_open(e) && e.payload["after_turn"] == true
+        })
         .count()
 }
 
@@ -45,7 +47,11 @@ fn a_turn_that_ends_without_a_wait_keeps_its_timer_and_the_timer_wakes_the_agent
     let f = Fixture::new();
     f.create("once", "timer", Some(1_000), None);
     assert_eq!(settle(&f).state, ExecutionState::Done);
-    assert_eq!(f.wake("once").state, "scheduled", "the timer outlives the turn");
+    assert_eq!(
+        f.wake("once").state,
+        "scheduled",
+        "the timer outlives the turn"
+    );
     assert_eq!(open_after_turn_events(&f), 0);
     f.apply(Operation::FireWakes { now: 2_000 });
     assert_eq!(f.wake("once").state, "fired");
@@ -112,9 +118,15 @@ fn a_yielded_timer_still_wakes_its_waiting_task() {
     f.wait_on(&["waited"]);
     f.apply(Operation::FireWakes { now: 2_000 });
     assert_eq!(f.wake("waited").state, "fired");
-    assert_eq!(open_after_turn_events(&f), 0, "the task is waiting, not done");
+    assert_eq!(
+        open_after_turn_events(&f),
+        0,
+        "the task is waiting, not done"
+    );
     assert!(
-        f.inbox().iter().any(crate::durable_state::agent_lifecycle::is_open),
+        f.inbox()
+            .iter()
+            .any(crate::durable_state::agent_lifecycle::is_open),
         "{:?}",
         f.inbox()
     );

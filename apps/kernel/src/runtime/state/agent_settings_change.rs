@@ -342,6 +342,34 @@ impl KernelRuntimeOwnedState {
             line.push_str(", continuing");
         }
         line.push('.');
+        self.post_settings_line(session_id, agent_id, line);
+    }
+
+    /// The pane line of a change that waits for the agent's background command to end: the
+    /// provider process that runs it keeps the old settings until then.
+    pub(super) fn announce_settings_change_after_command(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        changes: &[SettingChange],
+        by: &SettingsOrigin,
+    ) {
+        if changes.is_empty() {
+            return;
+        }
+        let parts = changes
+            .iter()
+            .map(|change| format!("{} changes to {}", change.field, change.new))
+            .collect::<Vec<_>>();
+        let mut line = parts.join(", ");
+        line.push_str(&format!(
+            " by {} when its background command ends.",
+            self.settings_origin_name(by)
+        ));
+        self.post_settings_line(session_id, agent_id, line);
+    }
+
+    fn post_settings_line(&self, session_id: &str, agent_id: &str, line: String) {
         let mut chars = line.chars();
         let line = chars
             .next()
@@ -355,6 +383,20 @@ impl KernelRuntimeOwnedState {
                 .list_session_attachment_ids(session_id),
             line,
         );
+    }
+
+    /// Whether the agent's stale provider process still runs a background command: a change
+    /// that needs a new process waits for it.
+    fn change_waits_for_background_command(&self, agent: &crate::agent::AgentInstance) -> bool {
+        self.provider_store
+            .get_run_for_agent(agent.session_id(), agent.id())
+            .is_some_and(|run| {
+                run.state() != crate::provider::ProviderRunState::Ended
+                    && run.settings_stale()
+                    && self
+                        .run_has_running_background_calls(agent.session_id(), run.id())
+                        .unwrap_or(false)
+            })
     }
 
     /// Whether the process can be relaunched on the agent's profile now. The worker relaunches a
@@ -435,10 +477,16 @@ impl KernelRuntimeState {
         // A leased agent's process runs on the worker, which settles the same change against its
         // own backing agent and tells the agent at its step boundary; the home only records it.
         let worker_applies = active_turn && agent.remote_execution().is_some();
+        let waits_for_command = !active_turn
+            && !worker_applies
+            && agent.remote_execution().is_none()
+            && owned.change_waits_for_background_command(agent);
         let applies = if worker_applies {
             SettingsApplies::AtStepBoundary
         } else if active_turn {
             self.mark_running_process_stale(agent, &changes)
+        } else if waits_for_command {
+            SettingsApplies::AtTurnEnd
         } else {
             SettingsApplies::Now
         };
@@ -469,6 +517,13 @@ impl KernelRuntimeState {
                     &context.origin,
                 );
             }
+            SettingsApplies::AtTurnEnd if waits_for_command => owned
+                .announce_settings_change_after_command(
+                    agent.session_id(),
+                    agent.id(),
+                    &changes,
+                    &context.origin,
+                ),
             SettingsApplies::AtTurnEnd => owned.announce_settings_change(
                 agent.session_id(),
                 agent.id(),

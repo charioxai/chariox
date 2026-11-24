@@ -243,15 +243,13 @@ impl KernelRuntimeOwnedState {
             .is_some();
         // A background command is a child of the provider's process, and so is the notification
         // turn that reports it: while it runs, the next dispatch replaces the process instead.
-        let background_command_runs = match self
-            .provider_store
-            .get_run_for_agent(session_id, agent_id)
-        {
-            Some(run) if run.state() != crate::provider::ProviderRunState::Ended => {
-                self.run_has_running_background_calls(session_id, run.id())?
-            }
-            _ => false,
-        };
+        let background_command_runs =
+            match self.provider_store.get_run_for_agent(session_id, agent_id) {
+                Some(run) if run.state() != crate::provider::ProviderRunState::Ended => {
+                    self.run_has_running_background_calls(session_id, run.id())?
+                }
+                _ => false,
+            };
         let changed = provider_model_or_account_changed || target_effort != agent.effort();
         if remote_update.is_none() && !active_turn && background_command_runs && changed {
             // The next turn after the command ended starts the new process.

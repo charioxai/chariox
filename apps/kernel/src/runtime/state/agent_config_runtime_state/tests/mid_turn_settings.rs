@@ -562,4 +562,34 @@ async fn a_model_switch_between_turns_keeps_the_process_that_runs_a_background_c
         ProviderRunState::Ended,
         "the process that runs the command is not ended by the switch"
     );
+    // The person is told it waits, not that it applied.
+    let notices = settings_notices(&turn);
+    assert!(
+        notices.iter().any(|notice| notice.contains(NEXT_MODEL)
+            && notice.contains("changes to")
+            && notice.contains("background command ends")),
+        "{notices:?}"
+    );
+    assert!(
+        notices.iter().all(|notice| !notice.contains("changed to")),
+        "{notices:?}"
+    );
+    // A follow-up while the command runs executes on that process, on the old model.
+    let next = turn
+        .runtime
+        .with_app_side_effect(|app| {
+            app.ensure_prompt_provider_run_for_agent(&turn.session_id, &turn.agent_id)
+        })
+        .await
+        .expect("the follow-up launches");
+    assert_eq!(next, turn.failed_run_id);
+    assert_ne!(
+        turn.runtime
+            .owned
+            .provider_store
+            .get_run(&next)
+            .unwrap()
+            .model(),
+        NEXT_MODEL
+    );
 }
