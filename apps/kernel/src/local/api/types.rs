@@ -644,4 +644,5 @@ pub use workspace::*;
 /// take no arguments and `chariox.kernel_browser_share` is removed.
 /// 1014 adds revision-based latest Room history outline reads.
 /// A Claude compaction is the history kind `context_compacted` (its text is the summary, empty when Claude wrote none), not a user prompt.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1014;
+/// Local 1015 (relay peer 452, provisional): a Claude compaction is one `context_compacted` terminal output row (running, done or failed), never a user prompt.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1015;
