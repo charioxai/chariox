@@ -483,11 +483,24 @@ impl super::KernelRuntimeOwnedState {
                     native_session_id(target_run),
                 )?
             {
-                let mut conversation = self.agent_conversation(session_id, agent_id, Some(prompt_id))
-                    .ok_or_else(|| DaemonError::LocalTransport {
-                        operation: "restore compacted session context",
-                        message: "Retained conversation is unavailable at the pending compaction boundary".into(),
-                    })?;
+                // The native session keeps Claude's own post-compaction summary. When the
+                // kernel holds no earlier conversation to restore, the turn still starts
+                // and the boundary stays pending for a later turn. Failing here blocked
+                // the task behind a Resume card and lost the agent (row 449).
+                let Some(mut conversation) =
+                    self.agent_conversation(session_id, agent_id, Some(prompt_id))
+                else {
+                    crate::logging::warn_with_fields(
+                        "daemon.provider_context_handoff",
+                        "no retained conversation at the pending compaction boundary; the turn starts on the native session",
+                        serde_json::json!({
+                            "session_id": session_id,
+                            "agent_id": agent_id,
+                            "compaction_revision": boundary.revision,
+                        }),
+                    );
+                    return Ok(None);
+                };
                 self.add_session_facts(session_id, agent_id, prompt_id, &mut conversation);
                 if !brief_refresh::writes_handoff_briefs(target_run) {
                     conversation.brief = self.stored_handoff_brief(session_id, agent_id);
