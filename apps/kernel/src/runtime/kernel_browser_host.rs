@@ -582,6 +582,19 @@ impl KernelBrowserHost {
             if read && !agent_read {
                 return Err("MP-11: browser_unavailable: user browser controller is stopped or unavailable; explicitly start/open the browser".into());
             }
+            // A person card's watcher brings back a controller a kernel restart ended, never one
+            // a `stop` ended: it asks to start "unless stopped".
+            if params["op"] == "start"
+                && params["unless_stopped"] == true
+                && self
+                    .inner
+                    .lock()
+                    .map_err(|_| "MD-2: browser host lock poisoned")?
+                    .stopped_by_request
+                    .contains(user)
+            {
+                return Err("MP-11: browser_unavailable: the browser was stopped on request; explicitly start/open the browser".into());
+            }
             implicit_start = agent_read;
             self.check_admission(admission)?;
             backend.start().map_err(crate::error::HostFailure::Other)?;
@@ -593,6 +606,10 @@ impl KernelBrowserHost {
                 .remove(user);
         }
         let mut params = params;
+        // Host-side intent only: the controller never sees it.
+        if let Some(request) = params.as_object_mut() {
+            request.remove("unless_stopped");
+        }
         if input {
             params["_person_idle_checked"] = agent_tab.is_some().into();
         }
