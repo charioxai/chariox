@@ -24,6 +24,10 @@ export function createCliSubAgentsComposition(deps: {
     changed: () => { setRevision(value => value + 1); draw() },
   })
 
+  // A wait's age is a clock reading: redraw the open card or view each half minute, never read the kernel again.
+  const ageTick = setInterval(() => { if (controller.cardOpen || controller.viewOpen) { setRevision(value => value + 1); draw() } }, 30_000)
+  onCleanup(() => clearInterval(ageTick))
+
   let roots = new Set<string>()
   const reconcileRoots = async () => {
     const ids = deps.attached() ? (deps.session().agents ?? []).map((agent: { id: string }) => agent.id) : []

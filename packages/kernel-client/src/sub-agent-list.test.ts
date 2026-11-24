@@ -75,12 +75,26 @@ test("AO-UI-03 one panel per sub-agent in card order, status only, a held decisi
     node("a3", null, "ended", { created_at_ms: 3 }),
   ])
   assert.deepEqual(subAgentPanels(t), [
-    { id: "a1", name: "a1", word: "running", dimmed: false, depth: 0 },
-    { id: "a2", name: "a2", word: "waiting", dimmed: false, depth: 1 },
-    { id: "a3", name: "a3", word: "done", dimmed: true, depth: 0 },
+    { id: "a1", name: "a1", word: "running", status: "running", dimmed: false, depth: 0 },
+    { id: "a2", name: "a2", word: "waiting", status: "waiting", dimmed: false, depth: 1 },
+    { id: "a3", name: "a3", word: "done", status: "ended", dimmed: true, depth: 0 },
   ])
 })
 
 test("a node without an alias is named by its id", () => {
   assert.equal(subAgentRows(tree([node("a1", null, "running", { alias: null })]))[0]!.name, "a1")
+})
+
+test("row 524 rows and panels carry the wait status; an idle node is idle, a needs-you node without a card keeps needs you", () => {
+  const now = Date.parse("2026-11-24T05:00:00Z")
+  const t = tree([
+    node("a1", null, "waiting", { liveness: { waiting_on: { kind: "timer", detail: "check", since_ms: now - 60_000, due_at_ms: Date.parse("2026-11-24T05:30:00Z") } } }),
+    node("a2", null, "waiting", { needs_user: true }),
+    node("a3", null, "idle"),
+    node("a4", null, "running", { liveness: { stalled: true, last_activity_at_ms: now - 15 * 60_000 } }),
+  ])
+  const flat = (rows: readonly { id: string; status: string }[]) => rows.map(r => `${r.id}:${r.status}`)
+  assert.ok(subAgentRows(t, now)[0]!.status.startsWith("waiting: timer 'check' (due "))
+  assert.deepEqual(flat(subAgentRows(t, now)).slice(1), ["a2:needs you", "a3:idle", "a4:stalled: no provider activity for 15 min"])
+  assert.deepEqual(flat(subAgentPanels(t, now)).slice(1), ["a2:waiting", "a3:idle", "a4:stalled: no provider activity for 15 min"])
 })
