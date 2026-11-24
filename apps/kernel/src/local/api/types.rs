@@ -643,4 +643,6 @@ pub use workspace::*;
 /// longer carry `kernel_id`, `kernel_name`, `focused_agent_kernel_id` or `reachable_by_focused_agent`; the loader tools
 /// take no arguments and `chariox.kernel_browser_share` is removed.
 /// 1014 adds revision-based latest Room history outline reads.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1014;
+/// Provisional 1015 (relay peer 452): a machine acquire request may carry `timeout_s`, the rental's hard stop in seconds;
+/// the connected service stops the machine then. Absent keeps the machine until it is released.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1015;

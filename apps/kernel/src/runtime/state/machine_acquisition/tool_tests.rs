@@ -462,7 +462,10 @@ async fn acquire_passes_the_requested_hard_stop_to_the_service() {
         .unwrap();
     let acquires = service.acquires.lock().unwrap();
     assert_eq!(acquires[0]["timeout_s"], 300);
-    assert!(acquires[1].get("timeout_s").is_none(), "no limit is invented for a request without one");
+    assert!(
+        acquires[1].get("timeout_s").is_none(),
+        "no limit is invented for a request without one"
+    );
 }
 
 #[tokio::test]
