@@ -2256,7 +2256,8 @@ fn a_writer_cycling_through_existing_files_is_not_killed_for_another_commands_al
     std::fs::remove_dir_all(&dir).unwrap();
     assert!(
         fillers.is_empty(),
-        "a writer that only rewrites existing files was stopped for another command's allocation: {fillers:?}"
+        "a writer that only rewrites existing files was stopped for another command's allocation: {:?}",
+        fillers.iter().map(|(pid, _)| *pid).collect::<Vec<_>>()
     );
 }
 
