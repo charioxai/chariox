@@ -147,6 +147,51 @@ async fn a_reached_limit_says_what_stopped_and_leaves_the_sub_agent_told() {
     );
 }
 
+// TL2: a cleanup that takes more than one tick still reports what the limit found to stop.
+#[tokio::test]
+async fn a_notice_after_a_cleanup_retry_still_names_what_the_limit_stopped() {
+    let team = team_with("deadline-notice-retry", None, true).await;
+    set_deadline(&team, &team.parent, crate::session::unix_epoch_ms() + 30).await;
+    tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+    let deadline = team
+        .runtime
+        .owned
+        .durable_state_store
+        .agent_deadline(&team.room, &team.parent)
+        .unwrap()
+        .unwrap();
+    // The first attempt reads the work and removes it, but does not finish: the next tick
+    // finds the agent already empty.
+    assert!(team
+        .runtime
+        .deadline_work_at_reach(&deadline)
+        .active_prompt
+        .is_some());
+    team.runtime
+        .stop_one_deadline_agent(&team.room, &team.parent)
+        .await
+        .unwrap();
+    assert!(team
+        .runtime
+        .deadline_work(&team.room, &team.parent)
+        .active_prompt
+        .is_none());
+    for _ in 0..2 {
+        team.runtime
+            .tick_agent_deadlines(crate::session::unix_epoch_ms())
+            .await
+            .unwrap();
+    }
+    let room = notices(&team, &team.parent);
+    let ended = room
+        .iter()
+        .filter(|notice| notice.contains("time limit ended at"))
+        .collect::<Vec<_>>();
+    assert_eq!(ended.len(), 1, "told once: {room:?}");
+    assert!(ended[0].contains("Stopped:"), "{}", ended[0]);
+    assert!(!ended[0].contains("It had no running turn"), "{}", ended[0]);
+}
+
 // TL4: three sub-agents, two mid-turn and one yielded on a wake, all go on when their parent's
 // limit ends, and each is told that no agent above it runs.
 #[tokio::test]

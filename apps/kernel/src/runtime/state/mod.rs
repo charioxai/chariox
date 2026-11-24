@@ -321,6 +321,14 @@ type UncertainLeasedTasks = Arc<
     std::sync::Mutex<BTreeMap<(String, String, String), leased_task_connectivity::Uncertainty>>,
 >;
 
+/// What each reached limit found to stop at its first cleanup attempt, by (room, agent, deadline),
+/// until the Room is told. A retry after earlier work was cleared must not report an empty agent.
+type DeadlineWorkFound = Arc<
+    std::sync::Mutex<
+        std::collections::BTreeMap<(String, String, u64), agent_deadline_notices::DeadlineWork>,
+    >,
+>;
+
 /// The (room, agent, deadline, level) time-limit warnings this kernel already sent.
 type DeadlineWarningsSent =
     Arc<std::sync::Mutex<std::collections::BTreeSet<(String, String, u64, u64)>>>;
@@ -332,6 +340,7 @@ struct KernelRuntimeOwnedState {
     /// `agent_deadline_edit`, so a worker never ends on the older of two values.
     agent_deadline_rearm: Arc<tokio::sync::Mutex<()>>,
     deadline_warnings_sent: DeadlineWarningsSent,
+    deadline_work_found: DeadlineWorkFound,
     app_control: crate::runtime::app_control::AppControlService,
     dev_app_bindings: Arc<app_dev_runtime::DevAppBindings>,
     critical_approval_passkeys: critical_approval_passkey::CriticalApprovalPasskeys,
@@ -1266,6 +1275,7 @@ impl KernelRuntimeState {
                 agent_deadline_edit: Arc::new(tokio::sync::Mutex::new(())),
                 agent_deadline_rearm: Arc::new(tokio::sync::Mutex::new(())),
                 deadline_warnings_sent: Arc::default(),
+                deadline_work_found: Arc::default(),
                 provider_usage_refresher:
                     crate::runtime::provider_usage_refresh::ProviderUsageRefresher::for_kernel(
                         provider_account_profiles.clone(),

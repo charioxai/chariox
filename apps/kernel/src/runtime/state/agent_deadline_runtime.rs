@@ -165,6 +165,7 @@ impl KernelRuntimeState {
                 .agent_lifecycle(Operation::BeatDeadlineClock { now })?;
         }
         self.warn_of_deadlines(&deadlines, now);
+        self.forget_deadline_work(&deadlines);
         for deadline in deadlines {
             if deadline.deadline_ms > now {
                 continue;
@@ -174,8 +175,8 @@ impl KernelRuntimeState {
             {
                 continue;
             }
-            // What the limit stops is read before the cleanup removes it.
-            let work = self.deadline_work(&deadline.session_id, &deadline.agent_id);
+            // What the limit stops is read before the cleanup removes it, and kept across retries.
+            let work = self.deadline_work_at_reach(&deadline);
             // Fence every due agent before awaiting any physical cleanup.
             self.owned
                 .durable_state_store
@@ -251,7 +252,11 @@ impl KernelRuntimeState {
         self.stop_one_deadline_agent(room, agent).await
     }
 
-    async fn stop_one_deadline_agent(&self, room: &str, agent: &str) -> Result<(), DaemonError> {
+    pub(super) async fn stop_one_deadline_agent(
+        &self,
+        room: &str,
+        agent: &str,
+    ) -> Result<(), DaemonError> {
         let owned = &self.owned;
         let session = match owned.session_store.get_session(room) {
             Ok(session) => session,
@@ -314,6 +319,9 @@ impl KernelRuntimeState {
             })
             .map(|task| task.task_id)
             .collect::<Vec<_>>();
+        if let Some(deadline) = owned.durable_state_store.agent_deadline(room, agent)? {
+            self.mark_jobs_cancelled_by_limit(room, agent, deadline.deadline_ms);
+        }
         owned.cancel_owned_agent_wakes(room, Some(agent));
         for task in owned
             .durable_state_store

@@ -161,6 +161,43 @@ impl KernelRuntimeState {
         work
     }
 
+    /// What the limit stops, as the first cleanup attempt found it. Later attempts see less,
+    /// because earlier ones already removed queued prompts and ended the turn.
+    pub(super) fn deadline_work_at_reach(&self, deadline: &AgentDeadline) -> DeadlineWork {
+        if deadline.stopped_at_ms.is_some() {
+            // A finished cleanup is not announced again.
+            return self.deadline_work(&deadline.session_id, &deadline.agent_id);
+        }
+        let key = (
+            deadline.session_id.clone(),
+            deadline.agent_id.clone(),
+            deadline.deadline_ms,
+        );
+        self.owned
+            .deadline_work_found
+            .lock()
+            .expect("deadline work poisoned")
+            .entry(key)
+            .or_insert_with(|| self.deadline_work(&deadline.session_id, &deadline.agent_id))
+            .clone()
+    }
+
+    /// Drops the retained summaries of limits that are no longer waiting for their notice.
+    pub(super) fn forget_deadline_work(&self, deadlines: &[AgentDeadline]) {
+        self.owned
+            .deadline_work_found
+            .lock()
+            .expect("deadline work poisoned")
+            .retain(|(room, agent, deadline_ms), _| {
+                deadlines.iter().any(|deadline| {
+                    deadline.stopped_at_ms.is_none()
+                        && deadline.deadline_ms == *deadline_ms
+                        && &deadline.session_id == room
+                        && &deadline.agent_id == agent
+                })
+            });
+    }
+
     /// TL2: the Room is told once, when the limit's cleanup finished, what stopped and what did not.
     pub(super) fn announce_deadline_stop(&self, deadline: &AgentDeadline, work: &DeadlineWork) {
         let Ok(agent) = self.owned.agent_store.get_agent(&deadline.agent_id) else {

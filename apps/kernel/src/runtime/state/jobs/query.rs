@@ -71,32 +71,17 @@ impl KernelRuntimeState {
         Ok(value)
     }
 
-    /// TL6: a job whose result was saved as cancelled after its agent's time limit ended says
-    /// that the limit ended it, and when, for the parent or successor who finds it later.
+    /// TL6: a job cancelled because its agent's time limit ended says so, and when, for the parent
+    /// or successor who finds it later. The cause was saved when the job ended, so a restart or a
+    /// new limit for the agent does not change it.
     fn limit_cancellation(&self, record: &Record) -> Option<serde_json::Value> {
         record
             .result
             .as_ref()
             .filter(|result| result.outcome == crate::local::JobOutcome::Cancelled)?;
-        let deadline = self
-            .owned
-            .durable_state_store
-            .agent_deadline(&record.room_id, &record.agent_id)
-            .ok()??;
-        let reached_at_ms = deadline
-            .reached_at_ms
-            .filter(|_| deadline.state == crate::local::AgentDeadlineState::Reached)?;
-        // A job its agent cancelled itself is not the limit's.
-        if self
-            .job_wake_driver
-            .as_ref()?
-            .agent_cancels
-            .lock()
-            .expect("job agent cancels")
-            .contains(&record.job_id)
-        {
+        let CancelCause::Limit { deadline_ms } = record.cancel_cause? else {
             return None;
-        }
+        };
         let agent = self.owned.agent_store.get_agent(&record.agent_id).ok();
         let name = agent
             .as_ref()
@@ -105,7 +90,7 @@ impl KernelRuntimeState {
         Some(serde_json::json!({
             "agent_id": record.agent_id,
             "reason": "the agent's time limit ended",
-            "at_ms": reached_at_ms,
+            "at_ms": deadline_ms,
             "next_step": format!("The job did not finish. The owner, or {name}'s parent, can give {name} a new limit with `agent deadline {name} <duration|none>`; then start the command again."),
         }))
     }

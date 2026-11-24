@@ -450,6 +450,17 @@ impl KernelRuntimeState {
             result.duration_ms = crate::session::unix_epoch_ms()
                 .saturating_sub(record.running_at_ms.unwrap_or(record.started_at_ms));
         }
+        // The cause saved with a cancelled result is the first request that asked for the stop.
+        let cause = self.job_wake_driver.as_ref().and_then(|driver| {
+            driver
+                .cancel_causes
+                .lock()
+                .expect("job cancel causes")
+                .remove(&record.job_id)
+        });
+        if result.outcome == JobOutcome::Cancelled {
+            record.cancel_cause = cause;
+        }
         self.finish_job(&wake, &mut record, result).await;
     }
 

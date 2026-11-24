@@ -904,10 +904,56 @@ async fn a_job_cancelled_by_its_agents_limit_says_so_in_its_status() {
         .as_str()
         .unwrap()
         .contains("agent deadline"));
-    let by_agent = status(cancelled_by_agent).await;
+    let by_agent = status(cancelled_by_agent.clone()).await;
     assert!(
         by_agent.get("cancelled_by").is_none(),
         "the agent's own cancel is not the limit's: {by_agent}"
+    );
+    // The cause was saved with the result: clearing the limit and a kernel restart (which
+    // empties what the driver kept in memory) change neither answer.
+    state
+        .owned
+        .durable_state_store
+        .agent_lifecycle(ledger::Operation::SetDeadline {
+            room: task.room_id.clone(),
+            agent: task.agent_id.clone(),
+            deadline: None,
+        })
+        .unwrap();
+    state
+        .job_wake_driver
+        .as_ref()
+        .unwrap()
+        .cancel_causes
+        .lock()
+        .unwrap()
+        .clear();
+    let reread = |id: String| {
+        let (state, run, task) = (&state, &run, &task);
+        async move {
+            state
+                .dispatch_job_tool(
+                    Some(run),
+                    "chariox.jobs.status",
+                    &serde_json::json!({ "job_id": id }),
+                    task,
+                )
+                .await
+                .unwrap()
+        }
+    };
+    let limit_id = by_limit["job_id"].as_str().unwrap().to_owned();
+    assert_eq!(
+        reread(limit_id).await["cancelled_by"]["reason"],
+        "the agent's time limit ended",
+        "a cleared limit keeps its cause"
+    );
+    assert!(
+        reread(cancelled_by_agent)
+            .await
+            .get("cancelled_by")
+            .is_none(),
+        "the agent's own cancel is still its own"
     );
     // A job id without a saved result names the likely reasons and the next step.
     let missing = state
