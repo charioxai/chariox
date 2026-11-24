@@ -75,6 +75,10 @@ fn end_registration(
 
 pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, DaemonError> {
     let question = matches!(&op, Operation::BlockForQuestion { .. });
+    let question_reply = match &op {
+        Operation::BlockForQuestion { reply, .. } => reply.clone(),
+        _ => None,
+    };
     let interrupted = matches!(&op, Operation::BlockInterrupted { .. });
     match op {
         Operation::Outside(mutation) => super::outside::apply(tx, mutation),
@@ -594,6 +598,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             task,
             prompt,
             reason,
+            ..
         }
         | Operation::BlockInterrupted {
             task,
@@ -634,6 +639,8 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             }
             t.state = ExecutionState::Blocked;
             t.owner_action = owner_action;
+            t.question_reply =
+                question_reply.filter(|reply| reply.label.is_some() || reply.placeholder.is_some());
             t.reason = reason;
             t.revision += 1;
             if let Some(goal) = &t.goal {

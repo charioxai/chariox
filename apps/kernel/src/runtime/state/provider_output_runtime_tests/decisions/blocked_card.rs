@@ -541,3 +541,64 @@ async fn a_refused_resume_says_why_on_the_agent() {
         "the notice must name why the Resume did not take: {notices:?}"
     );
 }
+
+/// The agent's own question: the card's free-text box carries the label and placeholder the agent gave.
+async fn question_card_custom_choice(
+    label: &str,
+    reply: Option<crate::durable_state::agent_lifecycle::QuestionReply>,
+) -> crate::session::RuntimeInteractionCustomChoice {
+    let t = tree(
+        label,
+        AgentPermissionLevel::Yolo,
+        AgentPermissionLevel::Yolo,
+    )
+    .await;
+    let working = t.working_task_of(&t.g);
+    let crate::durable_state::agent_lifecycle::Outcome::Task(asked) = t
+        .runtime
+        .owned
+        .durable_state_store
+        .agent_lifecycle(Operation::BlockForQuestion {
+            task: working.task_id.clone(),
+            prompt: working.prompt_id.clone(),
+            reason: "Which colour?".into(),
+            reply,
+        })
+        .unwrap()
+    else {
+        panic!("task")
+    };
+    t.runtime
+        .ensure_task_owner_interaction(asked.clone())
+        .await
+        .unwrap();
+    t.session()
+        .active_interactions()
+        .iter()
+        .find(|card| card.id() == Tree::blocked_card_id(&asked))
+        .and_then(|card| card.custom_choice().cloned())
+        .expect("the question has a free-text box")
+}
+
+#[tokio::test]
+async fn a_question_card_shows_the_label_and_placeholder_the_agent_gave() {
+    let custom = question_card_custom_choice(
+        "question-label",
+        Some(crate::durable_state::agent_lifecycle::QuestionReply {
+            label: Some("Something else".into()),
+            placeholder: Some("Another colour".into()),
+        }),
+    )
+    .await;
+    assert_eq!(custom.label(), "Something else");
+    assert_eq!(custom.placeholder(), Some("Another colour"));
+}
+
+#[tokio::test]
+async fn a_question_card_without_a_label_from_the_agent_has_a_plain_box() {
+    for (at, reply) in [None, Some(Default::default())].into_iter().enumerate() {
+        let custom = question_card_custom_choice(&format!("question-plain-{at}"), reply).await;
+        assert_eq!(custom.label(), "", "no fixed label of the kernel's own");
+        assert_eq!(custom.placeholder(), None);
+    }
+}
