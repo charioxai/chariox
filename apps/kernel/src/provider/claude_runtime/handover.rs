@@ -172,6 +172,13 @@ struct ClaudeTurn {
     last_context_window: Option<u64>,
     observed_context_model: Option<String>,
     main_stream_has_context: bool,
+    // The compactions this run has had and the one still running: the next program numbers the next
+    // row after them, so a reload never reuses the key of a row a client already shows. A predecessor
+    // program hands neither over.
+    #[serde(default)]
+    compactions: u64,
+    #[serde(default)]
+    compaction_started_at_ms: Option<u64>,
     start: ClaudeStartState,
 }
 
@@ -195,6 +202,8 @@ impl ClaudeTurn {
             last_context_window: state.last_context_window,
             observed_context_model: state.observed_context_model.clone(),
             main_stream_has_context: state.main_stream_has_context,
+            compactions: state.compactions,
+            compaction_started_at_ms: state.compaction_started_at_ms,
             start: state
                 .turn_watchdog
                 .start_state(std::time::Instant::now(), crate::session::unix_epoch_ms()),
@@ -387,6 +396,8 @@ impl Adopted {
         state.last_context_window = turn.last_context_window;
         state.observed_context_model = turn.observed_context_model;
         state.main_stream_has_context = turn.main_stream_has_context;
+        state.compactions = turn.compactions;
+        state.compaction_started_at_ms = turn.compaction_started_at_ms;
         AdoptedTurn {
             turn_id: turn.active_turn_id,
             prompt_message: turn.active_prompt_message,

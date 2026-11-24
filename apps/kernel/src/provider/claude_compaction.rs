@@ -107,8 +107,15 @@ pub(crate) fn read_summary_from_transcript(
     let length = file.metadata().ok()?.len();
     file.seek(SeekFrom::Start(length.saturating_sub(TAIL_BYTES)))
         .ok()?;
-    let mut tail = String::new();
-    BufReader::new(file).read_to_string(&mut tail).ok()?;
+    let mut bytes = Vec::new();
+    BufReader::new(file).read_to_end(&mut bytes).ok()?;
+    // A tail that starts inside the file starts inside a line, maybe inside a character: drop that
+    // partial line before decoding, so one split character cannot hide the intact summary near the end.
+    if length > TAIL_BYTES {
+        let first_line_end = bytes.iter().position(|byte| *byte == b'\n')?;
+        bytes.drain(..=first_line_end);
+    }
+    let tail = String::from_utf8_lossy(&bytes);
     tail.lines().rev().find_map(|line| {
         match claude_compaction(&serde_json::from_str::<Value>(line).ok()?)? {
             ClaudeCompaction::Summary {
