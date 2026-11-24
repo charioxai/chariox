@@ -174,14 +174,15 @@ pub(super) fn set(
             params![room, agent],
         )
         .map_err(sql)?;
-        // An ancestor's cleanup that runs after this must not stop the work this edit allows.
-        db.execute(
-            "INSERT INTO agent_deadline_revivals(room_id,agent_id,revived_at_ms) VALUES(?1,?2,?3) \
-             ON CONFLICT(room_id,agent_id) DO UPDATE SET revived_at_ms=excluded.revived_at_ms",
-            params![room, agent, sql_integer(crate::session::unix_epoch_ms())?],
-        )
-        .map_err(sql)?;
     }
+    // An explicit edit of this agent's limit: a cleanup that an ancestor's reached limit runs
+    // after it must not stop the work this edit allows.
+    db.execute(
+        "INSERT INTO agent_deadline_revivals(room_id,agent_id,revived_at_ms) VALUES(?1,?2,?3) \
+         ON CONFLICT(room_id,agent_id) DO UPDATE SET revived_at_ms=excluded.revived_at_ms",
+        params![room, agent, sql_integer(crate::session::unix_epoch_ms())?],
+    )
+    .map_err(sql)?;
     let outcome = set_effective(db, &room, &agent, deadline)?;
     for (child_room, child, time) in inherited {
         set_effective(db, &child_room, &child, time)?;
@@ -245,7 +246,7 @@ impl DurableKernelStateStore {
         let db = self.lock_connection("agent.deadline")?;
         validate(&db, room, agent, deadline)
     }
-    /// Whether an edit gave this finished agent a new limit at or after `after_ms`.
+    /// Whether an explicit edit of this agent's limit was made at or after `after_ms`.
     pub(crate) fn agent_revived_since(
         &self,
         room: &str,
