@@ -84,10 +84,19 @@ fn cancel_wake_still_cancels_a_timer_left_by_a_turn() {
     let f = Fixture::new();
     f.create("once", "timer", Some(1_000), None);
     assert_eq!(settle(&f).state, ExecutionState::Done);
+    // A later turn of the agent cancels it, as `chariox.events.cancel_wake` does.
+    f.apply(Operation::Begin {
+        owner: "owner".into(),
+        room: "room".into(),
+        agent: "agent".into(),
+        prompt: "later".into(),
+        run: Some("run".into()),
+        now: 40,
+    });
     f.apply(Operation::CancelWake {
         id: "once".into(),
-        task: "p".into(),
-        prompt: None,
+        task: "later".into(),
+        prompt: Some("later".into()),
         pending: false,
     });
     assert_eq!(f.wake("once").state, "cancelled");
