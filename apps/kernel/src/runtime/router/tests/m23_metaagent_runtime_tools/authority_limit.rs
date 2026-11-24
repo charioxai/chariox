@@ -428,13 +428,13 @@ async fn runs(world: &World, agent: &str) -> bool {
 }
 
 #[test]
-fn editing_a_middle_agent_does_not_reapply_an_ended_ancestors_limit_to_the_revived_agent_below() {
-    run_large_stack_async_test("authority-revived-below-middle", revived_below_middle);
+fn editing_a_middle_agent_gives_the_agent_below_no_limit_from_an_ended_ancestor() {
+    run_large_stack_async_test("authority-middle-agent-edits", middle_agent_edits);
 }
 
-/// a -> b -> d: a's limit ends the whole team; the owner revives d, then edits b while a stays ended.
-async fn revived_below_middle() {
-    let world = world("authority-revived-below-middle").await;
+/// a -> b -> d: a's limit ends only a. Editing b afterwards writes no limit onto d.
+async fn middle_agent_edits() {
+    let world = world("authority-middle-agent-edits").await;
     let now = crate::session::unix_epoch_ms();
     let set = |agent: &str, deadline_ms: Option<u64>| {
         world.router.runtime_state.set_agent_deadline(
@@ -446,28 +446,35 @@ async fn revived_below_middle() {
             },
         )
     };
-    // a's limit passes for real: the intent it keeps is a time in the past.
+    let limit_of_d = || async {
+        world
+            .app
+            .lock()
+            .await
+            .durable_state_store()
+            .agent_deadline(&world.room, &world.ids["d"])
+            .unwrap()
+    };
+    // a's limit passes for real and ends a, the agent that carries it.
     set("a", Some(now + 300)).await.unwrap();
     tokio::time::sleep(std::time::Duration::from_millis(400)).await;
-    for agent in ["a", "b", "d"] {
-        finish(&world, agent).await;
-    }
-    assert!(!runs(&world, "d").await, "a's ended limit ended d too");
+    finish(&world, "a").await;
+    assert!(!runs(&world, "a").await, "a's limit ended a");
+    assert!(runs(&world, "b").await, "a's limit does not end b");
+    assert!(runs(&world, "d").await, "a's limit does not end d");
 
-    set("d", None).await.unwrap();
-    assert!(runs(&world, "d").await, "the owner revived d");
-
-    // Extending b gives d b's limit, not a's ended one.
+    // Extending b gives d nothing: a limit bounds only the agent that carries it.
     set("b", Some(now + 8 * 60_000)).await.unwrap();
+    assert!(runs(&world, "d").await, "extending b ended d");
     assert!(
-        runs(&world, "d").await,
-        "extending b wrote a's ended limit onto the revived d"
+        limit_of_d().await.is_none(),
+        "extending b wrote a limit onto d"
     );
-    // Clearing b leaves d without a limit; a's retained limit is gone from the team.
     set("b", None).await.unwrap();
+    assert!(runs(&world, "d").await, "clearing b ended d");
     assert!(
-        runs(&world, "d").await,
-        "clearing b wrote a's ended limit onto the revived d"
+        limit_of_d().await.is_none(),
+        "clearing b wrote a limit onto d"
     );
 }
 
