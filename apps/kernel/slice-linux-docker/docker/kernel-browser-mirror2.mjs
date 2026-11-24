@@ -516,8 +516,10 @@ export class Mirror2 {
     if (stream.acked > (stream.prunedAt ?? 0)) { stream.prunedAt = stream.acked; for (const entry of stream.resources.values()) if (entry.sent && entry.sentAt <= stream.acked && entry.resource) { entry.resource = entry.preview = null; entry.url = ''; } }
     // A viewer whose base predates the newest reset has that reset on its way (a large one crossing a slow link
     // while small credits are answered): a second reset only queues behind it (r47: a 420 KB reset storm).
-    const layoutKey = this.layoutKey(tab.tab_id);
-    const resetReason = after === 0 ? 'client' : after > stream.issued ? 'ahead' : after < stream.issued - 8 && after >= stream.resetAt ? 'behind' : stream.document_id !== tab.document_id ? 'document' : stream.policy !== policy ? 'policy' : (stream.layoutKey ?? layoutKey) !== layoutKey ? 'layout' : stream.resetAt > stream.issued ? 'snapshot' : stream.fallback !== null ? 'fallback' : null;
+    // Row 527: credits can arrive out of order (one sent before others reaches the kernel after them), so a viewer is
+    // behind only when the newest base it acknowledged in any credit is: a late credit's older base resets nothing.
+    const layoutKey = this.layoutKey(tab.tab_id), base = Math.max(after, stream.acked ?? 0);
+    const resetReason = after === 0 ? 'client' : after > stream.issued ? 'ahead' : base < stream.issued - 8 && base >= stream.resetAt ? 'behind' : stream.document_id !== tab.document_id ? 'document' : stream.policy !== policy ? 'policy' : (stream.layoutKey ?? layoutKey) !== layoutKey ? 'layout' : stream.resetAt > stream.issued ? 'snapshot' : stream.fallback !== null ? 'fallback' : null;
     let reset = resetReason !== null;
     // A snapshot waits for a busy renderer in every call it makes (the viewer's reset has 30 s). Any other credit waits
     // somewhat longer than the default, but answers before the viewer's own 8 s request timeout.
