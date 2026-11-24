@@ -782,7 +782,8 @@ impl Ledger {
             return None;
         }
         let lost = self.free_loss(members, room);
-        let writers = writers(members, &lost);
+        let mut writers = writers(members);
+        apportion(&mut writers, &lost);
         let mut filling = BTreeMap::<u64, u64>::new();
         for writer in &writers {
             *filling.entry(writer.volume).or_default() += writer.rate;
@@ -1452,16 +1453,18 @@ struct Writer<'a> {
     pid: u32,
     volume: u64,
     path: PathBuf,
+    /// What it fills the volume by: its open files' allocated growth, or its
+    /// share of what the volume lost (`apportion`).
     rate: u64,
+    /// Everything it writes, when it sends output to this volume only and is
+    /// writing new files: a rate that counts only as far as the volume lost room.
+    whole: u64,
     written: u64,
     deleted_open: u64,
 }
 
 /// The agents' commands writing now, each with the volume it writes to.
-fn writers<'a>(
-    members: &'a [Arc<Mutex<Observation>>],
-    lost: &BTreeMap<u64, u64>,
-) -> Vec<Writer<'a>> {
+fn writers<'a>(members: &'a [Arc<Mutex<Observation>>]) -> Vec<Writer<'a>> {
     // A shared writable file can grow because of either holder. Neither
     // command supplies destructive evidence for that receiving volume.
     let mut holders = BTreeMap::<(u64, u64), usize>::new();
@@ -1526,24 +1529,22 @@ fn writers<'a>(
                 } else {
                     output.rate.min(command.write_rate)
                 };
-                // The rest of its writes (a copy of many short-lived files) is
-                // a fill rate only as far as the volume really lost room: a
-                // rewrite of blocks it already holds uses none.
-                let whole = only == Some(output.id);
-                let spread = if whole {
-                    command
-                        .write_rate
-                        .min(lost.get(&output.id).copied().unwrap_or_default())
+                // The rest of its writes (a copy of many short-lived files) can
+                // fill the volume only if the command writes new files and only
+                // as far as the volume lost room: a rewrite of blocks it holds
+                // uses none, whoever else allocates there.
+                let only_here = only == Some(output.id);
+                let whole = if only_here && output.fresh {
+                    command.write_rate
                 } else {
                     0
                 };
-                let rate = grown.max(spread);
-                let written = if whole {
+                let written = if only_here {
                     output.written.max(command.writes)
                 } else {
                     output.written
                 };
-                if rate < GROWING || shared(output) {
+                if (grown < GROWING && whole < GROWING) || shared(output) {
                     continue;
                 }
                 writers.push(Writer {
@@ -1551,7 +1552,8 @@ fn writers<'a>(
                     pid: command.pid,
                     volume: output.id,
                     path: output.path.clone(),
-                    rate,
+                    rate: grown,
+                    whole,
                     written,
                     deleted_open: command.deleted_open,
                 });
@@ -1559,6 +1561,29 @@ fn writers<'a>(
         }
     }
     writers
+}
+
+/// Gives each writer its rate: file growth where it is seen; otherwise a share
+/// of what its volume lost beyond that growth, shared between the commands
+/// writing new files there, so one loss is never spent twice.
+fn apportion(writers: &mut Vec<Writer<'_>>, lost: &BTreeMap<u64, u64>) {
+    let mut grown = BTreeMap::<u64, u64>::new();
+    let mut whole = BTreeMap::<u64, u64>::new();
+    for writer in writers.iter() {
+        *grown.entry(writer.volume).or_default() += writer.rate;
+        *whole.entry(writer.volume).or_default() += writer.whole;
+    }
+    for writer in writers.iter_mut() {
+        let unexplained = lost
+            .get(&writer.volume)
+            .copied()
+            .unwrap_or_default()
+            .saturating_sub(grown[&writer.volume]);
+        let all = whole[&writer.volume].max(1);
+        let share = (writer.whole as u128 * unexplained as u128 / all as u128) as u64;
+        writer.rate = writer.rate.max(share.min(writer.whole));
+    }
+    writers.retain(|writer| writer.rate >= GROWING);
 }
 
 /// A volume's free bytes against its floor.
