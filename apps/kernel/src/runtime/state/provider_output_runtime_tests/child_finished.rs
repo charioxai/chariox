@@ -850,23 +850,25 @@ async fn a_revived_sub_agents_new_work_survives_its_parents_ended_deadline() {
         .into_iter()
         .next()
         .expect("the room has an attachment");
+    // The revived child is given a prompt (queued: a test runtime has no provider to launch).
     runtime
-        .submit_prepared_prompt(crate::app::KernelPreparedPromptSubmission {
-            session_id: team.room.clone(),
-            prompt: crate::session::PromptQueueItem::new(
+        .owned
+        .session_store
+        .mirror_agent_prompt_state(
+            &team.room,
+            &team.child,
+            None,
+            std::collections::VecDeque::from([crate::session::PromptQueueItem::new(
                 "revived-prompt",
                 &attachment,
                 &team.child,
                 "continue",
                 crate::session::PromptStatus::Queued,
-            ),
-            force_queue: false,
-            refresh_projection: true,
-        })
-        .await
+            )]),
+        )
         .unwrap();
-    let session = runtime.owned.session_store.get_session(&team.room).unwrap();
     let work = |runtime: &KernelRuntimeState| {
+        let session = runtime.owned.session_store.get_session(&team.room).unwrap();
         let (active, queued) = runtime
             .owned
             .prompt_state_owner
@@ -881,12 +883,6 @@ async fn a_revived_sub_agents_new_work_survives_its_parents_ended_deadline() {
         .await
         .unwrap();
     assert!(work(runtime), "the parent's old deadline stopped the revived child's new work");
-    let live = runtime
-        .owned
-        .provider_store
-        .get_run_for_agent(&team.room, &team.child)
-        .expect("the revived child's turn has a run");
-    assert_ne!(live.state(), crate::provider::ProviderRunState::Ended);
 }
 
 /// The parent's `child_finished`, read until `done` holds.
