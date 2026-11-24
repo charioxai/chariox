@@ -38,6 +38,10 @@ static STARTED_UPLOADS: std::sync::Mutex<Option<std::collections::HashMap<PathBu
 const STARTED_UPLOADS_CAP: usize = 4096;
 
 fn note_upload_started(staging: &Path) {
+    note_upload_activity_at(staging, Instant::now());
+}
+
+fn note_upload_activity_at(staging: &Path, at: Instant) {
     let mut started = STARTED_UPLOADS.lock().unwrap_or_else(|e| e.into_inner());
     let started = started.get_or_insert_with(Default::default);
     if started.len() >= STARTED_UPLOADS_CAP {
@@ -49,15 +53,22 @@ fn note_upload_started(staging: &Path) {
             started.remove(&oldest);
         }
     }
-    started.insert(staging.to_path_buf(), Instant::now());
+    started.insert(staging.to_path_buf(), at);
 }
 
+/// An upload counts as established here while its chunks keep arriving: one silent for longer than
+/// a chunk may wait for its turn is abandoned, and a later upload to the same path starts over.
 fn upload_started(staging: &Path) -> bool {
+    upload_started_at(staging, Instant::now())
+}
+
+fn upload_started_at(staging: &Path, now: Instant) -> bool {
     STARTED_UPLOADS
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .as_ref()
-        .is_some_and(|started| started.contains_key(staging))
+        .and_then(|started| started.get(staging))
+        .is_some_and(|last| now.saturating_duration_since(*last) <= TURN_WAIT)
 }
 
 fn forget_upload(staging: &Path) {
@@ -443,6 +454,7 @@ fn open_staging(partial: &Path, path: &Path, offset: u64) -> Result<std::fs::Fil
     {
         Ok(file) => file,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            forget_upload(partial);
             return Err(missing_destination(path).unwrap_or_else(|| offset_mismatch(path, 0)));
         }
         Err(e) if e.raw_os_error() == Some(libc::ELOOP) => return Err(untrusted()),
@@ -475,6 +487,8 @@ fn wait_for_turn(partial: &Path, path: &Path, offset: u64) -> Result<(), DaemonE
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 if upload_started(partial) {
                     if let Some(error) = missing_destination(path) {
+                        // This attempt ends here; a retry to the same path starts over.
+                        forget_upload(partial);
                         return Err(error);
                     }
                 }
@@ -602,6 +616,7 @@ pub(crate) fn write_at(
     file.write_all(chunk.data)
         .map_err(|e| io_failure(path, &e))?;
     file.flush().map_err(|e| io_failure(path, &e))?;
+    note_upload_started(&partial);
     if end < chunk.total_size {
         return Ok(StagedWrite {
             received: end,
@@ -863,6 +878,47 @@ mod tests {
         assert!(message.contains("Recreate it or choose another folder"));
         assert!(!message.contains(PARTIAL_SUFFIX));
         assert!(!folder.exists());
+    }
+
+    // The record of an upload that failed (its folder was removed) must not make a retried
+    // upload to the same path reject its own out-of-order startup.
+    #[test]
+    fn a_retried_upload_after_a_removed_folder_still_waits_for_its_first_chunk() {
+        let dir = scratch();
+        let target = dir.join("incoming/nested/retry.bin");
+        let sha = format!("{:x}", Sha256::digest(b"abcdef"));
+        write(&chunk(&target, 0, b"abc", 6, Some(&sha))).unwrap();
+        std::fs::remove_dir_all(dir.join("incoming")).unwrap();
+        let error = write(&chunk(&target, 3, b"def", 6, Some(&sha))).unwrap_err();
+        assert_eq!(code(error), "file_destination_missing");
+
+        // The retry starts from offset 0, but its later chunk runs first and the folders are gone.
+        let first = chunk(&target, 0, b"abc", 6, Some(&sha));
+        let second = chunk(&target, 3, b"def", 6, Some(&sha));
+        let late = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            write(&first)
+        });
+        let outcome = written(write(&second).unwrap());
+        assert_eq!(outcome.0, 6);
+        assert_eq!(written(late.join().unwrap().unwrap()).0, 3);
+        assert_eq!(std::fs::read(&target).unwrap(), b"abcdef");
+    }
+
+    // An upload that has been silent for longer than a chunk waits for its turn is abandoned: its
+    // record no longer authorizes an immediate failure for a later upload to the same path.
+    #[test]
+    fn a_silent_uploads_record_expires() {
+        let staging = scratch().join("silent.bin.chariox-partial");
+        let long_ago = Instant::now()
+            .checked_sub(TURN_WAIT + Duration::from_secs(1))
+            .expect("the machine has been up for more than a chunk's wait");
+        note_upload_activity_at(&staging, long_ago);
+        assert!(!upload_started(&staging));
+        note_upload_started(&staging);
+        assert!(upload_started(&staging));
+        forget_upload(&staging);
+        assert!(!upload_started(&staging));
     }
 
     // EA2-07: an upload resumes at the offset the target reports, and the file
