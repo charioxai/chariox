@@ -203,13 +203,10 @@ pub(super) fn claude_observed_turns_from_value(value: &Value) -> Vec<ObservedExt
                 observed_at_ms,
             }];
         }
-        // The summary entry that follows is the row; the status events are stream-only.
-        Some(
-            ClaudeCompaction::Boundary { .. }
-            | ClaudeCompaction::Started
-            | ClaudeCompaction::Failed { .. },
-        ) => return Vec::new(),
-        None => {}
+        // The status events are stream-only. A boundary still marks where the context owner's
+        // recovery epoch starts (below), and the summary entry that follows is the row.
+        Some(ClaudeCompaction::Started | ClaudeCompaction::Failed { .. }) => return Vec::new(),
+        Some(ClaudeCompaction::Boundary { .. }) | None => {}
     }
     let record_type = value.get("type").and_then(Value::as_str);
     match record_type {
