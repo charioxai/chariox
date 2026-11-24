@@ -124,6 +124,51 @@ fn a_prompt_queued_before_archiving_waits_until_unarchive() {
 }
 
 #[test]
+fn an_archived_workflows_idle_instance_does_not_hide_another_workflows_queued_prompt() {
+    let (mut service, session_id, a) = archived_service();
+    let resolved = service
+        .resolve_workflow_ref(&session_id, "dup")
+        .expect("workflow resolves");
+    super::endpoint_instances::register_primary_instance(
+        &mut service,
+        &session_id,
+        &resolved,
+        &a.endpoint,
+        "instance-a",
+    );
+    super::endpoint_instances::enqueue(
+        &mut service,
+        &session_id,
+        a.workflow.id(),
+        a.endpoint.id(),
+        "queued for the archived workflow",
+    );
+    service
+        .set_workflow_archived(&session_id, "dup", true)
+        .expect("workflow should archive");
+    // B has no instance yet: its prompt needs one provisioned.
+    let b = workflow_with_endpoint(&mut service, &session_id, "other", "agent-1");
+    super::endpoint_instances::enqueue(
+        &mut service,
+        &session_id,
+        b.workflow.id(),
+        b.endpoint.id(),
+        "queued for the live workflow",
+    );
+
+    let candidate = service
+        .workflow_runtime_instance_provision_candidate(&session_id)
+        .expect("candidate lookup should succeed")
+        .expect("the live workflow's prompt gets an instance, whatever A has idle");
+    assert_eq!(candidate.workflow.id(), b.workflow.id());
+    // The archived workflow's prompt waits where it was.
+    let session = service.get_session(&session_id).expect("session exists");
+    assert!(session.workflow_queued_prompts().iter().any(|item| {
+        item.workflow_id() == a.workflow.id() && item.status() == WorkflowQueuedPromptStatus::Queued
+    }));
+}
+
+#[test]
 fn deleting_a_workflow_with_a_run_in_flight_names_the_run_and_changes_nothing() {
     let (mut service, session_id, workflow) = archived_service();
     let run = service

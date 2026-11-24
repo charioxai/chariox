@@ -31,7 +31,7 @@ pub(super) fn register_primary_instance(
         .expect("primary instance should register");
 }
 
-fn enqueue(
+pub(super) fn enqueue(
     service: &mut SessionService,
     session_id: &str,
     workflow_id: &str,

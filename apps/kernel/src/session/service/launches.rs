@@ -828,6 +828,11 @@ impl SessionService {
             let Some(workflow) = session.workflow(queued_prompt.workflow_id()).cloned() else {
                 continue;
             };
+            // An archived workflow's queued prompts wait for an unarchive. Its idle instance
+            // must not hide another workflow's prompt that still needs an instance.
+            if workflow.is_archived() {
+                continue;
+            }
             let Some(endpoint) = workflow.endpoint(queued_prompt.endpoint_id()).cloned() else {
                 continue;
             };
