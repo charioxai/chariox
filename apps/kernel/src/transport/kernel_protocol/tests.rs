@@ -99,6 +99,7 @@ fn terminal_output_event_batches_stay_under_json_byte_cap() {
             bytes: vec![b'x'; 16 * 1024],
             external_observation_metadata: None,
             replaces: false,
+            continues_replacement: false,
         })
         .collect::<Vec<_>>();
 
@@ -175,6 +176,7 @@ fn terminal_output_event_batch_size_accounting_matches_serialized_json() {
             bytes: vec![b'x'; 256 + index],
             external_observation_metadata: None,
             replaces: false,
+            continues_replacement: false,
         })
         .collect::<Vec<_>>();
     let accounted_bytes =

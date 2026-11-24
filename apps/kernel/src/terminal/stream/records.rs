@@ -61,6 +61,11 @@ pub struct TerminalOutputRecord {
     /// finished text this way.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub replaces: bool,
+    /// The bytes are more of the text a `replaces` record of the same `merge_key` set, in the same batch: a
+    /// replacement longer than one record goes out in pieces, and a piece after the first joins that row
+    /// wherever it now is, not after a tool row that came later.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub continues_replacement: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -107,6 +112,8 @@ pub struct TerminalOutputAppend {
     pub bytes: Vec<u8>,
     /// See `TerminalOutputRecord::replaces`.
     pub replaces: bool,
+    /// See `TerminalOutputRecord::continues_replacement`.
+    pub continues_replacement: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

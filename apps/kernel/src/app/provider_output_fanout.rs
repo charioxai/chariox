@@ -300,6 +300,7 @@ impl ProviderOutputFanout {
                 bytes: Vec::new(),
                 external_observation_metadata: None,
                 replaces: false,
+                continues_replacement: false,
             };
         }
         let recipient_attachment_ids = if kind == TerminalOutputKind::ProviderTerminal {
@@ -376,6 +377,7 @@ impl ProviderOutputFanout {
                 recipient_attachment_ids: recipient_attachment_ids.clone(),
                 bytes,
                 replaces: replaces && index == 0,
+                continues_replacement: replaces && index > 0,
             })
             .collect();
         let record = self

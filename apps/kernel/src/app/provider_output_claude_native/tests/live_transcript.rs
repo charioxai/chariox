@@ -793,6 +793,49 @@ fn a_reply_longer_than_one_live_record_is_replaced_whole() {
     );
 }
 
+// A client puts the pieces of a long replacement into the row the first piece replaced, wherever that row now is:
+// the first piece says it replaces, every later one says it continues that replacement, and nothing else does.
+#[test]
+fn the_pieces_of_a_long_replacement_say_which_is_first_and_which_continue_it() {
+    let mut turn = running_turn("streamed-long-pieces");
+    turn.hook_event("UserPromptSubmit");
+    turn.pass();
+    let drawn = screen(&[
+        "● The long answer:",
+        "",
+        "  First paragraph of it.",
+        "",
+        "✻ Working (3s)",
+    ]);
+    turn.terminal_shows(&drawn);
+    turn.terminal_shows(&drawn);
+    let tail = "More of the **answer**, line after line.\n".repeat(1000);
+    let reply = format!("The long answer:\n\nFirst paragraph of it.\n\n{tail}");
+    turn.append_transcript(assistant_text("reply", &reply));
+    turn.pass();
+    let records = turn
+        .app
+        .terminal()
+        .output_records()
+        .into_iter()
+        .filter(|record| record.kind == TerminalOutputKind::ProviderOutput)
+        .collect::<Vec<_>>();
+    let first = records
+        .iter()
+        .position(|record| record.replaces)
+        .expect("the reply is a replacement");
+    let pieces = &records[first..];
+    assert!(pieces.len() >= 3, "the reply needs more than two records");
+    assert!(pieces[0].replaces && !pieces[0].continues_replacement);
+    for piece in &pieces[1..] {
+        assert!(piece.continues_replacement && !piece.replaces, "{piece:?}");
+        assert_eq!(piece.merge_key, pieces[0].merge_key);
+    }
+    assert!(records[..first]
+        .iter()
+        .all(|record| !record.replaces && !record.continues_replacement));
+}
+
 #[test]
 fn a_later_block_of_a_prompt_that_opens_like_an_adopted_one_keeps_its_own_row() {
     let mut turn = running_turn("streamed-two-blocks");

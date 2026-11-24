@@ -295,6 +295,13 @@ function mergeProviderChunk(
   if (mergeKey && metadata.replaces) {
     return replaceKeyedRow(entries, { role, normalized, normalizedSource, mergeKey, metadata, providerRunId })
   }
+  if (mergeKey && metadata.continuesReplacement) {
+    // A later piece of a replacement joins the row the first piece set, wherever that row is now.
+    const continued = continueKeyedRow(entries, { role, normalized, normalizedSource, mergeKey, metadata, providerRunId })
+    if (continued) {
+      return continued
+    }
+  }
 
   if (mergeKey) {
     for (let index = entries.length - 1; index >= 0; index -= 1) {
@@ -413,6 +420,41 @@ function replaceKeyedRow(
     delete row.sourceText
   } else {
     row.sourceText = options.normalizedSource
+  }
+  applyStreamMetadata(row, options.metadata, { preserveExisting: true })
+  return { kind: "merged", entry: row }
+}
+
+/**
+ * More of a replacement than fit one record: it goes on the row the first piece set, however many tool rows
+ * or turns came after that row. Nothing to join (the first piece never arrived) leaves the piece to start a row.
+ */
+function continueKeyedRow(
+  entries: MutableTranscriptStreamEntry[],
+  options: {
+    role: string
+    normalized: string
+    normalizedSource: string | undefined
+    mergeKey: string
+    metadata: TranscriptStreamMetadata
+    providerRunId: string | null | undefined
+  },
+): { readonly kind: "merged"; readonly entry: MutableTranscriptStreamEntry } | null {
+  let row: MutableTranscriptStreamEntry | undefined
+  for (let index = entries.length - 1; index >= 0 && !row; index -= 1) {
+    const candidate = entries[index]!
+    if (candidate.role === options.role
+      && candidate.mergeKey === options.mergeKey
+      && sameStreamingMergeIdentity(candidate, { currentTurnId: null, providerRunId: options.providerRunId, metadata: options.metadata })) {
+      row = candidate
+    }
+  }
+  if (!row) {
+    return null
+  }
+  row.text += options.normalized
+  if (options.normalizedSource !== undefined) {
+    row.sourceText = `${row.sourceText ?? ""}${options.normalizedSource}`
   }
   applyStreamMetadata(row, options.metadata, { preserveExisting: true })
   return { kind: "merged", entry: row }

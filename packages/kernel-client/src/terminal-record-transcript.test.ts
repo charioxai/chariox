@@ -79,6 +79,9 @@ test("terminalRecordTranscriptMetadata carries a record's replacement of its row
   assert.equal(terminalRecordTranscriptMetadata({ kind: "provider_output", replaces: true }).replaces, true)
   assert.equal("replaces" in terminalRecordTranscriptMetadata({ kind: "provider_output" }), false)
   assert.equal("replaces" in terminalRecordTranscriptMetadata({ kind: "provider_output", replaces: false }), false)
+  assert.equal(terminalRecordTranscriptMetadata({ kind: "provider_output", continues_replacement: true }).continuesReplacement, true)
+  assert.equal("continuesReplacement" in terminalRecordTranscriptMetadata({ kind: "provider_output" }), false)
+  assert.equal("continuesReplacement" in terminalRecordTranscriptMetadata({ kind: "provider_output", continues_replacement: false }), false)
 })
 
 test("terminalRecordTranscriptMetadata preserves explicit null prompt identity", () => {

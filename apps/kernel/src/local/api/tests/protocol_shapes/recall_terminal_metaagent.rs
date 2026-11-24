@@ -343,6 +343,7 @@ fn local_daemon_protocol_terminal_output_shape_is_versioned() {
                     },
                 ),
                 replaces: false,
+                continues_replacement: false,
             },
             crate::terminal::TerminalOutputRecord {
                 record_id: Some(8),
@@ -363,6 +364,7 @@ fn local_daemon_protocol_terminal_output_shape_is_versioned() {
                 bytes: b"\x1b[2Jfullscreen".to_vec(),
                 external_observation_metadata: None,
                 replaces: true,
+                continues_replacement: false,
             },
         ],
     };

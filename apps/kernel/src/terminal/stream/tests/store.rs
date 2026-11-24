@@ -249,6 +249,7 @@ async fn terminal_stream_store_batch_fanout_notifies_each_changed_attachment_onc
             recipient_attachment_ids: Arc::from(vec!["attachment-1".to_string()]),
             bytes: b"one".to_vec(),
             replaces: false,
+            continues_replacement: false,
         },
         TerminalOutputAppend {
             session_id: "session-1".to_string(),
@@ -263,6 +264,7 @@ async fn terminal_stream_store_batch_fanout_notifies_each_changed_attachment_onc
             recipient_attachment_ids: Arc::from(vec!["attachment-1".to_string()]),
             bytes: b"two".to_vec(),
             replaces: false,
+            continues_replacement: false,
         },
     ]);
 
@@ -307,6 +309,7 @@ async fn terminal_stream_store_batch_fanout_coalesces_repeated_multi_recipient_c
             ]),
             bytes: b"one".to_vec(),
             replaces: false,
+            continues_replacement: false,
         },
         TerminalOutputAppend {
             session_id: "session-1".to_string(),
@@ -324,6 +327,7 @@ async fn terminal_stream_store_batch_fanout_coalesces_repeated_multi_recipient_c
             ]),
             bytes: b"two".to_vec(),
             replaces: false,
+            continues_replacement: false,
         },
     ]);
 

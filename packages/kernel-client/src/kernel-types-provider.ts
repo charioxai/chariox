@@ -307,6 +307,8 @@ export type TerminalOutputRecord = {
   merge_key?: string
   /** Protocol ≥1071: `bytes` take the place of the row under `merge_key` instead of being added to it. */
   replaces?: boolean
+  /** The bytes are more of the replacement the `replaces` record of the same `merge_key` began: they join that row, wherever it is now. */
+  continues_replacement?: boolean
   source?: "external_provider_observed" | string | null
   external_provider?: string | null
   external_provider_session_id?: string | null

@@ -312,7 +312,11 @@ Claude reply from its terminal as plain text under one merge key, and once the
 transcript's block lands it sends the block's text once with `replaces: true`,
 so every client's row ends as exactly the transcript text. The stored history
 row is replaced the same way. A replacing record never coalesces into the
-records before it.
+records before it. A replacement longer than one record (16 KiB) goes out in
+pieces in one batch: the first has `replaces: true`, each later one has
+`continues_replacement: true` and the same `merge_key`, and a client adds it to
+the row the first piece set, wherever that row now is (after a tool row, or in
+a later turn), never as a new row. A piece with no row to join starts one.
 
 `GetSessionHistoryOutline.include_prefetched_content=true` returns optional
 `prefetched_blobs` on each requested agent, including an explicit empty array
