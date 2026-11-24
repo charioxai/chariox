@@ -250,11 +250,16 @@ pub(crate) fn annotate_waits(
     labels: &SourceLabels,
 ) {
     for (agent_id, activity) in activity.iter_mut() {
-        let waiting = command_wait(agent_id, processes).or_else(|| yielded_wait(agent_id, yielded));
+        let waiting = command_wait(agent_id, processes)
+            .or_else(|| yielded_wait(agent_id, yielded))
+            .or_else(|| detached_wait(agent_id, yielded));
         if let Some(waiting) = waiting {
             activity.liveness.waiting_on = Some(waiting);
         }
-        activity.liveness.waiting_events = yielded_events(agent_id, yielded, labels);
+        let mut events = yielded_events(agent_id, yielded, labels);
+        events.extend(detached_events(agent_id, yielded));
+        events.sort_by(|a, b| a.since_ms.cmp(&b.since_ms).then_with(|| a.id.cmp(&b.id)));
+        activity.liveness.waiting_events = events;
     }
 }
 
@@ -312,6 +317,75 @@ pub(crate) fn annotate_cards(
             });
         }
     }
+}
+
+/// The live wakes of an agent whose task is no longer waiting (it settled, or has a turn running): a
+/// process, job, terminal or timer that outlives its turn. They are what the agent waits on while it
+/// shows idle.
+fn detached_wakes<'a>(
+    agent_id: &'a str,
+    yielded: &'a YieldedSources,
+) -> impl Iterator<Item = &'a AgentWake> {
+    yielded.wakes.iter().filter(move |wake| {
+        wake.agent_id == agent_id
+            && matches!(wake.state.as_str(), "scheduled" | "starting" | "running")
+            && !yielded
+                .tasks
+                .iter()
+                .any(|task| task.task_id == wake.task_id && task.state == ExecutionState::Waiting)
+    })
+}
+
+fn wake_wait_kind(wake: &AgentWake) -> (AgentWaitKind, &'static str) {
+    match wake.kind.as_str() {
+        "process" => (AgentWaitKind::BackgroundCommand, "command"),
+        "terminal" => (AgentWaitKind::BackgroundCommand, "terminal"),
+        "timer" => (AgentWaitKind::Timer, "timer"),
+        _ => (AgentWaitKind::Source, "event"),
+    }
+}
+
+fn detached_wait(agent_id: &str, yielded: &YieldedSources) -> Option<AgentWaitingOn> {
+    detached_wakes(agent_id, yielded)
+        .map(|wake| AgentWaitingOn {
+            kind: wake_wait_kind(wake).0,
+            detail: if wake.command.is_empty() {
+                wake.label.clone()
+            } else {
+                wake.command.join(" ")
+            },
+            resource: None,
+            since_ms: wake.created_at_ms,
+            due_at_ms: wake.next_due_ms.filter(|_| wake.kind == "timer"),
+        })
+        .min_by_key(|wait| wait.since_ms)
+}
+
+fn detached_events(agent_id: &str, yielded: &YieldedSources) -> Vec<AgentWaitEvent> {
+    detached_wakes(agent_id, yielded)
+        .map(|wake| {
+            let (kind, noun) = wake_wait_kind(wake);
+            let text = if wake.label.is_empty() {
+                wake.command.join(" ")
+            } else {
+                wake.label.clone()
+            };
+            AgentWaitEvent {
+                id: wake.id.clone(),
+                kind,
+                label: if text.is_empty() {
+                    noun.to_owned()
+                } else {
+                    format!("{noun} {text}")
+                },
+                since_ms: wake.created_at_ms,
+                due_at_ms: wake.next_due_ms.filter(|_| wake.kind == "timer"),
+                task_id: wake.task_id.clone(),
+                wait_started_at_ms: wake.created_at_ms,
+                cancel_wake_id: Some(wake.id.clone()),
+            }
+        })
+        .collect()
 }
 
 fn command_wait(agent_id: &str, processes: &[SessionProcess]) -> Option<AgentWaitingOn> {
@@ -506,12 +580,13 @@ impl YieldedSources {
         store: &crate::durable_state::DurableKernelStateStore,
         room: &str,
     ) -> Self {
-        // Only waiting tasks yield on sources; the Room's finished turns are not read.
+        // Only waiting tasks yield on sources; the Room's finished turns are not read. A live wake
+        // whose task has settled still names what its agent waits on.
         let tasks = store.agent_waiting_tasks(room).unwrap_or_default();
-        if tasks.is_empty() {
+        let wakes = store.agent_live_wakes(room).unwrap_or_default();
+        if tasks.is_empty() && wakes.is_empty() {
             return Self::default();
         }
-        let wakes = store.agent_waiting_wakes(room).unwrap_or_default();
         let registrations = tasks
             .iter()
             .flat_map(|task| store.agent_registrations(&task.task_id).unwrap_or_default())
@@ -706,6 +781,37 @@ mod tests {
             "last_acknowledged_at_ms": null, "alerted_sequence": null
         }))
         .unwrap()
+    }
+
+    // W8 (stallrca): a process, job or timer that outlives its turn is what its agent waits on, though
+    // the task is done and the agent shows idle.
+    #[test]
+    fn a_live_wake_of_a_settled_task_is_what_its_agent_waits_on() {
+        let mut activity = BTreeMap::from([("a".to_string(), idle_activity())]);
+        activity.get_mut("a").unwrap().status = AgentRuntimeStatus::Idle;
+        let sources = YieldedSources {
+            tasks: vec![task("a", "t-done", "done"), task("b", "t-b", "waiting")],
+            wakes: vec![
+                wake("a", "t-done", "process", "running", 4_000),
+                wake("a", "t-done", "process", "exited", 1_000),
+                wake("a", "t-done", "process", "cancelling", 2_000),
+                // a wake of a waiting task stays with that task's wait
+                wake("b", "t-b", "process", "running", 3_000),
+            ],
+            registrations: Vec::new(),
+        };
+        annotate_waits(&mut activity, &[], &sources, &SourceLabels::default());
+        let liveness = &activity["a"].liveness;
+        let on = liveness.waiting_on.as_ref().unwrap();
+        assert_eq!((on.kind, on.since_ms), (AgentWaitKind::BackgroundCommand, 4_000));
+        assert_eq!(on.detail, "cargo build");
+        assert_eq!(liveness.waiting_events.len(), 1);
+        assert_eq!(liveness.waiting_events[0].label, "command build");
+        assert_eq!(liveness.waiting_events[0].cancel_wake_id.as_deref(), Some("wake-4000"));
+        // not a wait of an agent with no live wake
+        let mut other = BTreeMap::from([("c".to_string(), idle_activity())]);
+        annotate_waits(&mut other, &[], &sources, &SourceLabels::default());
+        assert!(other["c"].liveness.waiting_on.is_none());
     }
 
     // W2: a timer wait says when it is due.

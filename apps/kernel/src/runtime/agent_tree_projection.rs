@@ -209,6 +209,7 @@ pub(crate) fn project_agent_tree(
             .iter()
             .any(|interaction| !held_by_agent(room, interaction.id()));
         let turn = turn_of(agent).unwrap_or_default();
+        let liveness = liveness_of(agent).and_then(node_liveness);
         let state = node_state(room, agent, !pending.is_empty(), turn);
         let find_agent = |id: &str| agents.iter().find(|candidate| candidate.id() == id);
         let effective = effective_agent_execution_config_with_parents(
@@ -263,7 +264,7 @@ pub(crate) fn project_agent_tree(
             deadline_ms: deadline_ms(agent),
             created_at_ms: agent.created_at_ms(),
             usage_limit_stop: agent.usage_limit_wait().cloned(),
-            liveness: liveness_of(agent).and_then(node_liveness),
+            liveness,
         });
     }
     let totals = totals_of(&nodes);
