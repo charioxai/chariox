@@ -705,4 +705,5 @@ async fn a_live_wake_of_a_settled_child_is_its_node_wait_reason() {
     assert_eq!(on.detail, "cargo test");
     assert_eq!(liveness.waiting_events[0].label, "command build");
     assert_eq!(tree.nodes[0].state, AgentTreeState::Waiting);
+    assert_eq!(tree.totals.live, 1, "a node waiting on its wake is live: its pane stays open");
 }

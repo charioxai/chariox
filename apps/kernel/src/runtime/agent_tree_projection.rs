@@ -210,7 +210,14 @@ pub(crate) fn project_agent_tree(
             .any(|interaction| !held_by_agent(room, interaction.id()));
         let turn = turn_of(agent).unwrap_or_default();
         let liveness = liveness_of(agent).and_then(node_liveness);
-        let state = node_state(room, agent, !pending.is_empty(), turn);
+        let mut state = node_state(room, agent, !pending.is_empty(), turn);
+        // A live process, job or timer outlives its turn (the task settled, the agent is idle): the node is waiting
+        // on it, and a client that counts live nodes keeps the node.
+        if state == AgentTreeState::Idle
+            && liveness.as_ref().is_some_and(|l| l.waiting_on.is_some())
+        {
+            state = AgentTreeState::Waiting;
+        }
         let find_agent = |id: &str| agents.iter().find(|candidate| candidate.id() == id);
         let effective = effective_agent_execution_config_with_parents(
             room,

@@ -39,11 +39,15 @@ const withoutNoun = (label: string, nouns: readonly string[]): string => {
 
 function waitOf(liveness: AgentLiveness): { readonly first: Wait; readonly more: number } | undefined {
   const events = liveness.waiting_events ?? []
+  const on = liveness.waiting_on
+  // A command held or paused for room is the reason the person needs: its event is the same command, so it is not counted again.
+  if (on && (on.kind === "command_held" || on.kind === "command_paused")) {
+    return { first: { kind: on.kind, since_ms: on.since_ms, text: on.detail ?? "", due_at_ms: on.due_at_ms, resource: on.resource }, more: Math.max(0, events.length - 1) }
+  }
   if (events.length > 0) {
     const [first, ...rest] = events as [AgentWaitEvent, ...AgentWaitEvent[]]
     return { first: { kind: first.kind, since_ms: first.since_ms, text: first.label, due_at_ms: first.due_at_ms }, more: rest.length }
   }
-  const on = liveness.waiting_on
   if (!on || on.kind === "provider") return undefined
   const noun = on.kind === "timer" ? "timer " : ""
   return { first: { kind: on.kind, since_ms: on.since_ms, text: `${noun}${on.detail ?? ""}`.trim(), due_at_ms: on.due_at_ms, resource: on.resource }, more: 0 }

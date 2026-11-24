@@ -35,6 +35,18 @@ test("W1 a command held or paused for room says which", () => {
   assert.equal(text(paused), "waiting: cargo build paused for disk (3 min)")
 })
 
+test("W1 a held command keeps its reason and resource when its yielded event is listed too", () => {
+  const held: AgentLiveness = {
+    waiting_on: { kind: "command_held", detail: "cargo build", resource: "memory", since_ms: ago(3 * MIN) },
+    waiting_events: [{ id: "w", kind: "background_command", label: "command cargo build", since_ms: ago(9 * MIN), task_id: "t", wait_started_at_ms: ago(9 * MIN) }],
+  }
+  assert.equal(text(held), "waiting: cargo build held for memory (3 min)")
+  const paused: AgentLiveness = { ...held, waiting_on: { kind: "command_paused", detail: "cargo build", resource: "disk", since_ms: ago(2 * MIN) } }
+  assert.equal(text(paused), "waiting: cargo build paused for disk (2 min)")
+  const more: AgentLiveness = { ...held, waiting_events: [...held.waiting_events!, { id: "s", kind: "source", label: "sub-agent a", since_ms: ago(MIN), task_id: "t", wait_started_at_ms: ago(MIN) }] }
+  assert.equal(text(more), "waiting: cargo build held for memory (3 min), and 1 more")
+})
+
 test("W2 a timer names its label and when it is due", () => {
   const due = Date.parse("2026-11-24T05:30:00Z")
   assert.equal(text(events({ kind: "timer", label: "timer check review", since: ago(MIN), due })), "waiting: timer 'check review' (due 05:30)")
