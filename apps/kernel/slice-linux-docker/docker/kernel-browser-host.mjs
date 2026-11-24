@@ -32,6 +32,7 @@ import { NativeAccessibility } from './native-accessibility.mjs';
 import { NativeComputer } from './native-computer.mjs';
 import { HostChromium } from "./kernel-browser-process.mjs";
 import { BrowserRecovery } from "./kernel-browser-recovery.mjs";
+import { LAUNCH_FAILURES_BEFORE_RESTART, recordRestart } from "./kernel-browser-controller-restart.mjs";
 import { requireBrowserMemory } from './browser-memory.mjs';
 import { admitComputerMutation, blockedUrl, extensionManagementUrl, EXTENSIONS_REFUSED } from "./kernel-browser-policy.mjs";
 import { ChromeTabGroups, writeTabGroupsExtension } from "./kernel-browser-tab-groups.mjs";
@@ -146,6 +147,9 @@ export class KernelBrowserHost {
     this.arbiter = new InputArbiter(this, this.chromeWindows);
     this.browserFactory = browserFactory;
     this.browser = null;
+    this.lifecycle = Promise.resolve();
+    this.restoredOpeners = new Map();
+    this.launchFailures = 0; this.restartController = null;
     this.recovery = new BrowserRecovery(this);
     this.savedGroups = [];
     this.generation = 0;
@@ -228,12 +232,14 @@ export class KernelBrowserHost {
     const name = path.join(this.root, "tabs.json");
     const active = [...this.tabs.values()].find(tab => tab.target_id === this.activeTarget);
     const data = { generation: this.generation, active_tab_id: active?.tab_id ?? null, groups: this.savedGroups,
-      tabs: [...this.tabs.values()].filter(tab => !this.browser?.appTabs?.apps || ![...this.browser.appTabs.apps.values()].some(app => app.targetId === tab.target_id)).slice(0, TAB_LIMIT).map(({ tab_id, url }) => {
+      tabs: [...this.tabs.values()].filter(tab => !this.browser?.appTabs?.apps || ![...this.browser.appTabs.apps.values()].some(app => app.targetId === tab.target_id)).slice(0, TAB_LIMIT).map(({ tab_id, url, opener_target_id }) => {
+        const live = [...this.tabs.values()], restored = this.restoredOpeners.get(tab_id);
+        const opener = live.find(other => other.target_id === opener_target_id)?.tab_id ?? (live.some(other => other.tab_id === restored) ? restored : undefined);
         const deferred = this.webBotAuthRestoreUrls.get(tab_id);
         const projectId = this.webBotAuthProjects.get(tab_id) ?? deferred?.projectId;
         const restoreUrl = deferred?.url ?? url;
         const safeUrl = redactObservation(restoreUrl, this.protection.values) === restoreUrl ? restorationUrl(restoreUrl) : "about:blank";
-        return { tab_id, url: safeUrl, ...(projectId ? { web_bot_auth: true, web_bot_auth_project_id: projectId } : {}) };
+        return { tab_id, url: safeUrl, ...(opener && opener !== tab_id ? { opener_tab_id: opener } : {}), ...(projectId ? { web_bot_auth: true, web_bot_auth_project_id: projectId } : {}) };
       }) };
     // App intent remains kernel-owned; only its origin selects the restored view.
     data.app_origins = [...new Set([
@@ -268,9 +274,13 @@ export class KernelBrowserHost {
     this.restoring = true;
     // Recovery belongs to the shared browser, not the viewer whose read first
     // notices the loss. Its caller still checks cancellation after this wait.
-    this.starting = this.startNow({ signal: recovering ? undefined : signal });
-    try { return await this.starting; }
-    catch (error) { this.recovery.schedule(); throw error; }
+    this.starting = this.serial(() => this.startNow({ signal: recovering ? undefined : signal }));
+    try { const started = await this.starting; this.launchFailures = 0; return started; }
+    catch (error) {
+      this.recovery.schedule();
+      if (++this.launchFailures >= LAUNCH_FAILURES_BEFORE_RESTART) this.launchFailures = 0, this.restartController?.();
+      throw error;
+    }
     finally { this.starting = null; this.restoring = false; }
   }
   async startNow({ signal } = {}) {
@@ -362,6 +372,7 @@ export class KernelBrowserHost {
         const url = restorationUrl(tab.url);
         const defer = tab.web_bot_auth === true && typeof tab.web_bot_auth_project_id === "string" && url !== "about:blank";
         if (defer) this.webBotAuthProjects.set(tab.tab_id, tab.web_bot_auth_project_id);
+        if (typeof tab.opener_tab_id === "string" && tab.opener_tab_id.startsWith("host-tab-")) this.restoredOpeners.set(tab.tab_id, tab.opener_tab_id);
         await this.createTab(defer ? "about:blank" : url, tab.tab_id, {
           signal,
           background: true,
@@ -380,7 +391,7 @@ export class KernelBrowserHost {
       await this.restoreWindowLayout(saved.window_layout, signal);
       this.recovery.watch(connection);
       this.stateSignal.notify();
-    } catch (error) { await this.stop({ recovering: true, preserveDesktop }); throw error; }
+    } catch (error) { await this.stopNow({ recovering: true, preserveDesktop }); throw error; }
   }
   // MP-08/MP-10/MP-11: native binding changes stay on the host mutation lane.
   async rebindWindows() {
@@ -577,13 +588,35 @@ export class KernelBrowserHost {
     }
     return await entry.ready;
   }
-  async stop({ recovering = false, preserveDesktop = false } = {}) {
+  // Row 548: Chrome knows a Tab's opener only for the browser that opened it; a restored Tab keeps the link its snapshot saved.
+  restoredOpener(tabId, tabIds) {
+    const opener = this.restoredOpeners.get(tabId);
+    return opener && [...tabIds.values()].includes(opener) ? { opener_tab_id: opener } : {};
+  }
+  // Row 548: the pointer buttons of one Tab, released without touching the browser. Best effort: a Tab already gone has nothing held.
+  async releaseTabInput(tab) {
+    const { connection, sessionId } = await this.browser.resolvePageTarget(tab.target_id);
+    await Promise.allSettled(["left", "middle", "right"].map(button => connection.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: 0, y: 0, button, buttons: 0, clickCount: 0 }, sessionId)));
+  }
+  // MP-08 (row 548): a browser start and a stop (an owner's, or a reset after a failed input) never overlap. They share the desktop,
+  // the Tab registry and the CDP client; a stop that ran beside a restart removed the new X server's directory.
+  serial(operation) {
+    const run = this.lifecycle.then(operation);
+    this.lifecycle = run.catch(() => {});
+    return run;
+  }
+  stop({ recovering = false, preserveDesktop = false } = {}) {
+    // An owner's stop disarms recovery at once, so a start queued behind it is refused rather than racing it.
+    if (!recovering) this.recovery?.stop();
+    return this.serial(() => this.stopNow({ recovering, preserveDesktop }));
+  }
+  // A reset belongs to the browser that failed. Once it holds the lock that browser may be gone and a newer one running: that one stays.
+  resetBrowser(browser, label) {
+    return this.serial(async () => { if (!this.isBrowserLive(browser)) return; lifecycleLog(label); await this.stopNow({ recovering: true }); });
+  }
+  async stopNow({ recovering = false, preserveDesktop = false } = {}) {
     lifecycleLog(recovering ? 'browser_stop recovering' : 'browser_stop');
-    if (!recovering) {
-      this.recovery?.stop();
-      await this.starting?.catch(() => {});
-      this.recovery?.stop();
-    }
+    if (!recovering) this.recovery?.stop();
     this.busyInputs.retireAll(); // a stopped browser is not relaunched by an input that waited for its renderer
     await this.desktopDisplay.close();
     await Promise.all([...this.displays.values()].map(stream=>this.removeDisplay(stream)));
@@ -625,7 +658,7 @@ export class KernelBrowserHost {
     return redactBrowserState({ state: "ready", generation: this.generation, _observation: this.observed, _tab_creation_actions,
       active_tab_id: active, downloads: this.downloads.state(), tabs: [...this.tabs.values()].map(({ target_id, opener_target_id, ...tab }) => ({
         ...tab,
-        ...(tabIds.has(opener_target_id) ? { opener_tab_id: tabIds.get(opener_target_id) } : {}),
+        ...(tabIds.has(opener_target_id) ? { opener_tab_id: tabIds.get(opener_target_id) } : this.restoredOpener(tab.tab_id, tabIds)),
         ...this.header.read(tab),
         ...(this.webBotAuthRestoreUrls.has(tab.tab_id) ? { title: "Web Bot Auth restore requires an agent to resume this tab" } : {}),
       })), dialogs, viewport:this.viewport(), chrome_window: this.chromeWindow(),
@@ -1405,12 +1438,15 @@ export class KernelBrowserHost {
       catch (error) {
         if (dispatched) markDispatched(error);
         // Late CDP acknowledgements and definitive text refusals leave nothing held; neither needs a browser reset.
-        if ((dispatched && !lateInputAck(error) && !(error instanceof TextInsertionRefused) || ["browser_action_cancelled", "stale_document_reference"].includes(error?.code)) && this.isBrowserLive(browserAtStart)) {
+        // A document that retired under the input (a popup redirecting, row 548) takes its pointer and key state with it: the
+        // refusal never resets the browser, and input that had reached the old document releases the buttons on this Tab only.
+        if (error?.code === "stale_document_reference") {
+          if (dispatched) await this.releaseTabInput(tab).catch(() => {});
+        } else if ((dispatched && !lateInputAck(error) && !(error instanceof TextInsertionRefused) || error?.code === "browser_action_cancelled") && this.isBrowserLive(browserAtStart)) {
           // Clear any dispatched key/button state before another actor can use
           // the browser. Recovery rotates generation; cancelled input never replays. A reset is a loss the
           // browser recovers from with its Tabs: only the owner's stop keeps it down.
-          lifecycleLog(`browser_reset after ${hostErrorLabel(error)}`);
-          await this.stop({ recovering: true });
+          await this.resetBrowser(browserAtStart, `browser_reset after ${hostErrorLabel(error)}`);
         }
         throw error;
       }
@@ -1688,7 +1724,7 @@ export class KernelBrowserHost {
       // A cancelled request that may have dispatched input stops the browser (no held keys/buttons). A
       // cancelled read-only observation (a viewer's credit on a huge page) must not stop every Tab (MP-08/MP-10).
       if (error?.code === "browser_action_cancelled" && request.method !== "host.computer" && !request.params?.display_subscription_id
-        && this.browser === browserAtEntry && !(request.method === "host.browser" && OBSERVATION_OPS.has(request.params?.op))) { lifecycleLog('browser_reset after cancelled request'); await this.stop({ recovering: true }); }
+        && this.browser === browserAtEntry && !(request.method === "host.browser" && OBSERVATION_OPS.has(request.params?.op))) { await this.resetBrowser(browserAtEntry, 'browser_reset after cancelled request'); }
       if (["browser_unavailable"].includes(error?.code)) {
         return { id: request.id, ok: false, error: { code: error.code, message: error.message } };
       }
@@ -1702,6 +1738,15 @@ if (process.argv[2] === "stdio" && process.argv[1] && import.meta.url === pathTo
   const host = new KernelBrowserHost(process.argv[3], { appStorageRoot: process.argv[4] });
   let closing = false;
   const stop = async () => { if (closing) return; closing = true; await host.stop(); process.exit(0); };
+  // Row 548: repeated launch failures end this controller process; the kernel starts a fresh one with the next request and the Tabs return.
+  host.restartController = () => {
+    if (closing) return;
+    void recordRestart(process.argv[3]).then(allowed => {
+      if (!allowed || closing) return;
+      closing = true; lifecycleLog('controller_restart after repeated launch failures');
+      void Promise.race([host.stop().catch(() => {}), new Promise(resolve => setTimeout(resolve, 5000))]).finally(() => process.exit(75));
+    }, () => {});
+  };
   process.on("SIGTERM", stop);
   process.on("SIGINT", stop);
   await new BrowserControllerStdioServer(timedHostRequests(host, request => scheduleHostRequest(request, host.browser, host.viewport(), Boolean(host.chromium.desktop?.binding?.())))).run().finally(() => host.stop());

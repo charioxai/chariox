@@ -168,7 +168,7 @@ export async function runKernelsCommand(argv: string[]): Promise<boolean> {
   if (wantsHelp(rest)) {
     const family = command === "events" ? EVENT_VERBS : command === "files" ? FILES_VERBS : undefined
     const verb = family?.find(name => name === rest[0])
-    console.log(family && !verb ? familyUsageOf(command, family) : usageOf(family ? `${command} ${verb}` : terminalVerb ? `terminal ${terminalVerb}` : execPlace ? "exec place" : command))
+    console.log(family && !verb ? familyUsageOf(command, family) : usageOf(command === "kernels" && rest[0] === "restart" ? "kernels restart" : family ? `${command} ${verb}` : terminalVerb ? `terminal ${terminalVerb}` : execPlace ? "exec place" : command))
     return true
   }
   let kernel: string | null = null
@@ -193,7 +193,9 @@ export async function runKernelsCommand(argv: string[]): Promise<boolean> {
     const split = terminalVerb === "open" || (command === "exec" && !execPlace) ? rest.indexOf("--") : -1
     const program = split < 0 ? [] : rest.slice(split + 1)
     const options = split < 0 ? rest : rest.slice(0, split)
-    const { flags, positionals } = parseArguments(verb ? `files ${verb}` : terminalVerb ? `terminal ${terminalVerb}` : execPlace ? "exec place" : command, verb || terminalVerb || execPlace ? options.slice(1) : options)
+    // `chariox kernels restart --browser` restarts the browser of a kernel (row 548); a bare `kernels` still lists them.
+    const kernelsRestart = command === "kernels" && rest[0] === "restart"
+    const { flags, positionals } = parseArguments(kernelsRestart ? "kernels restart" : verb ? `files ${verb}` : terminalVerb ? `terminal ${terminalVerb}` : execPlace ? "exec place" : command, verb || terminalVerb || execPlace || kernelsRestart ? options.slice(1) : options)
     const socket = flags.get("--socket") as string | undefined
     if (execPlace) {
       const session = flags.get("--session") as string | undefined
@@ -227,6 +229,13 @@ export async function runKernelsCommand(argv: string[]): Promise<boolean> {
       process.stdout.write(response.AgentReleaseNotes.text)
     } else if (command === "guide") {
       console.log(guideText())
+    } else if (kernelsRestart) {
+      // The browser is the only thing a person can restart here today; `--browser` names it, so a later `--kernel`-wide restart
+      // cannot be started by a missing flag.
+      if (!flags.has("--browser")) throw new CommandFailure("usage", usageOf("kernels restart"))
+      kernel = (flags.get("--kernel") as string | undefined) ?? null
+      const response = await sendRequest({ KernelBrowser: { command: { op: "restart" } } }, { socket, kernel: kernel ?? undefined, timeoutSeconds: parseTimeout(flags.get("--timeout")) + 60 }) as { KernelBrowser?: { result: unknown } }
+      console.log(JSON.stringify(response.KernelBrowser?.result ?? response))
     } else if (command === "kernels") {
       const listed = await sendRequest({ ListGatewayKernels: {} }, { socket, timeoutSeconds: DEFAULT_TIMEOUT_SECONDS }) as { GatewayKernelsListed: unknown }
       console.log(JSON.stringify(listed.GatewayKernelsListed))

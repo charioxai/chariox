@@ -422,7 +422,7 @@ impl KernelBrowserHost {
             || (method == "host.browser"
                 && matches!(
                     params["op"].as_str(),
-                    Some("open" | "close" | "navigate" | "resize" | "input" | "stop")
+                    Some("open" | "close" | "navigate" | "resize" | "input" | "stop" | "restart")
                 ));
         let mutation_lane = if mutation {
             Some(
@@ -497,7 +497,11 @@ impl KernelBrowserHost {
                     .insert(user.into());
             }
         }
-        if method == "host.browser" && params["op"] == "stop" {
+        let mut params = params;
+        // Row 548: a restart is a stop (the controller process, its Chrome and X server end; every running action is cancelled)
+        // that nothing keeps down: the request goes on as the `start` it ends with, which restores the Tabs.
+        let restart = method == "host.browser" && params["op"] == "restart";
+        if method == "host.browser" && (params["op"] == "stop" || restart) {
             let model = self.actor_model(user)?;
             let (id, cancellation) = {
                 let mut ledger = model.lock().map_err(|_| "MD-3: actor lock poisoned")?;
@@ -523,12 +527,21 @@ impl KernelBrowserHost {
             });
             result.map_err(crate::error::HostFailure::Other)?;
             self.check_admission(admission)?;
-            self.inner
-                .lock()
-                .map_err(|_| "MD-2: browser host lock poisoned")?
-                .stopped_by_request
-                .insert(user.into());
-            return Ok(serde_json::json!({ "state": "stopped", "tabs": [] }));
+            if restart {
+                self.inner
+                    .lock()
+                    .map_err(|_| "MD-2: browser host lock poisoned")?
+                    .stopped_by_request
+                    .remove(user);
+                params["op"] = "start".into();
+            } else {
+                self.inner
+                    .lock()
+                    .map_err(|_| "MD-2: browser host lock poisoned")?
+                    .stopped_by_request
+                    .insert(user.into());
+                return Ok(serde_json::json!({ "state": "stopped", "tabs": [] }));
+            }
         }
         let mut implicit_start = false;
         if params["_host_generation"].is_u64() {

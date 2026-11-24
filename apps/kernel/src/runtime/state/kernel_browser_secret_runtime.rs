@@ -60,7 +60,7 @@ impl KernelRuntimeState {
         params: Value,
     ) -> Result<Value, DaemonError> {
         // Stop must remain available even when observation storage is fenced.
-        if method == "host.browser" && params["op"] == "stop" {
+        if method == "host.browser" && matches!(params["op"].as_str(), Some("stop" | "restart")) {
             return self
                 .kernel_browser_bound_operation(user, admission.as_ref(), method, params, false)
                 .await;
@@ -115,6 +115,7 @@ impl KernelRuntimeState {
                         params["op"].as_str(),
                         Some(
                             "stop"
+                                | "restart"
                                 | "close"
                                 | "navigate"
                                 | "resize"
@@ -199,6 +200,7 @@ impl KernelRuntimeState {
                         | "cancel_download"
                         | "wait"
                         | "stop"
+                        | "restart"
                 )
             );
         let input =

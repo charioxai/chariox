@@ -49,6 +49,7 @@ impl KernelRuntimeState {
         if matches!(
             request.command,
             KernelBrowserCommand::Stop
+                | KernelBrowserCommand::Restart
                 | KernelBrowserCommand::GrantLeasedComputer { .. }
                 | KernelBrowserCommand::RevokeLeasedComputer { .. }
                 | KernelBrowserCommand::GrantRoomComputer { .. }
@@ -76,6 +77,7 @@ impl KernelRuntimeState {
         if matches!(
             request.command,
             KernelBrowserCommand::Stop
+                | KernelBrowserCommand::Restart
                 | KernelBrowserCommand::GrantLeasedComputer { .. }
                 | KernelBrowserCommand::RevokeLeasedComputer { .. }
                 | KernelBrowserCommand::GrantRoomComputer { .. }
