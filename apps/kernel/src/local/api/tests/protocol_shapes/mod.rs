@@ -10,6 +10,7 @@ mod agent_lifecycle;
 mod agent_liveness;
 mod agent_max_context;
 mod agent_peek;
+mod agent_profile_turn_end;
 mod agent_workflow;
 mod aggregate_agent_model;
 mod app_accounts;
