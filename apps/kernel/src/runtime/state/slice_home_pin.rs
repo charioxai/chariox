@@ -57,8 +57,21 @@ impl KernelRuntimeState {
                 .then(|| identity.user_id.clone())
                 .flatten();
         }
+        if self.is_own_startup_file_probe(sender, requester_public_key) {
+            return self.authenticated_owner_of(identity);
+        }
         self.same_owner_peer_user_id(identity)
             .or_else(|| self.provisioned_slice_user_id(identity, sender))
+    }
+
+    /// A leased worker is no home kernel, so no kernel of the same owner reads its files. The
+    /// worker's own managed startup check does: it reads a probe file of this machine through
+    /// the relay, from this kernel's own id and key.
+    fn is_own_startup_file_probe(&self, sender: &str, requester_public_key: &str) -> bool {
+        let config = self.owned.config_projection.snapshot();
+        config.kernel_runtime_role == crate::config::KernelRuntimeRole::RemoteLeaseWorker
+            && sender == config.daemon_id
+            && requester_public_key == config.relay_public_key
     }
 
     fn provisioned_slice_user_id(
