@@ -4,6 +4,7 @@ use super::*;
 use crate::provider_account_copy::{
     failure, AccountCopyInstall, ProviderAccountCopyBinding, ProviderAccountCopyCredential,
     ProviderAccountCopyReceipt, PROVIDER_ACCOUNT_COPY_CAPABILITY,
+    PROVIDER_ACCOUNT_OPENCODE_COPY_CAPABILITY,
 };
 
 fn unlocked(config: &crate::config::DaemonConfig) -> Result<(), DaemonError> {
@@ -140,6 +141,12 @@ impl KernelRuntimeState {
             .capabilities
             .iter()
             .any(|c| c == PROVIDER_ACCOUNT_COPY_CAPABILITY)
+            // A target that cannot install an OpenCode login must not be sent one.
+            || (binding.provider == "opencode"
+                && !peer
+                    .capabilities
+                    .iter()
+                    .any(|c| c == PROVIDER_ACCOUNT_OPENCODE_COPY_CAPABILITY))
         {
             return Err(failure("provider_account_copy_unsupported"));
         }
