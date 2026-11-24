@@ -418,6 +418,48 @@ async fn runs(world: &World, agent: &str) -> bool {
         .is_ok()
 }
 
+#[test]
+fn editing_a_middle_agent_does_not_reapply_an_ended_ancestors_limit_to_the_revived_agent_below() {
+    run_large_stack_async_test("authority-revived-below-middle", revived_below_middle);
+}
+
+/// a -> b -> d: a's limit ends the whole team; the owner revives d, then edits b while a stays ended.
+async fn revived_below_middle() {
+    let world = world("authority-revived-below-middle").await;
+    let now = crate::session::unix_epoch_ms();
+    let set = |agent: &str, deadline_ms: Option<u64>| {
+        world.router.runtime_state.set_agent_deadline(
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            crate::local::SetAgentDeadlineRequest {
+                session_id: world.room.clone(),
+                agent_id: world.ids[agent].clone(),
+                deadline_ms,
+            },
+        )
+    };
+    set("a", Some(now + 10 * 60_000)).await.unwrap();
+    for agent in ["a", "b", "d"] {
+        finish(&world, agent).await;
+    }
+    assert!(!runs(&world, "d").await, "a's ended limit ended d too");
+
+    set("d", None).await.unwrap();
+    assert!(runs(&world, "d").await, "the owner revived d");
+
+    // Extending b gives d b's limit, not a's ended one.
+    set("b", Some(now + 8 * 60_000)).await.unwrap();
+    assert!(
+        runs(&world, "d").await,
+        "extending b wrote a's ended limit onto the revived d"
+    );
+    // Clearing b leaves d without a limit; a's retained limit is gone from the team.
+    set("b", None).await.unwrap();
+    assert!(
+        runs(&world, "d").await,
+        "clearing b wrote a's ended limit onto the revived d"
+    );
+}
+
 async fn finished_deadline() {
     let world = world("authority-finished-deadline").await;
     let now = crate::session::unix_epoch_ms();

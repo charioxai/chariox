@@ -227,6 +227,7 @@ impl CommandRouter {
     ) -> Result<(), DaemonError> {
         let mut deadline_ms = crate::session::unix_epoch_ms()
             .saturating_add(u64::try_from(after.as_millis()).unwrap_or(u64::MAX));
+        // A parent whose limit has ended bounds nothing (see `set_agent_deadline`).
         if let LocalDaemonResponse::AgentDeadline {
             deadline: Some(parent_deadline),
         } = self
@@ -236,7 +237,9 @@ impl CommandRouter {
                 agent_id: parent.id().to_string(),
             })?
         {
-            deadline_ms = deadline_ms.min(parent_deadline.deadline_ms);
+            if parent_deadline.state == crate::local::AgentDeadlineState::Armed {
+                deadline_ms = deadline_ms.min(parent_deadline.deadline_ms);
+            }
         }
         // A retried spawn finds its child already bounded; keep the earlier limit on a spawn retry.
         if let LocalDaemonResponse::AgentDeadline {

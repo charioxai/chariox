@@ -108,6 +108,15 @@ impl KernelRuntimeState {
             for ancestor in crate::agent::authority_limit::ancestors(descendant, &agents) {
                 let limit = if ancestor.id() == agent.id() {
                     request.deadline_ms
+                } else if self
+                    .owned
+                    .durable_state_store
+                    .agent_deadline(ancestor.session_id(), ancestor.id())?
+                    .is_some_and(|own| own.state == AgentDeadlineState::Reached)
+                {
+                    // Like the check on the edited agent above: an ancestor whose limit
+                    // has ended bounds nothing, and its retained intent is a past time.
+                    None
                 } else {
                     self.owned
                         .durable_state_store
