@@ -1465,6 +1465,110 @@ async fn a_deferred_downshift_does_not_resume_the_oversized_native_session() {
     assert!(handoff.render_hidden(24_000).contains("Continuity Ledger"));
 }
 
+// The same protection holds when the settled turn's run is no longer live by the time the saved
+// profile is committed: the run ended first, or the kernel restarted in between and only the
+// durable agent (with its retained native Claude session) is left.
+async fn check_deferred_downshift_without_a_live_source(ended_only: bool) {
+    let (_root, _app, runtime, session, agent, run) = compact_fixture().await;
+    runtime
+        .owned
+        .agent_store
+        .write()
+        .set_agent_provider_resume_state(
+            &agent,
+            ProviderResumeState::from_claude_session_id("retained-native-session"),
+        )
+        .unwrap();
+    let prompt = crate::history::SessionHistoryEntry::user_prompt(
+        &session,
+        "attachment",
+        &agent,
+        "Review continuity without changing the accepted decision.",
+    );
+    runtime
+        .owned
+        .operational_history_store
+        .append_transcript(
+            &prompt,
+            crate::history::HistoryEventTurnContext {
+                prompt_id: Some("audit-prompt".into()),
+                turn_id: Some("audit-turn".into()),
+                provider: Some(run.provider().into()),
+                model: Some(run.model().into()),
+                provider_run_id: Some(run.id().into()),
+                provider_session_id: Some("retained-native-session".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    if ended_only {
+        runtime
+            .owned
+            .provider_store
+            .mark_run_ended_provider_only(&session, run.id())
+            .unwrap();
+    } else {
+        runtime
+            .owned
+            .provider_store
+            .terminate_run_provider_only(&session, run.id())
+            .unwrap();
+    }
+    {
+        let mut agents = runtime.owned.agent_store.write();
+        let mut current = agents.get_agent(&agent).unwrap();
+        let account = current.provider_account_profile().to_string();
+        current.set_pending_profile(Some(crate::agent::PendingAgentProfile {
+            provider: "claude".into(),
+            model: Some("haiku".into()),
+            effort: None,
+            account_profile: account,
+        }));
+        agents.restore_agent(current);
+    }
+    // The restart path commits a saved profile the same way: from the stored session and agent.
+    let stored = runtime.owned.session_store.get_session(&session).unwrap();
+    assert!(runtime
+        .owned
+        .apply_agent_profile_after_turn(&stored, &agent)
+        .unwrap());
+    let applied = runtime.owned.agent_store.get_agent(&agent).unwrap();
+    assert_eq!(applied.model(), Some("haiku"));
+    assert!(applied.pending_profile().is_none());
+    assert_eq!(
+        applied
+            .provider_resume_state()
+            .provider_session_id("claude"),
+        None,
+        "Haiku must not resume the oversized native session"
+    );
+    assert!(
+        runtime
+            .owned
+            .operational_history_store
+            .load_agent_compaction_boundary(
+                &session,
+                &agent,
+                "claude",
+                run.account_profile(),
+                Some("retained-native-session"),
+            )
+            .unwrap()
+            .is_some(),
+        "the protected history boundary is recorded for the next turn"
+    );
+}
+
+#[tokio::test]
+async fn a_deferred_downshift_after_the_source_run_ended_does_not_resume_the_oversized_session() {
+    check_deferred_downshift_without_a_live_source(true).await;
+}
+
+#[tokio::test]
+async fn a_deferred_downshift_after_a_restart_does_not_resume_the_retained_native_session() {
+    check_deferred_downshift_without_a_live_source(false).await;
+}
+
 // MP-08 / MP-10 / MP-11: real launches keep selection default, not the resolved id.
 #[tokio::test]
 async fn r5_review_implicit_default_downshift_preserves_the_compacted_native_session() {

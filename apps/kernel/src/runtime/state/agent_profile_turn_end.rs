@@ -228,13 +228,26 @@ impl KernelRuntimeOwnedState {
         agent: &AgentInstance,
         pending: &crate::agent::PendingAgentProfile,
     ) -> Result<(), DaemonError> {
-        let Some(run) = self
+        let run = self
             .provider_store
-            .get_run_for_agent(session_id, agent.id())
-        else {
+            .get_run_for_agent(session_id, agent.id());
+        let Some(target_model) = pending.model.as_deref().or(agent.model()) else {
             return Ok(());
         };
-        let Some(target_model) = pending.model.as_deref().or(agent.model()) else {
+        // No run, an ended run, or a run whose context size is unknown (a restart between the
+        // turn settling and this commit, a provider that exited first): the ordinary update's own
+        // recovery clears the retained native session and keeps the protected history.
+        if self.recover_unknown_context_downshift(
+            session_id,
+            agent,
+            run.as_ref(),
+            &pending.provider,
+            &pending.account_profile,
+            target_model,
+        )? {
+            return Ok(());
+        }
+        let Some(run) = run else {
             return Ok(());
         };
         if !super::agent_profile_compaction::needs_compaction(
