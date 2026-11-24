@@ -15,6 +15,26 @@ impl KernelRuntimeOwnedState {
 }
 
 impl KernelRuntimeOwnedState {
+    /// A change that waited for a background command is announced once the process that took it
+    /// outputs: its run is not stale, and the change is still pending for its agent.
+    pub(super) fn announce_settings_taken_by_run(&self, session_id: &str, provider_run_id: &str) {
+        let Ok(run) = self.provider_store.get_run(provider_run_id) else {
+            return;
+        };
+        let Some(agent_id) = run.agent_instance_id() else {
+            return;
+        };
+        if run.settings_stale()
+            || run.state() == crate::provider::ProviderRunState::Ended
+            || !run.client_interface().is_chariox()
+        {
+            return;
+        }
+        if let Some((changes, by)) = self.pending_settings_notices.take(session_id, agent_id) {
+            self.announce_settings_change(session_id, agent_id, &changes, &by, false, false);
+        }
+    }
+
     /// Whether a `run_in_background` call of the run has not ended: it is a child of the
     /// provider's process, so ending that process ends the call and its notification turn.
     pub(super) fn run_has_running_background_calls(
@@ -46,17 +66,6 @@ impl KernelRuntimeState {
         let Some(agent_id) = run.agent_instance_id().map(str::to_string) else {
             return Ok(false);
         };
-        // A process the next dispatch started on the new settings: the first finished step of
-        // its turn says that a change which waited for a background command took effect.
-        if !run.settings_stale()
-            && run.state() != crate::provider::ProviderRunState::Ended
-            && run.client_interface().is_chariox()
-        {
-            if let Some((changes, by)) = owned.pending_settings_notices.take(session_id, &agent_id)
-            {
-                owned.announce_settings_change(session_id, &agent_id, &changes, &by, false, false);
-            }
-        }
         if !run.settings_stale()
             || run.state() == crate::provider::ProviderRunState::Ended
             || !run.client_interface().is_chariox()

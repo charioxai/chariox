@@ -652,10 +652,19 @@ async fn a_model_switch_between_turns_keeps_the_process_that_runs_a_background_c
             .model(),
         NEXT_MODEL
     );
-    turn.runtime
-        .swap_turn_process_at_step_boundary(&turn.session_id, &replaced)
-        .await
-        .unwrap();
+    // The replacement turn only returns text: no tool call, no step boundary.
+    let reply = crate::provider::ProviderPromptSignalBatch {
+        chunks: vec![crate::provider::ProviderPromptChunk {
+            kind: crate::terminal::TerminalOutputKind::ProviderOutput,
+            merge_key: None,
+            bytes: b"done".to_vec(),
+        }],
+        ..Default::default()
+    };
+    let _ = turn
+        .runtime
+        .apply_owned_structured_output_batch(&turn.session_id, &replaced, Vec::new(), reply)
+        .await;
     let notices = settings_notices(&turn);
     assert!(
         notices
