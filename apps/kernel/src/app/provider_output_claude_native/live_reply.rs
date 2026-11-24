@@ -96,6 +96,10 @@ struct LiveReply {
     streamed: VecDeque<Streamed>,
     /// Rows taken of the blocks handed over: the terminal may draw them again.
     finished: VecDeque<Vec<String>>,
+    /// Which reader this is. Block identities are persisted (they are merge keys), and a reader lost to a restart or to
+    /// the run registry's eviction counts its blocks from 1 again: the reader's own number keeps its keys from ever
+    /// being the earlier reader's.
+    reader: u64,
     blocks_started: usize,
     /// Rows the previous read showed, with how often: a row counts once two
     /// reads in a row show it that many times.
@@ -127,7 +131,22 @@ struct Row {
     width: usize,
 }
 
+/// A number no earlier reader had, in this process or before a restart: the wall clock at the first reader, then one more
+/// for each reader after it.
+fn next_reader() -> u64 {
+    static NEXT: OnceLock<std::sync::atomic::AtomicU64> = OnceLock::new();
+    NEXT.get_or_init(|| std::sync::atomic::AtomicU64::new(crate::session::unix_epoch_ms()))
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
 impl LiveReply {
+    /// The merge key of this reader's `block`th block for the prompt it reads. Adoption finds a row left by an earlier
+    /// reader by the prefix `live-{prompt}-`, so that stays the start of every key.
+    fn block_key(&self, block: usize) -> String {
+        let prompt_id = self.prompt_id.as_deref().unwrap_or_default();
+        format!("assistant:live-{prompt_id}-{}.{block}:0", self.reader)
+    }
+
     fn new(rows: u16, cols: u16) -> Self {
         Self {
             screen: vt100::Parser::new(rows, cols, 0),
@@ -137,6 +156,7 @@ impl LiveReply {
             block: None,
             streamed: VecDeque::new(),
             finished: VecDeque::new(),
+            reader: next_reader(),
             blocks_started: 0,
             previous_rows: HashMap::new(),
             left_over: None,
@@ -201,12 +221,8 @@ impl LiveReply {
                     return None;
                 }
                 self.blocks_started += 1;
-                let prompt_id = self.prompt_id.as_deref().unwrap_or_default();
                 self.block = Some(Block {
-                    merge_key_suffix: format!(
-                        "assistant:live-{prompt_id}-{}:0",
-                        self.blocks_started
-                    ),
+                    merge_key_suffix: self.block_key(self.blocks_started),
                     rows: Vec::new(),
                     last_width: 0,
                     text: String::new(),

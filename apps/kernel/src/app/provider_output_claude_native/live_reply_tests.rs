@@ -128,7 +128,7 @@ fn a_reply_taller_than_the_screen_streams_row_by_row_and_the_transcript_continue
     assert_eq!(
         reply.adopt(SCROLLED_REPLY),
         Adoption::Streamed {
-            merge_key_suffix: "assistant:live-prompt-1-1:0".to_string(),
+            merge_key_suffix: reply.block_key(1),
         }
     );
 }
@@ -155,7 +155,7 @@ fn a_long_essay_streams_exactly_through_scrolls_and_redraws() {
     assert_eq!(
         reply.adopt(ESSAY_REPLY),
         Adoption::Streamed {
-            merge_key_suffix: "assistant:live-prompt-1-1:0".to_string(),
+            merge_key_suffix: reply.block_key(1),
         }
     );
 }
@@ -180,7 +180,7 @@ fn emphasis_streams_plain_and_the_transcript_text_replaces_it() {
     assert_eq!(
         reply.adopt(EMPHASIS_REPLY),
         Adoption::Streamed {
-            merge_key_suffix: "assistant:live-prompt-1-1:0".to_string(),
+            merge_key_suffix: reply.block_key(1),
         },
         "the transcript text is paired with the plain row, whatever markup it adds"
     );
@@ -325,7 +325,7 @@ fn a_streamed_code_block_is_paired_with_its_fenced_transcript_block() {
     assert_eq!(
         reply.adopt(markdown),
         Adoption::Streamed {
-            merge_key_suffix: "assistant:live-prompt-1-1:0".to_string(),
+            merge_key_suffix: reply.block_key(1),
         }
     );
 }
@@ -406,7 +406,7 @@ fn a_second_block_of_a_turn_may_open_with_the_line_of_a_block_the_transcript_has
     assert_eq!(streamed, "Result\nSecond body one.\nSecond body two.");
     assert!(second
         .iter()
-        .all(|delta| delta.merge_key_suffix == "assistant:live-prompt-1-2:0"));
+        .all(|delta| delta.merge_key_suffix == reply.block_key(2)));
 }
 
 #[test]
@@ -673,7 +673,7 @@ fn every_streamed_reply_is_paired_with_its_transcript_block() {
         assert_eq!(
             live.adopt(&reply.markdown),
             Adoption::Streamed {
-                merge_key_suffix: "assistant:live-prompt-1-1:0".to_string(),
+                merge_key_suffix: live.block_key(1),
             },
             "case {case}: the transcript block missed its row\nmarkdown: {:?}\nstreamed: {streamed:?}",
             reply.markdown
