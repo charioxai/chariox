@@ -30,7 +30,9 @@ agent. A child cannot outlive the nearest ancestor limit that is still running
 that inherited limit; the refusal names the ancestor, its limit and who can extend it.
 
 An edit is serialized with deadline cleanup, so an old scheduler snapshot
-cannot stop a run after an accepted extension or clear. Children inherit the
+cannot stop a run after an accepted extension or clear. An ended ancestor's cleanup leaves a sub-agent whose limit
+was edited after that ancestor's deadline was reached (and the team below it)
+alone: the owner's new limit for it also admits the work it starts next. Children inherit the
 new parent limit immediately, while their separate explicit limits remain.
 Deadline records and explicit limits commit in one durable transaction.
 `GetAgentDeadline {session_id,agent_id}` returns `AgentDeadline {deadline}`;
