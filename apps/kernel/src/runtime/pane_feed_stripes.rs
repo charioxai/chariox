@@ -214,7 +214,18 @@ fn triggers<'a>(
         })
 }
 
+/// A wake that still counts down or runs: it stays on the pane until it fires or ends.
+fn wake_is_armed(wake: &crate::durable_state::agent_lifecycle::AgentWake) -> bool {
+    matches!(wake.state.as_str(), "scheduled" | "starting" | "running")
+}
+
 fn tasks(session: &RuntimeSession, agent_id: &str) -> Vec<PaneStripe> {
+    let armed = session
+        .agent_wakes()
+        .iter()
+        .filter(|wake| wake.agent_id == agent_id && wake_is_armed(wake))
+        .map(|wake| wake.task_id.as_str())
+        .collect::<Vec<_>>();
     let tasks = session
         .agent_tasks()
         .iter()
@@ -264,6 +275,28 @@ fn tasks(session: &RuntimeSession, agent_id: &str) -> Vec<PaneStripe> {
                 ..stripe(format!("wait:{}", task.task_id), "Blocked", text, None)
             });
         }
+        // An ordinary task that yielded to a source shows what it waits for. One that armed a wake is
+        // shown by that wake (its reason and countdown); a goal has its own row.
+        if task.state == ExecutionState::Waiting
+            && task.goal.is_none()
+            && task.wait.is_some()
+            && !armed.contains(&task.task_id.as_str())
+            && !is_delivery_bookkeeping(&task.reason)
+        {
+            let text = if task.reason.is_empty() {
+                "Waiting for the next task event"
+            } else {
+                &task.reason
+            };
+            stripes.push(PaneStripe {
+                at_ms: task
+                    .wait
+                    .as_ref()
+                    .and_then(|wait| wait.deadline_ms)
+                    .filter(|deadline| *deadline < OPEN_ENDED_MS),
+                ..stripe(format!("wait:{}", task.task_id), "Waiting", text, None)
+            });
+        }
     }
     stripes
 }
@@ -304,22 +337,13 @@ fn has_owner_card(session: &RuntimeSession, agent_id: &str, task: &AgentTaskExec
     })
 }
 
-/// A wake the agent armed shows while it is armed; one its waiting task already shows is that row.
+/// A wake the agent armed shows while it is armed, with its reason and countdown: the task that
+/// waits on it shows no row of its own then.
 fn wakes(session: &RuntimeSession, agent_id: &str) -> Vec<PaneStripe> {
-    let waiting = session
-        .agent_tasks()
-        .iter()
-        .filter(|task| task.agent_id == agent_id && task.state == ExecutionState::Waiting)
-        .map(|task| task.task_id.as_str())
-        .collect::<Vec<_>>();
     session
         .agent_wakes()
         .iter()
-        .filter(|wake| {
-            wake.agent_id == agent_id
-                && matches!(wake.state.as_str(), "scheduled" | "starting" | "running")
-                && !waiting.contains(&wake.task_id.as_str())
-        })
+        .filter(|wake| wake.agent_id == agent_id && wake_is_armed(wake))
         .map(|wake| {
             let kind = match (wake.kind.as_str(), wake.interval_ms) {
                 ("timer", Some(_)) => "/wait-every",
