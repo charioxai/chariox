@@ -882,16 +882,21 @@ impl KernelRuntimeState {
         }
         let vault_path = expand_vault_path(&vault_config.path);
         let status = crate::secret::chariox_encrypted_vault_status(&vault_path)?;
+        let mut status = status;
         if !status.unlocked {
             let guard = self
                 .ensure_vault_unlocked_for_agent(session_id, agent_id, "credential_vault_manage")
                 .await?;
-            let status = crate::secret::chariox_encrypted_vault_status(&vault_path)?;
-            return Ok(VaultManaged {
-                status,
-                action: "unlocked".to_string(),
-                unlocked_via: guard.unlocked_via(),
-            });
+            status = crate::secret::chariox_encrypted_vault_status(&vault_path)?;
+            // Unlocking is all a plain management call asked for; any other action goes on now the
+            // Vault is open (a passphrase change asks for its passphrases, an extension applies).
+            if matches!(action.unwrap_or("popup"), "popup" | "status") {
+                return Ok(VaultManaged {
+                    status,
+                    action: "unlocked".to_string(),
+                    unlocked_via: guard.unlocked_via(),
+                });
+            }
         }
 
         match action.unwrap_or("popup") {

@@ -547,12 +547,18 @@ impl KernelRuntimeOwnedState {
             ));
         }
         // Accepting an App's offer, choosing its files and saving its file each hand the payload to
-        // one client by their own request; a reply never does it.
+        // one client by their own request; a reply never does it. An agent's own question may use
+        // any choice id it likes: only the App offers reserve these.
         if !take_host
             && matches!(
                 choice_id,
                 "accept_host_action" | "choose_files" | "save_file"
             )
+            && interaction.kernel_operation_id().is_some_and(|operation| {
+                ["host_action:", "file_pick:", "file_export:"]
+                    .iter()
+                    .any(|prefix| operation.starts_with(prefix))
+            })
         {
             return Err(interaction_error(
                 "App host actions use the dedicated terminal acceptance path",

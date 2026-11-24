@@ -294,6 +294,33 @@ async fn an_unlock_from_the_vault_window_closes_the_open_card_and_the_agent_goes
     }
 }
 
+// A management action asked of a locked Vault goes on after the unlock: the extension applies.
+#[tokio::test]
+async fn an_extension_asked_of_a_locked_vault_applies_after_the_unlock() {
+    let f = Fixture::locked();
+    let runtime = f.router.runtime_state.clone();
+    let (session, agent) = (f.session.clone(), f.agent.clone());
+    let operation = tokio::spawn(async move {
+        runtime
+            .manage_credential_vault(&session, &agent, Some("extend"))
+            .await
+    });
+    f.the_open_unlock_prompt().await;
+    f.unlock_for(PASSPHRASE, VaultUnlockDuration::Minutes { minutes: 10 })
+        .await
+        .unwrap();
+    let managed = tokio::time::timeout(std::time::Duration::from_secs(30), operation)
+        .await
+        .expect("the agent's operation is woken by the unlock")
+        .unwrap()
+        .expect("the operation succeeds");
+    assert_eq!(
+        managed.action, "extended_30m",
+        "the requested extension was applied"
+    );
+    assert!(managed.status.unlocked);
+}
+
 #[tokio::test]
 async fn an_unlock_request_cannot_claim_to_come_from_a_card() {
     let f = Fixture::locked();
