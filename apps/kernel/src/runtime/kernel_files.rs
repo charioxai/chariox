@@ -29,6 +29,58 @@ const PARTIAL_SUFFIX: &str = ".chariox-partial";
 const TURN_WAIT: Duration = Duration::from_secs(30);
 const TURN_POLL: Duration = Duration::from_millis(2);
 
+/// Uploads whose first chunk this kernel has staged, by staging path. A later chunk that finds its
+/// folder gone can then say the folder was removed. Without the record, a chunk that starts ahead
+/// of the first one (which creates the folders) cannot tell "not started yet" from "removed", so it
+/// waits its turn instead. Bounded: an abandoned upload only costs its entry until the cap evicts it.
+static STARTED_UPLOADS: std::sync::Mutex<Option<std::collections::HashMap<PathBuf, Instant>>> =
+    std::sync::Mutex::new(None);
+const STARTED_UPLOADS_CAP: usize = 4096;
+
+fn note_upload_started(staging: &Path) {
+    note_upload_activity_at(staging, Instant::now());
+}
+
+fn note_upload_activity_at(staging: &Path, at: Instant) {
+    let mut started = STARTED_UPLOADS.lock().unwrap_or_else(|e| e.into_inner());
+    let started = started.get_or_insert_with(Default::default);
+    if started.len() >= STARTED_UPLOADS_CAP {
+        if let Some(oldest) = started
+            .iter()
+            .min_by_key(|(_, at)| **at)
+            .map(|(path, _)| path.clone())
+        {
+            started.remove(&oldest);
+        }
+    }
+    started.insert(staging.to_path_buf(), at);
+}
+
+/// An upload counts as established here while its chunks keep arriving: one silent for longer than
+/// a chunk may wait for its turn is abandoned, and a later upload to the same path starts over.
+fn upload_started(staging: &Path) -> bool {
+    upload_started_at(staging, Instant::now())
+}
+
+fn upload_started_at(staging: &Path, now: Instant) -> bool {
+    STARTED_UPLOADS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .and_then(|started| started.get(staging))
+        .is_some_and(|last| now.saturating_duration_since(*last) <= TURN_WAIT)
+}
+
+fn forget_upload(staging: &Path) {
+    if let Some(started) = STARTED_UPLOADS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_mut()
+    {
+        started.remove(staging);
+    }
+}
+
 pub(super) fn fail(code: &str, message: impl Into<String>) -> DaemonError {
     DaemonError::MachineRequest {
         code: code.into(),
@@ -86,6 +138,10 @@ pub(super) fn resolve(path: &str, guard: &StateGuard) -> Result<PathBuf, DaemonE
 fn folder_failure(folder: &Path, error: &std::io::Error) -> DaemonError {
     use std::io::ErrorKind;
     let (code, reason) = match error.kind() {
+        ErrorKind::NotFound => return fail(
+            "file_destination_missing",
+            format!("Destination folder {} no longer exists. Recreate it or choose another folder, then upload again.", folder.display()),
+        ),
         ErrorKind::NotADirectory | ErrorKind::AlreadyExists => {
             ("file_not_a_file", "a file blocks the path")
         }
@@ -340,6 +396,21 @@ pub(crate) fn read(
     })
 }
 
+fn missing_destination(path: &Path) -> Option<DaemonError> {
+    let folder = path.parent()?;
+    let error = std::fs::metadata(folder).err()?;
+    (error.kind() == std::io::ErrorKind::NotFound).then(|| folder_failure(folder, &error))
+}
+
+fn upload_failure(path: &Path, error: &std::io::Error) -> DaemonError {
+    if error.kind() == std::io::ErrorKind::NotFound {
+        if let Some(error) = missing_destination(path) {
+            return error;
+        }
+    }
+    io_failure(path, error)
+}
+
 /// Opens the upload's staging file without trusting what is already at the predictable name:
 /// a first chunk replaces whatever is there, a later chunk continues only the private regular
 /// file this user made (another user of a shared directory may have planted a link or a file).
@@ -369,7 +440,11 @@ fn open_staging(partial: &Path, path: &Path, offset: u64) -> Result<std::fs::Fil
             .mode(0o600)
             .custom_flags(libc::O_NOFOLLOW)
             .open(partial)
-            .map_err(|e| io_failure(path, &e));
+            .map(|file| {
+                note_upload_started(partial);
+                file
+            })
+            .map_err(|e| upload_failure(path, &e));
     }
     let file = match std::fs::OpenOptions::new()
         .read(true)
@@ -379,7 +454,8 @@ fn open_staging(partial: &Path, path: &Path, offset: u64) -> Result<std::fs::Fil
     {
         Ok(file) => file,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Err(offset_mismatch(path, 0));
+            forget_upload(partial);
+            return Err(missing_destination(path).unwrap_or_else(|| offset_mismatch(path, 0)));
         }
         Err(e) if e.raw_os_error() == Some(libc::ELOOP) => return Err(untrusted()),
         Err(e) => return Err(io_failure(path, &e)),
@@ -401,12 +477,27 @@ fn open_staging(partial: &Path, path: &Path, offset: u64) -> Result<std::fs::Fil
 
 /// Holds a chunk that is ahead of the staged bytes until the chunks before it have landed. A chunk
 /// at a wrong offset still ends as `file_offset_mismatch`, after this wait.
-fn wait_for_turn(partial: &Path, offset: u64) {
-    let staged = || std::fs::symlink_metadata(partial).map_or(0, |metadata| metadata.len());
+fn wait_for_turn(partial: &Path, path: &Path, offset: u64) -> Result<(), DaemonError> {
     let deadline = Instant::now() + TURN_WAIT;
-    while offset > 0 && staged() < offset && Instant::now() < deadline {
+    while offset > 0 && Instant::now() < deadline {
+        match std::fs::symlink_metadata(partial) {
+            Ok(metadata) if metadata.len() >= offset => break,
+            // The first chunk creates the folders and may still be on its way: only an upload
+            // already started here has lost its folder.
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                if upload_started(partial) {
+                    if let Some(error) = missing_destination(path) {
+                        // This attempt ends here; a retry to the same path starts over.
+                        forget_upload(partial);
+                        return Err(error);
+                    }
+                }
+            }
+            _ => {}
+        }
         std::thread::sleep(TURN_POLL);
     }
+    Ok(())
 }
 
 fn offset_mismatch(path: &Path, have: u64) -> DaemonError {
@@ -520,11 +611,12 @@ pub(crate) fn write_at(
             ),
         ));
     }
-    wait_for_turn(&partial, chunk.offset);
+    wait_for_turn(&partial, path, chunk.offset)?;
     let mut file = open_staging(&partial, path, chunk.offset)?;
     file.write_all(chunk.data)
         .map_err(|e| io_failure(path, &e))?;
     file.flush().map_err(|e| io_failure(path, &e))?;
+    note_upload_started(&partial);
     if end < chunk.total_size {
         return Ok(StagedWrite {
             received: end,
@@ -532,6 +624,8 @@ pub(crate) fn write_at(
         });
     }
     let sha256 = publish(&file, &partial, path, chunk.overwrite, chunk.sha256)?;
+    // Published: this upload is over. A refused publish keeps its staged bytes, so it stays known.
+    forget_upload(&partial);
     Ok(StagedWrite {
         received: end,
         sha256: Some(sha256),
@@ -548,10 +642,14 @@ pub(crate) fn staged_bytes(staging: &Path) -> u64 {
 
 /// Drops the staging file `staging` of an unfinished upload.
 pub(crate) fn discard_staging(staging: &Path) {
+    forget_upload(staging);
     let _ = std::fs::remove_file(staging);
 }
 
 fn staging_replaced(path: &Path) -> DaemonError {
+    if let Some(error) = missing_destination(path) {
+        return error;
+    }
     fail(
         "file_staging_untrusted",
         format!(
@@ -586,7 +684,7 @@ fn replace(file: &std::fs::File, partial: &Path, path: &Path) -> Result<(), Daem
         if kept {
             let _ = std::fs::remove_file(&previous);
         }
-        return Err(io_failure(path, &error));
+        return Err(upload_failure(path, &error));
     }
     if names_the_open_file(path, file) {
         if kept {
@@ -643,7 +741,7 @@ fn publish(
                     ),
                 )
             } else {
-                io_failure(path, &error)
+                upload_failure(path, &error)
             }
         })?;
         if !names_the_open_file(path, file) {
@@ -760,6 +858,67 @@ mod tests {
             assert!(message.contains(&target.display().to_string()));
             assert!(!message.contains(PARTIAL_SUFFIX));
         }
+    }
+
+    #[test]
+    fn continuing_an_upload_names_the_destination_folder_that_disappeared() {
+        let dir = scratch();
+        let folder = dir.join("incoming");
+        let target = folder.join("upload.txt");
+        write(&chunk(&target, 0, b"a", 2, None)).unwrap();
+        std::fs::remove_dir_all(&folder).unwrap();
+
+        let error = write(&chunk(&target, 1, b"b", 2, None)).unwrap_err();
+        let message = error.to_string();
+        assert_eq!(code(error), "file_destination_missing");
+        assert!(message.contains(&format!(
+            "Destination folder {} no longer exists",
+            folder.display()
+        )));
+        assert!(message.contains("Recreate it or choose another folder"));
+        assert!(!message.contains(PARTIAL_SUFFIX));
+        assert!(!folder.exists());
+    }
+
+    // The record of an upload that failed (its folder was removed) must not make a retried
+    // upload to the same path reject its own out-of-order startup.
+    #[test]
+    fn a_retried_upload_after_a_removed_folder_still_waits_for_its_first_chunk() {
+        let dir = scratch();
+        let target = dir.join("incoming/nested/retry.bin");
+        let sha = format!("{:x}", Sha256::digest(b"abcdef"));
+        write(&chunk(&target, 0, b"abc", 6, Some(&sha))).unwrap();
+        std::fs::remove_dir_all(dir.join("incoming")).unwrap();
+        let error = write(&chunk(&target, 3, b"def", 6, Some(&sha))).unwrap_err();
+        assert_eq!(code(error), "file_destination_missing");
+
+        // The retry starts from offset 0, but its later chunk runs first and the folders are gone.
+        let first = chunk(&target, 0, b"abc", 6, Some(&sha));
+        let second = chunk(&target, 3, b"def", 6, Some(&sha));
+        let late = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            write(&first)
+        });
+        let outcome = written(write(&second).unwrap());
+        assert_eq!(outcome.0, 6);
+        assert_eq!(written(late.join().unwrap().unwrap()).0, 3);
+        assert_eq!(std::fs::read(&target).unwrap(), b"abcdef");
+    }
+
+    // An upload that has been silent for longer than a chunk waits for its turn is abandoned: its
+    // record no longer authorizes an immediate failure for a later upload to the same path.
+    #[test]
+    fn a_silent_uploads_record_expires() {
+        let staging = scratch().join("silent.bin.chariox-partial");
+        let long_ago = Instant::now()
+            .checked_sub(TURN_WAIT + Duration::from_secs(1))
+            .expect("the machine has been up for more than a chunk's wait");
+        note_upload_activity_at(&staging, long_ago);
+        assert!(!upload_started(&staging));
+        note_upload_started(&staging);
+        assert!(upload_started(&staging));
+        forget_upload(&staging);
+        assert!(!upload_started(&staging));
     }
 
     // EA2-07: an upload resumes at the offset the target reports, and the file
@@ -918,19 +1077,21 @@ mod tests {
     #[test]
     fn a_chunk_that_starts_ahead_of_the_one_before_it_waits_for_it() {
         let dir = scratch();
-        let target = dir.join("early.bin");
-        let sha = format!("{:x}", Sha256::digest(b"abcdef"));
-        let first = chunk(&target, 0, b"abc", 6, Some(&sha));
-        let second = chunk(&target, 3, b"def", 6, Some(&sha));
-        let late = std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(100));
-            write(&first)
-        });
-        let outcome = written(write(&second).unwrap());
-        assert_eq!(outcome.0, 6);
-        assert!(outcome.1);
-        assert_eq!(written(late.join().unwrap().unwrap()).0, 3);
-        assert_eq!(std::fs::read(&target).unwrap(), b"abcdef");
+        // The second target sits under folders that only the first chunk creates.
+        for target in [dir.join("early.bin"), dir.join("new/nested/early.bin")] {
+            let sha = format!("{:x}", Sha256::digest(b"abcdef"));
+            let first = chunk(&target, 0, b"abc", 6, Some(&sha));
+            let second = chunk(&target, 3, b"def", 6, Some(&sha));
+            let late = std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(100));
+                write(&first)
+            });
+            let outcome = written(write(&second).unwrap());
+            assert_eq!(outcome.0, 6);
+            assert!(outcome.1);
+            assert_eq!(written(late.join().unwrap().unwrap()).0, 3);
+            assert_eq!(std::fs::read(&target).unwrap(), b"abcdef");
+        }
     }
 
     // On a slow uplink the chunk ahead can land seconds after the one behind it.

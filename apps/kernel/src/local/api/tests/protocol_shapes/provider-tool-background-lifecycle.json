@@ -1,6 +1,16 @@
 {
-  "local_protocol": 1014,
-  "peer_protocol": 451,
+  "local_protocol": 1015,
+  "peer_protocol": 452,
+  "opencode_foreground_completed": {
+    "id": "part-1",
+    "tool": "bash",
+    "status": "completed",
+    "started_at_ms": 1000,
+    "finished_at_ms": 13000,
+    "description": "Shows working tree status",
+    "input": { "command": "git status" },
+    "output": "On branch main"
+  },
   "claude_foreground_completed": {
     "tool": "Read",
     "status": "completed",

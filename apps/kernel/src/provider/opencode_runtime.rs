@@ -21,8 +21,6 @@ pub(super) const NATIVE_PERMISSION_DENIED: &str =
     "The user rejected permission to use this specific tool call.";
 
 #[cfg(test)]
-use transcript::ToolTranscriptUpdate;
-
 #[cfg(test)]
 pub(crate) use tests::assert_native_non_retryability;
 
@@ -52,7 +50,7 @@ mod tests {
             render_snapshot_output_chunks,
         },
         transcript::render_tool_transcript_update,
-        OpenCodeAssistantCompletion, OpenCodeRuntimeState, ToolTranscriptUpdate,
+        OpenCodeAssistantCompletion, OpenCodeRuntimeState,
     };
 
     pub(crate) fn assert_native_non_retryability() {
@@ -142,42 +140,30 @@ mod tests {
 
     #[test]
     fn renders_structured_tool_update_with_input_and_output() {
-        let payload = render_tool_transcript_update(
-            &OpenCodePart {
-                id: "part-1".to_string(),
-                session_id: "session-1".to_string(),
-                message_id: "message-1".to_string(),
-                kind: "tool".to_string(),
-                text: String::new(),
-                tool: "bash".to_string(),
-                state: Some(OpenCodeToolState {
-                    status: "completed".to_string(),
-                    input: json!({ "command": "git status" }),
-                    output: String::new(),
-                    title: String::new(),
-                    metadata: json!({
-                        "output": "On branch main",
-                        "description": "Shows working tree status"
-                    }),
-                    error: String::new(),
-                    raw: String::new(),
-                }),
-                time: None,
-            },
-            &RemoteExtensionManifest::default(),
-        );
+        let part: OpenCodePart = serde_json::from_value(json!({
+            "id": "part-1", "sessionID": "session-1", "messageID": "message-1",
+            "type": "tool", "tool": "bash",
+            "state": {
+                "status": "completed",
+                "input": {"command": "git status"},
+                "metadata": {
+                    "output": "On branch main",
+                    "description": "Shows working tree status"
+                },
+                "time": {"start": 1000, "end": 13000}
+            }
+        }))
+        .unwrap();
+        let payload = render_tool_transcript_update(&part, &RemoteExtensionManifest::default());
 
-        let parsed: ToolTranscriptUpdate =
-            serde_json::from_str(&payload).expect("tool payload should deserialize");
-        assert_eq!(parsed.id, "part-1");
-        assert_eq!(parsed.tool, "bash");
-        assert_eq!(parsed.status, "completed");
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../local/api/tests/protocol_shapes/provider-tool-background-lifecycle.json"
+        ))
+        .unwrap();
         assert_eq!(
-            parsed.description.as_deref(),
-            Some("Shows working tree status")
+            serde_json::from_str::<serde_json::Value>(&payload).unwrap(),
+            fixture["opencode_foreground_completed"]
         );
-        assert_eq!(parsed.output.as_deref(), Some("On branch main"));
-        assert_eq!(parsed.input, Some(json!({ "command": "git status" })));
     }
 
     #[test]
@@ -214,6 +200,7 @@ mod tests {
                     metadata: json!({}),
                     error: String::new(),
                     raw: String::new(),
+                    time: None,
                 }),
                 time: None,
             },
@@ -1554,6 +1541,7 @@ mod tests {
                         metadata: json!({}),
                         error: String::new(),
                         raw: String::new(),
+                        time: None,
                     }),
                     time: None,
                 }),
@@ -1590,6 +1578,7 @@ mod tests {
                         metadata: json!({}),
                         error: String::new(),
                         raw: String::new(),
+                        time: None,
                     }),
                     time: None,
                 }),
