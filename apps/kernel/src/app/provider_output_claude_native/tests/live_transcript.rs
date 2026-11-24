@@ -793,6 +793,55 @@ fn a_reply_longer_than_one_live_record_is_replaced_whole() {
     );
 }
 
+// A reader that is lost (a kernel restart, or the registry evicting the least recently read run) starts counting its
+// blocks again. What it streams next must not take the key of a block an earlier reader streamed: the key is the row's
+// identity in history and on clients, so a reused one would replace the earlier answer.
+#[test]
+fn a_block_streamed_after_the_reader_was_lost_keeps_the_earlier_answer() {
+    let mut turn = running_turn("streamed-after-reader-loss");
+    turn.hook_event("UserPromptSubmit");
+    turn.pass();
+    let first_drawn = screen(&[
+        "● Checked the files.",
+        "",
+        "  All of them pass.",
+        "",
+        "✻ Working (3s)",
+    ]);
+    turn.terminal_shows(&first_drawn);
+    turn.terminal_shows(&first_drawn);
+    let first = "Checked the files.\n\n**All** of them pass.";
+    turn.append_transcript(assistant_text("first", first));
+    turn.pass();
+    assert_eq!(turn.live_rows(), [first], "the first block is the transcript's");
+    // The reader is lost; the screen it had is gone.
+    super::live_reply::forget(turn.run.id());
+    let second_drawn = screen(&[
+        "● Then the build.",
+        "",
+        "  It is green.",
+        "",
+        "✻ Working (9s)",
+    ]);
+    turn.terminal_shows(&second_drawn);
+    turn.terminal_shows(&second_drawn);
+    assert_eq!(
+        turn.live_rows(),
+        [first, "Then the build."],
+        "the second block streams as its own row; the first answer stays"
+    );
+    assert_eq!(
+        turn.stored_replies(),
+        [first, "Then the build."],
+        "and so does history"
+    );
+    let second = "Then the build.\n\nIt is **green**.";
+    turn.append_transcript(assistant_text("second", second));
+    turn.pass();
+    assert_eq!(turn.live_rows(), [first, second]);
+    assert_eq!(turn.stored_replies(), [first, second]);
+}
+
 // A client puts the pieces of a long replacement into the row the first piece replaced, wherever that row now is:
 // the first piece says it replaces, every later one says it continues that replacement, and nothing else does.
 #[test]
