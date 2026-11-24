@@ -743,6 +743,17 @@ impl ProcessTree {
         }
     }
 
+    /// Holds or continues every verified process of the workload, its own
+    /// included: a workload without a cgroup that memory exhaustion acts on.
+    #[cfg(unix)]
+    pub fn signal_workload(&self, signal: libc::c_int) {
+        for (pid, identity) in &self.owned {
+            if *pid > 1 && *pid <= i32::MAX as u32 && same_process(*pid, identity) {
+                let _ = unsafe { libc::kill(*pid as i32, signal) };
+            }
+        }
+    }
+
     fn subtree(&self, command: u32) -> std::collections::BTreeSet<u32> {
         let mut selected = std::collections::BTreeSet::from([command]);
         loop {

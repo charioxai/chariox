@@ -15,6 +15,12 @@ Environment=CHARIOX_KERNEL_HOST=127.0.0.1
 EnvironmentFile=-%h/.config/chariox/kernel.env
 # The kernel and its Apps own only this unit's delegated subtree.
 Delegate=cpu memory pids
+# The kernel stays answering when agents use the rest of the machine (Miguel
+# 11-23): this much of its own memory is never reclaimed or swapped out. Only
+# memory it actually uses is protected, so a small kernel costs what it uses.
+# A busier kernel raises its own protection from what it has measurably used
+# (see docs/MEMORY_EXHAUSTION.md).
+MemoryMin=2G
 DelegateSubgroup=supervisor
 # Prepares the `apps` subtree from the supervisor subgroup, then execs the
 # kernel. No ExecStartPre/Post: see start-kernel.sh.

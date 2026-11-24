@@ -20,6 +20,21 @@ pub(crate) enum WaitChange {
     Stopped {
         reason: String,
     },
+    /// Real memory exhaustion: the command that grew most was acted on. The
+    /// message is the one line its agent, its pane and its stderr all get.
+    Exhaustion {
+        step: ExhaustionStep,
+        message: String,
+    },
+}
+
+/// The steps taken against the command that grows most while the machine is out of memory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ExhaustionStep {
+    Throttled,
+    Paused,
+    Resumed,
+    Stopped,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,6 +45,9 @@ pub(crate) struct WaitEvent {
     pub change: WaitChange,
     /// The row at that moment (`Running` once it continues).
     pub state: SessionProcessState,
+    /// Who the workload is listed under, for an event that outlives it (a job
+    /// the pool ends): its owner still hears why.
+    pub owner: Option<(String, super::projection::SessionProcessOwner)>,
 }
 
 static EVENTS: Mutex<VecDeque<WaitEvent>> = Mutex::new(VecDeque::new());
