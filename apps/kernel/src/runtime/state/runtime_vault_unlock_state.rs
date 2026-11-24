@@ -120,6 +120,13 @@ impl VaultUnlockGuard {
     }
 }
 
+impl VaultUnlockGuard {
+    /// The person asked for the Vault to stay open (an extension): dropping the guard no longer locks it.
+    fn keep_unlocked(&mut self) {
+        self.lock_on_drop = false;
+    }
+}
+
 impl Drop for VaultUnlockGuard {
     fn drop(&mut self) {
         if !self.lock_on_drop {
@@ -883,6 +890,8 @@ impl KernelRuntimeState {
         let vault_path = expand_vault_path(&vault_config.path);
         let status = crate::secret::chariox_encrypted_vault_status(&vault_path)?;
         let mut status = status;
+        // A single-use unlock locks the Vault again when this guard drops: it lives to the end of the action.
+        let mut unlock_guard = None;
         if !status.unlocked {
             let guard = self
                 .ensure_vault_unlocked_for_agent(session_id, agent_id, "credential_vault_manage")
@@ -897,6 +906,7 @@ impl KernelRuntimeState {
                     unlocked_via: guard.unlocked_via(),
                 });
             }
+            unlock_guard = Some(guard);
         }
 
         match action.unwrap_or("popup") {
@@ -914,6 +924,10 @@ impl KernelRuntimeState {
                     "extend_30m"
                 };
                 let (status, action) = apply_vault_manage_choice(&vault_path, choice, &vault_config)?;
+                // The extension is the new lease: the unlock that opened the Vault must not undo it.
+                if let Some(guard) = unlock_guard.as_mut() {
+                    guard.keep_unlocked();
+                }
                 Ok(VaultManaged::done(status, action))
             }
             other => Err(DaemonError::LocalTransport {

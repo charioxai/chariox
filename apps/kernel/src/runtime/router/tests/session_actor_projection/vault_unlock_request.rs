@@ -294,31 +294,36 @@ async fn an_unlock_from_the_vault_window_closes_the_open_card_and_the_agent_goes
     }
 }
 
-// A management action asked of a locked Vault goes on after the unlock: the extension applies.
+// A management action asked of a locked Vault goes on after the unlock: the extension applies, also
+// after a single-use unlock, which must not lock the Vault again under the new lease.
 #[tokio::test]
 async fn an_extension_asked_of_a_locked_vault_applies_after_the_unlock() {
-    let f = Fixture::locked();
-    let runtime = f.router.runtime_state.clone();
-    let (session, agent) = (f.session.clone(), f.agent.clone());
-    let operation = tokio::spawn(async move {
-        runtime
-            .manage_credential_vault(&session, &agent, Some("extend"))
+    for duration in [
+        VaultUnlockDuration::Minutes { minutes: 10 },
+        VaultUnlockDuration::Once,
+    ] {
+        let f = Fixture::locked();
+        let runtime = f.router.runtime_state.clone();
+        let (session, agent) = (f.session.clone(), f.agent.clone());
+        let operation = tokio::spawn(async move {
+            runtime
+                .manage_credential_vault(&session, &agent, Some("extend"))
+                .await
+        });
+        f.the_open_unlock_prompt().await;
+        f.unlock_for(PASSPHRASE, duration).await.unwrap();
+        let managed = tokio::time::timeout(std::time::Duration::from_secs(30), operation)
             .await
-    });
-    f.the_open_unlock_prompt().await;
-    f.unlock_for(PASSPHRASE, VaultUnlockDuration::Minutes { minutes: 10 })
-        .await
-        .unwrap();
-    let managed = tokio::time::timeout(std::time::Duration::from_secs(30), operation)
-        .await
-        .expect("the agent's operation is woken by the unlock")
-        .unwrap()
-        .expect("the operation succeeds");
-    assert_eq!(
-        managed.action, "extended_30m",
-        "the requested extension was applied"
-    );
-    assert!(managed.status.unlocked);
+            .expect("the agent's operation is woken by the unlock")
+            .unwrap()
+            .unwrap_or_else(|error| panic!("{duration:?}: the extension must apply: {error}"));
+        assert_eq!(managed.action, "extended_30m", "{duration:?}");
+        assert!(managed.status.unlocked, "{duration:?}");
+        assert!(
+            f.status().await.unlocked,
+            "{duration:?}: the Vault stays open under the extension"
+        );
+    }
 }
 
 #[tokio::test]
