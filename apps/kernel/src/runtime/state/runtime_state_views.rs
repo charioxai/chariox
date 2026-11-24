@@ -209,6 +209,11 @@ impl KernelRuntimeState {
             ),
             &crate::runtime::projection::SourceLabels::of_session(session),
         );
+        crate::runtime::projection::annotate_cards(
+            &mut activity,
+            session,
+            &self.decisions_held_by_agents(session.id()),
+        );
         if let Err(error) = crate::runtime::projection::annotate_deadline_ends(
             &mut activity,
             &self.owned.durable_state_store,

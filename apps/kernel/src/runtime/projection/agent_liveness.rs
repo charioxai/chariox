@@ -60,6 +60,7 @@ impl AgentLiveness {
                 detail: String::new(),
                 resource: None,
                 since_ms: floored.unwrap_or(now_ms),
+                due_at_ms: None,
             }),
             waiting_events: Vec::new(),
             stalled: quiet_since.is_some_and(|at| now_ms.saturating_sub(at) > STALLED_AFTER_MS),
@@ -77,6 +78,9 @@ pub struct AgentWaitingOn {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resource: Option<WaitReason>,
     pub since_ms: u64,
+    /// When a timer is due; absent for anything else.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub due_at_ms: Option<u64>,
 }
 
 /// One event a waiting task is registered for: an armed wake, or a source (an agent, a workflow
@@ -89,6 +93,9 @@ pub struct AgentWaitEvent {
     /// What the event is, in plain words: "sub-agent sub-agent-1", "timer: check the build".
     pub label: String,
     pub since_ms: u64,
+    /// When a timer is due; absent for anything else.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub due_at_ms: Option<u64>,
     /// The task that waits, and when its wait began: the owner ends the whole wait with these.
     pub task_id: String,
     pub wait_started_at_ms: u64,
@@ -158,6 +165,8 @@ pub enum AgentWaitKind {
     CommandPaused,
     /// Its command waits for room before it starts.
     CommandHeld,
+    /// A decision card the agent's turn is held on: the owner's, or one an agent holds.
+    Card,
 }
 
 /// The state `agent children` and the session agent inspection name for an
@@ -249,6 +258,62 @@ pub(crate) fn annotate_waits(
     }
 }
 
+/// Names the decision cards each agent's turn is held on, by the title the card shows and never
+/// by its fields. A card the user holds reads "your answer on '<title>'"; one an ancestor agent
+/// holds reads as that agent's. The oldest of all a wait names is `waiting_on`.
+pub(crate) fn annotate_cards(
+    activity: &mut BTreeMap<String, AgentRuntimeActivity>,
+    session: &crate::session::RuntimeSession,
+    held_by_agent: &std::collections::HashSet<String>,
+) {
+    for interaction in session.active_interactions() {
+        let Some(agent_id) = interaction.agent_id() else {
+            continue;
+        };
+        let Some(activity) = activity.get_mut(agent_id) else {
+            continue;
+        };
+        let title = interaction.title().map_or_else(
+            || "a decision".to_owned(),
+            |title| format!("'{}'", title.trim()),
+        );
+        let label = if held_by_agent.contains(interaction.id()) {
+            format!("the answer of the agent that holds {title}")
+        } else {
+            format!("your answer on {title}")
+        };
+        let since_ms = interaction.requested_at_ms();
+        activity.liveness.waiting_events.push(AgentWaitEvent {
+            id: interaction.id().to_owned(),
+            kind: AgentWaitKind::Card,
+            label,
+            since_ms,
+            due_at_ms: None,
+            task_id: String::new(),
+            wait_started_at_ms: since_ms,
+            cancel_wake_id: None,
+        });
+        activity
+            .liveness
+            .waiting_events
+            .sort_by(|a, b| a.since_ms.cmp(&b.since_ms).then_with(|| a.id.cmp(&b.id)));
+        if activity
+            .liveness
+            .waiting_on
+            .as_ref()
+            .is_none_or(|on| on.kind == AgentWaitKind::Provider || since_ms < on.since_ms)
+        {
+            activity.liveness.waiting_on = Some(AgentWaitingOn {
+                kind: AgentWaitKind::Card,
+                detail: title,
+                resource: None,
+                since_ms,
+                due_at_ms: None,
+            });
+        }
+    }
+}
+
 fn command_wait(agent_id: &str, processes: &[SessionProcess]) -> Option<AgentWaitingOn> {
     processes
         .iter()
@@ -268,6 +333,7 @@ fn waiting_on(kind: AgentWaitKind, waiting: &Waiting) -> AgentWaitingOn {
         detail: waiting.command_line.clone(),
         resource: Some(waiting.reason),
         since_ms: waiting.since_ms,
+        due_at_ms: None,
     }
 }
 
@@ -307,6 +373,7 @@ fn yielded_wait(agent_id: &str, yielded: &YieldedSources) -> Option<AgentWaiting
         },
         resource: None,
         since_ms: wake.created_at_ms,
+        due_at_ms: wake.next_due_ms.filter(|_| wake.kind == "timer"),
     });
     let source_waits = waiting_tasks.iter().flat_map(|task| {
         let wait = task.wait.as_ref();
@@ -326,6 +393,7 @@ fn yielded_wait(agent_id: &str, yielded: &YieldedSources) -> Option<AgentWaiting
                 detail: registration.source_id.clone(),
                 resource: None,
                 since_ms: wait.map_or(task.last_progress_at_ms, |wait| wait.started_at_ms),
+                due_at_ms: None,
             })
     });
     wake_waits
@@ -384,6 +452,7 @@ fn yielded_events(
                     format!("{noun} {text}")
                 },
                 since_ms: wake.created_at_ms,
+                due_at_ms: wake.next_due_ms.filter(|_| wake.kind == "timer"),
                 task_id: task.task_id.clone(),
                 wait_started_at_ms,
                 cancel_wake_id: Some(wake.id.clone()),
@@ -410,6 +479,7 @@ fn yielded_events(
                     .and_then(|o| o.resource_id.as_deref())
                     .unwrap_or(&registration.source_id)),
                 since_ms: wait_started_at_ms,
+                due_at_ms: None,
                 task_id: task.task_id.clone(),
                 wait_started_at_ms,
                 // A completion source covers an obligation the task still owes; only a follow of a
