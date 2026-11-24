@@ -192,6 +192,50 @@ async fn a_notice_after_a_cleanup_retry_still_names_what_the_limit_stopped() {
     assert!(!ended[0].contains("It had no running turn"), "{}", ended[0]);
 }
 
+// TL1 / TL4: a notice reaches an agent in the middle of its turn. An active turn takes only urgent
+// rows, so the warning and the parent-ended notice must be the urgent front of the inbox.
+#[tokio::test]
+async fn time_limit_notices_are_urgent_so_an_active_turn_takes_them() {
+    let team = team_with("deadline-notices-urgent", None, true).await;
+    let now = crate::session::unix_epoch_ms();
+    set_deadline(&team, &team.parent, now + 9 * 60_000).await;
+    team.runtime.tick_agent_deadlines(now).await.unwrap();
+    let store = &team.runtime.owned.durable_state_store;
+    let warning = store
+        .agent_urgent_delivery_front(&team.room, &team.parent)
+        .unwrap()
+        .expect("a warning waits for the active turn");
+    assert_eq!(warning.kind, "time_limit_warning");
+    assert!(
+        warning.urgent,
+        "the warning is delivered into the running turn"
+    );
+
+    // The parent's limit ends while its sub-agent works: the sub-agent hears of it in its turn.
+    let deadline = crate::session::unix_epoch_ms();
+    set_deadline(&team, &team.parent, deadline + 30).await;
+    tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+    team.runtime
+        .tick_agent_deadlines(crate::session::unix_epoch_ms())
+        .await
+        .unwrap();
+    let told = store
+        .agent_inbox(&team.room, &team.child, 0)
+        .unwrap()
+        .into_iter()
+        .find(|event| event.kind == "parent_time_limit_ended")
+        .expect("the sub-agent is told");
+    assert!(told.urgent, "the parent-ended notice is urgent");
+    assert_eq!(
+        store
+            .agent_urgent_delivery_front(&team.room, &team.child)
+            .unwrap()
+            .map(|event| event.sequence),
+        Some(told.sequence),
+        "an active turn of the sub-agent takes it first"
+    );
+}
+
 // TL4: three sub-agents, two mid-turn and one yielded on a wake, all go on when their parent's
 // limit ends, and each is told that no agent above it runs.
 #[tokio::test]
