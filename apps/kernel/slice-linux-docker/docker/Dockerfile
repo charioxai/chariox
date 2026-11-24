@@ -407,7 +407,6 @@ COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/kernel-browser-cd
      apps/kernel/slice-linux-docker/docker/kernel-browser-card-region.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-card-verification.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-recovery.mjs \
-     apps/kernel/slice-linux-docker/docker/kernel-browser-controller-restart.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-input.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-input-queue.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-linux.mjs \

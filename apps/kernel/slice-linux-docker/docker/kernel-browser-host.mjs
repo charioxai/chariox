@@ -25,6 +25,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { displayTiming, slowMark, timestamp, timedHostRequests } from './kernel-browser-timing.mjs';
 import { hostErrorLabel, hostFailureMessage } from './kernel-browser-error-label.mjs';
 // The kernel's daemon log carries the lines of the controller's stderr that start with this prefix (fixed labels only).
+const LAUNCH_FAILURES_BEFORE_REBUILD = 3;
 const lifecycleLog = text => process.stderr.write(`CHARIOX-LOG ${text}\n`);
 import { BrowserCdpClient, isTrustedStaleReferenceError } from "./browser-controller-cdp.mjs";
 import { BrowserControllerStdioServer, handleBrowserControllerRequest } from "./browser-controller.mjs";
@@ -32,7 +33,6 @@ import { NativeAccessibility } from './native-accessibility.mjs';
 import { NativeComputer } from './native-computer.mjs';
 import { HostChromium } from "./kernel-browser-process.mjs";
 import { BrowserRecovery } from "./kernel-browser-recovery.mjs";
-import { LAUNCH_FAILURES_BEFORE_RESTART, recordRestart } from "./kernel-browser-controller-restart.mjs";
 import { requireBrowserMemory } from './browser-memory.mjs';
 import { admitComputerMutation, blockedUrl, extensionManagementUrl, EXTENSIONS_REFUSED } from "./kernel-browser-policy.mjs";
 import { ChromeTabGroups, writeTabGroupsExtension } from "./kernel-browser-tab-groups.mjs";
@@ -128,7 +128,7 @@ export function navigationUrl(raw) {
 }
 
 export class KernelBrowserHost {
-  constructor(root, { appStorageRoot, chromium = new HostChromium(root, { appStorageRoot }), browserFactory = connection => new BrowserCdpClient({ connectionFactory: () => connection, permissionRequests: true, focusWorldSource: mirror2ObserverExpression() }), personIdleMs = PERSON_IDLE_MS, backgroundIdleMs = BACKGROUND_IDLE_MS, shownIdleMs = SHOWN_IDLE_MS } = {}) {
+  constructor(root, { appStorageRoot, chromiumFactory = null, chromium = new HostChromium(root, { appStorageRoot }), browserFactory = connection => new BrowserCdpClient({ connectionFactory: () => connection, permissionRequests: true, focusWorldSource: mirror2ObserverExpression() }), personIdleMs = PERSON_IDLE_MS, backgroundIdleMs = BACKGROUND_IDLE_MS, shownIdleMs = SHOWN_IDLE_MS } = {}) {
     this.root = root;
     this.personIdleMs = personIdleMs; this.backgroundIdleMs = backgroundIdleMs;
     this.shownIdleMs = shownIdleMs; this.usedAt = Date.now(); this.running = 0; this.frozen = null; this.freezing = null;
@@ -149,7 +149,9 @@ export class KernelBrowserHost {
     this.browser = null;
     this.lifecycle = Promise.resolve();
     this.restoredOpeners = new Map();
-    this.launchFailures = 0; this.restartController = null;
+    this.launchFailures = 0;
+    // Row 548: only a host that built its own Chromium can build another.
+    this.chromiumFactory = chromiumFactory ?? (arguments[1]?.chromium ? null : () => new HostChromium(root, { appStorageRoot }));
     this.recovery = new BrowserRecovery(this);
     this.savedGroups = [];
     this.generation = 0;
@@ -278,7 +280,7 @@ export class KernelBrowserHost {
     try { const started = await this.starting; this.launchFailures = 0; return started; }
     catch (error) {
       this.recovery.schedule();
-      if (++this.launchFailures >= LAUNCH_FAILURES_BEFORE_RESTART) this.launchFailures = 0, this.restartController?.();
+      if (++this.launchFailures >= LAUNCH_FAILURES_BEFORE_REBUILD) { this.launchFailures = 0; this.rebuildChromium(); }
       throw error;
     }
     finally { this.starting = null; this.restoring = false; }
@@ -587,6 +589,17 @@ export class KernelBrowserHost {
       entry=created;this.compositors.set(tab.tab_id,entry);
     }
     return await entry.ready;
+  }
+  // Row 548: launches that keep failing may fail on state this Chromium object (its owned desktop and the children it knows) built up;
+  // the next launch starts from a new one. It queues behind the lifecycle lock, so it never replaces a Chromium that is starting or stopping.
+  rebuildChromium() {
+    if (!this.chromiumFactory) return null;
+    lifecycleLog('chromium_rebuild after repeated launch failures');
+    return this.serial(async () => {
+      await this.stopNow({ recovering: true }).catch(() => {});
+      this.chromium = this.chromiumFactory();
+      if (this.chromium.desktop) this.chromium.desktop.browser = () => this.browser;
+    }).catch(() => {});
   }
   // Row 548: Chrome knows a Tab's opener only for the browser that opened it; a restored Tab keeps the link its snapshot saved.
   restoredOpener(tabId, tabIds) {
@@ -1738,15 +1751,6 @@ if (process.argv[2] === "stdio" && process.argv[1] && import.meta.url === pathTo
   const host = new KernelBrowserHost(process.argv[3], { appStorageRoot: process.argv[4] });
   let closing = false;
   const stop = async () => { if (closing) return; closing = true; await host.stop(); process.exit(0); };
-  // Row 548: repeated launch failures end this controller process; the kernel starts a fresh one with the next request and the Tabs return.
-  host.restartController = () => {
-    if (closing) return;
-    void recordRestart(process.argv[3]).then(allowed => {
-      if (!allowed || closing) return;
-      closing = true; lifecycleLog('controller_restart after repeated launch failures');
-      void Promise.race([host.stop().catch(() => {}), new Promise(resolve => setTimeout(resolve, 5000))]).finally(() => process.exit(75));
-    }, () => {});
-  };
   process.on("SIGTERM", stop);
   process.on("SIGINT", stop);
   await new BrowserControllerStdioServer(timedHostRequests(host, request => scheduleHostRequest(request, host.browser, host.viewport(), Boolean(host.chromium.desktop?.binding?.())))).run().finally(() => host.stop());

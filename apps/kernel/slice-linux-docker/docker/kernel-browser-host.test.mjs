@@ -3939,13 +3939,16 @@ test('row 548: a popup whose page keeps erroring never fails the state of the ot
   assert.equal(pages.has(opener), true);
 }, { realCdp: true }));
 
-test('row 548: three launches in a row that fail ask for a fresh controller process, and a launch that works starts the count again', () => using(async ({ host, chromium }) => {
-  const start = chromium.start; let asked = 0; host.restartController = () => { asked++; };
+test('row 548: three launches in a row that fail continue on a new Chromium object, and a launch that works starts the count again', () => using(async ({ host, chromium }) => {
+  const start = chromium.start;
+  const replacement = { child: null, start: async () => { replacement.child = { exitCode: null, signalCode: null }; return 'http://127.0.0.1:1'; }, stop: async () => { replacement.child = null; } };
+  host.chromiumFactory = () => replacement;
   chromium.start = async () => { throw Object.assign(new Error('MD-2: host Chromium launch failed'), { code: 'browser_display_unavailable' }); };
   for (let n = 0; n < 2; n++) await assert.rejects(host.start());
-  assert.equal(asked, 0, 'two failures are retried by the browser itself');
+  assert.equal(host.chromium, chromium, 'two failures are retried by the same browser object');
   await assert.rejects(host.start());
-  assert.equal(asked, 1, 'the third failure ends the controller process, as a hot reload does');
-  chromium.start = start;
+  await host.lifecycle;
+  assert.equal(host.chromium, replacement, 'the third failure builds a new Chromium object, as a restarted controller would have');
   await host.start(); assert.equal(host.launchFailures, 0);
+  chromium.start = start;
 }));
