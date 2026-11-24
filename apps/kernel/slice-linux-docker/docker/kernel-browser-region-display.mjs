@@ -91,7 +91,10 @@ export async function createRegionDisplay({host,command,scope,signal,target,leas
   // the kernel admits the same Tab on the new window (rebindRegion). Any other retire removes it, as before.
   const offWindow=host.chromeWindows.onRetire?.(({reason}={})=>{
    if(stream.regionWindow.isCurrent())return;
-   if(reason==='viewport_resize'&&stream.resizeRebind===true&&target.kind==='visible_page'&&typeof stream.rebindSource==='function'&&!stream.rebinding){stream.rebinding=rebindHold(host,stream);return;}
+   // A resize retires the window twice (viewport_resize, then window_changed when the window re-binds): a pending rebind
+   // keeps its hold through both; it re-admits on whatever window is current then, within the same bound.
+   if(stream.rebinding)return;
+   if(reason==='viewport_resize'&&stream.resizeRebind===true&&target.kind==='visible_page'&&typeof stream.rebindSource==='function'){stream.rebinding=rebindHold(host,stream);return;}
    void host.removeDisplay(stream.subscription_id).catch(()=>{});
   });
   offRetire=()=>{unwatch?.();offBand?.();offWindow?.();};

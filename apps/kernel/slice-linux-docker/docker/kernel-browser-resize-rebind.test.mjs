@@ -18,7 +18,9 @@ function rig(){
   removeDisplay:async id=>{removed.push(id);const s=host.displays.get(id);if(s)await s.close();}};
  class Capture {constructor(options){this.options=options;this.region=visiblePageGeometry(options.window,options.viewport);this.tab=options.tab;}async start(){return this;}async close(){closed.push(this.region.css_width);}valid(){return true;}}
  // The resize: the old window retires (viewport_resize), the window re-binds at the new size.
- const resize=(width,height)=>{window.current=false;for(const fn of listeners)fn({window_generation:window.window_generation,reason:'viewport_resize'});window=windowAt(window.window_generation+1,width,height);};
+ // A real resize retires the window twice: viewport_resize, then window_changed when the window re-binds (bench timeline).
+ const resize=(width,height)=>{window.current=false;for(const fn of listeners)fn({window_generation:window.window_generation,reason:'viewport_resize'});
+  for(const fn of listeners)fn({window_generation:window.window_generation,reason:'window_changed'});window=windowAt(window.window_generation+1,width,height);};
  return {host,tab,Capture,resize,removed,closed,get window(){return window;}};
 }
 const subscribe=(r,extra={})=>subscribeVisiblePage(r.host,{op:'display_subscribe',tab_id:'t',generation:1,codecs:['png','avc1.420033'],bitrate:8_000_000,device_scale_factor:1,...extra},'terminal:a',undefined,{Capture:r.Capture});
