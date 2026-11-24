@@ -106,6 +106,7 @@ impl RoomTerminalService {
                     Err(error) => {
                         let mut record = record;
                         record.ended = Some(RoomTerminalOutcome::KernelRestarted);
+                        record.ended_at_ms = Some(crate::session::unix_epoch_ms());
                         crate::logging::error_with_fields(
                             "room_terminal.hot_reload",
                             "a handed-over terminal could not be adopted",

@@ -1,4 +1,4 @@
-import { closeRoomTerminalRequest, expectRoomTerminalResult, openRoomTerminalRequest, readRoomTerminalOutputRequest, roomTerminalRequest, type KernelTerminalTarget } from "@chariox/kernel-client/ipc-requests"
+import { closeRoomTerminalRequest, expectRoomTerminalResult, listRoomTerminalsRequest, openRoomTerminalRequest, readRoomTerminalOutputRequest, roomTerminalRequest, type KernelTerminalTarget } from "@chariox/kernel-client/ipc-requests"
 import type { ProgramInput } from "@chariox/kernel-client/kernel-types"
 import { StringDecoder } from "node:string_decoder"
 import type { Readable, Writable } from "node:stream"
@@ -101,10 +101,23 @@ export async function runKernelExec(options: KernelExecOptions, send: SendReques
     throw new CommandFailure("exec_failed", `the command did not exit normally (${(status.outcome as { reason?: string } | undefined)?.reason ?? status.state})`)
   } finally {
     options.signals?.off("SIGINT", onInt); options.signals?.off("SIGTERM", onTerm); options.signals?.off("SIGHUP", onHup)
-    // The command never outlives this call: a terminal that cannot be closed is named, with the way to close it.
-    await send(closeRoomTerminalRequest(target, terminalId)).catch((error: unknown) => {
+    // The command never outlives this call. The kernel removes a one-command terminal itself once
+    // its output was read to the end, so a close that finds nothing is the expected answer: it
+    // counts as closed when the kernel's list no longer holds the terminal. A terminal that is
+    // still listed and cannot be closed is named, with the way to close it.
+    await send(closeRoomTerminalRequest(target, terminalId)).catch(async (error: unknown) => {
+      if (await isGone(send, target, terminalId)) return
       if (failed) process.stderr.write(`${JSON.stringify({ warning: { code: "exec_terminal_left_open", terminal_id: terminalId, message: String((error as Error)?.message ?? error), next_step: `chariox terminal close --terminal ${terminalId}` } })}\n`)
       else throw new CommandFailure("exec_terminal_left_open", `the command finished but its terminal could not be closed: ${String((error as Error)?.message ?? error)}`, { terminal_id: terminalId, next_step: `chariox terminal close --terminal ${terminalId}` })
     })
+  }
+}
+
+async function isGone(send: SendRequest, target: KernelTerminalTarget, terminalId: string): Promise<boolean> {
+  try {
+    const { terminals } = expectRoomTerminalResult(await send(listRoomTerminalsRequest(target)), "listed")
+    return !terminals.some(terminal => terminal.terminal_id === terminalId)
+  } catch {
+    return false
   }
 }

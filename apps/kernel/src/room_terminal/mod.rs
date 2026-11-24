@@ -17,6 +17,8 @@ mod terminal;
 mod types;
 
 #[cfg(all(test, unix))]
+mod ended_tests;
+#[cfg(all(test, unix))]
 mod tests;
 
 /// The code of a terminal refusal; its message is the service's own sentence.

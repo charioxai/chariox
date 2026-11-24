@@ -38,7 +38,20 @@ mod pump_task;
 #[cfg(unix)]
 pub use handover::TerminalHandover;
 
-const MAX_TERMINALS_PER_SCOPE: usize = 16;
+/// A one-command terminal (opened on the kernel with a command: what `chariox exec` runs) is the
+/// kernel's to tidy: it goes as soon as its final output was read. When nobody reads it (the client
+/// went away) it goes this long after the command exited: long enough for a client still on its
+/// way to read the exit and the output, short enough that a crashed client leaves nothing behind.
+pub(super) const ONE_COMMAND_UNREAD_RETENTION: Duration = Duration::from_secs(60);
+/// Any other ended terminal an agent opened and no human ever used (a Room terminal whose program
+/// ended) stays listed this long, scrollback readable, so the agent can still see how it ended;
+/// then the kernel removes it. A terminal a person opened, or one a person typed into, is never
+/// removed by the kernel: like a program in a normal OS, only that person closes it.
+/// Nothing counts terminals, ended or not, and there is no limit (Miguel 11-24).
+pub(super) const AGENT_ENDED_RETENTION: Duration = Duration::from_secs(60 * 60);
+/// How often the kernel looks for ended terminals whose time is up. Listing and opening look
+/// as well, so a terminal never shows after its time even between two of these.
+const ENDED_SWEEP_INTERVAL: Duration = Duration::from_secs(5);
 const MAX_INPUT_BYTES: usize = 64 * 1024;
 const MAX_OUTPUT_PAGE_BYTES: usize = 256 * 1024;
 /// A live reply waits while the program keeps writing: one more display frame each time the
@@ -100,6 +113,11 @@ struct Inner {
     shell_for_test: Mutex<Option<String>>,
     managed: ManagedWork,
     pump_runtime: OnceLock<tokio::runtime::Handle>,
+    /// Set once the sweep of ended terminals runs.
+    ended_sweep: OnceLock<()>,
+    /// Test clock: added to the wall clock, so a test jumps over the retention.
+    #[cfg(test)]
+    clock_skew_ms: std::sync::atomic::AtomicU64,
 }
 
 pub(super) struct State {
@@ -185,8 +203,15 @@ impl RoomTerminalService {
                 shell_for_test: Mutex::new(None),
                 managed: ManagedWork::default(),
                 pump_runtime: OnceLock::new(),
+                ended_sweep: OnceLock::new(),
+                #[cfg(test)]
+                clock_skew_ms: std::sync::atomic::AtomicU64::new(0),
             }),
         };
+        // Terminals that ended before a restart or hot reload follow the same clock from their
+        // recorded end time: what is already due goes now.
+        service.expire_ended();
+        service.start_ended_sweep();
         for owner in service.owners() {
             if owner.lock().terminal.is_running() {
                 service.start_pump(&owner);
@@ -203,6 +228,8 @@ impl RoomTerminalService {
 
     pub fn open(&self, spec: OpenRoomTerminal) -> Result<RoomTerminalSummary, DaemonError> {
         validate_size(spec.cols, spec.rows)?;
+        self.expire_ended();
+        self.start_ended_sweep();
         if !spec.working_directory.is_dir() {
             return Err(refused(format!(
                 "the folder `{}` does not exist",
@@ -255,17 +282,13 @@ impl RoomTerminalService {
                     "this kernel is stopping, so it opens no terminals".to_string(),
                 ));
             }
+            // No limit on how many terminals a Room or the kernel holds: the machine's own
+            // limits (descriptors, memory) refuse what does not fit, and say so.
             let in_scope: Vec<_> = state
                 .terminals
                 .values()
                 .filter(|owner| owner.scope == spec.scope)
                 .collect();
-            if in_scope.len() >= MAX_TERMINALS_PER_SCOPE {
-                return Err(refused(format!(
-                    "{} already has {MAX_TERMINALS_PER_SCOPE} terminals; close one first",
-                    spec.scope.describe()
-                )));
-            }
             spec.title
                 .filter(|title| !title.trim().is_empty())
                 .unwrap_or_else(|| next_title(&in_scope))
@@ -397,6 +420,7 @@ impl RoomTerminalService {
             user_interacted,
             created_at_ms: unix_epoch_ms(),
             ended: None,
+            ended_at_ms: None,
             scrollback_text: String::new(),
             screen_text: String::new(),
         };
@@ -431,6 +455,7 @@ impl RoomTerminalService {
     }
 
     pub fn list(&self, scope: impl Into<TerminalScope>) -> Vec<RoomTerminalSummary> {
+        self.expire_ended();
         let owners = self.owners_for_scope(&scope.into());
         let mut summaries = Vec::new();
         for owner in owners {
@@ -603,12 +628,23 @@ impl RoomTerminalService {
                     gather = true;
                 } else if !page.bytes.is_empty() || page.gap || finished {
                     let driver = terminal.current_driver(pty);
-                    return Ok(RoomTerminalOutput {
+                    let output = RoomTerminalOutput {
                         terminal: terminal.summary(driver),
                         data_base64: base64::engine::general_purpose::STANDARD.encode(&page.bytes),
                         next_offset: page.next_offset,
                         gap: page.gap,
-                    });
+                    };
+                    // The command is over and this page ended at its last byte: nothing is left
+                    // for a client to read, so the one-command terminal goes now.
+                    let read_to_the_end = !page.gap
+                        && !terminal.is_running()
+                        && terminal.is_one_command()
+                        && page.next_offset >= terminal.log.end_offset();
+                    drop(state);
+                    if read_to_the_end {
+                        self.remove_ended(&owner);
+                    }
+                    return Ok(output);
                 }
             }
             if gather {
@@ -642,11 +678,131 @@ impl RoomTerminalService {
             state.removed = true;
             self.lock().terminals.remove(terminal_id);
         }
-        let _ = self.stop_owner(&owner, true);
+        self.finish_removal(&owner, terminal_id)
+    }
+
+    fn finish_removal(
+        &self,
+        owner: &Arc<TerminalOwner>,
+        terminal_id: &str,
+    ) -> Result<(), DaemonError> {
+        let _ = self.stop_owner(owner, true);
         self.settle_outside_jobs(&mut owner.lock().terminal)?;
         self.inner.store.remove(terminal_id)?;
         self.report_work();
         Ok(())
+    }
+
+    /// Remove an ended terminal the kernel itself tidies (`kernel_cleanup_after`). Nothing
+    /// happens to a terminal that is not ended.
+    fn remove_ended(&self, owner: &Arc<TerminalOwner>) {
+        let terminal_id = {
+            let mut state = owner.lock();
+            if state.removed || state.terminal.is_running() || state.terminal.record.ended.is_none()
+            {
+                return;
+            }
+            state.removed = true;
+            state.terminal.record.terminal_id.clone()
+        };
+        {
+            let mut registry = self.lock();
+            if registry
+                .terminals
+                .get(&terminal_id)
+                .is_some_and(|held| Arc::ptr_eq(held, owner))
+            {
+                registry.terminals.remove(&terminal_id);
+            }
+        }
+        if let Err(error) = self.finish_removal(owner, &terminal_id) {
+            crate::logging::error_with_fields(
+                "room_terminal.remove",
+                "ended terminal could not be removed",
+                serde_json::json!({"terminal_id": terminal_id, "error": error.to_string()}),
+            );
+        }
+    }
+
+    pub(super) fn now_ms(&self) -> u64 {
+        #[cfg(test)]
+        {
+            unix_epoch_ms()
+                + self
+                    .inner
+                    .clock_skew_ms
+                    .load(std::sync::atomic::Ordering::SeqCst)
+        }
+        #[cfg(not(test))]
+        unix_epoch_ms()
+    }
+
+    #[cfg(test)]
+    pub(super) fn advance_clock_for_test(&self, by: Duration) {
+        self.inner.clock_skew_ms.fetch_add(
+            u64::try_from(by.as_millis()).unwrap(),
+            std::sync::atomic::Ordering::SeqCst,
+        );
+    }
+
+    /// Remove every ended terminal whose retention is over. Returns how many went.
+    pub(super) fn expire_ended(&self) -> usize {
+        if self.lock().shutdown {
+            return 0;
+        }
+        let now = self.now_ms();
+        let due: Vec<_> = self
+            .owners()
+            .into_iter()
+            .filter(|owner| {
+                let mut guard = owner.lock();
+                let state = &mut *guard;
+                let terminal = &mut state.terminal;
+                if state.removed || terminal.is_running() || terminal.record.ended.is_none() {
+                    return false;
+                }
+                // An ended record with no end time (never written so) starts its clock now.
+                let ended_at = *terminal.record.ended_at_ms.get_or_insert(now);
+                let Some(retention) = terminal.kernel_cleanup_after() else {
+                    return false;
+                };
+                now.saturating_sub(ended_at) >= u64::try_from(retention.as_millis()).unwrap()
+            })
+            .collect();
+        for owner in &due {
+            self.remove_ended(owner);
+        }
+        due.len()
+    }
+
+    /// Look for ended terminals that are due while the kernel runs, without a client asking.
+    fn start_ended_sweep(&self) {
+        let Some(runtime) = self
+            .inner
+            .pump_runtime
+            .get()
+            .cloned()
+            .or_else(|| tokio::runtime::Handle::try_current().ok())
+        else {
+            return;
+        };
+        if self.inner.ended_sweep.set(()).is_err() {
+            return;
+        }
+        let service = Arc::downgrade(&self.inner);
+        runtime.spawn(async move {
+            loop {
+                tokio::time::sleep(ENDED_SWEEP_INTERVAL).await;
+                let Some(inner) = service.upgrade() else {
+                    break;
+                };
+                // Removing ends processes and writes the store: off the timer workers.
+                let _ = tokio::task::spawn_blocking(move || {
+                    RoomTerminalService { inner }.expire_ended()
+                })
+                .await;
+            }
+        });
     }
 
     /// The Room ended: detach its registry entries before stopping their work.
