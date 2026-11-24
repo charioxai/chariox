@@ -537,6 +537,240 @@ async fn promoting_a_notification_batches_pending_inbox_wakes_with_the_same_rece
     assert_eq!(delivered[0].state, "submitting");
 }
 
+const EDITED_NOTIFICATION: &str = "Summarize only; do not deploy.";
+
+/// A queue-mode notification waits behind the busy turn and its person changes the text.
+async fn edited_queued_notification(rig: &Rig) {
+    let source = rig.workflow_with_exit("pipeline");
+    rig.trigger_on(&rig.register(&source)).await;
+    rig.complete(&source, "release-run", "release approved");
+    rig.pass().await;
+    let session = rig
+        .runtime
+        .owned
+        .session_store
+        .get_session(&rig.session_id)
+        .unwrap();
+    let queued = rig
+        .runtime
+        .owned
+        .prompt_state_owner
+        .peek_next_queued_prompt(&session, &rig.agent_id)
+        .expect("the notification waits behind the busy turn");
+    rig.runtime
+        .owned
+        .update_queued_prompt(
+            &rig.session_id,
+            &rig.agent_id,
+            &rig.attachment_id,
+            queued.id(),
+            EDITED_NOTIFICATION,
+        )
+        .unwrap();
+}
+
+/// The person's words for a waiting notification are theirs: a wake that arrives before it starts
+/// is not added to it, and it reaches the provider as written.
+#[tokio::test]
+async fn a_persons_edit_of_a_queued_notification_survives_a_pending_wake() {
+    use crate::durable_state::agent_lifecycle::{occurrence, Operation, Outcome};
+
+    let rig = rig().await;
+    edited_queued_notification(&rig).await;
+    let store = &rig.runtime.owned.durable_state_store;
+    let Outcome::Event(peer_event) = store
+        .agent_lifecycle(Operation::Occur(occurrence(
+            &rig.session_id,
+            &rig.agent_id,
+            "peer",
+            "finished",
+            "peer_event",
+            serde_json::json!({}),
+        )))
+        .unwrap()
+    else {
+        panic!("peer completion did not reach the inbox");
+    };
+    let session = rig
+        .runtime
+        .owned
+        .session_store
+        .get_session(&rig.session_id)
+        .unwrap();
+    rig.runtime
+        .owned
+        .prompt_state_owner
+        .complete_active_prompt_only(&session, &rig.agent_id)
+        .unwrap();
+    let dispatch = rig
+        .runtime
+        .owned
+        .advance_next_queued_prompt_dispatch(&rig.session_id, &rig.agent_id, &rig.run_id)
+        .unwrap()
+        .expect("the edited notification starts after the busy turn");
+    assert_eq!(dispatch.prompt, EDITED_NOTIFICATION);
+    let delivered = store
+        .agent_events_for_prompt(&rig.session_id, &rig.agent_id, &dispatch.prompt_id)
+        .unwrap();
+    assert!(
+        delivered
+            .iter()
+            .all(|row| row.sequence != peer_event.sequence),
+        "the wake waits for a turn of its own: {delivered:?}"
+    );
+}
+
+/// A later occurrence does not rewrite the edited prompt: it queues a turn of its own.
+#[tokio::test]
+async fn a_persons_edit_of_a_queued_notification_survives_a_later_occurrence() {
+    let rig = rig().await;
+    edited_queued_notification(&rig).await;
+    let other = rig.workflow_with_exit("pipeline-b");
+    rig.trigger_on(&rig.register(&other)).await;
+    rig.complete(&other, "other-run", "other finished");
+    rig.pass().await;
+    let waiting = rig.queued_prompts();
+    assert_eq!(waiting.len(), 2, "{waiting:?}");
+    assert_eq!(waiting[0], EDITED_NOTIFICATION);
+    assert!(waiting[1].contains("other finished"), "{waiting:?}");
+}
+
+/// A busy turn ends with a notification queued and a timer wake pending for a parked task: the
+/// promotion resumes the task, and the task's wait row ends with it.
+#[tokio::test]
+async fn a_completion_promotion_with_a_timer_wake_ends_the_wait_row_of_the_task_it_resumes() {
+    use super::super::local_prompt_dispatch_runtime::tests::runtime_with_active_prompt_and_config;
+    use crate::durable_state::agent_lifecycle::{ExecutionState, Operation};
+
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let (_root, runtime, session_id, agent_id, attachment_id, active_prompt_id, run_id) =
+        runtime_with_active_prompt_and_config(config, &[]).await;
+    let rig = Rig {
+        _root,
+        runtime,
+        session_id,
+        agent_id,
+        attachment_id,
+        active_prompt_id,
+        run_id,
+    };
+    let store = &rig.runtime.owned.durable_state_store;
+    let parked = "parked-timer";
+    let now = crate::session::unix_epoch_ms();
+    let apply = |operation| store.agent_lifecycle(operation).unwrap();
+    apply(Operation::Begin {
+        owner: "local".into(),
+        room: rig.session_id.clone(),
+        agent: rig.agent_id.clone(),
+        prompt: parked.into(),
+        run: Some(rig.run_id.clone()),
+        now,
+    });
+    let registration = "completion-timer-a".to_string();
+    let wake = serde_json::from_value(serde_json::json!({
+        "id": "timer-a", "task_id": parked, "room_id": rig.session_id, "agent_id": rig.agent_id,
+        "registration_id": registration, "kind": "timer", "label": "timer-a", "state": "scheduled",
+        "created_at_ms": now, "verified_at_ms": now, "next_due_ms": now + 1_000,
+        "command": [], "fire_count": 0, "missed_fires": 0,
+    }))
+    .unwrap();
+    apply(Operation::CreateWake {
+        task: parked.into(),
+        prompt: parked.into(),
+        wake,
+    });
+    apply(Operation::Yield {
+        task: parked.into(),
+        prompt: parked.into(),
+        registrations: vec![registration],
+        cursor: 0,
+        deadline: Some(now + 60_000),
+        reason: "wait for the timer".into(),
+        now,
+    });
+    apply(Operation::Settle {
+        room: rig.session_id.clone(),
+        agent: rig.agent_id.clone(),
+        prompt: parked.into(),
+        run: rig.run_id.clone(),
+        has_answer: true,
+        cancelled: false,
+        now,
+    });
+    let task = store.agent_task(parked).unwrap().unwrap();
+    assert_eq!(task.state, ExecutionState::Waiting);
+    rig.runtime.owned.record_wait_started(&task);
+    let wait_rows = || -> Vec<serde_json::Value> {
+        rig.runtime
+            .owned
+            .operational_history_store
+            .load_session_events(&rig.session_id, Some(&rig.agent_id))
+            .unwrap()
+            .into_iter()
+            .filter_map(|event| {
+                let entry = event.to_session_history_entry()?;
+                (entry.kind == crate::history::SessionHistoryEntryKind::ProviderTool
+                    && entry.merge_key.as_deref()?.starts_with("wait:"))
+                .then(|| serde_json::from_str(&entry.text).unwrap())
+            })
+            .collect()
+    };
+    let rows = wait_rows();
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0]["status"], "running", "{}", rows[0]);
+
+    let workflow = rig.workflow_with_exit("pipeline-a");
+    rig.trigger_on(&rig.register(&workflow)).await;
+    rig.complete(&workflow, "pipeline-a", "pipeline-a");
+    rig.pass().await;
+    apply(Operation::FireWakes { now: now + 1_000 });
+    let room = rig
+        .runtime
+        .owned
+        .session_store
+        .get_session(&rig.session_id)
+        .unwrap();
+    let next = rig
+        .runtime
+        .owned
+        .prompt_state_owner
+        .peek_next_queued_prompt(&room, &rig.agent_id)
+        .unwrap();
+    let batch = rig
+        .runtime
+        .complete_local_prompt_with_queued_advance_if_matches(
+            &rig.session_id,
+            &rig.agent_id,
+            Some(&rig.run_id),
+            &next,
+            Some(&rig.active_prompt_id),
+        )
+        .await
+        .unwrap()
+        .expect("the busy turn completes")
+        .dispatch
+        .expect("the mixed batch uses receipt-aware dispatch");
+    assert!(batch.prompt.contains("2 new messages:"), "{}", batch.prompt);
+    assert!(rig
+        .runtime
+        .enqueue_prompt_dispatch_with_acceptance(&batch)
+        .await
+        .unwrap());
+    let resumed = store.agent_task(parked).unwrap().unwrap();
+    assert_eq!(
+        resumed.prompt_id, batch.prompt_id,
+        "the original task owns the promoted turn"
+    );
+    let rows = wait_rows();
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(
+        rows[0]["status"], "completed",
+        "the wait the promotion ended is not left running: {}",
+        rows[0]
+    );
+}
+
 #[tokio::test]
 async fn promoted_mixed_notifications_resume_the_timer_task_and_settle_its_receipts() {
     use super::super::local_prompt_dispatch_runtime::tests::runtime_with_active_prompt_and_config;

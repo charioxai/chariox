@@ -2162,6 +2162,8 @@ impl PromptStateOwner {
                     .queued_notifications()
                     .first()
                     .is_some_and(|lead| lead.batch_instruction.is_some())
+                // A person's edit of its text stays as written: a later occurrence queues its own turn.
+                && !queued.queued_text_edited()
                 && !queued.remote_steer_reserved()
                 && !queued.local_steer_submitted()
         })?;
@@ -2200,6 +2202,7 @@ impl PromptStateOwner {
             prompt.into(),
             queued.attachments(),
         ));
+        queued.mark_queued_text_edited();
         // MP-08/MP-11 R1: text and acquisition provenance change under one
         // queue lock. An automated edit cannot keep a human owner's request.
         *queued = queued.clone().with_source_attachment(editor);

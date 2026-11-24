@@ -577,6 +577,7 @@ impl KernelRuntimeOwnedState {
         };
         let started_next =
             self.add_pending_wakes_to_notification(&session, agent_id, started_next)?;
+        let waiting = self.waits_before_promotion(session_id, agent_id, &started_next);
         let (active_prompt, queued_prompts) =
             self.prompt_state_owner.state_parts(&session, agent_id);
         self.mirror_prompt_owner_agent_state_with_activity_mutation(
@@ -586,6 +587,7 @@ impl KernelRuntimeOwnedState {
             queued_prompts,
             activity_mutation,
         )?;
+        self.close_waits_after_promotion(session_id, agent_id, &started_next, &waiting)?;
         let source_attachment_id = self.promoted_prompt_source_attachment_id(
             session_id,
             started_next.source_attachment_id(),

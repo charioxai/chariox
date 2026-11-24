@@ -1020,9 +1020,12 @@ impl KernelRuntimeOwnedState {
         started: crate::session::PromptQueueItem,
     ) -> Result<crate::session::PromptQueueItem, DaemonError> {
         let notifications = started.queued_notifications();
+        // A person edited this prompt's text while it waited: their words go to the provider as
+        // written, and the wakes stay pending for a turn of their own.
         if !notifications
             .first()
             .is_some_and(|notification| notification.batch_instruction.is_some())
+            || started.queued_text_edited()
             || self.sudo_work_task(session.id(), agent).is_some()
         {
             return Ok(started);
@@ -1085,6 +1088,42 @@ impl KernelRuntimeOwnedState {
         } else {
             Ok(started)
         }
+    }
+
+    /// The tasks waiting before a promotion's durable commit resumes them: read after the wakes joined
+    /// the promoted prompt and before that prompt is mirrored, and empty when no wake joined.
+    pub(super) fn waits_before_promotion(
+        &self,
+        room: &str,
+        agent: &str,
+        started: &crate::session::PromptQueueItem,
+    ) -> Vec<ledger::AgentTaskExecution> {
+        if started.inbox_wakes().is_empty() {
+            Vec::new()
+        } else {
+            self.waiting_tasks(room, agent)
+        }
+    }
+
+    /// Ends the wait rows of the tasks that promotion's commit resumed. Every path that promotes a queued
+    /// notification with wakes (local or remote, on a dispatch or on a completion) does this after its commit.
+    pub(super) fn close_waits_after_promotion(
+        &self,
+        room: &str,
+        agent: &str,
+        started: &crate::session::PromptQueueItem,
+        waiting: &[ledger::AgentTaskExecution],
+    ) -> Result<(), DaemonError> {
+        if waiting.is_empty() {
+            return Ok(());
+        }
+        if let Some(lead) =
+            self.durable_state_store
+                .agent_event_for_prompt(room, agent, started.id())?
+        {
+            self.record_woken_waits(waiting, &lead);
+        }
+        Ok(())
     }
 
     /// Bind only after dispatch admission and immediately before provider I/O.

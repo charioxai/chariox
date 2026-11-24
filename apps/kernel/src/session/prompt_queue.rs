@@ -247,6 +247,10 @@ pub(crate) struct DurablePromptPrivateState {
     queued_notifications: Vec<QueuedNotification>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     inbox_wakes: Vec<u64>,
+    /// A person changed the text of this queued notification prompt: the kernel keeps their words
+    /// and no longer rewrites the prompt from its occurrences.
+    #[serde(default, skip_serializing_if = "is_false_bool")]
+    queued_text_edited: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -276,6 +280,7 @@ struct PromptPrivateMetadata {
     question_wait_stopped: bool,
     queued_notifications: Vec<QueuedNotification>,
     inbox_wakes: Vec<u64>,
+    queued_text_edited: bool,
 }
 
 /// One notification occurrence a queued prompt delivers: what happened, where it
@@ -346,6 +351,7 @@ impl DurablePromptPrivateState {
             question_wait_stopped: metadata.question_wait_stopped,
             queued_notifications: metadata.queued_notifications,
             inbox_wakes: metadata.inbox_wakes,
+            queued_text_edited: metadata.queued_text_edited,
         })
     }
 }
@@ -681,6 +687,23 @@ impl PromptQueueItem {
         );
         self.prompt = text;
         self.updated_at_ms = crate::session::unix_epoch_ms();
+    }
+
+    /// A person edited this queued notification prompt's text: it is theirs now, and no later
+    /// occurrence or wake rewrites it.
+    pub(crate) fn mark_queued_text_edited(&mut self) {
+        if self.queued_notifications().is_empty() {
+            return;
+        }
+        self.private_metadata
+            .get_or_insert_with(|| Box::new(PromptPrivateMetadata::default()))
+            .queued_text_edited = true;
+    }
+
+    pub(crate) fn queued_text_edited(&self) -> bool {
+        self.private_metadata
+            .as_deref()
+            .is_some_and(|metadata| metadata.queued_text_edited)
     }
 
     pub(crate) fn with_inbox_wakes(mut self, sequences: Vec<u64>) -> Self {
@@ -1206,6 +1229,7 @@ impl PromptQueueItem {
             question_wait_stopped: private.question_wait_stopped,
             queued_notifications: private.queued_notifications.clone(),
             inbox_wakes: private.inbox_wakes.clone(),
+            queued_text_edited: private.queued_text_edited,
         }));
         self.restore_remote_steer_outcome_uncertainty(private.remote_steer_uncertainty.clone());
     }
