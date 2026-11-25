@@ -797,6 +797,36 @@ test('Row 342 F3: prefetched stylesheet reads serve only their own document, and
  assert.equal(await mirror.crossOriginSheet(late,'https://cdn.example/c.css'),'.late{color:blue}');
 });
 
+// Row 487: a layout reset (the person resized the window) snapshots the same document again; its sheets' bytes are the
+// same, so they are read once per document (github.com: 8 sheet reads of ~85 ms per resize), never from another document.
+test('Row 487: a reset of the same document reuses its raw sheet reads; a new document reads again',async()=>{
+ const reads=[];
+ const mirror=new Mirror2({host:{browser:{responseBodies:{async read(_world,address){reads.push(address);return Buffer.from('.a{color:red}')}}}}});
+ mirror.evaluate=async(_world,expression)=>{if(expression.includes('compatMode'))return false;const sheets=JSON.parse(expression.slice(expression.lastIndexOf('})(')+3,-1));return {css:sheets[0].body??sheets[0].text,parsed:sheets.map(()=>null),used:null}};
+ const world=url=>({connection:{async send(method){throw Error(`unexpected ${method}`)}},sessionId:'S',frame:{id:'F',url},ref:'observer'});
+ const page=world('https://github.com/a');
+ assert.equal(await mirror.crossOriginSheet(page,'https://github.githubassets.com/x.css','n9'),'.a{color:red}');
+ assert.equal(await mirror.crossOriginSheet(page,'https://github.githubassets.com/x.css','n9'),'.a{color:red}');
+ assert.deepEqual(reads,['https://github.githubassets.com/x.css'],'the second snapshot of the document reads nothing again');
+ await mirror.crossOriginSheet(world('https://github.com/b'),'https://github.githubassets.com/x.css','n9');
+ assert.equal(reads.length,2,'another document reads its own bytes');
+});
+
+// Review P2 on #1719: the page can reload a sheet at the same URL with new CSS (re-linked, no-cache). The update reads the
+// latest response, and the next reset snapshot carries the new bytes, not the first ones.
+test('Row 487: a sheet update reads the new response, and the next reset snapshot carries it', async () => {
+ let body = '.a{color:red}'; const reads = [];
+ const mirror = new Mirror2({ host: { browser: { responseBodies: { async read(_world, address) { reads.push(address); return Buffer.from(body); } } } } });
+ mirror.evaluate = async (_world, expression) => { if (expression.includes('compatMode')) return false; const sheets = JSON.parse(expression.slice(expression.lastIndexOf('})(') + 3, -1)); return { css: sheets[0].body ?? sheets[0].text, parsed: sheets.map(() => null), used: null }; };
+ const page = { connection: { async send(method) { throw Error(`unexpected ${method}`); } }, sessionId: 'S', frame: { id: 'F', url: 'https://example.com/' }, ref: 'observer' };
+ const url = 'https://cdn.example.com/live.css';
+ assert.equal(await mirror.crossOriginSheet(page, url, 'n4'), '.a{color:red}');
+ body = '.a{color:green}';
+ assert.equal(await mirror.crossOriginSheet(page, url), '.a{color:green}', 'the update reads the latest response');
+ assert.equal(await mirror.crossOriginSheet(page, url, 'n4'), '.a{color:green}', 'a later reset snapshot carries the new bytes');
+ assert.equal(reads.length, 2, 'the reset still reads nothing again');
+});
+
 test('MP-08/MP-10: the normalized sheet cache stays within its entry and size bounds',()=>{
  const cache=new ParsedSheets(2,10);
  cache.put('a','1234');cache.put('b','1234');cache.take('a');cache.put('c','1234');
