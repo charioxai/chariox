@@ -134,10 +134,16 @@ impl KernelRuntimeOwnedState {
         {
             return Ok(false);
         }
+        // A backstop of an earlier task covered an idle interval a later turn ended: it holds nobody.
+        let latest = tasks.last().map(|task| task.task_id.as_str());
         Ok(!store
             .agent_wakes(Some(room), Some(agent))?
             .iter()
-            .any(|wake| matches!(wake.state.as_str(), "scheduled" | "starting" | "running")))
+            .any(|wake| {
+                matches!(wake.state.as_str(), "scheduled" | "starting" | "running")
+                    && !(wake.label.starts_with(BACKSTOP_LABEL)
+                        && Some(wake.task_id.as_str()) != latest)
+            }))
     }
 
     /// Cell 4: a message waits for its recipient's next turn, and an idle agent with nothing armed
