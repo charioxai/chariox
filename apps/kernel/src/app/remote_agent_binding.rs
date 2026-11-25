@@ -1879,6 +1879,7 @@ fn installed_remote_account_metadata(
 ) -> Option<crate::account_profile::ProviderAccountReplicaMetadata> {
     profile.is_installed_at(target_kind, target_ref).then(|| {
         crate::account_profile::ProviderAccountReplicaMetadata {
+            provider_account_id: None,
             owner_user_id: worker_owner_user_id.to_string(),
             provider: profile.provider.clone(),
             profile_id: profile.profile_id.clone(),
@@ -1975,6 +1976,7 @@ mod tests {
                     },
                     materialization: crate::account_profile::ProviderAccountMaterialization {
                         profile: crate::account_profile::ProviderAccountReplicaMetadata {
+                            provider_account_id: None,
                             owner_user_id: "owner".into(),
                             provider: "opencode".into(),
                             profile_id: "go".into(),
@@ -2037,6 +2039,7 @@ mod tests {
             },
             materialization: crate::account_profile::ProviderAccountMaterialization {
                 profile: crate::account_profile::ProviderAccountReplicaMetadata {
+                    provider_account_id: None,
                     owner_user_id: "owner".into(),
                     provider: "opencode".into(),
                     profile_id: "go".into(),
@@ -2077,6 +2080,7 @@ mod tests {
     #[test]
     fn remote_account_receipt_names_the_workers_profile_never_an_alias() {
         let expected = crate::account_profile::ProviderAccountReplicaMetadata {
+            provider_account_id: None,
             owner_user_id: "user-home".to_string(),
             provider: "codex".to_string(),
             profile_id: "codex-1-vfx4dshw".to_string(),
@@ -2125,6 +2129,7 @@ mod tests {
     #[test]
     fn remote_agent_launch_uses_the_materialized_profile_id() {
         let materialized = crate::account_profile::ProviderAccountReplicaMetadata {
+            provider_account_id: None,
             owner_user_id: "user-home".to_string(),
             provider: "codex".to_string(),
             profile_id: "codex-1-vfx4dshw".to_string(),

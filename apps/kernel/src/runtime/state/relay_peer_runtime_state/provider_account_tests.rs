@@ -74,6 +74,7 @@ exit 2
     };
     let materialization = crate::account_profile::ProviderAccountMaterialization {
         profile: crate::account_profile::ProviderAccountReplicaMetadata {
+            provider_account_id: None,
             owner_user_id: "owner-a".into(),
             provider: "opencode".into(),
             profile_id: "slow".into(),
