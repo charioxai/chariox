@@ -221,3 +221,39 @@ fn machine_approval_receipts_in_the_session_shape_and_hash() {
         "94e6a5f1c1c3e7d97ff0d57122df03ce00d2c42ca8b96c376e50fb3604b9d12b"
     );
 }
+
+/// Local 1016: a machine row carries the closed reason the connected service gave when it stopped
+/// or failed the machine without the owner asking; a row the owner stopped carries none.
+#[test]
+fn machine_event_reason_1016_shapes_and_hash() {
+    let row = |state: &str, reason: Option<&str>| {
+        let mut row = serde_json::json!({"allocation_ref":"resource","name":"Computer","state":state,"revision":1,"since":"2026-11-02T00:00:00Z","kernel_id":null,"machine_id":null,"available_actions":["delete"]});
+        if let Some(reason) = reason {
+            row["reason"] = reason.into();
+        }
+        row
+    };
+    let snapshot = serde_json::json!({
+        "responses": [{"ControlPlane": {"result": {"kind": "machines", "machines": [
+            row("failed", Some("copy_failed")),
+            row("stopped", Some("hard_stop")),
+            row("failed", Some("rental_failed")),
+            row("stopped", None)
+        ], "saved_states": []}}}]
+    });
+    for shape in snapshot["responses"].as_array().unwrap() {
+        let response: LocalDaemonResponse = serde_json::from_value(shape.clone()).unwrap();
+        assert_eq!(serde_json::to_value(response).unwrap(), *shape);
+    }
+    assert_eq!(
+        format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
+        ),
+        "f6b79846680a47fb0551b3f6147ce86fe8bd08f1baa527364d4a2dc4bbae5eb2"
+    );
+    assert!(serde_json::from_value::<LocalDaemonResponse>(
+        serde_json::json!({"ControlPlane": {"result": {"kind": "machines", "machines": [row("failed", Some("because"))], "saved_states": []}}})
+    )
+    .is_err());
+}
