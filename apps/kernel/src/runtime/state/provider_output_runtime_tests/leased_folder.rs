@@ -208,3 +208,157 @@ async fn a_refused_leased_spawn_removes_the_folder_it_made() {
         .join("agent-home-1");
     assert!(!folder.exists(), "the refused spawn left {folder:?}");
 }
+
+/// Spawns one folderless leased agent and returns (the session's folder, the agent record's folder).
+async fn spawn_folderless(
+    app: &Arc<Mutex<DaemonApp>>,
+    runtime: &KernelRuntimeState,
+) -> (String, String) {
+    let lease = runtime
+        .create_bound_relay_execution_lease(
+            "home",
+            "room",
+            "agent-home-1",
+            false,
+            "owner",
+            caller(),
+        )
+        .await
+        .unwrap();
+    runtime
+        .authorize_relay_execution_lease_caller(&lease.id, caller())
+        .await
+        .unwrap();
+    let leased = runtime
+        .create_relay_leased_agent(
+            &lease.id, "dev-stub", "default", None, None, None, None, None, None, None,
+        )
+        .await
+        .unwrap();
+    let app = app.lock().await;
+    let session_folder = app
+        .sessions()
+        .get_session(&leased.backing_session_id)
+        .unwrap()
+        .worktree_id()
+        .to_string();
+    let agent_folder = app
+        .agents()
+        .get_agent(&leased.backing_agent_id)
+        .unwrap()
+        .worktree_id()
+        .expect("the backing agent has a folder")
+        .to_string();
+    (session_folder, agent_folder)
+}
+
+// Queue row 315 (W1, W3): a machine rented with a custom repository root runs its leased agents
+// under that root, and every place that shows the agent's folder shows the same one.
+#[tokio::test]
+async fn a_leased_agent_on_a_machine_with_a_custom_root_runs_under_that_root() {
+    crate::test_support::isolated_env_test!();
+    let root = crate::test_support::TestWorktree::new("leased-folder-custom-root");
+    let managed_root = root.path().join("srv").join("mpval");
+    std::fs::create_dir_all(&managed_root).unwrap();
+    std::env::set_var(
+        crate::managed_bootstrap::MANAGED_REPOSITORY_ROOT_ENV,
+        &managed_root,
+    );
+    let (app, runtime) = worker_runtime(&root, "{root}").await;
+    let (session_folder, agent_folder) = spawn_folderless(&app, &runtime).await;
+    let expected = managed_root.join("chariox-workspaces").join("agent-home-1");
+    assert_eq!(std::path::Path::new(&session_folder), expected);
+    assert!(expected.is_dir(), "{expected:?}");
+    assert_eq!(
+        agent_folder, session_folder,
+        "the agent shows another folder"
+    );
+    assert!(
+        !root.path().join("user").join("chariox-workspaces").exists(),
+        "the worker's home was used"
+    );
+}
+
+// Queue row 315 (W2): a worker with no recorded root keeps the folder under its home.
+#[tokio::test]
+async fn a_leased_agent_on_a_machine_without_a_custom_root_keeps_the_home_folder() {
+    crate::test_support::isolated_env_test!();
+    let root = crate::test_support::TestWorktree::new("leased-folder-no-root");
+    std::env::remove_var(crate::managed_bootstrap::MANAGED_REPOSITORY_ROOT_ENV);
+    let (app, runtime) = worker_runtime(&root, "{root}").await;
+    let (session_folder, agent_folder) = spawn_folderless(&app, &runtime).await;
+    let expected = root
+        .path()
+        .join("user")
+        .join("chariox-workspaces")
+        .join("agent-home-1");
+    assert_eq!(std::path::Path::new(&session_folder), expected);
+    assert_eq!(agent_folder, session_folder);
+}
+
+// Queue row 315: a recorded root that is not usable refuses the spawn with the reason; it never
+// falls back to the home folder, and the refusal leaves the lease's authorization for a retry.
+#[tokio::test]
+async fn a_leased_agent_refuses_when_the_recorded_root_is_not_a_valid_root() {
+    crate::test_support::isolated_env_test!();
+    let root = crate::test_support::TestWorktree::new("leased-folder-bad-root");
+    std::env::set_var(
+        crate::managed_bootstrap::MANAGED_REPOSITORY_ROOT_ENV,
+        "/var/lib/chariox/x",
+    );
+    let (app, runtime) = worker_runtime(&root, "{root}").await;
+    // A bound, authorized lease: the refusal below can only come from the root, never from the
+    // caller check.
+    let lease = runtime
+        .create_bound_relay_execution_lease(
+            "home",
+            "room",
+            "agent-home-1",
+            false,
+            "owner",
+            caller(),
+        )
+        .await
+        .unwrap();
+    runtime
+        .authorize_relay_execution_lease_caller(&lease.id, caller())
+        .await
+        .unwrap();
+    let refused = runtime
+        .create_relay_leased_agent(
+            &lease.id, "dev-stub", "default", None, None, None, None, None, None, None,
+        )
+        .await
+        .expect_err("a root that is not valid refuses the spawn");
+    assert!(
+        refused.to_string().contains("managed repository root"),
+        "the refusal is not about the root: {refused}"
+    );
+    assert!(!root.path().join("user").join("chariox-workspaces").exists());
+
+    // The refusal did not use up the authorization: with a valid root the same lease spawns.
+    let managed_root = root.path().join("srv").join("retry");
+    std::fs::create_dir_all(&managed_root).unwrap();
+    std::env::set_var(
+        crate::managed_bootstrap::MANAGED_REPOSITORY_ROOT_ENV,
+        &managed_root,
+    );
+    let leased = runtime
+        .create_relay_leased_agent(
+            &lease.id, "dev-stub", "default", None, None, None, None, None, None, None,
+        )
+        .await
+        .expect("the retry on the same lease spawns under the valid root");
+    let folder = app
+        .lock()
+        .await
+        .sessions()
+        .get_session(&leased.backing_session_id)
+        .unwrap()
+        .worktree_id()
+        .to_string();
+    assert_eq!(
+        std::path::Path::new(&folder),
+        managed_root.join("chariox-workspaces").join("agent-home-1")
+    );
+}
