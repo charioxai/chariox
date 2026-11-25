@@ -120,9 +120,17 @@ fn environment_requests_have_the_camel_case_wire_of_protocol_972() {
             LocalDaemonRequest::SetProjectEnvironmentSecret(SetProjectEnvironmentSecretRequest {
                 project_id: "p".into(),
                 name: "T".into(),
-                value: VaultPassphrase::new("synthetic"),
+                source: ProjectEnvironmentSecretSource::Value(VaultPassphrase::new("synthetic")),
             }),
-            json!({"SetProjectEnvironmentSecret": {"projectId": "p", "name": "T", "value": "synthetic"}}),
+            json!({"SetProjectEnvironmentSecret": {"projectId": "p", "name": "T", "source": {"value": "synthetic"}}}),
+        ),
+        (
+            LocalDaemonRequest::SetProjectEnvironmentSecret(SetProjectEnvironmentSecretRequest {
+                project_id: "p".into(),
+                name: "GH_TOKEN".into(),
+                source: ProjectEnvironmentSecretSource::VaultEntry("cap-1".into()),
+            }),
+            json!({"SetProjectEnvironmentSecret": {"projectId": "p", "name": "GH_TOKEN", "source": {"vaultEntry": "cap-1"}}}),
         ),
         (
             LocalDaemonRequest::RunProjectEnvironmentSetup(RunProjectEnvironmentSetupRequest {
