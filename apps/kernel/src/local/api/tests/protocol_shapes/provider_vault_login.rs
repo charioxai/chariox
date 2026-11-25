@@ -104,7 +104,7 @@ fn native_account_identity_peer_shape_is_versioned_and_hashed() {
     let bytes = include_bytes!("provider-account-identity-452.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "2470f8b947c3bc253df6407c77a754ff718cfb6e4fffa0c0d74ea35187ccb6b5"
+        "a5fa150c0beed51fb1763e278dc3d61095b14d697fdcc646db913f81873a0583"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(

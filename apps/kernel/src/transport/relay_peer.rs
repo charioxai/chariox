@@ -258,7 +258,8 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// Peer 452 carries file slices as bytes: the `content` of `FileSliceRead`, `WriteLeasedAgentFile` and
 /// `ProjectEnvironmentFilePulled` is `data_base64` in the peer plaintext, which is lifted out of the JSON, and a
 /// kernel that offers `x-chariox-relay-peer-binary: v1` sends and takes peer requests and replies as `CXR3`/`CXR2` frames.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 452;
+/// Provisional peer 454: the home's capture preparation carries the existing Vault entries the worker's command runs with (`env_uses`), so the home refuses an unknown one before it unlocks.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 454;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
 pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = RELAY_PEER_PROTOCOL_VERSION;
