@@ -4,7 +4,7 @@ export const machineAllocationMinimumProtocolVersion = 1006
 /** Optional connected service data. An absent machine_allocation hides hosted actions. */
 export type ControlPlaneRequest =
   | { action: "capabilities" }
-  | { action: "acquire"; capability_revision: string; request_id: string; class_id?: string; region?: string }
+  | { action: "acquire"; capability_revision: string; request_id: string; class_id?: string; region?: string; timeout_s?: number }
   | { action: "acquire_job"; capability_revision: string; request_id: string; job_ref: string; needs: { memory_gib?: number; cpus?: number }; timeout_s: number }
   | { action: "get_job" | "cancel_job"; job_ref: string }
   | { action: "job_started"; allocation_ref: string; capability_revision: string }

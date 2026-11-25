@@ -14,6 +14,9 @@ pub enum ControlPlaneRequest {
         class_id: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         region: Option<String>,
+        /// The rental's hard stop in seconds; the service stops the machine then. Absent keeps it until released.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        timeout_s: Option<u64>,
     },
     AcquireJob {
         capability_revision: String,
