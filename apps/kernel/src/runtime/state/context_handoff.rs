@@ -682,6 +682,23 @@ impl super::KernelRuntimeOwnedState {
         ))
     }
 
+    pub(super) fn stall_recovery_notes(
+        &self,
+        room: &str,
+        agent: &str,
+        prompt: &str,
+    ) -> Option<String> {
+        const NOTES_BYTES: usize = 16_000;
+        let brief = self.stored_handoff_brief(room, agent);
+        match self.agent_conversation(room, agent, Some(prompt)) {
+            Some(mut conversation) => {
+                conversation.brief = brief;
+                conversation.render(NOTES_BYTES)
+            }
+            None => brief,
+        }
+    }
+
     pub(super) fn stored_handoff_brief(&self, session_id: &str, agent_id: &str) -> Option<String> {
         self.protected_stored_handoff_brief(session_id, agent_id)
             .inspect_err(|error| {

@@ -90,8 +90,10 @@ pub(crate) fn user_only(
         Some(UserOnly::UserDomain)
     } else if interaction.level() == crate::session::RuntimeInteractionLevel::Critical {
         Some(UserOnly::Critical)
-    } else if super::agent_task_owner_interactions::is_blocked_task_decision(interaction.id()) {
-        // Resume or Cancel of a blocked task is a decision about an agent, so its parent may hold it.
+    } else if super::agent_task_owner_interactions::is_blocked_task_decision(interaction.id())
+        || super::provider_stall::is_provider_stall_decision(interaction)
+    {
+        // An agent's parent can answer a request to recover its turn.
         None
     } else if super::machine_acquisition::is_machine_acquisition_decision(interaction.id()) {
         // Acquiring a machine is the person's OK or an agent's acting for them.
@@ -129,22 +131,24 @@ impl KernelRuntimeOwnedState {
     }
 
     /// Whether `ancestor` may hold a decision now: it is alive, not stopped, not past its deadline,
-    /// not itself waiting for the user, and would approve for itself (a `Required` agent would ask
-    /// the user, and a parent passes on only the authority it holds).
+    /// not itself waiting for the user, and can make the decision using its own authority.
     pub(super) fn ancestor_can_hold(
         &self,
         rooms: &crate::session::SessionService,
         ancestor: &crate::agent::AgentInstance,
+        turn_recovery: bool,
     ) -> bool {
         let Ok(session) = rooms.get_session(ancestor.session_id()) else {
             return false;
         };
         if ancestor.archived()
             || session.status() == crate::session::SessionStatus::Ended
-            || self
-                .decision_execution_config(rooms, &session, ancestor)
-                .permission_level
-                == AgentPermissionLevel::Required
+            // A stalled-turn decision uses the parent's existing control of child turns.
+            || (!turn_recovery
+                && self
+                    .decision_execution_config(rooms, &session, ancestor)
+                    .permission_level
+                    == AgentPermissionLevel::Required)
             || session
                 .active_interaction_for_agent(ancestor.id())
                 .is_some()
@@ -189,7 +193,14 @@ impl KernelRuntimeOwnedState {
         };
         ancestors(start, &agents)
             .into_iter()
-            .find(|ancestor| accepts(ancestor) && self.ancestor_can_hold(rooms, ancestor))
+            .find(|ancestor| {
+                accepts(ancestor)
+                    && self.ancestor_can_hold(
+                        rooms,
+                        ancestor,
+                        super::provider_stall::is_provider_stall_decision(interaction),
+                    )
+            })
             .map_or(DecisionHolder::User, |ancestor| {
                 DecisionHolder::Agent(ancestor.id().to_owned())
             })

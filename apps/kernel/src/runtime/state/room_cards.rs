@@ -60,7 +60,7 @@ impl KernelRuntimeOwnedState {
                 ));
             }
         }
-        if !self.ancestor_can_hold(rooms, caller) {
+        if !self.ancestor_can_hold(rooms, caller, false) {
             return Err(denied(
                 "your current authority requires the owner's answer to this card",
             ));

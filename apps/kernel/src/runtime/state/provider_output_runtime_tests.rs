@@ -189,6 +189,7 @@ mod project_environment_shell;
 mod project_queued_environment;
 mod prompt_cancellation;
 mod prompt_parking;
+mod provider_stall;
 mod provider_turn_adoption;
 mod publication_settlement;
 mod pump_selection;

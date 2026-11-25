@@ -1127,6 +1127,9 @@ pub struct CreateAgentRequest {
     pub spawn_key: Option<String>,
     #[serde(skip)]
     pub(crate) peer_spawn_limit: Option<crate::session::EffectiveAgentExecutionConfig>,
+    /// A kernel recovery can keep the parent edge while the parent has no creating turn.
+    #[serde(skip)]
+    pub(crate) stall_recovery: bool,
     #[serde(default)]
     pub role: AgentRole,
     pub alias: Option<String>,
@@ -1152,6 +1155,7 @@ impl CreateAgentRequest {
             parent_agent_id: None,
             spawn_key: None,
             peer_spawn_limit: None,
+            stall_recovery: false,
             role: AgentRole::Standard,
             alias: None,
             provider: provider.into(),
