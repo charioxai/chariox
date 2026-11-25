@@ -18,6 +18,16 @@ pub enum TaskOwnerAction {
     Question,
 }
 
+/// What an agent's own question says about its free-text answer box: the label and the placeholder
+/// the card shows. An agent that gives neither gets a plain box with no text of the kernel's own.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QuestionReply {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placeholder: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentTaskExecution {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -36,6 +46,9 @@ pub struct AgentTaskExecution {
     pub reason: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner_action: Option<TaskOwnerAction>,
+    /// The label and placeholder the agent gave its question's answer box (`chariox.events.blocked`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub question_reply: Option<QuestionReply>,
     pub obligations: Vec<AgentObligation>,
     pub wait: Option<AgentWait>,
     pub last_progress_at_ms: u64,
@@ -483,6 +496,7 @@ pub(crate) enum Operation {
         task: String,
         prompt: String,
         reason: String,
+        reply: Option<QuestionReply>,
     },
     /// The kernel blocks a task whose attempt was interrupted (a refused or failed
     /// dispatch, a lost run): a later turn of the agent may supersede it. An owner block

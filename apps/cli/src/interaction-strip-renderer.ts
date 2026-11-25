@@ -12,7 +12,7 @@ import type {
   RuntimeInteraction,
 } from "./cli-types.js"
 import { providerLoginLines } from "@chariox/kernel-client/provider-login-projection"
-import { renderInteractionCustomChoiceValue } from "./interaction-custom-choice-render.js"
+import { customChoiceLine } from "./interaction-custom-choice-render.js"
 import type { ProviderLoginStripState } from "./provider-login-interaction-controller.js"
 import { renderProviderLoginStrip } from "./provider-login-strip-renderer.js"
 import {
@@ -395,13 +395,8 @@ function renderInteractionChoices(
     const selected = focused && index === selectedIndex
     const editing = options.customEditing(interaction.id)
     const value = options.customReply(interaction.id)
-    const placeholder = interaction.custom_choice.placeholder ?? "type another option"
-    const renderedValue = renderInteractionCustomChoiceValue(
-      value,
-      placeholder,
-      interaction.custom_choice.input_kind,
-    )
-    text.content = `${selected ? ">" : " "} ${index + 1}.${interaction.custom_choice.label}: ${renderedValue}${editing ? "_" : ""}`
+    // The agent sets the label and the hint; with none the box is plain, with no text of ours.
+    text.content = customChoiceLine(index, interaction.custom_choice, value, selected, editing)
     text.fg = selected ? theme.background : theme.primary
     text.bg = selected ? theme.primary : undefined
     text.attributes = selected ? TextAttributes.BOLD : TextAttributes.NONE

@@ -69,6 +69,11 @@ pub struct PersonInboxNotice {
     pub body: Option<String>,
     /// A URL or a Chariox target the person can open.
     pub link: Option<String>,
+    /// Who raised it: an agent the person asked to tell them (`chariox.notify_person`), or the
+    /// kernel itself (a workflow that could not start, an account to sign in to). Only the
+    /// first is a requested notification; the second is something the person must act on.
+    #[serde(default)]
+    pub origin: PersonInboxNoticeOrigin,
     /// A kernel-owned action; ordinary agent notices cannot create one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub action: Option<PersonInboxNoticeAction>,
@@ -79,6 +84,14 @@ pub struct PersonInboxNotice {
     /// card stands for the n notices past it: Noisy. `title` then reads "<agent> sent n more
     /// notifications" and `body` names the latest one.
     pub folded: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PersonInboxNoticeOrigin {
+    #[default]
+    Agent,
+    Kernel,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

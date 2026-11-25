@@ -96,7 +96,8 @@ use std::sync::mpsc;
 use transitions::apply;
 pub(super) use types::Request;
 pub use types::{
-    AgentObligation, AgentTaskExecution, AgentWait, AgentWake, ExecutionState, TaskOwnerAction,
+    AgentObligation, AgentTaskExecution, AgentWait, AgentWake, ExecutionState, QuestionReply,
+    TaskOwnerAction,
 };
 mod wake_receipts;
 pub(crate) use types::{
@@ -1719,6 +1720,7 @@ fn new_task(
         state: ExecutionState::Working,
         reason: String::new(),
         owner_action: None,
+        question_reply: None,
         obligations: vec![],
         wait: None,
         last_progress_at_ms: now,

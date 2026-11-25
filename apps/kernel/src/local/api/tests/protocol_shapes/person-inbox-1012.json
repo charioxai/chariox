@@ -19,13 +19,13 @@
       "cards": [
         { "card_id": "provider-account:codex:copy-1", "session_id": "", "snoozed_until_ms": null, "body": { "notice": {
           "agent_id": "provider-account:copy-1", "agent_name": null, "title": "Work was copied to Laptop", "body": "Sign in there once so the copies don't log each other out",
-          "link": null, "action": { "kind": "provider_sign_in", "kernel_id": "kernel-target", "provider": "codex", "account_profile": "copy-1", "label": "Sign in on Laptop" },
+          "origin": "kernel", "link": null, "action": { "kind": "provider_sign_in", "kernel_id": "kernel-target", "provider": "codex", "account_profile": "copy-1", "label": "Sign in on Laptop" },
           "priority": "normal", "created_at_ms": 6, "read": false, "folded": 0 } } },
         { "card_id": "notice_5_ab", "session_id": "room-1", "snoozed_until_ms": null, "body": { "notice": {
-          "agent_id": "agent-1", "agent_name": "Reviewer", "title": "PR review done", "body": "Two comments.",
+          "agent_id": "agent-1", "agent_name": "Reviewer", "origin": "agent", "title": "PR review done", "body": "Two comments.",
           "link": "https://github.com/charioxai/chariox/pull/976", "priority": "high", "created_at_ms": 5, "read": false, "folded": 0 } } },
         { "card_id": "noisy_5_cd", "session_id": "room-1", "snoozed_until_ms": null, "body": { "notice": {
-          "agent_id": "agent-1", "agent_name": "Reviewer", "title": "Reviewer sent 3 more notifications", "body": "Latest: CI is green.",
+          "agent_id": "agent-1", "agent_name": "Reviewer", "origin": "agent", "title": "Reviewer sent 3 more notifications", "body": "Latest: CI is green.",
           "link": null, "priority": "normal", "created_at_ms": 6, "read": false, "folded": 3 } } },
         { "card_id": "permission-1", "session_id": "room-1", "snoozed_until_ms": 9000, "body": { "needs_you": { "interaction": {
           "id": "permission-1", "agent_id": "agent-1", "kind": "permission", "level": "info", "message": "Run the tests",

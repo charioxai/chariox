@@ -232,6 +232,23 @@ impl KernelRuntimeState {
         } else {
             self.owned.blocked_card_message(name, &task)
         };
+        // The agent sets the box's label and placeholder; with none the card has a plain box.
+        // Only an agent's question has a free-text box: a recovery card (Resume / Cancel) keeps its own kind and choices.
+        let reply_choice = question.then(|| {
+            crate::session::RuntimeInteractionCustomChoice::new(
+                "reply",
+                task.question_reply
+                    .as_ref()
+                    .and_then(|reply| reply.label.clone())
+                    .unwrap_or_default(),
+                task.question_reply
+                    .as_ref()
+                    .and_then(|reply| reply.placeholder.clone()),
+                Some(1),
+                None,
+            )
+            .with_description("Send your reply and continue the waiting task.")
+        });
         if let Some(existing) = session.active_interactions().iter().find(|i| i.id() == id) {
             let live = self
                 .owned
@@ -250,14 +267,19 @@ impl KernelRuntimeState {
             if live {
                 if existing.message() != message
                     || existing.related_agent_id() != Some(task.agent_id.as_str())
+                    || (question && existing.custom_choice() != reply_choice.as_ref())
                 {
                     let mutation = self.owned.begin_managed_activity_mutation();
                     let mut sessions = self.owned.session_store.write();
                     let mut latest = sessions.get_session(&task.room_id)?;
                     if latest.update_active_interaction(&id, |current| {
-                        current
+                        let updated = current
                             .with_message(message)
-                            .with_related_agent_id(task.agent_id.clone())
+                            .with_related_agent_id(task.agent_id.clone());
+                        match reply_choice.clone() {
+                            Some(reply) => updated.with_question_reply(reply),
+                            None => updated,
+                        }
                     }) {
                         sessions.restore_session(latest);
                     }
@@ -334,17 +356,8 @@ impl KernelRuntimeState {
         .without_timeout()
         .with_related_agent_id(task.agent_id.clone())
         .with_room_dismissed(dismissed);
-        if question {
-            interaction = interaction.with_question_reply(
-                crate::session::RuntimeInteractionCustomChoice::new(
-                    "reply",
-                    "Reply",
-                    None,
-                    Some(1),
-                    None,
-                )
-                .with_description("Send your reply and continue the waiting task."),
-            );
+        if let Some(reply) = reply_choice {
+            interaction = interaction.with_question_reply(reply);
         }
 
         let rx = self

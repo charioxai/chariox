@@ -175,6 +175,10 @@ fn linked_workflow_refusals_honor_mute_and_keep_read_state() {
                         panic!("expected a workflow refusal notice");
                     };
                     assert_eq!(notice.agent_id, agent_id);
+                    assert_eq!(
+                        notice.origin,
+                        crate::local::PersonInboxNoticeOrigin::Kernel
+                    );
                     (card.card_id, notice.read, notice.body.unwrap())
                 })
                 .collect::<Vec<_>>()
