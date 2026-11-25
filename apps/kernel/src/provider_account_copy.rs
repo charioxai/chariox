@@ -143,6 +143,7 @@ pub(crate) fn failure(code: &'static str) -> crate::error::DaemonError {
                 | "provider_account_copy_target_credential_unreadable"
                 | "provider_account_copy_cli_missing"
                 | "provider_account_copy_install_failed"
+                | TRANSFER_SIGN_IN_REQUIRED
         ),
     }
 }
@@ -180,14 +181,25 @@ pub(crate) fn failure_message(code: &str) -> &'static str {
         "provider_account_copy_rejected" => "The official provider rejected the account; sign in to the source account again.",
         "provider_account_copy_verification_failed" => "The official provider could not check the account; check its availability and retry.",
         "provider_account_copy_install_failed" => "Account installation did not finish; retry the same operation to recover.",
+        TRANSFER_TARGET_NOT_OWNED => "This worker is not enrolled as your own kernel, so the Claude account was not copied to it. Enroll it under Machines, then send the prompt again.",
+        TRANSFER_WORKER_OUTDATED => "This worker runs an older Chariox that cannot hold a copied Claude login. Update it, then send the prompt again. Nothing was sent.",
+        TRANSFER_SIGN_IN_REQUIRED => "Claude needs a sign-in. Use the sign-in card in Chariox; your prompt continues afterwards.",
         _ => "Invalid provider account copy request.",
     }
 }
 
+/// Row 577: the refusals a leased Claude launch can give, each naming one step.
+pub(crate) const TRANSFER_TARGET_NOT_OWNED: &str = "provider_account_transfer_target_not_owned";
+pub(crate) const TRANSFER_WORKER_OUTDATED: &str = "provider_account_transfer_worker_outdated";
+pub(crate) const TRANSFER_SIGN_IN_REQUIRED: &str = "provider_account_transfer_sign_in_required";
+
 pub(crate) fn is_public_code(code: &str) -> bool {
     matches!(
         code,
-        "provider_account_copy_unauthorized"
+        TRANSFER_TARGET_NOT_OWNED
+            | TRANSFER_WORKER_OUTDATED
+            | TRANSFER_SIGN_IN_REQUIRED
+            | "provider_account_copy_unauthorized"
             | "provider_account_copy_profile"
             | "provider_account_copy_cancelled"
             | "provider_account_copy_unavailable"

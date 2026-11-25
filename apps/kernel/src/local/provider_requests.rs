@@ -217,7 +217,6 @@ fn remote_native_provider_run_response(
             provider_session_id: request.provider_session_id.clone(),
             required_mcps,
             remote_extension_manifest,
-            provider_launch_credential: None,
         },
     ))?;
     match response {

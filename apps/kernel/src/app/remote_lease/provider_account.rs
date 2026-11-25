@@ -29,6 +29,10 @@ impl RemoteLeaseRuntime<'_> {
         // user or another lease's owner; an installed copy under the account
         // authority. Resolve aliases before changing a run.
         let registry = self.app.provider_account_profile_registry();
+        // Row 577: the worker's own tracked copy of the home's account is the account for this lease.
+        if let Some(copy) = self.transferred_copy_for_lease(lease, provider, account_profile)? {
+            return Ok(copy);
+        }
         let account_owner = crate::account_profile::provider_account_authority_owner_for_lease(
             self.app.config(),
             &registry,
@@ -43,6 +47,29 @@ impl RemoteLeaseRuntime<'_> {
                 operation: crate::transport::relay_peer::REMOTE_PROVIDER_ACCOUNT_MISSING_OPERATION,
                 message: format!("the selected {provider} account is unavailable on the worker; connect or select an available account before changing the profile"),
             })
+    }
+
+    /// The worker's profile id for the copy the lease's home kernel made of its account
+    /// `home_profile`: the home names the account by its own id, the worker holds the copy
+    /// under its own, and the two are tied by where the copy came from, never by a label.
+    pub(crate) fn transferred_copy_for_lease(
+        &self,
+        lease: &crate::execution_lease::ExecutionLease,
+        provider: &str,
+        home_profile: &str,
+    ) -> Result<Option<String>, DaemonError> {
+        if crate::provider::canonical_provider_family(provider).is_none() {
+            return Ok(None);
+        }
+        let authority = crate::account_profile::provider_account_authority_owner_user_id(
+            self.app.config(),
+            &lease.owner_user_id,
+        );
+        Ok(self
+            .app
+            .provider_account_profile_registry()
+            .transferred_profile(&authority, provider, &lease.home_kernel_id, home_profile)?
+            .map(|copy| copy.profile_id))
     }
 
     #[cfg(test)]

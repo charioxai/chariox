@@ -1837,7 +1837,6 @@ mod tests {
             "no_active_provider_run",
             "leased_agent_not_found",
             "execution_lease_not_found",
-            crate::transport::relay_peer::REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE,
         ] {
             assert!(remote_queued_steer_failure_is_definitely_unaccepted(
                 &DaemonError::RelayTransport {
@@ -2083,10 +2082,7 @@ fn remote_queued_steer_failure_is_definitely_unaccepted(error: &DaemonError) -> 
             ..
         } => matches!(
             code.as_str(),
-            "no_active_provider_run"
-                | "leased_agent_not_found"
-                | "execution_lease_not_found"
-                | crate::transport::relay_peer::REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE
+            "no_active_provider_run" | "leased_agent_not_found" | "execution_lease_not_found"
         ),
         DaemonError::LocalTransport { operation, .. } => matches!(
             *operation,

@@ -120,15 +120,27 @@ impl KernelRuntimeOwnedState {
             })
             .transpose()?
             .unwrap_or_else(|| session.owner_user_id().to_string());
-        let profile = self.provider_account_profiles.get(
+        // Row 577: a copy the home made sits under the account authority (`local` for the
+        // configured Cloud owner), never under the lease owner, who stays the runtime principal.
+        let account_owner = crate::account_profile::provider_account_authority_owner_for_lease(
+            &self.config_projection.snapshot(),
+            &self.provider_account_profiles,
             &request.owner_user_id,
+            &request.provider,
+            &request.account_profile,
+        )?;
+        let profile = self.provider_account_profiles.get(
+            &account_owner,
             &request.provider,
             &request.account_profile,
         )?;
         let selection = request.account_profile.clone();
         request.account_profile = profile.profile_id;
-        let owner = request.owner_user_id.clone();
-        crate::account_profile::bind_provider_account_authority(&mut request, owner, selection);
+        crate::account_profile::bind_provider_account_authority(
+            &mut request,
+            account_owner,
+            selection,
+        );
         Ok(request)
     }
 
@@ -1965,41 +1977,6 @@ mod tests {
         assert_eq!(
             prepared.provider_credential_env.iter().collect::<Vec<_>>(),
             vec![("CLAUDE_CODE_OAUTH_TOKEN", "setup-token-secret")]
-        );
-        assert!(
-            !crate::secret::chariox_encrypted_vault_status(&vault_path)
-                .expect("vault status should resolve")
-                .unlocked
-        );
-
-        let mut remote_credential = Box::pin(runtime.resolve_remote_provider_launch_credential(
-            session.id(),
-            workflow_agent.id(),
-            "test remote Claude launch",
-        ));
-        tokio::select! {
-            result = &mut remote_credential => panic!("remote credential resolved before unlock: {result:?}"),
-            _ = tokio::time::sleep(std::time::Duration::from_millis(25)) => {}
-        }
-        let interaction = runtime
-            .owned
-            .session_store
-            .get_session(session.id())
-            .expect("session should remain available")
-            .active_interaction_for_agent(workflow_agent.id())
-            .expect("remote launch vault interaction should be visible")
-            .clone();
-        resolve_vault_passphrase_interaction(&runtime, session.id(), &interaction).await;
-        let credential = remote_credential
-            .await
-            .expect("remote launch credential should resolve")
-            .expect("Claude launch should carry a credential");
-        assert_eq!(credential.provider, "claude");
-        assert_eq!(credential.account_profile, profile.profile_id);
-        assert!(!format!("{credential:?}").contains("setup-token-secret"));
-        assert_eq!(
-            credential.secret_input.into_zeroizing().as_str(),
-            "setup-token-secret"
         );
         assert!(
             !crate::secret::chariox_encrypted_vault_status(&vault_path)

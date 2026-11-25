@@ -36,39 +36,6 @@ fn an_aborted_relay_socket_is_a_transient_transport_error() {
     assert!(remote_prompt_error_should_retry_transport(&aborted));
 }
 
-#[test]
-fn launch_credential_retry_requires_the_typed_worker_diagnostic() {
-    use crate::transport::relay_peer::REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE;
-
-    for operation in [
-        "read relay peer response",
-        "read temporary relay peer response",
-    ] {
-        let required = DaemonError::RelayTransport {
-            operation,
-            code: REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE.to_string(),
-            message: "worker requested a credential for a cold provider launch".to_string(),
-            retryable: false,
-        };
-        assert!(remote_prompt_error_requires_provider_launch_credential(
-            &required
-        ));
-    }
-    let unrelated = DaemonError::LocalTransport {
-        operation: "read relay peer response",
-        message: "worker unavailable".to_string(),
-    };
-    assert!(!remote_prompt_error_requires_provider_launch_credential(
-        &unrelated
-    ));
-    let untyped_required = DaemonError::LocalTransport {
-        operation: "read relay peer response",
-        message: format!("{REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE}: relaunch"),
-    };
-    assert!(!remote_prompt_error_requires_provider_launch_credential(
-        &untyped_required
-    ));
-}
 use std::sync::Arc;
 
 use crate::app::{DaemonApp, KernelPreparedPromptSubmission};
@@ -954,6 +921,135 @@ impl WorkflowSubmissionFixture {
             .expect("vault cancellation should resolve");
         submission.await
     }
+
+    async fn submit_after_unlocking_vault(&self) -> Result<String, DaemonError> {
+        let runtime = self.runtime.clone();
+        let mut dispatch = self.dispatch.clone();
+        let session_id = dispatch.session_id.clone();
+        let agent_id = dispatch.agent_id.clone();
+        let prompt = dispatch.prompt.clone();
+        let submission = submit_remote_prompt_to_worker_with_binding_refresh(
+            &runtime,
+            &mut dispatch,
+            prompt,
+            Vec::new(),
+        );
+        tokio::pin!(submission);
+        let mut completed_submission = None;
+        let interaction = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                let session = runtime
+                    .owned
+                    .session_store
+                    .get_session(&session_id)
+                    .expect("session should remain available");
+                if let Some(interaction) = session.active_interaction_for_agent(&agent_id) {
+                    break Some(interaction.clone());
+                }
+                tokio::select! {
+                    result = &mut submission => {
+                        completed_submission = Some(result);
+                        return None;
+                    }
+                    _ = tokio::task::yield_now() => {}
+                }
+            }
+        })
+        .await
+        .expect("locked vault should request a passphrase before transport");
+        if let Some(result) = completed_submission {
+            return result;
+        }
+        let interaction = interaction.expect("vault interaction should be observed");
+        assert_eq!(interaction.title(), Some("Unlock Chariox Vault"));
+        runtime
+            .answer_terminal_runtime_interaction(
+                &session_id,
+                interaction.id(),
+                "unlock_once",
+                Some("fixture passphrase"),
+                Some(
+                    runtime
+                        .owned
+                        .session_store
+                        .get_session(&session_id)
+                        .unwrap()
+                        .owner_user_id(),
+                ),
+                None,
+                None,
+                Some(crate::local::KernelConnectionClass::Terminal),
+            )
+            .await
+            .expect("vault unlock should resolve");
+        submission.await
+    }
+
+    async fn submit_after_cancelling_sign_in_card(&self) -> Result<String, DaemonError> {
+        let runtime = self.runtime.clone();
+        let mut dispatch = self.dispatch.clone();
+        let session_id = dispatch.session_id.clone();
+        let agent_id = dispatch.agent_id.clone();
+        let prompt = dispatch.prompt.clone();
+        let submission = submit_remote_prompt_to_worker_with_binding_refresh(
+            &runtime,
+            &mut dispatch,
+            prompt,
+            Vec::new(),
+        );
+        tokio::pin!(submission);
+        let mut completed_submission = None;
+        let interaction = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                let session = runtime
+                    .owned
+                    .session_store
+                    .get_session(&session_id)
+                    .expect("session should remain available");
+                if let Some(interaction) = session.active_interaction_for_agent(&agent_id) {
+                    break Some(interaction.clone());
+                }
+                tokio::select! {
+                    result = &mut submission => {
+                        completed_submission = Some(result);
+                        return None;
+                    }
+                    _ = tokio::task::yield_now() => {}
+                }
+            }
+        })
+        .await
+        .expect("a missing token should open the sign-in card before transport");
+        if let Some(result) = completed_submission {
+            return result;
+        }
+        let interaction = interaction.expect("vault interaction should be observed");
+        assert!(
+            interaction.provider_login().is_some(),
+            "the owner without a token gets the provider sign-in card"
+        );
+        runtime
+            .answer_terminal_runtime_interaction(
+                &session_id,
+                interaction.id(),
+                "cancel",
+                None,
+                Some(
+                    runtime
+                        .owned
+                        .session_store
+                        .get_session(&session_id)
+                        .unwrap()
+                        .owner_user_id(),
+                ),
+                None,
+                None,
+                Some(crate::local::KernelConnectionClass::Terminal),
+            )
+            .await
+            .expect("vault cancellation should resolve");
+        submission.await
+    }
 }
 
 impl Drop for WorkflowSubmissionFixture {
@@ -1110,52 +1206,6 @@ fn remote_prompt_dispatch_refreshes_binding_for_structured_missing_lease_errors(
 }
 
 #[test]
-fn remote_prompt_dispatch_retries_with_a_credential_only_when_worker_requests_it() {
-    let unstructured = classify_error(
-        DaemonError::LocalTransport {
-            operation: "read relay peer response",
-            message: format!(
-                "transport error: {}: worker run was lost",
-                crate::transport::relay_peer::REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE,
-            ),
-        },
-        true,
-    );
-    assert!(matches!(
-        unstructured,
-        RemotePromptSubmissionOutcome::Indeterminate(_)
-    ));
-
-    let unrelated = classify_error(
-        DaemonError::LocalTransport {
-            operation: "read relay peer response",
-            message: "worker run was lost".to_string(),
-        },
-        true,
-    );
-    assert!(matches!(
-        unrelated,
-        RemotePromptSubmissionOutcome::Indeterminate(_)
-    ));
-
-    let structured = classify_error(
-        DaemonError::RelayTransport {
-            operation: "read relay peer response",
-            code: crate::transport::relay_peer::REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE
-                .to_string(),
-            message: "worker requires a launch credential".to_string(),
-            retryable: false,
-        },
-        true,
-    );
-    assert!(matches!(
-        structured,
-        RemotePromptSubmissionOutcome::RejectedBeforeAdmission(error)
-            if remote_prompt_error_requires_provider_launch_credential(&error)
-    ));
-}
-
-#[test]
 fn remote_prompt_dispatch_retries_disconnected_relay_targets() {
     let error = DaemonError::LocalTransport {
         operation: "read relay peer response",
@@ -1257,15 +1307,19 @@ fn leased_prompt_submit_timeout_covers_codex_mcp_retry_window() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn remote_workflow_submit_rejects_missing_vault_credential_before_transport() {
+async fn remote_workflow_submit_asks_for_the_official_sign_in_when_the_owner_has_no_token() {
     crate::test_support::isolated_env_test!();
-    let mut fixture = WorkflowSubmissionFixture::new(WorkflowCredentialState::MissingCredential);
+    let _claude = crate::test_support::TestClaudeExecutable::new();
+    let fixture = WorkflowSubmissionFixture::new(WorkflowCredentialState::MissingCredential);
     assert!(fixture.dispatch.workflow_context.is_some());
     let error = fixture
-        .submit()
+        .submit_after_cancelling_sign_in_card()
         .await
-        .expect_err("workflow submit must reject a missing credential before transport");
-    assert!(error.to_string().contains("remote Claude launch requires"));
+        .expect_err("workflow submit must stop before transport when the owner has no token");
+    assert!(
+        error.to_string().contains("Claude needs a sign-in"),
+        "the refusal names the sign-in step: {error}"
+    );
     assert!(!error.to_string().contains("relay_url is not configured"));
     assert!(!format!("{error:?}").contains(WORKFLOW_CREDENTIAL_CANARY));
 }
@@ -1286,7 +1340,7 @@ async fn remote_workflow_submit_rejects_missing_or_locked_vault_before_transport
         assert!(
             crate::secret::is_chariox_vault_locked_error(&error)
                 || error.to_string().contains("Vault unlock was cancelled")
-                || error.to_string().contains("remote Claude launch requires"),
+                || error.to_string().contains("Unlock the kernel Vault"),
             "missing or locked vault should reject before sending: {error}"
         );
         assert!(!error.to_string().contains("relay_url is not configured"));
@@ -1294,26 +1348,55 @@ async fn remote_workflow_submit_rejects_missing_or_locked_vault_before_transport
     }
 }
 
+// UX: the person unlocks the Vault in the existing card and the held prompt goes on by itself.
 #[tokio::test(flavor = "current_thread")]
-async fn remote_workflow_submit_admits_vaulted_token_or_active_worker_run_without_exposing_it() {
+async fn remote_workflow_submit_goes_on_by_itself_after_the_vault_unlock_card() {
     crate::test_support::isolated_env_test!();
     let _claude = crate::test_support::TestClaudeExecutable::new();
-    for credential_state in [
-        WorkflowCredentialState::Unlocked,
-        WorkflowCredentialState::ActiveWorkerRun,
-    ] {
-        let mut fixture = WorkflowSubmissionFixture::new(credential_state);
-        assert!(fixture.dispatch.workflow_context.is_some());
-        let error = fixture
-            .submit()
-            .await
-            .expect_err("fixture relay is absent after credential admission");
-        assert!(
-            error.to_string().contains("relay_url is not configured"),
-            "credential admission should reach the transport boundary: {error}"
-        );
-        assert!(!error.to_string().contains(WORKFLOW_CREDENTIAL_CANARY));
-        assert!(!format!("{error:?}").contains(WORKFLOW_CREDENTIAL_CANARY));
+    let fixture = WorkflowSubmissionFixture::new(WorkflowCredentialState::Locked);
+    let error = fixture
+        .submit_after_unlocking_vault()
+        .await
+        .expect_err("the fixture worker is not the owner's enrolled kernel");
+    assert!(
+        error
+            .to_string()
+            .contains("not enrolled as your own kernel"),
+        "the prompt passed the unlock without being sent again: {error}"
+    );
+    assert!(!format!("{error:?}").contains(WORKFLOW_CREDENTIAL_CANARY));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn remote_workflow_submit_copies_the_account_once_and_never_sends_the_token() {
+    crate::test_support::isolated_env_test!();
+    let _claude = crate::test_support::TestClaudeExecutable::new();
+    // A live worker run needs no account step and reaches the transport boundary.
+    let mut active = WorkflowSubmissionFixture::new(WorkflowCredentialState::ActiveWorkerRun);
+    assert!(active.dispatch.workflow_context.is_some());
+    let error = active
+        .submit()
+        .await
+        .expect_err("fixture relay is absent after admission");
+    assert!(
+        error.to_string().contains("relay_url is not configured"),
+        "a live worker run reaches the transport boundary: {error}"
+    );
+    // A cold launch with the owner's token and a worker that is not the owner's own enrolled
+    // kernel is refused with the one step; the token is never in the refusal.
+    let mut cold = WorkflowSubmissionFixture::new(WorkflowCredentialState::Unlocked);
+    let error = cold
+        .submit()
+        .await
+        .expect_err("a worker that is not the owner's kernel gets no copy");
+    assert!(
+        error
+            .to_string()
+            .contains("not enrolled as your own kernel"),
+        "the refusal names the enrollment step: {error}"
+    );
+    for text in [error.to_string(), format!("{error:?}")] {
+        assert!(!text.contains(WORKFLOW_CREDENTIAL_CANARY));
     }
 }
 
@@ -1400,7 +1483,6 @@ async fn leased_prompt_uses_shared_handoff_dispatch_before_provider_submission()
             None,
             Vec::new(),
             crate::extension::RemoteExtensionManifest::default(),
-            None,
             Default::default(),
         )
         .await
