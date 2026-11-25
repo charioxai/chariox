@@ -14,6 +14,7 @@ mod meta_authority;
 mod native_launch_authority;
 mod notification_follows;
 mod owner_cards;
+mod owner_shell;
 mod pressure;
 mod session_authority;
 mod standing;

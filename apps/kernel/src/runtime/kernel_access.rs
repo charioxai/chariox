@@ -5,6 +5,8 @@ mod sudo_request;
 pub(crate) use sudo_request::SudoRequestFailure;
 /// Routing identity for kernel-wide access popups; never a session or grant scope.
 pub(crate) const ACCESS_INTERACTION_SCOPE: &str = "kernel-access";
+/// Ids of the grants the kernel itself gives the shell of an owner's own terminal; a request cannot name one.
+pub(crate) const OWNER_SHELL_GRANT_PREFIX: &str = "shell-";
 use crate::local::{CoveredProcess, KernelAccessGrant};
 use process::ProcessIdentity;
 use std::collections::{BTreeMap, HashSet};
