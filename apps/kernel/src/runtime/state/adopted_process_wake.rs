@@ -92,11 +92,12 @@ fn command_line(pid: u32) -> String {
 }
 
 /// The processes of provider run `run` that the turn left running and nothing watches: they carry
-/// the run's marker (every process the provider started does, however it was detached), they are
+/// the run's marker and its kernel's (every process the provider started does, however it was detached), they are
 /// not the provider process or anything still below it (its helpers, and the commands it tracks
 /// itself), and no wake of the kernel's covers them (`skip`, or a watched process's own marker).
 pub(super) fn left_running(
     run: &str,
+    owner: Option<&str>,
     provider_pids: &BTreeSet<u32>,
     skip: &BTreeSet<u32>,
 ) -> Vec<Background> {
@@ -128,7 +129,9 @@ pub(super) fn left_running(
         .filter(|pid| *pid != own && !skip.contains(pid) && !provider_pids.contains(pid))
         .filter_map(|pid| {
             let identity = stat(pid).filter(|s| !s.ended)?;
+            // Provider run ids repeat from kernel to kernel: the run's marker counts with its kernel's.
             (environment_has(pid, "CHARIOX_PROVIDER_RUN_ID", Some(run))
+                && environment_has(pid, crate::provider::process_owner::OWNER_ENV, owner)
                 && !environment_has(pid, super::agent_process_group::WAKE_MARKER_ENV, None)
                 && !below_provider(pid))
             .then(|| Background {

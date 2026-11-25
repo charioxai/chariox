@@ -254,7 +254,12 @@ impl KernelRuntimeOwnedState {
                 wake.pid.into_iter().chain(adopted)
             })
             .collect();
-        let found = adopted::left_running(run, &self.provider_pids_of_run(run), &covered);
+        let found = adopted::left_running(
+            run,
+            crate::provider::process_owner::current_marker().as_deref(),
+            &self.provider_pids_of_run(run),
+            &covered,
+        );
         for background in found.iter().take(adopted::MAX_ADOPTED) {
             let mut wake = kernel_wake(
                 &task,
