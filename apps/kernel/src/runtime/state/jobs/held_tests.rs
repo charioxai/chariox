@@ -571,6 +571,11 @@ fn restart(state: &KernelRuntimeState, job_id: &str, recover_wake: bool) {
         .unwrap()
         .remove(job_id);
     if recover_wake {
+        // A restart takes the old supervisor's live entry with it; #1513 makes recovery keep any
+        // placement's live job, so the test drops the entry the way a new process has none.
+        let driver = state.job_wake_driver.as_ref().unwrap();
+        let wake_id = driver.read(job_id).unwrap().wake_id;
+        driver.live.lock().unwrap().remove(&wake_id);
         super::return_tests::recover_job(state, job_id);
     }
 }
