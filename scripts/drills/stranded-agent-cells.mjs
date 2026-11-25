@@ -136,7 +136,7 @@ try {
   // The backstop is the only wake left; its firing is the agent's next turn.
   if (backstop && !skipBackstopWait) {
     const due = backstop.wake.next_due_ms
-    const woke = await until(async () => done(await turnsOf(backstop.r.R, backstop.r.agent)).length >= 2, "the backstop wakes the agent", Math.max(60000, due - Date.now() + 240000)).then(() => true, () => false)
+    const woke = await until(async () => done(await turnsOf(backstop.r.R, backstop.r.agent)).some(turn => /backstop for a stated wait/.test(text(turn)) && /Wake|wake/.test(text(turn)) && !/Kernel: your turn ended/.test(text(turn).slice(0, 80))), "the backstop wakes the agent", Math.max(60000, due - Date.now() + 240000)).then(() => true, () => false)
     save("turns-c2-final.json", await turnsOf(backstop.r.R, backstop.r.agent))
     cell("2-backstop-wakes-the-agent", woke, { late_s: Math.round((Date.now() - due) / 1000) })
     if (!woke) exitCode = 1
