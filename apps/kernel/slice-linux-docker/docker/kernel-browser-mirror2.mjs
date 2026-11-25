@@ -286,6 +286,10 @@ export class ParsedSheets {
     for (const [first, text] of this.bodies) { if (this.bodies.size <= this.entries && this.size <= this.chars) break; this.bodies.delete(first); this.size -= text.length; }
   }
 }
+// Row 426: a credit that steps aside for a region operation (never reaches the viewer; next() queues it again).
+// Row 426 F3: what the kernel had issued when a credit arrived (the credit's after_sequence can only account for those).
+const ARRIVAL_ISSUED = Symbol('mirror credit arrival');
+const MIRROR_YIELD = Object.freeze(Object.assign(new Error('mirror credit yields to a region operation'), { code: 'mirror_yield' }));
 export class Mirror2 {
   constructor(service) { this.service = service; this.host = service.host; this.frames = new MirrorFrames(this); this.css = new MirrorCssEvents(); this.regions = new Mirror2Regions(this); this.parsedSheets = new ParsedSheets(); this.fontSubsets = new FontSubsets(); this.host.visitedLinks?.listeners.add((origin, url) => this.visited(origin, url)); }
   // MP-08/MP-10/MP-11: older v2 viewers never receive an unknown operation.
@@ -462,6 +466,7 @@ export class Mirror2 {
       return run;
     }
     const arrival = Date.now(), wait = command.wait_ms ?? 0;
+    command[ARRIVAL_ISSUED] = stream.issued ?? 0;
     // A reset credit (lost base) must not queue behind a waiting long poll.
     if (command.after_sequence === 0 || resend || command.flush) this.hurry(stream);
     const hurry = stream.hurry;
@@ -478,8 +483,13 @@ export class Mirror2 {
         try { return await build(); } catch (error) { if (!(LAYOUT_MOVED.test(error?.message ?? '') || error?.code === 'stale_document_reference') || signal?.aborted || Date.now() >= hard) throw error; }
       }
     };
-    const run = stream.chain.then(observe);
-    stream.chain = run.catch(() => {});
+    // Row 426: a region operation (a lease check, once per region video frame) waits on this chain. A plain credit with nothing
+    // to send steps aside for it (no packet, no sequence spent) and queues again behind it; the viewer's own urgent credits
+    // (reset, resend, flush) are answered as before.
+    const plain = command.after_sequence > 0 && !resend && !command.flush;
+    const step = () => plain && stream.regionWaiting > 0 && Date.now() < arrival + wait ? Promise.reject(MIRROR_YIELD) : observe();
+    const once = () => { const segment = stream.chain.then(step); stream.chain = segment.catch(() => {}); return segment; };
+    const run = (async () => { for (;;) { try { return await once(); } catch (error) { if (error !== MIRROR_YIELD) throw error; } } })();
     if (replayKey) { const entry = { run, done: false }; run.finally(() => { entry.done = true; }).catch(() => {}); (stream.replies ??= new Map()).set(replayKey, entry); if (stream.replies.size > 8) stream.replies.delete(stream.replies.keys().next().value); }
     return run;
   }
@@ -490,7 +500,9 @@ export class Mirror2 {
     return document === stored.document_id && world.frame?.loaderId === document && browser.sessionsByTarget?.get(stored.target_id) === world.sessionId ? { tab: { ...stored }, world } : null;
   }
   // Credits that arrived before this point stop waiting (their hurry count is older).
-  hurry(stream) { stream.hurry = (stream.hurry ?? 0) + 1; if (stream.world) this.evaluate(stream.world, `${stream.world.ref}.wake()`).catch(() => {}); }
+  hurry(stream) { stream.hurry = (stream.hurry ?? 0) + 1; this.wake(stream); }
+  wake(stream) { if (stream.world) this.evaluate(stream.world, `${stream.world.ref}.wake()`).catch(() => {}); }
+
   // The viewer keeps its native preview of a document until the DOM mirror can be built. This reset only says "still preparing".
   previewPacket(stream, command, scope, tabId, documentId, started) {
     if (this.service.require(command.subscription_id, scope, command.generation) !== stream || this.host.generation !== command.generation) throw new Error('MP-11: stale mirror subscription');
@@ -567,8 +579,10 @@ export class Mirror2 {
     if (stream.acked > (stream.prunedAt ?? 0)) { stream.prunedAt = stream.acked; for (const entry of stream.resources.values()) if (entry.sent && entry.sentAt <= stream.acked && entry.resource) { entry.resource = entry.preview = null; entry.url = ''; } }
     // A viewer whose base predates the newest reset has that reset on its way (a large one crossing a slow link
     // while small credits are answered): a second reset only queues behind it (r47: a 420 KB reset storm).
+    // `behind` counts only packets issued before this credit arrived: the ones issued while it queued (up to seconds on a quiet
+    // page with the viewer's eight credits in flight) answered earlier credits and say nothing about this viewer (row 426 F3).
     const layoutKey = this.layoutKey(tab.tab_id);
-    const resetReason = after === 0 ? 'client' : after > stream.issued ? 'ahead' : after < stream.issued - 8 && after >= stream.resetAt ? 'behind' : stream.document_id !== tab.document_id ? 'document' : stream.policy !== policy ? 'policy' : (stream.layoutKey ?? layoutKey) !== layoutKey ? 'layout' : stream.resetAt > stream.issued ? 'snapshot' : stream.fallback !== null ? 'fallback' : null;
+    const resetReason = after === 0 ? 'client' : after > stream.issued ? 'ahead' : after < (command[ARRIVAL_ISSUED] ?? stream.issued) - 8 && after >= stream.resetAt ? 'behind' : stream.document_id !== tab.document_id ? 'document' : stream.policy !== policy ? 'policy' : (stream.layoutKey ?? layoutKey) !== layoutKey ? 'layout' : stream.resetAt > stream.issued ? 'snapshot' : stream.fallback !== null ? 'fallback' : null;
     let reset = resetReason !== null;
     // A snapshot waits for a busy renderer in every call it makes (the viewer's reset has 30 s). Any other credit waits
     // somewhat longer than the default, but answers before the viewer's own 8 s request timeout.
@@ -585,6 +599,8 @@ export class Mirror2 {
     // Frame slots restart with a snapshot, so rebased child keys are re-learned.
     // A slice in flight may be lost with the base: a partial resource restarts.
     let source, fallback = null;
+    // Row 426: an ordinary credit (not the viewer's reset, resend or flush) can step aside for a waiting region operation.
+    const yieldable = command.after_sequence > 0 && command.resend !== true && !command.flush; let yielded = false;
     const moved = () => { const live = this.host.browser.documentIdsByTarget?.get(tab.target_id); return !!live && live !== tab.document_id; };
     // Ordered navigation events retire this credit before any old-world retry.
     // A renderer query here would queue behind the newly loading document.
@@ -681,7 +697,7 @@ export class Mirror2 {
       if (reset) this.host.timing?.('mirror2_fonts', fontsAt);
       // Long poll: nothing to send yet -> wait for the page (or newly loaded bytes).
       // A navigation ends the wait at once (MP-08/MP-10): the next credit resets to the new document.
-      while (!reset && !resources.length && this.empty(stream, source) && !this.sheetsDue(stream) && Date.now() < deadline && stream.hurry === hurry && !moved()) {
+      while (!reset && !resources.length && this.empty(stream, source) && !this.sheetsDue(stream) && Date.now() < deadline && stream.hurry === hurry && !(yieldable && stream.regionWaiting > 0) && !moved()) {
         const settle = stream.movedAt + SETTLE_MS - Date.now(), refine = settle > 0 && this.refinePending(stream) ? settle + 1 : 500;
         await this.syncScriptFonts(world, tab);
         const polled = this.evaluate(world, `${world.ref}.waitDrain(${Math.max(1, Math.min(500, refine, deadline - Date.now()))})`, true);
@@ -695,6 +711,7 @@ export class Mirror2 {
         if (this.empty(stream, source)) { await this.refreshFonts(stream, world); resources = await this.materialize(world, stream, null, more.loaded); }
         if (this.empty(stream, source)) await this.askWheel(stream, world, false);
       }
+      yielded = yieldable && stream.regionWaiting > 0 && !reset && !resources.length && this.empty(stream, source) && !this.sheetsDue(stream) && Date.now() < deadline && stream.hurry === hurry && !moved();
     } catch (error) {
       assertNotCancelled(signal);
       assertDocument();
@@ -707,6 +724,7 @@ export class Mirror2 {
       this.host.timing?.(`mirror2_fallback_${fallback}${error.mirrorDetail ? ' ' + error.mirrorDetail : ''}`, timestamp());
       source = null; reset = true;
     } finally { moveWatch?.cancel(); }
+    if (yielded && !fallback) throw MIRROR_YIELD;
     if (fallback) resources = [];
     mark('observe_resources');
     assertDocument();
