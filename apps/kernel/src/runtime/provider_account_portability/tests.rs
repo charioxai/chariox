@@ -227,3 +227,148 @@ fn vault_backed_login_is_accepted_by_preflight_and_offered_to_context_transfer()
     assert!(preflight_selection(&config, &fixture.profiles, owner, &selection).is_err());
     crate::secret::lock_chariox_encrypted_vault(&vault).unwrap();
 }
+
+// Row 582: `all` is every signed-in login the owner holds, every provider and profile, none picked.
+#[test]
+fn all_is_every_signed_in_login_of_every_provider_in_a_fixed_order() {
+    let fixture = Fixture::new();
+    let owner = crate::session::DEFAULT_LOCAL_USER_ID;
+    let sign_in = |provider: &str, profile: &str| {
+        fixture
+            .profiles
+            .update_observation(
+                owner,
+                provider,
+                profile,
+                crate::account_profile::ProviderAccountAuthState::Authenticated,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+    };
+    let codex = fixture
+        .profiles
+        .list(owner, Some("codex"))
+        .unwrap()
+        .remove(0);
+    let second_codex = fixture
+        .profiles
+        .create_managed(owner, "codex", "Second")
+        .unwrap();
+    let claude = fixture
+        .profiles
+        .create_managed(owner, "claude", "Claude")
+        .unwrap();
+    let signed_out = fixture
+        .profiles
+        .create_managed(owner, "opencode", "Signed out")
+        .unwrap();
+    assert!(
+        all_owner_accounts(&fixture.profiles, owner)
+            .unwrap()
+            .is_empty(),
+        "a profile that was never signed in has nothing to move"
+    );
+    sign_in("codex", &codex.profile_id);
+    sign_in("codex", &second_codex.profile_id);
+    sign_in("claude", &claude.profile_id);
+    let all: Vec<_> = all_owner_accounts(&fixture.profiles, owner)
+        .unwrap()
+        .into_iter()
+        .map(|account| (account.provider, account.account_profile))
+        .collect();
+    let mut expected = vec![
+        ("claude".to_string(), claude.profile_id.clone()),
+        ("codex".to_string(), codex.profile_id.clone()),
+        ("codex".to_string(), second_codex.profile_id.clone()),
+    ];
+    expected.sort();
+    assert_eq!(
+        all, expected,
+        "every profile of every signed-in provider, sorted"
+    );
+    assert!(!all
+        .iter()
+        .any(|(_, profile)| profile == &signed_out.profile_id));
+}
+
+#[test]
+fn preflight_of_all_names_the_login_that_cannot_travel_and_the_one_step() {
+    let fixture = Fixture::new();
+    let owner = crate::session::DEFAULT_LOCAL_USER_ID;
+    let codex = fixture
+        .profiles
+        .list(owner, Some("codex"))
+        .unwrap()
+        .remove(0);
+    fixture
+        .profiles
+        .update_observation(
+            owner,
+            "codex",
+            &codex.profile_id,
+            crate::account_profile::ProviderAccountAuthState::Authenticated,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+    // The fixture's Codex login carries its auth file: `all` passes and reads no Vault.
+    assert!(!preflight_selection(
+        &fixture.config,
+        &fixture.profiles,
+        owner,
+        &ProviderAccountTransferSelection::All
+    )
+    .unwrap());
+    // A signed-in login with nothing to move is refused by name, never skipped.
+    let bare = fixture
+        .profiles
+        .create_managed(owner, "codex", "Bare")
+        .unwrap();
+    fixture
+        .profiles
+        .update_observation(
+            owner,
+            "codex",
+            &bare.profile_id,
+            crate::account_profile::ProviderAccountAuthState::Authenticated,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+    let refusal = preflight_selection(
+        &fixture.config,
+        &fixture.profiles,
+        owner,
+        &ProviderAccountTransferSelection::All,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        refusal.contains("cannot be copied as it is") && refusal.contains("Sign in to it again")
+    );
+    assert!(refusal.contains(&bare.profile_id));
+}
+
+// Row 582: the wire shape of the `all` selection is pinned (local 1016).
+#[test]
+fn the_all_selection_has_the_one_wire_shape() {
+    let request: PreflightProviderAccountPortabilityRequest = serde_json::from_value(
+        serde_json::json!({"providerAccounts": {"kind": "all"}, "kernelContext": "empty"}),
+    )
+    .unwrap();
+    assert_eq!(
+        request.provider_accounts,
+        ProviderAccountTransferSelection::All
+    );
+    assert_eq!(
+        serde_json::to_value(&request).unwrap(),
+        serde_json::json!({"providerAccounts": {"kind": "all"}, "kernelContext": "empty"})
+    );
+}

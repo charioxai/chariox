@@ -198,6 +198,10 @@ pub const SKILLS_V2_RUNTIME_CAPABILITY: &str = "skills_v2_runtime";
 /// advertise `skills_v2_runtime` and still reject that request, so clients gate on this one.
 pub const SKILLS_REPOSITORY_UPDATE_CAPABILITY: &str = "skills_repository_update_v581";
 
+/// Row 582: the kernel can export and import a managed-context plan whose provider accounts are
+/// `all`. Cloud checks it on the source and the target before it accepts such a plan.
+pub const MANAGED_CONTEXT_ALL_PROVIDERS_CAPABILITY: &str = "managed_context_all_providers_v1";
+
 /// Shared by direct kernel status and relay discovery. These advertise support,
 /// not authorization; every operation still checks its caller and home binding.
 pub const RUNTIME_CONTROL_CAPABILITIES: &[&str] = &[
@@ -213,4 +217,5 @@ pub const RUNTIME_CONTROL_CAPABILITIES: &[&str] = &[
     "framed_plaintext_v1",
     crate::provider_account_copy::PROVIDER_ACCOUNT_COPY_CAPABILITY,
     crate::provider_account_copy::PROVIDER_ACCOUNT_COPY_PULL_CAPABILITY,
+    MANAGED_CONTEXT_ALL_PROVIDERS_CAPABILITY,
 ];
