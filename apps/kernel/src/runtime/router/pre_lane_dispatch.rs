@@ -96,6 +96,7 @@ impl CommandRouter {
                 .event_connection_lanes
                 .lock(&event_user_id, &removal.connection_id)
                 .await;
+            crate::runtime::start_gate::begin_current()?;
             return execute_event_catalog_request_with_client(
                 &self.runtime_state,
                 &self.config_projection,
@@ -132,6 +133,7 @@ impl CommandRouter {
                 .event_connection_lanes
                 .lock(&event_user_id, &connection_id)
                 .await;
+            crate::runtime::start_gate::begin_current()?;
             return execute_event_catalog_request_with_client(
                 &self.runtime_state,
                 &self.config_projection,

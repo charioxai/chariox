@@ -1349,7 +1349,20 @@ async fn dispatch_relay_client_request(
     #[cfg(test)]
     command_result_cache.await_dispatch_for_test().await;
     let command_id = command.command_id.clone();
-    let result = router.dispatch(command, request).await;
+    // Only a mutation (a command with a receipt) can be cancelled before it starts; a read is never held back.
+    let gate = fingerprint
+        .is_some()
+        .then(crate::runtime::start_gate::current)
+        .flatten();
+    if gate.as_ref().is_some_and(|gate| gate.is_cancelled()) {
+        command_result_cache.release_unstarted(&command_id).await;
+        return cancelled_dispatch_outcome();
+    }
+    let result = crate::runtime::start_gate::scope(gate, router.dispatch(command, request)).await;
+    if matches!(&result, Err(error) if crate::runtime::start_gate::is_cancelled_error(error)) {
+        command_result_cache.release_unstarted(&command_id).await;
+        return cancelled_dispatch_outcome();
+    }
     let outgoing = match result {
         Ok(response) => {
             let mut response = serde_json::to_value(response).unwrap_or(Value::Null);
@@ -1380,6 +1393,14 @@ async fn dispatch_relay_client_request(
         unreachable!("relay command dispatch only builds response frames")
     };
     cached_relay_dispatch_outcome(response, error)
+}
+
+fn cancelled_dispatch_outcome() -> RelayDispatchOutcome {
+    RelayDispatchOutcome::RelayError(relay_error(
+        "request_cancelled",
+        "the request was cancelled before it started: the client lost authority",
+        true,
+    ))
 }
 
 #[allow(
