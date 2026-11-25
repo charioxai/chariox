@@ -52,6 +52,9 @@ pub(super) struct Pool {
     stopped_at: Mutex<BTreeMap<String, Instant>>,
     pub(super) ledger: Mutex<admission::Ledger>,
     pub(super) launches: Mutex<BTreeMap<String, super::launch::Reservation>>,
+    /// Launches whose hold was logged: one line when it begins, one when it
+    /// starts, however often the queue asks again.
+    pub(super) launch_waiting: Mutex<std::collections::BTreeSet<String>>,
     pub(super) launch_generation: std::sync::atomic::AtomicU64,
     pub(super) volume: Box<admission::Volume>,
 }
@@ -158,6 +161,7 @@ impl Pool {
             stopped_at: Mutex::default(),
             ledger: Mutex::new(admission::Ledger::new(peaks)),
             launches: Mutex::default(),
+            launch_waiting: Mutex::default(),
             launch_generation: std::sync::atomic::AtomicU64::new(0),
             volume,
         }
