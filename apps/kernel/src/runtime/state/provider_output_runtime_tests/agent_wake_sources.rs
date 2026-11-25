@@ -13,6 +13,7 @@ use std::sync::Mutex as StdMutex;
 
 mod accepted_yield;
 mod assessment_inbox;
+mod lost_process;
 #[cfg(unix)]
 mod handed_over_run;
 mod mcp_paging;
