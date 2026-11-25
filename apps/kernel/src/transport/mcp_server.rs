@@ -27,6 +27,8 @@ mod catalog;
 mod catalog_stream;
 #[cfg(test)]
 mod catalog_stream_tests;
+mod lean_tools;
+pub(crate) use lean_tools::LeanLoads;
 mod tool_content;
 mod tool_loading;
 
@@ -429,6 +431,10 @@ async fn handle_json_rpc_value(
                 .await?;
             let claude_loading = tool_loading::ClaudeLoading::for_run(&router, auth_token);
             let tools = tool_loading::without_alias_twins(tools);
+            let tools = match lean_tools::LeanListing::for_run(&router, auth_token) {
+                Some(lean) => lean.view(auth_token, tools),
+                None => tools,
+            };
             // An invalidation during discovery cannot be acknowledged by an
             // older list. Record only successful discovery for the same run.
             if let Some((run_id, revision)) = captured {
@@ -504,10 +510,30 @@ async fn handle_json_rpc_value(
                 .get("arguments")
                 .cloned()
                 .unwrap_or_else(|| serde_json::json!({}));
-            let previous_catalog = catalog::listing(&router, auth_token).await;
-            let result = router
-                .dispatch_authenticated_runtime_tool_call(auth_token, tool_name, arguments)
-                .await;
+            let lean = lean_tools::LeanListing::for_run(&router, auth_token);
+            let previous_catalog = match &lean {
+                Some(lean) => {
+                    lean.view_listing(auth_token, catalog::listing(&router, auth_token).await)
+                }
+                None => catalog::listing(&router, auth_token).await,
+            };
+            let result = match &lean {
+                Some(lean) if tool_name == lean_tools::FIND_TOOL => {
+                    let catalog = router
+                        .runtime_tool_specs_for_auth_token_async(auth_token.to_owned())
+                        .await
+                        .map(tool_loading::without_alias_twins)?;
+                    Ok(crate::transport::runtime_tools::RuntimeToolResult {
+                        ok: true,
+                        payload: lean.find(auth_token, &arguments, &catalog),
+                    })
+                }
+                _ => {
+                    router
+                        .dispatch_authenticated_runtime_tool_call(auth_token, tool_name, arguments)
+                        .await
+                }
+            };
             match result {
                 // Claude Code's `--permission-prompt-tool` contract: the result
                 // is exactly one text block holding the JSON-stringified
@@ -556,7 +582,12 @@ async fn handle_json_rpc_value(
                     };
                     let (content, structured_content) =
                         tool_content::runtime_tool_content_ordered(result.payload, first_keys);
-                    let changed = previous_catalog != catalog::listing(&router, auth_token).await;
+                    let after = match &lean {
+                        Some(lean) => lean
+                            .view_listing(auth_token, catalog::listing(&router, auth_token).await),
+                        None => catalog::listing(&router, auth_token).await,
+                    };
+                    let changed = previous_catalog != after;
                     Ok(catalog::tool_response(
                         changed,
                         serde_json::json!({

@@ -107,6 +107,7 @@ impl CatalogMonitor {
         {
             let mut catalogs = self.lock();
             catalogs.retain(|token, _| running.contains(token));
+            router.lean_loads().retain_runs(&running);
             for (token, listing) in next {
                 if !running.contains(&token) {
                     continue;
