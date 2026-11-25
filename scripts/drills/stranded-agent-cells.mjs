@@ -23,13 +23,15 @@ const tokenFile = need("--token-file")
 const skipBackstopWait = flags.get("--skip-backstop-wait") === "1"
 const k = await startDrillKernel({ label: "nowake554", binary: need("--kernel-binary"), stateRoot: need("--state-root"), evidence, extraEnv: { CHARIOX_ROOM_AGENT_TOOLS: "1" } })
 const results = []
+let exitCode = 0
 const cell = (id, pass, detail = {}) => {
   results.push({ id, status: pass === null ? "INCONCLUSIVE" : pass ? "PASS" : "FAIL", ...detail })
+  // Review P2: a failed cell fails the drill, however the check that recorded it was written.
+  if (pass === false) exitCode = 1
   writeFileSync(join(evidence, "cells.json"), JSON.stringify(results, null, 1) + "\n", { mode: 0o600 })
   console.log(id, results.at(-1).status, JSON.stringify(detail))
 }
 const save = (name, value) => writeFileSync(join(evidence, name), JSON.stringify(value, null, 1), { mode: 0o600 })
-let exitCode = 0
 const live = wake => ["scheduled", "starting", "running"].includes(wake.state)
 try {
   const passphrase = randomBytes(32).toString("hex")
