@@ -15,6 +15,8 @@ mod mcp_config;
 mod ports;
 
 pub use catalog_endpoint::opencode_catalog_endpoint;
+pub(super) use catalog_endpoint::OpenCodeCatalogStartup;
+pub(crate) use catalog_endpoint::OPENCODE_CATALOG_START;
 pub(crate) use catalog_endpoint::{
     ensure_opencode_account_endpoint, invalidate_opencode_account_endpoint,
     shutdown_opencode_account_endpoints,
