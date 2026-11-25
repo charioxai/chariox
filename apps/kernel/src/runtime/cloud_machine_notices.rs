@@ -123,6 +123,13 @@ impl KernelRuntimeState {
             });
         };
         self.reconcile_cloud_machine_notices(&machines)?;
+        self.install_awaiting_machines(
+            &machines,
+            &profile.api_url,
+            &profile.account_id,
+            credential,
+        )
+        .await;
         Ok(
             if needs_watching(&machines, crate::session::unix_epoch_ms()) {
                 Watch::Poll

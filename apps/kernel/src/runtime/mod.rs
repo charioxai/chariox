@@ -2,6 +2,7 @@ pub(crate) mod aegs_network_policy;
 pub(crate) mod agent_account_admission;
 pub mod agent_actor;
 pub(crate) mod agent_control_executor;
+pub(crate) mod agent_machine_install;
 pub mod agent_prompt_service;
 mod agent_tree_projection;
 pub(crate) mod agent_utility_executor;

@@ -809,6 +809,12 @@ where
     let claim_state = router.runtime_state();
     let contended_claim_task =
         tokio::spawn(async move { claim_state.run_contended_claim_retries().await });
+    let install_router = Arc::clone(&router);
+    router
+        .runtime_state()
+        .set_agent_install_starter(Arc::new(move |ticket| {
+            install_router.start_agent_machine_install(ticket)
+        }));
     let machine_notice_state = router.runtime_state();
     let machine_notice_task =
         tokio::spawn(async move { machine_notice_state.run_cloud_machine_notices().await });

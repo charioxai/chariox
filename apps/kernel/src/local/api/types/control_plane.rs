@@ -40,6 +40,11 @@ pub enum ControlPlaneRequest {
     Get {
         allocation_ref: String,
     },
+    /// Row 582: the kernel that acquired a machine asks for the ticket that starts its own transfer
+    /// of the owner's logins to it. Only that kernel is answered.
+    ContextTransfer {
+        allocation_ref: String,
+    },
     Release {
         allocation_ref: String,
         capability_revision: String,
@@ -113,6 +118,9 @@ impl ControlPlaneRequest {
 pub enum ControlPlaneResponse {
     JobCancelled {
         job_ref: String,
+    },
+    ContextTransfer {
+        ticket: Box<crate::managed_context::outbound_service::ManagedContextTransferTicket>,
     },
     Capabilities {
         machine_allocation: Option<MachineAllocationCapability>,

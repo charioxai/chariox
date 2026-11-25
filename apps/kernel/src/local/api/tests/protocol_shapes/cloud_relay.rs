@@ -48,7 +48,8 @@ fn relay_status_control_capabilities_are_versioned_and_hashed() {
             "provider_account_copy_opencode_v1",
             "viewer_density_stills_v1",
             "display_resize_rebind_v1",
-            "managed_context_all_providers_v1"
+            "managed_context_all_providers_v1",
+            "agent_machine_install_v1"
         ])
     );
     assert_eq!(
@@ -56,7 +57,7 @@ fn relay_status_control_capabilities_are_versioned_and_hashed() {
             "{:x}",
             Sha256::digest(serde_json::to_string(&response).unwrap().as_bytes())
         ),
-        "d4dc2246576324886b151e06e35e4fe31893e77a4aea732437a07fb3a0c4578e"
+        "d0eb912ac6fdfa9dd9e1f10bc3ebf2533c0aa1ff81d1faa7e0a4d72c36a23376"
     );
 }
 

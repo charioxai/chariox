@@ -221,6 +221,7 @@ pub const RUNTIME_CONTROL_CAPABILITIES: &[&str] = &[
     VIEWER_DENSITY_STILLS_CAPABILITY,
     DISPLAY_RESIZE_REBIND_CAPABILITY,
     MANAGED_CONTEXT_ALL_PROVIDERS_CAPABILITY,
+    crate::runtime::agent_machine_install::AGENT_MACHINE_INSTALL_CAPABILITY,
 ];
 
 /// MP-08/MP-11 (row 341): `display_subscribe` accepts `viewer_density_stills`. Viewers ask for it only of a kernel that
