@@ -281,7 +281,7 @@ async fn owner_task_decision_restores_its_reply_channel_after_reload() {
         .resolve_runtime_interaction(
             &f.session,
             &id,
-            "cancel",
+            "stop",
             None,
             Some(DEFAULT_LOCAL_USER_ID),
             false,

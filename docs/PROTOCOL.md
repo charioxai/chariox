@@ -1288,9 +1288,11 @@ card. Browser-access consent stays with the person. A block the agent raises
 itself with `chariox.events.blocked` is its question to the owner: the task gets
 `owner_action: "question"` and the decision is titled **Question**, a `choice`
 whose message is the agent's own words, with `custom_choice {id: "reply"}` and
-one `cancel` choice labelled **Dismiss**, never Resume. A reply resumes the task and
-reaches the agent as "The owner answered your question"; Dismiss cancels it. The
-correction and Resume
+one choice labelled **Dismiss** (id `cancel`, kept for older clients), never Resume. A reply
+resumes the task and reaches the agent as "The owner answered your question". Dismiss only
+hides the card from the Room: the task keeps waiting, the card stays actionable in the person's
+Inbox, and every client reads the same projection. Only the separate **Stop <agent>'s task**
+choice (id `stop`) cancels the task. The correction and Resume
 instruction name every unresolved obligation, its source label when available,
 and the calls that settle it, using the actual registrations and receipt sequences.
 For a person-held card in the TUI, open it with F8, Ctrl+G or `/approvals`, select

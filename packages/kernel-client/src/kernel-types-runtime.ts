@@ -269,6 +269,7 @@ export type PaymentCardSummary = {
 export type RuntimeInteractionChoice = {
   id: string
   label: string
+  description?: string
   reply: string
   style?: "primary" | "secondary" | "danger" | null
   /** Protocol 392: answering with this choice needs the Chariox passkey. */
@@ -347,6 +348,7 @@ export type PasskeyPrompt = {
 export type RuntimeInteractionCustomChoice = {
   id: string
   label: string
+  description?: string
   placeholder?: string | null
   min_length?: number | null
   max_length?: number | null
@@ -711,8 +713,9 @@ export type OwnerInteraction = {
   interaction_id: string
   title?: string
   message: string
-  choices: { id: string; label: string }[]
+  choices: { id: string; label: string; description?: string }[]
   reply_choice_id?: string
+  reply_choice_description?: string
   person_only?: string
 }
 export type OwnerInteractionsListedResponse = { OwnerInteractionsListed: { interactions: OwnerInteraction[] } }
