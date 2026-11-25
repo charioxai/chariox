@@ -4,8 +4,22 @@ use super::*;
 fn a_local_job_completes_once_with_its_output_after_two_hot_reloads() {
     let scratch = std::env::temp_dir().join(format!("hr-job-{}", std::process::id()));
     let record = scratch.join("record");
+    let mut env = ready_codex(&scratch, &record);
+    env.push((
+        "CHARIOX_WAKE_SCHEDULER_STALL_FILE",
+        scratch.join("wake-stall"),
+    ));
+    let kernel = start_laptop_kernel(&scratch, &env);
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(local_job_drill(&kernel, &record));
+}
+
+pub(super) fn ready_codex(scratch: &Path, record: &Path) -> Vec<(&'static str, PathBuf)> {
     let codex = scratch.join("codex");
-    std::fs::create_dir_all(&record).unwrap();
+    std::fs::create_dir_all(record).unwrap();
     std::fs::create_dir_all(scratch.join("codex-home")).unwrap();
     install(
         |file| {
@@ -21,72 +35,17 @@ fn a_local_job_completes_once_with_its_output_after_two_hot_reloads() {
         &codex,
     );
     std::fs::write(scratch.join("fake_codex.py"), FAKE_CODEX).unwrap();
-    let kernel = start_laptop_kernel(
-        &scratch,
-        &[
-            ("CHARIOX_CODEX_BIN", codex),
-            ("CHARIOX_FAKE_CODEX_RECORD", record.clone()),
-            ("CODEX_HOME", scratch.join("codex-home")),
-            (
-                "CHARIOX_WAKE_SCHEDULER_STALL_FILE",
-                scratch.join("wake-stall"),
-            ),
-        ],
-    );
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap()
-        .block_on(local_job_drill(&kernel, &record));
+    vec![
+        ("CHARIOX_CODEX_BIN", codex),
+        ("CHARIOX_FAKE_CODEX_RECORD", record.to_owned()),
+        ("CODEX_HOME", scratch.join("codex-home")),
+    ]
 }
 
 async fn local_job_drill(kernel: &Kernel, record: &Path) {
     let mut socket = connect(kernel, Duration::from_secs(60)).await;
     let project = kernel.scratch.join("project");
-    let created = request(
-        &mut socket,
-        json!({"CreateSession": {
-            "workspace_id": project, "worktree_id": project, "alias": null, "no_subscribe": true,
-        }}),
-    )
-    .await;
-    let room = created["SessionCreated"]["session"]["id"].as_str().unwrap();
-    let spawned = request(
-        &mut socket,
-        json!({"SpawnAgent": {
-            "session_id": room, "alias": "job-runner", "provider": "codex", "model": "gpt-6-luna",
-            "effort": "low", "worktree_id": null, "no_subscribe": true,
-        }}),
-    )
-    .await;
-    let agent = spawned["AgentSpawned"]["agent"]["id"].as_str().unwrap();
-    let attached = request(
-        &mut socket,
-        json!({"AttachToSession": {
-            "session_id": room, "client_id": "local-job-drill", "capability_level": "FullTerminal",
-        }}),
-    )
-    .await;
-    let attachment = attached["SessionAttached"]["attachment"]["id"]
-        .as_str()
-        .unwrap();
-    request(
-        &mut socket,
-        json!({"SubmitPrompt": {
-            "session_id": room, "target_agent_id": agent, "attachment_id": attachment,
-            "prompt": "Run the local job drill", "attachments": [],
-        }}),
-    )
-    .await;
-    wait_for("the agent opens its turn", || record.join("parts").exists()).await;
-    let before = request(
-        &mut socket,
-        json!({"GetSessionState": { "session_id": room }}),
-    )
-    .await;
-    let task = before["SessionState"]["session"]["prompt_states"][agent]["active_prompt"]["id"]
-        .as_str()
-        .unwrap();
+    let (room, task) = open_job_room(&mut socket, &project, record).await;
     let started = job_tool(record, "start", "chariox.jobs.run", json!({
         "task_id": task, "origin_prompt_id": task, "timeout_s": 150, "wait_s": 1,
         "command": ["/bin/sh", "-c", "printf 'before\\npartial-'; echo $$ > started; while [ ! -f finish ]; do sleep 0.05; done; printf 'line\\nafter\\n'; exit 7"],
@@ -193,7 +152,55 @@ async fn local_job_drill(kernel: &Kernel, record: &Path) {
     std::fs::write(record.join("go"), "").unwrap();
 }
 
-fn job_wake<'a>(state: &'a Value, job: &str) -> &'a Value {
+pub(super) async fn open_job_room(
+    socket: &mut Socket,
+    project: &Path,
+    record: &Path,
+) -> (String, String) {
+    let created = request(
+        socket,
+        json!({"CreateSession": {
+            "workspace_id": project, "worktree_id": project, "alias": null, "no_subscribe": true,
+        }}),
+    )
+    .await;
+    let room = created["SessionCreated"]["session"]["id"].as_str().unwrap();
+    let spawned = request(
+        socket,
+        json!({"SpawnAgent": {
+            "session_id": room, "alias": "job-runner", "provider": "codex", "model": "gpt-6-luna",
+            "effort": "low", "worktree_id": null, "no_subscribe": true,
+        }}),
+    )
+    .await;
+    let agent = spawned["AgentSpawned"]["agent"]["id"].as_str().unwrap();
+    let attached = request(
+        socket,
+        json!({"AttachToSession": {
+            "session_id": room, "client_id": "local-job-drill", "capability_level": "FullTerminal",
+        }}),
+    )
+    .await;
+    let attachment = attached["SessionAttached"]["attachment"]["id"]
+        .as_str()
+        .unwrap();
+    request(
+        socket,
+        json!({"SubmitPrompt": {
+            "session_id": room, "target_agent_id": agent, "attachment_id": attachment,
+            "prompt": "Run the local job drill", "attachments": [],
+        }}),
+    )
+    .await;
+    wait_for("the agent opens its turn", || record.join("parts").exists()).await;
+    let before = request(socket, json!({"GetSessionState": { "session_id": room }})).await;
+    let task = before["SessionState"]["session"]["prompt_states"][agent]["active_prompt"]["id"]
+        .as_str()
+        .unwrap();
+    (room.to_owned(), task.to_owned())
+}
+
+pub(super) fn job_wake<'a>(state: &'a Value, job: &str) -> &'a Value {
     let mut wakes = state["SessionState"]["session"]["agent_wakes"]
         .as_array()
         .unwrap()
@@ -205,7 +212,7 @@ fn job_wake<'a>(state: &'a Value, job: &str) -> &'a Value {
     wake
 }
 
-async fn job_tool(record: &Path, suffix: &str, tool: &str, arguments: Value) -> Value {
+pub(super) async fn job_tool(record: &Path, suffix: &str, tool: &str, arguments: Value) -> Value {
     let answer = codex_tools(
         record,
         suffix,
