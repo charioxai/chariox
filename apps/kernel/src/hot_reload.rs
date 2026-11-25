@@ -1144,10 +1144,18 @@ impl Prepared {
 
 static PREPARED: Mutex<Option<Prepared>> = Mutex::new(None);
 
-/// Completes when a SIGUSR2 hot reload is prepared. A refused request
-/// changes nothing: the kernel keeps running and waits for the next one.
+type RestartAnswer = tokio::sync::oneshot::Sender<Result<(), String>>;
+static RESTART_REQUESTS: OnceLock<tokio::sync::mpsc::UnboundedSender<RestartAnswer>> =
+    OnceLock::new();
+/// How long the kernel keeps serving after it prepared a requested restart: the answer to the request leaves first.
+const RESTART_REPLY_GRACE: Duration = Duration::from_millis(400);
+
+/// Completes when a hot reload is prepared, on a SIGUSR2 or on a request (`request_restart`). A refused request
+/// changes nothing: the kernel keeps running and waits for the next one; a requester is told why.
 pub async fn requested(terminals: RoomTerminalService, handover_path: PathBuf) {
     use tokio::signal::unix::{signal, SignalKind};
+    let (restart_tx, mut restarts) = tokio::sync::mpsc::unbounded_channel::<RestartAnswer>();
+    let _ = RESTART_REQUESTS.set(restart_tx);
     let mut requests = match signal(SignalKind::user_defined2()) {
         Ok(requests) => requests,
         Err(error) => {
@@ -1159,21 +1167,51 @@ pub async fn requested(terminals: RoomTerminalService, handover_path: PathBuf) {
             return std::future::pending().await;
         }
     };
-    while requests.recv().await.is_some() {
+    loop {
+        let answer = tokio::select! {
+            signalled = requests.recv() => { if signalled.is_none() { break; } None }
+            asked = restarts.recv() => match asked { Some(answer) => Some(answer), None => break },
+        };
         match prepare(&terminals).await {
             Ok(terminals) => {
                 *PREPARED.lock().unwrap_or_else(|e| e.into_inner()) =
                     Some(Prepared::new(terminals, handover_path));
+                if let Some(answer) = answer {
+                    let _ = answer.send(Ok(()));
+                    tokio::time::sleep(RESTART_REPLY_GRACE).await;
+                }
                 return;
             }
-            Err(reason) => crate::logging::error_with_fields(
-                "hot_reload",
-                "hot reload refused; the kernel keeps running",
-                serde_json::json!({ "reason": reason }),
-            ),
+            Err(reason) => {
+                crate::logging::error_with_fields(
+                    "hot_reload",
+                    "hot reload refused; the kernel keeps running",
+                    serde_json::json!({ "reason": reason }),
+                );
+                if let Some(answer) = answer {
+                    let _ = answer.send(Err(reason));
+                }
+            }
         }
     }
     std::future::pending().await
+}
+
+/// A person's or agent's request to restart this kernel (row 551): the same preparation as a SIGUSR2, answered. `Ok` means the
+/// hot reload is prepared and the kernel is stopping; `Err` is why it was refused and the kernel keeps running.
+pub async fn request_restart() -> Result<(), String> {
+    let Some(requests) = RESTART_REQUESTS.get() else {
+        return Err("hot reload is unavailable on this kernel".into());
+    };
+    let (answer, reply) = tokio::sync::oneshot::channel();
+    requests
+        .send(answer)
+        .map_err(|_| "hot reload is unavailable on this kernel".to_string())?;
+    match tokio::time::timeout(VERIFY_TIMEOUT * 3, reply).await {
+        Ok(Ok(result)) => result,
+        Ok(Err(_)) => Err("the kernel is already stopping".into()),
+        Err(_) => Err("the hot reload did not prepare in time".into()),
+    }
 }
 
 async fn prepare(

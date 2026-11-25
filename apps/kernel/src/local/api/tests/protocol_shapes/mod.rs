@@ -52,6 +52,7 @@ mod kernel_computer;
 mod kernel_gateway;
 mod kernel_operation_interactions;
 mod kernel_resources;
+mod kernel_restart;
 mod kernel_trash;
 mod landing8;
 mod machine_acquire;
