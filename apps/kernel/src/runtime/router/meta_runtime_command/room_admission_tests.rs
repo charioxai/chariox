@@ -63,7 +63,7 @@ fn room_admission_any_agent_above_names_a_grandchild_for_delete() {
 }
 
 #[test]
-fn room_admission_sibling_peer_and_ancestor_are_outside_the_subtree() {
+fn room_admission_sibling_peer_and_ancestor_parse_and_admission_decides() {
     let a = agent("a", None);
     let b = agent("b", Some("a"));
     let sibling = agent("s", Some("a"));
