@@ -738,7 +738,7 @@ mod tests {
             )
             .unwrap());
         router
-            .admit_relay_stream(key)
+            .admit_relay_stream(key, None)
             .expect("a live gateway streams");
         let client_id = format!(
             "{}{}",
@@ -748,7 +748,7 @@ mod tests {
         let path = origins::path_in(&config.private_runtime_state_root());
         origins::revoke(&path, &client_id).unwrap().unwrap();
         router
-            .admit_relay_stream(key)
+            .admit_relay_stream(key, None)
             .expect_err("a revoked gateway gets no stream");
     }
 

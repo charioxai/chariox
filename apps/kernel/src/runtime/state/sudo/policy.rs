@@ -279,6 +279,8 @@ pub(crate) fn sudo_request_forbidden(request: &LocalDaemonRequest) -> bool {
             | LocalDaemonRequest::JoinKernelLink(_)
             | LocalDaemonRequest::ForgetGatewayKernel(_)
             | LocalDaemonRequest::RecordPairedClient(_)
+            | LocalDaemonRequest::ConfigureRelayIssuer(_)
+            | LocalDaemonRequest::IssueRelayClientToken(_)
             | LocalDaemonRequest::ApproveRemoteMachine(_)
             | LocalDaemonRequest::CreateSessionInvite(_)
             | LocalDaemonRequest::JoinSessionInvite(_)

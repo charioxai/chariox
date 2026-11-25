@@ -244,7 +244,8 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// outcome and the mirror v2 header's `page_wheel`, and requires the relay's registration acknowledgment before reporting
 /// the kernel online.
 /// Peer 451 carries the local 1014 terminal `stdin` of a program.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 451;
+/// Provisional peer 452 (local 1015): the relay issuer requests of a self-hosted kernel.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 452;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
 pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = RELAY_PEER_PROTOCOL_VERSION;
