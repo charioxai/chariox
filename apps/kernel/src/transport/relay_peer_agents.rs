@@ -12,6 +12,8 @@ pub enum AgentMessageDelivery {
     Queued,
     Started,
     Steered,
+    /// The recipient read it in a turn that gave it no prompt of its own: nothing is left to deliver.
+    AlreadyDelivered,
     Undelivered,
 }
 

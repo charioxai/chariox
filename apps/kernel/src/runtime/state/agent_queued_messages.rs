@@ -241,13 +241,15 @@ impl KernelRuntimeState {
         DaemonError,
     > {
         use crate::transport::relay_peer_agents::AgentMessageDelivery::{
-            Queued, Started, Steered, Undelivered,
+            AlreadyDelivered, Queued, Started, Steered, Undelivered,
         };
         let current = self
             .owned
             .durable_state_store
             .agent_inbox_event(submitted.sequence)?;
-        let event = current.as_ref().map_or(submitted, |(event, _)| event);
+        let (event, read) = current
+            .as_ref()
+            .map_or((submitted, false), |(event, read)| (event, *read));
         Ok(match event.state.as_str() {
             "accepted" | "acknowledged" | "handled" => {
                 if let Some(target) = &event.target_prompt_id {
@@ -255,10 +257,11 @@ impl KernelRuntimeState {
                 } else if let Some(prompt) = &event.prompt_id {
                     (Started, Some(prompt.clone()))
                 } else {
-                    (Queued, None)
+                    (AlreadyDelivered, None)
                 }
             }
             "failed" | "expired" => (Undelivered, None),
+            _ if read => (AlreadyDelivered, None),
             _ => (Queued, None),
         })
     }
@@ -280,6 +283,9 @@ impl KernelRuntimeState {
             receipt["prompt_id"] = prompt_id.into();
         } else if delivery == AgentMessageDelivery::Queued {
             receipt["note"] = "The message is saved. Delivery has not been confirmed.".into();
+        } else if delivery == AgentMessageDelivery::AlreadyDelivered {
+            receipt["note"] =
+                "The recipient already read this message; nothing is left to deliver.".into();
         }
         Ok(receipt)
     }
@@ -294,8 +300,8 @@ impl KernelRuntimeState {
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
         if urgent && !first.urgent {
             let promotion = self.promote_queued_message(first).await?;
-            // Read before the repeat, or cancelled: nothing is left to deliver, and a pending answer would be false.
-            if matches!(promotion, Promotion::Delivered | Promotion::Withdrawn) {
+            // Cancelled by the person before its recipient read it: nothing was sent.
+            if matches!(promotion, Promotion::Withdrawn) {
                 return Ok(promotion_result(first.sequence, &promotion));
             }
         }

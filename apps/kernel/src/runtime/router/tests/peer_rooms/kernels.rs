@@ -109,6 +109,45 @@ fn a_message_from_another_kernel_lands_once_as_a_stamped_message() {
 }
 
 #[test]
+fn an_urgent_repeat_from_another_kernel_of_a_message_already_read_says_it_was_delivered() {
+    run_peer_test("peer-kernel-urgent-after-read", || async {
+        let rooms = Rooms::new(AgentPermissionLevel::Yolo, AgentPermissionLevel::Required);
+        rooms
+            .request_from_kernel_a(message(&rooms, "request-read", "peer", false))
+            .await;
+        let sequence = rooms.inbox(&rooms.peer_room, rooms.peer.id()).await[0].sequence;
+        // The recipient read and acknowledged it in a turn that gave it no prompt of its own.
+        rooms
+            .router
+            .runtime_state
+            .ack_agent_inbox(
+                &rooms.peer_room,
+                rooms.peer.id(),
+                &serde_json::json!({"sequence": sequence, "handled": true}),
+                1,
+            )
+            .await
+            .expect("the recipient acknowledges it");
+        let RelayPeerResponse::PeerAgentAccepted {
+            delivery,
+            duplicate,
+            ..
+        } = rooms
+            .request_from_kernel_a(message(&rooms, "request-read", "peer", true))
+            .await
+        else {
+            panic!("accepted")
+        };
+        assert!(duplicate);
+        assert_eq!(
+            delivery,
+            Some(crate::transport::relay_peer_agents::AgentMessageDelivery::AlreadyDelivered),
+            "a consumed message is never reported as still queued"
+        );
+    });
+}
+
+#[test]
 fn a_peer_message_after_deadline_is_refused_before_it_enters_the_inbox() {
     use crate::durable_state::agent_lifecycle::Operation;
 
