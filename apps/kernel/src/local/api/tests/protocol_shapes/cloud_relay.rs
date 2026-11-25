@@ -47,7 +47,8 @@ fn relay_status_control_capabilities_are_versioned_and_hashed() {
             "provider_account_copy_pull_v1",
             "provider_account_copy_opencode_v1",
             "viewer_density_stills_v1",
-            "display_resize_rebind_v1"
+            "display_resize_rebind_v1",
+            "managed_context_all_providers_v1"
         ])
     );
     assert_eq!(

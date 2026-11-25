@@ -945,57 +945,17 @@ fn prepare_managed_context_package_for_ticket(
             ManagedContextPackageDevelopment::FromSource { archives }
         }
     };
-    let provider_accounts = match &plan.provider_accounts {
-        ManagedContextProviderAccountSelection::None => ManagedContextPackageProviderAccounts::None,
-        ManagedContextProviderAccountSelection::Selected { accounts } => {
-            let owner_user_id = source_account_owner(config)?;
-            let mut materializations = Vec::with_capacity(accounts.len());
-            let mut vault_logins = Vec::new();
-            let mut serialized_component_bytes = 2u64;
-            for account in accounts {
-                let unavailable = |_| {
-                    outbound_service_error(
-                        format!(
-                            "selected {} provider account `{}` has no transferable credentials",
-                            account.provider, account.account_profile
-                        ),
-                        false,
-                    )
-                };
-                if provider_account_profiles
-                    .login_is_vault_credential(
-                        &owner_user_id,
-                        &account.provider,
-                        &account.account_profile,
-                    )
-                    .map_err(unavailable)?
-                {
-                    vault_logins.push(
-                        provider_account_profiles
-                            .export_vault_login(
-                                config,
-                                &owner_user_id,
-                                &account.provider,
-                                &account.account_profile,
-                                &crate::account_profile::VaultLoginSeal {
-                                    source_private_key: &config.relay_private_key,
-                                    target_public_key: &ticket.target.relay_public_key,
-                                    context_id: &plan.context_id,
-                                    source_kernel_id: &config.daemon_id,
-                                    target_kernel_id: &ticket.target.kernel_id,
-                                },
-                            )
-                            .map_err(vault_login_export_error)?,
-                    );
-                    continue;
-                }
-                let materialization = provider_account_profiles
-                    .export_managed_context_materialization(
-                        &owner_user_id,
-                        &account.provider,
-                        &account.account_profile,
-                    )
-                    .map_err(|_| {
+    let provider_accounts =
+        match source_selected_accounts(config, provider_account_profiles, &plan.provider_accounts)?
+        {
+            None => ManagedContextPackageProviderAccounts::None,
+            Some(accounts) => {
+                let owner_user_id = source_account_owner(config)?;
+                let mut materializations = Vec::with_capacity(accounts.len());
+                let mut vault_logins = Vec::new();
+                let mut serialized_component_bytes = 2u64;
+                for account in &accounts {
+                    let unavailable = |_| {
                         outbound_service_error(
                             format!(
                                 "selected {} provider account `{}` has no transferable credentials",
@@ -1003,19 +963,61 @@ fn prepare_managed_context_package_for_ticket(
                             ),
                             false,
                         )
-                    })?;
-                append_bounded_provider_account_materialization(
-                    &mut materializations,
-                    &mut serialized_component_bytes,
-                    materialization,
-                )?;
+                    };
+                    if provider_account_profiles
+                        .login_is_vault_credential(
+                            &owner_user_id,
+                            &account.provider,
+                            &account.account_profile,
+                        )
+                        .map_err(unavailable)?
+                    {
+                        vault_logins.push(
+                            provider_account_profiles
+                                .export_vault_login(
+                                    config,
+                                    &owner_user_id,
+                                    &account.provider,
+                                    &account.account_profile,
+                                    &crate::account_profile::VaultLoginSeal {
+                                        source_private_key: &config.relay_private_key,
+                                        target_public_key: &ticket.target.relay_public_key,
+                                        context_id: &plan.context_id,
+                                        source_kernel_id: &config.daemon_id,
+                                        target_kernel_id: &ticket.target.kernel_id,
+                                    },
+                                )
+                                .map_err(vault_login_export_error)?,
+                        );
+                        continue;
+                    }
+                    let materialization = provider_account_profiles
+                        .export_managed_context_materialization(
+                            &owner_user_id,
+                            &account.provider,
+                            &account.account_profile,
+                        )
+                        .map_err(|_| {
+                            outbound_service_error(
+                                format!(
+                                "selected {} provider account `{}` has no transferable credentials",
+                                account.provider, account.account_profile
+                            ),
+                                false,
+                            )
+                        })?;
+                    append_bounded_provider_account_materialization(
+                        &mut materializations,
+                        &mut serialized_component_bytes,
+                        materialization,
+                    )?;
+                }
+                ManagedContextPackageProviderAccounts::Selected {
+                    materializations,
+                    vault_logins,
+                }
             }
-            ManagedContextPackageProviderAccounts::Selected {
-                materializations,
-                vault_logins,
-            }
-        }
-    };
+        };
     let git_credentials = match &plan.git_credentials {
         ManagedContextGitCredentialSelection::None => ManagedContextPackageGitCredentials::None,
         selection @ ManagedContextGitCredentialSelection::Selected { .. } => {
@@ -1869,6 +1871,30 @@ impl Drop for ArtifactRootCleanup {
     }
 }
 
+/// The accounts a package carries, in the plan's order. `All` (row 582) is resolved here, on the
+/// source, to every login the owner holds; a plan that selects nothing, or an `All` for an owner
+/// with no login, carries none. A login that cannot move is not left out: the export that follows
+/// refuses and names it.
+fn source_selected_accounts(
+    config: &DaemonConfig,
+    provider_account_profiles: &crate::account_profile::ProviderAccountProfileRegistry,
+    selection: &ManagedContextProviderAccountSelection,
+) -> Result<Option<Vec<crate::managed_context::package::ManagedContextProviderAccount>>, DaemonError>
+{
+    match selection {
+        ManagedContextProviderAccountSelection::None => Ok(None),
+        ManagedContextProviderAccountSelection::Selected { accounts } => Ok(Some(accounts.clone())),
+        ManagedContextProviderAccountSelection::All => {
+            let owner_user_id = source_account_owner(config)?;
+            let accounts = crate::runtime::provider_account_portability::all_owner_accounts(
+                provider_account_profiles,
+                &owner_user_id,
+            )?;
+            Ok((!accounts.is_empty()).then_some(accounts))
+        }
+    }
+}
+
 /// A locked Vault is the owner's to open and the same export is repeated afterwards.
 fn source_account_owner(config: &DaemonConfig) -> Result<String, DaemonError> {
     let cloud_user_id = config
@@ -1918,9 +1944,11 @@ fn package_export_reads_vault(
 ) -> Result<bool, DaemonError> {
     let plan = ticket.context_plan.package_binding();
     let mut uses_vault = plan.kernel_context == ManagedContextKernelSelection::SourceKernel;
-    if let ManagedContextProviderAccountSelection::Selected { accounts } = &plan.provider_accounts {
+    if let Some(accounts) =
+        source_selected_accounts(config, provider_account_profiles, &plan.provider_accounts)?
+    {
         let owner_user_id = source_account_owner(config)?;
-        for account in accounts {
+        for account in &accounts {
             uses_vault |= provider_account_profiles
                 .login_is_vault_credential(
                     &owner_user_id,

@@ -22,6 +22,8 @@ export type ProviderAccountTransferSelection =
         readonly accountProfile: string
       }[]
     }
+  // Row 582: every login of the owner on the source kernel; the source resolves it when it exports.
+  | { readonly kind: "all" }
 
 export type GitCredentialTransferSelection =
   | { readonly kind: "none" }

@@ -2,14 +2,14 @@
 //! human Cloud mutations. Preflight reads only existing provider-native exports
 //! and drops their bytes; callers receive an empty acknowledgement.
 use crate::account_profile::{
-    provider_account_authority_owner_user_id, ProviderAccountContextTransfer,
-    ProviderAccountProfile, ProviderAccountProfileRegistry,
+    provider_account_authority_owner_user_id, ProviderAccountAuthState,
+    ProviderAccountContextTransfer, ProviderAccountProfile, ProviderAccountProfileRegistry,
 };
 use crate::config::DaemonConfig;
 use crate::error::DaemonError;
 use crate::local::{
     LocalDaemonResponse, PreflightProviderAccountPortabilityRequest,
-    ProviderAccountTransferSelection,
+    ProviderAccountTransferProfile, ProviderAccountTransferSelection,
 };
 use crate::managed_context::package::ManagedContextKernelSelection;
 use crate::runtime::command::KernelCommand;
@@ -73,17 +73,33 @@ pub(super) fn preflight_selection(
     runtime_owner: &str,
     selection: &ProviderAccountTransferSelection,
 ) -> Result<bool, DaemonError> {
-    let ProviderAccountTransferSelection::Selected { accounts } = selection else {
-        return Ok(false);
-    };
     let owner = provider_account_authority_owner_user_id(config, runtime_owner);
+    let accounts = match selection {
+        ProviderAccountTransferSelection::None => return Ok(false),
+        ProviderAccountTransferSelection::Selected { accounts } => accounts.clone(),
+        ProviderAccountTransferSelection::All => all_owner_accounts(profiles, &owner)?
+            .into_iter()
+            .map(|account| ProviderAccountTransferProfile {
+                provider: account.provider,
+                account_profile: account.account_profile,
+            })
+            .collect(),
+    };
+    let all = matches!(selection, ProviderAccountTransferSelection::All);
     let mut carries_vault_login = false;
-    for account in accounts {
+    for account in &accounts {
         let unavailable = || {
-            error(format!(
-                "selected {} provider account `{}` has no transferable credentials",
-                account.provider, account.account_profile
-            ))
+            if all {
+                error(format!(
+                    "your {} account `{}` cannot be copied as it is. Sign in to it again in Provider Accounts so its login can travel, then start again",
+                    account.provider, account.account_profile
+                ))
+            } else {
+                error(format!(
+                    "selected {} provider account `{}` has no transferable credentials",
+                    account.provider, account.account_profile
+                ))
+            }
         };
         if profiles
             .login_is_vault_credential(&owner, &account.provider, &account.account_profile)
@@ -104,6 +120,29 @@ pub(super) fn preflight_selection(
             .map_err(|_| unavailable())?;
     }
     Ok(carries_vault_login)
+}
+
+/// Row 582: every login the owner holds on this kernel (signed in; a profile that was never signed
+/// in has nothing to move), every provider and every profile, in provider then profile order. A
+/// login that cannot travel stays in the list so the export refuses and names it.
+pub(crate) fn all_owner_accounts(
+    profiles: &ProviderAccountProfileRegistry,
+    owner: &str,
+) -> Result<Vec<crate::managed_context::package::ManagedContextProviderAccount>, DaemonError> {
+    let mut accounts: Vec<_> = profiles
+        .list(owner, None)?
+        .into_iter()
+        .filter(|profile| profile.auth_state == ProviderAccountAuthState::Authenticated)
+        .map(
+            |profile| crate::managed_context::package::ManagedContextProviderAccount {
+                provider: profile.provider,
+                account_profile: profile.profile_id,
+            },
+        )
+        .collect();
+    accounts
+        .sort_by(|a, b| (&a.provider, &a.account_profile).cmp(&(&b.provider, &b.account_profile)));
+    Ok(accounts)
 }
 
 /// Only a Chariox Vault can be sealed for a new machine's own Vault (local 973).

@@ -110,6 +110,8 @@ enum ManagedKernelProviderAccounts {
     Selected {
         accounts: Vec<ManagedKernelProviderAccount>,
     },
+    /// Row 582: every login of the owner on the source kernel, resolved when it exports.
+    All,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -212,7 +214,7 @@ impl ManagedKernelContextPlan {
             )
             || matches!(
                 self.provider_accounts,
-                ManagedKernelProviderAccounts::Selected { .. }
+                ManagedKernelProviderAccounts::Selected { .. } | ManagedKernelProviderAccounts::All
             )
             || matches!(
                 self.git_credentials,
@@ -294,6 +296,7 @@ impl ManagedKernelContextPlan {
             },
             provider_accounts: match &self.provider_accounts {
                 ManagedKernelProviderAccounts::None => ManagedContextProviderAccountSelection::None,
+                ManagedKernelProviderAccounts::All => ManagedContextProviderAccountSelection::All,
                 ManagedKernelProviderAccounts::Selected { accounts } => {
                     ManagedContextProviderAccountSelection::Selected {
                         accounts: accounts
@@ -371,6 +374,7 @@ impl ManagedKernelContextPlan {
 
     fn validate_provider_accounts(&self) -> Result<(), &'static str> {
         let ManagedKernelProviderAccounts::Selected { accounts } = &self.provider_accounts else {
+            // `None` and `All` name no accounts; `All` still needs a source (see `validate`).
             return Ok(());
         };
         if accounts.is_empty() || accounts.len() > MAX_PROVIDER_ACCOUNTS {
@@ -912,5 +916,47 @@ mod tests {
         let encoded = serde_json::to_string(&plan).expect("serialize context plan");
         assert!(encoded.contains("\"credentialIds\""));
         assert!(!encoded.contains("credential_ids"));
+    }
+    #[test]
+    fn an_all_providers_plan_needs_a_source_and_has_its_own_digest() {
+        let wire = |providers: serde_json::Value,
+                    source: serde_json::Value|
+         -> ManagedKernelContextPlan {
+            let mut plan: ManagedKernelContextPlan = serde_json::from_value(serde_json::json!({
+                "schemaVersion": 1,
+                "contextId": "managed_ctx_all",
+                "planDigest": format!("sha256:{}", "0".repeat(64)),
+                "source": source,
+                "kernelContext": "empty",
+                "developmentSetup": { "kind": "empty" },
+                "providerAccounts": providers,
+                "gitCredentials": { "kind": "none" },
+            }))
+            .expect("parse");
+            plan.plan_digest = plan.compute_digest().expect("digest");
+            plan
+        };
+        let source = serde_json::json!({
+            "sourceTargetId": "source-target-test", "relayRealmId": "realm-1",
+            "machineId": "source-machine-test", "kernelId": "source-kernel",
+            "keyThumbprint": "a".repeat(64),
+        });
+        let all = wire(serde_json::json!({"kind": "all"}), source.clone());
+        all.validate().expect("an all plan with a source is valid");
+        assert!(!all.is_empty());
+        assert!(matches!(
+            all.package_binding().provider_accounts,
+            ManagedContextProviderAccountSelection::All
+        ));
+        assert_ne!(
+            all.plan_digest,
+            wire(serde_json::json!({"kind": "none"}), source.clone()).plan_digest
+        );
+        assert!(
+            wire(serde_json::json!({"kind": "all"}), serde_json::Value::Null)
+                .validate()
+                .is_err(),
+            "the source holds the logins, so `all` without one is inconsistent"
+        );
     }
 }
