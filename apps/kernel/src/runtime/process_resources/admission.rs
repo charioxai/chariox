@@ -195,7 +195,7 @@ impl Entry {
         }
         crate::logging::info_with_fields(
             "process_resources.admission",
-            &format!("admission {decision} ({reason:?}): {line}: {why}"),
+            format!("admission {decision} ({reason:?}): {line}: {why}"),
             fields,
         );
     }
