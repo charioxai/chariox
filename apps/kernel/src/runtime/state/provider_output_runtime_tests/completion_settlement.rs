@@ -477,6 +477,11 @@ async fn a02_r3_pre_io_rejection_retries_without_tasks_or_client_notice() {
             .with_agent_id(agent.id()),
         )
         .unwrap();
+    // #1577: a failed start waits out its backoff; let it be due.
+    store.agent_ledger_sql_for_test(&format!(
+        "UPDATE agent_inbox_start_failures SET retry_at_ms=1 WHERE sequence={}",
+        e.sequence
+    ));
     runtime.sweep_agent_lifecycle().await.unwrap();
     runtime.task_work_settled().await;
     let retried = store
