@@ -495,17 +495,24 @@ fn cancelling_the_turn_aborts_its_in_flight_app_tool() {
         crate::session::PromptStatus::Dispatching,
         crate::session::PromptStatus::Running,
     ] {
-        check_app_call_turn_lifetime(status, false);
+        check_app_call_turn_lifetime(status, false, false);
     }
 }
 
 /// MP-08/MP-11 A05: revoking the binding wakes a waiting call, not only its reply.
 #[test]
 fn capability_revoking_the_app_binding_wakes_its_in_flight_app_tool() {
-    check_app_call_turn_lifetime(crate::session::PromptStatus::Running, true);
+    check_app_call_turn_lifetime(crate::session::PromptStatus::Running, true, false);
 }
 
-fn check_app_call_turn_lifetime(status: crate::session::PromptStatus, revoke: bool) {
+/// MP-11: a binding revoked and bound again to the same installation before the waiting call next looks
+/// is still a revoked binding; the old call does not carry over to the new one.
+#[test]
+fn capability_rebinding_the_app_between_polls_still_ends_the_in_flight_app_tool() {
+    check_app_call_turn_lifetime(crate::session::PromptStatus::Running, true, true);
+}
+
+fn check_app_call_turn_lifetime(status: crate::session::PromptStatus, revoke: bool, rebind: bool) {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(1)
         .thread_stack_size(crate::runtime_transport::KERNEL_RUNTIME_THREAD_STACK_SIZE)
@@ -658,6 +665,15 @@ fn check_app_call_turn_lifetime(status: crate::session::PromptStatus, revoke: bo
     // Keep the caller/connection alive: cancellation must observe the kernel
     // turn state, rather than depend on dropping the MCP dispatch future.
     if revoke {
+        // Keep the runtime's only worker busy, so the waiting call cannot look between the revoke
+        // and the new binding: it sees only the new binding, whose revision differs.
+        let busy = rebind.then(|| {
+            let busy = runtime.spawn(async {
+                std::thread::sleep(std::time::Duration::from_millis(600));
+            });
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            busy
+        });
         runtime
             .block_on(router.runtime_state.revoke_agent_extension(
                 agent.id(),
@@ -666,6 +682,18 @@ fn check_app_call_turn_lifetime(status: crate::session::PromptStatus, revoke: bo
                 "alice",
             ))
             .unwrap();
+        if rebind {
+            runtime
+                .block_on(router.runtime_state.grant_agent_extension(
+                    agent.id(),
+                    crate::extension::ExtensionGrant::app("installed"),
+                    "alice",
+                ))
+                .unwrap();
+        }
+        if let Some(busy) = busy {
+            runtime.block_on(busy).unwrap();
+        }
     } else {
         assert!(prompts
             .begin_cancelling_active_prompt(&session, agent.id())

@@ -168,8 +168,11 @@ async fn an_agent_binds_a_trusted_app_in_any_turn_without_a_card() {
     assert!(session.active_interactions().is_empty());
 }
 
+/// An agent binds the owner's trusted App to a descendant with no step of its own: the parent
+/// needs no binding to hand over, a peer outside its subtree is refused, and revoking one
+/// binding revokes only that one.
 #[tokio::test]
-async fn capability_app_child_transfer_is_a_held_subset_and_revocation_cascades() {
+async fn an_agent_binds_the_owners_app_to_a_descendant_and_revokes_each_binding_alone() {
     let room = room();
     let [(parent, parent_token), (child, _), (peer, _)] = room.agents.clone();
     running_prompt(&room, &parent, ClientCapabilityLevel::FullTerminal, "owner").await;
@@ -177,20 +180,10 @@ async fn capability_app_child_transfer_is_a_held_subset_and_revocation_cascades(
         !room_command(
             &room,
             &parent_token,
-            format!("extension grant app {child} installed")
-        )
-        .await,
-        "MP-08: a parent cannot hand over an App it does not hold"
-    );
-    assert!(request_app(&room, &parent_token, "installed").await);
-    assert!(
-        !room_command(
-            &room,
-            &parent_token,
             format!("extension grant app {peer} installed")
         )
         .await,
-        "MP-08: transfer is limited to a direct child"
+        "MP-08: binding is limited to the caller's own subtree"
     );
     assert!(!bound(&room, &peer).await);
     assert!(
@@ -202,6 +195,7 @@ async fn capability_app_child_transfer_is_a_held_subset_and_revocation_cascades(
         .await
     );
     assert!(bound(&room, &child).await);
+    assert!(request_app(&room, &parent_token, "installed").await);
     assert!(
         room_command(
             &room,
@@ -212,8 +206,8 @@ async fn capability_app_child_transfer_is_a_held_subset_and_revocation_cascades(
     );
     assert!(!bound(&room, &parent).await);
     assert!(
-        !bound(&room, &child).await,
-        "MP-11: a revoked parent binding is revoked from its descendants"
+        bound(&room, &child).await,
+        "a binding is revoked alone: there is no delegation chain"
     );
 }
 
@@ -389,42 +383,6 @@ async fn capability_stale_home_run_cannot_acquire_after_agent_is_leased() {
 }
 
 #[tokio::test]
-async fn capability_deleting_an_app_grant_source_revokes_its_child() {
-    let room = room();
-    let [(parent, parent_token), (child, _), (peer, _)] = room.agents.clone();
-    for agent in [&parent, &peer] {
-        room.router
-            .runtime_state
-            .grant_agent_extension(agent, ExtensionGrant::app("installed"), "alice")
-            .await
-            .unwrap();
-    }
-    assert!(
-        room_command(
-            &room,
-            &parent_token,
-            format!("extension grant app {child} installed")
-        )
-        .await
-    );
-    assert!(bound(&room, &child).await);
-    room.router
-        .runtime_state
-        .destroy_agent(&parent, "alice")
-        .await
-        .unwrap();
-    // A sub-agent ends with its parent, so the grant it got from the parent goes with it.
-    assert!(
-        room.app.lock().await.agents().get_agent(&child).is_err(),
-        "MP-11: source deletion revokes delegated authority"
-    );
-    assert!(
-        bound(&room, &peer).await,
-        "MP-11: independent owner grants survive"
-    );
-}
-
-#[tokio::test]
 async fn capability_agent_origin_cannot_use_an_owner_only_app_binding_helper() {
     let room = room();
     let (agent, _) = room.agents[0].clone();
@@ -450,13 +408,13 @@ async fn capability_agent_origin_cannot_use_an_owner_only_app_binding_helper() {
 }
 
 #[tokio::test]
-async fn capability_agents_cannot_supply_app_authority_or_safety_overrides() {
+async fn capability_agents_cannot_supply_safety_or_environment_overrides() {
     let room = room();
     let (agent, token) = room.agents[2].clone();
     running_prompt(&room, &agent, ClientCapabilityLevel::FullTerminal, "owner").await;
     for args in [
         serde_json::json!({"kind":"app","name":"installed","allow":"write"}),
-        serde_json::json!({"kind":"app","name":"installed","app_grant":{"grant_id":"external","expires_at_ms":u64::MAX}}),
+        serde_json::json!({"kind":"app","name":"installed","environment":"elsewhere"}),
     ] {
         assert!(
             room.router

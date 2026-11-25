@@ -44,7 +44,6 @@ impl KernelRuntimeState {
                     environment: args.environment.clone(),
                     credential: args.credential.clone(),
                     max_safety: args.allow.clone(),
-                    app_grant: None,
                 };
                 grant.validate_app_binding()?;
                 if self.room_agent_tools_enabled() && self.slice_kernel_id().is_some() {
