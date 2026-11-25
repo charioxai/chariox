@@ -40,7 +40,7 @@ impl RemoteLeaseRuntime<'_> {
             .get(&account_owner, provider, account_profile)
             .map(|profile| profile.profile_id)
             .map_err(|_| DaemonError::LocalTransport {
-                operation: "update leased agent profile",
+                operation: crate::transport::relay_peer::REMOTE_PROVIDER_ACCOUNT_MISSING_OPERATION,
                 message: format!("the selected {provider} account is unavailable on the worker; connect or select an available account before changing the profile"),
             })
     }

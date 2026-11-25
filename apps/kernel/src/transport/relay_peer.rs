@@ -261,6 +261,12 @@ pub const REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE: &str =
 /// The worker refused a leased prompt before admission because the selected
 /// account cannot start work there; repeating the prompt cannot repair it.
 pub const REMOTE_PROVIDER_ACCOUNT_UNUSABLE_CODE: &str = "provider_account_unusable";
+/// The worker no longer holds the account the home believes it installed there,
+/// for example after the worker's state was restored. Nothing was admitted, and
+/// handing the account over again repairs it.
+pub const REMOTE_PROVIDER_ACCOUNT_MISSING_CODE: &str = "provider_account_missing";
+pub(crate) const REMOTE_PROVIDER_ACCOUNT_MISSING_OPERATION: &str =
+    "leased provider account missing";
 pub(crate) const ADMIT_LEASED_PROMPT_ACCOUNT_OPERATION: &str = "admit leased prompt account";
 pub(crate) const ENSURE_REMOTE_PROVIDER_ACCOUNT_OPERATION: &str = "ensure remote provider account";
 /// The worker refused a completion because the prompt it names is not the leased
