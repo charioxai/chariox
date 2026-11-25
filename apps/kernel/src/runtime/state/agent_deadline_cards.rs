@@ -20,6 +20,29 @@ fn reached(deadline: &AgentDeadline) -> bool {
 }
 
 impl KernelRuntimeState {
+    pub(super) fn has_pending_agent_message(&self, room: &str, agent: &str) -> bool {
+        let mut after = 0;
+        loop {
+            let Ok(events) = self
+                .owned
+                .durable_state_store
+                .agent_work_inbox(room, agent, after, None)
+            else {
+                return false;
+            };
+            let Some(last) = events.last().map(|event| event.sequence) else {
+                return false;
+            };
+            if events
+                .iter()
+                .any(|event| event.kind == "message" && event.state == "pending")
+            {
+                return true;
+            }
+            after = last;
+        }
+    }
+
     pub(super) async fn show_deadline_refusal(&self, room: &str, agent: &str) {
         if let Err(error) = self.raise_deadline_card(room, agent).await {
             tracing::warn!(%error, room, agent, "could not show the agent's ended time limit");

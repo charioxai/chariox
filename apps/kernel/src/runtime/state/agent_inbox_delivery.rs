@@ -412,21 +412,31 @@ impl KernelRuntimeState {
             .as_ref()
             .and_then(|d| d.target_active_prompt_id.clone());
         let waiting = self.owned.waiting_tasks(room, agent);
-        let Outcome::Event(attempt) =
-            self.owned
-                .durable_state_store
-                .agent_lifecycle(Operation::Attempt {
-                    room: room.into(),
-                    agent: agent.into(),
-                    sequence: event.sequence,
-                    prompt: prompt_id.clone(),
-                    target: target_prompt,
-                    run,
-                    now: crate::session::unix_epoch_ms(),
-                    work,
-                    through,
-                })?
-        else {
+        let attempted = self
+            .owned
+            .durable_state_store
+            .agent_lifecycle(Operation::Attempt {
+                room: room.into(),
+                agent: agent.into(),
+                sequence: event.sequence,
+                prompt: prompt_id.clone(),
+                target: target_prompt,
+                run,
+                now: crate::session::unix_epoch_ms(),
+                work,
+                through,
+            });
+        let attempted = match attempted {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                // A message queued before the limit ended is refused here, before any start.
+                if crate::error::is_agent_deadline_refusal(&error) {
+                    self.show_deadline_refusal(room, agent).await;
+                }
+                return Err(error);
+            }
+        };
+        let Outcome::Event(attempt) = attempted else {
             unreachable!()
         };
         self.owned.record_woken_waits(&waiting, &attempt);

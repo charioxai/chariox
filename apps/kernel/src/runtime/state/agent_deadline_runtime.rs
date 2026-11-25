@@ -214,6 +214,9 @@ impl KernelRuntimeState {
             }
             // What the limit stops is read before the cleanup removes it, and kept across retries.
             let work = self.deadline_work_at_reach(&deadline);
+            // Messages the limit retires were never refused by a delivery; the owner is told once.
+            let retires_messages = deadline.reached_at_ms.is_none()
+                && self.has_pending_agent_message(&deadline.session_id, &deadline.agent_id);
             // Fence every due agent before awaiting any physical cleanup.
             self.owned
                 .durable_state_store
@@ -223,6 +226,10 @@ impl KernelRuntimeState {
                     now,
                     stopped: false,
                 })?;
+            if retires_messages {
+                self.show_deadline_refusal(&deadline.session_id, &deadline.agent_id)
+                    .await;
+            }
             due.push((deadline, work));
         }
         let outcomes =
