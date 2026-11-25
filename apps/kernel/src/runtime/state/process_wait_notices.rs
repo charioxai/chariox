@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 use crate::runtime::process_resources::{
-    SessionProcessState, WaitChange, WaitEvent, WaitReason, Waiting,
+    ExhaustionStep, SessionProcessState, WaitChange, WaitEvent, WaitReason, Waiting,
 };
 
 /// A state that holds this long is told; a flip back inside it is not.
@@ -89,6 +89,35 @@ impl WaitNotices {
                     tracked.changed_at = now;
                 }
                 None
+            }
+            // The machine ran out of memory and the command grew most: its
+            // agent hears each step at once, with the numbers.
+            WaitChange::Exhaustion { step, message } => {
+                let tracked = self.tracked.remove(&event.process_id);
+                let command = match (&event.state, tracked) {
+                    (SessionProcessState::Paused(row) | SessionProcessState::Held(row), _) => {
+                        short(&row.command_line)
+                    }
+                    (_, Some(tracked)) => tracked.command,
+                    _ => String::new(),
+                };
+                Some(Notice {
+                    session_id: session_id.into(),
+                    agent_id: agent_id.into(),
+                    process_id: event.process_id.clone(),
+                    command,
+                    resource: "memory",
+                    state: match step {
+                        ExhaustionStep::Throttled => "throttled",
+                        ExhaustionStep::Paused => "paused",
+                        ExhaustionStep::Resumed => "running",
+                        ExhaustionStep::Stopped => "ended",
+                    },
+                    message: message
+                        .trim_end()
+                        .trim_start_matches("chariox: ")
+                        .to_string(),
+                })
             }
             WaitChange::Stopped {
                 reason,
@@ -271,6 +300,7 @@ mod tests {
             process_id: "p1".into(),
             change,
             state,
+            owner: None,
         }
     }
 

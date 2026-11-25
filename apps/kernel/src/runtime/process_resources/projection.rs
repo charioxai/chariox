@@ -182,7 +182,26 @@ pub(super) fn states_for_key(key: &str) -> std::collections::BTreeMap<u32, Sessi
             let state = state_of(entry);
             (state != SessionProcessState::Running).then_some((*pid, state))
         })
+        .chain(
+            observation
+                .frozen
+                .iter()
+                .map(|(pid, (since_ms, command))| (*pid, frozen_state(command, *since_ms))),
+        )
         .collect()
+}
+
+/// A workload memory exhaustion froze reads as paused for memory.
+pub(super) fn frozen_state(command: &str, since_ms: u64) -> SessionProcessState {
+    SessionProcessState::Paused(Waiting {
+        reason: admission::WaitReason::Memory,
+        position: 1,
+        need_bytes: 0,
+        free_bytes: 0,
+        command_line: command.to_string(),
+        cwd: None,
+        since_ms,
+    })
 }
 
 pub(crate) fn keys_for_session(

@@ -6,6 +6,8 @@ use std::time::Duration;
 
 mod control;
 mod disk_use;
+mod exhaustion;
+pub(crate) use exhaustion::kernel_protection;
 mod growth_window;
 use control::WatchCommand;
 pub(crate) use control::{end_owner, outside_ended_for_key, start_now_for_key, stop_for_key};
@@ -17,7 +19,11 @@ pub(crate) use handover::{adopt_released, hand_over_released, ReleasedJobs};
 /// The commands whose admission has stopped them, for a kernel that replaces
 /// its program in place.
 pub(crate) fn hand_over_admission() -> Vec<HeldCommand> {
-    pool::Pool::shared().held_commands()
+    let pool = pool::Pool::shared();
+    // A workload memory exhaustion froze would stay stopped under the next
+    // program, which starts without that state: let it go before the handover.
+    pool.release_for_handover();
+    pool.held_commands()
 }
 mod admission;
 
@@ -35,6 +41,58 @@ mod process_environment;
 
 pub(crate) fn configure(settings: crate::config::ResourceProtection) {
     pool::Pool::shared().configure(settings);
+    check_kernel_protection();
+}
+
+/// The kernel's own cgroup protects its memory (`memory.min`) so agents using
+/// the rest of the machine never push it out. The unit templates and Setup set
+/// it; where a kernel finds it short of what it needs (the 2 GiB default, or a
+/// quarter above what it has measurably used) it raises it itself through its
+/// service manager, then says what it did. Once at start, then when its own
+/// peak asks for more.
+pub(super) fn check_kernel_protection() {
+    // Tests never ask the host's service manager for anything.
+    if cfg!(test) {
+        return;
+    }
+    static TRIED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let Some((protected, wanted)) = kernel_protection() else {
+        return;
+    };
+    let fields = serde_json::json!({"memory_min_bytes": protected, "wanted_bytes": wanted});
+    // Each wanted size is said and tried once.
+    if TRIED.fetch_max(wanted, std::sync::atomic::Ordering::Relaxed) >= wanted {
+        return;
+    }
+    if protected >= wanted {
+        crate::logging::info_with_fields(
+            "process_resources.kernel_protection",
+            "the kernel's memory is protected from agent workloads",
+            fields,
+        );
+        return;
+    }
+    let raised = exhaustion::raise_protection(wanted);
+    // What holds is read back, not assumed: the kernel's own cgroup and every
+    // level above it must carry the minimum.
+    let after = kernel_protection().map_or(0, |(protected, _)| protected);
+    if after >= wanted {
+        crate::logging::info_with_fields(
+            "process_resources.kernel_protection",
+            "the kernel's memory is protected from agent workloads (raised by the kernel itself)",
+            serde_json::json!({"memory_min_bytes": after, "wanted_bytes": wanted}),
+        );
+    } else {
+        crate::logging::warn_with_fields(
+            "process_resources.kernel_protection",
+            format!(
+                "the kernel's memory is not protected ({}): {}",
+                raised.err().unwrap_or_else(|| "a level above the kernel does not carry the minimum".into()),
+                exhaustion::protection_hint()
+            ),
+            serde_json::json!({"memory_min_bytes": after, "wanted_bytes": wanted}),
+        );
+    }
 }
 
 mod projection;
@@ -57,7 +115,9 @@ pub(crate) use submissions::Submissions;
 #[cfg(test)]
 pub(crate) use waits::push_for_tests as push_wait_event;
 pub(crate) use waits::size;
-pub(crate) use waits::{take_scope_kills, take_wait_events, ScopeKill, WaitChange, WaitEvent};
+pub(crate) use waits::{
+    take_scope_kills, take_wait_events, ExhaustionStep, ScopeKill, WaitChange, WaitEvent,
+};
 #[cfg(test)]
 mod admission_tests;
 #[cfg(target_os = "linux")]
@@ -101,6 +161,8 @@ pub(crate) fn signal_notice(signal: i32) -> String {
     format!("killed by signal {signal} ({name})")
 }
 
+#[cfg(test)]
+mod exhaustion_tests;
 #[cfg(test)]
 mod pressure_tests;
 #[cfg(test)]
@@ -574,6 +636,13 @@ impl PreparedDomain {
                     .collect();
                 {
                     let mut observation = watched.lock().unwrap_or_else(|e| e.into_inner());
+                    // A workload that ended while held leaves no hold behind.
+                    observation
+                        .frozen
+                        .retain(|pid, _| samples.iter().any(|sample| sample.pid == *pid));
+                    observation
+                        .exempt
+                        .retain(|pid| samples.iter().any(|sample| sample.pid == *pid));
                     observation.samples = samples;
                     observation.commands = commands;
                     observation.disk_writes = disk_writes;
@@ -688,6 +757,41 @@ impl PreparedDomain {
                         let _ = reply.send(result);
                     }
                     Ok(WatchCommand::StartNow { process_id, reply }) => {
+                        // A workload memory exhaustion froze: its owner starts it again by hand.
+                        let frozen_root = {
+                            let observation = watched.lock().unwrap_or_else(|e| e.into_inner());
+                            observation
+                                .samples
+                                .iter()
+                                .find(|sample| sample.process_id == process_id)
+                                .map(|sample| sample.pid)
+                                .filter(|pid| observation.frozen.contains_key(pid))
+                        };
+                        if let Some(pid) = frozen_root {
+                            let gate = self.pool.hold_gate();
+                            #[cfg(target_os = "linux")]
+                            let by_cgroup = self.cgroup.as_ref().is_some_and(|group| group.freeze(false));
+                            #[cfg(not(target_os = "linux"))]
+                            let by_cgroup = false;
+                            if !by_cgroup {
+                                #[cfg(unix)]
+                                tree.signal_workload(libc::SIGCONT);
+                            }
+                            {
+                                let mut observation = watched.lock().unwrap_or_else(|e| e.into_inner());
+                                observation.frozen.remove(&pid);
+                                observation.exempt.insert(pid);
+                            }
+                            drop(gate);
+                            pool::Pool::tell(
+                                &watched,
+                                pid,
+                                "chariox: this process was started again by hand and will not be held for memory again.\n".into(),
+                                waits::ExhaustionStep::Resumed,
+                            );
+                            let _ = reply.send(Ok(vec![process_id]));
+                            continue;
+                        }
                         let started = tree.command_of(&process_id).is_some_and(|command| {
                             watched
                                 .lock()
@@ -706,6 +810,45 @@ impl PreparedDomain {
                         } else {
                             Err("the process is not waiting; refresh Health".into())
                         });
+                    }
+                    Ok(WatchCommand::ExhaustFreeze { pid, freeze, command, message }) => {
+                        // Holding or letting go of a workload and a hot reload's release of
+                        // every hold exclude each other: a hold either completes (and is
+                        // recorded) before the release looks, or sees the handover and is dropped.
+                        let gate = self.pool.hold_gate();
+                        if freeze && self.pool.handing_over() {
+                            continue;
+                        }
+                        let held = {
+                            #[cfg(target_os = "linux")]
+                            let by_cgroup = self.cgroup.as_ref().is_some_and(|group| group.freeze(freeze));
+                            #[cfg(not(target_os = "linux"))]
+                            let by_cgroup = false;
+                            by_cgroup || {
+                                #[cfg(unix)]
+                                tree.signal_workload(if freeze { libc::SIGSTOP } else { libc::SIGCONT });
+                                cfg!(unix)
+                            }
+                        };
+                        {
+                            let mut observation = watched.lock().unwrap_or_else(|e| e.into_inner());
+                            if freeze && held {
+                                observation
+                                    .frozen
+                                    .insert(pid, (crate::session::unix_epoch_ms(), command.clone()));
+                            } else {
+                                observation.frozen.remove(&pid);
+                            }
+                        }
+                        drop(gate);
+                        if held {
+                            let step = if freeze {
+                                waits::ExhaustionStep::Paused
+                            } else {
+                                waits::ExhaustionStep::Resumed
+                            };
+                            pool::Pool::tell(&watched, pid, message, step);
+                        }
                     }
                     Ok(WatchCommand::Apply) => {
                         let protection = self.pool.protection();
@@ -810,9 +953,21 @@ fn admit(tree: &sampling::ProcessTree, watched: &Arc<Mutex<Observation>>) {
                 signals.push((*command, waiting));
             }
             let change = match (waiting, entry.stopped) {
-                (true, false) => Some(waits::WaitChange::Began),
-                (false, true) => Some(waits::WaitChange::Resumed {
-                    waited_ms: now.saturating_sub(entry.since_ms),
+                (true, false) => Some(match &entry.exhaustion {
+                    Some(note) => waits::WaitChange::Exhaustion {
+                        step: waits::ExhaustionStep::Paused,
+                        message: note.paused.clone(),
+                    },
+                    None => waits::WaitChange::Began,
+                }),
+                (false, true) => Some(match &entry.exhaustion {
+                    Some(note) => waits::WaitChange::Exhaustion {
+                        step: waits::ExhaustionStep::Resumed,
+                        message: note.resumed.clone(),
+                    },
+                    None => waits::WaitChange::Resumed {
+                        waited_ms: now.saturating_sub(entry.since_ms),
+                    },
                 }),
                 _ => None,
             };
@@ -845,25 +1000,28 @@ fn admit(tree: &sampling::ProcessTree, watched: &Arc<Mutex<Observation>>) {
                 entry.stopped = true;
             } else {
                 entry.continued();
+                entry.exhaustion = None;
             }
         }
     }
     for (command, process_id, change, state) in changes {
-        let line = match change {
+        let line = match &change {
             waits::WaitChange::Began => waits::began_line(&state),
-            waits::WaitChange::Resumed { waited_ms } => Some(waits::resumed_line(waited_ms)),
+            waits::WaitChange::Resumed { waited_ms } => Some(waits::resumed_line(*waited_ms)),
             waits::WaitChange::Stopped { .. } => None,
+            waits::WaitChange::Exhaustion { message, .. } => Some(message.clone()),
         };
         crate::logging::info_with_fields(
             "process_resources.admission_wait",
-            match change {
+            match &change {
                 waits::WaitChange::Began => "a command began to wait",
                 waits::WaitChange::Resumed { .. } => "a waiting command continues",
                 waits::WaitChange::Stopped { .. } => "a waiting command was ended",
+                waits::WaitChange::Exhaustion { .. } => "memory exhaustion acted on a command",
             },
             serde_json::json!({"pid": command, "state": format!("{state:?}"),
-            "waited_ms": match change {
-                waits::WaitChange::Resumed { waited_ms } => waited_ms,
+            "waited_ms": match &change {
+                waits::WaitChange::Resumed { waited_ms } => *waited_ms,
                 _ => 0,
             }}),
         );
@@ -876,6 +1034,7 @@ fn admit(tree: &sampling::ProcessTree, watched: &Arc<Mutex<Observation>>) {
                 process_id,
                 change,
                 state,
+                owner: listed_owner(watched),
             });
         }
     }
@@ -911,16 +1070,41 @@ fn tell_stopped(watched: &Arc<Mutex<Observation>>, pid: u32, notice: String, res
                 .unwrap_or_default(),
         )
     };
+    let exhausted = watched
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .admission
+        .get(&pid)
+        .is_some_and(|entry| entry.exhaustion.is_some());
+    let reason = notice.trim_end().to_string();
     waits::push(waits::WaitEvent {
         keys: keys_of(watched),
         process_id,
-        change: waits::WaitChange::Stopped {
-            reason: notice.trim_end().to_string(),
-            resource,
-            command,
+        change: if exhausted {
+            waits::WaitChange::Exhaustion {
+                step: waits::ExhaustionStep::Stopped,
+                message: reason,
+            }
+        } else {
+            waits::WaitChange::Stopped {
+                reason,
+                resource,
+                command,
+            }
         },
         state,
+        owner: listed_owner(watched),
     });
+}
+
+/// Who the workload is listed under, if it is.
+fn listed_owner(watched: &Arc<Mutex<Observation>>) -> Option<(String, SessionProcessOwner)> {
+    watched
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .listed
+        .as_ref()
+        .map(|listing| (listing.session_id.clone(), listing.owner.clone()))
 }
 
 /// The keys the workload is registered under.
@@ -1059,6 +1243,10 @@ struct Observation {
     released: bool,
     /// The watched processes at the last sample, which a hot reload hands over.
     owned: Option<sampling::Owned>,
+    /// Workloads memory exhaustion froze: when (Unix ms) and the command.
+    frozen: std::collections::BTreeMap<u32, (u64, String)>,
+    /// Workloads their owner started again by hand: never held again.
+    exempt: std::collections::BTreeSet<u32>,
 }
 impl Observation {
     fn resident(&self) -> u64 {
@@ -1106,6 +1294,25 @@ impl ProcessDomain {
         );
         drop(registry);
         self.released = self.stop.send(WatchCommand::Release).is_ok();
+    }
+    /// Records a hold as the watch does once it has signalled the workload.
+    #[cfg(test)]
+    fn record_frozen_for_test(&self, pid: u32) {
+        self.state
+            .lock()
+            .unwrap()
+            .frozen
+            .insert(pid, (1, "job".into()));
+    }
+    /// Queues a hold of the workload as memory exhaustion would.
+    #[cfg(test)]
+    fn freeze_for_test(&self, pid: u32) {
+        let _ = self.stop.send(WatchCommand::ExhaustFreeze {
+            pid,
+            freeze: true,
+            command: "job".into(),
+            message: "held\n".into(),
+        });
     }
     /// The memory domain a hot reload hands over with the process.
     pub(crate) fn cgroup_path(&self) -> Option<std::path::PathBuf> {

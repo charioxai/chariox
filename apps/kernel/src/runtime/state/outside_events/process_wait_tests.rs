@@ -1,8 +1,8 @@
 //! A command that waits for room reaches the agent's followers as an outside event.
 use super::*;
 use crate::runtime::process_resources::{
-    push_wait_event, take_wait_events, PreparedDomain, SessionProcessOwner, SessionProcessState,
-    WaitChange, WaitEvent, Waiting,
+    push_wait_event, take_wait_events, ExhaustionStep, PreparedDomain, SessionProcessOwner,
+    SessionProcessState, WaitChange, WaitEvent, Waiting,
 };
 
 #[cfg(target_os = "linux")]
@@ -82,6 +82,7 @@ fn a_wait_and_its_end_reach_a_follower_of_the_agent() {
                             process_id: "process-issued-7".into(),
                             change,
                             state,
+                            owner: None,
                         });
                     }
                     runtime.deliver_process_waits();
@@ -177,6 +178,7 @@ fn an_agent_finds_a_notice_in_its_inbox_when_its_command_pauses_and_when_it_cont
                             process_id: "process-issued-8".into(),
                             change,
                             state,
+                            owner: None,
                         })
                     };
                     let notices = || -> Vec<String> {
@@ -210,6 +212,117 @@ fn an_agent_finds_a_notice_in_its_inbox_when_its_command_pauses_and_when_it_cont
                     runtime.deliver_process_waits_at(at(9));
                     assert_eq!(notices().len(), 2, "{:?}", notices());
                     assert_eq!(notices()[1], "`cargo test` continues.");
+                    assert!(
+                        runtime
+                            .owned
+                            .durable_state_store
+                            .agent_delivery_front(session.id(), "builder")
+                            .unwrap()
+                            .is_none(),
+                        "a notice was queued as a delivery that would start or steer a turn"
+                    );
+                    drop(domain);
+                    let _ = child.kill();
+                    let _ = child.wait();
+                });
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+/// Memory exhaustion (M6, M7): every step taken against the command that grew
+/// most reaches its agent's inbox at once, with the numbers, as a notice that
+/// starts or steers no turn, and reaches the pane as a status summary.
+#[cfg(target_os = "linux")]
+#[test]
+fn an_agent_hears_each_memory_exhaustion_step_with_the_numbers_and_the_pane_gets_it_as_status() {
+    std::thread::Builder::new()
+        .stack_size(64 * 1024 * 1024)
+        .spawn(|| {
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(async {
+                    let worktree = crate::test_support::TestWorktree::new("inbox-exhaustion");
+                    let app =
+                        crate::app::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+                            .unwrap();
+                    let session = app
+                        .sessions_mut()
+                        .create_session(worktree.session_request())
+                        .unwrap();
+                    let agent = crate::agent::AgentInstance::new(
+                        "builder",
+                        "builder",
+                        session.id(),
+                        None,
+                        "dev-stub",
+                        None,
+                        None,
+                        Some(session.worktree_id().into()),
+                        crate::agent::GridPosition::new(0, 0, 1, 1),
+                    );
+                    app.agents_mut().restore_agent(agent);
+                    let router = crate::runtime::router::CommandRouter::with_interactive_capacity(
+                        std::sync::Arc::new(tokio::sync::Mutex::new(app)),
+                        4,
+                    );
+                    let runtime = router.runtime_state();
+                    let mut child = std::process::Command::new("sleep").arg("30").spawn().unwrap();
+                    let domain = PreparedDomain::for_tests().start(child.id()).unwrap();
+                    domain.bind_key("exhaustion-test-key");
+                    domain.list_as(session.id(), SessionProcessOwner::Agent("builder".into()));
+                    take_wait_events();
+                    let row = Waiting {
+                        reason: crate::runtime::process_resources::WaitReason::Memory,
+                        position: 1,
+                        need_bytes: 0,
+                        free_bytes: 0,
+                        command_line: "node usage-limit.test.js".into(),
+                        cwd: Some("/work".into()),
+                        since_ms: 1,
+                    };
+                    let push = |step, message: &str, state| {
+                        push_wait_event(WaitEvent {
+                            keys: vec!["exhaustion-test-key".into()],
+                            process_id: "process-issued-9".into(),
+                            change: WaitChange::Exhaustion {
+                                step,
+                                message: message.into(),
+                            },
+                            state,
+                            owner: None,
+                        })
+                    };
+                    let notices = || -> Vec<String> {
+                        runtime
+                            .read_agent_inbox(session.id(), "builder", &serde_json::json!({}))
+                            .unwrap()["events"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .filter(|event| event["kind"] == "resource_notice")
+                            .map(|event| event["payload"]["message"].as_str().unwrap().to_string())
+                            .collect()
+                    };
+                    let throttled = "chariox: your process `node usage-limit.test.js` was throttled: the machine is out of memory (memory pressure 40%, 75% of the memory pool in use) and this process grew 3 GB in 10 s, the most of anything running (now 9 GB).\n";
+                    let stopped = "chariox: your process `node usage-limit.test.js` was stopped: the machine ran out of memory; it grew 5 GB in 10 s. Run it again with less memory.\n";
+                    let t0 = std::time::Instant::now();
+                    push(ExhaustionStep::Throttled, throttled, SessionProcessState::Running);
+                    push(
+                        ExhaustionStep::Stopped,
+                        stopped,
+                        SessionProcessState::Paused(row),
+                    );
+                    // No settle time: the agent is told in the same pass.
+                    runtime.deliver_process_waits_at(t0);
+                    let heard = notices();
+                    assert_eq!(heard.len(), 2, "{heard:?}");
+                    assert!(heard[0].contains("was throttled") && heard[0].contains("grew 3 GB in 10 s"), "{heard:?}");
+                    assert!(heard[1].contains("was stopped") && heard[1].contains("grew 5 GB"), "{heard:?}");
                     assert!(
                         runtime
                             .owned

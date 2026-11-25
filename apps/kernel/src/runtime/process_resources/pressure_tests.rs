@@ -16,7 +16,7 @@ pub(super) fn writer_command() -> String {
     )
 }
 
-const ALLOC: &str = "import ctypes,sys,time
+pub(super) const ALLOC: &str = "import ctypes,sys,time
 if sys.platform == \"linux\": ctypes.CDLL(None).prctl(1,9)
 start,rate,top=map(int,sys.argv[1:4])
 b=[bytearray(start*1048576)] if start else []

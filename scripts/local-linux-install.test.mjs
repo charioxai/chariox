@@ -74,6 +74,7 @@ echo "$*" >> "$HARNESS_STATE/systemctl"
 case "$*" in
   "show chariox-app-storage.service -p MainPID --value") echo 123 ;;
   "show user@"*) echo "\${HARNESS_DELEGATE:-cpu memory pids}" ;;
+  "set-property "*" MemoryMin=2G") test "$#" = 3 ;;
   "is-enabled --quiet chariox-docker-admission-locks.service") test -e "$HARNESS_STATE/enabled-admission" ;;
   "enable --quiet chariox-docker-admission-locks.service") touch "$HARNESS_STATE/enabled-admission" ;;
   "is-enabled --quiet chariox-app-storage.service") test -e "$HARNESS_STATE/enabled" ;;
@@ -196,6 +197,28 @@ test("AppArmor without unprivileged userns restriction does not load an ABI 4 ex
   }
 })
 
+
+// The kernel's memory protection holds only as far as every level above it carries it: one
+// `systemctl set-property` per unit (it takes a single unit), never a list.
+test("local Linux root install sets the kernel's memory protection on each level above the user's kernel", { skip: !linux }, async () => {
+  const h = await harness()
+  try {
+    const staged = h.install(["alice"])
+    assert.equal(staged.status, 0, staged.out)
+    assert.doesNotMatch(await h.log("systemctl"), /set-property/, "a staged root leaves the host's systemd alone")
+    const result = h.install(["alice"], [], { CHARIOX_LOCAL_INSTALL_PROTECT_SYSTEMD: "1" })
+    assert.equal(result.status, 0, result.out)
+    const calls = (await h.log("systemctl")).split("\n").filter((line) => line.startsWith("set-property"))
+    assert.deepEqual(calls, [
+      "set-property user.slice MemoryMin=2G",
+      "set-property user-1000.slice MemoryMin=2G",
+      "set-property user@1000.service MemoryMin=2G",
+    ])
+    const dry = h.install(["alice"], ["--dry-run"], { CHARIOX_LOCAL_INSTALL_PROTECT_SYSTEMD: "1" })
+    assert.equal(dry.status, 0, dry.out)
+    assert.match(dry.out, /would protect the kernel's memory in user@1000\.service/)
+  } finally { await rm(h.base, { recursive: true, force: true }) }
+})
 
 test("restricted kernel with an incompatible AppArmor parser fails actionably before installation", { skip: !linux }, async () => {
   const h = await harness()
