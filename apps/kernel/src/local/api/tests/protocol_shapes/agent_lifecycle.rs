@@ -37,6 +37,7 @@ fn agent_task_projection_shape_is_bound_to_protocol452() {
         reason: "delegate result".into(),
         owner_action: None,
         question_reply: None,
+        unblock: None,
         obligations: vec![AgentObligation {
             id: "obligation".into(),
             kind: "delegate".into(),

@@ -93,6 +93,14 @@ impl KernelRuntimeOwnedState {
                 .into_iter()
                 .map(|mut task| {
                     task.reason = crate::terminal::public_task_failure_reason(&task.reason);
+                    // A blocked task a command settles says what unblocks it and the command.
+                    if task.owner_action.is_none()
+                        && self.blocked_task_is_open(&task).unwrap_or(false)
+                    {
+                        if let Ok(agent) = self.agent_store.get_agent(&task.agent_id) {
+                            task.unblock = Some(self.task_unblock(&agent, &task));
+                        }
+                    }
                     task
                 })
                 .collect(),

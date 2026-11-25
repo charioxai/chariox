@@ -371,16 +371,16 @@ async fn a02_unloaded_room_cannot_abort_live_room_supervision() {
     );
     let current = store.agent_tasks(Some(&f.session), None).unwrap().remove(0);
     assert_eq!(current.state, ExecutionState::Blocked);
-    assert!(f.active_ids().contains(&format!(
-        "task-blocked-{}-{}",
-        current.task_id, current.blocked_revision
-    )));
+    assert!(
+        f.active_ids().is_empty(),
+        "the blocked task is status on its row, not a card"
+    );
 }
 
-// The card a person sees after a kernel restart left an agent mid-turn with owned work: plain words,
-// no provider or delivery vocabulary, and the same choice ids and semantics as every blocked task.
+// What a person reads after a kernel restart left an agent mid-turn with owned work: plain words,
+// no provider or delivery vocabulary, on the row of the blocked task.
 #[tokio::test]
-async fn a02_interrupted_agent_card_speaks_plainly() {
+async fn a02_interrupted_agent_status_speaks_plainly() {
     use crate::durable_state::agent_lifecycle::{ExecutionState, Operation};
     let f = Fixture::with_room_tools();
     let store = &f.state.owned.durable_state_store;
@@ -410,18 +410,20 @@ async fn a02_interrupted_agent_card_speaks_plainly() {
     f.state.sweep_agent_lifecycle().await.unwrap();
     let task = store.agent_tasks(Some(&f.session), None).unwrap().remove(0);
     assert_eq!(task.state, ExecutionState::Blocked);
-    let card = f
-        .state
-        .owned
-        .session_store
-        .get_session(&f.session)
-        .unwrap()
-        .active_interactions()
-        .iter()
-        .find(|card| card.id().starts_with("task-blocked-"))
-        .cloned()
-        .expect("the blocked task shows its decision card");
-    let words = format!("{} {}", task.reason, card.message());
+    assert!(
+        f.state
+            .owned
+            .session_store
+            .get_session(&f.session)
+            .unwrap()
+            .active_interactions()
+            .iter()
+            .all(|card| !card.id().starts_with("task-blocked-")),
+        "a blocked task shows status, not a decision card"
+    );
+    // The row carries the reason; the way out (`unblock`) is named for a task whose agent exists
+    // (`blocked_card.rs`), and this task's agent is gone from the Room.
+    let words = task.reason.clone();
     assert!(
         words.contains(
             "Interrupted before it finished. Resume it to continue where it stopped, or cancel it."
@@ -434,16 +436,6 @@ async fn a02_interrupted_agent_card_speaks_plainly() {
             "{internal}: {words}"
         );
     }
-    assert_eq!(
-        card.choices()
-            .iter()
-            .map(|choice| choice.id())
-            .collect::<Vec<_>>(),
-        vec!["cancel", "resume", "stop"]
-    );
-    assert_eq!(card.choices()[0].label(), "Dismiss");
-    assert_eq!(card.choices()[1].label(), "Resume");
-    assert!(card.choices()[2].label().ends_with("task"));
 }
 
 #[tokio::test]
@@ -473,7 +465,6 @@ async fn a02_owner_resume_failure_is_visible_and_cannot_leave_idle_working() {
         else {
             panic!()
         };
-        let interaction = format!("task-blocked-{}-{}", task_id, blocked.blocked_revision);
         f.state
             .ensure_task_owner_interaction(blocked.clone())
             .await
@@ -495,17 +486,13 @@ async fn a02_owner_resume_failure_is_visible_and_cannot_leave_idle_working() {
                 })
                 .unwrap();
         }
+        // `agent resume` settles the task the owner was shown: here the one it read before.
         f.state
-            .owned
-            .resolve_runtime_interaction(
-                &f.session,
-                &interaction,
-                "resume",
-                None,
-                Some(DEFAULT_LOCAL_USER_ID),
-                false,
+            .resolve_agent_task_owner_action(
+                &blocked,
+                super::super::agent_task_owner_resolution::OwnerTaskAction::Resume,
             )
-            .unwrap();
+            .await;
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
             loop {
                 let history = f
@@ -884,10 +871,9 @@ async fn a12_owner_paused_goal_withdraws_decision_without_reopening_on_interval(
         .ensure_task_owner_interaction(blocked.clone())
         .await
         .unwrap();
-    assert_eq!(
-        f.active_ids().len(),
-        1,
-        "a real decision must request owner action"
+    assert!(
+        f.active_ids().is_empty(),
+        "a blocked goal task is status on its row, never a card"
     );
     let mut approval = f.register("unrelated-approval").unwrap();
     let attachment = f
@@ -1000,9 +986,9 @@ async fn a12_owner_paused_goal_withdraws_decision_without_reopening_on_interval(
         .await
         .unwrap();
     assert_eq!(
-        f.active_ids().len(),
-        2,
-        "a new genuine decision after Resume must remain visible"
+        f.active_ids(),
+        vec![f.id("unrelated-approval")],
+        "a new block after Resume is status too: no card opens"
     );
     assert!(matches!(
         approval.try_recv(),
@@ -1156,11 +1142,12 @@ async fn computer_task_decision_leaves_release_accessible_until_human_releases()
         })
         .unwrap();
     let Outcome::Task(blocked) = store
-        .agent_lifecycle(Operation::Block {
+        .agent_lifecycle(Operation::BlockForQuestion {
             task: id.clone(),
             prompt: id,
             reason: "Goal evaluation timed out; inspect the receipt and choose whether to resume"
                 .into(),
+            reply: None,
         })
         .unwrap()
     else {
@@ -1212,10 +1199,11 @@ async fn idle_tab_takeover_return_continues_the_waiting_agent() {
         })
         .unwrap();
     let Outcome::Task(blocked) = store
-        .agent_lifecycle(Operation::Block {
+        .agent_lifecycle(Operation::BlockForQuestion {
             task: id.clone(),
             prompt: id.clone(),
             reason: "human_takeover: waiting for the person to return control".into(),
+            reply: None,
         })
         .unwrap()
     else {
@@ -1686,10 +1674,11 @@ async fn rewording_a_task_decision_on_a_managed_kernel_does_not_wait_for_itself(
         })
         .unwrap();
     let Outcome::Task(blocked) = store
-        .agent_lifecycle(Operation::Block {
+        .agent_lifecycle(Operation::BlockForQuestion {
             task: task_id.clone(),
             prompt: task_id.clone(),
             reason: "Owner clarification required".into(),
+            reply: None,
         })
         .unwrap()
     else {
@@ -1742,10 +1731,11 @@ async fn owner_task_decision_has_no_person_deadline() {
         })
         .unwrap();
     let Outcome::Task(blocked) = store
-        .agent_lifecycle(Operation::Block {
+        .agent_lifecycle(Operation::BlockForQuestion {
             task: task.clone(),
             prompt: task,
             reason: "Please finish verification".into(),
+            reply: None,
         })
         .unwrap()
     else {
@@ -1767,7 +1757,8 @@ async fn owner_task_decision_has_no_person_deadline() {
 // A blocked task's card is bound to the room owner of the moment it was raised. A restart can leave
 // it open after that owner is gone, so the room's current owner and the agent's owner answer it too.
 #[tokio::test]
-async fn a_blocked_task_card_is_answered_by_the_room_owner_and_the_agent_owner_not_by_a_stranger() {
+async fn an_agents_question_card_is_answered_by_the_room_owner_and_the_agent_owner_not_by_a_stranger(
+) {
     use crate::durable_state::agent_lifecycle::{Operation, Outcome};
     for answerer in [DEFAULT_LOCAL_USER_ID, "agent-owner", "stranger"] {
         let f = Fixture::with_room_tools();
@@ -1796,10 +1787,11 @@ async fn a_blocked_task_card_is_answered_by_the_room_owner_and_the_agent_owner_n
             })
             .unwrap();
         let Outcome::Task(blocked) = store
-            .agent_lifecycle(Operation::Block {
+            .agent_lifecycle(Operation::BlockForQuestion {
                 task: f.id("interrupted"),
                 prompt: f.id("interrupted"),
                 reason: "Interrupted before it finished.".into(),
+                reply: None,
             })
             .unwrap()
         else {

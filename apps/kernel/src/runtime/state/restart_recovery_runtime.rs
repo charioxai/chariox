@@ -3860,13 +3860,20 @@ mod tests {
             started.outcome,
             crate::session::PromptSubmissionOutcome::Queued { .. }
         ));
+        // The interrupted attempt is status on the row, not a card, until the turn replaces it.
         assert!(started
             .session
             .active_interactions()
             .iter()
-            .any(|interaction| interaction
-                .id()
-                .starts_with(&format!("task-blocked-{}-", old_task.task_id))));
+            .all(|interaction| !interaction.id().starts_with("task-blocked-")));
+        assert!(
+            runtime
+                .owned
+                .blocked_task_for_command(&session_id, &agent_id)
+                .unwrap()
+                .is_some(),
+            "the owner can still settle the interrupted attempt before the turn replaces it"
+        );
         if detach_source {
             runtime
                 .with_app_side_effect(|app| {

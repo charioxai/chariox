@@ -1,9 +1,9 @@
-//! A blocked task's card is a decision about an agent: it goes to the parent that
-//! spawned the agent, says what the agent still owes, and only a root agent's card reaches the
-//! person. Tree: g (room agent) -> p -> c.
+//! A blocked task is status, not a card: the agent's row names what it owes and the command that
+//! settles it, the parent that spawned the agent is told with one `child_blocked` event, and
+//! `agent resume` / `agent resume cancel` (the person or an agent above) resume or cancel it.
+//! Tree: g (room agent) -> p -> c.
 use super::*;
 use crate::durable_state::agent_lifecycle::{AgentTaskExecution, AgentWake, ExecutionState};
-use crate::runtime::state::decision_holder::DecisionHolder;
 
 const INVALID_TURN_END: &str = "Repeated invalid turn end; owner must resume or cancel";
 
@@ -125,10 +125,55 @@ impl Tree {
     fn blocked_card_id(task: &AgentTaskExecution) -> String {
         format!("task-blocked-{}-{}", task.task_id, task.blocked_revision)
     }
+
+    fn blocked_events(&self, agent: &str) -> Vec<InboxEvent> {
+        self.runtime
+            .owned
+            .durable_state_store
+            .agent_inbox(&self.room, agent, 0)
+            .unwrap()
+            .into_iter()
+            .filter(|event| event.kind == "child_blocked")
+            .collect()
+    }
+
+    /// The agent's row as a client reads it: the projected task with what unblocks it.
+    fn row_task(&self, task: &AgentTaskExecution) -> AgentTaskExecution {
+        self.runtime
+            .owned
+            .session_snapshot(&self.room)
+            .unwrap()
+            .agent_tasks()
+            .iter()
+            .find(|projected| projected.task_id == task.task_id)
+            .cloned()
+            .expect("the row shows the task")
+    }
+
+    /// No card of the room is about this task.
+    fn assert_no_card(&self, task: &AgentTaskExecution) {
+        let cards = self
+            .session()
+            .active_interactions()
+            .iter()
+            .map(|card| card.id().to_owned())
+            .collect::<Vec<_>>();
+        assert!(
+            cards.iter().all(|id| !id.contains(&task.task_id)),
+            "{cards:?}"
+        );
+        assert!(
+            self.session()
+                .active_interactions()
+                .iter()
+                .all(|card| card.title() != Some("Agent needs your action")),
+            "no generic card"
+        );
+    }
 }
 
 #[tokio::test]
-async fn a_blocked_helpers_card_goes_to_its_parent_and_names_what_it_owes() {
+async fn a_blocked_helper_tells_its_parent_what_it_owes_and_raises_no_card() {
     let t = tree(
         "blocked-card-parent",
         AgentPermissionLevel::Yolo,
@@ -140,40 +185,38 @@ async fn a_blocked_helpers_card_goes_to_its_parent_and_names_what_it_owes() {
         .ensure_task_owner_interaction(task.clone())
         .await
         .unwrap();
-    let id = Tree::blocked_card_id(&task);
+    // The sweep runs again: the parent is told once.
+    t.runtime
+        .ensure_task_owner_interaction(task.clone())
+        .await
+        .unwrap();
 
-    assert_eq!(t.holder(&id), DecisionHolder::Agent(t.p.clone()));
-    assert_eq!(
-        t.panels(),
-        vec![(t.g.clone(), vec![id.clone()])],
-        "the person sees it in the top panel while the parent holds it"
+    t.assert_no_card(&task);
+    assert!(
+        t.panels().is_empty(),
+        "the person is shown nothing: {:?}",
+        t.panels()
     );
-    let events = t.decision_events(&t.p);
+    let events = t.blocked_events(&t.p);
     assert_eq!(events.len(), 1, "{events:?}");
-    assert_eq!(events[0].payload["interaction_id"], id);
-    assert_eq!(events[0].payload["needs_answer"], true);
-    let detail = events[0].payload["detail"].as_str().unwrap();
-    assert!(
-        detail.contains("wake-blk"),
-        "the open obligation is named: {detail}"
-    );
-    assert!(
-        detail.contains("wait for review"),
-        "the source label is named: {detail}"
-    );
-    assert!(
-        detail.contains("chariox.events.cancel_wake"),
-        "the exact settling call is named: {detail}"
-    );
-    let choices = events[0].payload["choices"].to_string();
-    assert!(
-        choices.contains("resume") && choices.contains("cancel") && choices.contains("stop"),
-        "{choices}"
-    );
-    assert!(
-        t.decision_events(&t.g).is_empty(),
-        "only the holder is told"
-    );
+    assert_eq!(events[0].payload["needs_answer"], false);
+    assert_eq!(events[0].payload["task_id"], task.task_id);
+    let unblock = events[0].payload["unblock"].as_str().unwrap();
+    for named in ["wake-blk", "wait for review", "chariox.events.cancel_wake"] {
+        assert!(unblock.contains(named), "{named} in {unblock}");
+    }
+    assert_eq!(events[0].payload["resume_command"], "agent resume c");
+    assert_eq!(events[0].payload["cancel_command"], "agent resume cancel c");
+    assert!(t.blocked_events(&t.g).is_empty(), "only the parent is told");
+    assert!(t.decision_events(&t.p).is_empty(), "no decision to answer");
+
+    // The row says the same.
+    let row = t.row_task(&task);
+    assert_eq!(row.state, ExecutionState::Blocked);
+    let unblock = row.unblock.expect("the row names what unblocks it");
+    assert!(unblock.steps.contains("wake-blk"), "{}", unblock.steps);
+    assert_eq!(unblock.resume_command, "agent resume c");
+    assert_eq!(unblock.cancel_command, "agent resume cancel c");
 }
 
 #[tokio::test]
@@ -189,26 +232,17 @@ async fn the_parent_stopping_a_blocked_helper_ends_it_and_its_timer() {
         .ensure_task_owner_interaction(task.clone())
         .await
         .unwrap();
-    let id = Tree::blocked_card_id(&task);
 
-    assert_eq!(
-        t.runtime
-            .answer_child_decision(&t.room, &t.p, &id, "stop")
-            .await
-            .unwrap(),
-        ChildDecisionStatus::Answered
-    );
+    let ended = settle(
+        &t,
+        &task,
+        Some(&t.p),
+        crate::local::UsageLimitStopAction::Cancel,
+    )
+    .await;
+
+    assert_eq!(ended.state, ExecutionState::Cancelled);
     let store = &t.runtime.owned.durable_state_store;
-    for _ in 0..100 {
-        if store.agent_task(&task.task_id).unwrap().unwrap().state == ExecutionState::Cancelled {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    }
-    assert_eq!(
-        store.agent_task(&task.task_id).unwrap().unwrap().state,
-        ExecutionState::Cancelled
-    );
     assert_eq!(
         store.agent_wake("wake-blk").unwrap().unwrap().state,
         "cancelled"
@@ -320,7 +354,69 @@ async fn dismissing_a_blocked_question_keeps_its_task_and_inbox_card() {
 }
 
 #[tokio::test]
-async fn a_blocked_root_agents_card_stays_the_persons_and_names_what_it_owes() {
+async fn the_person_resumes_or_cancels_a_blocked_task_and_an_unrelated_agent_cannot() {
+    let t = tree(
+        "blocked-card-person",
+        AgentPermissionLevel::Yolo,
+        AgentPermissionLevel::Yolo,
+    )
+    .await;
+    let task = t.blocked_task_of(&t.c, INVALID_TURN_END);
+    // A sibling room agent is no ancestor of c.
+    let outsider = t
+        .agent_at("outsider", None, AgentPermissionLevel::Yolo)
+        .await;
+    let refused = t
+        .runtime
+        .resolve_usage_limit_stop(
+            &t.room,
+            &t.c,
+            "local",
+            Some(&outsider),
+            crate::local::UsageLimitStopAction::Cancel,
+        )
+        .await
+        .expect_err("only an agent above may settle it");
+    assert!(
+        refused.to_string().contains("only an agent above"),
+        "{refused}"
+    );
+    assert_eq!(
+        t.runtime
+            .owned
+            .durable_state_store
+            .agent_task(&task.task_id)
+            .unwrap()
+            .unwrap()
+            .state,
+        ExecutionState::Blocked
+    );
+
+    // The person, at the CLI, resumes it.
+    let resumed = settle(
+        &t,
+        &task,
+        None,
+        crate::local::UsageLimitStopAction::ResumeWhenBack,
+    )
+    .await;
+    assert_ne!(resumed.state, ExecutionState::Blocked, "{}", resumed.reason);
+    // Nothing is left to settle: the command says so.
+    let none = t
+        .runtime
+        .resolve_usage_limit_stop(
+            &t.room,
+            &t.c,
+            "local",
+            None,
+            crate::local::UsageLimitStopAction::Cancel,
+        )
+        .await;
+    assert!(none.is_err(), "no blocked task is left");
+}
+
+#[tokio::test]
+async fn a_blocked_root_agent_shows_status_and_no_card_and_tells_nobody() {
     let t = tree(
         "blocked-card-root",
         AgentPermissionLevel::Yolo,
@@ -332,17 +428,19 @@ async fn a_blocked_root_agents_card_stays_the_persons_and_names_what_it_owes() {
         .ensure_task_owner_interaction(task.clone())
         .await
         .unwrap();
-    let id = Tree::blocked_card_id(&task);
 
-    assert_eq!(t.holder(&id), DecisionHolder::User);
-    let session = t.session();
-    let card = session
-        .active_interactions()
-        .iter()
-        .find(|i| i.id() == id)
-        .unwrap();
-    assert!(card.message().contains("wake-blk"), "{}", card.message());
-    assert!(t.decision_events(&t.p).is_empty() && t.decision_events(&t.g).is_empty());
+    t.assert_no_card(&task);
+    assert!(t.blocked_events(&t.p).is_empty() && t.blocked_events(&t.g).is_empty());
+    let unblock = t
+        .row_task(&task)
+        .unblock
+        .expect("the row names the way out");
+    assert!(unblock.steps.contains("wake-blk"), "{}", unblock.steps);
+    assert!(
+        unblock.resume_command.starts_with("agent resume "),
+        "{}",
+        unblock.resume_command
+    );
 }
 
 #[tokio::test]
@@ -523,7 +621,7 @@ async fn a_resumed_task_is_told_the_sequence_of_an_outcome_the_kernel_expired() 
 }
 
 #[tokio::test]
-async fn corrupt_completion_registrations_keep_the_parents_stop_decision() {
+async fn corrupt_completion_registrations_keep_the_parents_cancel_command() {
     let t = tree(
         "blocked-corrupt",
         AgentPermissionLevel::Yolo,
@@ -546,33 +644,29 @@ async fn corrupt_completion_registrations_keep_the_parents_stop_decision() {
         .ensure_task_owner_interaction(task.clone())
         .await
         .unwrap();
-    assert_eq!(
-        t.holder(&Tree::blocked_card_id(&task)),
-        DecisionHolder::Agent(t.p.clone())
-    );
-    let event = t.decision_events(&t.p).pop().unwrap();
-    let detail = event.payload["detail"].as_str().unwrap();
+    let event = t.blocked_events(&t.p).pop().unwrap();
+    let unblock = event.payload["unblock"].as_str().unwrap();
     assert!(
-        detail.contains("Recovery instructions could not be read")
-            && detail.contains("Stop this task"),
-        "{detail}"
+        unblock.contains("Recovery instructions could not be read")
+            && unblock.contains("Cancel this task"),
+        "{unblock}"
     );
+    assert_eq!(event.payload["cancel_command"], "agent resume cancel c");
 }
 
-/// Answers `task`'s card with `choice` through the card entry point and returns the task once
-/// the owner action has settled it (left Blocked, or failed visibly).
-async fn answer_card(t: &Tree, task: &AgentTaskExecution, choice: &str) -> AgentTaskExecution {
-    t.runtime
-        .owned
-        .resolve_runtime_interaction(
-            &t.room,
-            &Tree::blocked_card_id(task),
-            choice,
-            None,
-            Some("local"),
-            false,
-        )
-        .unwrap();
+/// Settles `task` with `agent resume` / `agent resume cancel` (by `caller`, an agent above, or the
+/// person at the CLI when `None`) and returns the task once the owner action has settled it (left
+/// Blocked, or failed visibly).
+async fn settle(
+    t: &Tree,
+    task: &AgentTaskExecution,
+    caller: Option<&str>,
+    action: crate::local::UsageLimitStopAction,
+) -> AgentTaskExecution {
+    let _ = t
+        .runtime
+        .resolve_usage_limit_stop(&t.room, &task.agent_id, "local", caller, action)
+        .await;
     let store = &t.runtime.owned.durable_state_store;
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
         loop {
@@ -589,7 +683,7 @@ async fn answer_card(t: &Tree, task: &AgentTaskExecution, choice: &str) -> Agent
         }
     })
     .await
-    .expect("the owner's answer must settle the task or fail visibly")
+    .expect("the owner's command must settle the task or fail visibly")
 }
 
 #[tokio::test]
@@ -609,7 +703,13 @@ async fn resume_is_not_refused_by_another_turns_unconfirmed_delivery() {
     let sender = t.working_task_of(&t.p);
     t.submitting_message(&sender, &t.g, "later-turn");
 
-    let resumed = answer_card(&t, &task, "resume").await;
+    let resumed = settle(
+        &t,
+        &task,
+        None,
+        crate::local::UsageLimitStopAction::ResumeWhenBack,
+    )
+    .await;
 
     assert_ne!(resumed.state, ExecutionState::Blocked, "{}", resumed.reason);
     let notices = t.runtime.agent_notices_for_test(&t.room, &t.g);
@@ -636,7 +736,13 @@ async fn a_refused_resume_says_why_on_the_agent() {
     let sender = t.working_task_of(&t.p);
     t.submitting_message(&sender, &t.g, &task.prompt_id);
 
-    answer_card(&t, &task, "resume").await;
+    settle(
+        &t,
+        &task,
+        None,
+        crate::local::UsageLimitStopAction::ResumeWhenBack,
+    )
+    .await;
 
     let notices = t.runtime.agent_notices_for_test(&t.room, &t.g);
     assert!(
@@ -916,43 +1022,22 @@ async fn asking_a_new_question_with_another_label_changes_the_open_card() {
     assert_eq!(after.placeholder(), Some("Second label hint"));
 }
 
-/// A recovery card (Resume / Cancel) of an ordinary blocked task keeps its own kind and choices on every projection: it never grows a reply box.
+/// A task blocked by a restart or a failure never raises a card, on any projection: it is status on
+/// its row and an event to its parent, so no reply box or Resume / Cancel card ever appears.
 #[tokio::test]
-async fn a_recovery_card_stays_a_recovery_card_on_every_projection() {
+async fn a_recovery_task_raises_no_card_on_any_projection() {
     let t = tree(
-        "recovery-card",
+        "recovery-no-card",
         AgentPermissionLevel::Yolo,
         AgentPermissionLevel::Yolo,
     )
     .await;
     let task = t.blocked_task_of(&t.g, INVALID_TURN_END);
-    let id = Tree::blocked_card_id(&task);
-    let card = || {
-        t.session()
-            .active_interactions()
-            .iter()
-            .find(|card| card.id() == id)
-            .cloned()
-            .expect("the recovery card")
-    };
-    t.runtime
-        .ensure_task_owner_interaction(task.clone())
-        .await
-        .unwrap();
-    let first = card();
-    assert!(first.custom_choice().is_none());
-    t.runtime
-        .ensure_task_owner_interaction(task.clone())
-        .await
-        .unwrap();
-    let second = card();
-    assert!(
-        second.custom_choice().is_none(),
-        "no reply box appears on a later projection"
-    );
-    assert_eq!(second.choices().len(), first.choices().len());
-    assert_eq!(
-        serde_json::to_value(&second).unwrap()["kind"],
-        serde_json::to_value(&first).unwrap()["kind"]
-    );
+    for _ in 0..2 {
+        t.runtime
+            .ensure_task_owner_interaction(task.clone())
+            .await
+            .unwrap();
+        t.assert_no_card(&task);
+    }
 }

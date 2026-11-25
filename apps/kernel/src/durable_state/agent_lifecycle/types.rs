@@ -28,6 +28,15 @@ pub struct QuestionReply {
     pub placeholder: Option<String>,
 }
 
+/// What unblocks a blocked task and the commands that settle it. Read by clients with the task, so
+/// the agent's row says what to do; the kernel adds it to the projection and never stores it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskUnblock {
+    pub steps: String,
+    pub resume_command: String,
+    pub cancel_command: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentTaskExecution {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -49,6 +58,9 @@ pub struct AgentTaskExecution {
     /// The label and placeholder the agent gave its question's answer box (`chariox.events.blocked`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub question_reply: Option<QuestionReply>,
+    /// Set in the projection of a blocked task that only a command settles; never stored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unblock: Option<TaskUnblock>,
     pub obligations: Vec<AgentObligation>,
     pub wait: Option<AgentWait>,
     pub last_progress_at_ms: u64,

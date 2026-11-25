@@ -4666,24 +4666,28 @@ pub(in crate::runtime::state) mod tests {
         assert!(!task.reason.contains("provider protocol"));
         assert!(task.reason.contains("Resume"));
         assert!(!task.reason.contains("Interrupted before it finished"));
-        tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            loop {
-                if runtime
-                    .owned
-                    .session_store
-                    .get_session(&session_id)
-                    .unwrap()
-                    .active_interactions()
-                    .iter()
-                    .any(|i| i.id().starts_with("task-blocked-"))
-                {
-                    break;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-            }
-        })
-        .await
-        .expect("failed dispatch must offer owner actions without the periodic sweep");
+        // The failed dispatch is status on the agent's row, with what unblocks it: no card.
+        let row = runtime
+            .owned
+            .session_snapshot(&session_id)
+            .unwrap()
+            .agent_tasks()
+            .iter()
+            .find(|t| t.task_id == dispatch.prompt_id)
+            .cloned()
+            .expect("the row shows the failed dispatch");
+        assert!(
+            row.unblock.is_some(),
+            "the failed dispatch names what unblocks it without the periodic sweep"
+        );
+        assert!(runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .unwrap()
+            .active_interactions()
+            .iter()
+            .all(|i| !i.id().starts_with("task-blocked-")));
         assert!(runtime
             .owned
             .prompt_state_owner
@@ -4759,23 +4763,21 @@ pub(in crate::runtime::state) mod tests {
             .fail_prompt_dispatch(dispatch, unacknowledged)
             .await
             .expect_err("failed dispatch must retain its error");
-        let blocked_card = |runtime: &KernelRuntimeState| {
+        // A blocked task is status the owner settles with `agent resume`, never a card.
+        let blocked_task = |runtime: &KernelRuntimeState| {
             runtime
                 .owned
-                .session_store
-                .get_session(&session_id)
+                .blocked_task_for_command(&session_id, &agent_id)
                 .unwrap()
-                .active_interactions()
-                .iter()
-                .any(|i| i.id().starts_with("task-blocked-"))
+                .is_some()
         };
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            while !blocked_card(&runtime) {
+            while !blocked_task(&runtime) {
                 tokio::time::sleep(std::time::Duration::from_millis(5)).await;
             }
         })
         .await
-        .expect("the failed dispatch offers the owner its decision");
+        .expect("the failed dispatch leaves the task blocked for the owner to settle");
 
         let attachment = runtime
             .owned
@@ -4813,8 +4815,8 @@ pub(in crate::runtime::state) mod tests {
             "the failed attempt is superseded by the owner's next turn"
         );
         assert!(
-            !blocked_card(&runtime),
-            "the stale decision must leave the Room"
+            !blocked_task(&runtime),
+            "the stale blocked task must no longer wait for the owner"
         );
     }
 
