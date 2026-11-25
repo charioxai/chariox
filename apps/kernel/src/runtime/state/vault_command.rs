@@ -7,6 +7,7 @@ use crate::runtime::kernel_access::error;
 
 mod capture;
 mod copy;
+mod entry_ref;
 mod files;
 mod home;
 mod remove;
