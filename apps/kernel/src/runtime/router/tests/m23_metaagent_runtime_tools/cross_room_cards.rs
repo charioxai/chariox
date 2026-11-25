@@ -116,7 +116,7 @@ async fn cards() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "a41b0bf5a7c321d99bd21a1247bd454d991970bf0004adf390ff7c9dcecc10ae"
+        "1fa27d2595d8ab314e5e64f8024838805b11453f7ecf2c6bb6ba4cdafac41c6d"
     );
 }
 
@@ -174,6 +174,77 @@ async fn kernel_decision_metadata() {
     assert!(cards[0]["age_ms"].as_u64().is_some());
     assert_eq!(cards[0]["requester"]["agent_id"], world.ids["q"]);
     assert!(cards[0].get("message").is_none());
+}
+
+#[test]
+fn room_cards_pages_by_bytes_and_keeps_a_cursor_after_the_previous_card_closes() {
+    run_large_stack_async_test("xroom-paged", paged);
+}
+async fn paged() {
+    let world = coordinator("xroom-paged").await;
+    let owner = world
+        .app
+        .lock()
+        .await
+        .sessions()
+        .get_session(&world.other_room)
+        .unwrap()
+        .owner_user_id()
+        .to_owned();
+    let mut answers = Vec::new();
+    for index in 0..6 {
+        let id = format!("page-card-{index}");
+        let interaction = RuntimeInteraction::for_kernel_operation(
+            &id,
+            format!("access-grant:{id}"),
+            "Allow command?",
+            "Details ".repeat(600),
+            vec![RuntimeInteractionChoice::new(
+                "allow", "Allow", "allow", None,
+            )],
+        );
+        answers.push(
+            world
+                .router
+                .runtime_state
+                .create_kernel_operation_interaction(
+                    crate::runtime::state::CardKind::NativePermissionInput,
+                    &world.other_room,
+                    &owner,
+                    interaction,
+                )
+                .await
+                .unwrap(),
+        );
+    }
+
+    let command = format!("room cards {}", world.other_room);
+    let first = room_command(&world, "a", &command).await;
+    assert!(first.ok, "{first:?}");
+    assert!(first.payload.to_string().len() < 17 * 1024);
+    let cursor = first.payload["response"]["next_after"]
+        .as_str()
+        .expect("first page cursor");
+    let answered = room_command(
+        &world,
+        "a",
+        &format!("agent answer {cursor} allow --room {}", world.other_room),
+    )
+    .await;
+    assert!(answered.ok, "{answered:?}");
+
+    let next = room_command(&world, "a", &format!("{command} --after {cursor}")).await;
+    assert!(next.ok, "{next:?}");
+    assert!(next.payload.to_string().len() < 17 * 1024);
+    let cards = next.payload["response"]["cards"].as_array().unwrap();
+    assert!(cards
+        .iter()
+        .all(|card| card["id"].as_str().unwrap() > cursor));
+    assert_eq!(
+        first.payload["response"]["cards"].as_array().unwrap().len() + cards.len(),
+        6
+    );
+    assert!(next.payload["response"]["next_after"].is_null());
 }
 
 #[test]

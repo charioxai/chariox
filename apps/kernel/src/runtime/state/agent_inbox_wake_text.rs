@@ -13,7 +13,9 @@ pub(super) const WAKE_TEXT_LIMIT: usize = 240;
 /// `after` is the sequence the agent's inbox read starts behind.
 pub(super) fn wake_text(lead: &InboxEvent, batch: &[InboxEvent], after: u64) -> String {
     if lead.reply_requested {
-        return format!("Inbox: 1 message with a reply requested (sequence {}). Read it with chariox.events.inbox after {after}. If this request started your turn, your final answer goes back to the sender.", lead.sequence);
+        // A reply-requested message that reaches a running unrelated turn does not settle that turn's
+        // final answer (`started_by_request` is false): only a request that started the turn does.
+        return format!("Inbox: 1 message, reply requested (sequence {}). Read it with chariox.events.inbox after {after}. If this request started your turn, your final answer goes to the sender; otherwise message them: Reply to message {}: your answer.", lead.sequence, lead.sequence);
     }
     let count = 1 + batch.len();
     let mut kinds: Vec<(String, usize)> = Vec::new();
@@ -263,5 +265,17 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("If this request started your turn"), "{text}");
+        // A reply-requested message that reached an already running turn does not settle that
+        // turn's final answer: the prompt must name the explicit message for those turns.
+        assert!(text.contains("Reply to message 41:"), "{text}");
+        assert!(
+            !text.contains("Answer in this turn"),
+            "a final answer is not offered unconditionally: {text}"
+        );
+        let condition = text.find("If this request started your turn").unwrap();
+        assert!(
+            text.find("final answer").unwrap() > condition,
+            "the final answer is the conditional branch: {text}"
+        );
     }
 }

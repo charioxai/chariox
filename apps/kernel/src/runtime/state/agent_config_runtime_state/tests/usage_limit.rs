@@ -829,9 +829,9 @@ async fn asking_waits_for_the_person_and_an_agent_cannot_take_the_decision() {
     team.hit_the_limit(0).await;
     let reset = team.stop(0).unwrap().resumes_at_ms.unwrap();
 
-    // Nothing fires without the person's decision, however late.
-    tick(team.rt(), reset + 3_600_000).await;
+    tick(team.rt(), reset - 1).await;
     assert_eq!(team.stop(0).unwrap().state, UsageLimitStopState::Asking);
+    assert!(!team.has_turn(0));
 
     // A parent cannot arm it under Ask me.
     let refused = team
@@ -2099,6 +2099,27 @@ impl Team {
             "the other-account turn finished before the tick"
         );
     }
+}
+
+#[tokio::test]
+async fn an_unanswered_card_closes_at_the_named_reset_without_resuming_work() {
+    let team = team(config(UsageLimitResume::Ask), 1).await;
+    team.hit_the_limit(0).await;
+    let reset = team.stop(0).unwrap().resumes_at_ms.unwrap();
+    tick(team.rt(), reset - 1).await;
+    assert_eq!(team.cards(0).len(), 1);
+
+    tick(team.rt(), reset).await;
+    assert!(team.stop(0).is_none());
+    assert!(team.cards(0).is_empty());
+    assert!(!team.has_turn(0));
+    assert!(team
+        .rt()
+        .owned
+        .terminal_stream
+        .notice_records()
+        .iter()
+        .any(|notice| { notice.message.starts_with("Usage is back on ") }));
 }
 
 #[tokio::test]

@@ -36,6 +36,7 @@ impl KernelRuntimeOwnedState {
         &self,
         agent: &crate::agent::AgentInstance,
         stop: &UsageLimitStop,
+        reason: String,
     ) -> Result<(), DaemonError> {
         if stop.state == UsageLimitStopState::Asking {
             let room = self.session_store.get_session(agent.session_id())?;
@@ -48,7 +49,7 @@ impl KernelRuntimeOwnedState {
                     .iter()
                     .any(|interaction| interaction.id() == id)
                 {
-                    self.timeout_runtime_interaction(room.id(), &id)?;
+                    self.settle_card_condition_met(room.id(), &id, reason)?;
                 }
             }
         }
@@ -236,7 +237,7 @@ impl KernelRuntimeState {
             ),
             crate::session::RuntimeInteractionChoice::new(
                 "not_now",
-                if is_back { "Leave paused" } else { "Not now" },
+                if is_back { "Leave paused" } else { "Dismiss" },
                 "not_now",
                 None,
             ),
