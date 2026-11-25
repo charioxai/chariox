@@ -143,6 +143,14 @@ fn summarize_meta_command_response(
             "type": "AgentFocused",
             "agent": summarize_meta_agent(agent),
         }),
+        LocalDaemonResponse::AccountKernelsListed { kernels } => serde_json::json!({
+            "type": "AccountKernelsListed",
+            "kernels": kernels,
+        }),
+        LocalDaemonResponse::AccountKernelUnlinked { target_id } => serde_json::json!({
+            "type": "AccountKernelUnlinked",
+            "target_id": target_id,
+        }),
         LocalDaemonResponse::AgentsListed { agents } => serde_json::json!({
             "type": "AgentsListed",
             "agents": agents

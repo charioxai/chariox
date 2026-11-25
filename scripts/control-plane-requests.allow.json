@@ -38,5 +38,9 @@
   {
     "name": "packages/kernel-client/src/ipc-managed-context-requests.ts",
     "why": "generic seam: builders for kernel-to-kernel context transfer"
+  },
+  {
+    "name": "LocalDaemonRequest::CloudAccountKernels",
+    "why": "generic seam: manage the owner's enrolled kernels through the connected service; the kernel attests its live owner agent and the service owns directory and unlink policy"
   }
 ]

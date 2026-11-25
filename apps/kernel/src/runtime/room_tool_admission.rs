@@ -223,7 +223,10 @@ pub(crate) fn command(tokens: &[String]) -> Result<(), DaemonError> {
         {
             Ok(())
         }
-        Some("kernel") if matches!(tokens, [_, verb] if verb == "status" || verb == "list-local") => {
+        Some("kernel")
+            if matches!(tokens, [_, verb] if matches!(verb.as_str(), "status" | "list-local" | "list-account"))
+                || matches!(tokens, [_, verb, _] if verb == "unlink") =>
+        {
             Ok(())
         }
         // What `--room` and `--slice` accept for the caller, and the Rooms it makes and deletes itself; the slice lifecycle stays out.
