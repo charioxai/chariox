@@ -757,7 +757,10 @@ async fn a_steer_skipped_at_the_native_write_is_delivered_again() {
     // stays pending; give the delivery task time to reach the wait either way.
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     assert!(
-        matches!(f.state_of(steer.sequence).as_str(), "pending" | "submitting"),
+        matches!(
+            f.state_of(steer.sequence).as_str(),
+            "pending" | "submitting"
+        ),
         "the steer waits for the lane without being lost: {}",
         f.state_of(steer.sequence)
     );
