@@ -70,6 +70,7 @@ export type RuntimeSession = {
   agent_activity?: Record<string, AgentRuntimeActivity>
   agent_activity_revision?: number
   active_interactions?: RuntimeInteraction[]
+  machine_approval_receipts?: import("./machine-approval-receipts.js").MachineApprovalReceipt[]
   agent_tasks?: AgentTaskExecution[]
   // Protocol 460: live sudo windows for every client's status row.
   sudo_windows?: KernelSudoTurn[]

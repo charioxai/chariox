@@ -74,6 +74,8 @@ pub(crate) async fn execute(
     gateway: &crate::runtime::kernel_gateway::KernelGateway,
     request: &ControlPlaneRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
+    let mut request = request;
+    let replayed: ControlPlaneRequest;
     let capabilities = matches!(request, ControlPlaneRequest::Capabilities {});
     // People use their authenticated owner connection; agents use the same process-bound
     // grant as Rooms, exec and the gateway. A Room bearer alone spends no enrollment.
@@ -108,6 +110,7 @@ pub(crate) async fn execute(
         };
     };
     let mut acquisition_hold = None;
+    let mut approval_guard = None;
     if matches!(
         request,
         ControlPlaneRequest::Acquire { .. } | ControlPlaneRequest::AcquireJob { .. }
@@ -161,6 +164,16 @@ pub(crate) async fn execute(
         let approval = state
             .approve_machine_acquisition(command, request, machine_allocation.as_ref())
             .await?;
+        approval_guard = state.machine_approval_guard(command, request);
+        // The approved request goes again as the approved one, and the service refuses it unless
+        // it holds that request.
+        if let crate::runtime::state::Approval::Replay {
+            capability_revision,
+        } = &approval
+        {
+            replayed = request.with_capability_revision(capability_revision);
+            request = &replayed;
+        }
         let still_allowed = (|| {
             if let Some(grant) = &grant {
                 state.authorize_external_request(grant, &request_shape)?;
@@ -194,6 +207,9 @@ pub(crate) async fn execute(
         }
         still_allowed?;
     }
+    if let Some(guard) = approval_guard.as_mut() {
+        guard.posting();
+    }
     let send = crate::runtime::cloud_api_client::post_cloud_json::<ControlPlaneResponse>(
         profile.api_url.clone(),
         "/control-plane",
@@ -212,6 +228,8 @@ pub(crate) async fn execute(
         }
         None => send.await,
     };
+    // The owner's approved request has reached the service, whatever it answered.
+    state.machine_approval_sent(command, request);
     if let Ok(ControlPlaneResponse::Machine {
         allocation_ref,
         state: machine,

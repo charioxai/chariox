@@ -61,6 +61,7 @@ type KernelEventDispatchControllerDeps = {
   applyRuntimeInteractionsChanged: (
     sessionId: string,
     activeInteractions: Record<string, unknown>[],
+    machineApprovalReceipts: unknown,
   ) => Promise<void> | void
   applyWorkflowRunUpdated: (
     sessionId: string,
@@ -375,7 +376,7 @@ export function createKernelEventDispatchController(
       deps.appendNotice(`Kernel sent malformed runtime interactions for session ${event.session_id}.`, "warning")
       return
     }
-    await deps.applyRuntimeInteractionsChanged(event.session_id, event.active_interactions)
+    await deps.applyRuntimeInteractionsChanged(event.session_id, event.active_interactions, event.machine_approval_receipts)
   }
 
   async function applyWorkflowRunUpdated(event: KernelEventWorkflowRunUpdated) {

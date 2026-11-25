@@ -86,6 +86,23 @@ pub(crate) struct DurableWorkflowHotState {
     pub(crate) workflow_publication_snapshots: BTreeMap<String, WorkflowPublicationSnapshot>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct MachineApprovalReceipt {
+    pub id: String,
+    pub shown_in_agent_id: Option<String>,
+    pub message: String,
+    pub state: MachineApprovalReceiptState,
+    pub expires_at_ms: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum MachineApprovalReceiptState {
+    Approving,
+    Sent,
+    Expired,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeSession {
     id: String,
@@ -135,6 +152,8 @@ pub struct RuntimeSession {
     prompt_runtime: PromptRuntimeState,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     active_interactions: Vec<RuntimeInteraction>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    machine_approval_receipts: Vec<MachineApprovalReceipt>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     metaagent_tasks: Vec<MetaagentTask>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -340,6 +359,7 @@ impl RuntimeSession {
             connected_cli_count: 0,
             prompt_runtime: PromptRuntimeState::default(),
             active_interactions: Vec::new(),
+            machine_approval_receipts: Vec::new(),
             metaagent_tasks: Vec::new(),
             agent_tasks: Vec::new(),
             sudo_windows: Vec::new(),
@@ -869,6 +889,38 @@ impl RuntimeSession {
 
     pub fn active_interactions(&self) -> &[RuntimeInteraction] {
         &self.active_interactions
+    }
+
+    pub(crate) fn machine_approval_receipts(&self) -> &[MachineApprovalReceipt] {
+        &self.machine_approval_receipts
+    }
+
+    pub(crate) fn upsert_machine_approval_receipt(&mut self, receipt: MachineApprovalReceipt) {
+        const RECENT_RECEIPTS: usize = 32;
+        let receipts = &mut self.machine_approval_receipts;
+        receipts.retain(|prior| prior.id != receipt.id);
+        receipts.push(receipt);
+        receipts.drain(..receipts.len().saturating_sub(RECENT_RECEIPTS));
+    }
+
+    pub(crate) fn mark_machine_approval_sent(&mut self, id: &str) -> bool {
+        let Some(receipt) = self.machine_approval_receipts.iter_mut().find(|receipt| {
+            receipt.id == id && receipt.state == MachineApprovalReceiptState::Approving
+        }) else {
+            return false;
+        };
+        receipt.state = MachineApprovalReceiptState::Sent;
+        true
+    }
+
+    /// The approved try ended before it reached the service: its "Approving" line goes away.
+    pub(crate) fn withdraw_machine_approval(&mut self, id: Option<&str>) -> bool {
+        let before = self.machine_approval_receipts.len();
+        self.machine_approval_receipts.retain(|receipt| {
+            receipt.state != MachineApprovalReceiptState::Approving
+                || id.is_some_and(|id| receipt.id != id)
+        });
+        self.machine_approval_receipts.len() != before
     }
 
     pub fn metaagent_tasks(&self) -> &[MetaagentTask] {
@@ -1421,9 +1473,9 @@ impl RuntimeSession {
 
     pub fn equivalent_except_runtime_interactions(&self, other: &Self) -> bool {
         let mut left = self.clone();
-        let right = other.clone();
-        left.active_interactions = right.active_interactions.clone();
-        left == right
+        left.active_interactions = other.active_interactions.clone();
+        left.machine_approval_receipts = other.machine_approval_receipts.clone();
+        &left == other
     }
 
     pub fn set_workspace_live_sync_mode(
