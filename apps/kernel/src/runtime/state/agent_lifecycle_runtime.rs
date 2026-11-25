@@ -621,10 +621,11 @@ impl KernelRuntimeState {
                 current
             }
             other => {
-                let refusal = if other.is_none() {
-                    "sender has no running turn"
-                } else {
-                    "stale sender turn"
+                let refusal = match other {
+                    Some(current) if current.status() == crate::session::PromptStatus::Running => {
+                        format!("stale sender turn. The current turn is `{}`. Retry send_agent_message with origin_prompt_id set to `{}`.", current.id(), current.id())
+                    }
+                    _ => "sender has no running turn. Send the message from a running turn using the origin_prompt_id supplied for that turn.".into(),
                 };
                 let tool_args = serde_json::json!({"origin_prompt_id": args.origin_prompt_id});
                 self.log_refused_turn_tool(
@@ -633,7 +634,7 @@ impl KernelRuntimeState {
                     None,
                     "send_agent_message",
                     &tool_args,
-                    refusal,
+                    &refusal,
                 );
                 return Err(ledger::error(refusal));
             }
