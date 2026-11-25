@@ -917,31 +917,37 @@ mod tests {
         assert!(encoded.contains("\"credentialIds\""));
         assert!(!encoded.contains("credential_ids"));
     }
-    #[test]
-    fn an_all_providers_plan_needs_a_source_and_has_its_own_digest() {
-        let wire = |providers: serde_json::Value,
-                    source: serde_json::Value|
-         -> ManagedKernelContextPlan {
-            let mut plan: ManagedKernelContextPlan = serde_json::from_value(serde_json::json!({
-                "schemaVersion": 1,
-                "contextId": "managed_ctx_all",
-                "planDigest": format!("sha256:{}", "0".repeat(64)),
-                "source": source,
-                "kernelContext": "empty",
-                "developmentSetup": { "kind": "empty" },
-                "providerAccounts": providers,
-                "gitCredentials": { "kind": "none" },
-            }))
-            .expect("parse");
-            plan.plan_digest = plan.compute_digest().expect("digest");
-            plan
-        };
-        let source = serde_json::json!({
+    /// A wire plan with a correct digest, so `validate` fails only for what the test changes.
+    fn plan_with_providers(
+        providers: serde_json::Value,
+        source: serde_json::Value,
+    ) -> ManagedKernelContextPlan {
+        let mut plan: ManagedKernelContextPlan = serde_json::from_value(serde_json::json!({
+            "schemaVersion": 1,
+            "contextId": "managed_ctx_all",
+            "planDigest": format!("sha256:{}", "0".repeat(64)),
+            "source": source,
+            "kernelContext": "empty",
+            "developmentSetup": { "kind": "empty" },
+            "providerAccounts": providers,
+            "gitCredentials": { "kind": "none" },
+        }))
+        .expect("parse");
+        plan.plan_digest = plan.compute_digest().expect("digest");
+        plan
+    }
+
+    fn a_source() -> serde_json::Value {
+        serde_json::json!({
             "sourceTargetId": "source-target-test", "relayRealmId": "realm-1",
             "machineId": "source-machine-test", "kernelId": "source-kernel",
             "keyThumbprint": "a".repeat(64),
-        });
-        let all = wire(serde_json::json!({"kind": "all"}), source.clone());
+        })
+    }
+
+    #[test]
+    fn an_all_providers_plan_needs_a_source_and_has_its_own_digest() {
+        let all = plan_with_providers(serde_json::json!({"kind": "all"}), a_source());
         all.validate().expect("an all plan with a source is valid");
         assert!(!all.is_empty());
         assert!(matches!(
@@ -950,13 +956,31 @@ mod tests {
         ));
         assert_ne!(
             all.plan_digest,
-            wire(serde_json::json!({"kind": "none"}), source.clone()).plan_digest
+            plan_with_providers(serde_json::json!({"kind": "none"}), a_source()).plan_digest
         );
         assert!(
-            wire(serde_json::json!({"kind": "all"}), serde_json::Value::Null)
+            plan_with_providers(serde_json::json!({"kind": "all"}), serde_json::Value::Null)
                 .validate()
                 .is_err(),
             "the source holds the logins, so `all` without one is inconsistent"
         );
+    }
+
+    #[test]
+    fn an_empty_selected_list_is_refused_for_the_selection_and_all_does_not_loosen_it() {
+        let selected = |accounts: serde_json::Value| {
+            plan_with_providers(
+                serde_json::json!({"kind": "selected", "accounts": accounts}),
+                a_source(),
+            )
+        };
+        assert_eq!(
+            selected(serde_json::json!([])).validate(),
+            Err("managed context provider account selection is invalid"),
+            "refused for the selection, not for the digest or the source"
+        );
+        selected(serde_json::json!([{"provider": "claude", "accountProfile": "default"}]))
+            .validate()
+            .expect("the same plan with one account is valid");
     }
 }

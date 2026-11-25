@@ -35,15 +35,3 @@ fn the_cloud_wire_plan_can_say_every_provider_account_of_the_owner() {
         "a plan that installs the owner's providers is not an empty plan"
     );
 }
-
-#[test]
-fn a_selected_list_still_needs_at_least_one_account() {
-    // Guards the change: `all` must not loosen the explicit list.
-    assert!(
-        serde_json::from_value::<ManagedKernelContextPlan>(wire_plan(
-            serde_json::json!({ "kind": "selected", "accounts": [] })
-        ))
-        .map(|plan| plan.validate().is_err())
-        .unwrap_or(true)
-    );
-}
