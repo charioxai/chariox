@@ -139,6 +139,7 @@ fn agent_listing_row(description: &Value) -> Value {
         "id": description["id"],
         "alias": description["alias"],
         "state": description["state"],
+        "provider": description["provider"],
         "model": description["model"],
         "execution_mode": description["execution_mode"],
         "permission_level": description["permission_level"],
