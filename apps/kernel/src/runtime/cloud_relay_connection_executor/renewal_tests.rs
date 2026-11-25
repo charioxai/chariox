@@ -138,6 +138,64 @@ async fn renewal_persists_the_issued_expiry_instead_of_the_requested_lifetime() 
     );
 }
 
+/// Row 563 (presence under disk stalls): a stalled app lock (a slow disk under a durable write)
+/// must not hold back the renewed relay token. The connector reads its token from the projection,
+/// so renewal that waits for the app lock lets the first token expire and the kernel goes offline.
+#[tokio::test]
+async fn renewal_reaches_the_projection_while_the_app_lock_is_held() {
+    let root = crate::test_support::TestWorktree::new("relay-renew-stalled-app");
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.user_config.state.path = Some(root.path().join("state.db").display().to_string());
+    let expiry = (crate::session::unix_epoch_ms() / 1_000 + 120) * 1_000;
+    let claims = serde_json::json!({"exp": expiry / 1_000,
+        "public_key_thumbprint": crate::runtime::terminal_pairings::public_key_thumbprint(&config.relay_public_key)});
+    let token = format!(
+        "header.{}.signature",
+        base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(serde_json::to_vec(&claims).unwrap())
+    );
+    let response = serde_json::json!({"token": token, "expiresAt": chrono::DateTime::from_timestamp_millis(expiry.try_into().unwrap()).unwrap().to_rfc3339()}).to_string();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+        api_url: format!("http://{}", listener.local_addr().unwrap()),
+        relay_url: "wss://relay.example.test".into(),
+        kernel_id: Some(config.daemon_id.clone()),
+        kernel_credential: Some("synthetic-enrollment".into()),
+        ..Default::default()
+    });
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut request = vec![0; 16_384];
+        let _ = stream.read(&mut request).await.unwrap();
+        let header = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", response.len());
+        stream.write_all(header.as_bytes()).await.unwrap();
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+    let app = crate::app::DaemonApp::bootstrap(config).unwrap();
+    let projection = app.config_projection_store();
+    let app = Arc::new(tokio::sync::Mutex::new(app));
+    let router = crate::runtime::router::CommandRouter::with_interactive_capacity(app.clone(), 1);
+    // The held guard stands for a durable write stalled on a slow disk under the app lock.
+    let stalled_disk = app.lock().await;
+    let outcome = tokio::time::timeout(
+        Duration::from_secs(2),
+        ensure_cloud_relay_connection(&router.runtime_state(), &projection),
+    )
+    .await;
+    let installed = projection.snapshot().relay_token;
+    drop(stalled_disk);
+    // Let a late renewal settle so the server task and the app are released either way.
+    let _ = tokio::time::timeout(Duration::from_secs(5), server).await;
+    assert!(
+        outcome.is_ok_and(|result| result.is_ok()),
+        "renewal must not wait for the app lock behind a stalled disk write"
+    );
+    assert!(
+        installed.is_some(),
+        "the connector reads the projection: the renewed token must be there before the stall ends"
+    );
+}
+
 #[tokio::test]
 async fn removed_cloud_kernel_keeps_its_owner_identity_on_renewal() {
     let root = crate::test_support::TestWorktree::new("relay-unlinked-owner");

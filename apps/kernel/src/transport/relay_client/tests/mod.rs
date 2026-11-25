@@ -4,6 +4,7 @@ mod browser_peer_version;
 mod client_requests;
 mod cloud_presence;
 mod cloud_terminal_pairing;
+mod fanout_after_renewal;
 mod idle_traffic;
 mod kernel_protocol;
 mod leased_prompt_run_change;
