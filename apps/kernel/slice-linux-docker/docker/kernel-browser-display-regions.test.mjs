@@ -398,3 +398,211 @@ for(const kind of ['browser_chrome','browser_auxiliary'])test(`MP-08/MP-10 retir
  await assert.rejects(subscribeRegion(f.host,f.command,'terminal:a',undefined,{Capture}),{code:'user_domain_stale_reference'});
  assert.equal(f.calls.filter(c=>c==='close').length,1);assert.equal(f.host.displays.size,0);
 });
+
+// R1 (proposal R, row 343): a browser without its own display (headless: macOS always, test rigs on Linux) gets region video
+// from Chrome's own frames: the lease is granted, its source is a crop of the Tab's one shared screencast (lease rect in device
+// pixels, no window offset), and two regions of one Tab share that screencast.
+test('R1a/R1b: a headless browser grants a region lease as a crop of the Tab\'s one shared screencast',async()=>{
+ const f=fixture();delete f.host.chromium.display;f.host.chromeWindows={current:()=>null,resolve:async()=>{throw Error('no window on a headless browser')}};
+ const shared=[];f.host.screencastFor=async(tab,scale)=>{let entry=shared.find(s=>s.tab===tab);if(!entry){entry={tab,scale,starts:1};shared.push(entry);}return entry;};
+ class Screencast {constructor(options){this.options=options;this.region={css_width:options.rect.width/options.scale,css_height:options.rect.height/options.scale};f.calls.push(['screencast',options]);}async start(){return this;}async close(){f.calls.push('close');}valid(){return true;}}
+ const first=await subscribeRegion(f.host,f.command,'terminal:a',undefined,{Screencast});
+ assert.equal(first.source_kind,'region');assert.equal(first.css_width,100);assert.equal(first.css_height,50);assert.equal(first.device_scale_factor,2);
+ const source=[...f.host.displays.values()][0].regionSource;
+ assert(source instanceof Screencast,'the region source is the screencast crop');
+ assert.deepEqual(source.options.rect,{left:10,top:20,width:100,height:50},'the lease rect relative to the page, at DPR1 geometry (R2)');
+ await subscribeRegion(f.host,{...f.command},'terminal:a',undefined,{Screencast});
+ assert.equal(shared.length,1,'two regions of one Tab share one screencast');
+ for(const stream of [...f.host.displays.values()])await stream.close();
+});
+
+// R1: a region's view of the shared screencast: frames at the crop's size with the crop for the encoder; a fenced or closed shared
+// source fences the region; closing the region only releases the shared source.
+test('R1: a screencast region crops the shared frames and follows the shared fences',async()=>{
+ const {ScreencastRegionCapture}=await import('./kernel-browser-screencast-region.mjs');
+ const listeners=new Set(),source={closed:false,fenced:false,regionRevision:4,changedAt:1,subscribe(fn){listeners.add(fn);return()=>listeners.delete(fn);},sample:()=>({data_base64:'j',width:2560,height:1600,serial:7,signature:'s'})};
+ let released=0;const shared={source,ready:Promise.resolve(),release:()=>{released++;}};
+ const policy={},rect={left:20,top:40,width:200,height:100};
+ const region=new ScreencastRegionCapture({shared,tab:{tab_id:'t'},scale:2,policy,rect,allowed:p=>p===policy});
+ await region.start();
+ assert.deepEqual(region.region,{css_width:100,css_height:50});
+ assert.deepEqual(region.sample(),{data_base64:'j',width:200,height:100,serial:7,signature:'s',crop:{x:20,y:40,width:200,height:100},motion:true},'the shared frame named at the crop');
+ const seen=[];region.subscribe(f=>seen.push(f));for(const l of listeners)l({data_base64:'k',width:2560,height:1600,serial:8});
+ assert.deepEqual(seen.map(f=>[f.serial,f.width,f.crop.x]),[[8,200,20]]);
+ source.fenced=true;assert.equal(region.valid(),false,'a fenced shared source fences the region');assert.equal(region.sample(),null);
+ source.fenced=false;await region.close();assert.equal(released,1,'closing releases the shared source');assert.equal(listeners.size,0);
+});
+
+// R1c: a page with Vault-protected values or targets on it never gets region video from the screencast (as the whole-tab
+// fallback): the lease is refused, and a region already streaming stops being valid once protection appears.
+test('R1c: a protected page gets no screencast region video',async()=>{
+ const f=fixture();delete f.host.chromium.display;f.host.chromeWindows={current:()=>null};
+ f.host.screencastFor=async()=>({source:{closed:false,fenced:false,subscribe:()=>()=>{},sample:()=>null},ready:Promise.resolve(),release:()=>{}});
+ const {ScreencastRegionCapture}=await import('./kernel-browser-screencast-region.mjs');
+ f.host.protection={unknown:false,values:['v'],targets:[]};
+ await assert.rejects(subscribeRegion(f.host,f.command,'terminal:a',undefined,{Screencast:ScreencastRegionCapture}),/refused|fenced/);
+ assert.equal(f.host.displays.size,0,'no region stream is left');
+ const g=fixture();delete g.host.chromium.display;g.host.chromeWindows={current:()=>null};g.host.screencastFor=f.host.screencastFor;
+ g.host.protection={unknown:false,values:[],targets:[]};
+ await subscribeRegion(g.host,g.command,'terminal:a',undefined,{Screencast:ScreencastRegionCapture});
+ const source=[...g.host.displays.values()][0].regionSource;assert.equal(source.valid(),true);
+ g.host.protection={unknown:false,values:[],targets:['t']};assert.equal(source.valid(),false,'protection appearing stops the region');
+ for(const stream of [...g.host.displays.values()])await stream.close();
+});
+
+// R1 S2/S3 (orch14 decision 11-22): a navigation fences the region screencast for good (no frame of the new document goes out on
+// it); a protection event (DOM rebuilt, a target attribute) fences at once and no frame captured before that fence goes out later.
+test('R1 S2/S3: navigation and protection events fence the region screencast; older frames never go out after a fence',async()=>{
+ const {RegionScreencast}=await import('./kernel-browser-screencast-region.mjs');
+ let clock=1_000_000;const sent=[],listeners=new Set();
+ const connection={subscribe(fn){listeners.add(fn);return()=>listeners.delete(fn);},send:async(method)=>{sent.push(method);return {};}};
+ const policy={unknown:false,values:[],targets:[]},tab={tab_id:'t',document_id:'doc'};
+ const cast=new RegionScreencast({connection,sessionId:'s',tab,width:100,height:50,policy,allowed:p=>p===policy,now:()=>clock});
+ await cast.start();
+ const out=[];cast.subscribe(f=>out.push(f.capturedAt));
+ const frame=at=>{for(const l of listeners)l({sessionId:'s',method:'Page.screencastFrame',params:{sessionId:1,data:'j',metadata:{timestamp:at/1000}}});};
+ frame(clock-10);assert.equal(out.length,1,'a frame goes out');
+ clock+=100;for(const l of listeners)l({sessionId:'s',method:'DOM.documentUpdated',params:{}});
+ assert.equal(cast.sample(),null,'S3: the protection event drops the latest frame');
+ frame(clock-50);assert.equal(out.length,1,'S3: a frame captured before the fence never goes out after it');
+ frame(clock+5);assert.equal(out.length,2,'S3: frames after the fence go out while the policy still allows them');
+ for(const l of listeners)l({sessionId:'s',method:'Page.frameNavigated',params:{frame:{id:'main',loaderId:'new'}}});
+ frame(clock+50);assert.equal(out.length,2,'S2: nothing goes out after a navigation');assert.equal(cast.valid(),false);assert.equal(cast.sample(),null);
+ await cast.close();assert(sent.includes('Page.stopScreencast'));
+});
+
+// R2 (P5 for screencast regions): a DPR2 viewer's region gets motion at DPR1 geometry (R0: full DPR2 frames cost 3x headed CPU
+// and +43 ms P95; DPR1 geometry 1.8x and +25 ms). The shared screencast runs at the page's CSS size and the crop is the lease
+// rect in CSS pixels; the exact still at rest stays the lossless DPR2 picture (unchanged).
+test('R2: a DPR2 region of a display-less browser crops a DPR1-geometry screencast',async()=>{
+ const f=fixture();delete f.host.chromium.display;f.host.chromeWindows={current:()=>null};
+ const asked=[];f.host.screencastFor=async(tab,scale)=>{asked.push(scale);return {source:{closed:false,fenced:false,subscribe:()=>()=>{},sample:()=>null},ready:Promise.resolve(),release:()=>{}};};
+ class Screencast {constructor(options){this.options=options;this.region={css_width:options.rect.width/options.scale,css_height:options.rect.height/options.scale};}async start(){return this;}async close(){}valid(){return true;}}
+ const result=await subscribeRegion(f.host,f.command,'terminal:a',undefined,{Screencast});
+ assert.deepEqual(asked,[1],'the shared screencast is asked at DPR1 geometry');
+ const source=[...f.host.displays.values()][0].regionSource;
+ assert.deepEqual(source.options.rect,{left:10,top:20,width:100,height:50},'the crop is the lease rect in CSS pixels');
+ assert.equal(result.css_width,100);assert.equal(result.css_height,50);
+ for(const stream of [...f.host.displays.values()])await stream.close();
+});
+
+// R1 review 1 (P2): a screencast region returns the same validated placement as a native one: the opaque element's clip origin
+// plus the inward rounding (motion runs at DPR1 geometry, R2), captured at admission; input keeps only the rounding.
+const headless=f=>{delete f.host.chromium.display;f.host.chromeWindows={current:()=>null};
+ f.host.screencastFor=async()=>({source:{closed:false,fenced:false,subscribe:()=>()=>{},sample:()=>null},ready:Promise.resolve(),release:()=>{}});
+ return class Screencast {constructor(options){this.options=options;this.region={css_width:options.rect.width,css_height:options.rect.height};}async start(){return this;}async close(){}valid(){return true;}};};
+for(const scale of [1,2])test(`R1: a clipped screencast region carries its placement with inward rounding at DPR${scale}`,async()=>{
+ const f=fixture();f.lease.device_scale_factor=scale;const Screencast=headless(f);
+ f.lease.rect={x:10.2,y:20.2,width:100.1,height:50.1};f.lease.element_offset={x:12.25,y:30.5};
+ const r=await subscribeRegion(f.host,f.command,'terminal:a',undefined,{Screencast});
+ const stream=[...f.host.displays.values()][0];
+ try{
+  assert.deepEqual(r.region_offset,{x:12.25+Math.ceil(10.2)-10.2,y:30.5+Math.ceil(20.2)-20.2});
+  assert.deepEqual(stream.regionPlacement,r.region_offset);
+  f.lease.element_offset.x=999;assert.equal(stream.regionPlacement.x,r.region_offset.x,'captured at admission');
+  assert.deepEqual(stream.regionOffset,{x:Math.ceil(10.2)-10.2,y:Math.ceil(20.2)-20.2},'input uses only the rounding');
+ }finally{await stream.close();}
+});
+for(const value of [undefined,{x:-1,y:0},{x:0,y:NaN}])test(`R1: a screencast region refuses an invalid element offset ${JSON.stringify(value)}`,async()=>{
+ const f=fixture();const Screencast=headless(f);f.lease.element_offset=value;
+ await assert.rejects(subscribeRegion(f.host,f.command,'terminal:a',undefined,{Screencast}));
+ assert.equal(f.host.displays.size,0);
+});
+
+// R1 review 1 (P1): the lossless still at rest is the region's crop at the display's density: a DPR2 lease on a page that runs
+// at scale 1 (headless) is captured through the clip scale (Chrome re-rasterizes), protected, and is css size x DPR.
+test('R1: a screencast region\'s exact still is its crop at the lease density',async()=>{
+ const f=fixture();f.lease.device_scale_factor=2;f.host.scales=new Map([['t',1]]);const Screencast=headless(f);
+ const {encodePng}=await import('./kernel-browser-pixels.mjs'),shots=[];
+ f.host.screenshot=async(tab,clip,protectedCapture)=>{shots.push({clip,protectedCapture});return {data_base64:encodePng(clip.width*clip.scale,clip.height*clip.scale,Buffer.alloc(clip.width*clip.scale*clip.height*clip.scale*4,255)),protected_regions:[]};};
+ await subscribeRegion(f.host,f.command,'terminal:a',undefined,{Screencast});
+ const stream=[...f.host.displays.values()][0];
+ // R1 review 2: the page is scrolled to y=500; a CDP clip is in page coordinates.
+ let origins=[{pageX:0,pageY:500,scale:1}];stream.regionSource.sessionId='s';
+ stream.regionSource.connection={send:async method=>{assert.equal(method,'Page.getLayoutMetrics');return {cssVisualViewport:origins.length>1?origins.shift():origins[0]};}};
+ try{
+  const shot=await stream.regionSource.options.exact();
+  assert.deepEqual(shots,[{clip:{x:10,y:520,width:100,height:50,scale:2},protectedCapture:true}],'the lease rect offset by the viewport page origin');
+  assert.deepEqual([shot.width,shot.height],[200,100],'css size x DPR');
+  origins=[{pageX:0,pageY:500,scale:1},{pageX:0,pageY:520,scale:1}];
+  await assert.rejects(stream.regionSource.options.exact(),/moved/,'a viewport that moved during the capture refuses');
+  origins=[{pageX:0,pageY:0,scale:2}];
+  await assert.rejects(stream.regionSource.options.exact(),/unzoomed/,'a pinch-zoomed viewport refuses');
+  origins=[{pageX:0,pageY:0,scale:1}];
+  f.host.screenshot=async()=>({data_base64:encodePng(1,1,Buffer.alloc(4)),protected_regions:[{x:0,y:0,width:1,height:1}]});
+  await assert.rejects(stream.regionSource.options.exact(),/protected/,'a protected region in the clip refuses');
+ }finally{await stream.close();}
+});
+
+// R1 review 3 (P2): a viewport that moves (or is pinch-zoomed) during an exact capture is a retryable refusal: the region's
+// NativeRefiner drops that capture and refines on a later request instead of latching a failure for the subscription.
+test('R1: a screencast region refines again after an exact capture the viewport moved under',async()=>{
+ const {NativeRefiner}=await import('./kernel-browser-refiner.mjs'),{encodePng}=await import('./kernel-browser-pixels.mjs');
+ const f=fixture();f.lease.device_scale_factor=1;f.host.scales=new Map([['t',1]]);const Screencast=headless(f);
+ f.host.screenshot=async(tab,clip)=>({data_base64:encodePng(clip.width,clip.height,Buffer.alloc(clip.width*clip.height*4,255)),protected_regions:[]});
+ await subscribeRegion(f.host,f.command,'terminal:a',undefined,{Screencast});
+ const stream=[...f.host.displays.values()][0],source=stream.regionSource;
+ let origins=[{pageX:0,pageY:0,scale:1},{pageX:0,pageY:40,scale:1}];source.sessionId='s';
+ source.connection={send:async()=>({cssVisualViewport:origins.length>1?origins.shift():origins[0]})};
+ let clock=1000;const pixels={run:async()=>({width:100,height:50,pixels:Buffer.alloc(4)}),close:async()=>{}};
+ const refiner=new NativeRefiner(()=>source.options.exact(),{now:()=>clock,pixels,quietMs:0,verifyMs:0});
+ const binding={source:{},document:'doc',policy:f.host.protection,epoch:0,serial:1,native:false,scale:1};
+ try{
+  assert.equal(refiner.request(binding,0,()=>true),null);await refiner.active;
+  clock+=10;assert.doesNotThrow(()=>refiner.request(binding,0,()=>true),'a moved viewport is not a failure of the subscription');await refiner.active;
+  const exact=refiner.request(binding,0,()=>true);
+  assert(exact?.settled_verified,'the next capture refines the region');
+  assert.deepEqual([exact.width,exact.height],[100,50]);
+ }finally{await refiner.close();await stream.close();}
+});
+
+// Row 401 F2 (webperf-r19 A1): each subscription builds a new encoder, and its helper's cold first key frame (~96 ms: start,
+// imports, first decode and crop) delayed the first picture after every re-subscribe. The encoder starts at subscribe, before
+// the screencast source starts.
+test('row 401 F2: a screencast region subscription starts its encoder before its source starts',async()=>{
+ const {PortableEncoder}=await import('./kernel-browser-display.mjs');
+ const f=fixture();delete f.host.chromium.display;f.host.chromeWindows={current:()=>null,resolve:async()=>{throw Error('no window on a headless browser')}};
+ f.host.screencastFor=async(tab,scale)=>({tab,scale});
+ const order=[],warm=PortableEncoder.prototype.warm;
+ PortableEncoder.prototype.warm=function(){order.push('encoder warm');return Promise.resolve();};
+ class Screencast {constructor(options){this.options=options;this.region={css_width:options.rect.width/options.scale,css_height:options.rect.height/options.scale};}async start(){order.push('source start');return this;}async close(){}valid(){return true;}}
+ try{
+  await subscribeRegion(f.host,f.command,'terminal:a',undefined,{Screencast});
+  assert.deepEqual(order,['encoder warm','source start']);
+ }finally{
+  PortableEncoder.prototype.warm=warm;
+  for(const stream of [...f.host.displays.values()])await stream.close();
+ }
+});
+
+// Row 401 F2 (spare): a region retired by a mirror reset is re-subscribed 15-65 ms later, less than the helper's ~96 ms warm-up.
+// Closing a screencast region stream warms one fresh helper; the next subscription takes it already warm. Unused, it closes.
+test('row 401 F2: a re-subscribe takes a helper warmed when the last region closed; an unused one closes after 5 s',async t=>{
+ const {PortableEncoder}=await import('./kernel-browser-display.mjs');
+ t.mock.timers.enable({apis:['setTimeout']});
+ const f=fixture();delete f.host.chromium.display;f.host.chromeWindows={current:()=>null,resolve:async()=>{throw Error('no window on a headless browser')}};
+ f.host.screencastFor=async(tab,scale)=>({tab,scale});
+ const warmed=[],closed=[],warm=PortableEncoder.prototype.warm,close=PortableEncoder.prototype.close;
+ PortableEncoder.prototype.warm=function(){warmed.push(this);return Promise.resolve();};
+ PortableEncoder.prototype.close=async function(){closed.push(this);};
+ class Screencast {constructor(options){this.options=options;this.region={css_width:options.rect.width/options.scale,css_height:options.rect.height/options.scale};}async start(){return this;}async close(){}valid(){return true;}}
+ try{
+  await subscribeRegion(f.host,f.command,'terminal:a',undefined,{Screencast});
+  const first=[...f.host.displays.values()][0];
+  assert.equal(warmed.length,1,'the first subscription warms its own encoder');
+  await first.close();f.host.displays.clear();
+  assert.equal(warmed.length,2,'closing the region warms one spare helper');
+  const spare=warmed[1];
+  f.retire?.();
+  const g=fixture();delete g.host.chromium.display;g.host.chromeWindows=f.host.chromeWindows;g.host.screencastFor=f.host.screencastFor;
+  g.host.spareRegionEncoder=f.host.spareRegionEncoder;
+  await subscribeRegion(g.host,g.command,'terminal:a',undefined,{Screencast});
+  const second=[...g.host.displays.values()][0];
+  assert.equal(second.encoder,spare,'the re-subscribe takes the warm spare');
+  assert.equal(warmed.length,2,'no new cold encoder for it');
+  await second.close();
+  const unused=warmed[2];assert.ok(unused,'the second close warms a new spare');
+  t.mock.timers.tick(5000);await Promise.resolve();
+  assert.ok(closed.includes(unused),'an unused spare closes after 5 s');
+ }finally{PortableEncoder.prototype.warm=warm;PortableEncoder.prototype.close=close;}
+});
