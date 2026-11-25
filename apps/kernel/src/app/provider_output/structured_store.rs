@@ -5,10 +5,11 @@ use crate::provider::ProviderPromptSignalBatch;
 use crate::terminal::TerminalOutputRecord;
 
 pub(crate) const STRUCTURED_OUTPUT_EMPTY_POLL_BACKOFF_MS: u64 = 500;
-/// PROPOSED: a run holding no prompt and no background work is read again this long after an
-/// empty poll. Its provider tells the pump the moment it writes anything (the output
-/// notifier), so the poll is only a safety net; at the busy rate a Room of idle agents
-/// polls twice a second each, forever.
+/// A run holding no prompt and no background work is read again this long after
+/// an empty poll (5 s, approved by the owner 11-24). Its provider tells the pump
+/// the moment it writes anything (the output notifier), so the poll is only a
+/// safety net; at the busy rate a Room of idle agents polls twice a second each,
+/// forever.
 pub(crate) const STRUCTURED_OUTPUT_IDLE_POLL_BACKOFF_MS: u64 = 5_000;
 pub(crate) const STRUCTURED_OUTPUT_POLL_FAILURE_RETRY_LIMIT: u8 = 3;
 
