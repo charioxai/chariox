@@ -1048,6 +1048,7 @@ where
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn serve_kernel_socket<S>(
     runtime: Arc<KernelTransportRuntime>,
     router: Arc<CommandRouter>,

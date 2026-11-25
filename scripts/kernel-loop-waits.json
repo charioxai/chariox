@@ -64,5 +64,11 @@
     "fn": "run_provider_output_pump_until",
     "call": "pump_ready_provider_output_run",
     "reason": "shutdown drain after `stop` fired"
+  },
+  {
+    "path": "apps/kernel/src/runtime/state/provider_output_pump_runtime.rs",
+    "fn": "run_provider_output_pump_until",
+    "call": "for_each_concurrent",
+    "reason": "shutdown drain after `stop` fired (#1566 drains every run once, MAX_PROVIDER_OUTPUT_PUMPS at a time, then the loop returns); each run keeps its own lane, as the reviewed pump_ready_provider_output_run call above"
   }
 ]

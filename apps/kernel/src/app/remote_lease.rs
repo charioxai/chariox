@@ -518,7 +518,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
             && name
                 .chars()
                 .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'));
-        // A managed machine records its repository root at rent time (the default root is the
+        // A managed machine records its repository root when it is acquired (the default root is the
         // worker's home); the folder lives under that root, never beside it.
         let base =
             if std::env::var_os(crate::managed_bootstrap::MANAGED_REPOSITORY_ROOT_ENV).is_some() {

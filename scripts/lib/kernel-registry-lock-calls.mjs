@@ -35,9 +35,12 @@ export const registryLockCalls = [
   { call: 'release', form: 'method', receiver: 'resources', defined: processResources, via: 'registry()' },
   { call: 'observe', form: 'method', receiver: 'permit', defined: launch, via: 'samples_for_key(' },
   { call: 'release_exited_process_jobs', form: 'method', defined: ptyManager, via: 'release(' },
-  { call: 'remove_process', form: 'method', defined: ptyManager, via: 'unbind_key(' },
-  { call: 'remove_provider_pty_process', form: 'function', defined: providerProcesses, via: 'remove_process(' },
-  { call: 'remove_run', form: 'method', defined: providerProcesses, via: 'remove_provider_pty_process(' },
+  { call: 'remove_process_with_reaps', form: 'method', defined: ptyManager, via: 'unbind_key(' },
+  { call: 'remove_process', form: 'method', defined: ptyManager, via: 'remove_process_with_reaps(' },
+  { call: 'remove_provider_pty_process', form: 'function', defined: providerProcesses, via: 'remove_process_with_reaps(' },
+  { call: 'remove_run_with_reaps', form: 'method', defined: providerProcesses, via: 'remove_provider_pty_process(' },
+  // Two types define `remove_run`: the adapter reaches the helper directly, the tracker through `remove_run_with_reaps`; every definition must take one of them.
+  { call: 'remove_run', form: 'method', defined: providerProcesses, via: ['remove_provider_pty_process(', 'remove_run_with_reaps('] },
 ]
 
 const callPattern = ({ call, form, receiver = '' }) => new RegExp({
@@ -99,7 +102,7 @@ export function registryLockTable(code, path) {
     const bodies = [...code.matchAll(new RegExp(`\\bfn\\s+${entry.call}\\b[^{;]*\\{`, 'g'))]
       .map(match => code.slice(match.index + match[0].length - 1, closing(code, match.index + match[0].length - 1)))
     if (!bodies.length) hits.push({ path, line: 1, rule: `registry lock entry point \`${entry.call}\` named in lib/kernel-registry-lock-calls.mjs no longer exists: update the table` })
-    else if (bodies.some(body => !body.includes(entry.via))) hits.push({ path, line: 1, rule: `registry lock entry point \`${entry.call}\` no longer takes \`${entry.via}\`: update lib/kernel-registry-lock-calls.mjs` })
+    else if (bodies.some(body => ![entry.via].flat().some(via => body.includes(via)))) hits.push({ path, line: 1, rule: `registry lock entry point \`${entry.call}\` no longer takes \`${[entry.via].flat().join('` or `')}\`: update lib/kernel-registry-lock-calls.mjs` })
   }
   return hits
 }

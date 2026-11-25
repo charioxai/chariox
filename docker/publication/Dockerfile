@@ -28,6 +28,7 @@ COPY apps/server apps/server
 # The server build runs the protocol pin check, which reads these files.
 COPY scripts/generate-protocol-versions.mjs scripts/generate-protocol-versions.mjs
 COPY scripts/lib/protocol-versions.mjs scripts/lib/protocol-versions.mjs
+COPY scripts/lib/protocol-hash-pins.mjs scripts/lib/protocol-hash-pins.mjs
 COPY fixtures fixtures
 COPY apps/kernel/src/local/api/types.rs apps/kernel/src/local/api/types.rs
 COPY apps/kernel/src/transport/relay_peer.rs apps/kernel/src/transport/relay_peer.rs

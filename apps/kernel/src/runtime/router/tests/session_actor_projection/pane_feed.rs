@@ -397,7 +397,7 @@ async fn attention_stripes_of_a_failed_run(newer_runs: usize) -> Vec<Vec<String>
     let mut session = app.sessions_mut().get_session(&session_id).unwrap();
     for index in 0..newer_runs {
         let mut newer = WorkflowRun::new(
-            &format!("z-run-{index:04}"),
+            format!("z-run-{index:04}"),
             busy.id(),
             "endpoint",
             "node-a",

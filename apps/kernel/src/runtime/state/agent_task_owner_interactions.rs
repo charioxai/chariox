@@ -330,11 +330,7 @@ impl KernelRuntimeState {
             .durable_state_store
             .task_card_is_dismissed(&task.task_id, task.blocked_revision)?;
         let interaction = crate::session::RuntimeInteraction::for_kernel_operation(
-            &id,
-            &id,
-            "Question",
-            &message,
-            choices,
+            &id, &id, "Question", &message, choices,
         )
         .without_timeout()
         .with_related_agent_id(task.agent_id.clone())

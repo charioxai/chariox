@@ -672,7 +672,7 @@ pub use workspace::*;
 /// settings read.
 /// Local 1015 (relay peer 452, Landing 14): `SetProjectEnvironmentSecret` takes a `source` (a typed value, a Vault entry id, or
 /// `unlink`).
-/// Local 1015 (relay peer 452, Landing 14): a machine acquire request may carry `timeout_s`, the rental's hard stop in seconds;
+/// Local 1015 (relay peer 452, Landing 14): a machine acquire request may carry `timeout_s`, the machine's hard stop in seconds;
 /// the connected service stops the machine then. Absent keeps the machine until it is released.
 /// Local 1015 (relay peer 452, Landing 14): file slices between kernels travel as bytes (`data_base64` lifted out of the
 /// peer plaintext), and peer requests and replies are binary relay frames between kernels that offer them.

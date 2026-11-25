@@ -16,7 +16,7 @@ pub enum MachineAcquisitionRequest {
         class_id: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         region: Option<String>,
-        /// The rental's hard stop in seconds: the service stops the machine then.
+        /// The machine's hard stop in seconds: the service stops the machine then.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         timeout_s: Option<u64>,
         /// What the machine is for; the owner's card names it.

@@ -157,6 +157,7 @@ fn node_liveness(
 /// `None` when `root` is not an agent of the session. Nodes are the descendants
 /// of `root` (not `root` itself) in creation order. The revision is the caller's.
 /// `held_by_agent` says whether an ancestor agent, not the user, holds an interaction.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn project_agent_tree(
     session: &RuntimeSession,
     agents: &[AgentInstance],

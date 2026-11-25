@@ -77,7 +77,7 @@ async fn cloud(status: &str) -> Cloud {
                     serde_json::json!({"error":{"code":"not_found","message":"not found"}}),
                 )
             } else if failures
-                .fetch_update(
+                .try_update(
                     std::sync::atomic::Ordering::SeqCst,
                     std::sync::atomic::Ordering::SeqCst,
                     |left| left.checked_sub(1),
@@ -211,11 +211,12 @@ async fn the_owner_gets_one_card_and_approving_it_lets_the_kernel_join() {
         .unwrap();
     let result = tool.await.unwrap().unwrap();
     assert_eq!(result.payload["status"], "approved");
-    let decisions = cloud.decisions.lock().unwrap();
-    assert_eq!(decisions.len(), 1);
-    assert_eq!(decisions[0].0, "approve");
-    assert_eq!(decisions[0].1["userCode"], "ABCD-EFGH");
-    drop(decisions);
+    {
+        let decisions = cloud.decisions.lock().unwrap();
+        assert_eq!(decisions.len(), 1);
+        assert_eq!(decisions[0].0, "approve");
+        assert_eq!(decisions[0].1["userCode"], "ABCD-EFGH");
+    }
     // Asking again after approval is answered without a second card.
     let again = state.kernel_enrollment_tool(&token, args()).await.unwrap();
     assert_eq!(again.payload["status"], "approved");
