@@ -44,6 +44,7 @@ mod notification_subscription;
 mod outside_events;
 mod own_machine_enrollment;
 mod owner_view;
+mod pane_feed;
 mod person_inbox;
 mod project_environment;
 mod prompt_control;
@@ -105,6 +106,7 @@ pub use notification_subscription::*;
 pub use outside_events::*;
 pub use own_machine_enrollment::*;
 pub use owner_view::*;
+pub use pane_feed::*;
 pub use person_inbox::*;
 pub use project_environment::*;
 pub use prompt_control::*;
@@ -647,4 +649,6 @@ pub use workspace::*;
 /// 1014 adds revision-based latest Room history outline reads.
 /// Provisional 1015 (relay peer 452): a kernel issues its own client relay tokens: `RelayIssuerStatus`,
 /// `ConfigureRelayIssuer` and `IssueRelayClientToken`; terminal pairing links carry a pairing-only kernel-signed token.
+/// Local 1015 (relay peer 452): the agent pane feed. `GetPaneFeed` answers `PaneFeed`, the one kernel read model of what an
+/// agent's pane shows; `ReportPaneSettings` carries the settings a provider terminal changed (docs/PROTOCOL.md 3.3.2.1).
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1015;

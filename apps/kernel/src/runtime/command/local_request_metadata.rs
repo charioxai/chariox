@@ -179,6 +179,13 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
             LocalRequestMetadata::new("session.view.attach", Interactive)
                 .session(&request.session_id)
         }
+        LocalDaemonRequest::GetPaneFeed(request) => {
+            LocalRequestMetadata::new("pane_feed.get", Normal).session(&request.session_id)
+        }
+        LocalDaemonRequest::ReportPaneSettings(request) => {
+            LocalRequestMetadata::new("pane_feed.report_settings", Interactive)
+                .session(&request.session_id)
+        }
         LocalDaemonRequest::DetachFromSession(request) => {
             LocalRequestMetadata::new("session.detach", Interactive)
                 .attachment(&request.attachment_id)
@@ -958,6 +965,8 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::ListRoomListSessions(_) => "room_list.sessions.list",
         LocalDaemonRequest::GetRoomListSnapshot(_) => "room_list.public_snapshot.get",
         LocalDaemonRequest::OwnerView(_) => "owner_view",
+        LocalDaemonRequest::GetPaneFeed(_) => "pane_feed.get",
+        LocalDaemonRequest::ReportPaneSettings(_) => "pane_feed.report_settings",
         LocalDaemonRequest::GetPersonInbox(_) => "person_inbox.get",
         LocalDaemonRequest::SetInboxCardState(_) => "person_inbox.set_card_state",
         LocalDaemonRequest::SetInboxMute(_) => "person_inbox.set_mute",

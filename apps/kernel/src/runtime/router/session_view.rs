@@ -153,7 +153,7 @@ impl CommandRouter {
         }
     }
 
-    async fn session_view_component(
+    pub(super) async fn session_view_component(
         &self,
         command: &KernelCommand,
         component: &str,
