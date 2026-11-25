@@ -34,17 +34,44 @@ pub(crate) fn provider_command_catalogs_response() -> Result<LocalDaemonResponse
     })
 }
 
+/// Who is asking for the catalog. A kernel's own startup warm-up must never start
+/// a provider server for a provider nobody asked about; a client read may.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CatalogLoad {
+    /// A client (or an explicit account request) reads the catalog.
+    Requested,
+    /// The kernel warms its own copy before any client asks.
+    Warmup,
+}
+
 pub(crate) fn load_provider_catalog(
     config: DaemonConfig,
     registry: crate::account_profile::ProviderAccountProfileRegistry,
     owner_user_id: String,
     request: GetProviderCatalogRequest,
 ) -> Result<OpenCodeProviderCatalog, DaemonError> {
+    load_provider_catalog_for(
+        config,
+        registry,
+        owner_user_id,
+        request,
+        CatalogLoad::Requested,
+    )
+}
+
+pub(crate) fn load_provider_catalog_for(
+    config: DaemonConfig,
+    registry: crate::account_profile::ProviderAccountProfileRegistry,
+    owner_user_id: String,
+    request: GetProviderCatalogRequest,
+    load: CatalogLoad,
+) -> Result<OpenCodeProviderCatalog, DaemonError> {
     if config.provider_catalog_read_delay_ms > 0 {
         thread::sleep(Duration::from_millis(config.provider_catalog_read_delay_ms));
     }
 
-    let selected_profiles = resolve_catalog_profiles(&config, &registry, &owner_user_id, &request)?;
+    let selected_profiles =
+        resolve_catalog_profiles_for(&config, &registry, &owner_user_id, &request, load)?;
     let claude_catalog = if let Some(profile) = selected_profiles.get("claude") {
         let environment =
             registry.resolve_environment(&profile.owner_user_id, "claude", &profile.profile_id)?;
@@ -171,6 +198,15 @@ fn append_catalog_source(
                 .and_then(crate::provider::canonical_provider_family)
                 == Some(provider) =>
         {
+            if matches!(
+                error,
+                DaemonError::LocalTransport {
+                    operation: crate::provider::OPENCODE_CATALOG_START,
+                    ..
+                }
+            ) {
+                return Err(error);
+            }
             return Err(DaemonError::LocalTransport {
                 operation: "get_provider_catalog",
                 message: format!("{provider} catalog is unavailable: {error}. Check the provider account and retry."),
@@ -181,11 +217,28 @@ fn append_catalog_source(
     Ok(())
 }
 
+#[cfg(test)]
 fn resolve_catalog_profiles(
     config: &DaemonConfig,
     registry: &crate::account_profile::ProviderAccountProfileRegistry,
     owner_user_id: &str,
     request: &GetProviderCatalogRequest,
+) -> Result<BTreeMap<String, crate::account_profile::ProviderAccountProfile>, DaemonError> {
+    resolve_catalog_profiles_for(
+        config,
+        registry,
+        owner_user_id,
+        request,
+        CatalogLoad::Requested,
+    )
+}
+
+fn resolve_catalog_profiles_for(
+    config: &DaemonConfig,
+    registry: &crate::account_profile::ProviderAccountProfileRegistry,
+    owner_user_id: &str,
+    request: &GetProviderCatalogRequest,
+    load: CatalogLoad,
 ) -> Result<BTreeMap<String, crate::account_profile::ProviderAccountProfile>, DaemonError> {
     let focus_provider = request
         .provider
@@ -257,10 +310,18 @@ fn resolve_catalog_profiles(
         // Native defaults exist before a login does. Broad reads (including startup
         // warm-up) must not keep a provider server alive for an empty placeholder.
         // An explicit provider/account request still starts it on demand.
+        // OpenCode is the exception once installed: its free models need no
+        // account, so a signed-out default profile still has models to offer.
+        // Offering them takes its server, so only a client read does that; the
+        // startup warm-up leaves it out and its copy is revalidated by the
+        // first client read (see `ProviderCatalogProjectionStore`).
         if profile.origin == crate::account_profile::ProviderAccountProfileOrigin::Default
             && profile.auth_state != crate::account_profile::ProviderAccountAuthState::Authenticated
             && focus_provider != Some(provider)
             && !overrides.contains_key(provider)
+            && !(provider == "opencode"
+                && load == CatalogLoad::Requested
+                && resolve_opencode_executable().is_ok())
         {
             continue;
         }
@@ -710,11 +771,11 @@ fn bounded_output(
     })
 }
 
-fn opencode_auth_status(
-    account_profile: &str,
+/// `opencode auth list` under the profile's roots: the official CLI accepts the
+/// stored login files. Returns the resolved executable.
+fn run_opencode_auth_list(
     environment: &BTreeMap<String, String>,
-    services: &[crate::account_profile::ProviderAccountService],
-) -> Result<ProviderAuthStatus, DaemonError> {
+) -> Result<std::path::PathBuf, DaemonError> {
     let executable = resolve_opencode_executable()?;
     // MP-08 / MP-10 / MP-11: auth list exits before background model refresh
     // settles, which can strand its native lock ahead of explicit provisioning.
@@ -741,6 +802,15 @@ fn opencode_auth_status(
             ),
         });
     }
+    Ok(executable)
+}
+
+fn opencode_auth_status(
+    account_profile: &str,
+    environment: &BTreeMap<String, String>,
+    services: &[crate::account_profile::ProviderAccountService],
+) -> Result<ProviderAuthStatus, DaemonError> {
+    let executable = run_opencode_auth_list(environment)?;
     let credential_inspection = inspect_opencode_credentials(environment);
     use crate::account_profile::ProviderAccountAuthState;
     let auth_state = if services
@@ -937,6 +1007,42 @@ fn opencode_go_usage(
             }
         }
         Err(_) => OpenCodeGoUsage::Unavailable,
+    }
+}
+
+/// How far a copied OpenCode login could be checked before it was published.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OpenCodeCopyCheck {
+    CliMissing,
+    Rejected,
+    Inconclusive,
+}
+
+/// Checks a copied OpenCode login in a staging profile. It must hold a usable
+/// credential and the official CLI must accept it. OpenCode has no login-check
+/// command and the kernel knows one authenticated provider call, the OpenCode Go
+/// usage request; that call runs whenever the login holds a Go key.
+pub(crate) fn check_copied_opencode_login(
+    environment: &BTreeMap<String, String>,
+) -> Result<(), OpenCodeCopyCheck> {
+    if inspect_opencode_credentials(environment) != OpenCodeCredentialInspection::Valid {
+        return Err(OpenCodeCopyCheck::Rejected);
+    }
+    match run_opencode_auth_list(environment) {
+        Ok(_) => {}
+        Err(DaemonError::ProviderExecutableNotFound { .. }) => {
+            return Err(OpenCodeCopyCheck::CliMissing)
+        }
+        Err(_) => return Err(OpenCodeCopyCheck::Inconclusive),
+    }
+    match opencode_go_usage(environment, crate::session::unix_epoch_ms()) {
+        OpenCodeGoUsage::Rejected | OpenCodeGoUsage::NotEntitled => {
+            Err(OpenCodeCopyCheck::Rejected)
+        }
+        OpenCodeGoUsage::Unavailable => Err(OpenCodeCopyCheck::Inconclusive),
+        OpenCodeGoUsage::Available(_)
+        | OpenCodeGoUsage::VerifiedWithoutMeters
+        | OpenCodeGoUsage::MissingKey => Ok(()),
     }
 }
 
@@ -1659,6 +1765,7 @@ mod tests {
                 "cloud-owner",
                 &crate::account_profile::ProviderAccountMaterialization {
                     profile: crate::account_profile::ProviderAccountReplicaMetadata {
+                        provider_account_id: None,
                         owner_user_id: "cloud-owner".into(),
                         provider: "codex".into(),
                         profile_id: home.profile_id.clone(),
@@ -1770,6 +1877,61 @@ mod tests {
         )
         .is_err());
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn broad_catalog_offers_installed_signed_out_opencode_only() {
+        crate::test_support::isolated_env_test!();
+        let _guard = crate::env_lock::lock();
+        let root = std::env::temp_dir().join(format!(
+            "chariox-catalog-account-free-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        fs::create_dir(&root).expect("fixture root should create");
+        let previous = std::env::var_os("CHARIOX_OPENCODE_BIN");
+        let registry = crate::account_profile::ProviderAccountProfileRegistry::open(
+            root.join("profiles.json"),
+        )
+        .expect("fixture registry should open");
+        registry
+            .migrate_effective_defaults("local", &root.join("home"))
+            .expect("fixture profiles should create");
+        let request = GetProviderCatalogRequest::default();
+
+        let executable = root.join("opencode");
+        fs::write(&executable, "#!/bin/sh\nexit 0\n").expect("fixture should write");
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o755))
+            .expect("fixture should be executable");
+        std::env::set_var("CHARIOX_OPENCODE_BIN", &executable);
+        let installed =
+            resolve_catalog_profiles(&DaemonConfig::for_tests(), &registry, "local", &request);
+        let warming = resolve_catalog_profiles_for(
+            &DaemonConfig::for_tests(),
+            &registry,
+            "local",
+            &request,
+            CatalogLoad::Warmup,
+        );
+        std::env::set_var("CHARIOX_OPENCODE_BIN", root.join("missing"));
+        let missing =
+            resolve_catalog_profiles(&DaemonConfig::for_tests(), &registry, "local", &request);
+        match previous {
+            Some(value) => std::env::set_var("CHARIOX_OPENCODE_BIN", value),
+            None => std::env::remove_var("CHARIOX_OPENCODE_BIN"),
+        }
+        let _ = fs::remove_dir_all(&root);
+
+        // Signed-out Claude and Codex stay out of the broad read; only the
+        // account-free OpenCode profile is kept, and only while it is installed.
+        let installed = installed.expect("installed catalog profiles should resolve");
+        assert_eq!(installed.keys().collect::<Vec<_>>(), vec!["opencode"]);
+        assert!(missing
+            .expect("missing OpenCode should not fail the broad read")
+            .is_empty());
+        // The kernel's own startup warm-up never takes the account-free
+        // exception: nobody asked for OpenCode yet, so no server starts for it.
+        assert!(warming.expect("warm-up should not fail").is_empty());
     }
 
     #[test]

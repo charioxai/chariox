@@ -17,6 +17,14 @@ impl CommandRouter {
         self.config_projection.snapshot()
     }
 
+    /// See `DaemonConfigProjectionStore::observe_updates`.
+    pub(crate) fn observe_relay_config_updates(
+        &self,
+        observer: impl Fn(&crate::config::DaemonConfig) + Send + Sync + 'static,
+    ) {
+        self.config_projection.observe_updates(observer);
+    }
+
     pub(crate) fn cloud_relay_token_refresh_due(&self) -> bool {
         let config = self.config_projection.snapshot();
         cloud_relay_token_refresh_due(&config, crate::session::unix_epoch_ms())
@@ -42,14 +50,13 @@ impl CommandRouter {
     pub(crate) async fn publish_cloud_kernel_presence(
         &self,
         online: bool,
+        registration: Option<&chariox_relay::protocol::DaemonRegistration>,
     ) -> Result<(), DaemonError> {
         let config = self.config_projection.snapshot();
         let Some(profile) = config.cloud_relay.as_ref() else {
             return Ok(());
         };
-        let registration = self.relay_registration().await;
-        let Some(mut body) =
-            cloud_kernel_presence_body(&config, profile, online, Some(&registration))
+        let Some(mut body) = cloud_kernel_presence_body(&config, profile, online, registration)
         else {
             return Ok(());
         };

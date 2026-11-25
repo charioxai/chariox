@@ -124,6 +124,35 @@ impl CommandRouter {
         }
     }
 
+    pub(super) fn dispatch_withdraw_reply_command(
+        &self,
+        session: &crate::session::RuntimeSession,
+        sender: &crate::agent::AgentInstance,
+        command: &str,
+        args: &[String],
+    ) -> RuntimeToolResult {
+        let Some(sequence) = args
+            .first()
+            .filter(|_| args.len() == 1)
+            .and_then(|value| value.parse().ok())
+        else {
+            return meta_command_failure_result(
+                command,
+                meta_command_error("usage: agent withdraw-reply <message-id>"),
+            );
+        };
+        match self
+            .runtime_state
+            .withdraw_agent_reply_request(session, sender, sequence)
+        {
+            Ok(()) => RuntimeToolResult {
+                ok: true,
+                payload: serde_json::json!({"command": command, "response": {"message_id": sequence.to_string(), "status": "settled"}}),
+            },
+            Err(error) => meta_command_failure_result(command, error),
+        }
+    }
+
     /// `agent promote <message-id>`: the sender makes a message it queued urgent.
     pub(super) async fn dispatch_meta_agent_promote_command(
         &self,

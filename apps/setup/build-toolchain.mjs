@@ -130,6 +130,25 @@ async function installedVersion(root) {
   }
 }
 
+// Reads the one `bin/micromamba` member with Python, which Setup already requires. GNU tar -j would
+// need the host's bzip2, a package a minimal Linux machine may lack; only the installed environment
+// carries bzip2, and that is installed afterwards.
+const extractMicromambaScript = `
+import os, shutil, sys, tarfile
+archive, destination = sys.argv[1:3]
+with tarfile.open(archive, "r:bz2") as bundle:
+    member = bundle.getmember("bin/micromamba")
+    if not member.isreg() or member.size > 256 * 1024 * 1024:
+        raise SystemExit("bin/micromamba is not a regular file of a sane size")
+    os.makedirs(os.path.dirname(destination), mode=0o700, exist_ok=True)
+    with bundle.extractfile(member) as source, os.fdopen(os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o700), "wb") as target:
+        shutil.copyfileobj(source, target)
+`
+
+export async function extractMicromamba(archive, destination, options) {
+  await required("python3", ["-I", "-c", extractMicromambaScript, archive, destination], options)
+}
+
 async function install(root, prefix, home, packageLock, lockFd) {
   const bootstrap = join(root, "bootstrap"), cache = join(root, "cache"), temp = join(root, "tmp")
   const archive = join(bootstrap, "micromamba.tar.bz2"), lock = join(bootstrap, "linux-x64.lock")
@@ -155,7 +174,7 @@ async function install(root, prefix, home, packageLock, lockFd) {
       "--output", archive, micromamba.url], { env, stdio })
     const digest = createHash("sha256").update(await readFile(archive)).digest("hex")
     if (digest !== micromamba.sha256) throw new Error("Micromamba download failed SHA-256 verification")
-    await required("tar", ["-xjf", archive, "bin/micromamba"], { cwd: bootstrap, env, stdio })
+    await extractMicromamba(archive, join(bootstrap, "bin/micromamba"), { env, stdio })
     await writeFile(lock, packageLock)
     await required(join(bootstrap, "bin/micromamba"), ["--no-rc", "create", "--yes", "--prefix", prefix, "--file", lock], { env, stdio })
     for (const tool of ["cc", "c++", "gcc", "g++", "ar", "as", "ld", "nm", "ranlib", "strip"]) {

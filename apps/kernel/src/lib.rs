@@ -35,6 +35,7 @@ pub mod history_archive;
 pub mod hot_reload;
 pub mod io;
 pub(crate) mod jobs;
+pub mod kernel_pid_file;
 mod lease_worker_enrollment;
 pub mod local;
 pub mod logging;

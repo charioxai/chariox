@@ -187,10 +187,10 @@ fn blocked_cards(team: &Family) -> Vec<String> {
         .collect()
 }
 
-// Pilot O: an interrupted child's Resume/Cancel card stayed for ever once the child was deleted,
-// because the child's task kept the card alive.
+// Pilot O: an interrupted child's blocked task stayed open for ever once the child was deleted.
+// It is status and a `child_blocked` event for the parent, not a card.
 #[tokio::test]
-async fn deleting_a_blocked_child_clears_its_interrupted_card() {
+async fn deleting_a_blocked_child_clears_its_interrupted_task() {
     let team = family_of("child-cleanup-card", 1, None, true, true).await;
     let kid = &team.kids[0];
     let crate::durable_state::agent_lifecycle::Outcome::Task(blocked) = team
@@ -210,17 +210,25 @@ async fn deleting_a_blocked_child_clears_its_interrupted_card() {
         .ensure_task_owner_interaction(blocked)
         .await
         .unwrap();
-    assert_eq!(
-        blocked_cards(&team).len(),
-        1,
-        "the owner is asked what to do"
+    assert!(blocked_cards(&team).is_empty(), "a blocked task is no card");
+    assert!(
+        team.runtime
+            .owned
+            .blocked_task_for_command(&team.room, &kid.child)
+            .unwrap()
+            .is_some(),
+        "the owner can settle it with `agent resume`"
     );
     team.runtime
         .destroy_one_agent(&kid.child, "local", true)
         .await
         .unwrap();
     assert!(
-        blocked_cards(&team).is_empty(),
+        team.runtime
+            .owned
+            .blocked_task_for_command(&team.room, &kid.child)
+            .unwrap()
+            .is_none(),
         "nobody is left to resume it"
     );
 }

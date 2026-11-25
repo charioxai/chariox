@@ -197,6 +197,7 @@ pub(crate) enum KernelEvent {
     RuntimeInteractionsChanged {
         session_id: String,
         active_interactions: Vec<RuntimeInteraction>,
+        machine_approval_receipts: Vec<crate::session::MachineApprovalReceipt>,
     },
     SessionUnavailable {
         session_id: String,
@@ -480,6 +481,7 @@ pub(crate) fn kernel_event_trace_payload(event_id: u64, event: &KernelEvent) -> 
         KernelEvent::RuntimeInteractionsChanged {
             session_id,
             active_interactions,
+            ..
         } => serde_json::json!({
             "event_id": event_id,
             "event": "runtime_interactions_changed",
@@ -924,12 +926,16 @@ pub(crate) fn runtime_interactions_changed_event(
     previous_snapshot: Option<&SessionSnapshotProjection>,
 ) -> Option<KernelEvent> {
     let previous_snapshot = previous_snapshot?;
-    if previous_snapshot.session.active_interactions() == snapshot.session.active_interactions() {
+    if previous_snapshot.session.active_interactions() == snapshot.session.active_interactions()
+        && previous_snapshot.session.machine_approval_receipts()
+            == snapshot.session.machine_approval_receipts()
+    {
         return None;
     }
     Some(KernelEvent::RuntimeInteractionsChanged {
         session_id: snapshot.session.id().to_string(),
         active_interactions: snapshot.session.active_interactions().to_vec(),
+        machine_approval_receipts: snapshot.session.machine_approval_receipts().to_vec(),
     })
 }
 
@@ -1211,6 +1217,9 @@ pub(crate) fn map_kernel_error(error: &DaemonError) -> KernelTransportError {
         }
         DaemonError::ProviderLoginCodeInvalid => {
             kernel_error("provider_login_code_invalid", error, false)
+        }
+        DaemonError::ProviderLoginVaultEntryUnavailable => {
+            kernel_error("provider_login_vault_entry_unavailable", error, false)
         }
         DaemonError::ProviderAccountCopy {
             code, retryable, ..

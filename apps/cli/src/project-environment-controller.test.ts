@@ -390,7 +390,7 @@ test("adding a secret saves the name, then sends the masked value to the Vault w
   h.replies.push({ ProjectEnvironmentSaved: { environment: environment({ revision: 3, secrets: [...environment().secrets, { name: "NEW_TOKEN", presence: "present" }] }) } })
   h.key("return")
   await h.settle()
-  assert.deepEqual(h.requests.at(-1), { SetProjectEnvironmentSecret: { projectId: "project-1", name: "NEW_TOKEN", value: "hunter2-secret" } })
+  assert.deepEqual(h.requests.at(-1), { SetProjectEnvironmentSecret: { projectId: "project-1", name: "NEW_TOKEN", source: { value: "hunter2-secret" } } })
   assert.match(h.text(), /NEW_TOKEN\s+In Vault/)
   assert(!JSON.stringify(h.controller.view()).includes("hunter2"))
 })

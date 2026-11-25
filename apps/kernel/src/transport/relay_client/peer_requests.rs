@@ -59,7 +59,9 @@ pub(super) async fn handle_daemon_peer_request(
                 };
             }
         };
-        let request = match serde_json::from_slice::<RelayPeerRequest>(&decrypted.plaintext) {
+        let request = match crate::transport::relay_peer::open_peer_plaintext::<RelayPeerRequest>(
+            &decrypted.plaintext,
+        ) {
             Ok(request) => request,
             Err(_) => {
                 return RelayRequestOutcome {
@@ -183,7 +185,13 @@ pub(super) async fn handle_daemon_peer_request(
     }
     let is_lease_worker =
         router.kernel_runtime_role() == crate::config::KernelRuntimeRole::RemoteLeaseWorker;
+    // The managed startup check reads a probe file of this machine through the relay. On a
+    // leased worker that is the one file request it answers, and only from itself.
+    let own_startup_file_probe = is_lease_worker
+        && matches!(&request, RelayPeerRequest::ReadMachineFile { .. })
+        && canonical_peer_daemon_id(from_daemon_id) == Some(daemon_id.as_str());
     let lease_worker_caller = if !managed_context_request(&request)
+        && !own_startup_file_probe
         && (is_lease_worker
             || matches!(
                 &request,
@@ -2340,7 +2348,7 @@ pub(crate) async fn send_authenticated_peer_request_for_test(
     let decrypted =
         relay_crypto::decrypt_payload_for_private_key(source_private_key, &encrypted_response)
             .map_err(|error| relay_error("test_peer_request_failed", &error.to_string(), false))?;
-    serde_json::from_slice(&decrypted.plaintext)
+    crate::transport::relay_peer::open_peer_plaintext(&decrypted.plaintext)
         .map_err(|error| relay_error("test_peer_request_failed", &error.to_string(), false))
 }
 
@@ -2374,7 +2382,7 @@ fn encrypt_peer_response(
     requester_public_key: &str,
     response: RelayPeerResponse,
 ) -> RelayRequestOutcome {
-    let plaintext = match serde_json::to_vec(&response) {
+    let plaintext = match crate::transport::relay_peer::seal_peer_plaintext(&response) {
         Ok(bytes) => bytes,
         Err(error) => {
             return RelayRequestOutcome {
@@ -2793,6 +2801,7 @@ fn managed_context_request(request: &RelayPeerRequest) -> bool {
 mod tests {
     mod agent_move;
     mod environment_setup_worker;
+    mod file_slice_wire;
     mod signed_slice;
 
     use super::*;
@@ -3165,7 +3174,8 @@ mod tests {
         let decrypted =
             relay_crypto::decrypt_payload_for_private_key(source_private_key, &encrypted_response)
                 .expect("response should decrypt");
-        serde_json::from_slice(&decrypted.plaintext).expect("response should decode")
+        crate::transport::relay_peer::open_peer_plaintext(&decrypted.plaintext)
+            .expect("response should decode")
     }
 
     /// MP-08 / MP-09 / MP-10 / MP-11: `chariox.file.copy` slices reach a leased agent's workspace
@@ -3282,6 +3292,111 @@ mod tests {
             }
         }
         assert!(notes.exists());
+        match previous {
+            Some(value) => std::env::set_var("CHARIOX_HOME", value),
+            None => std::env::remove_var("CHARIOX_HOME"),
+        }
+    }
+
+    // The managed startup check reads a probe file of the kernel's own machine through the
+    // relay. A leased worker is such a kernel: it answers that read from itself and from no
+    // other kernel, and answers no other file request.
+    #[test]
+    fn a_lease_worker_serves_its_own_startup_file_probe_and_nothing_else() {
+        run_on_large_stack(
+            "lease worker startup probe test",
+            a_lease_worker_serves_its_own_startup_file_probe_and_nothing_else_inner(),
+        );
+    }
+
+    async fn a_lease_worker_serves_its_own_startup_file_probe_and_nothing_else_inner() {
+        let _env = crate::env_lock::lock();
+        let folder = crate::test_support::TestWorktree::new("lease-worker-startup-probe");
+        std::fs::write(folder.path().join("probe.py"), b"result = 1\n").unwrap();
+        let state_home = folder.path().join("kernel-home");
+        std::fs::create_dir_all(&state_home).unwrap();
+        let previous = std::env::var_os("CHARIOX_HOME");
+        std::env::set_var("CHARIOX_HOME", &state_home);
+
+        let app = DaemonApp::bootstrap(lease_worker_config()).expect("worker should boot");
+        let own_id = app.config().daemon_id.clone();
+        let own_public_key = app.config().relay_public_key.clone();
+        let router = Arc::new(CommandRouter::with_interactive_capacity(
+            Arc::new(Mutex::new(app)),
+            2,
+        ));
+        let own_private_key = router.relay_private_key();
+        let state = Arc::new(RwLock::new(RelayClientState::default()));
+        let probe = folder.path().join("probe.py");
+        let read = RelayPeerRequest::ReadMachineFile {
+            path: probe.display().to_string(),
+            offset: 0,
+        };
+        let own_identity = scoped_machine_identity(
+            "machine-worker-1",
+            Some(public_key_thumbprint(&own_public_key)),
+        );
+
+        // The worker's own probe is served...
+        let served = send_authenticated_peer_request_for_test(
+            &router,
+            &state,
+            &own_id,
+            own_identity.clone(),
+            &own_private_key,
+            &own_public_key,
+            read.clone(),
+        )
+        .await
+        .expect("a lease worker answers its own startup file probe");
+        let RelayPeerResponse::FileSliceRead { content, .. } = served else {
+            panic!("a slice")
+        };
+        assert_eq!(&**content.decode().unwrap(), b"result = 1\n");
+
+        // ...no other file request from itself is...
+        for request in [
+            RelayPeerRequest::ListMachineDirectory {
+                path: folder.path().display().to_string(),
+                offset: 0,
+            },
+            RelayPeerRequest::DeleteMachinePath {
+                path: probe.display().to_string(),
+                expect_revision: None,
+            },
+        ] {
+            let refused = send_authenticated_peer_request_for_test(
+                &router,
+                &state,
+                &own_id,
+                own_identity.clone(),
+                &own_private_key,
+                &own_public_key,
+                request,
+            )
+            .await;
+            assert!(refused.is_err(), "{refused:?}");
+        }
+        assert!(probe.exists());
+
+        // ...and another kernel of the same owner reads nothing from a worker.
+        let other_private_key = relay_crypto::generate_private_key_base64();
+        let other_public_key = relay_crypto::public_key_from_private_key_base64(&other_private_key)
+            .expect("peer public key");
+        let refused = send_authenticated_peer_request_for_test(
+            &router,
+            &state,
+            "kernel-other",
+            scoped_machine_identity(
+                "machine-other",
+                Some(public_key_thumbprint(&other_public_key)),
+            ),
+            &other_private_key,
+            &own_public_key,
+            read,
+        )
+        .await;
+        assert!(refused.is_err(), "{refused:?}");
         match previous {
             Some(value) => std::env::set_var("CHARIOX_HOME", value),
             None => std::env::remove_var("CHARIOX_HOME"),
@@ -4143,7 +4258,8 @@ mod tests {
             relay_crypto::decrypt_payload_for_private_key(&source_private_key, &encrypted)
                 .expect("decrypt lease response");
         let RelayPeerResponse::ExecutionLeaseCreated { lease, .. } =
-            serde_json::from_slice(&plaintext.plaintext).expect("decode lease response")
+            crate::transport::relay_peer::open_peer_plaintext(&plaintext.plaintext)
+                .expect("decode lease response")
         else {
             panic!("unexpected lease response")
         };
@@ -4345,7 +4461,8 @@ mod tests {
             relay_crypto::decrypt_payload_for_private_key(&source_private_key, &encrypted_response)
                 .expect("decrypt identity rejection");
         let response: RelayPeerResponse =
-            serde_json::from_slice(&decrypted.plaintext).expect("decode identity rejection");
+            crate::transport::relay_peer::open_peer_plaintext(&decrypted.plaintext)
+                .expect("decode identity rejection");
         assert!(matches!(
             response,
             RelayPeerResponse::ManagedContextImportFailed {
@@ -6231,7 +6348,8 @@ mod tests {
         let decrypted =
             relay_crypto::decrypt_payload_for_private_key(source_private_key, &encrypted_response)
                 .expect("decrypt peer response");
-        serde_json::from_slice(&decrypted.plaintext).expect("decode peer response")
+        crate::transport::relay_peer::open_peer_plaintext(&decrypted.plaintext)
+            .expect("decode peer response")
     }
 
     fn context_completion_fixture(

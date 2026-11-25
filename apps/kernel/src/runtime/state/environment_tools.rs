@@ -1,6 +1,6 @@
 //! Room tools for the Project Environment: an agent reads what this machine has and lacks, brings missing
 //! entries from another machine, runs the saved Setup, compares the files with the record, proposes changes
-//! and saves the fields. Names and states only; never a Secret value (the Vault capture tools take values).
+//! and saves the fields. Names and states only; never a Secret value: a value comes from a Vault entry, by its id.
 use super::*;
 use crate::local::{
     EnvironmentEntryRef, ImportProjectEnvironmentEntriesRequest, LocalDaemonResponse,
@@ -17,6 +17,7 @@ pub(crate) const ENVIRONMENT_SETUP: &str = "chariox.environment.setup";
 pub(crate) const ENVIRONMENT_CHECK: &str = "chariox.environment.check";
 pub(crate) const ENVIRONMENT_PROPOSE: &str = "chariox.environment.propose";
 pub(crate) const ENVIRONMENT_SAVE: &str = "chariox.environment.save";
+pub(crate) const ENVIRONMENT_USE_VAULT_ENTRY: &str = "chariox.environment.use_vault_entry";
 
 pub(crate) fn is_environment_tool(name: &str) -> bool {
     matches!(
@@ -27,6 +28,7 @@ pub(crate) fn is_environment_tool(name: &str) -> bool {
             | ENVIRONMENT_CHECK
             | ENVIRONMENT_PROPOSE
             | ENVIRONMENT_SAVE
+            | ENVIRONMENT_USE_VAULT_ENTRY
     )
 }
 
@@ -50,6 +52,8 @@ pub(crate) fn environment_tool_specs() -> Vec<RuntimeToolSpec> {
             object(serde_json::json!({"proposals":{"type":"array","items":proposal}}))),
         (ENVIRONMENT_SAVE, "Save the Environment fields as the next revision (revision 0 writes the first Environment of a Project that has none, `exists` false in the read result): Setup script, Variables (KEY=value lines, no values of Secrets), Secret names and File paths. `revision` is the revision you read; a stale one writes nothing. MCPs and Skills stay as they are. Values of Secrets go through the Vault capture tools, never through this tool.",
             object(serde_json::json!({"revision":{"type":"integer"},"setup":{"type":"string"},"variables":{"type":"string"},"secrets":names,"files":names}))),
+        (ENVIRONMENT_USE_VAULT_ENTRY, "Give a Secret of the saved Environment its value from a Vault entry, inside the kernel: you name the Secret and the entry's credential_id (see chariox.list_credential_handles; a new value first goes in with chariox.vault.capture_command), never the value. The entry must have been made for the environment variable of the same name. Returns whether the Vault now holds the Secret.",
+            serde_json::json!({"type":"object","required":["name","credential_id"],"properties":{"name":{"type":"string"},"credential_id":{"type":"string"}},"additionalProperties":false})),
     ]
     .into_iter()
     .map(|(name, description, input_schema)| RuntimeToolSpec {
@@ -61,6 +65,22 @@ pub(crate) fn environment_tool_specs() -> Vec<RuntimeToolSpec> {
 }
 
 impl KernelRuntimeState {
+    /// The Environment tools this agent can use now. Giving a Secret its value from a Vault entry
+    /// needs a saved Environment, so that tool is listed only when the Room's Project has one.
+    pub(crate) fn environment_tool_specs_for(&self, token: &str) -> Vec<RuntimeToolSpec> {
+        let has_environment = (|| -> Result<bool, DaemonError> {
+            let context = self.vault_agent_context(token)?;
+            let session = self.owned.session_store.get_session(&context.session_id)?;
+            let project = self.tool_project(&session, &context.owner_user_id)?;
+            Ok(self.environment_store().load(project.id())?.is_some())
+        })()
+        .unwrap_or(false);
+        environment_tool_specs()
+            .into_iter()
+            .filter(|spec| has_environment || spec.name != ENVIRONMENT_USE_VAULT_ENTRY)
+            .collect()
+    }
+
     pub(crate) async fn environment_tool(
         &self,
         token: &str,
@@ -194,6 +214,46 @@ impl KernelRuntimeState {
                 }
                 store.replace(project.id(), all)?;
                 serde_json::json!({ "stored": stored })
+            }
+            ENVIRONMENT_USE_VAULT_ENTRY => {
+                let text = |key: &str| {
+                    arguments
+                        .get(key)
+                        .and_then(|v| v.as_str())
+                        .ok_or_else(|| error(format!("{key} is a string")))
+                };
+                let (name, credential_id) = (text("name")?, text("credential_id")?);
+                let record = record.ok_or_else(|| {
+                    environment_error("this Project has no Environment yet; Draft one first")
+                })?;
+                if !record.secrets.iter().any(|secret| secret == name) {
+                    return Err(environment_error(
+                        "save the Secret's name in the Environment before giving it a value",
+                    ));
+                }
+                // Waits for the owner's unlock, like chariox.vault.use_env, and holds it while reading.
+                let _unlock = self
+                    .ensure_vault_unlocked_for_agent(
+                        &context.session_id,
+                        &context.agent_id,
+                        "environment_use_vault_entry",
+                    )
+                    .await?;
+                self.copy_vault_entry_into_environment(
+                    &context.agent_id,
+                    super::vault_use::VaultUseAsk {
+                        agent_id: Some(&context.agent_id),
+                        session_id: Some(&context.session_id),
+                        ..Default::default()
+                    },
+                    project.id(),
+                    name,
+                    credential_id,
+                    || self.recheck_vault_agent(&context),
+                )
+                .await?;
+                let view = self.project_environment_view(&project, checkout, Some(record))?;
+                serde_json::json!({"name": name, "secrets": view.secrets})
             }
             _ => {
                 // A Project with no Environment takes its first one here: revision 0 is the owner's own first Save.
@@ -330,7 +390,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_six_tools_are_advertised_with_an_object_schema_each() {
+    fn the_tools_are_advertised_with_an_object_schema_each() {
         let specs = environment_tool_specs();
         let names: Vec<&str> = specs.iter().map(|spec| spec.name.as_str()).collect();
         assert_eq!(
@@ -342,6 +402,7 @@ mod tests {
                 "chariox.environment.check",
                 "chariox.environment.propose",
                 "chariox.environment.save",
+                "chariox.environment.use_vault_entry",
             ]
         );
         assert!(names.iter().all(|name| is_environment_tool(name)));

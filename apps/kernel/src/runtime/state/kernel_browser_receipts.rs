@@ -51,10 +51,6 @@ impl KernelRuntimeState {
             KernelBrowserCommand::Stop
                 | KernelBrowserCommand::GrantLeasedComputer { .. }
                 | KernelBrowserCommand::RevokeLeasedComputer { .. }
-                | KernelBrowserCommand::GrantRoomComputer { .. }
-                | KernelBrowserCommand::ListGrants
-                | KernelBrowserCommand::SubscribeGrants { .. }
-                | KernelBrowserCommand::RevokeGrants { .. }
         ) {
             return Ok(None);
         }
@@ -78,10 +74,6 @@ impl KernelRuntimeState {
             KernelBrowserCommand::Stop
                 | KernelBrowserCommand::GrantLeasedComputer { .. }
                 | KernelBrowserCommand::RevokeLeasedComputer { .. }
-                | KernelBrowserCommand::GrantRoomComputer { .. }
-                | KernelBrowserCommand::ListGrants
-                | KernelBrowserCommand::SubscribeGrants { .. }
-                | KernelBrowserCommand::RevokeGrants { .. }
         ) {
             return Ok(());
         }
@@ -132,6 +124,8 @@ while IFS= read -r request; do
   *'"method":"host.protect"'*) printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
   *'"method":"host.computer.retire"'*) printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
   *'"method":"host.browser.retire_input"'*) printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
+  *'"rebind":true'*) printf '{"id":%s,"ok":false,"error":{"code":"browser_action_failed","message":"cannot bind the page again"}}\n' "$id" ;;
+  *'"op":"popup_region"'*) printf '{"id":%s,"ok":true,"result":{"state":"condition_met","reason":"Browser restarted"}}\n' "$id" ;;
   *'"op":"state_signal"'*) after=${request#*'"after":'}; after=${after%%,*}; ms=${request#*'"wait_ms":'}; ms=${ms%%[!0-9]*}; ( n=0; while test "$(cat "$1/signal" 2>/dev/null || echo 0)" = "$after" && test "$n" -lt $((ms / 10)); do sleep 0.01; n=$((n+1)); done; printf '{"id":%s,"ok":true,"result":{"signal":%s}}\n' "$id" "$(cat "$1/signal" 2>/dev/null || echo 0)" ) & ;;
   *'"state_wait":true'*) while test -e "$1/hold"; do sleep 0.01; done; printf '{"id":%s,"ok":true,"result":{"generation":1,"tabs":[{"tab_id":"host-tab-fixture","document_id":"document","title":"%s"}],"_state_signal":%s}}\n' "$id" "$(cat "$1/title" 2>/dev/null || echo first)" "$(cat "$1/signal" 2>/dev/null || echo 0)" ;;
   *'"op":"start"'*) printf 'start\n' >> "$1/starts"; printf '{"id":%s,"ok":true,"result":{"generation":1,"tabs":[{"tab_id":"host-tab-fixture","document_id":"document"}]}}\n' "$id" ;;

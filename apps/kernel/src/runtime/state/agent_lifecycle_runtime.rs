@@ -5,6 +5,10 @@ use crate::durable_state::agent_lifecycle::{
     self as ledger, AgentTaskExecution, ExecutionState, Operation, Outcome,
 };
 
+/// What a parent is told when the kernel's program was replaced (a restart or a hot reload)
+/// while a task waited for a background call, and nothing was left to carry the wait over.
+const UNHELD_TASK_RESTART_REASON: &str = "The kernel restarted while this task waited for a background call to end, and the call's end can no longer reach it. Send the request again to continue the conversation.";
+
 impl KernelRuntimeOwnedState {
     /// True when the task is at a revision this kernel has not yet announced.
     /// Retried settlements of an unchanged task are not news.
@@ -599,6 +603,25 @@ impl KernelRuntimeState {
         }
         Ok(())
     }
+    pub(crate) fn withdraw_agent_reply_request(
+        &self,
+        session: &crate::session::RuntimeSession,
+        sender: &crate::agent::AgentInstance,
+        sequence: u64,
+    ) -> Result<(), DaemonError> {
+        self.require_message_authority(session, sender)?;
+        self.owned
+            .durable_state_store
+            .agent_lifecycle(Operation::WithdrawReply {
+                room: session.id().into(),
+                agent: sender.id().into(),
+                sequence,
+                now: crate::session::unix_epoch_ms(),
+            })?;
+        self.publish_task_change(session.id());
+        self.schedule_agent_lifecycle_sweep();
+        Ok(())
+    }
     pub(in crate::runtime::state) async fn send_durable_agent_message(
         &self,
         session: &crate::session::RuntimeSession,
@@ -621,10 +644,11 @@ impl KernelRuntimeState {
                 current
             }
             other => {
-                let refusal = if other.is_none() {
-                    "sender has no running turn"
-                } else {
-                    "stale sender turn"
+                let refusal = match other {
+                    Some(current) if current.status() == crate::session::PromptStatus::Running => {
+                        format!("stale sender turn. The current turn is `{}`. Retry send_agent_message with origin_prompt_id set to `{}`.", current.id(), current.id())
+                    }
+                    _ => "sender has no running turn. Send the message from a running turn using the origin_prompt_id supplied for that turn.".into(),
                 };
                 let tool_args = serde_json::json!({"origin_prompt_id": args.origin_prompt_id});
                 self.log_refused_turn_tool(
@@ -633,7 +657,7 @@ impl KernelRuntimeState {
                     None,
                     "send_agent_message",
                     &tool_args,
-                    refusal,
+                    &refusal,
                 );
                 return Err(ledger::error(refusal));
             }
@@ -684,8 +708,15 @@ impl KernelRuntimeState {
                 )
                 .await;
         }
-        self.owned
-            .ensure_agent_before_deadline(target_room, target.id())?;
+        if let Err(error) = self
+            .owned
+            .ensure_agent_before_deadline(target_room, target.id())
+        {
+            if crate::error::is_agent_deadline_refusal(&error) {
+                self.show_deadline_refusal(target_room, target.id()).await;
+            }
+            return Err(error);
+        }
         // Refuse here, while the sender can still react: a message the peer's account cannot
         // start would otherwise stay durable and pending behind the sender's goal.
         if let Err(error) =
@@ -1479,6 +1510,10 @@ impl KernelRuntimeState {
     }
     async fn sweep_agent_lifecycle_at(&self, now: u64) -> Result<(), DaemonError> {
         let step = &self.owned.agent_wakes.sweep_step;
+        step.enter("provider stall notices");
+        if let Err(error) = self.reconcile_provider_stalls(now).await {
+            tracing::warn!(%error, "provider stall notices will be reconciled in the next pass");
+        }
         step.enter("the lost-workspace check");
         Box::pin(self.end_turns_on_lost_workspace()).await;
         if !self.owned.config_projection.snapshot().room_agent_tools {
@@ -1708,7 +1743,7 @@ impl KernelRuntimeState {
             // Stopping the turn asks the worker, which may not answer: the check ends in its
             // own work, and the sweep goes on with the other tasks.
             let (task, prompt) = (task.clone(), check.prompt_id.clone());
-            self.spawn_task_work(
+            self.spawn_child_task_work(
                 format!("goal-check:{}", task.task_id),
                 move |state| async move {
                     if let CheckExpiry::Blocked(stopped) =
@@ -1730,7 +1765,7 @@ impl KernelRuntimeState {
             // The worker that holds the run may be gone: a cancellation that is not confirmed
             // stays unsettled and is started again by the next sweep, apart from this one.
             let cancelled = task.clone();
-            self.spawn_task_work(
+            self.spawn_child_task_work(
                 format!("cancel:{}", task.task_id),
                 move |state| async move {
                     Box::pin(state.cancel_agent_task_resources(&cancelled)).await
@@ -2004,6 +2039,31 @@ impl KernelRuntimeState {
                         "prompt_id": ended.prompt_id, "provider_run_id": ended.provider_run_id,
                         "state": ended.state, "last_progress_at_ms": task.last_progress_at_ms}),
                 );
+                // A task whose last progress predates this program's start lost its executor to a
+                // restart or a hot reload (the in-memory hold for its background calls went with
+                // it, and no active prompt was left for recovery to end). Its parent hears that,
+                // typed and retryable, not a cancellation nobody asked for.
+                // The turn is already ended above; telling its parent is best effort, as in restart
+                // recovery. An agent that no longer exists must not abort the whole sweep.
+                if task.last_progress_at_ms < self.owned.agent_wakes.started_at_ms {
+                    if let Err(error) = self
+                        .announce_child_interrupted(
+                            &ended.room_id,
+                            &ended.agent_id,
+                            &ended.prompt_id,
+                            UNHELD_TASK_RESTART_REASON,
+                        )
+                        .await
+                    {
+                        crate::logging::warn_with_fields(
+                            "runtime.agent_lifecycle",
+                            "could not tell the parent about a turn the sweep ended as interrupted",
+                            serde_json::json!({"room_id": ended.room_id, "agent_id": ended.agent_id,
+                                "task_id": ended.task_id, "prompt_id": ended.prompt_id,
+                                "error": crate::secret_redaction::redact_secrets(&error.to_string())}),
+                        );
+                    }
+                }
                 return Ok(Some(ended));
             }
         }

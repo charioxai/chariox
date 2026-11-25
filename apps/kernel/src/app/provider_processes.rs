@@ -121,7 +121,7 @@ impl<'a> ProviderLaunchProcessRuntime<'a> {
         &mut self,
         provider_run_id: &str,
     ) -> Result<(bool, Option<String>), DaemonError> {
-        remove_provider_pty_process(self.app, provider_run_id)
+        remove_provider_pty_process(self.app, provider_run_id, None)
     }
 
     pub(crate) fn poll_exit(
@@ -210,6 +210,14 @@ impl<'a> ProviderProcessTracker<'a> {
     }
 
     pub(crate) fn remove_run(&mut self, provider_run_id: &str) -> Result<bool, DaemonError> {
+        self.remove_run_with_reaps(provider_run_id, None)
+    }
+
+    pub(crate) fn remove_run_with_reaps(
+        &mut self,
+        provider_run_id: &str,
+        reaps: Option<&mut crate::pty::PtyShutdownReaps>,
+    ) -> Result<bool, DaemonError> {
         let tracked_process_key = self
             .app
             .provider_process_tracking
@@ -217,7 +225,7 @@ impl<'a> ProviderProcessTracker<'a> {
             .run_processes
             .get(provider_run_id)
             .cloned();
-        let (removed, process_key) = remove_provider_pty_process(self.app, provider_run_id)?;
+        let (removed, process_key) = remove_provider_pty_process(self.app, provider_run_id, reaps)?;
         let process_key = tracked_process_key.or(process_key);
         let Some(process_key) = process_key else {
             return Ok(removed);
@@ -522,6 +530,7 @@ impl<'a> ProviderProcessTracker<'a> {
 fn remove_provider_pty_process(
     app: &mut DaemonApp,
     provider_run_id: &str,
+    mut reaps: Option<&mut crate::pty::PtyShutdownReaps>,
 ) -> Result<(bool, Option<String>), DaemonError> {
     let process_key = app.pty.process_key(provider_run_id).ok();
     let cleanup_root = app
@@ -529,13 +538,19 @@ fn remove_provider_pty_process(
         .get_run(provider_run_id)
         .ok()
         .and_then(|run| claude_native_tui_cleanup_root(&run));
-    let removed = app.pty.remove_process(provider_run_id)?;
+    let removed = app
+        .pty
+        .remove_process_with_reaps(provider_run_id, reaps.as_deref_mut())?;
     let process_still_running = process_key
         .as_deref()
         .is_some_and(|key| app.pty.has_process_key(key));
     if !process_still_running {
         if let Some(root) = cleanup_root {
-            let _ = std::fs::remove_dir_all(root);
+            if let Some(reaps) = reaps {
+                reaps.remove_state_dir_after_reap(root);
+            } else {
+                let _ = std::fs::remove_dir_all(root);
+            }
         }
     }
     Ok((removed, process_key))

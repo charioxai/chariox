@@ -5,7 +5,7 @@ fn session_outline_delta_snapshot_and_hash() {
     let bytes = include_bytes!("session-outline-delta-1014.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "592112103ee47b96b17d059beeaede0c8c55311e859ee845a67508551a47f337"
+        "799963fb89ca6fc1469a575dd1afd6e9ac929637ba68912492af30dc3d1888f2"
     );
     let expected: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(expected["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);

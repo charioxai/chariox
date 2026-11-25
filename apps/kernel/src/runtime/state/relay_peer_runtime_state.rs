@@ -431,12 +431,24 @@ impl KernelRuntimeState {
                 )
             })
             .await?;
+        // The worker's stop is final: neither a home's edit nor the shift of a restart revives
+        // an agent that already ended here.
+        if self
+            .owned
+            .durable_state_store
+            .agent_deadline(&backing.0, &backing.1)?
+            .is_some_and(|ended| ended.state == crate::local::AgentDeadlineState::Reached)
+        {
+            return Err(DaemonError::MachineRequest {
+                code: crate::error::AGENT_DEADLINE_REACHED.into(),
+                message: "the worker already ended this leased agent at its time limit; a leased agent cannot be extended after that, start a new agent".into(),
+            });
+        }
         self.owned.durable_state_store.agent_lifecycle(
             crate::durable_state::agent_lifecycle::Operation::SetDeadline {
                 room: backing.0,
                 agent: backing.1,
                 deadline: deadline_ms,
-                inherited: Vec::new(),
             },
         )?;
         Ok(())
@@ -798,9 +810,18 @@ impl KernelRuntimeState {
                 // A prior profile acknowledgement may have been lost. Home remains
                 // authoritative, including when this is a retry of an active prompt.
                 if let Err(error) = profile_update {
+                    // A worker that lost the account leaves the prompt open: the home
+                    // hands the account over again and submits the same prompt, which
+                    // a rejection receipt would fence.
+                    let account_missing = matches!(
+                        &error,
+                        DaemonError::LocalTransport { operation, .. }
+                            if *operation
+                                == crate::transport::relay_peer::REMOTE_PROVIDER_ACCOUNT_MISSING_OPERATION
+                    );
                     if let Some(home_prompt_id) = profile_home_prompt_id
                         .as_deref()
-                        .filter(|_| profile_receipt_is_new)
+                        .filter(|_| profile_receipt_is_new && !account_missing)
                     {
                         // A permanent profile refusal needs a durable receipt.
                         runtime

@@ -32,6 +32,18 @@ impl CommandRouter {
             .map(Some);
         }
 
+        if let LocalDaemonRequest::MachineAcquisition(request) = request {
+            return crate::runtime::control_plane::execute_acquire(
+                &self.config_projection.snapshot(),
+                &self.runtime_state,
+                command,
+                &self.kernel_gateway,
+                request,
+            )
+            .await
+            .map(Some);
+        }
+
         if let Some(actor) = command.caller.metaagent_id.as_deref() {
             self.runtime_state
                 .authorize_room_provider_epoch(Some(actor), command.provider_run_id.as_deref())?;
@@ -41,6 +53,15 @@ impl CommandRouter {
         if let LocalDaemonRequest::AttachSessionView(request) = request {
             return self
                 .attach_session_view(command, request.clone())
+                .await
+                .map(Some);
+        }
+        if let LocalDaemonRequest::GetPaneFeed(request) = request {
+            return self.get_pane_feed(command, request.clone()).await.map(Some);
+        }
+        if let LocalDaemonRequest::ReportPaneSettings(request) = request {
+            return self
+                .report_pane_settings(command, request.clone())
                 .await
                 .map(Some);
         }
@@ -87,6 +108,7 @@ impl CommandRouter {
                 .event_connection_lanes
                 .lock(&event_user_id, &removal.connection_id)
                 .await;
+            crate::runtime::start_gate::begin_current()?;
             return execute_event_catalog_request_with_client(
                 &self.runtime_state,
                 &self.config_projection,
@@ -123,6 +145,7 @@ impl CommandRouter {
                 .event_connection_lanes
                 .lock(&event_user_id, &connection_id)
                 .await;
+            crate::runtime::start_gate::begin_current()?;
             return execute_event_catalog_request_with_client(
                 &self.runtime_state,
                 &self.config_projection,

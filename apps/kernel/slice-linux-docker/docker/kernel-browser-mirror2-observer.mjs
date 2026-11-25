@@ -236,15 +236,27 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     // as changes of that value at the next drain (a sheet can turn up in the middle of one, which ends by clearing what is dirty).
     const valueNames = new Set();
     let valueStale = [];
-    const sheetCss = (text, base, doc) => {
-      const out = loadViewerOptions(sanitizeMirrorCss(text, base, resource), doc);
-      for (const name of ['href', 'src']) if (!valueNames.has(name) && new RegExp(`\\[\\s*chariox-${name}\\s*[~|^$*]?=`, 'i').test(out)) {
+    const valuesSelected = names => {
+      for (const name of names) if (!valueNames.has(name)) {
         valueNames.add(name);
         for (const node of nodes.values()) if (node.nodeType === 1 && node.hasAttribute(name)) valueStale.push([node, name === 'href' ? 'href' : 'chariox-src']);
         if (valueStale.length) wake();
       }
+    };
+    const sheetCss = (text, base, doc) => {
+      const out = loadViewerOptions(sanitizeMirrorCss(text, base, resource), doc);
+      valuesSelected(['href', 'src'].filter(name => new RegExp(`\\[\\s*chariox-${name}\\s*[~|^$*]?=`, 'i').test(out)));
       return out;
     };
+    // A cross-origin sheet the kernel sanitized itself (the same sanitizeMirrorCss, on its cached copy): each part's url()
+    // occurrences register here in the sanitizer's own order, so the keys, this registry and its side effects are those of
+    // sheetCss. Only the occurrences, the part's image-set() text (occurrence numbers `mr:r<n>`) and its href/src selectors come in.
+    const sheetKeys = parts => parts.map(({ urls, imageSets, values }) => {
+      const keys = urls.map(([value, base, kind]) => resource(String(value), String(base), String(kind)));
+      if (imageSets) loadViewerOptions(String(imageSets).replace(/url\("mr:r(\d+)"\)/g, (_, n) => keys[n - 1] ? `url("mr:${keys[n - 1]}")` : 'none'), document);
+      valuesSelected(values.filter(name => name === 'href' || name === 'src'));
+      return keys;
+    });
     const markValuesStale = () => {
       for (const [node, name] of valueStale) if (mirrored(node)) { if (!dirty.attrs.has(node)) dirty.attrs.set(node, new Set()); dirty.attrs.get(node).add(name); }
       valueStale = [];
@@ -365,6 +377,10 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     const hostBox = node => viewportHost(node) ? [0, 0, 0, 0] : box(node);
     // Layout size (untransformed: the mirrored DOM applies the same transforms); SVG/text boxes use the rendered box.
     const layoutSize = node => node.nodeType === 1 && node.offsetWidth !== undefined ? [node.offsetWidth, node.offsetHeight] : (node.nodeType === 1 ? box(node) : textBox(node)).slice(2);
+    // Row 489: a document's body with no box of its own whose closed root paints (Chromium's PDF document: a 0-high body, its
+    // viewer iframe absolute in the root) is laid out in the viewer at what it paints: a 0-high tile never gets a region there.
+    // Only the body: any other host keeps its layout size (its painted overflow must not push the content after it).
+    const tileSize = node => { const size = layoutSize(node); if (size[0] > 0 && size[1] > 0 || !closedRoots.has(node) || node !== node.ownerDocument.body) return size; const own = box(node), ink = closedInk(node, own); return ink && ink[0] === own[0] && ink[1] === own[1] ? [Math.round(ink[2]), Math.round(ink[3])] : size; };
     const textBox = node => { const range = node.ownerDocument.createRange(); range.selectNodeContents(node); const r = range.getBoundingClientRect(); return [r.x, r.y, r.width, r.height]; };
     // Every non-password input counts, as on the pixel path (a filled month/date shows its value too).
     const plainText = node => node.localName === 'input' ? node.type !== 'password' : node.localName === 'textarea' || node.isContentEditable;
@@ -394,6 +410,8 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
         if (root.nodeType === 9) for (const type of ['loading', 'loadingdone', 'loadingerror']) root.fonts.addEventListener(type, wake, { signal: listening.signal });
         const listen = (type, fn) => root.addEventListener(type, fn, { capture: true, passive: true, signal: listening.signal });
         if (root.nodeType === 9) listen('readystatechange', wake);
+        // Row 486: media events do not bubble; the capture listener sees play, pause and end of every mirrored element.
+        for (const type of ['playing', 'pause', 'ended', 'emptied']) listen(type, wake);
         listen('scroll', event => { const target = event.target; dirty.scroll.add(target.nodeType === 9 ? target.documentElement : target); wake(); });
         // A fragment navigation moves `:target` (the header, or a frame document's fragment op).
         if (root.nodeType === 9) root.defaultView?.addEventListener('hashchange', wake, { passive: true, signal: listening.signal });
@@ -565,7 +583,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     const densityOp = (id, attrs, ops) => { const value = attrs['chariox-density'] ?? null; if (value === (densityOf.get(id) ?? null)) return; if (value) densityOf.set(id, value); else densityOf.delete(id); ops.push({ op: 'attr', id, name: 'chariox-density', value }); };
     const remember = (record, node) => { if (node.nodeType === 1 && formControl(node)) formNodes.set(record.id, node); if (node.localName === 'img') imageNodes.set(record.id, node); if (node.nodeType === 1 && ['input', 'select'].includes(node.localName)) controlShapes.set(record.id, controlShape(node)); nodes.set(record.id, node); parentOf.set(record.id, record.parent); kindOf.set(record.id, record.kind); if (record.kind === 'tile' || record.foreign) opaque.add(record.id); kids.set(record.id, []); if (record.parent && kids.has(record.parent)) kids.get(record.parent).push(record.id); };
     const opaqueRecord = (node, record, reason) => {
-      const [width, height] = layoutSize(node);
+      const [width, height] = tileSize(node);
       record.kind = 'tile'; record.reason = reason; record.size = [width, height];
       record.tag = node.namespaceURI === HTML && !['object', 'embed', 'applet', 'frame', 'frameset', 'portal', 'fencedframe'].includes(node.localName) ? node.localName : 'div';
       shapes.set(record.id, { size: record.size, display: null });
@@ -753,7 +771,8 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       remember(record, node);
       if (tag.includes('-') && !node.shadowRoot) { pendingHosts.set(id, node); closedTodo.add(node); }
       // A built-in host's closed root leaves its light DOM empty (a consent manager's banner, for one): the kernel checks those once.
-      else if (ns === HTML && SHADOW_HOSTS.has(tag) && !node.firstChild && !node.shadowRoot) closedTodo.add(node);
+      // Row 489: empty includes whitespace text only (Chromium's PDF document is such a body, its viewer iframe in the closed root).
+      else if (ns === HTML && SHADOW_HOSTS.has(tag) && !node.shadowRoot && !node.firstElementChild && !/\S/.test(node.textContent)) closedTodo.add(node);
       if (walk.defer && ns === HTML && node.firstChild && !formControl(node)) { const box = deferredBox(node, walk.defer); if (box) record.deferred = box; }
       walk.then = { node, id, kind: record.kind, depth, root: false, later: !!record.deferred }; return record;
     };
@@ -980,6 +999,10 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       return [...groups].filter(([, failed]) => failed).map(([key]) => sha256(key)).sort().slice(0, 128);
     };
     let reportedFonts = '[]';
+    // Row 486: whether a mirrored video or audio element is playing (not paused or ended, with data to play, muted or not).
+    // The viewer keeps such a Tab warm. A video or audio is an opaque tile, so only those are looked at.
+    let reportedPlaying = false;
+    const mediaPlaying = () => { for (const id of opaque) { const node = nodes.get(id); if (node?.isConnected && node.namespaceURI === HTML && (node.localName === 'video' || node.localName === 'audio') && !node.paused && !node.ended && node.readyState > 2) return true; } return false; };
     const reportedRequirements = new Map(), absentKeys = new Map(), absentOf = new Map(), installedFamilies = new Map();
     const fontOps = (ops, force = false) => {
       const due = stacksDue();
@@ -999,8 +1022,8 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     const complete = () => continuation === null && document.readyState === 'complete';
     const header = () => {
       const { focused, focus_visible, selection, range } = focusState(); reported = JSON.stringify([focused, focus_visible, selection, range]);
-      reportedComplete = complete(); const font_failures = fontFailures(); reportedFonts = JSON.stringify(font_failures);
-      return { title: document.title, snapshot_complete: reportedComplete, ...(viewportFirst ? { snapshot_viewport_complete: (deferral ? deferral.walked : continuation === null) && document.readyState !== 'loading' } : {}), font_failures, scroll: [scrollX, scrollY], focused, focus_visible, selection, fragment: fragmentOf(document), revision, opaque: opaque.size > 0, closed_candidates: closedTodo.size > 0, full_pending: fullSheets.size };
+      reportedComplete = complete(); const font_failures = fontFailures(); reportedFonts = JSON.stringify(font_failures); reportedPlaying = mediaPlaying();
+      return { title: document.title, snapshot_complete: reportedComplete, ...(viewportFirst ? { snapshot_viewport_complete: (deferral ? deferral.walked : continuation === null) && document.readyState !== 'loading' } : {}), font_failures, scroll: [scrollX, scrollY], focused, focus_visible, selection, fragment: fragmentOf(document), revision, opaque: opaque.size > 0, closed_candidates: closedTodo.size > 0, full_pending: fullSheets.size, media_playing: reportedPlaying };
     };
     // The next pruned sheet's full text, while its node still has that text (a changed sheet already sent its own).
     const fullSheet = () => { for (const [id, text] of fullSheets) { fullSheets.delete(id); if (styleNodes.get(id)?.text === text) return { id, css: text }; } return null; };
@@ -1202,7 +1225,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       // records (a Vault-filled field toggling display, a canvas resized by CSS); a new display re-serializes.
       for (const id of shapes.keys()) {
         const node = nodes.get(id), kind = kindOf.get(id); if (!node?.isConnected) continue;
-        const size = layoutSize(node), display = kind === 'mask' && node.nodeType === 1 ? getComputedStyle(node).display : null, last = shapes.get(id);
+        const size = kind === 'tile' ? tileSize(node) : layoutSize(node), display = kind === 'mask' && node.nodeType === 1 ? getComputedStyle(node).display : null, last = shapes.get(id);
         if (last && display !== last.display) { const parent = nodes.get(parentOf.get(id)); replaceNode(node); if (parent) childList(parent, out, ops); continue; }
         if (last && (last.size[0] !== size[0] || last.size[1] !== size[1])) ops.push({ op: 'size', id, size });
         shapes.set(id, { size, display });
@@ -1284,7 +1307,10 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       const node = live(id), kind = kindOf.get(id);
       if (kind !== 'tile' && !(kind === 'frame' && foreign.has(id))) throw new Error('mirror2 region required');
       const intersect = (a,b) => { const x=Math.max(a[0],b[0]),y=Math.max(a[1],b[1]);return [x,y,Math.max(0,Math.min(a[0]+a[2],b[0]+b[2])-x),Math.max(0,Math.min(a[1]+a[3],b[1]+b[3])-y)]; };
-      let bounds=box(node),clip=intersect(bounds,[0,0,node.ownerDocument.defaultView.innerWidth,node.ownerDocument.defaultView.innerHeight]);
+      // Row 489: a closed root's content can paint outside its host's box (Chromium's PDF body is 0 high, its viewer
+      // iframe absolute in the root): the region covers that ink, as opaqueBoxes reports it.
+      // The host's own box stays the origin (element offset, input); only the captured area grows to the root's ink.
+      let bounds=box(node),clip=intersect(closedInk(node,bounds)??bounds,[0,0,node.ownerDocument.defaultView.innerWidth,node.ownerDocument.defaultView.innerHeight]);
       for(let view=node.ownerDocument.defaultView;view !== window;view=view.parent){
         const owner=view.frameElement;if(!owner)throw new Error('mirror2 frame unavailable');
         // The owner's origin maps the child by translation only: a rotated/scaled owner (or ancestor of it) would misplace the crop.
@@ -1358,6 +1384,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     // The still keeps its CSS box: past the packet's byte budget it travels at a lower pixel density, the one its measured size
     // predicts (side x 0.9 x sqrt(budget / bytes), drawn again from the full-size pixels), again until it fits. Halving left a
     // video frame that missed the budget by 1% at a quarter of its density (subvysion, T3).
+    const drawnCanvases = new WeakSet();
     const elementPixels = async (id, scale, budget) => {
       const node = nodes.get(id);
       if (!node?.isConnected || kindOf.get(id) !== 'tile' || node.namespaceURI !== HTML || !['canvas', 'video'].includes(node.localName) || node.localName === 'video' && node.readyState < 2) return null;
@@ -1386,7 +1413,14 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
         if (!video) {
           const data = g.getImageData(0, 0, W, H).data; let clear = true, black = true;
           for (let i = 0; i < data.length && (clear || black); i += 4) { clear &&= !data[i + 3]; black &&= !data[i] && !data[i + 1] && !data[i + 2] && data[i + 3] === 255; }
-          if (clear) return null;
+          // Nothing drawn (or cleared to transparent): the page shows through, as natively. The kernel decides the still.
+          // A composited WebGL buffer (preserveDrawingBuffer false) reads clear too, while the page still shows its frame:
+          // a canvas that once read real pixels has a context, so asking for '2d' creates none and names a 2D one; any
+          // other context keeps the still it has.
+          // `flat`: proven a 2D canvas the page cleared (only asked of a canvas with a context): the kernel may then replace a real
+          // still with a clear one; otherwise it keeps whatever real still it has (one from the rendered page included).
+          if (clear) { if (drawnCanvases.has(node)) { let flat = false; try { flat = !!node.getContext('2d'); } catch {} return flat ? { clear: true, flat: true } : null; } return { clear: true }; }
+          drawnCanvases.add(node);
           if (black) { let flat = false; try { flat = !!node.getContext('2d'); } catch {} if (!flat) return null; }
         }
         for (let still = canvas; ;) {
@@ -1726,7 +1760,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       wake(); return true;
     };
     // Credit long-poll: resolves on the next page change (or the bound).
-    const changed = () => fontsChanged() || stacksDue() || complete() !== reportedComplete || JSON.stringify(fontFailures()) !== reportedFonts || continuation !== null || deferred.size > 0 || records.length > 0 || overflow || adoptedDirty || valueStale.length > 0 || Object.values(dirty).some(set => set.size > 0);
+    const changed = () => fontsChanged() || stacksDue() || mediaPlaying() !== reportedPlaying || complete() !== reportedComplete || JSON.stringify(fontFailures()) !== reportedFonts || continuation !== null || deferred.size > 0 || records.length > 0 || overflow || adoptedDirty || valueStale.length > 0 || Object.values(dirty).some(set => set.size > 0);
     // Credit long-poll. The delta is taken in the wake microtask, right after our
     // capture-phase listener or MutationObserver callback, so an echo does not
     // wait for the page's own handlers to finish their task. A change flagged
@@ -1745,6 +1779,14 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       if (window !== window.top || document.readyState === 'loading' || root?.nodeType !== 9 || viewerRetains(String(text))) return null;
       const sheet = new CSSStyleSheet(); sheet.replaceSync(String(text));
       const keep = usedBy(root); let out = ''; for (const rule of sheet.cssRules) out += pruned(rule, keep);
+      return out;
+    };
+    // The same check from a cross-origin sheet's selector list (the kernel holds the sheet and keeps the rules): '1' where
+    // a selector is in use, '0' where not, as usedCss would keep or drop its rule. Null where usedCss answers null.
+    const usedSelectors = (id, selectors) => {
+      const root = nodes.get(id)?.getRootNode?.();
+      if (window !== window.top || document.readyState === 'loading' || root?.nodeType !== 9) return null;
+      const keep = usedBy(root); let out = ''; for (const selector of selectors) out += keep(String(selector)) ? '1' : '0';
       return out;
     };
     // URLs this document actually fetched (Resource Timing): the kernel reads
@@ -1813,6 +1855,6 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       let binary = ''; for (let i = 0; i < bytes.length; i += 32768) binary += String.fromCharCode(...bytes.subarray(i, i + 32768));
       return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"><image width="${W}" height="${H}" preserveAspectRatio="none" href="data:image/webp;base64,${btoa(binary)}"/></svg>`;
     };
-    return Object.freeze({ sheetChanged, dispose, snapshot, visited, drain, resetTargets, waitDrain, wake, sanitize, usedCss, fullSheet, markClosedHost, reveal, customHosts, customCandidates, closedChecked, loaded, loadedCount, nearImages, preview, sprite, idOfNode, frameOrigin, activeForeign, opaqueBoxes, regionShape, regionBoxes, mediaNode, elementPixels, coveredBy, point, hitCheck, menuOff, activeTarget, ancestry, focus, blur, set, select, scrollTo, protect, textCoverage, textCodePoints, pending: () => continuation !== null || deferred.size > 0 || records.length > 0 || overflow });
+    return Object.freeze({ sheetChanged, dispose, snapshot, visited, drain, resetTargets, waitDrain, wake, sanitize, sheetKeys, usedCss, usedSelectors, fullSheet, markClosedHost, reveal, customHosts, customCandidates, closedChecked, loaded, loadedCount, nearImages, preview, sprite, idOfNode, frameOrigin, activeForeign, opaqueBoxes, regionShape, regionBoxes, mediaNode, elementPixels, coveredBy, point, hitCheck, menuOff, activeTarget, ancestry, focus, blur, set, select, scrollTo, protect, textCoverage, textCodePoints, pending: () => continuation !== null || deferred.size > 0 || records.length > 0 || overflow });
   }
 }

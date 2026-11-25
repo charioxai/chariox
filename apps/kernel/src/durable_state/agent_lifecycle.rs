@@ -20,6 +20,9 @@ mod delivery_failure_tests;
 mod leased_processes;
 #[cfg(test)]
 mod live_wait_tests;
+#[cfg(test)]
+mod start_failure_tests;
+pub(crate) mod start_failures;
 pub(crate) use deadline_clock::WorkerHeldDeadline;
 pub(crate) use leased_processes::LeasedProcessMutation;
 #[cfg(test)]
@@ -93,7 +96,8 @@ use std::sync::mpsc;
 use transitions::apply;
 pub(super) use types::Request;
 pub use types::{
-    AgentObligation, AgentTaskExecution, AgentWait, AgentWake, ExecutionState, TaskOwnerAction,
+    AgentObligation, AgentTaskExecution, AgentWait, AgentWake, ExecutionState, QuestionReply,
+    TaskOwnerAction, TaskUnblock,
 };
 mod wake_receipts;
 pub(crate) use types::{
@@ -145,6 +149,8 @@ pub(super) fn initialize(db: &mut Connection) -> Result<(), DaemonError> {
     CREATE TABLE IF NOT EXISTS agent_source_occurrences(sequence INTEGER PRIMARY KEY AUTOINCREMENT,room_id TEXT NOT NULL,source_id TEXT NOT NULL,occurrence_id TEXT NOT NULL,success INTEGER NOT NULL,public_answer TEXT,UNIQUE(room_id,source_id,occurrence_id));
     CREATE TABLE IF NOT EXISTS agent_inbox(sequence INTEGER PRIMARY KEY AUTOINCREMENT,room_id TEXT NOT NULL,agent_id TEXT NOT NULL,source_id TEXT NOT NULL,occurrence_id TEXT NOT NULL,payload TEXT NOT NULL,UNIQUE(room_id,agent_id,source_id,occurrence_id));
     CREATE TABLE IF NOT EXISTS agent_inbox_refusals(sequence INTEGER PRIMARY KEY,first_refused_at_ms INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS agent_inbox_start_failures(sequence INTEGER PRIMARY KEY,attempts INTEGER NOT NULL,last_error TEXT NOT NULL,retry_at_ms INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS agent_inbox_promotions(prompt_id TEXT PRIMARY KEY) WITHOUT ROWID;
     CREATE TABLE IF NOT EXISTS agent_inbox_shown(sequence INTEGER PRIMARY KEY);
     CREATE TABLE IF NOT EXISTS agent_inbox_unread_reverts(sequence INTEGER PRIMARY KEY,count INTEGER NOT NULL);
     CREATE INDEX IF NOT EXISTS agent_inbox_recipient ON agent_inbox(room_id,agent_id,sequence);
@@ -287,6 +293,19 @@ impl DurableKernelStateStore {
         Ok(self
             .read_tasks("agent.lifecycle.task", "task_id=?1", [task])?
             .pop())
+    }
+    pub(crate) fn task_card_is_dismissed(
+        &self,
+        task: &str,
+        revision: u64,
+    ) -> Result<bool, DaemonError> {
+        self.lock_connection("agent.lifecycle.task_card_is_dismissed")?
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM agent_tasks WHERE task_id=?1 AND dismissed_card_revision=?2)",
+                params![task, sql_integer(revision)?],
+                |row| row.get(0),
+            )
+            .map_err(sql)
     }
     /// A blocking waiter took the result. Its receipt is independent of whether the parent's
     /// delegate source was bound before the worker finished.
@@ -755,6 +774,15 @@ impl DurableKernelStateStore {
             .map_err(sql)?;
         rows.collect::<Result<_, _>>().map_err(sql)
     }
+    /// What failed starts of this delivery left: the attempt, the error and the next try.
+    pub(crate) fn agent_start_failure(
+        &self,
+        sequence: u64,
+    ) -> Result<Option<start_failures::StartFailure>, DaemonError> {
+        let mut db = self.lock_connection("agent.lifecycle.start_failure")?;
+        let tx = db.transaction().map_err(sql)?;
+        start_failures::get(&tx, sequence)
+    }
     /// Pending inbox rows, rather than task existence, own periodic delivery retries.
     pub(crate) fn agent_pending_inbox_recipients(
         &self,
@@ -1127,6 +1155,36 @@ impl DurableKernelStateStore {
         .collect()
     }
 }
+
+/// The wake rows and their promoted prompt become durable in the same transaction.
+pub(super) fn record_prompt_state_in(
+    tx: &Transaction<'_>,
+    state: &crate::durable_prompt_state::DurablePromptStateEventPayload,
+) -> rusqlite::Result<()> {
+    let Some(prompt) = state
+        .active_prompt
+        .as_ref()
+        .filter(|prompt| !prompt.inbox_wakes().is_empty())
+    else {
+        return Ok(());
+    };
+    if tx.execute(
+        "INSERT OR IGNORE INTO agent_inbox_promotions(prompt_id) VALUES(?1)",
+        [prompt.id()],
+    )? == 0
+    {
+        return Ok(());
+    }
+    delivery::admit_promoted_wakes(
+        tx,
+        &state.session_id,
+        &state.agent_id,
+        prompt.id(),
+        prompt.inbox_wakes(),
+    )
+    .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))
+}
+
 pub(super) fn execute(
     db: &mut Connection,
     request: Request,
@@ -1399,6 +1457,13 @@ fn index_task_lookups(db: &Connection) -> Result<(), DaemonError> {
         )
         .map_err(sql)?;
     }
+    if !columns
+        .iter()
+        .any(|column| column == "dismissed_card_revision")
+    {
+        db.execute_batch("ALTER TABLE agent_tasks ADD COLUMN dismissed_card_revision INTEGER")
+            .map_err(sql)?;
+    }
     let registration_columns: Vec<String> = db
         .prepare("PRAGMA table_xinfo(agent_registrations)")
         .map_err(sql)?
@@ -1655,6 +1720,8 @@ fn new_task(
         state: ExecutionState::Working,
         reason: String::new(),
         owner_action: None,
+        question_reply: None,
+        unblock: None,
         obligations: vec![],
         wait: None,
         last_progress_at_ms: now,
@@ -1737,6 +1804,7 @@ fn event(tx: &Transaction<'_>, mut e: InboxEvent) -> Result<InboxEvent, DaemonEr
     }
     tx.execute("INSERT INTO agent_inbox(room_id,agent_id,source_id,occurrence_id,payload) VALUES(?1,?2,?3,?4,'{}')",params![e.room_id,e.agent_id,e.source_id,e.occurrence_id]).map_err(sql)?;
     e.sequence = tx.last_insert_rowid() as u64;
+    e.arrived_at_ms = Some(crate::session::unix_epoch_ms());
     save_event(tx, &e)?;
     if let Some(task) = e.occurrence_id.strip_prefix("child-finished-") {
         tx.execute("UPDATE agent_inbox SET payload=json_set(payload,'$.state','handled') WHERE room_id=?1 AND agent_id=?2 AND occurrence_id=?3 AND json_extract(payload,'$.kind') IN ('source_completed','source_lost') AND json_extract(payload,'$.state')='pending'", params![room, agent, format!("task-terminal-{task}")]).map_err(sql)?;
@@ -1782,6 +1850,7 @@ fn save_event(tx: &Transaction<'_>, e: &InboxEvent) -> Result<(), DaemonError> {
             [sql_integer(e.sequence)?],
         )
         .map_err(sql)?;
+        start_failures::clear(tx, e.sequence)?;
     }
     Ok(())
 }
@@ -1879,6 +1948,7 @@ pub(crate) fn occurrence(
         prompt_id: None,
         target_prompt_id: None,
         provider_run_id: None,
+        arrived_at_ms: None,
         attempted_at_ms: None,
         submit_epoch: None,
         resumed_at_ms: None,

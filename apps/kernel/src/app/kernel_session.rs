@@ -291,7 +291,7 @@ impl<'a> KernelSessionService<'a> {
                 &mut request,
             )?;
         }
-        let obligation = if self.app.config().room_agent_tools {
+        let obligation = if self.app.config().room_agent_tools && !request.stall_recovery {
             request
                 .parent_agent_id
                 .as_ref()

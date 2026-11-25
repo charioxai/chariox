@@ -43,6 +43,8 @@ export type Mirror2Packet = {
   focus_visible?: boolean
   /** Y3-C1a: the page's own script takes the wheel (a non-passive wheel listener on window, document, html or body): every wheel goes to the kernel's page; absent: the viewer scrolls its copy. */
   page_wheel?: boolean
+  /** Row 486: a mirrored video or audio element is playing (muted or not): the viewer keeps the Tab warm; absent: none plays. */
+  media_playing?: boolean
   resources: Mirror2Resource[]; tiles: Mirror2Tile[]; css_width: number; css_height: number; device_scale_factor: 1 | 2
 }
 // Protocol 489 wire form: a delta omits the binding, its base (sequence - 1),

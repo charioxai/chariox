@@ -14,25 +14,21 @@ export type KernelBrowserDisplayTarget =
   // Protocol 530: a popup of the band's window, by its id in the state's chrome_window.auxiliary.
   | { kind: "browser_auxiliary"; window_generation: number; auxiliary_id: number }
   | { kind: "browser_window"; window_generation: number }
-export type KernelBrowserCommand =
+export type KernelBrowserPlainCommand =
   | { op: "paste_secret"; credential_id: string; tab_id: string; generation: number }
 
   | { op: "grant_leased_computer"; agent_id: string; target: KernelDesktopTarget }
   | { op: "revoke_leased_computer"; agent_id: string }
-  | { op: "grant_room_computer"; agent_id: string | null }
   | { op: "computer"; command: KernelComputerCommand }
-  | { op: "list_grants" }
-  | { op: "subscribe_grants"; after: number; wait_ms: number }
   // Protocol 556: `state` that waits (<= 2000 ms) until it differs from the `revision` the caller holds ("" reads at once).
   | { op: "state_wait"; after: string; wait_ms: number; known_favicons?: string[] }
-  | { op: "revoke_grants"; agent_id: string | null }
-  | { op: "mirror_subscribe"; tab_id: string; generation: number; device_scale_factor: 1 | 2; wire?: 2; navigation_preview?: true; viewport_first?: true; visited_links?: true; font_requirements?: true; font_absent?: true; layout_width?: number; layout_height?: number }
+  | { op: "mirror_subscribe"; tab_id: string; generation: number; device_scale_factor: 1 | 2; wire?: 2; navigation_preview?: true; viewport_first?: true; visited_links?: true; layout_delta?: true; font_requirements?: true; font_absent?: true; layout_width?: number; layout_height?: number }
   | { op: "mirror_next"; subscription_id: string; generation: number; after_sequence: number; drift_nodes: string[]; known_sheets?: string[]; known_fonts?: string[]; wait_ms?: number; resend?: true; flush?: true }
   | { op: "mirror_close"; subscription_id: string; generation: number }
   | { op: "mirror_input"; tab_id: string; generation: number; document_id: string; subscription_id: string; sequence: number; action: KernelBrowserMirrorAction }
   | { op: "display_capture" | "display_takeover" | "display_release"; tab_id: string; generation: number }
   | { op: "display_actors" }
-  | { op: "display_subscribe"; target?: KernelBrowserDisplayTarget; tab_id: string; generation: number; codecs: string[]; bitrate: number; device_scale_factor: 1 | 2; initial_push?: boolean; tab_display?: boolean }
+  | { op: "display_subscribe"; target?: KernelBrowserDisplayTarget; tab_id: string; generation: number; codecs: string[]; bitrate: number; device_scale_factor: 1 | 2; initial_push?: boolean; resize_rebind?: boolean; tab_display?: boolean; viewer_density_stills?: boolean }
   | { op: "display_next"; subscription_id: string; generation: number; after_sequence: number }
   // MP-08/MP-10/MP-11: fresh admission and delivery identity, same producer.
   | { op: "display_suspend" | "display_resume"; subscription_id: string; generation: number }
@@ -41,7 +37,8 @@ export type KernelBrowserCommand =
   // MP-08/MP-10: protocol 491 push acknowledgement on a relay display subscription.
   | { op: "display_ack"; subscription_id: string; generation: number; sequence: number; lost: boolean; held_ms?: number; paused?: boolean }
   | { op: "display_input"; binding_id?: string; sequence?: number; tab_id: string; generation: number; document_id: string; input: KernelBrowserInput }
-  | { op: "start" | "state" | "stop" }
+  // Row 548 (protocol 1015): `restart` stops the controller and starts a fresh one; the answer is the restored browser state.
+  | { op: "start" | "state" | "stop" | "restart" }
   | { op: "open"; url: string }
   | { op: "close" | "snapshot" | "screenshot"; tab_id: string; generation: number }
   | { op: "resize"; tab_id: string; generation: number; width: number; height: number }
@@ -52,15 +49,22 @@ export type KernelBrowserCommand =
   | { op: "cancel_download"; tab_id: string; generation: number; download_id: string }
   | { op: "dialog"; tab_id: string; generation: number; document_id: string; dialog_id: string; action: "accept" | "dismiss"; prompt_text?: string }
   | { op: "unsubscribe"; subscription_id: string; generation: number }
+// A person's navigation or input in a Room: downloads it starts belong to that Room.
+export type KernelBrowserRoomCommand = Extract<KernelBrowserPlainCommand, { op: "open" | "navigate" | "input" | "mirror_input" | "display_input" }>
+export type KernelBrowserCommand =
+  | KernelBrowserPlainCommand
+  | { op: "room"; session_id: string; command: KernelBrowserRoomCommand }
+  // Finished downloads of the Room; `after` is the `revision` the caller holds ("" reads at once).
+  | { op: "downloads_wait"; session_id: string; after?: string; wait_ms: number }
+  // Show a finished download in the file manager of the kernel's own computer (`native: false` elsewhere).
+  | { op: "reveal_download"; session_id: string; download_id: string }
 export type KernelBrowserRequest = { KernelBrowser: { command: KernelBrowserCommand } }
 export type KernelBrowserFrame = {
   generation: number; tab_id: string; mime_type: "image/png" | "image/jpeg";
   data_base64: string; width: number; height: number; sequence?: number
 }
-export type UserDomainGrantEvent = {
-  event: "user_domain_grants_changed"; cursor: number
-  room_computer?: { agent_id: string; session_id: string; allowed: boolean }[]
-}
+// Local 1015: the answer to a leased desktop grant or revoke.
+export type KernelLeasedComputerResult = { agent_id: string; leased_computer: boolean }
 export type KernelBrowserTabActor = { actor_id: string; kind: "agent" | "human"; display_label: string }
 export type KernelBrowserAgentActivity = { sequence: number; tab_id: string; actor: KernelBrowserTabActor }
 export type KernelBrowserTab = { can_go_back?: boolean | null; can_go_forward?: boolean | null; favicon_hash?: string | null; favicon_png_base64?: string; tab_id: string; document_id: string; url: string; title: string; opened_by?: KernelBrowserTabActor | null; opener_tab_id?: string; taken_over?: boolean }
@@ -73,6 +77,11 @@ export type KernelBrowserDownload = {
   state: "in_progress" | "done" | "failed" | "cancelled"; bytes: number;
   path: string | null; reason?: string
 }
+export type KernelBrowserRoomDownloads = {
+  downloads: { download_id: string; name: string; path: string }[]
+  revision: string
+}
+export type KernelBrowserRevealResult = { native: boolean }
 export type KernelBrowserResult = {
   downloads?: KernelBrowserDownload[];
   active_tab_id?: string | null;
@@ -86,7 +95,7 @@ export type KernelBrowserResult = {
   unchanged?: true
   // Protocol 630/233: absent on older kernels.
   dialogs?: KernelBrowserDialog[]
-} | KernelBrowserFrame | UserDomainGrantEvent
+} | KernelBrowserRoomDownloads | KernelBrowserRevealResult | KernelBrowserFrame | KernelLeasedComputerResult
 
 // MP-08 / MP-11: local446; same typed surface for MCP and terminal transports.
 export type KernelDesktopTarget = { surface_id: string; generation: string }

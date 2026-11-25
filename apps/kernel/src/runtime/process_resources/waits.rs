@@ -19,7 +19,26 @@ pub(crate) enum WaitChange {
     /// The pool ended the command, for this reason.
     Stopped {
         reason: String,
+        /// What it was short of when it ran (a waiting command's row says it).
+        resource: WaitReason,
+        /// Its command line, when the kernel saw it.
+        command: String,
     },
+    /// Real memory exhaustion: the command that grew most was acted on. The
+    /// message is the one line its agent, its pane and its stderr all get.
+    Exhaustion {
+        step: ExhaustionStep,
+        message: String,
+    },
+}
+
+/// The steps taken against the command that grows most while the machine is out of memory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ExhaustionStep {
+    Throttled,
+    Paused,
+    Resumed,
+    Stopped,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,6 +49,9 @@ pub(crate) struct WaitEvent {
     pub change: WaitChange,
     /// The row at that moment (`Running` once it continues).
     pub state: SessionProcessState,
+    /// Who the workload is listed under, for an event that outlives it (a job
+    /// the pool ends): its owner still hears why.
+    pub owner: Option<(String, super::projection::SessionProcessOwner)>,
 }
 
 static EVENTS: Mutex<VecDeque<WaitEvent>> = Mutex::new(VecDeque::new());
@@ -155,10 +177,23 @@ pub(super) fn filling_line(filling: &super::admission::Filling) -> String {
     } else {
         String::new()
     };
+    let short = match filling.full_in {
+        Some(0) => format!(
+            "the disk has {} free, full in under a second at the rate it fills,",
+            size(filling.free)
+        ),
+        Some(seconds) => format!(
+            "the disk has {} free, full in about {seconds} s at the rate it fills,",
+            size(filling.free)
+        ),
+        None => format!(
+            "the disk has {} free (the floor is {})",
+            size(filling.free),
+            size(filling.floor)
+        ),
+    };
     format!(
-        "chariox: stopped this command: the disk has {} free (the floor is {}) and this command was filling it, writing {}/s ({} written so far).{deleted} Free space or move its output elsewhere, then run it again.\n",
-        size(filling.free),
-        size(filling.floor),
+        "chariox: stopped this command: {short} and this command was filling it, writing {}/s ({} written so far).{deleted} Free space or move its output elsewhere, then run it again.\n",
         size(filling.rate),
         size(filling.written),
     )

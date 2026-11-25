@@ -90,7 +90,6 @@ pub(crate) fn public_error_message(message: &str) -> bool {
         "sudo request expired; answer the popup in a Chariox terminal",
         "queued sudo was revoked",
         "sudo authorization revoked before dispatch",
-        "access request refused or expired; answer the popup in a Chariox terminal",
     ]
     .into_iter()
     .chain(Refusal::ALL.map(Refusal::message))
@@ -175,6 +174,8 @@ response_policies! {
         PairingInviteJoined,
         TerminalPairingLinkCreated,
         TerminalPairingLinkJoined,
+        RelayIssuer,
+        RelayClientTokenIssued,
         ProviderLoginStarted,
         ProviderLoginStatus,
         ProviderLoginCancelled,
@@ -192,6 +193,7 @@ response_policies! {
     ],
     Public => [
         ControlPlane,
+        MachineAcquisition,
         EventSubscription,
         NotificationSources,
         EventsListed,
@@ -226,6 +228,8 @@ response_policies! {
         KernelAccessRevoked,
         KernelSudoRequesterRenewed,
         GatewayKernelsListed,
+        AccountKernelsListed,
+        AccountKernelUnlinked,
         AttachmentsHeartbeated,
         GatewayKernelJoined,
         GatewayKernelForgotten,
@@ -382,6 +386,7 @@ response_policies! {
         FreshRemoteMachineKernelsObserved,
         RoomListSessionsListed,
         RoomListSnapshot,
+        PaneFeed,
         PersonInbox,
         NotificationSubscriptions,
         NotificationSubscriptionTested,
@@ -482,6 +487,7 @@ response_policies! {
         RoomSetupUpdated,
         AgentAliased,
         AgentProfileUpdated,
+        AgentSettings,
         AgentDeadline,
         AgentTree,
         AgentSpawned,

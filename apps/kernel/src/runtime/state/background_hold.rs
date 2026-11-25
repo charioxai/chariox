@@ -12,6 +12,13 @@ const NOTIFICATION_GRACE_MS: u64 = 60_000;
 pub(super) const STILL_RUNNING_NOTE: &str =
     "A background command was still running when this agent was released; its result is not part of this answer.";
 
+/// Work the child still owes that a held call cannot wait for. An outcome the agent was already
+/// told of and has not acknowledged (`settling`: a timer that ran out, a finished job) is not
+/// work: a wake turn that starts a call and ends without acknowledging it must still be held.
+fn blocks_a_hold(obligation: &AgentObligation) -> bool {
+    obligation.requires_resolution() && obligation.status != "settling"
+}
+
 #[derive(Clone)]
 pub(super) struct HeldTask {
     room: String,
@@ -141,10 +148,7 @@ impl KernelRuntimeOwnedState {
             && task.goal.is_none()
             && task.wait.is_none()
             && task.pending_prompt_id.is_none()
-            && !task
-                .obligations
-                .iter()
-                .any(AgentObligation::requires_resolution);
+            && !task.obligations.iter().any(blocks_a_hold);
         if !plain
             || !self
                 .agent_store

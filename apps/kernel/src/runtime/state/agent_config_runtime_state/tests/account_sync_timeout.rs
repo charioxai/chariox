@@ -32,6 +32,7 @@ async fn remote_profile_account_sync_waits_off_lock_past_the_ordinary_deadline()
                     },
                     materialization: crate::account_profile::ProviderAccountMaterialization {
                         profile: crate::account_profile::ProviderAccountReplicaMetadata {
+                            provider_account_id: None,
                             owner_user_id: "owner".into(),
                             provider: "opencode".into(),
                             profile_id: "go".into(),

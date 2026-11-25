@@ -242,9 +242,11 @@ pub(super) async fn enqueue_peer_request_to_known_kernel_via_relay_authorized(
         // Sealed only now, so waiting for the state is charged to a forwarded decision.
         request.rebase_decision_budget();
         let plaintext =
-            serde_json::to_vec(&request).map_err(|error| DaemonError::LocalTransport {
-                operation: "serialize relay peer request",
-                message: error.to_string(),
+            crate::transport::relay_peer::seal_peer_plaintext(&request).map_err(|error| {
+                DaemonError::LocalTransport {
+                    operation: "serialize relay peer request",
+                    message: error.to_string(),
+                }
             })?;
         let encrypted_request = relay_crypto::encrypt_payload_for_peer(
             &config.relay_private_key,
@@ -400,7 +402,9 @@ pub(super) async fn enqueue_peer_request_to_known_kernel_via_relay_authorized(
                 message: "peer key changed while the request was pending".into(),
             });
         }
-        match serde_json::from_slice::<RelayPeerResponse>(&decrypted.plaintext) {
+        match crate::transport::relay_peer::open_peer_plaintext::<RelayPeerResponse>(
+            &decrypted.plaintext,
+        ) {
             Ok(response) => {
                 trace.log_completed("success", None, Some(&envelope.from_daemon_id));
                 Ok(response)
@@ -922,10 +926,13 @@ async fn send_peer_request_via_temporary_connection_authorized_inner(
         return Err(error);
     }
     request.rebase_decision_budget();
-    let plaintext = serde_json::to_vec(&request).map_err(|error| DaemonError::LocalTransport {
-        operation: "serialize relay peer request",
-        message: error.to_string(),
-    })?;
+    let plaintext =
+        crate::transport::relay_peer::seal_peer_plaintext(&request).map_err(|error| {
+            DaemonError::LocalTransport {
+                operation: "serialize relay peer request",
+                message: error.to_string(),
+            }
+        })?;
     let encrypted_request = relay_crypto::encrypt_payload_for_peer(
         &config.relay_private_key,
         &kernel.public_key,
@@ -1036,8 +1043,9 @@ async fn send_peer_request_via_temporary_connection_authorized_inner(
                                 message,
                             });
                         }
-                        let response =
-                            serde_json::from_slice::<RelayPeerResponse>(&decrypted.plaintext);
+                        let response = crate::transport::relay_peer::open_peer_plaintext::<
+                            RelayPeerResponse,
+                        >(&decrypted.plaintext);
                         return match response {
                             Ok(response) => {
                                 trace.log_completed("success", None, Some(&from_daemon_id));

@@ -90,6 +90,7 @@ async fn a02_native_settlement_never_reacquires_held_provider_lane() {
             prompt_id: None,
             target_prompt_id: None,
             provider_run_id: None,
+            arrived_at_ms: None,
             attempted_at_ms: None,
             submit_epoch: None,
             resumed_at_ms: None,
@@ -476,6 +477,11 @@ async fn a02_r3_pre_io_rejection_retries_without_tasks_or_client_notice() {
             .with_agent_id(agent.id()),
         )
         .unwrap();
+    // #1577: a failed start waits out its backoff; let it be due.
+    store.agent_ledger_sql_for_test(&format!(
+        "UPDATE agent_inbox_start_failures SET retry_at_ms=1 WHERE sequence={}",
+        e.sequence
+    ));
     runtime.sweep_agent_lifecycle().await.unwrap();
     runtime.task_work_settled().await;
     let retried = store

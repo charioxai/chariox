@@ -6,7 +6,7 @@ use crate::provider::*;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 /// How the stand-in service answers the next acquire.
-enum Answer {
+pub(super) enum Answer {
     /// Commits the allocation, then fails with this status and Cloud code (none for a bare 5xx).
     FailAfterCommit(&'static str, Option<&'static str>),
     /// Commits the allocation, then closes the connection: the response is lost.
@@ -23,20 +23,20 @@ enum Answer {
     },
 }
 
-struct Service {
-    api_url: String,
-    acquires: Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
+pub(super) struct Service {
+    pub(super) api_url: String,
+    pub(super) acquires: Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
     /// The options the service lists; a test changes them to change the stock.
-    offers: Arc<std::sync::Mutex<Vec<MachineOption>>>,
+    pub(super) offers: Arc<std::sync::Mutex<Vec<MachineOption>>>,
     /// Answers for the next acquires, before the service's own judgement.
-    answers: Arc<std::sync::Mutex<std::collections::VecDeque<Answer>>>,
-    capability_failures: Arc<std::sync::Mutex<CapabilityFailures>>,
+    pub(super) answers: Arc<std::sync::Mutex<std::collections::VecDeque<Answer>>>,
+    pub(super) capability_failures: Arc<std::sync::Mutex<CapabilityFailures>>,
     ready_target: Arc<std::sync::Mutex<Option<ControlPlaneMachineTarget>>>,
 }
 
 /// How the stand-in service answers the next capability calls, in order; it answers at once when
 /// none is queued.
-enum CapabilityAnswer {
+pub(super) enum CapabilityAnswer {
     Answer,
     Fail(&'static str, &'static str),
     /// Notifies `arrived` when the call comes in, and answers only when `release` is notified.
@@ -46,12 +46,15 @@ enum CapabilityAnswer {
     },
 }
 
-type CapabilityFailures = std::collections::VecDeque<CapabilityAnswer>;
+pub(super) type CapabilityFailures = std::collections::VecDeque<CapabilityAnswer>;
 
 /// A connected service that lists `offers` and, like Cloud, binds each accepted request id to its
 /// class and region and replays it, whatever the stock says now. A new request for a class named
 /// in `sold_out` is refused and, like Cloud, closed: every later try of it is refused as closed.
-async fn service(offers: Vec<MachineOption>, sold_out: &'static [&'static str]) -> Service {
+pub(super) async fn service(
+    offers: Vec<MachineOption>,
+    sold_out: &'static [&'static str],
+) -> Service {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let api_url = format!("http://{}", listener.local_addr().unwrap());
     let acquires = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -103,11 +106,31 @@ async fn service(offers: Vec<MachineOption>, sold_out: &'static [&'static str]) 
             let (status, response) = match request["action"].as_str().unwrap() {
                 "capabilities" => {
                     let answer = next_capability_failure.lock().unwrap().pop_front();
+                    // One guard for both fields: a second lock in the same statement would wait on the first.
+                    let listed_now = listed.lock().unwrap().clone();
                     let capability = MachineAllocationCapability {
                         revision: "v1".into(),
                         actions: vec!["acquire".into()],
-                        offer: None,
-                        offers: listed.lock().unwrap().clone(),
+                        // A service that lists no options still has its one default machine.
+                        offer: listed_now.is_empty().then(|| {
+                            crate::local::MachineAcquisitionOffer {
+                                machine_type: "small".into(),
+                                vcpu: 2,
+                                ram_gb: 4.0,
+                                disk_gb: 40,
+                                location: "north".into(),
+                                terms: crate::local::MachineAcquisitionTerms {
+                                    amount: "0.06".into(),
+                                    currency: "EUR".into(),
+                                    period: crate::local::MachineAcquisitionPeriod::Hour,
+                                },
+                                rate_per_minute: Some(crate::local::JobMachineRate {
+                                    amount_micros: 1_000,
+                                    currency: "EUR".into(),
+                                }),
+                            }
+                        }),
+                        offers: listed_now,
                         job_offers: vec![],
                         job_default_class_id: None,
                     };
@@ -207,6 +230,21 @@ async fn service(offers: Vec<MachineOption>, sold_out: &'static [&'static str]) 
                         }
                     }
                 }
+                "get" | "release" if request["allocation_ref"] == "unknown-machine" => {
+                    ("404 Not Found", error("not_found"))
+                }
+                // The kernel reconciles the machines it recorded against the service's whole list.
+                "list" => (
+                    "200 OK",
+                    serde_json::json!({"kind":"machines","saved_states":[],
+                        "machines": accepted.values()
+                            .filter(|(_, _, id)| !released.contains(id))
+                            .map(|(_, _, id)| serde_json::json!({
+                                "allocation_ref":id,"name":id,"state":"ready","revision":1,
+                                "since":"2026-11-19T00:00:00Z","kernel_id":null,"machine_id":null,
+                                "available_actions":["stop","release"]}))
+                            .collect::<Vec<_>>()}),
+                ),
                 "get" | "release" => {
                     let allocation_ref = request["allocation_ref"].as_str().unwrap();
                     assert!(accepted.values().any(|(_, _, id)| id == allocation_ref));
@@ -261,7 +299,7 @@ async fn respond(mut socket: tokio::net::TcpStream, status: &str, response: serd
 }
 
 /// A kernel whose owner allows automatic allocation, one running agent, and its tool token.
-async fn agent_kernel(
+pub(in crate::runtime::state) async fn agent_kernel(
     api_url: String,
 ) -> (
     KernelRuntimeState,
@@ -271,6 +309,11 @@ async fn agent_kernel(
     let worktree = crate::test_support::TestWorktree::new("machine-tool");
     let mut config = crate::config::DaemonConfig::for_tests();
     config.user_config.agents.offload_without_asking = Some(true);
+    // These tests are about which option an acquire takes, not about the owner's limits: every
+    // class the stand-in service lists is allowed.
+    config.user_config.agents.offload_classes = Some(vec!["small".into(), "big".into()]);
+    // One test acquires more machines than the default maximum allows without asking.
+    config.user_config.agents.offload_max_machines = Some(100);
     let mut app = crate::DaemonApp::bootstrap(config).unwrap();
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(worktree.session_request())
@@ -437,6 +480,35 @@ async fn acquire_without_a_class_takes_the_first_option_in_stock() {
     assert_eq!(acquires.len(), 1);
     assert_eq!(acquires[0]["class_id"], "small");
     assert_eq!(acquires[0]["region"], "north");
+}
+
+// Row 368: the agent's hard stop travels to the service in a generic field; the service enforces it.
+#[tokio::test]
+async fn acquire_passes_the_requested_hard_stop_to_the_service() {
+    let service = service(vec![option("small", "north", true)], &[]).await;
+    let (state, token, _workspace) = agent_kernel(service.api_url.clone()).await;
+    state
+        .machine_tool(
+            &token,
+            "chariox.machines.acquire",
+            serde_json::json!({"request_id":"with-stop","timeout_s":300}),
+        )
+        .await
+        .unwrap();
+    state
+        .machine_tool(
+            &token,
+            "chariox.machines.acquire",
+            serde_json::json!({"request_id":"without-stop"}),
+        )
+        .await
+        .unwrap();
+    let acquires = service.acquires.lock().unwrap();
+    assert_eq!(acquires[0]["timeout_s"], 300);
+    assert!(
+        acquires[1].get("timeout_s").is_none(),
+        "no limit is invented for a request without one"
+    );
 }
 
 #[tokio::test]
@@ -1283,4 +1355,85 @@ async fn a_success_whose_row_is_swept_while_the_try_waits_is_still_recorded() {
             "near_expiry {near_expiry}"
         );
     }
+}
+
+/// Row 257: in a Room of many agents, the owner's card (in the Room and in `chariox interaction list`) names the agent
+/// that asks for a machine and the purpose it gave.
+async fn owner_card_title(args: serde_json::Value) -> (String, String, String) {
+    let service = service(vec![option("small", "north", true)], &[]).await;
+    let (state, token, _workspace) = agent_kernel(service.api_url.clone()).await;
+    let mut config = state.owned.config_projection.snapshot();
+    config.user_config.agents.offload_without_asking = None;
+    state.owned.config_projection.update(config);
+    let session = state
+        .owned
+        .session_store
+        .list_sessions()
+        .into_iter()
+        .next()
+        .unwrap();
+    let owner = session.owner_user_id().to_owned();
+    let agent = state
+        .owned
+        .agent_store
+        .list_agents()
+        .into_iter()
+        .find(|agent| agent.session_id() == session.id())
+        .unwrap();
+    let name = agent.alias().unwrap_or(agent.agent_ref()).to_owned();
+    let asking = {
+        let state = state.clone();
+        tokio::spawn(async move {
+            state
+                .machine_tool(&token, "chariox.machines.acquire", args)
+                .await
+        })
+    };
+    let mut card = None;
+    for _ in 0..500 {
+        card = state
+            .list_owner_interactions(&owner)
+            .into_iter()
+            .find(|card| card.interaction_id.starts_with("machine-acquisition-"));
+        if card.is_some() || asking.is_finished() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    let Some(card) = card else {
+        let answer = if asking.is_finished() {
+            format!("{:?}", asking.await.unwrap().map(|result| result.payload))
+        } else {
+            "still waiting".into()
+        };
+        panic!("no owner card; the acquire answered {answer}");
+    };
+    asking.abort();
+    assert!(
+        service.acquires.lock().unwrap().is_empty(),
+        "nothing is sent before the owner answers"
+    );
+    (name, card.title.unwrap_or_default(), card.message)
+}
+
+#[tokio::test]
+async fn the_owner_card_for_an_agents_machine_request_names_the_agent_and_its_purpose() {
+    let (name, title, message) = owner_card_title(
+        serde_json::json!({"request_id":"r1","purpose":"Build the kernel\nfor the drill"}),
+    )
+    .await;
+    assert_eq!(
+        title,
+        format!("{name} asks for a machine. Purpose: Build the kernel for the drill.")
+    );
+    assert!(message.starts_with("Acquire small in north"), "{message}");
+}
+
+#[tokio::test]
+async fn the_owner_card_names_the_agent_that_gave_no_purpose() {
+    let (name, title, _) = owner_card_title(serde_json::json!({"request_id":"r1"})).await;
+    assert_eq!(
+        title,
+        format!("{name} asks for a machine and gave no purpose.")
+    );
 }

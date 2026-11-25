@@ -1,6 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
+import { kernelShapedCatalog } from "./kernel-shaped-catalog.fixture.js"
 import {
   backendProviderLabel,
   catalogModelOptions,
@@ -52,8 +53,8 @@ test("catalogModelOptions uses remote machine qualified provider names", () => {
   assert.equal(options[0]?.providerName, "Codex (builder-west)")
 })
 
-test("fallback catalog exposes Claude headless and Claude -p as isolated backends", () => {
-  const catalog = fallbackProviderCatalog()
+test("a kernel catalog exposes Claude headless and Claude -p as isolated backends", () => {
+  const catalog = kernelShapedCatalog()
 
   assert.equal(backendProviderLabel("claude-headless"), "Claude headless")
   assert.equal(backendProviderLabel("claude-p"), "Claude -p")
@@ -61,11 +62,11 @@ test("fallback catalog exposes Claude headless and Claude -p as isolated backend
 
   const claudeHeadlessOptions = catalogModelOptions(catalog, "claude-headless")
   assert.deepEqual(claudeHeadlessOptions.map((option) => option.providerId), ["claude-headless"])
-  assert.deepEqual(claudeHeadlessOptions.map((option) => option.id), ["claude-headless/claude-sonnet-4-6"])
+  assert.deepEqual(claudeHeadlessOptions.map((option) => option.id), ["claude-headless/claude-sonnet-5-5"])
 
   const claudePrintOptions = catalogModelOptions(catalog, "claude-p")
   assert.deepEqual(claudePrintOptions.map((option) => option.providerId), ["claude-p"])
-  assert.deepEqual(claudePrintOptions.map((option) => option.id), ["claude-p/claude-sonnet-4-6"])
+  assert.deepEqual(claudePrintOptions.map((option) => option.id), ["claude-p/claude-sonnet-5-5"])
 
   const opencodeOptions = catalogModelOptions(catalog, "opencode")
   assert.equal(opencodeOptions.some((option) => option.providerId.startsWith("claude")), false)
@@ -113,10 +114,19 @@ test("fallback catalog can be marked as local fallback metadata", () => {
 })
 
 // MP-08 / MP-11: local fallback labels must obey the native catalog contract too.
-test("fallback picker uses native names without Chariox branding", () => {
-  const catalog = fallbackProviderCatalog()
+test("picker uses native names without Chariox branding", () => {
+  const catalog = kernelShapedCatalog()
   assert.equal(catalogModelOptions(catalog, "codex")[0]?.label, "gpt-5.4")
-  assert.equal(catalogModelOptions(catalog, "claude-p")[0]?.label, "Sonnet 4.6")
+  assert.equal(catalogModelOptions(catalog, "claude-p")[0]?.label, "Sonnet 5.5")
+})
+
+// Row 324 M4: the kernel owns the Claude models and default; with no kernel the CLI invents none.
+test("M4: the fallback catalog names no Claude model and no Claude default", () => {
+  const catalog = fallbackProviderCatalog()
+  assert.equal(catalog.all.some((provider) => provider.id.startsWith("claude")), false)
+  assert.equal(Object.keys(catalog.default).some((id) => id.startsWith("claude")), false)
+  assert.equal(catalog.connected.some((id) => id.startsWith("claude")), false)
+  assert.doesNotMatch(JSON.stringify(catalog), /claude-(sonnet|opus|haiku|fable)/)
 })
 
 test("picker preserves native provider names, ids and model display names", () => {

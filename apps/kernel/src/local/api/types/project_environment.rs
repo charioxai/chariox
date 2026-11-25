@@ -67,13 +67,22 @@ pub struct ProjectEnvironmentExtensionView {
     pub presence: ExtensionPresence,
 }
 
+/// Where a Secret's value comes from: typed by the owner, or an entry already in this kernel's Vault
+/// (named by its credential id; the value moves Vault to Vault inside the kernel and later follows the entry).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ProjectEnvironmentSecretSource {
+    Value(VaultPassphrase),
+    VaultEntry(String),
+}
+
 /// The owner puts a Secret's value into this kernel's Vault under the Project scope.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SetProjectEnvironmentSecretRequest {
     pub project_id: String,
     pub name: String,
-    pub value: VaultPassphrase,
+    pub source: ProjectEnvironmentSecretSource,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

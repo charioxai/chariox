@@ -196,6 +196,11 @@ pub struct WorkflowDefinition {
     origin: Option<WorkflowOrigin>,
     #[serde(default = "unix_epoch_ms")]
     created_at_ms: u64,
+    /// Set while the workflow is archived: kept and readable, but hidden from
+    /// lists and refused for new runs. It is not a design edit, so it never
+    /// moves `revision`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    archived_at_ms: Option<u64>,
     #[serde(default)]
     revision: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -229,6 +234,7 @@ impl WorkflowDefinition {
             run_counter: 0,
             origin: None,
             created_at_ms: unix_epoch_ms(),
+            archived_at_ms: None,
             revision: 0,
             code_source: None,
             canvas_layout: None,
@@ -305,6 +311,23 @@ impl WorkflowDefinition {
 
     pub fn created_at_ms(&self) -> u64 {
         self.created_at_ms
+    }
+
+    pub fn archived_at_ms(&self) -> Option<u64> {
+        self.archived_at_ms
+    }
+
+    pub fn is_archived(&self) -> bool {
+        self.archived_at_ms.is_some()
+    }
+
+    /// Archiving an archived workflow keeps its first timestamp.
+    pub(crate) fn set_archived(&mut self, archived: bool) {
+        self.archived_at_ms = match (archived, self.archived_at_ms) {
+            (true, None) => Some(unix_epoch_ms()),
+            (true, kept) => kept,
+            (false, _) => None,
+        };
     }
 
     pub(crate) fn set_gate(

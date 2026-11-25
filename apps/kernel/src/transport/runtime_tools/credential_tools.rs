@@ -121,6 +121,8 @@ pub struct RequestPopupChoiceArgs {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RequestPopupCustomChoiceArgs {
     pub id: String,
+    /// The agent's own label for the free-text box; absent means a plain box with no label of ours.
+    #[serde(default)]
     pub label: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub placeholder: Option<String>,
@@ -552,14 +554,14 @@ pub fn credential_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: MANAGE_CREDENTIAL_VAULT_TOOL.to_string(),
-            description: "Check, lock, or request the Chariox Vault unlock/extend popup for the current session. Passphrases and secrets are never returned to the model.".to_string(),
+            description: "Check, extend, lock or change the passphrase of the Chariox Vault, or ask the person to unlock it. Secrets are never returned to the model.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "action": {
                         "type": "string",
-                        "enum": ["status", "lock", "popup"],
-                        "description": "Defaults to popup. status returns locked/unlocked metadata; lock clears in-memory vault keys; popup asks the user to unlock, extend, lock, or dismiss."
+                        "enum": ["status", "extend", "extend_60m", "lock", "change_passphrase", "popup"],
+                        "description": "Defaults to popup. An unlocked Vault raises no card: popup and status return its state and unlock time; extend (30 minutes) and extend_60m push it out; lock clears the keys; change_passphrase asks the person for the passphrases. A locked Vault asks the person to unlock it."
                     }
                 },
                 "additionalProperties": false
@@ -567,14 +569,14 @@ pub fn credential_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: REQUEST_POPUP_TOOL.to_string(),
-            description: "Ask a question through the shared Chariox interaction card. To get your supervisor or the person to look at something while you keep working, ask with wait:false: your parent, or else the person and whoever follows them, is woken with your title and message, and the answer comes back to you; a line like `FOR <name>:` in your reply wakes nobody. Use wait:false for questions you can keep working without: returns interaction_id and registration_id immediately; the attributed answer arrives in your durable event inbox and wakes you after you yield or finish this turn. Continue tools while pending, or yield on registration_id. Supply at least one fixed choice; the card always adds a Cancel choice, and a cancel reads as status cancelled with choice_id cancel (not a timeout). Set default_on_timeout to an existing choice id to return that reply on timeout; omit it to return status timed_out with no choice_id or reply. Omit wait (or use true) only when work cannot continue without the answer: it blocks until an answer or timeout, and the provider cuts a blocking call after about 5 minutes and withdraws its card, so for a step a person must do (CAPTCHA, login, approval, anything that can take minutes) use wait:false and yield on the registration_id. Each choice carries the exact reply you want returned; a blocking notice may use one acknowledgement choice, such as OK. When a browser card becomes unavailable, verification has not succeeded: continue the owner's current request (ask for browser access if needed, take a fresh snapshot, show a replacement card) and follow any later owner instruction to pause or stop.".to_string(),
+            description: "Ask a question through the shared Chariox interaction card. To get your supervisor or the person to look at something while you keep working, ask with wait:false: your parent, or else the person and whoever follows them, is woken with your title and message and the answer comes back to you; a line like `FOR <name>:` in your reply wakes nobody. Use wait:false for questions you can keep working without: returns interaction_id and registration_id at once; the attributed answer arrives in your event inbox and wakes you after you yield or finish this turn. Supply at least one fixed choice; the card always adds a Cancel choice, and a cancel reads as status cancelled with choice_id cancel (not a timeout). Set default_on_timeout to an existing choice id to return that reply on timeout; omit it for status timed_out with no choice_id or reply. Omit wait (or use true) only when work cannot continue without the answer: it blocks until an answer or timeout, and the provider cuts a blocking call after about 5 minutes and withdraws its card, so for a step a person must do (CAPTCHA, login, approval, anything slow) use wait:false and yield on the registration_id. Each choice carries the exact reply returned; a blocking notice may use one acknowledgement choice, such as OK. When a browser card becomes unavailable, verification has not succeeded: continue the owner's current request (ask for browser access if needed, take a fresh snapshot, show a new card) and follow any later instruction to pause or stop.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["message", "choices"],
                 "properties": {
                     "wait": {"type": "boolean", "default": true},
                     "title": {"type": "string"},
-                    "message": {"type": "string", "description": "Instructions written directly to the person. For a browser verification, describe their steps: press Send Code, then enter the code from their email. Keep agent scheduling, tools and task bookkeeping out of the card."},
+                    "message": {"type": "string", "description": "Instructions written directly to the person; for a browser verification, their steps (press Send Code, then enter the code from their email). Keep agent scheduling, tools and bookkeeping out of the card."},
                     "level": {
                         "type": "string",
                         "enum": ["info", "warning", "critical"]
@@ -587,12 +589,12 @@ pub fn credential_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                         "properties": {"browser_region": {
                             "type": "object", "required": ["tab_id", "ref"], "additionalProperties": false,
                             "properties": {"tab_id": {"type": "string", "minLength": 1}, "ref": {"type": "string", "minLength": 1},
-                                "done_text": {"type":"string","minLength":1,"maxLength":200,"description":"Short text that is not on the element yet and appears in it once the person's step is done (for example the name of the field that reveals the token). The card then closes by itself and you continue. Use it whenever the page does not make the element disappear when the step is done and no verification applies."},
+                                "done_text": {"type":"string","minLength":1,"maxLength":200,"description":"Short text not on the element yet that appears in it once the person's step is done (for example the name of the field that reveals the token); the card then closes by itself and you continue. Use it when the element does not disappear when the step is done and no verification applies."},
                                 "verification": {"type":"object", "required":["challenge_id","url","accepted_json_pointer"], "additionalProperties":false,
                                     "properties":{"challenge_id":{"type":"string","minLength":1,"maxLength":128},"url":{"type":"string"},"accepted_json_pointer":{"type":"string","minLength":2,"maxLength":128}},
                                     "description":"For an actual site verification: one unique challenge id, exact same-origin POST URL without query/credentials, and JSON pointer to a boolean true on acceptance. Use wait:false and only Cancel, with no until or custom reply. The card remains on rejection, records only delivery/HTTP status/classification, and closes only on a positive response from this document. Show the card before requesting a fresh code; the person types inside its live region while you wait. Never infer acceptance from disappearance."}}
                         }},
-                        "description": "Show a live browser element from your observed snapshot (tab_id and node_ref as ref). The kernel follows its position with a margin and closes the card with condition_met when the element disappears or its document changes. Uses the existing protected Tab display."
+                        "description": "Show a live browser element from your observed snapshot (tab_id and node_ref as ref). The kernel follows its position and closes the card with condition_met when the element disappears or its document changes."
                     },
                     "until": {
                         "type": "object",
@@ -606,14 +608,14 @@ pub fn credential_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                         "required": ["request"],
                         "properties": {"request": {"type": "object"}},
                         "additionalProperties": false,
-                        "description": "A card that asks for one specific action. request is one kernel request (the shape chariox_kernel_request takes). The card shows the kernel's own description of exactly that request, not your title or message (they are ignored), and asks for the Chariox passkey. On approval the kernel runs it at once and returns its result; on Cancel nothing runs and status is cancelled. Blocks until decided (wait is ignored). A request that only reads your own Room (ListAgents, GetSessionState and the like, with this Room's session_id) asks nobody: it runs at once and the result carries ran true and its response. A read of another Room, of every Room (ListSessions) or of the daemon waits for the card like any other action."
+                        "description": "A card that asks for one specific action. request is one kernel request (the shape chariox_kernel_request takes). The card shows the kernel's own description of exactly that request (your title and message are ignored) and asks for the Chariox passkey. On approval the kernel runs it at once and returns its result; on Cancel nothing runs and status is cancelled. Blocks until decided (wait is ignored). A request that only reads your own Room (ListAgents, GetSessionState and the like, with this Room's session_id) asks nobody: it runs at once and the result carries ran true and its response. Reads of other Rooms or the daemon wait for the card."
                     },
                     "custom_choice": {
                         "type": "object",
-                        "required": ["id", "label"],
+                        "required": ["id"],
                         "properties": {
                             "id": {"type": "string"},
-                            "label": {"type": "string"},
+                            "label": {"type": "string", "description": "Optional label of the free-text box."},
                             "placeholder": {"type": "string"},
                             "min_length": {"type": "integer", "minimum": 1},
                             "max_length": {"type": "integer", "minimum": 1}

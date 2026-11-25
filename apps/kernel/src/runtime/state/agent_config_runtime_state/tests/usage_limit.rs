@@ -45,6 +45,20 @@ async fn team(config: crate::config::DaemonConfig, count: usize) -> Team {
 
 /// The first lane's turn is a step of a workflow run when `workflow_step`.
 async fn team_of(config: crate::config::DaemonConfig, count: usize, workflow_step: bool) -> Team {
+    team_on(config, count, workflow_step, "dev-stub").await
+}
+
+/// The lanes run as the claude provider, which has accounts to switch to.
+async fn team_claude(config: crate::config::DaemonConfig, count: usize) -> Team {
+    team_on(config, count, false, "claude").await
+}
+
+async fn team_on(
+    config: crate::config::DaemonConfig,
+    count: usize,
+    workflow_step: bool,
+    provider: &str,
+) -> Team {
     let worktree = crate::test_support::test_workspace_root().join(format!(
         "chariox-usage-limit-{:016x}",
         rand::random::<u64>()
@@ -78,7 +92,7 @@ async fn team_of(config: crate::config::DaemonConfig, count: usize, workflow_ste
             .agent_store
             .set_agent_runtime_profile_with_account_profile(
                 agent_id,
-                "dev-stub",
+                provider,
                 Some("claude-haiku-5-5".to_string()),
                 None,
                 None,
@@ -89,7 +103,7 @@ async fn team_of(config: crate::config::DaemonConfig, count: usize, workflow_ste
         let request = crate::provider::LaunchProviderRequest::new(
             &session_id,
             "claude",
-            "dev-stub",
+            provider,
             "default",
             "claude-haiku-5-5",
         )
@@ -317,6 +331,44 @@ impl Team {
             .is_some()
     }
 
+    /// The provider's named reset has passed: the stop's time moves back so the clock of the
+    /// scheduler (the real one) finds it due.
+    fn make_reset_due(&self, lane: usize) {
+        let agent_id = self.lanes[lane].agent_id.clone();
+        self.rt()
+            .owned
+            .agent_store
+            .change_usage_limit_stop_durably(
+                &self.rt().owned.durable_state_store,
+                &agent_id,
+                |agent| {
+                    let mut stop = agent.usage_limit_stop().cloned()?;
+                    let now = crate::session::unix_epoch_ms();
+                    stop.stopped_at_ms = now.saturating_sub(7_200_000);
+                    stop.resumes_at_ms = Some(now.saturating_sub(1_000));
+                    Some(Some(stop))
+                },
+            )
+            .unwrap();
+    }
+
+    /// A second account of the agent's provider with room: the person now has a real choice, so a
+    /// usage stop raises its card.
+    fn with_second_account(self) -> Self {
+        let registry = &self.rt().owned.provider_account_profiles;
+        let spare = registry
+            .create_managed(OWNER, "claude", "Spare")
+            .expect("a second account");
+        crate::test_support::authenticate_provider_account(
+            registry,
+            OWNER,
+            "claude",
+            &spare.profile_id,
+        )
+        .expect("it is logged in");
+        self
+    }
+
     /// The cards the room shows for one agent, by id.
     fn cards(&self, lane: usize) -> Vec<String> {
         self.rt()
@@ -386,7 +438,9 @@ async fn a_turn_that_ends_on_the_limit_asks_by_default_and_names_when_usage_is_b
 
 #[tokio::test]
 async fn a_weekly_limit_card_names_the_utc_reset_date() {
-    let team = team(config(UsageLimitResume::Ask), 1).await;
+    let team = team_claude(crate::config::DaemonConfig::for_tests(), 1)
+        .await
+        .with_second_account();
     let day = chrono::Utc::now().date_naive() + chrono::Days::new(2);
     team.hit_the_limit_saying(
         0,
@@ -775,9 +829,9 @@ async fn asking_waits_for_the_person_and_an_agent_cannot_take_the_decision() {
     team.hit_the_limit(0).await;
     let reset = team.stop(0).unwrap().resumes_at_ms.unwrap();
 
-    // Nothing fires without the person's decision, however late.
-    tick(team.rt(), reset + 3_600_000).await;
+    tick(team.rt(), reset - 1).await;
     assert_eq!(team.stop(0).unwrap().state, UsageLimitStopState::Asking);
+    assert!(!team.has_turn(0));
 
     // A parent cannot arm it under Ask me.
     let refused = team
@@ -900,9 +954,9 @@ fn task_of(
 
 #[tokio::test]
 async fn asking_raises_one_card_that_the_person_answers_and_the_blocked_task_card_stays_hidden() {
-    let mut config = config(UsageLimitResume::Ask);
+    let mut config = crate::config::DaemonConfig::for_tests();
     config.room_agent_tools = true;
-    let team = team(config, 1).await;
+    let team = team_claude(config, 1).await.with_second_account();
     let task_id = owe_work(&team, 0);
 
     team.hit_the_limit(0).await;
@@ -926,14 +980,15 @@ async fn asking_raises_one_card_that_the_person_answers_and_the_blocked_task_car
         team.cards(0).is_empty(),
         "an answered decision leaves no card"
     );
-    let reset = team.stop(0).unwrap().resumes_at_ms.unwrap();
-    tick(team.rt(), reset).await;
-    assert_eq!(task_of(&team, &task_id).state, ExecutionState::Working);
+    // The armed resume of the task is exercised with a provider that can launch in
+    // `a_task_that_hits_the_limit_again_after_its_resume_is_brought_back_as_the_same_task`.
 }
 
 #[tokio::test]
 async fn a_decision_card_that_lost_its_reply_channel_is_raised_again() {
-    let team = team(config(UsageLimitResume::Ask), 1).await;
+    let team = team_claude(crate::config::DaemonConfig::for_tests(), 1)
+        .await
+        .with_second_account();
     team.hit_the_limit(0).await;
     let first = team.cards(0);
     assert_eq!(first.len(), 1);
@@ -2047,8 +2102,35 @@ impl Team {
 }
 
 #[tokio::test]
+async fn an_unanswered_card_closes_at_the_named_reset_without_resuming_work() {
+    // The stripe card at the stop is the default policy's (a spare account to switch to). An explicit
+    // Ask me raises no card at the stop and keeps its stop at the reset until answered.
+    let team = team_claude(crate::config::DaemonConfig::for_tests(), 1)
+        .await
+        .with_second_account();
+    team.hit_the_limit(0).await;
+    let reset = team.stop(0).unwrap().resumes_at_ms.unwrap();
+    tick(team.rt(), reset - 1).await;
+    assert_eq!(team.cards(0).len(), 1);
+
+    tick(team.rt(), reset).await;
+    assert!(team.stop(0).is_none());
+    assert!(team.cards(0).is_empty());
+    assert!(!team.has_turn(0));
+    assert!(team
+        .rt()
+        .owned
+        .terminal_stream
+        .notice_records()
+        .iter()
+        .any(|notice| { notice.message.starts_with("Usage is back on ") }));
+}
+
+#[tokio::test]
 async fn a_turn_on_another_account_ends_the_stop_and_closes_its_card_with_the_reason() {
-    let team = team(config(UsageLimitResume::Ask), 1).await;
+    let team = team_claude(crate::config::DaemonConfig::for_tests(), 1)
+        .await
+        .with_second_account();
     team.hit_the_limit(0).await;
     assert_eq!(team.cards(0).len(), 1, "the stripe asks");
 
@@ -2081,7 +2163,9 @@ async fn a_turn_on_another_account_ends_the_stop_and_closes_its_card_with_the_re
 
 #[tokio::test]
 async fn a_turn_on_the_limited_account_leaves_the_stop_and_its_card() {
-    let team = team(config(UsageLimitResume::Ask), 1).await;
+    let team = team_claude(crate::config::DaemonConfig::for_tests(), 1)
+        .await
+        .with_second_account();
     team.hit_the_limit(0).await;
     let limited = team.stop(0).unwrap().account_profile;
 
@@ -2178,3 +2262,6 @@ async fn changing_the_selected_profile_closes_the_stop_before_the_next_turn() {
         .usage_limit_stop()
         .is_none());
 }
+
+#[path = "usage_limit/cards.rs"]
+mod cards;

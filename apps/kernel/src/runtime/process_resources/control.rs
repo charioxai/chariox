@@ -45,6 +45,15 @@ pub(super) enum WatchCommand {
     },
     /// Admission changed one of its commands: apply it now.
     Apply,
+    /// Memory exhaustion holds (`freeze`) or lets go of the workload's own
+    /// process: a job is its own domain, so its whole cgroup freezes. `message`
+    /// is what its stream, its agent and its pane are told.
+    ExhaustFreeze {
+        pid: u32,
+        freeze: bool,
+        command: String,
+        message: String,
+    },
     /// Start now: the user admits this waiting command whatever the room.
     StartNow {
         process_id: String,

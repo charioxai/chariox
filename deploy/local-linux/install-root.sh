@@ -178,6 +178,22 @@ install_all() {
   act "verify native display and system browser dependencies" \
     bash "$here/install-browser-dependencies.sh"
 
+  # The kernel's memory protection (`MemoryMin=2G` in its unit) holds only as far
+  # as every cgroup above it carries it, and the owner's user manager is the
+  # root's to set: user.slice, the owner's slice and `user@UID.service`.
+  # `systemctl set-property` takes one unit per call. Only memory the kernel
+  # actually uses is protected (nothing is reserved). A staged root leaves the
+  # host's systemd alone (CHARIOX_LOCAL_INSTALL_PROTECT_SYSTEMD=1 is the test hook).
+  if [[ -z "$R" || -n "${CHARIOX_LOCAL_INSTALL_PROTECT_SYSTEMD:-}" ]]; then
+    for uid in "${uids[@]}"; do
+      for unit in user.slice "user-$uid.slice" "user@$uid.service"; do
+        act "protect the kernel's memory in $unit" systemctl set-property "$unit" MemoryMin=2G
+      done
+    done
+  else
+    say "staged root; the user manager's memory protection (MemoryMin=2G on user.slice, the owner's slice and user@UID.service) is left to the host install"
+  fi
+
   # Preserve the host-wide admission inode shared with older root kernels.
   # These contain no data; ordinary kernels flock the read-only descriptor.
   act "provision host-wide Docker admission locks" \

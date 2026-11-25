@@ -37,6 +37,7 @@ impl CommandRouter {
                     .event_connection_lanes
                     .lock(&event_user_id, &connection.connection_id)
                     .await;
+                crate::runtime::start_gate::begin_current()?;
                 Box::pin(self.check_app_route(&event_user_id, route, connection)).await?;
                 Ok(self
                     .runtime_state
@@ -48,6 +49,7 @@ impl CommandRouter {
                     .event_connection_lanes
                     .lock(&event_user_id, &grant.connection_id)
                     .await;
+                crate::runtime::start_gate::begin_current()?;
                 Box::pin(
                     crate::runtime::event_catalog_control::validate_event_connection(
                         &self.runtime_state,

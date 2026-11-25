@@ -246,7 +246,7 @@ mod tests {
         after.session.set_agents(vec![agent]);
         after
             .session
-            .add_active_interaction(crate::session::RuntimeInteraction::new(
+            .add_interaction_fixture(crate::session::RuntimeInteraction::new(
                 "interaction",
                 "agent",
                 crate::session::RuntimeInteractionKind::Permission,
@@ -463,7 +463,7 @@ mod tests {
         after.session.set_sudo_windows(vec![window]);
         after
             .session
-            .add_active_interaction(crate::session::RuntimeInteraction::new(
+            .add_interaction_fixture(crate::session::RuntimeInteraction::new(
                 "owner-decision",
                 "agent",
                 crate::session::RuntimeInteractionKind::Permission,

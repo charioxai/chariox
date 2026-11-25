@@ -2648,6 +2648,9 @@ async fn dropping_the_runtime_frees_the_terminal_wake_driver() {
 #[path = "async_popup.rs"]
 mod async_popup;
 
+#[path = "claude_login_card.rs"]
+mod claude_login_card;
+
 /// needsui: an agent's own question reaches the owner as a question with a reply box, not as a generic
 /// "Agent needs your action" with Resume; the reply resumes the task.
 #[tokio::test]
@@ -2695,11 +2698,13 @@ async fn an_agents_question_is_a_reply_card_and_the_reply_resumes_the_task() {
     assert_eq!(
         card.choices()
             .iter()
-            .map(|choice| (choice.id(), choice.label()))
+            .map(|choice| choice.id())
             .collect::<Vec<_>>(),
-        vec![("cancel", "Dismiss")],
-        "a question offers a reply or Dismiss, never Resume"
+        vec!["cancel", "stop"],
+        "a question offers a reply, Dismiss or Stop, never Resume"
     );
+    assert_eq!(card.choices()[0].label(), "Dismiss");
+    assert!(card.choices()[1].label().ends_with("task"));
     f.runtime
         .owned
         .resolve_attributed_terminal_runtime_interaction(
@@ -3529,4 +3534,49 @@ async fn kwait_timer_fires_when_an_older_finished_wake_cannot_be_decoded() {
         .unwrap();
     assert_eq!(timer.state, "fired", "{timer:?}");
     assert_eq!(timer.fire_count, 1);
+}
+
+#[tokio::test]
+async fn urgent_events_pending_at_the_provider_lane_share_one_steer() {
+    let f = fixture("urgent-inbox-batch", true).await;
+    let lanes = &f.runtime.provider_runtime_lanes;
+    let held = lanes.acquire(&f.run).await;
+    let waiting = lanes.notify_on_next_acquire_for_tests(&f.run);
+    let arrive = |source: &str| {
+        let mut event = crate::durable_state::agent_lifecycle::occurrence(
+            &f.room,
+            &f.agent,
+            source,
+            "finished",
+            "peer_event",
+            serde_json::json!({}),
+        );
+        event.urgent = true;
+        f.store().agent_lifecycle(Operation::Occur(event)).unwrap();
+    };
+    arrive("first");
+    let (room, agent, runtime) = (f.room.clone(), f.agent.clone(), f.runtime.clone());
+    let delivery = tokio::spawn(async move { runtime.deliver_agent_inbox(&room, &agent).await });
+    tokio::time::timeout(std::time::Duration::from_secs(1), waiting.notified())
+        .await
+        .expect("steer is waiting on the provider lane");
+    for source in ["second", "third", "fourth"] {
+        arrive(source);
+    }
+    drop(held);
+    delivery.await.unwrap().unwrap();
+
+    let events = f.store().agent_inbox(&f.room, &f.agent, 0).unwrap();
+    assert_eq!(events.len(), 4);
+    let steer = events[0]
+        .prompt_id
+        .as_ref()
+        .expect("the steer was admitted");
+    for event in &events {
+        assert_eq!(event.prompt_id.as_ref(), Some(steer), "{event:?}");
+        assert_eq!(
+            event.target_prompt_id.as_deref(),
+            Some(f.prompt_id.as_str())
+        );
+    }
 }

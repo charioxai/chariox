@@ -566,6 +566,76 @@ mod tests {
         assert!(!mailbox.structured_output_poll_in_flight("run-timeout"));
     }
 
+    // Terminating a run whose compaction was still running publishes its failure through the
+    // finished output polls before the runtime is cleared: nothing polls it afterwards.
+    #[test]
+    fn terminating_a_run_in_the_middle_of_a_compaction_publishes_its_failure() {
+        use crate::provider::{
+            AgentEndpointMode, ContextCompaction, LaunchProviderRequest, ProviderLaunchResult,
+        };
+        let worktree = crate::test_support::TestWorktree::new("claude-compaction-terminate");
+        let run = RuntimeProviderRun::new(
+            "run-compaction-terminate",
+            &LaunchProviderRequest::new("room", "claude", "claude", "default", "sonnet"),
+            ProviderLaunchResult {
+                endpoint_mode: AgentEndpointMode::External,
+                process_label: "claude-fixture".to_string(),
+                pty_target: None,
+                pty_program: Some("/bin/sh".to_string()),
+                pty_args: vec![
+                    "-c".to_string(),
+                    r#"printf '{"type":"system","subtype":"status","status":"compacting","compact_output_chars":0}\n'; while IFS= read -r line; do :; done"#
+                        .to_string(),
+                    "fixture".to_string(),
+                ],
+                pty_env: Default::default(),
+                pty_env_remove: Vec::new(),
+                working_directory: Some(worktree.path().to_path_buf()),
+                structured_endpoint: None,
+            },
+        );
+        let mut binding = crate::provider::initialize_claude_runtime(&run).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut running = 0;
+        while running == 0 {
+            let batch = crate::provider::drain_claude_events(&run, &mut binding.state).unwrap();
+            running += batch
+                .chunks
+                .iter()
+                .filter(|chunk| chunk.kind == crate::terminal::TerminalOutputKind::ContextCompacted)
+                .count();
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the compaction should start"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let mailbox = ProviderRunActorMailbox::default();
+        mailbox.insert_claude_runtime(run.id().to_string(), binding.state);
+
+        mailbox.spawn_terminate(run.id().to_string(), run.clone());
+
+        let published = mailbox
+            .drain_finished_output_polls_for_run(run.id())
+            .into_iter()
+            .filter_map(|job| job.result.ok().flatten())
+            .flat_map(|batch| batch.chunks)
+            .filter(|chunk| chunk.kind == crate::terminal::TerminalOutputKind::ContextCompacted)
+            .map(|chunk| {
+                (
+                    chunk.merge_key.unwrap(),
+                    serde_json::from_slice::<ContextCompaction>(&chunk.bytes).unwrap(),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(published.len(), 1, "{published:?}");
+        assert_eq!(
+            published[0].0,
+            "claude:run-compaction-terminate:compaction:0"
+        );
+        assert!(matches!(published[0].1, ContextCompaction::Failed { .. }));
+    }
+
     #[tokio::test]
     async fn finished_output_poll_wakes_completion_waiters() {
         let mailbox = ProviderRunActorMailbox::default();

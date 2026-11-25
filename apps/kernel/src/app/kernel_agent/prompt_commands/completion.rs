@@ -694,6 +694,7 @@ impl<'a> KernelAgentService<'a> {
             |agent_id| self.app.providers.get_run_for_agent(session.id(), agent_id),
             &prompt_activity,
             &active_turns,
+            crate::session::unix_epoch_ms(),
             None,
             |_| None,
         );

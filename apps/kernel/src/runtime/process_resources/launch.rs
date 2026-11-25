@@ -197,7 +197,7 @@ impl LaunchAdmission {
         cwd: &Path,
         minimum_memory: u64,
     ) -> bool {
-        self.reserve_with_memory(id, argv, cwd, false, minimum_memory)
+        self.reserve_logged(id, argv, cwd, false, minimum_memory, false)
             .is_err()
     }
 
@@ -231,6 +231,20 @@ impl LaunchAdmission {
         force: bool,
         minimum_memory: u64,
     ) -> Result<LaunchPermit, LaunchWait> {
+        self.reserve_logged(id, argv, cwd, force, minimum_memory, true)
+    }
+
+    /// `decides`: a launch that will run (or wait) as asked, so what admission
+    /// decides is logged; a probe (`would_wait`) logs nothing.
+    fn reserve_logged(
+        &self,
+        id: &str,
+        argv: &[String],
+        cwd: &Path,
+        force: bool,
+        minimum_memory: u64,
+        decides: bool,
+    ) -> Result<LaunchPermit, LaunchWait> {
         let pool = &self.0;
         let protection = pool.protection();
         let seen = admission::seen_argv(0, argv, Some(cwd.to_path_buf()));
@@ -261,13 +275,46 @@ impl LaunchAdmission {
                 .memory
                 .saturating_sub(reserved)
                 .saturating_sub(launch_memory.values().copied().fold(0, u64::saturating_add));
-            // A declared job books capacity before it has a PID. Ordinary
-            // command predictions wait only when physical memory is short.
+            // A declared job books capacity before it has a PID. A command
+            // whose last run peaked heavy waits when that peak does not fit
+            // the room left and something heavy runs that can free it
+            // (otherwise it starts: one command always makes progress). Other
+            // ordinary commands wait only when physical memory is short.
+            let heavy_known =
+                expected.memory >= light && ledger.heavy_running(&members, light, &launches);
             if !force
                 && protection.memory
-                && (minimum_memory > 0 || pool.memory_emergency())
+                && (minimum_memory > 0 || heavy_known || pool.memory_emergency())
                 && memory > free
             {
+                let first = decides
+                    && pool
+                        .launch_waiting
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .insert(id.to_string());
+                if first {
+                    crate::logging::info_with_fields(
+                        "process_resources.admission",
+                        format!(
+                            "admission held (Memory): {}: {}",
+                            admission::display(argv),
+                            if minimum_memory > 0 {
+                                "it declared a memory need above the room left in the pool"
+                            } else if heavy_known {
+                                "its last run peaked above the room left in the pool, so it waits before it starts"
+                            } else {
+                                "the machine is short of memory"
+                            }
+                        ),
+                        serde_json::json!({
+                            "decision": "held", "reason": "memory", "launch": id,
+                            "command": admission::display(argv).chars().take(200).collect::<String>(),
+                            "need_bytes": memory, "free_bytes": free,
+                            "declared_bytes": minimum_memory,
+                        }),
+                    );
+                }
                 return Err(LaunchWait {
                     reason: admission::WaitReason::Memory,
                     need_bytes: memory,
@@ -289,6 +336,26 @@ impl LaunchAdmission {
                         free_bytes: free,
                     });
                 }
+            }
+            if decides
+                && pool
+                    .launch_waiting
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(id)
+            {
+                crate::logging::info_with_fields(
+                    "process_resources.admission",
+                    format!(
+                        "admission started (Memory): {}: the room it waited for is free",
+                        admission::display(argv)
+                    ),
+                    serde_json::json!({
+                        "decision": "started", "reason": "memory", "launch": id,
+                        "command": admission::display(argv).chars().take(200).collect::<String>(),
+                        "need_bytes": memory, "free_bytes": free,
+                    }),
+                );
             }
             launches.insert(
                 id.to_string(),

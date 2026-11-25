@@ -1,5 +1,5 @@
 use super::*;
-use crate::extension::{AppCapabilityGrant, ExtensionGrant, ExtensionKind};
+use crate::extension::{ExtensionGrant, ExtensionKind};
 use crate::runtime::state::capability_grant_runtime::AppBindingPermit;
 
 #[derive(PartialEq, Eq)]
@@ -80,7 +80,6 @@ impl KernelRuntimeState {
             target_binding: agent.remote_execution().cloned(),
             installation: installation.into(),
             target_revision: self.app_binding_revision(agent.id(), installation),
-            parent: None,
             provider_run_id: None,
         };
         if !self
@@ -115,7 +114,7 @@ impl KernelRuntimeState {
     pub(in crate::runtime::state) async fn copy_agent_app_grant(
         &self,
         agent_id: &str,
-        mut grant: ExtensionGrant,
+        grant: ExtensionGrant,
         caller_user_id: &str,
     ) -> Result<Option<crate::agent::AgentInstance>, DaemonError> {
         if self.room_agent_tools_enabled() && self.agent_app_binding_origin() {
@@ -123,7 +122,6 @@ impl KernelRuntimeState {
             return Ok(None);
         }
         let installation = grant.name.clone();
-        grant.app_grant = None; // An explicit owner fork is a new checked grant.
         Ok(
             match self
                 .checked_app_grant(
@@ -162,15 +160,12 @@ impl KernelRuntimeState {
     async fn checked_app_grant(
         &self,
         agent_ref: &str,
-        mut grant: ExtensionGrant,
+        grant: ExtensionGrant,
         caller_user_id: &str,
         wait_for_slot: bool,
         binding_permit: Option<AppBindingPermit>,
         origin: AppGrantOrigin,
     ) -> Result<Result<crate::agent::AgentInstance, NotBound>, DaemonError> {
-        if self.room_agent_tools_enabled() {
-            self.require_app_grant_wake()?;
-        }
         if self.room_agent_tools_enabled()
             && binding_permit.is_none()
             && self.agent_app_binding_origin()
@@ -237,31 +232,8 @@ impl KernelRuntimeState {
                 return Err(app_binding_error("App grant scope changed"));
             }
         }
-        if self.room_agent_tools_enabled() {
-            let parent_cause = binding_permit
-                .as_ref()
-                .and_then(|permit| permit.parent.as_ref())
-                .and_then(|grant| grant.app_grant.as_ref());
-            grant.app_grant = Some(AppCapabilityGrant {
-                grant_id: format!("app-grant-{:032x}", rand::random::<u128>()),
-                expires_at_ms: parent_cause
-                    .map(|cause| cause.expires_at_ms)
-                    .unwrap_or_else(|| {
-                        crate::session::unix_epoch_ms().saturating_add(
-                            super::super::capability_grant_runtime::DEFAULT_APP_GRANT_LIFETIME
-                                .as_millis() as u64,
-                        )
-                    }),
-                delegated_by_agent_id: parent_cause
-                    .and_then(|_| binding_permit.as_ref().map(|p| p.actor.id().to_string())),
-                delegated_from_grant_id: parent_cause.map(|cause| cause.grant_id.clone()),
-            });
-        }
-        // MP-11: revocation and child delegation serialize at the same boundary.
+        // MP-11: revocation and binding serialize at the same boundary.
         let agent = {
-            if self.room_agent_tools_enabled() {
-                self.require_app_grant_wake()?;
-            }
             // MP-11 SB-03: hold run replacement/termination through mutation.
             let providers = self.owned.provider_store.read();
             let mut epochs = self
@@ -322,16 +294,6 @@ impl KernelRuntimeState {
                         "App binding changed while acquisition was pending",
                     ));
                 }
-                if let Some(parent) = &permit.parent {
-                    let current_parent = agents.get_agent(permit.actor.id())?;
-                    if !current_parent.has_extension_grant(ExtensionKind::App, &grant.name)
-                        || !current_parent.extension_grants().contains(parent)
-                    {
-                        return Err(app_binding_error(
-                            "App delegation source expired or was revoked",
-                        ));
-                    }
-                }
             }
             let record_owner_choice = || {
                 if origin == AppGrantOrigin::Requested {
@@ -345,16 +307,7 @@ impl KernelRuntimeState {
                 }
                 Ok::<_, DaemonError>(())
             };
-            if self.room_agent_tools_enabled()
-                && current.has_extension_grant(ExtensionKind::App, &grant.name)
-                && current.extension_grants().iter().any(|existing| {
-                    existing.kind == ExtensionKind::App
-                        && existing.name == grant.name
-                        && existing.app_grant.is_some()
-                })
-            {
-                // MP-11: an idempotent grant cannot renew its lifetime or orphan
-                // descendants by silently replacing their source generation.
+            if current.has_extension_grant(ExtensionKind::App, &grant.name) {
                 record_owner_choice()?;
                 return Ok(Ok(current));
             }
@@ -370,10 +323,6 @@ impl KernelRuntimeState {
             agent
         };
         self.owned.session_snapshot(agent.session_id())?;
-        self.notify_app_grant_change();
-        if let Some(cause) = &grant.app_grant {
-            self.arm_app_grant_expiry(agent.id(), &grant.name, cause);
-        }
         self.append_agent_durable_event(
             "agent.extension_granted",
             &agent,
@@ -462,23 +411,7 @@ impl KernelRuntimeState {
         name: &str,
         caller_user_id: &str,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
-        self.revoke_app_binding_set(agent_ref, name, caller_user_id, None)
-            .await
-    }
-
-    pub(in crate::runtime::state) async fn revoke_expired_agent_app(
-        &self,
-        agent_id: &str,
-        name: &str,
-        grant_id: &str,
-    ) -> Result<crate::agent::AgentInstance, DaemonError> {
-        let owner = self
-            .owned
-            .agent_store
-            .get_agent(agent_id)?
-            .owner_user_id()
-            .to_string();
-        self.revoke_app_binding_set(agent_id, name, &owner, Some(grant_id))
+        self.revoke_app_binding_set(agent_ref, name, caller_user_id)
             .await
     }
 
@@ -487,7 +420,6 @@ impl KernelRuntimeState {
         agent_ref: &str,
         name: &str,
         caller_user_id: &str,
-        expected: Option<&str>,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
         ExtensionGrant::app(name).validate_app_binding()?;
         self.owned.ensure_agent_extension_authority(
@@ -495,7 +427,7 @@ impl KernelRuntimeState {
             caller_user_id,
             "revoke agent App",
         )?;
-        let (root, revoked) = {
+        let root = {
             let mut epochs = self
                 .owned
                 .app_grant_epochs
@@ -506,63 +438,21 @@ impl KernelRuntimeState {
             let root = agents
                 .get_agent(agent_ref)
                 .or_else(|_| agents.get_agent_by_ref(agent_ref))?;
-            let cause = root
-                .extension_grants()
-                .iter()
-                .find(|g| g.kind == ExtensionKind::App && g.name == name)
-                .and_then(|g| g.app_grant.as_ref());
-            if expected.is_some_and(|id| cause.is_none_or(|cause| cause.grant_id != id)) {
-                return Ok(root); // A newer grant replaced this timer's binding.
-            }
-            let mut ids = vec![root.id().to_string()];
-            let mut source_ids: Vec<String> = cause
-                .map(|cause| vec![cause.grant_id.clone()])
-                .unwrap_or_default();
-            let candidates = agents.get_session_agents(root.session_id());
-            let mut index = 0;
-            while index < source_ids.len() {
-                for child in &candidates {
-                    let cause = child
-                        .extension_grants()
-                        .iter()
-                        .find(|g| g.kind == ExtensionKind::App && g.name == name)
-                        .and_then(|g| g.app_grant.as_ref());
-                    if let Some(cause) = cause.filter(|cause| {
-                        cause.delegated_from_grant_id.as_deref() == Some(source_ids[index].as_str())
-                    }) {
-                        if !ids.iter().any(|id| id == child.id()) {
-                            ids.push(child.id().to_string());
-                            source_ids.push(cause.grant_id.clone());
-                        }
-                    }
-                }
-                index += 1;
-            }
-            if expected.is_none() {
-                for id in &ids {
-                    self.owned.durable_state_store.append_event(
-                        "app.binding.owner_revoked",
-                        Some(id.clone()),
-                        serde_json::json!({"installation_id":name}),
-                    )?;
-                }
-            }
-            let mut revoked = Vec::new();
-            for id in ids {
-                revoked.push(agents.revoke_extension(&id, ExtensionKind::App, name)?);
-                epochs
-                    .entry((id, name.to_string()))
-                    .or_default()
-                    .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-            }
-            (revoked[0].clone(), revoked)
+            self.owned.durable_state_store.append_event(
+                "app.binding.owner_revoked",
+                Some(root.id().to_string()),
+                serde_json::json!({"installation_id":name}),
+            )?;
+            let revoked = agents.revoke_extension(root.id(), ExtensionKind::App, name)?;
+            epochs
+                .entry((root.id().to_string(), name.to_string()))
+                .or_default()
+                .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+            revoked
         };
-        self.notify_app_grant_change();
-        for agent in revoked {
-            self.owned.session_snapshot(agent.session_id())?;
-            self.finish_revoked_app_binding(agent, name, caller_user_id)
-                .await?;
-        }
+        self.owned.session_snapshot(root.session_id())?;
+        self.finish_revoked_app_binding(root.clone(), name, caller_user_id)
+            .await?;
         Ok(root)
     }
 
@@ -644,13 +534,12 @@ impl KernelRuntimeState {
             agent.owner_user_id(),
             "request agent App binding",
         )?;
-        let mut permit = AppBindingPermit {
+        let permit = AppBindingPermit {
             actor: agent.clone(),
             target_id: target.id().into(),
             target_binding: target.remote_execution().cloned(),
             installation: installation_id.into(),
             target_revision: self.app_binding_revision(target.id(), installation_id),
-            parent: None,
             provider_run_id: self
                 .room_provider_origin
                 .as_ref()
@@ -669,19 +558,6 @@ impl KernelRuntimeState {
                     .agent_store
                     .get_session_agents(agent.session_id());
                 crate::runtime::room_tool_admission::in_subtree(&agent, &target, &agents)?;
-                let parent = agent
-                    .extension_grants()
-                    .iter()
-                    .find(|grant| grant.kind == ExtensionKind::App && grant.name == installation_id)
-                    .filter(|grant| {
-                        grant.app_grant.is_some()
-                            && agent.has_extension_grant(ExtensionKind::App, installation_id)
-                    })
-                    .ok_or_else(|| {
-                        app_binding_error("App transfer must name a live App bound to the caller")
-                    })?;
-                permit.parent = Some(parent.clone());
-                return Ok(Some(permit));
             }
             // Only the owner's trusted, available App binds; publication and
             // invocation recheck it through the existing App admission path.
@@ -743,7 +619,11 @@ impl KernelRuntimeState {
             None,
         );
         let resolution = self
-            .create_runtime_interaction(session.id(), interaction)
+            .create_runtime_interaction(
+                crate::runtime::state::CardKind::RuntimeGrant,
+                session.id(),
+                interaction,
+            )
             .await?
             .await
             .map_err(|_| app_binding_error("App binding approval closed without a decision"))?;

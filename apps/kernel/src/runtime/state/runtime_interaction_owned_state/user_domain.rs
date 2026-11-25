@@ -7,6 +7,7 @@ impl KernelRuntimeOwnedState {
     /// Called under the shared interaction mutation/admission guards.
     pub(super) fn register_user_domain_interaction(
         &self,
+        kind: super::CardKind,
         interaction: RuntimeInteraction,
         responder: tokio::sync::oneshot::Sender<super::super::PendingInteractionResolution>,
         owner: Option<&str>,
@@ -24,9 +25,7 @@ impl KernelRuntimeOwnedState {
         {
             return Err(interaction_error("Invalid unattached kernel decision"));
         }
-        self.ensure_kernel_decision_capacity(owner, &interaction, &|id| {
-            self.session_store.get_session(id).ok()
-        })?;
+        super::card_registry::admit_scoped_card(kind, &interaction, &responder)?;
         let mut pending = self.pending_interactions.write();
         if pending.contains_key(interaction.id())
             || pending.values().any(|p| {
@@ -122,7 +121,12 @@ impl KernelRuntimeOwnedState {
                 "App host actions use the dedicated terminal acceptance path",
             ));
         }
-        // Host offers intentionally advertise only decline. The owner-bound
+        if matches!(choice, "choose_files" | "save_file") {
+            return Err(interaction_error(
+                "Choosing a file is done in the client's file chooser, not by a reply",
+            ));
+        }
+        // Host offers advertise Accept for clients to send the dedicated request, and Decline. The owner-bound
         // dedicated take path is their sole acceptance authority, as in Rooms.
         let (choice_id, reply) = if take_host {
             (
@@ -212,13 +216,14 @@ mod tests {
         )
     }
     #[tokio::test]
-    async fn detached_decisions_share_owner_authority_limits_and_cleanup() {
+    async fn detached_decisions_share_owner_authority_and_cleanup() {
         let state = fixture();
         let mut receivers = Vec::new();
         for number in 0..8 {
             receivers.push(
                 state
                     .create_kernel_operation_interaction(
+                        crate::runtime::state::CardKind::NativePermissionInput,
                         "",
                         "alice",
                         interaction(&format!("detached-{number}")),
@@ -229,10 +234,6 @@ mod tests {
         }
         assert_eq!(state.owned.user_domain_interactions("alice").len(), 8);
         assert!(state.owned.user_domain_interactions("bob").is_empty());
-        assert!(state
-            .create_kernel_operation_interaction("", "alice", interaction("over-limit"))
-            .await
-            .is_err());
         assert!(state
             .resolve_terminal_runtime_interaction("", "detached-0", "deny", None, Some("bob"))
             .await

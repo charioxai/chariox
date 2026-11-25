@@ -125,6 +125,8 @@ pub(crate) mod native_interaction_bridge;
 pub(crate) mod notes;
 pub(crate) mod owned_process_signals;
 pub(crate) mod pairing_invite_executor;
+pub(crate) mod pane_feed;
+pub(crate) mod pane_feed_stripes;
 pub(crate) mod perf_timing;
 pub(crate) mod person_inbox;
 pub mod process_health;
@@ -168,6 +170,7 @@ pub(crate) mod session_projection_refresh;
 pub(crate) mod session_read_control;
 pub(crate) mod slice_command_executor;
 pub(crate) mod stall_watchdog;
+pub(crate) mod start_gate;
 pub(crate) mod state;
 pub(crate) mod terminal_command_catalog;
 pub mod terminal_output_executor;
@@ -191,6 +194,7 @@ pub(crate) mod workspace_worktrees;
 pub(crate) mod kernel_access;
 pub(crate) mod kernel_gateway;
 
+pub(crate) mod relay_issuer;
 pub(crate) mod relay_peer_authority;
 pub(crate) mod self_host_terminal_grants;
 

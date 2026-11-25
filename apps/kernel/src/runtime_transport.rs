@@ -65,6 +65,8 @@ use subscriptions::{
     emit_replay_gap_snapshot, replay_recent_events, run_subscription_loop, ReplaySubscriptionResult,
 };
 
+const KERNEL_ROUTING_ACCESS_REQUIRED: &str = "Run `chariox access request --no-wait` on your local kernel, then retry after the owner approves.";
+
 pub(crate) const WATCH_INTERVAL_MS: u64 = 100;
 pub(crate) const ROOM_LIST_ROW_COALESCE_MS: u64 = 500;
 const PUMP_INTERVAL_MS: u64 = 500;
@@ -421,6 +423,7 @@ impl KernelTransportRuntime {
 
 #[derive(Debug)]
 struct ConnectionState {
+    same_computer: bool,
     // MD-3: generated after admission, stable only for this live connection.
     local_terminal_id: String,
     terminal_lifetime: crate::runtime::command::TerminalLifetime,
@@ -705,32 +708,65 @@ where
         let progress = crate::runtime::stall_watchdog::progress_watch(
             "kernel.runtime",
             "transport_pump",
-            Duration::from_secs(10),
+            Duration::from_secs(1),
         );
+        let mut maintenance = tokio::task::JoinSet::new();
+        let mut next_pass = tokio::time::Instant::now();
+        let mut pass_requested = true;
         loop {
-            progress.progress();
-            // MP-08 / MP-10: capture readiness before draining, so an arrival
-            // during the pump cannot be hidden by the post-pump sleep.
+            progress.stage("schedule maintenance", Duration::from_secs(1));
+            #[cfg(test)]
+            pump_state.count_transport_pump_iteration();
             let output_ready_sequence = pump_state.provider_output_ready_sequence();
             let provider_actor_completion_sequence =
                 pump_router.provider_run_actor_completion_sequence();
-            pump_router.runtime_state().pump_kernel_access();
-            pump_router.pump_transport_runtime().await;
             let change_sequence = pump_router.transport_runtime_pump_change_sequence();
             let pty_output_sequence = pump_router.pty_output_change_sequence();
-            let delay_ms = pump_router.transport_runtime_pump_interval_ms(
-                PUMP_INTERVAL_MS,
-                IDLE_PUMP_INTERVAL_MS,
-                crate::session::unix_epoch_ms(),
-            );
+            if pass_requested && maintenance.is_empty() {
+                let router = Arc::clone(&pump_router);
+                // Slow I/O and waits for subordinate services are supervised separately.
+                // The join set limits them to one pass and cancels it on shutdown.
+                maintenance.spawn(async move {
+                    router.pump_transport_runtime().await;
+                    let interval_ms = router.transport_runtime_pump_interval_ms(
+                        PUMP_INTERVAL_MS,
+                        IDLE_PUMP_INTERVAL_MS,
+                        crate::session::unix_epoch_ms(),
+                    );
+                    tokio::time::Instant::now() + Duration::from_millis(interval_ms)
+                });
+                pass_requested = false;
+            }
+            let delay = if maintenance.is_empty() {
+                next_pass.saturating_duration_since(tokio::time::Instant::now())
+            } else {
+                Duration::from_millis(PUMP_INTERVAL_MS)
+            };
+            progress.stage("wait for runtime activity", delay + Duration::from_secs(1));
             tokio::select! {
-                _ = sleep(Duration::from_millis(delay_ms)) => {}
-                _ = pump_router.wait_for_transport_runtime_pump_change_after(change_sequence) => {}
-                _ = pump_router.wait_for_pty_output_change_after(pty_output_sequence) => {}
-                _ = pump_router.wait_for_provider_run_actor_completion_after(provider_actor_completion_sequence) => {}
-                _ = pump_router.wait_for_started_app_refreshes() => {}
-                _ = pump_state.wait_for_provider_output_ready_after(output_ready_sequence) => {}
-                _ = pump_state.wait_for_kernel_access_holder_exit() => {}
+                Some(result) = maintenance.join_next(), if !maintenance.is_empty() => {
+                    next_pass = match result {
+                        Ok(next) => next,
+                        Err(error) => {
+                            crate::logging::error_with_fields(
+                                "kernel.runtime",
+                                "transport maintenance task failed",
+                                serde_json::json!({"error": error.to_string()}),
+                            );
+                            tokio::time::Instant::now() + Duration::from_millis(PUMP_INTERVAL_MS)
+                        }
+                    };
+                }
+                _ = sleep(delay) => pass_requested |= maintenance.is_empty(),
+                _ = pump_router.wait_for_transport_runtime_pump_change_after(change_sequence) => pass_requested = true,
+                _ = pump_router.wait_for_pty_output_change_after(pty_output_sequence) => pass_requested = true,
+                _ = pump_router.wait_for_provider_run_actor_completion_after(provider_actor_completion_sequence) => pass_requested = true,
+                _ = pump_router.wait_for_started_app_refreshes() => pass_requested = true,
+                _ = pump_state.wait_for_provider_output_ready_after(output_ready_sequence) => pass_requested = true,
+                // The pass sweeps grants when it starts. While one runs, a holder that
+                // exited after that sweep would resolve this wake on every iteration;
+                // the next pass sweeps it, so the wake only listens between passes.
+                _ = pump_state.wait_for_kernel_access_holder_exit(), if maintenance.is_empty() => pass_requested = true,
             }
         }
     });
@@ -790,6 +826,14 @@ where
                 contended_claim_task.abort();
                 created_peer_release_task.abort();
                 pump_task.abort();
+                crate::shutdown::stage("provider decisions");
+                if let Err(error) = router.runtime_state().close_provider_decisions_for_shutdown() {
+                    crate::logging::error_with_fields(
+                        "daemon.shutdown",
+                        "could not withdraw provider decisions during shutdown",
+                        serde_json::json!({"error": error.to_string()}),
+                    );
+                }
                 crate::shutdown::stage("provider output pump");
                 // Output already taken from a provider must reach history:
                 // a hot-reloaded turn continues after it in the new program.
@@ -975,6 +1019,7 @@ async fn handle_kernel_connection(
         connection_class,
         None,
         agent_run_id,
+        peer_addr.is_some_and(|address| address.ip().is_loopback()),
     )
     .await
 }
@@ -998,10 +1043,12 @@ where
         KernelConnectionClass::Terminal,
         None,
         None,
+        true,
     )
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn serve_kernel_socket<S>(
     runtime: Arc<KernelTransportRuntime>,
     router: Arc<CommandRouter>,
@@ -1010,6 +1057,7 @@ async fn serve_kernel_socket<S>(
     connection_class: KernelConnectionClass,
     peer: Option<crate::runtime::kernel_access::process::ProcessIdentity>,
     agent_run_id: Option<String>,
+    same_computer: bool,
 ) -> Result<(), DaemonError>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
@@ -1031,6 +1079,7 @@ where
     let connection_inbound_request_permits =
         Arc::new(Semaphore::new(CONNECTION_INBOUND_REQUEST_LIMIT));
     let connection_state = Arc::new(Mutex::new(ConnectionState {
+        same_computer,
         local_terminal_id: format!("{:032x}", rand::random::<u128>()),
         terminal_lifetime: Default::default(),
         browser_terminal_contexts: Default::default(),
@@ -1489,7 +1538,7 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
                                 response: Box::new(None),
                                 error: Some(KernelTransportError {
                                     code: "kernel_not_available".into(),
-                                    message: "kernel routing is only available to a local access grant holder".into(),
+                                    message: KERNEL_ROUTING_ACCESS_REQUIRED.into(),
                                     retryable: false,
                                 }),
                             },
@@ -1550,8 +1599,11 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
                     return;
                 }
             }
-            command.terminal_lifetime =
-                Some(connection_state.lock().await.terminal_lifetime.clone());
+            {
+                let connection = connection_state.lock().await;
+                command.terminal_lifetime = Some(connection.terminal_lifetime.clone());
+                command.same_computer = connection.same_computer;
+            }
             if peer.is_some() && matches!(&request, crate::local::LocalDaemonRequest::WaitEvents(_))
             {
                 connection_state
@@ -1866,8 +1918,7 @@ async fn handle_incoming_payload(connection: IncomingConnection<'_>, payload: &[
                 let Some(caller) = external_caller.as_ref() else {
                     refuse(KernelTransportError {
                         code: "kernel_not_available".into(),
-                        message: "kernel routing is only available to a local access grant holder"
-                            .into(),
+                        message: KERNEL_ROUTING_ACCESS_REQUIRED.into(),
                         retryable: false,
                     });
                     return;

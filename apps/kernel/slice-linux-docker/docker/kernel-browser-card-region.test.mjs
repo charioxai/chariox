@@ -88,6 +88,59 @@ test('an App confirmation region is found by the host in the Tab document, never
   assert.equal(calls.includes('DOM.getDocument'), false, 'the base fake never saw the confirmation query');
 }));
 
+test('a plain card is bound again to the whole page after the browser restarted, and one that waits for text or a proof is not', () => withHost(async ({ host, snapshot, region, state }) => {
+  await snapshot();
+  const first = await region({ card_id: 'person-card' });
+  assert.equal(first.state, 'present');
+  // The kernel restarted: the Tab came back with a new document, and the controller a new generation.
+  host.generation = 2; state.document_id = 'doc-2';
+  // The restarted controller remembers nothing: no snapshot references, no anchors.
+  host.cardReferences.clear(); host.cardAnchors.clear();
+  const lost = await region({ card_id: 'person-card', generation: 1, document_id: 'doc' });
+  assert.equal(lost.state, 'condition_met');
+  assert.equal(lost.reason, 'Browser restarted');
+  const connection = await host.browser.ensureConnection(), base = connection.send, sent = [];
+  connection.send = async (method, params, session) => {
+    sent.push({ method, params });
+    if (method === 'DOM.getDocument') return { root: { nodeId: 1 } };
+    if (method === 'DOM.querySelector') return { nodeId: 5 };
+    if (method === 'DOM.describeNode') return { node: { backendNodeId: 77 } };
+    return base(method, params, session);
+  };
+  const again = await region({ card_id: 'person-card', ref: undefined, rebind: true });
+  assert.equal(again.state, 'present');
+  assert.equal(again.region.ref, 'backend:77');
+  assert.equal(again.region.generation, 2);
+  assert.equal(again.region.document_id, 'doc-2');
+  assert.equal(again.region.tab_id, 'one');
+  assert.deepEqual(sent.find(call => call.method === 'DOM.querySelector').params, { nodeId: 1, selector: 'body' });
+  // The poll that follows names the new binding and keeps following the page.
+  const followed = await region({ card_id: 'person-card', ref: 'backend:77', generation: 2, document_id: 'doc-2' });
+  assert.equal(followed.state, 'present');
+  for (const refused of [{ done_text: 'Connected' }, { app_confirmation: true }, { release: true }]) {
+    await assert.rejects(region({ card_id: 'person-card', ref: undefined, rebind: true, ...refused }), { code: 'user_domain_stale_reference' });
+  }
+  await assert.rejects(region({ card_id: undefined, ref: undefined, rebind: true }), { code: 'user_domain_stale_reference' });
+}));
+test('a verification card whose proof was lost with the restart settles unavailable, never as a completed card', () => withHost(async ({ host, snapshot, region }) => {
+  const verification = { challenge_id: 'challenge-one', url: 'https://example.com/verify', accepted_json_pointer: '/accepted' };
+  await snapshot();
+  const first = await region({ card_id: 'verification', verification });
+  assert.equal(first.state, 'present');
+  assert.ok(host.cardAnchors.get('agent:a\0verification').verification, 'the card is watching for its proof');
+  // The kernel restarted: a new controller generation that remembers no anchor and no snapshot reference.
+  host.generation = 2;
+  host.cardReferences.clear(); host.cardAnchors.clear();
+  // The recovered card polls with the old generation and its verification condition.
+  const lost = await region({ card_id: 'verification', verification, generation: 1, document_id: 'doc' });
+  assert.equal(lost.state, 'unavailable', 'a lost proof is reported to the waiting agent, not settled as success');
+  assert.equal(lost.reason, 'Browser restarted');
+  // The same poll for a plain card is still the restart notice the kernel rebinds from.
+  const plain = await region({ card_id: 'plain', generation: 1, document_id: 'doc' });
+  assert.equal(plain.state, 'condition_met');
+  assert.equal(plain.reason, 'Browser restarted');
+}));
+
 test('MP-08/MP-10 card geometry follows scrolling, movement and viewport resize without another snapshot', () => withHost(async ({ snapshot, region, state }) => {
   await snapshot();
   const initial = (await region({})).region;

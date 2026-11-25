@@ -744,6 +744,7 @@ async fn relay_event_writer_delivers_ready_events_without_a_frame_wait() {
         None,
         false,
         false,
+        false,
         Arc::new(std::sync::atomic::AtomicBool::new(false)),
         Arc::default(),
     ));
@@ -803,6 +804,7 @@ async fn relay_event_writer_preserves_controls_bounded_events_and_fifo() {
         pong_rx,
         receipt_rx,
         None,
+        false,
         false,
         false,
         Arc::new(std::sync::atomic::AtomicBool::new(false)),

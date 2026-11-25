@@ -869,7 +869,11 @@ async fn busy_interaction_consumes_arm_and_replay_fails_closed_inner() {
     let busy_receiver = env
         .local_router
         .runtime_state
-        .create_runtime_interaction(&env.session_id, busy_interaction)
+        .create_runtime_interaction(
+            crate::runtime::state::CardKind::NativePermissionInput,
+            &env.session_id,
+            busy_interaction,
+        )
         .await
         .expect("busy interaction should register");
 

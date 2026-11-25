@@ -111,3 +111,55 @@ async fn compacted_session_recovery_matches_destination_claude_mode() {
         .expect("destination Claude mode rejected the compacted native-session recovery");
     assert!(handoff.render_hidden(24_000).contains("Mode Amber Ledger"));
 }
+
+/// Row 449: a Claude compaction recorded a recovery boundary, but the kernel's own
+/// record of the conversation held nothing to restore (an agent whose only turn is the
+/// one being dispatched). The dispatch failed with "Retained conversation is unavailable
+/// at the pending compaction boundary", which blocked the task behind a Resume card and
+/// lost the agent. The turn must start: the native session keeps Claude's own summary.
+#[tokio::test]
+async fn compaction_boundary_without_retained_conversation_does_not_fail_the_turn() {
+    let fixture = DerivedHandoffFixture::new().await;
+    let source = fixture
+        .run("source", "claude", Some("native"))
+        .projected_for_home_agent_with_id(
+            "source",
+            fixture.session_id.clone(),
+            fixture.agent_id.clone(),
+        );
+    fixture
+        .runtime
+        .owned
+        .operational_history_store
+        .record_agent_compaction_boundary(
+            &fixture.session_id,
+            &fixture.agent_id,
+            source.provider(),
+            source.model(),
+            source.account_profile(),
+            Some("native"),
+        )
+        .unwrap();
+    fixture.user(1, "The only turn: the one being dispatched.");
+    let mut target = fixture
+        .run("target", "claude", Some("native"))
+        .projected_for_home_agent_with_id(
+            "target",
+            fixture.session_id.clone(),
+            fixture.agent_id.clone(),
+        );
+    target.set_model("haiku");
+    let handoff = fixture.runtime.owned.context_handoff_for_dispatch(
+        &fixture.session_id,
+        &fixture.agent_id,
+        &target,
+        // The prompt is the history's only turn, so nothing earlier can be restored.
+        "prompt-1",
+        false,
+    );
+    assert!(
+        handoff.is_ok(),
+        "a compaction boundary with nothing to restore failed the turn: {:?}",
+        handoff.err()
+    );
+}

@@ -1,6 +1,6 @@
 {
-  "local": 1014,
-  "peer": 451,
+  "local": 1015,
+  "peer": 452,
   "response": {
     "room_id": "room-other",
     "cards": [
@@ -21,6 +21,7 @@
         "answerable": true,
         "reason": null
       }
-    ]
+    ],
+    "next_after": null
   }
 }

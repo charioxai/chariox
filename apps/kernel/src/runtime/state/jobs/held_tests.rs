@@ -1,7 +1,7 @@
 //! A job placed on a machine the agent already holds, through `chariox.jobs.run`: the held machine's
 //! own kernel runs it (a second kernel in this process stands in for it), and no machine is allocated,
 //! started or released.
-use super::cleanup_tests::service;
+use super::cleanup_tests::{service, service_by_action};
 use super::return_tests::worker_kernel;
 use super::*;
 
@@ -45,7 +45,7 @@ async fn run_on_held(
 
 #[tokio::test]
 async fn a_job_naming_a_held_machine_runs_on_its_kernel_and_leaves_the_machine_held() {
-    let (state, run, task, workspace) = super::tests::remote_fixture().await;
+    let (state, run, task, workspace) = super::tests::fixture().await;
     let home = crate::test_support::TestWorktree::new("held-machine-home");
     stand_in_kernel("held-kernel-runs", home.path());
     // The machine is read to check it before the job exists and again when the job starts; any
@@ -104,8 +104,86 @@ async fn a_job_naming_a_held_machine_runs_on_its_kernel_and_leaves_the_machine_h
 }
 
 #[tokio::test]
+async fn absolute_job_cwd_uploads_only_the_selected_directory_to_a_held_worker() {
+    let (state, run, task, workspace) = super::tests::fixture().await;
+    let home = crate::test_support::TestWorktree::new("held-small-workspace");
+    stand_in_kernel("held-kernel-small-workspace", home.path());
+    let workspace = workspace.path().canonicalize().unwrap();
+    let empty = workspace.join("empty");
+    let small = workspace.join("small");
+    let oversized = workspace.join("oversized");
+    for dir in [&empty, &small, &oversized] {
+        std::fs::create_dir(dir).unwrap();
+    }
+    let bytes = 2 * 1024 * 1024 * 1024 + 1;
+    std::fs::File::create(oversized.join("large.bin"))
+        .unwrap()
+        .set_len(bytes)
+        .unwrap();
+    std::fs::write(workspace.join(".charioxignore"), b"small/private.bin\n").unwrap();
+    std::fs::write(small.join("private.bin"), b"local-only").unwrap();
+    std::fs::write(small.join("payload.bin"), vec![0; 1024 * 1024]).unwrap();
+    // Every run asks the machine service for the held machine's state; how often is not the point here.
+    let service = service_by_action(&state, |_| {
+        (200, held_machine("ready", "held-kernel-small-workspace"))
+    })
+    .await;
+    for (directory, command) in [
+        (&empty, r#"test -z "$(ls -A)" && printf empty > receipt"#),
+        (
+            &small,
+            r#"test ! -e private.bin && wc -c < payload.bin > receipt"#,
+        ),
+    ] {
+        let value = run_on_held(
+            &state,
+            &run,
+            &task,
+            serde_json::json!({"command":command,"cwd":directory,"outputs":["receipt"],"machine":"held-1","wait_s":40}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(value["placement"], "remote", "{value}");
+        assert_eq!(value["result"]["exit_code"], 0, "{value}");
+        assert_eq!(
+            value["result"]["files_back"],
+            serde_json::json!(["receipt"]),
+            "{value}"
+        );
+    }
+    assert_eq!(std::fs::read(empty.join("receipt")).unwrap(), b"empty");
+    assert_eq!(
+        std::fs::read_to_string(small.join("receipt"))
+            .unwrap()
+            .trim(),
+        "1048576"
+    );
+    assert!(!workspace.join("receipt").exists());
+
+    let value = run_on_held(
+        &state,
+        &run,
+        &task,
+        serde_json::json!({"command":["/bin/true"],"cwd":oversized,"machine":"held-1","wait_s":40}),
+    )
+    .await
+    .unwrap();
+    service.abort();
+    let reason = value["result"]["output_tail"].as_str().unwrap();
+    assert!(reason.contains(oversized.to_str().unwrap()), "{value}");
+    assert!(
+        reason.contains("2147483648 bytes") && reason.contains("100000 files"),
+        "{value}"
+    );
+    assert!(
+        reason.contains("2147483649 bytes (file count 1)"),
+        "{value}"
+    );
+}
+
+#[tokio::test]
 async fn a_job_naming_a_machine_that_is_not_held_is_refused_before_it_starts() {
-    let (state, run, task, _workspace) = super::tests::remote_fixture().await;
+    let (state, run, task, _workspace) = super::tests::fixture().await;
     let service = service(
         &state,
         vec![(
@@ -133,7 +211,7 @@ async fn a_job_naming_a_machine_that_is_not_held_is_refused_before_it_starts() {
 
 #[tokio::test]
 async fn a_job_naming_a_released_machine_is_refused_with_what_to_do() {
-    let (state, run, task, _workspace) = super::tests::remote_fixture().await;
+    let (state, run, task, _workspace) = super::tests::fixture().await;
     let service = service(
         &state,
         vec![("get", 200, held_machine("deleted", "held-kernel-gone"))],
@@ -156,7 +234,7 @@ async fn a_job_naming_a_released_machine_is_refused_with_what_to_do() {
 
 #[tokio::test]
 async fn a_job_naming_a_machine_whose_kernel_does_not_answer_is_refused() {
-    let (state, run, task, _workspace) = super::tests::remote_fixture().await;
+    let (state, run, task, _workspace) = super::tests::fixture().await;
     // No kernel stands in under this id, so the gateway cannot reach it.
     let service = service(
         &state,
@@ -179,10 +257,10 @@ async fn a_job_naming_a_machine_whose_kernel_does_not_answer_is_refused() {
     );
 }
 
-/// Naming a machine the agent already holds is not an offload policy choice, so the kernel switch
-/// for renting workers (CHARIOX_REMOTE_JOBS) does not gate it.
+/// Naming a machine the agent already holds is not an offload policy choice: the Room's option
+/// (here its default, local) does not decide where the job runs.
 #[tokio::test]
-async fn a_job_naming_a_held_machine_runs_with_remote_jobs_off() {
+async fn a_job_naming_a_held_machine_runs_whatever_the_rooms_offload_option_says() {
     let (state, run, task, _workspace) = super::tests::fixture().await;
     let home = crate::test_support::TestWorktree::new("held-machine-off-home");
     stand_in_kernel("held-kernel-off", home.path());
@@ -219,7 +297,7 @@ fn a_machine_name_that_is_not_an_allocation_ref_is_rejected() {
 
 #[tokio::test]
 async fn after_a_restart_the_held_machine_is_granted_again_only_while_it_runs_the_same_kernel() {
-    let (state, _run, _task, workspace) = super::tests::remote_fixture().await;
+    let (state, _run, _task, workspace) = super::tests::fixture().await;
     let home = crate::test_support::TestWorktree::new("held-machine-reattach-home");
     stand_in_kernel("held-kernel-same", home.path());
     let mut record = super::return_tests::remote_record(workspace.path(), "true", &[]);
@@ -493,6 +571,11 @@ fn restart(state: &KernelRuntimeState, job_id: &str, recover_wake: bool) {
         .unwrap()
         .remove(job_id);
     if recover_wake {
+        // A restart takes the old supervisor's live entry with it; #1513 makes recovery keep any
+        // placement's live job, so the test drops the entry the way a new process has none.
+        let driver = state.job_wake_driver.as_ref().unwrap();
+        let wake_id = driver.read(job_id).unwrap().wake_id;
+        driver.live.lock().unwrap().remove(&wake_id);
         super::return_tests::recover_job(state, job_id);
     }
 }
@@ -506,7 +589,7 @@ fn two_gets(kernel: &str) -> Vec<(&'static str, u16, serde_json::Value)> {
 
 #[tokio::test]
 async fn a_held_machine_job_runs_through_the_targets_gateway_ledger() {
-    let (state, run, task, _workspace) = super::tests::remote_fixture().await;
+    let (state, run, task, _workspace) = super::tests::fixture().await;
     let home = crate::test_support::TestWorktree::new("held-gateway-room-home");
     let kernel_id = "held-kernel-gateway-room";
     Machine::stand_in(kernel_id, home.path(), Fault::None);
@@ -537,7 +620,7 @@ async fn a_held_machine_job_runs_through_the_targets_gateway_ledger() {
 
 #[tokio::test]
 async fn cancelling_a_held_machine_job_during_its_upload_removes_what_was_uploaded() {
-    let (state, run, task, workspace) = super::tests::remote_fixture().await;
+    let (state, run, task, workspace) = super::tests::fixture().await;
     three_files(workspace.path());
     let home = crate::test_support::TestWorktree::new("held-cancel-upload-home");
     let machine = Machine::stand_in("held-kernel-cancel", home.path(), Fault::HangUpload(1));
@@ -586,7 +669,7 @@ async fn cancelling_a_held_machine_job_during_its_upload_removes_what_was_upload
 
 #[tokio::test]
 async fn a_held_machine_job_whose_upload_fails_removes_what_was_uploaded() {
-    let (state, run, task, workspace) = super::tests::remote_fixture().await;
+    let (state, run, task, workspace) = super::tests::fixture().await;
     three_files(workspace.path());
     let home = crate::test_support::TestWorktree::new("held-failed-upload-home");
     Machine::stand_in("held-kernel-upload", home.path(), Fault::FailUpload(1));
@@ -658,7 +741,7 @@ async fn a_kernel_restart_during_a_held_machine_upload_removes_what_was_uploaded
 
 #[tokio::test]
 async fn a_kernel_restart_while_a_held_machine_cleans_up_keeps_the_finished_result() {
-    let (state, run, task, _workspace) = super::tests::remote_fixture().await;
+    let (state, run, task, _workspace) = super::tests::fixture().await;
     let home = crate::test_support::TestWorktree::new("held-restart-clean-home");
     let machine = Machine::stand_in(
         "held-kernel-restart-clean",
@@ -730,7 +813,7 @@ async fn a_kernel_restart_while_a_held_machine_cleans_up_keeps_the_finished_resu
 
 #[tokio::test]
 async fn a_held_machine_that_could_not_clean_up_is_cleaned_when_the_job_is_checked_again() {
-    let (state, run, task, _workspace) = super::tests::remote_fixture().await;
+    let (state, run, task, _workspace) = super::tests::fixture().await;
     let home = crate::test_support::TestWorktree::new("held-retry-clean-home");
     let machine = Machine::stand_in("held-kernel-retry", home.path(), Fault::CleanupDown);
     let service = service(&state, two_gets("held-kernel-retry")).await;
@@ -759,7 +842,7 @@ async fn a_held_machine_that_could_not_clean_up_is_cleaned_when_the_job_is_check
 
 #[tokio::test]
 async fn a_removal_the_machine_refused_runs_again_when_the_job_is_checked_again() {
-    let (state, run, task, _workspace) = super::tests::remote_fixture().await;
+    let (state, run, task, _workspace) = super::tests::fixture().await;
     let home = crate::test_support::TestWorktree::new("held-refused-clean-home");
     Machine::stand_in(
         "held-kernel-refused",
@@ -796,7 +879,7 @@ async fn a_removal_the_machine_refused_runs_again_when_the_job_is_checked_again(
 
 #[tokio::test]
 async fn a_kernel_restart_removes_what_a_finished_held_machine_job_could_not() {
-    let (state, run, task, _workspace) = super::tests::remote_fixture().await;
+    let (state, run, task, _workspace) = super::tests::fixture().await;
     let home = crate::test_support::TestWorktree::new("held-startup-clean-home");
     let machine = Machine::stand_in("held-kernel-startup", home.path(), Fault::CleanupDown);
     let service = service(
@@ -1028,7 +1111,7 @@ async fn a_queued_job_moves_to_an_enrolled_kernel_after_its_turn_ends() {
 }
 
 async fn job_with_upload_fault(kernel_id: &str, fault: Fault) -> (serde_json::Value, usize) {
-    let (state, run, task, workspace) = super::tests::remote_fixture().await;
+    let (state, run, task, workspace) = super::tests::fixture().await;
     three_files(workspace.path());
     let home = crate::test_support::TestWorktree::new("held-upload-fault");
     let machine = Machine::stand_in(kernel_id, home.path(), fault);
@@ -1082,7 +1165,7 @@ async fn a_missing_held_upload_reply_is_retried_and_reported() {
 
 #[tokio::test]
 async fn a_machine_only_held_job_runs_without_uploading_or_returning_workspace_files() {
-    let (state, run, task, workspace) = super::tests::remote_fixture().await;
+    let (state, run, task, workspace) = super::tests::fixture().await;
     three_files(workspace.path());
     let home = crate::test_support::TestWorktree::new("machine-only-home");
     let kernel = "machine-only-kernel";
@@ -1124,7 +1207,7 @@ async fn a_machine_only_held_job_runs_without_uploading_or_returning_workspace_f
 
 #[tokio::test]
 async fn release_during_held_job_return_settles_the_saved_job() {
-    let (state, run, task, _workspace) = super::tests::remote_fixture().await;
+    let (state, run, task, _workspace) = super::tests::fixture().await;
     let home = crate::test_support::TestWorktree::new("held-return-released");
     let kernel = "held-return-released-kernel";
     Machine::stand_in(kernel, home.path(), Fault::FailReturn);

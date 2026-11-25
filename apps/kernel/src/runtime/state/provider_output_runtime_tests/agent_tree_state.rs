@@ -671,3 +671,93 @@ async fn a_node_reports_its_account_workspace_worktree_and_machine() {
     assert_eq!(node.worker_kernel_id.as_deref(), Some("worker-kernel"));
     assert!(after.rev > before.rev);
 }
+
+// Row 524 W1/W8, through the runtime: a live process wake of a node whose turn settled done (no yield) is what
+// the node waits on in the tree the client reads, and the wake going away takes the reason with it.
+#[tokio::test]
+async fn a_live_wake_of_a_settled_child_is_its_node_wait_reason() {
+    // The child finished its turn: idle, nothing armed.
+    let team = team("tree-live-wake", false, true).await;
+    assert!(
+        read(&team).nodes[0].liveness.is_none(),
+        "nothing armed: no reason"
+    );
+    assert_eq!(read(&team).nodes[0].state, AgentTreeState::Idle);
+    let store = &team.runtime.owned.durable_state_store;
+    let now = crate::session::unix_epoch_ms();
+    // Its next turn arms a build and ends without yielding.
+    let Outcome::Task(task) = store
+        .agent_lifecycle(Operation::Begin {
+            owner: "local".into(),
+            room: team.room.clone(),
+            agent: team.child.clone(),
+            prompt: "wake-prompt".into(),
+            run: Some("wake-run".into()),
+            now,
+        })
+        .unwrap()
+    else {
+        panic!("begin returns the task")
+    };
+    let wake: crate::durable_state::agent_lifecycle::AgentWake = serde_json::from_value(serde_json::json!({
+        "id": "wake-build", "task_id": task.task_id, "room_id": team.room, "agent_id": team.child,
+        "registration_id": "completion-wake-build", "kind": "process", "label": "build",
+        "state": "starting", "created_at_ms": now - 90_000,
+        "verified_at_ms": null, "next_due_ms": null, "interval_ms": null,
+        "command": ["cargo", "test"], "match_text": null, "matched_at_ms": null, "pid": null, "exit_code": null,
+        "fire_count": 0, "missed_fires": 0, "last_fired_at_ms": null,
+        "last_sequence": null, "last_delivery": null, "last_delivered_at_ms": null,
+        "last_acknowledged_at_ms": null, "alerted_sequence": null
+    }))
+    .unwrap();
+    store
+        .agent_lifecycle(Operation::ArmWake {
+            task: task.task_id.clone(),
+            prompt: task.prompt_id.clone(),
+            wake: Box::new(wake),
+        })
+        .unwrap();
+    store
+        .agent_lifecycle(Operation::ProcessStarted {
+            id: "wake-build".into(),
+            pid: 42,
+            now,
+        })
+        .unwrap();
+    // The turn ends without a yield: its task settles done and the wake stays armed.
+    store
+        .agent_lifecycle(Operation::Settle {
+            room: team.room.clone(),
+            agent: team.child.clone(),
+            prompt: "wake-prompt".into(),
+            run: "wake-run".into(),
+            has_answer: true,
+            cancelled: false,
+            now: now + 1,
+        })
+        .unwrap();
+    let tree = read(&team);
+    let liveness = tree.nodes[0].liveness.as_ref().unwrap_or_else(|| {
+        panic!(
+            "the live wake is named: wakes {:?}",
+            store
+                .agent_wakes(Some(&team.room), Some(&team.child))
+                .unwrap()
+                .iter()
+                .map(|w| (w.id.clone(), w.state.clone(), w.task_id.clone()))
+                .collect::<Vec<_>>()
+        )
+    });
+    let on = liveness.waiting_on.as_ref().unwrap();
+    assert_eq!(
+        on.kind,
+        crate::runtime::projection::AgentWaitKind::BackgroundCommand
+    );
+    assert_eq!(on.detail, "cargo test");
+    assert_eq!(liveness.waiting_events[0].label, "command build");
+    assert_eq!(tree.nodes[0].state, AgentTreeState::Waiting);
+    assert_eq!(
+        tree.totals.live, 1,
+        "a node waiting on its wake is live: its pane stays open"
+    );
+}

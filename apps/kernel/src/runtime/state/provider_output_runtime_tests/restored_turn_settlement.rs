@@ -415,19 +415,16 @@ async fn owner_resume_does_not_depend_on_the_sudo_window_that_raised_the_decisio
         .ensure_task_owner_interaction(blocked.clone())
         .await
         .unwrap();
+    // The person's `agent resume` settles it, whatever kernel access window raised the status.
     runtime
-        .owned
-        .resolve_runtime_interaction(
+        .resolve_usage_limit_stop(
             &turn.session_id,
-            &format!(
-                "task-blocked-{}-{}",
-                blocked.task_id, blocked.blocked_revision
-            ),
-            "resume",
+            &turn.agent_id,
+            "local",
             None,
-            Some("local"),
-            false,
+            crate::local::UsageLimitStopAction::ResumeWhenBack,
         )
+        .await
         .unwrap();
     let task = tokio::time::timeout(std::time::Duration::from_secs(5), async {
         loop {
@@ -511,22 +508,17 @@ async fn a_later_turn_retires_an_interrupted_turn_whose_waited_work_finished() {
         .ensure_task_owner_interaction(blocked.clone())
         .await
         .unwrap();
-    let card = format!(
-        "task-blocked-{}-{}",
-        blocked.task_id, blocked.blocked_revision
-    );
-    let open_cards = || {
+    let waits_for_the_owner = || {
         runtime
             .owned
-            .session_store
-            .get_session(&turn.session_id)
+            .blocked_task_for_command(&turn.session_id, &turn.agent_id)
             .unwrap()
-            .active_interactions()
-            .iter()
-            .map(|i| i.id().to_owned())
-            .collect::<Vec<_>>()
+            .is_some()
     };
-    assert!(open_cards().contains(&card), "the owner card is raised");
+    assert!(
+        waits_for_the_owner(),
+        "the interrupted attempt waits for the owner"
+    );
 
     let later = crate::session::PromptQueueItem::new(
         "later-turn",
@@ -541,7 +533,7 @@ async fn a_later_turn_retires_an_interrupted_turn_whose_waited_work_finished() {
         .unwrap());
     assert_eq!(task_of(&runtime, &turn).state, ExecutionState::Cancelled);
     assert!(
-        !open_cards().contains(&card),
-        "the card for the retired attempt is withdrawn"
+        !waits_for_the_owner(),
+        "the retired attempt no longer waits for the owner"
     );
 }

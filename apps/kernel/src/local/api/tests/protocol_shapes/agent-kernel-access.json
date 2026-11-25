@@ -1,0 +1,10 @@
+{
+  "local_protocol": 1015,
+  "request": {
+    "RequestKernelAccess": {
+      "no_wait": true,
+      "reason": "Check the test kernel",
+      "term": "until_holder_exits"
+    }
+  }
+}

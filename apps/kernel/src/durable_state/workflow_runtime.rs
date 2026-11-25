@@ -579,6 +579,7 @@ pub(super) fn write_workflow_runtime_transition(
         let prompt_state =
             crate::durable_prompt_state::DurablePromptStateEventPayload::decode(prompt_state_json)
                 .map_err(|_| rusqlite::Error::InvalidQuery)?;
+        super::agent_lifecycle::record_prompt_state_in(transaction, &prompt_state)?;
         super::workflow_notifications::agent_lineage::record_prompt_state_in(
             transaction,
             &prompt_state,

@@ -270,11 +270,10 @@ impl AppControlService {
     }
 
     /// At most one live approval per validation operation, and a few per
-    /// owner, so App validations never take the owner's whole share of kernel
-    /// decisions (install and publisher approvals keep room).
+    /// owner, so App validations never crowd out the owner's install and
+    /// publisher approvals.
     pub(crate) fn begin_validation_prompt(&self, operation_id: &str, owner: &str) -> bool {
         const PER_OWNER: usize = 4;
-        // Half of the kernel-wide decision limit (32) stays for other kinds.
         const TOTAL: usize = 16;
         let mut prompts = self
             .validation_prompts

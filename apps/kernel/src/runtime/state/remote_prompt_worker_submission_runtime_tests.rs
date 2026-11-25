@@ -1456,6 +1456,75 @@ fn a_worker_account_refusal_fails_the_prompt_instead_of_reconciling() {
     ));
 }
 
+#[test]
+fn a_worker_that_lost_the_account_is_refused_before_admission_and_handed_it_again() {
+    let refused = classify_error(
+        DaemonError::RelayTransport {
+            operation: "read relay peer response",
+            code: crate::transport::relay_peer::REMOTE_PROVIDER_ACCOUNT_MISSING_CODE.to_string(),
+            message: "the selected codex account is unavailable on the worker".to_string(),
+            retryable: false,
+        },
+        true,
+    );
+    let RemotePromptSubmissionOutcome::RejectedBeforeAdmission(error) = &refused else {
+        panic!("a missing worker account must be refused before admission, not reconciled");
+    };
+    assert!(remote_prompt_error_is_account_missing(error));
+    assert!(!remote_prompt_error_is_account_missing(
+        &DaemonError::RelayTransport {
+            operation: "read relay peer response",
+            code: "provider_account_unusable".to_string(),
+            message: "not authenticated".to_string(),
+            retryable: false,
+        }
+    ));
+}
+
+#[test]
+fn a_prompt_that_cannot_start_on_a_worker_says_why() {
+    use super::super::remote_prompt_dispatch_settlement_runtime::remote_dispatch_failure_outcome;
+    let missing_account = remote_dispatch_failure_outcome(
+        &DaemonError::RelayTransport {
+            operation: "read relay peer response",
+            code: crate::transport::relay_peer::REMOTE_PROVIDER_ACCOUNT_MISSING_CODE.to_string(),
+            message: "the selected codex account is unavailable on the worker".to_string(),
+            retryable: false,
+        },
+        "kernel-lab",
+    );
+    assert!(missing_account.is_error());
+    assert!(missing_account.reason.contains("kernel-lab"));
+    assert!(missing_account
+        .reason
+        .contains("does not hold the selected account"));
+
+    let no_executable = remote_dispatch_failure_outcome(
+        &DaemonError::RelayTransport {
+            operation: "read relay peer response",
+            code: "relay_request_failed".to_string(),
+            message: "provider adapter `codex` could not resolve executable `codex`".to_string(),
+            retryable: false,
+        },
+        "kernel-lab",
+    );
+    assert!(no_executable
+        .reason
+        .contains("not installed on worker kernel kernel-lab"));
+
+    let unreachable = remote_dispatch_failure_outcome(
+        &DaemonError::RelayTransport {
+            operation: "read relay peer response",
+            code: "target_not_connected".to_string(),
+            message: "target_not_connected".to_string(),
+            retryable: true,
+        },
+        "kernel-lab",
+    );
+    assert!(unreachable.retryable);
+    assert!(unreachable.reason.contains("is not connected"));
+}
+
 // MP-08/MP-10/MP-11: failed idle admission must retry through the real peer
 // dispatch path, rather than consuming a resend with no dispatch left to run.
 #[tokio::test]

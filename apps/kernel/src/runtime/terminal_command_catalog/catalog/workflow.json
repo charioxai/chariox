@@ -60,6 +60,18 @@
         ]
       },
       {
+        "id": "workflow-archive",
+        "label": "archive",
+        "description": "Hide a workflow and refuse new runs; keeps its code and history",
+        "value": "/workflow archive "
+      },
+      {
+        "id": "workflow-unarchive",
+        "label": "unarchive",
+        "description": "Restore an archived workflow",
+        "value": "/workflow unarchive "
+      },
+      {
         "id": "workflow-delete",
         "label": "delete",
         "description": "Delete a workflow by id or alias",

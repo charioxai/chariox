@@ -142,8 +142,12 @@ impl KernelRuntimeState {
                 )
                 .with_provider_login(projection);
                 receiver = Some(
-                    self.create_runtime_interaction(session_id, interaction)
-                        .await?,
+                    self.create_runtime_interaction(
+                        crate::runtime::state::CardKind::ProviderLogin,
+                        session_id,
+                        interaction,
+                    )
+                    .await?,
                 );
                 phase = Some(next_phase);
             } else {

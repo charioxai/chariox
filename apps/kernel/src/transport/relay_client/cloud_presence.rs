@@ -6,7 +6,9 @@
 //! failure, and drops intents a newer one has replaced.
 
 use std::future::Future;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+
+use chariox_relay::protocol::DaemonRegistration;
 use std::time::Duration;
 
 use tokio::sync::watch;
@@ -32,15 +34,21 @@ struct PresenceIntent {
 pub(super) struct CloudPresencePublisher {
     intent: watch::Sender<Option<PresenceIntent>>,
     worker: JoinHandle<()>,
+    registration: Arc<Mutex<Option<Arc<DaemonRegistration>>>>,
 }
 
 impl CloudPresencePublisher {
     pub(super) fn start(router: Arc<CommandRouter>) -> Self {
-        Self::start_with(move |online, reason| {
+        Self::start_with(move |online, reason, registration| {
             let router = Arc::clone(&router);
             async move {
-                match super::connection_state::publish_cloud_presence(&router, online, &reason)
-                    .await
+                match super::connection_state::publish_cloud_presence(
+                    &router,
+                    online,
+                    &reason,
+                    registration.as_deref(),
+                )
+                .await
                 {
                     super::connection_state::CloudPresencePublishOutcome::Published => Ok(()),
                     outcome => Err(format!("{outcome:?}")),
@@ -49,14 +57,30 @@ impl CloudPresencePublisher {
         })
     }
 
+    pub(super) fn update_registration(&self, registration: &DaemonRegistration) {
+        *self
+            .registration
+            .lock()
+            .expect("presence registration lock") = Some(Arc::new(registration.clone()));
+    }
+
     fn start_with<P, F>(publish: P) -> Self
     where
-        P: Fn(bool, String) -> F + Send + Sync + 'static,
+        P: Fn(bool, String, Option<Arc<DaemonRegistration>>) -> F + Send + Sync + 'static,
         F: Future<Output = Result<(), String>> + Send + 'static,
     {
         let (intent, intents) = watch::channel(None);
-        let worker = tokio::spawn(run_presence_worker(intents, publish));
-        Self { intent, worker }
+        let registration = Arc::new(Mutex::new(None::<Arc<DaemonRegistration>>));
+        let latest = Arc::clone(&registration);
+        let worker = tokio::spawn(run_presence_worker(intents, move |online, reason| {
+            let registration = latest.lock().expect("presence registration lock").clone();
+            publish(online, reason, registration)
+        }));
+        Self {
+            intent,
+            worker,
+            registration,
+        }
     }
 
     /// Replace whatever is pending with this state; it is sent next.
@@ -69,7 +93,9 @@ impl CloudPresencePublisher {
 
     /// Drain the final intent before the runtime drops its tasks on shutdown.
     pub(super) async fn finish(self) {
-        let Self { intent, mut worker } = self;
+        let Self {
+            intent, mut worker, ..
+        } = self;
         drop(intent);
         match tokio::time::timeout(CLOUD_PRESENCE_SHUTDOWN_TIMEOUT, &mut worker).await {
             Ok(Ok(())) => {}

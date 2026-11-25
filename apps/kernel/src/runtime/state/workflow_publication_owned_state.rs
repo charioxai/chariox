@@ -606,7 +606,7 @@ impl KernelRuntimeOwnedState {
                 .iter()
                 .filter(|a| a.session_id() == session_id)
             {
-                self.forget_room_computer_access(agent.id());
+                self.forget_leased_computer_grant(agent.id());
             }
             self.agent_store.remove_session_agents(&session_id);
             let _ = self

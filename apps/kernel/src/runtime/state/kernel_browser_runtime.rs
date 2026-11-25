@@ -46,6 +46,8 @@ pub(crate) enum KernelBrowserDisplayRequest {
         device_scale_factor: u32,
         initial_push: bool,
         tab_display: bool,
+        viewer_density_stills: bool,
+        resize_rebind: bool,
     },
     EncodedCapture {
         subscription_id: String,
@@ -112,10 +114,6 @@ fn browser_tool_params(arguments: serde_json::Value) -> Result<serde_json::Value
         KernelBrowserCommand::PasteSecret { .. }
             | KernelBrowserCommand::GrantLeasedComputer { .. }
             | KernelBrowserCommand::RevokeLeasedComputer { .. }
-            | KernelBrowserCommand::GrantRoomComputer { .. }
-            | KernelBrowserCommand::ListGrants
-            | KernelBrowserCommand::SubscribeGrants { .. }
-            | KernelBrowserCommand::RevokeGrants { .. }
             | KernelBrowserCommand::MirrorSubscribe { .. }
             | KernelBrowserCommand::MirrorNext { .. }
             | KernelBrowserCommand::MirrorClose { .. }
@@ -203,6 +201,46 @@ impl KernelRuntimeState {
         caller: &crate::runtime::command::KernelCommand,
         command: KernelBrowserCommand,
     ) -> Result<serde_json::Value, DaemonError> {
+        use KernelBrowserCommand as C;
+        let (command, download_room) = match command {
+            C::DownloadsWait {
+                session_id,
+                after,
+                wait_ms,
+            } => {
+                return self
+                    .room_downloads_wait(caller, &session_id, after, wait_ms)
+                    .await;
+            }
+            C::RevealDownload {
+                session_id,
+                download_id,
+            } => {
+                return self
+                    .room_download_reveal(caller, &session_id, &download_id)
+                    .await;
+            }
+            C::Room {
+                session_id,
+                command,
+            } => {
+                if !matches!(
+                    *command,
+                    C::Open { .. }
+                        | C::Navigate { .. }
+                        | C::Input { .. }
+                        | C::MirrorInput { .. }
+                        | C::DisplayInput { .. }
+                ) {
+                    return Err(host_error(
+                        "Room browser scope requires navigation or input".into(),
+                    ));
+                }
+                self.room_downloads_owner(caller, &session_id)?;
+                (*command, Some(session_id))
+            }
+            command => (command, None),
+        };
         if let KernelBrowserCommand::PasteSecret {
             credential_id,
             tab_id,
@@ -250,7 +288,9 @@ impl KernelRuntimeState {
                 | KernelBrowserCommand::MirrorClose { .. }
                 | KernelBrowserCommand::MirrorInput { .. }
         ) {
-            return self.kernel_browser_mirror_request(caller, command).await;
+            return self
+                .kernel_browser_mirror_request(caller, command, download_room.as_deref())
+                .await;
         }
         let request = match command {
             KernelBrowserCommand::DisplayCapture { tab_id, generation } => {
@@ -265,6 +305,8 @@ impl KernelRuntimeState {
                 device_scale_factor,
                 initial_push,
                 tab_display,
+                viewer_density_stills,
+                resize_rebind,
             } => KernelBrowserDisplayRequest::NegotiatedSubscribe {
                 tab_id,
                 generation,
@@ -274,6 +316,8 @@ impl KernelRuntimeState {
                 device_scale_factor,
                 initial_push,
                 tab_display,
+                viewer_density_stills,
+                resize_rebind,
             },
             KernelBrowserCommand::DisplayNext {
                 subscription_id,
@@ -365,43 +409,17 @@ impl KernelRuntimeState {
                     }
                     KernelBrowserCommand::RevokeLeasedComputer { agent_id } => {
                         self.revoke_leased_computer(&user, agent_id).await?;
-                        let kernel = self.owned.config_projection.snapshot().daemon_id;
-                        return self.room_computer_grant_snapshot(&user, &kernel);
-                    }
-                    KernelBrowserCommand::GrantRoomComputer { .. }
-                    | KernelBrowserCommand::ListGrants
-                    | KernelBrowserCommand::RevokeGrants { .. }
-                    | KernelBrowserCommand::SubscribeGrants { .. } => {
-                        if let KernelBrowserCommand::GrantRoomComputer { agent_id } = &command {
-                            self.set_room_computer_access(&user, agent_id.as_deref(), true)?;
-                        }
-                        if let KernelBrowserCommand::RevokeGrants { agent_id } = &command {
-                            self.set_room_computer_access(&user, agent_id.as_deref(), false)?;
-                            self.revoke_user_leased_computer(&user, agent_id.as_deref())
-                                .await?;
-                        }
-                        if let KernelBrowserCommand::SubscribeGrants { after, wait_ms } = command {
-                            if wait_ms > 25_000 {
-                                return Err(host_error(
-                                    "MP-08: access subscription wait exceeds 25000 ms".into(),
-                                ));
-                            }
-                            let deadline = tokio::time::Instant::now()
-                                + std::time::Duration::from_millis(wait_ms.into());
-                            while self.owned.kernel_browser_host.access_cursor(&user) == after
-                                && tokio::time::Instant::now() < deadline
-                            {
-                                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                                self.kernel_browser_terminal_context(caller)?;
-                            }
-                        }
-                        let kernel = self.owned.config_projection.snapshot().daemon_id;
-                        return self.room_computer_grant_snapshot(&user, &kernel);
+                        return Ok(
+                            serde_json::json!({"agent_id": agent_id, "leased_computer": false}),
+                        );
                     }
                     _ => {}
                 }
                 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
-                if matches!(command, KernelBrowserCommand::Stop) {
+                if matches!(
+                    command,
+                    KernelBrowserCommand::Stop | KernelBrowserCommand::Restart
+                ) {
                     let views = self.app_control().user_views();
                     for owner in self.user_domain_owner_aliases(&user) {
                         for view in views.browser_views(&owner) {
@@ -414,6 +432,9 @@ impl KernelRuntimeState {
                 let mut params = serde_json::to_value(command)
                     .map_err(|_| host_error("MD-2: invalid command".into()))?;
                 params["observed_by"] = serde_json::json!(actor);
+                if let Some(room) = &download_room {
+                    params["_download_session"] = serde_json::json!(room);
+                }
                 let admission = self
                     .owned
                     .kernel_browser_host
@@ -454,7 +475,12 @@ impl KernelRuntimeState {
         if !(room_control || features::display_enabled() || mirror_control) {
             return Err(host_error("MD-DISPLAY: display disabled".into()));
         }
-        Box::pin(self.kernel_browser_display_request(caller, request)).await
+        Box::pin(self.kernel_browser_display_request_in_room(
+            caller,
+            request,
+            download_room.as_deref(),
+        ))
+        .await
     }
     pub(crate) async fn kernel_browser_display_attach(
         &self,
@@ -569,6 +595,16 @@ impl KernelRuntimeState {
         caller: &crate::runtime::command::KernelCommand,
         request: KernelBrowserDisplayRequest,
     ) -> Result<serde_json::Value, DaemonError> {
+        self.kernel_browser_display_request_in_room(caller, request, None)
+            .await
+    }
+
+    async fn kernel_browser_display_request_in_room(
+        &self,
+        caller: &crate::runtime::command::KernelCommand,
+        request: KernelBrowserDisplayRequest,
+        download_room: Option<&str>,
+    ) -> Result<serde_json::Value, DaemonError> {
         let room_control = request.room_control();
         if let Some((id, generation, command)) = room_control {
             if self.is_room_display(id) {
@@ -611,10 +647,18 @@ impl KernelRuntimeState {
                 device_scale_factor,
                 initial_push,
                 tab_display,
+                viewer_density_stills,
+                resize_rebind,
             } => {
                 let mut params = serde_json::json!({"op":"display_subscribe","tab_id":tab_id,"generation":generation,"codecs":codecs,"bitrate":bitrate,"device_scale_factor":device_scale_factor});
                 if tab_display {
                     params["tab_display"] = true.into();
+                }
+                if viewer_density_stills {
+                    params["viewer_density_stills"] = true.into();
+                }
+                if resize_rebind {
+                    params["resize_rebind"] = true.into();
                 }
                 if let Some(target) = target {
                     params["target"] = serde_json::to_value(target)
@@ -721,6 +765,9 @@ impl KernelRuntimeState {
             }
         };
         params["observed_by"] = serde_json::json!(actor);
+        if let Some(room) = download_room {
+            params["_download_session"] = serde_json::json!(room);
+        }
         if let Some(at) = input_at {
             crate::transport::kernel_browser_display::timing("input_admission", at);
         }
@@ -833,7 +880,7 @@ impl KernelRuntimeState {
             tools.extend(self.owner_handoff_tool_spec());
             tools.push(RuntimeToolSpec { name: BROWSER.into(),
                 description: "MD-3: control the user's kernel browser outside sessions/slices. Read state/snapshot/screenshot to obtain tab IDs, generation and document_id. If a snapshot is too large, find returns matching fields/buttons/links with node_ref, labels and bounds: {op:find,tab_id,generation,query,kind:field|button|link|any}. query is a case-insensitive substring of a label, role, id, name, placeholder or control text; empty query lists controls. Results are bounded: to continue repeat the same find with next_offset as offset and its document_id beside command. A changed document requires a fresh find. Find never returns field values; Downloads appear in state.downloads (in_progress/done/failed/cancelled); a done path is readable with file tools until the Room ends or the browser stops. Downloads are limited to 256 MiB per file and 1 GiB per Room. Cancel with cancel_download and its download_id, tab_id and generation. The input op requires the observed document_id beside command and accepts click/text/key/scroll/upload; scroll with target=node_ref scrolls that node into view; upload uses target=node_ref from snapshot and path (or paths, 1 through 20 files, 512 MiB total) inside the Room workspace; traversal and symlink escapes are refused; only input type=file is supported, not drop zones or chooser buttons; click/scroll x,y are CSS pixels inside the state viewport (screenshot pixels / device_scale_factor). Pending dialogs appear in state.dialogs; answer with dialog using its dialog_id, tab_id, document_id, generation and action accept/dismiss (optional prompt_text, empty allowed). Permission dialogs use accept for Allow and dismiss for Deny; unanswered requests deny after 30 seconds. screenshot returns the viewport; add node_ref (from a snapshot), clip {x,y,width,height} in CSS pixels inside the viewport, or full_page:true (one image pixel per CSS pixel, cut at 16000 px) to get one element, a region or the whole page; full_page uses viewport masks when the page fits; a taller page with a plain Vault-filled field requires a masked viewport screenshot instead. save writes the bytes of an image or other resource the page shows (node_ref from a snapshot, or an http(s) or data url; fetched with the page's own session) to path inside the Room workspace: {path, bytes, mime_type, sha256}, at most 25 MiB; paths outside the workspace, .. and symlink escapes are refused. wait ends when a condition holds, so do not poll snapshots: text (case-insensitive, as the page shows it to you), node_ref (that node is on the page) or url_contains, with timeout_ms up to 30000; it answers {matched, waited_ms} with the tab state, and matched false means the time ran out. Camera, microphone and screen capture are unavailable. A first state/snapshot/screenshot starts a browser that is not running; after a stop only start brings it back. If start fails, the error ends with a reason class (browser_executable_missing, browser_sandbox_unavailable, browser_display_unavailable, browser_disk_full, browser_out_of_memory, browser_profile_locked, browser_startup_timeout or browser_launch_failed): retry start once, then tell the owner in plain words that the browser did not start. Never ask the owner to allow browser access for a failed start. Vault input is separate.".into(),
-                input_schema: serde_json::json!({"type":"object","properties":{"document_id":{"type":"string","minLength":1,"maxLength":256},"command":{"type":"object","properties":{"op":{"type":"string","enum":["start","state","stop","open","close","navigate","snapshot","find","input","dialog","cancel_download","screenshot","save","wait"]},"tab_id":{"type":"string"},"generation":{"type":"integer","minimum":1},"url":{"type":"string"},"query":{"type":"string","maxLength":512,"description":"find: label, role, id, name, placeholder or control text substring; empty lists controls."},"kind":{"type":"string","enum":["field","button","link","any"],"description":"find: the control kind, as in slice_browser_find."},"offset":{"type":"integer","minimum":0,"maximum":100000,"description":"find: next_offset from a prior page; pass its document_id beside command."},"node_ref":{"type":"string","description":"screenshot, save or wait: a top-level node_ref from a fresh snapshot (backend:N). A screenshot never scrolls: scroll to an off-screen node first (input scroll with target)."},"clip":{"type":"object","properties":{"x":{"type":"integer","minimum":0},"y":{"type":"integer","minimum":0},"width":{"type":"integer","minimum":1},"height":{"type":"integer","minimum":1}},"required":["x","y","width","height"],"additionalProperties":false,"description":"screenshot: a region in CSS pixels inside the state viewport."},"full_page":{"type":"boolean","description":"screenshot: true captures the whole page."},"text":{"type":"string","minLength":1,"maxLength":512,"description":"wait: text that must show on the page."},"url_contains":{"type":"string","minLength":1,"maxLength":512,"description":"wait: part of the tab's URL."},"timeout_ms":{"type":"integer","minimum":0,"maximum":30000,"description":"wait: how long to wait at most."},"path":{"type":"string","minLength":1,"maxLength":4096,"description":"save: the file to write, relative to the Room workspace or an absolute path inside it."},"subscription_id":{"type":"string"},"document_id":{"type":"string","minLength":1,"maxLength":256},"download_id":{"type":"string","minLength":1,"maxLength":128},"dialog_id":{"type":"string","minLength":1,"maxLength":256},"action":{"type":"string","enum":["accept","dismiss"]},"prompt_text":{"type":"string","maxLength":2048},"input":{"type":"object","properties":{"kind":{"type":"string","enum":["click","text","key","scroll","upload"]},"target":{"type":"string","description":"Upload: node_ref from a fresh snapshot of an input type=file. Scroll: a node_ref to scroll into view instead of x, y and deltas."},"path":{"type":"string","minLength":1,"maxLength":4096,"description":"Upload: a file relative to the Room workspace, or an absolute path inside it. Use path or paths."},"paths":{"type":"array","minItems":1,"maxItems":20,"items":{"type":"string","minLength":1,"maxLength":4096}},"x":{"type":"integer","minimum":0,"maximum":1279},"y":{"type":"integer","minimum":0,"maximum":799},"text":{"type":"string","maxLength":16384},"key":{"type":"string","minLength":1,"maxLength":16,"description":"Named navigation/editing key or a single printable character; validated by the shared browser input path."},"modifiers":{"type":"integer","minimum":0,"maximum":15,"description":"Optional bounded CDP keyboard bitset: Alt=1, Ctrl=2, Meta=4, Shift=8; omitted means zero."},"delta_x":{"type":"integer","minimum":-10000,"maximum":10000},"delta_y":{"type":"integer","minimum":-10000,"maximum":10000}},"required":["kind"],"additionalProperties":false}},"required":["op"],"additionalProperties":false}},"required":["command"],"additionalProperties":false}), });
+                input_schema: serde_json::json!({"type":"object","properties":{"document_id":{"type":"string","minLength":1,"maxLength":256},"command":{"type":"object","properties":{"op":{"type":"string","enum":["start","state","stop","restart","open","close","navigate","snapshot","find","input","dialog","cancel_download","screenshot","save","wait"]},"tab_id":{"type":"string"},"generation":{"type":"integer","minimum":1},"url":{"type":"string"},"query":{"type":"string","maxLength":512,"description":"find: label, role, id, name, placeholder or control text substring; empty lists controls."},"kind":{"type":"string","enum":["field","button","link","any"],"description":"find: the control kind, as in slice_browser_find."},"offset":{"type":"integer","minimum":0,"maximum":100000,"description":"find: next_offset from a prior page; pass its document_id beside command."},"node_ref":{"type":"string","description":"screenshot, save or wait: a top-level node_ref from a fresh snapshot (backend:N). A screenshot never scrolls: scroll to an off-screen node first (input scroll with target)."},"clip":{"type":"object","properties":{"x":{"type":"integer","minimum":0},"y":{"type":"integer","minimum":0},"width":{"type":"integer","minimum":1},"height":{"type":"integer","minimum":1}},"required":["x","y","width","height"],"additionalProperties":false,"description":"screenshot: a region in CSS pixels inside the state viewport."},"full_page":{"type":"boolean","description":"screenshot: true captures the whole page."},"text":{"type":"string","minLength":1,"maxLength":512,"description":"wait: text that must show on the page."},"url_contains":{"type":"string","minLength":1,"maxLength":512,"description":"wait: part of the tab's URL."},"timeout_ms":{"type":"integer","minimum":0,"maximum":30000,"description":"wait: how long to wait at most."},"path":{"type":"string","minLength":1,"maxLength":4096,"description":"save: the file to write, relative to the Room workspace or an absolute path inside it."},"subscription_id":{"type":"string"},"document_id":{"type":"string","minLength":1,"maxLength":256},"download_id":{"type":"string","minLength":1,"maxLength":128},"dialog_id":{"type":"string","minLength":1,"maxLength":256},"action":{"type":"string","enum":["accept","dismiss"]},"prompt_text":{"type":"string","maxLength":2048},"input":{"type":"object","properties":{"kind":{"type":"string","enum":["click","text","key","scroll","upload"]},"target":{"type":"string","description":"Upload: node_ref from a fresh snapshot of an input type=file. Scroll: a node_ref to scroll into view instead of x, y and deltas."},"path":{"type":"string","minLength":1,"maxLength":4096,"description":"Upload: a file relative to the Room workspace, or an absolute path inside it. Use path or paths."},"paths":{"type":"array","minItems":1,"maxItems":20,"items":{"type":"string","minLength":1,"maxLength":4096}},"x":{"type":"integer","minimum":0,"maximum":1279},"y":{"type":"integer","minimum":0,"maximum":799},"text":{"type":"string","maxLength":16384},"key":{"type":"string","minLength":1,"maxLength":16,"description":"Named navigation/editing key or a single printable character; validated by the shared browser input path."},"modifiers":{"type":"integer","minimum":0,"maximum":15,"description":"Optional bounded CDP keyboard bitset: Alt=1, Ctrl=2, Meta=4, Shift=8; omitted means zero."},"delta_x":{"type":"integer","minimum":-10000,"maximum":10000},"delta_y":{"type":"integer","minimum":-10000,"maximum":10000}},"required":["kind"],"additionalProperties":false}},"required":["op"],"additionalProperties":false}},"required":["command"],"additionalProperties":false}), });
         }
         tools
     }

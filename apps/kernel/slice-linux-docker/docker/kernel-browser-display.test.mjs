@@ -543,3 +543,14 @@ test('MP-08/MP-10/MP-11 closing an encoder drains the active raster request befo
     await rm(root,{recursive:true,force:true});
   }
 });
+
+// Row 401 F2: a warming encoder answers the first real frame once warm, never as a busy encoder (which would skip that frame).
+test('row 401 F2: an encode sent while the encoder warms waits for it and returns a key frame',async()=>{
+ const encoder=new PortableEncoder();
+ try{
+  const warming=encoder.warm();
+  const frame=await encoder.encode('/9j//gAQTGF2YzYyLjExLjEwMAD/2wBDAAgEBAQEBAUFBQUFBQYGBgYGBgYGBgYGBgYHBwcICAgHBwcGBgcHCAgICAkJCQgICAgJCQoKCgwMCwsODg4RERT/xABSAAEBAAAAAAAAAAAAAAAAAAAACAEBAQAAAAAAAAAAAAAAAAAAAAEQAQEAAwEAAAAAAAAAAAAAAAARATFxQREBAQAAAAAAAAAAAAAAAAAAACH/wAARCAAQACADASIAAhEAAxEA/9oADAMBAAIRAxEAPwCf7mTzc6AiUAKV/9k=',2_000_000,true,'avc1.420033',[],{crop:{x:0,y:0,width:16,height:8}});
+  await warming;
+  assert.equal(typeof frame.data_base64,'string');assert.equal(frame.key,true);
+ }finally{await encoder.close();}
+});

@@ -1,6 +1,7 @@
 // MP-07 / MP-08 / MP-10 / MP-11: regenerate landing pins from the two Rust constants.
 import { readFileSync, writeFileSync } from "node:fs"
 import { repositoryRoot, localProtocolVersion, relayPeerProtocolVersion } from "./lib/protocol-versions.mjs"
+import { HASH_PINS_PATH, hashPinsProblem } from "./lib/protocol-hash-pins.mjs"
 const check = process.argv.includes("--check")
 function update(path, content) {
   const url = new URL(path, repositoryRoot)
@@ -12,11 +13,18 @@ update("fixtures/protocol-versions.json", JSON.stringify({ local: localProtocolV
 // These snapshots compare their allocation with the current runtime pair.
 // Their shape hashes remain explicit in the focused protocol tests.
 const currentSnapshots = [
+  "apps/kernel/src/local/api/tests/protocol_shapes/provider-account-identity-452.json",
+  "apps/kernel/src/local/api/tests/protocol_shapes/account-kernels-1015.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/local-browser-expires-in-1014.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/folded-answer-1013.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/browser-mirror2-page-wheel-1014.json",
+  "apps/kernel/src/local/api/tests/protocol_shapes/browser-mirror2-media-playing-1015.json",
+  "apps/kernel/src/local/api/tests/protocol_shapes/browser-mirror2-layout-delta-1015.json",
+  "apps/kernel/src/local/api/tests/protocol_shapes/browser-display-resize-rebind-1015.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/agent-release-notes.json",
+  "apps/kernel/src/local/api/tests/protocol_shapes/agent-kernel-access.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/program-stdin-1014.json",
+  "apps/kernel/src/local/api/tests/protocol_shapes/machine-acquire-1015.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/files-watch-1011.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/watcher-1012.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/runtime-mcp-paging-1014.json",
@@ -98,3 +106,8 @@ const clientPath = "packages/kernel-client/src/kernel-types.ts"
 update(clientPath, readFileSync(new URL(clientPath, repositoryRoot), "utf8").replace(/export const LOCAL_DAEMON_PROTOCOL_VERSION = \d+/, `export const LOCAL_DAEMON_PROTOCOL_VERSION = ${localProtocolVersion}`))
 const dockerPath = "docker/publication/Dockerfile"
 update(dockerPath, readFileSync(new URL(dockerPath, repositoryRoot), "utf8").replace(/ARG CHARIOX_LOCAL_DAEMON_PROTOCOL_VERSION=\d+/g, `ARG CHARIOX_LOCAL_DAEMON_PROTOCOL_VERSION=${localProtocolVersion}`))
+// The hashes pinned in the protocol tests follow the protocol pair; pnpm protocol:rehash rewrites them and these pins.
+if (check) {
+  const problem = hashPinsProblem(readFileSync(new URL(HASH_PINS_PATH, repositoryRoot), "utf8"), localProtocolVersion, relayPeerProtocolVersion)
+  if (problem) throw new Error(problem)
+}

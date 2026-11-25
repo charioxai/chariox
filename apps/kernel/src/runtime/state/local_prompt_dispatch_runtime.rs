@@ -10,7 +10,6 @@ use super::*;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum PromptDispatchAcceptance {
     Submitted,
-    PreparingBrief,
     Dropped,
 }
 
@@ -569,18 +568,11 @@ impl KernelRuntimeState {
                     message: error.to_string(),
                 })??
             };
-            if handoff
-                .as_ref()
-                .is_some_and(|handoff| handoff.needs_brief())
-                && super::context_handoff::brief_refresh::writes_handoff_briefs(&provider_run)
-            {
-                self.spawn_handoff_brief_dispatch(
-                    dispatch.clone(),
-                    provider_run,
-                    handoff.unwrap(),
-                    hidden_system_context,
-                );
-                return Ok(PromptDispatchAcceptance::PreparingBrief);
+            if let Some(handoff) = handoff.as_ref().filter(|handoff| {
+                handoff.needs_brief()
+                    && super::context_handoff::brief_refresh::writes_handoff_briefs(&provider_run)
+            }) {
+                self.spawn_handoff_brief_fold(dispatch, provider_run.clone(), handoff.clone());
             }
             return self
                 .submit_structured_prompt_with_handoff(
@@ -1775,6 +1767,21 @@ impl KernelRuntimeState {
         ) else {
             return;
         };
+        if let Err(error) = self
+            .with_app_side_effect(|app| {
+                app.settle_cancelled_claude_compaction_for_runtime(
+                    &dispatch.provider_run_id,
+                    prompt.id(),
+                )
+            })
+            .await
+        {
+            crate::logging::warn_with_fields(
+                "daemon.claude_native",
+                "could not settle compaction for the cancelled prompt",
+                serde_json::json!({ "provider_run_id": dispatch.provider_run_id, "error": error.to_string() }),
+            );
+        }
         let settlement = self.owned.settle_stopped_agent_task(
             &dispatch.session_id,
             &agent_id,
@@ -4134,7 +4141,10 @@ pub(in crate::runtime::state) mod tests {
     }
 
     #[tokio::test]
-    async fn cancelling_during_handoff_brief_never_submits_or_saves_the_cancelled_fold() {
+    /// C-FALLBACK: a rebuilt handoff never holds the turn on its brief. The
+    /// turn goes out with the stored brief and the newest history while the
+    /// brief is folded in the background, and the fold is stored after.
+    async fn a_rebuilt_handoff_goes_out_while_its_brief_folds_in_the_background() {
         let (root, runtime, session_id, agent_id, attachment_id, prompt_id, _) =
             runtime_with_active_prompt_and_history(Some(&format!(
                 "remember amber {}",
@@ -4144,7 +4154,7 @@ pub(in crate::runtime::state) mod tests {
         let started = root.path().join("brief-started");
         let release = root.path().join("brief-release");
         let finished = root.path().join("brief-finished");
-        let submitted = root.path().join("cancelled-submit");
+        let submitted = root.path().join("submitted");
         let brief = "## Goal\nRemember amber\n## Constraints & Preferences\nNone\n## Progress\nDone\n## Key Decisions\nNone\n## Next Steps\nRecall\n## Critical Context\namber";
         let answer = serde_json::json!({"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":brief}]}}).to_string();
         let script = format!(
@@ -4194,64 +4204,44 @@ pub(in crate::runtime::state) mod tests {
             &attachment_id,
             run.id(),
             &prompt_id,
-            "cancelled request",
+            "next request",
             None,
             false,
         );
         runtime.enqueue_prompt_dispatch(&dispatch).await.unwrap();
         for _ in 0..200 {
-            if started.exists() {
+            if started.exists() && submitted.exists() {
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
+        assert!(started.exists(), "the brief is folded by the real utility");
         assert!(
-            started.exists(),
-            "fixture must reach the real brief utility"
+            submitted.exists(),
+            "the turn must reach the provider while its brief still folds"
         );
-        let session = runtime
-            .owned
-            .session_store
-            .get_session(&session_id)
-            .unwrap();
-        runtime
-            .owned
-            .prompt_state_owner
-            .begin_cancelling_prompt_if_matches(&session, &agent_id, Some(&prompt_id))
-            .unwrap();
+        assert!(!finished.exists(), "the fold is still held");
         std::fs::write(&release, "").unwrap();
+        let mut stored = None;
         for _ in 0..200 {
-            if finished.exists() {
+            stored = runtime
+                .owned
+                .operational_history_store
+                .load_agent_handoff_brief(&session_id, &agent_id)
+                .unwrap();
+            if stored.is_some() {
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
-        assert!(finished.exists(), "fixture utility must finish");
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-        let submitted = submitted.exists();
-        let stored = runtime
-            .owned
-            .operational_history_store
-            .load_agent_handoff_brief(&session_id, &agent_id)
-            .unwrap();
         runtime
             .owned
             .provider_store
             .terminate_run_provider_only(&session_id, run.id())
             .unwrap();
-        assert!(
-            !submitted,
-            "a cancelled request reached the provider actor after the brief"
-        );
-        assert!(
-            stored.is_none(),
-            "a cancelled fold must not overwrite the shared stored brief"
-        );
+        assert!(stored.is_some(), "the background fold is stored");
     }
 
-    /// A rebuilt handoff reads the agent's history once per dispatch, for the
-    /// packet, the brief and the final check alike, and the brief deadline
-    /// starts at the first summary call: a slow read still leaves a stored brief.
     #[tokio::test]
     async fn a_handoff_dispatch_reads_the_history_once_and_a_slow_read_still_yields_a_brief() {
         let mut config = DaemonConfig::for_tests();
@@ -4320,16 +4310,17 @@ pub(in crate::runtime::state) mod tests {
         let history = runtime.owned.operational_history_store.clone();
         let loads_before = history.agent_history_loads();
         runtime.enqueue_prompt_dispatch(&dispatch).await.unwrap();
+        let mut stored = None;
         for _ in 0..600 {
-            if submitted.exists() {
+            stored = history
+                .load_agent_handoff_brief(&session_id, &agent_id)
+                .unwrap();
+            if submitted.exists() && stored.is_some() {
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
         let loads = history.agent_history_loads() - loads_before;
-        let stored = history
-            .load_agent_handoff_brief(&session_id, &agent_id)
-            .unwrap();
         runtime
             .owned
             .provider_store
@@ -4516,79 +4507,6 @@ pub(in crate::runtime::state) mod tests {
     }
 
     #[tokio::test]
-    async fn handoff_dispatch_returns_to_the_pump_before_preparing_the_brief() {
-        let (_worktree, runtime, session_id, agent_id, observer_id, _run_id, mut dispatch) =
-            runtime_with_admitted_prompt().await;
-        let request =
-            LaunchProviderRequest::new(&session_id, "claude", "claude", "default", "sonnet")
-                .with_agent_id(&agent_id);
-        let mut run = crate::provider::RuntimeProviderRun::new(
-            "brief-target-run",
-            &request,
-            crate::provider::ProviderLaunchResult {
-                endpoint_mode: crate::provider::AgentEndpointMode::Managed,
-                process_label: "claude".into(),
-                pty_target: None,
-                pty_program: None,
-                pty_args: vec![],
-                pty_env: Default::default(),
-                pty_env_remove: vec![],
-                working_directory: None,
-                structured_endpoint: None,
-            },
-        );
-        run.mark_running();
-        dispatch.provider_run_id = run.id().to_string();
-        runtime
-            .owned
-            .provider_store
-            .write()
-            .insert_run_for_test(run.clone());
-        runtime.owned.provider_run_projection.update(run);
-        let entry = crate::history::SessionHistoryEntry::user_prompt(
-            &session_id,
-            "prior",
-            &agent_id,
-            format!("remember amber-kestrel {}", "notes ".repeat(2_000)),
-        );
-        runtime
-            .owned
-            .operational_history_store
-            .append(&crate::history::HistoryEvent::transcript(
-                100,
-                &entry,
-                crate::history::HistoryEventTurnContext {
-                    prompt_id: Some("prior".into()),
-                    ..Default::default()
-                },
-            ))
-            .unwrap();
-        // A current-thread executor cannot run the continuation until this test yields.
-        // The missing Claude actor makes a synchronous dispatch fail immediately.
-        assert_eq!(
-            runtime
-                .enqueue_prompt_dispatch_after_liveness_with_acceptance(&dispatch, &runtime.owned)
-                .await
-                .unwrap(),
-            PromptDispatchAcceptance::PreparingBrief
-        );
-        let records = runtime
-            .owned
-            .terminal_stream
-            .drain_notice_records(&session_id, &observer_id);
-        assert!(
-            records
-                .iter()
-                .any(|record| record.message.contains("Preparing handoff")),
-            "{records:?}"
-        );
-        assert!(runtime
-            .owned
-            .prompt_dispatch_matches_active_prompt(&dispatch)
-            .unwrap());
-    }
-
-    #[tokio::test]
     async fn local_prompt_admission_echo_does_not_wait_for_git_observation() {
         let (_worktree, runtime, session_id, _, observer_id, provider_run_id, dispatch) =
             runtime_with_admitted_prompt_in_git(true).await;
@@ -4748,24 +4666,28 @@ pub(in crate::runtime::state) mod tests {
         assert!(!task.reason.contains("provider protocol"));
         assert!(task.reason.contains("Resume"));
         assert!(!task.reason.contains("Interrupted before it finished"));
-        tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            loop {
-                if runtime
-                    .owned
-                    .session_store
-                    .get_session(&session_id)
-                    .unwrap()
-                    .active_interactions()
-                    .iter()
-                    .any(|i| i.id().starts_with("task-blocked-"))
-                {
-                    break;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-            }
-        })
-        .await
-        .expect("failed dispatch must offer owner actions without the periodic sweep");
+        // The failed dispatch is status on the agent's row, with what unblocks it: no card.
+        let row = runtime
+            .owned
+            .session_snapshot(&session_id)
+            .unwrap()
+            .agent_tasks()
+            .iter()
+            .find(|t| t.task_id == dispatch.prompt_id)
+            .cloned()
+            .expect("the row shows the failed dispatch");
+        assert!(
+            row.unblock.is_some(),
+            "the failed dispatch names what unblocks it without the periodic sweep"
+        );
+        assert!(runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .unwrap()
+            .active_interactions()
+            .iter()
+            .all(|i| !i.id().starts_with("task-blocked-")));
         assert!(runtime
             .owned
             .prompt_state_owner
@@ -4841,23 +4763,21 @@ pub(in crate::runtime::state) mod tests {
             .fail_prompt_dispatch(dispatch, unacknowledged)
             .await
             .expect_err("failed dispatch must retain its error");
-        let blocked_card = |runtime: &KernelRuntimeState| {
+        // A blocked task is status the owner settles with `agent resume`, never a card.
+        let blocked_task = |runtime: &KernelRuntimeState| {
             runtime
                 .owned
-                .session_store
-                .get_session(&session_id)
+                .blocked_task_for_command(&session_id, &agent_id)
                 .unwrap()
-                .active_interactions()
-                .iter()
-                .any(|i| i.id().starts_with("task-blocked-"))
+                .is_some()
         };
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            while !blocked_card(&runtime) {
+            while !blocked_task(&runtime) {
                 tokio::time::sleep(std::time::Duration::from_millis(5)).await;
             }
         })
         .await
-        .expect("the failed dispatch offers the owner its decision");
+        .expect("the failed dispatch leaves the task blocked for the owner to settle");
 
         let attachment = runtime
             .owned
@@ -4895,8 +4815,8 @@ pub(in crate::runtime::state) mod tests {
             "the failed attempt is superseded by the owner's next turn"
         );
         assert!(
-            !blocked_card(&runtime),
-            "the stale decision must leave the Room"
+            !blocked_task(&runtime),
+            "the stale blocked task must no longer wait for the owner"
         );
     }
 

@@ -1594,13 +1594,14 @@ fn linux_docker_slice_auto_build_refreshes_protocol_or_runtime_incompatible_work
     assert_eq!(
         artifact_stage_instructions,
         vec![
+            "COPY --from=cli-builder /out/chariox /chariox",
             "COPY --from=rust-builder /opt/chariox-source/target/release/chariox-kernel /chariox-kernel",
             "COPY --from=rust-builder /opt/chariox-source/target/release/chariox-managed-bootstrap /chariox-managed-bootstrap",
             "COPY --from=rust-builder /opt/chariox-source/target/release/chariox-relay /chariox-relay",
             "COPY --from=rust-builder /opt/chariox-source/target/release/chariox-app-package /chariox-app-package",
             "COPY --from=rust-builder /opt/chariox-source/target/release/chariox-app-wasm-worker /chariox-app-wasm-worker",
         ],
-        "the release artifact stage must export only the five signed runtime binaries"
+        "the release artifact stage must export only the five signed runtime binaries and the CLI (#1611)"
     );
     assert!(script.contains("runtime image $SLICE_IMAGE is stale and build policy is never"));
     assert!(script.contains("because its worker image is stale"));

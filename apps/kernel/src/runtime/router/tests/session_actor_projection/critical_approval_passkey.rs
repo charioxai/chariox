@@ -119,6 +119,7 @@ impl Fixture {
         self.router
             .runtime_state
             .create_kernel_operation_interaction(
+                crate::runtime::state::CardKind::App,
                 &self.session,
                 DEFAULT_LOCAL_USER_ID,
                 RuntimeInteraction::for_kernel_operation(
@@ -185,7 +186,7 @@ impl Fixture {
         self.router.dispatch(command, request).await
     }
 
-    /// Runs `/credential vault manage`, chooses Change passphrase and
+    /// Runs `/credential vault manage change_passphrase` and
     /// answers its three secret prompts through `RespondToInteraction`, as a
     /// client does.
     async fn change_passphrase(
@@ -198,11 +199,10 @@ impl Fixture {
         let manage_agent = agent.clone();
         let manage = tokio::spawn(async move {
             runtime
-                .manage_credential_vault_unlock(&session, &manage_agent)
+                .manage_credential_vault(&session, &manage_agent, Some("change_passphrase"))
                 .await
         });
-        let answers = std::iter::once(("change_passphrase", None))
-            .chain(entries.map(|entry| ("passphrase", Some(entry))));
+        let answers = entries.map(|entry| ("passphrase", Some(entry)));
         let mut answered = std::collections::BTreeSet::new();
         for (choice, reply) in answers {
             let prompt = tokio::time::timeout(std::time::Duration::from_secs(30), async {
@@ -483,6 +483,7 @@ async fn routine_decisions_agent_meta_and_other_users_are_unchanged() {
         .router
         .runtime_state
         .create_kernel_operation_interaction(
+            crate::runtime::state::CardKind::App,
             &f.session,
             DEFAULT_LOCAL_USER_ID,
             RuntimeInteraction::for_kernel_operation(
@@ -541,7 +542,11 @@ async fn routine_decisions_agent_meta_and_other_users_are_unchanged() {
     let refused = f
         .router
         .runtime_state
-        .create_runtime_interaction(&f.session, agent_question)
+        .create_runtime_interaction(
+            crate::runtime::state::CardKind::App,
+            &f.session,
+            agent_question,
+        )
         .await
         .expect_err("an agent question may not require the passkey");
     assert!(refused.to_string().contains("passkey"), "{refused}");

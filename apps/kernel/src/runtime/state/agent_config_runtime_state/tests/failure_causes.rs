@@ -230,9 +230,20 @@ async fn a_native_hook_error_keeps_its_summary_without_multiline_diagnostics() {
         .iter()
         .all(|text| !text.contains("native diagnostic")));
     assert_eq!(settled_history_failure(&turn), Some(failure.clone()));
+    // #1724: a usage limit is a row status first. The transcript still says why the turn ended and how
+    // to recover, in the usage stop's own lines instead of the generic typed notice.
+    let outputs = provider_error_outputs(&turn);
     assert!(
-        provider_error_outputs(&turn).contains(&failure.notice()),
-        "the transcript carries the typed explanation and recovery"
+        outputs
+            .iter()
+            .any(|text| text.contains(&failure.reason) && text.contains("Resumes automatically")),
+        "the transcript says why the turn ended and that it resumes: {outputs:?}"
+    );
+    assert!(
+        outputs
+            .iter()
+            .any(|text| text.contains(&failure.reason) && text.contains("send it again to retry")),
+        "the transcript says the request was dropped and how to retry it: {outputs:?}"
     );
 }
 

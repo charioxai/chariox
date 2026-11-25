@@ -152,7 +152,7 @@ impl KernelRuntimeState {
 /// A live Chariox Claude run whose session the profile change keeps, on a
 /// smaller window that its last turn's context nearly fills or exceeds.
 /// Its context figure is the last API call input, including cached input.
-fn needs_compaction(
+pub(super) fn needs_compaction(
     run: &RuntimeProviderRun,
     target_provider: &str,
     target_account: &str,

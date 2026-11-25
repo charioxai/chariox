@@ -85,6 +85,7 @@ impl KernelRuntimeOwnedState {
             WorkflowDesignOp::WorkflowCreate { .. } => None,
             WorkflowDesignOp::WorkflowUpdate { workflow_id, .. }
             | WorkflowDesignOp::WorkflowRemove { workflow_id }
+            | WorkflowDesignOp::WorkflowArchive { workflow_id, .. }
             | WorkflowDesignOp::SchemaAdd { workflow_id, .. }
             | WorkflowDesignOp::SchemaUpdate { workflow_id, .. }
             | WorkflowDesignOp::SchemaRemove { workflow_id, .. }
@@ -270,9 +271,20 @@ impl KernelRuntimeOwnedState {
                 )?;
                 Ok(None)
             }
+            // A room agent passed the creator check above; a person must be the
+            // room owner, so a guest cannot hide or delete the owner's workflows.
+            WorkflowDesignOp::WorkflowRemove { .. } | WorkflowDesignOp::WorkflowArchive { .. } => {
+                if caller_metaagent_id.is_none() {
+                    self.ensure_room_owner_acts(
+                        session_id,
+                        caller_user_id,
+                        "archive or delete workflow",
+                    )?;
+                }
+                Ok(None)
+            }
             WorkflowDesignOp::WorkflowCreate { .. }
             | WorkflowDesignOp::WorkflowUpdate { .. }
-            | WorkflowDesignOp::WorkflowRemove { .. }
             | WorkflowDesignOp::SchemaAdd { .. }
             | WorkflowDesignOp::SchemaUpdate { .. }
             | WorkflowDesignOp::SchemaRemove { .. }

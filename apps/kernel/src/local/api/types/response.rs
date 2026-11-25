@@ -4,7 +4,10 @@ use super::*;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum LocalDaemonResponse {
     AgentReleaseNotes { landing: u32, text: String },
+    AccountKernelsListed { kernels: Vec<AccountKernel> },
+    AccountKernelUnlinked { target_id: String },
     ControlPlane { result: ControlPlaneResponse },
+    MachineAcquisition { result: MachineAcquisitionResult },
     SessionProcessesStopped { result: crate::runtime::process_resources::ProcessControlResult },
     SessionProcessStartedNow { process_id: String },
     RemoteJobPolicy { result: RemoteJobPolicy },
@@ -330,6 +333,9 @@ pub enum LocalDaemonResponse {
         tab_id: Option<String>,
         watchers: Vec<OwnerViewWatcher>,
     },
+    PaneFeed {
+        feed: PaneFeed,
+    },
     PersonInbox {
         cards: Vec<PersonInboxCard>,
         mutes: Vec<PersonInboxOrigin>,
@@ -390,6 +396,8 @@ pub enum LocalDaemonResponse {
     PairedClientsListed { clients: Vec<PairedClientRecord>, },
     PairedClientRecorded { client: PairedClientRecord, },
     PairedClientRevoked { client: PairedClientRecord, },
+    RelayIssuer { issuer: Option<RelayIssuerRecord>, },
+    RelayClientTokenIssued { token: RelayClientToken, },
     ProviderAuthStatus { status: ProviderAuthStatus, },
     ProviderLoginStarted { login: ProviderLoginStart, },
     ProviderLoginStatus { login: ProviderLoginStatus, },
@@ -496,6 +504,7 @@ pub enum LocalDaemonResponse {
     SessionAliasSuggested { workspace_id: String, alias: String, },
     RoomSetupUpdated { session: RuntimeSession, },
     AgentAliased { agent: AgentInstance, session: RuntimeSession, },
+    AgentSettings { agent: AgentSettings, },
     AgentProfileUpdated {
         agent: AgentInstance,
         session: RuntimeSession,

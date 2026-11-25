@@ -412,11 +412,9 @@ async fn room_boundaries() {
     assert!(grandchild.ok, "grandchild admission: {grandchild:?}");
     // A peer outside the subtree stays out of reach, and a rename or delete
     // needs a direct child: the grandparent may not rename d, its parent may.
-    for command in [
-        "agent delete peer",
-        "agent focus peer",
-        "agent alias d by-grandparent",
-    ] {
+    // (Deleting the peer is the owner's delete, open to every agent of the Room: see
+    // subtree/owner_delete.rs.)
+    for command in ["agent focus peer", "agent alias d by-grandparent"] {
         assert!(
             !room_command(&router, &auth_a, command).await.ok,
             "{command}"

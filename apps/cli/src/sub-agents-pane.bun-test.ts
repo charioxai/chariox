@@ -24,12 +24,31 @@ for (const width of [32, 36]) test(`AO-UI-03 one panel per sub-agent at ${width}
     assert.match(frame, /Sub-agents 3/)
     const rows = frame.split("\n")
     const line = (name: string) => rows.find(row => row.includes(name))!
-    assert.match(line("researcher"), /researcher\s+running/); assert.match(line("reader"), /reader\s+waiting/); assert.match(line("writer"), /writer\s+done/)
+    assert.match(line("researcher"), /researcher\s+running/); assert.match(line("reader"), /reader\s+waiting/); assert.match(line("writer"), /writer\s+ended/)
     assert.ok(!/needs you|error|\[|Approve|Deny/i.test(frame), "status only: no decision, button or error text")
     assert.ok(line("reader").indexOf("reader") > line("researcher").indexOf("researcher"), `sub-sub-agents are indented\n${frame}`)
     controller.moveFocus(1)
     await harness.renderOnce()
     assert.equal(controller.focusedPanelId, "writer")
     assert.equal(harness.captureCharFrame().split("\n").filter(row => row.includes("writer")).length, 1, "moving the focus does not duplicate or lose a panel")
+  } finally { harness.renderer.destroy() }
+})
+
+// Row 524: a panel says what its sub-agent waits on and for how long.
+test("row 524 a panel shows the wait reason and its age, and a stall", async () => {
+  const [revision, setRevision] = createSignal(0)
+  const controller = new SubAgentsController({ send: async () => { throw new Error("no read") }, changed: () => setRevision(value => value + 1), sessionId: () => "s" })
+  const since = Date.now() - 12 * 60_000
+  const waiting = { ...node("builder", "room", "waiting", 1), liveness: { waiting_on: { kind: "background_command" as const, detail: "cargo test", since_ms: since }, waiting_events: [{ id: "w", kind: "background_command" as const, label: "command cargo test", since_ms: since, task_id: "t", wait_started_at_ms: since }] } }
+  const hung = { ...node("hung", "room", "running", 2), liveness: { stalled: true, last_activity_at_ms: Date.now() - 90 * 60_000 } }
+  controller.apply(live([waiting, hung, node("rest", "room", "idle", 3)]))
+  const harness = await testRender(() => createComponent(SubAgentsPane, { controller, revision, width: 70, onFocus: id => controller.chooseRow(id) }), { width: 70, height: 18, useThread: false })
+  try {
+    await harness.renderOnce()
+    const rows = harness.captureCharFrame().split("\n")
+    const line = (name: string) => rows.find(row => row.includes(name))!
+    assert.match(line("builder"), /builder\s+waiting: cargo test \(12 min\)/)
+    assert.match(line("hung"), /hung\s+stalled: no provider activity for 1 h 30 min/)
+    assert.match(line("rest"), /rest\s+idle/)
   } finally { harness.renderer.destroy() }
 })

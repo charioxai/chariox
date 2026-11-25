@@ -115,6 +115,10 @@ impl CommandRouter {
                     .set_agent_deadline(&command_caller_user_id(&command), request)
                     .await
             }),
+            LocalDaemonRequest::GetAgentSettings(request) => boxed_handler(|| async move {
+                self.runtime_state
+                    .read_agent_settings(&command_caller_user_id(&command), request)
+            }),
             LocalDaemonRequest::GetAgentDeadline(request) => boxed_handler(|| async move {
                 self.runtime_state
                     .read_agent_deadline(&command_caller_user_id(&command), request)
@@ -694,6 +698,15 @@ impl CommandRouter {
                     request,
                 )
                 .await
+            }),
+            request @ (LocalDaemonRequest::RelayIssuerStatus(_)
+            | LocalDaemonRequest::ConfigureRelayIssuer(_)
+            | LocalDaemonRequest::IssueRelayClientToken(_)) => boxed_handler(|| async move {
+                crate::runtime::relay_issuer::execute_relay_issuer_request(
+                    &self.config_projection.snapshot(),
+                    &command.caller,
+                    request,
+                )
             }),
             request @ (LocalDaemonRequest::CreatePairingInvite(_)
             | LocalDaemonRequest::JoinPairingInvite(_)

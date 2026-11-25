@@ -7,32 +7,6 @@ use crate::transport::relay_peer::LeasedComputerGrant;
 use std::time::Duration;
 
 impl KernelRuntimeState {
-    pub(super) async fn revoke_user_leased_computer(
-        &self,
-        user: &str,
-        agent_id: Option<&str>,
-    ) -> Result<(), DaemonError> {
-        let home = self.owned.config_projection.snapshot().daemon_id;
-        let ids = self
-            .owned
-            .leased_computer_grants
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .iter()
-            .filter(|(id, grant)| {
-                grant.home_kernel_id == home && agent_id.is_none_or(|agent| agent == id.as_str())
-            })
-            .map(|(id, _)| id.clone())
-            .collect::<Vec<_>>();
-        for id in ids {
-            let agent = self.owned.agent_store.get_agent(&id)?;
-            if self.provider_account_authority_owner_user_id(agent.owner_user_id()) == user {
-                self.revoke_leased_computer(user, &id).await?;
-            }
-        }
-        Ok(())
-    }
-
     pub(super) async fn grant_leased_computer(
         &self,
         user: &str,
@@ -144,7 +118,7 @@ impl KernelRuntimeState {
             return Err(host_error("MP-11: desktop grant superseded".into()));
         }
         self.refresh_user_domain_grants();
-        self.room_computer_grant_snapshot(user, &config.daemon_id)
+        Ok(serde_json::json!({"agent_id": agent_id, "leased_computer": true}))
     }
 
     pub(super) async fn revoke_leased_computer(

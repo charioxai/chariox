@@ -3,6 +3,8 @@ mod cancellation_tests;
 mod drain;
 #[cfg(test)]
 mod finalized_snapshot_tests;
+#[cfg(test)]
+mod free_limit_tests;
 mod parts;
 mod permission;
 #[cfg(test)]

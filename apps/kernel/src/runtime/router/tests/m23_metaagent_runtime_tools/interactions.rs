@@ -102,7 +102,11 @@ async fn metaagent_lists_interaction_events_but_cannot_resolve_them_inner() {
     );
     let worker_resolution = router
         .runtime_state
-        .create_runtime_interaction(session.id(), worker_interaction)
+        .create_runtime_interaction(
+            crate::runtime::state::CardKind::NativePermissionInput,
+            session.id(),
+            worker_interaction,
+        )
         .await
         .expect("worker interaction should register");
     let meta_queued_prompts = app

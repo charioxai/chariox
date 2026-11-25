@@ -16,7 +16,15 @@ impl KernelRuntimeState {
             let id = args["job_id"]
                 .as_str()
                 .ok_or_else(|| ledger::error("job_id required"))?;
-            let mut record = driver.own(id, task)?;
+            let mut record = match driver.own(id, task) {
+                Ok(record) => record,
+                // TL6: a parent reads the status and output of its descendants' jobs, such as one
+                // the limit of a sub-agent cancelled. Cancel and collection stay with the owner.
+                Err(error) if name == "chariox.jobs.status" => {
+                    return self.ancestor_job_status(driver, id, task)?.ok_or(error);
+                }
+                Err(error) => return Err(error),
+            };
             let mut collection_error = None;
             let mut release_notice = None;
             if record.state == "finished" && !record.deleted {
@@ -41,7 +49,6 @@ impl KernelRuntimeState {
                 && record.has_remote_trace()
                 && !record.deleted
                 && release_notice.is_none()
-                && (self.remote_jobs_enabled() || record.request.machine.is_some())
             {
                 match record.remote {
                     RemoteStage::Finished { .. } if name == "chariox.jobs.cancel" => {
@@ -91,6 +98,12 @@ impl KernelRuntimeState {
                 }
             }
             if name == "chariox.jobs.cancel" && record.result.is_none() {
+                driver
+                    .cancel_causes
+                    .lock()
+                    .expect("job cancel causes")
+                    .entry(record.job_id.clone())
+                    .or_insert(CancelCause::Agent);
                 let wake = self
                     .owned
                     .durable_state_store
@@ -140,7 +153,8 @@ impl KernelRuntimeState {
             record.machine_label = Some(machine.machine_label.clone());
             record.address = machine.address.clone();
         }
-        if let Some(reach) = (self.remote_jobs_enabled() && machine.is_none())
+        if let Some(reach) = machine
+            .is_none()
             .then(|| self.reach_for_id(&format!("{}{}", super::reach::REACH_PREFIX, run.id())))
             .flatten()
         {
@@ -172,12 +186,11 @@ impl KernelRuntimeState {
         let heavy = record.request.needs.memory_gib.is_some()
             || record.request.needs.cpus.is_some_and(|cpus| cpus > 1)
             || admission.is_heavy(&wake.command, &record.cwd);
-        let remote = self.remote_jobs_enabled()
-            && match self.effective_remote_jobs_policy(&record.room_id, &record.agent_id)? {
-                crate::local::OffloadPolicy::Off => false,
-                crate::local::OffloadPolicy::WhenBusy => busy,
-                crate::local::OffloadPolicy::AlwaysHeavy => heavy,
-            };
+        let remote = match self.effective_remote_jobs_policy(&record.room_id, &record.agent_id)? {
+            crate::local::OffloadPolicy::Off => false,
+            crate::local::OffloadPolicy::WhenBusy => busy,
+            crate::local::OffloadPolicy::AlwaysHeavy => heavy,
+        };
         if remote {
             record.placement = JobPlacement::Remote;
         }
@@ -266,10 +279,24 @@ pub(super) fn job_workspace(
     request: &RunJobRequest,
 ) -> Result<(PathBuf, PathBuf), DaemonError> {
     let workspace = super::super::agent_process_watch::workspace_cwd(run, None)?;
-    let cwd = match request.target_directory() {
-        Some(directory) => Path::new(directory).join(request.cwd.as_deref().unwrap_or("")),
-        None => super::super::agent_process_watch::workspace_cwd(run, request.cwd.as_deref())?,
+    if let Some(directory) = request.target_directory() {
+        let cwd = Path::new(directory).join(request.cwd.as_deref().unwrap_or(""));
+        return Ok((workspace, cwd));
+    }
+    let Some(directory) = &request.cwd else {
+        return Ok((workspace.clone(), workspace));
     };
+    let cwd = workspace
+        .join(directory)
+        .canonicalize()
+        .ok()
+        .filter(|path| path.is_dir() && path.starts_with(&workspace))
+        .ok_or_else(|| {
+            ledger::error(format!(
+                "Job directory `{directory}` must be an existing directory inside the agent's workspace `{}`",
+                workspace.display()
+            ))
+        })?;
     Ok((workspace, cwd))
 }
 
@@ -292,7 +319,11 @@ pub(super) fn validate(request: &RunJobRequest) -> Result<Vec<String>, DaemonErr
             ));
         }
     }
-    if let Some(cwd) = &request.cwd {
+    if let Some(cwd) = request
+        .cwd
+        .as_deref()
+        .filter(|cwd| request.target_directory().is_some() || !Path::new(cwd).is_absolute())
+    {
         crate::jobs::relative(cwd)?;
     }
     for output in &request.outputs {

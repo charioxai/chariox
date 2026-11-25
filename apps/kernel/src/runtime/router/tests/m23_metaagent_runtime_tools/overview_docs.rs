@@ -67,7 +67,11 @@ async fn assert_metaagent_runtime_mcp_returns_session_overview_and_command_docs(
     );
     let _owned_resolution = router
         .runtime_state
-        .create_runtime_interaction(session.id(), owned_interaction)
+        .create_runtime_interaction(
+            crate::runtime::state::CardKind::NativePermissionInput,
+            session.id(),
+            owned_interaction,
+        )
         .await
         .expect("owned interaction should register");
     let peer_interaction = RuntimeInteraction::new(
@@ -89,7 +93,11 @@ async fn assert_metaagent_runtime_mcp_returns_session_overview_and_command_docs(
     );
     let _peer_resolution = router
         .runtime_state
-        .create_runtime_interaction(session.id(), peer_interaction)
+        .create_runtime_interaction(
+            crate::runtime::state::CardKind::NativePermissionInput,
+            session.id(),
+            peer_interaction,
+        )
         .await
         .expect("peer interaction should register");
 
@@ -254,7 +262,7 @@ async fn assert_metaagent_runtime_mcp_returns_session_overview_and_command_docs(
             &meta_auth_token,
             crate::transport::runtime_tools::META_COMMAND_DOCS_TOOL,
             serde_json::json!({
-                "command": "session create"
+                "command": "session attach"
             }),
         )
         .await

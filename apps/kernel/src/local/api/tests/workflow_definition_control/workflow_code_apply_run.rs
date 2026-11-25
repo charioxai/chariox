@@ -129,6 +129,7 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
     let listed = harness
         .dispatch(LocalDaemonRequest::ListWorkflows(ListWorkflowsRequest {
             session_id: session.id().to_string(),
+            include_archived: false,
         }))
         .expect("workflow list should succeed");
     match listed {

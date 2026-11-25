@@ -224,6 +224,32 @@ where
     decode_cloud_response(response)
 }
 
+pub(super) fn post_with_kernel_enrollment(
+    profile: &crate::config::PersistedCloudRelayProfile,
+    path: &str,
+    body: &serde_json::Value,
+) -> Result<ureq::Response, DaemonError> {
+    let credential = profile
+        .kernel_credential
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| DaemonError::LocalTransport {
+            operation: "manage linked kernels",
+            message: "Enroll this kernel to manage the owner's linked kernels".into(),
+        })?;
+    let response = cloud_json_agent()
+        .post(&format!("{}{path}", profile.api_url))
+        .timeout(CLOUD_API_REQUEST_TIMEOUT)
+        .set("x-chariox-kernel-credential", credential)
+        .set("content-type", "application/json")
+        .send_string(&body.to_string())
+        .map_err(cloud_transport_error)?;
+    if !(200..300).contains(&response.status()) {
+        return Err(cloud_status_error(response.status(), String::new()));
+    }
+    Ok(response)
+}
+
 pub(super) fn decode_cloud_response<T>(response: ureq::Response) -> Result<T, DaemonError>
 where
     T: serde::de::DeserializeOwned,
@@ -335,6 +361,16 @@ pub(crate) fn cloud_error_code(error: &DaemonError) -> Option<&str> {
     };
     let code = message.split_once("cloud_api_code=")?.1;
     Some(code.split(':').next().unwrap_or(code))
+}
+
+/// Whether the service said nothing is held under the request: it closed the request, or refused
+/// it for stock, budget or an invalid request. Any other failure may have committed the allocation
+/// (`acquire_failure` is the one classification), so the request keeps its place.
+pub(crate) fn cloud_error_is_refusal(error: &DaemonError) -> bool {
+    matches!(
+        acquire_failure(error),
+        AcquireFailure::Closed { .. } | AcquireFailure::Refused { .. }
+    )
 }
 
 /// The reason Cloud gave with its code, as `cloud_status_error` keeps it for a client error.

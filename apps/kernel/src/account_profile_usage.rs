@@ -13,7 +13,7 @@ impl ProviderAccountProfileRegistry {
             .profiles
             .iter()
             .filter_map(|stored| {
-                let profile = &stored.public;
+                let profile = document.visible_profile(stored)?;
                 if profile.owner_user_id != owner_user_id {
                     return None;
                 }
@@ -32,7 +32,10 @@ impl ProviderAccountProfileRegistry {
                 identity.update(b"chariox.provider-account.v1\0");
                 identity.update(profile.provider.as_bytes());
                 identity.update([0]);
-                if identity_label_base(profile.identity_summary.as_deref()).is_some() {
+                if let Some(account_id) = &stored.provider_account_id {
+                    identity.update(b"provider-account-id\0");
+                    identity.update(account_id.as_bytes());
+                } else if identity_label_base(profile.identity_summary.as_deref()).is_some() {
                     identity.update(b"provider-identity\0");
                     identity.update(
                         profile
@@ -65,7 +68,7 @@ impl ProviderAccountProfileRegistry {
                         identity.update(format!("{ambient_default:?}").as_bytes());
                     }
                 }
-                let public = project_usage_freshness(profile.clone());
+                let public = profile;
                 Some(ProviderUsageAccount {
                     account_id: format!("{:x}", identity.finalize()),
                     provider: public.provider,
@@ -160,5 +163,397 @@ mod tests {
         );
         let encoded = serde_json::to_string(&first).unwrap();
         assert!(!encoded.contains(scope.to_str().unwrap()));
+    }
+}
+
+#[cfg(test)]
+mod claude_account_identity_tests {
+    use super::*;
+
+    fn native_login(root: &Path, installation: &str, account: &str) {
+        fs::create_dir_all(root).unwrap();
+        set_private_dir_permissions(root).unwrap();
+        fs::write(
+            root.join(".claude.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "userID": installation,
+                "oauthAccount": { "accountUuid": account }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn second_claude_link_names_the_existing_account() {
+        crate::test_support::isolated_env_test!();
+        let root = crate::test_support::TestWorktree::new("claude-account-duplicate-link");
+        let registry =
+            ProviderAccountProfileRegistry::open(root.path().join("accounts.json")).unwrap();
+        let first = root.path().join("first");
+        let second = root.path().join("second");
+        let account = "879d9f26-dd4a-40f5-9aa1-e9ebc8ffc16a";
+        native_login(&first, "installation-a", account);
+        native_login(&second, "installation-b", account);
+        registry
+            .link_existing("local", "claude", "Work", &first)
+            .unwrap();
+        let refusal = registry
+            .link_existing("local", "claude", "Personal", &second)
+            .unwrap_err();
+        assert!(refusal.to_string().contains("same Claude account"));
+        assert!(refusal.to_string().contains("Work"));
+        assert_eq!(registry.list("local", Some("claude")).unwrap().len(), 1);
+        registry
+            .link_existing("other-owner", "claude", "Personal", &second)
+            .unwrap();
+    }
+
+    #[test]
+    fn claude_account_upgrade_keeps_the_chosen_name_and_both_executionroots() {
+        crate::test_support::isolated_env_test!();
+        let root = crate::test_support::TestWorktree::new("claude-account-group-upgrade");
+        let path = root.path().join("accounts.json");
+        let registry = ProviderAccountProfileRegistry::open(&path).unwrap();
+        let first = root.path().join("first");
+        let second = root.path().join("second");
+        let third = root.path().join("third");
+        let account = "879d9f26-dd4a-40f5-9aa1-e9ebc8ffc16a";
+        let other_account = "3923d56f-cd51-4bb3-a129-ed90956dc8f3";
+        // Legacy registrations were possible before the identity was learned.
+        for dir in [&first, &second, &third] {
+            fs::create_dir_all(dir).unwrap();
+            set_private_dir_permissions(dir).unwrap();
+        }
+        let first_profile = registry
+            .link_existing("local", "claude", "Work", &first)
+            .unwrap();
+        let second_profile = registry
+            .link_existing("local", "claude", "Personal", &second)
+            .unwrap();
+        let third_profile = registry
+            .link_existing("local", "claude", "Another", &third)
+            .unwrap();
+        for profile in [&first_profile, &second_profile] {
+            registry
+                .update_observation(
+                    "local",
+                    "claude",
+                    &profile.profile_id,
+                    ProviderAccountAuthState::Authenticated,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap();
+        }
+        registry
+            .set_default("local", "claude", &second_profile.profile_id)
+            .unwrap();
+        drop(registry);
+        native_login(&first, "installation-a", account);
+        native_login(&second, "installation-b", account);
+        native_login(&third, "installation-c", other_account);
+
+        for _ in 0..2 {
+            let registry = ProviderAccountProfileRegistry::open(&path).unwrap();
+            let listed = registry.list("local", Some("claude")).unwrap();
+            assert_eq!(listed.len(), 2);
+            assert_eq!(
+                listed.iter().find(|p| p.is_default).unwrap().label,
+                "Personal"
+            );
+            let merges =
+                serde_json::to_value(&registry.read_document().unwrap().claude_account_merges)
+                    .unwrap();
+            assert_eq!(
+                merges,
+                serde_json::json!([{
+                    "owner_user_id": "local",
+                    "profile_id": second_profile.profile_id,
+                    "name": "Personal",
+                    "former_names": ["Work"]
+                }])
+            );
+            let usage = registry.usage_accounts("local", "machine-a").unwrap();
+            assert_eq!(usage.len(), 2);
+            assert!(usage.iter().any(|row| row.label == "Personal"));
+            for (profile, dir) in [(&first_profile, &first), (&second_profile, &second)] {
+                registry
+                    .require_authenticated(
+                        "local",
+                        "claude",
+                        &profile.profile_id,
+                        None,
+                        "resume drill",
+                    )
+                    .unwrap();
+                let env = registry
+                    .resolve_environment("local", "claude", &profile.profile_id)
+                    .unwrap();
+                assert_eq!(
+                    env.get("CLAUDE_CONFIG_DIR").unwrap(),
+                    &dir.display().to_string()
+                );
+            }
+        }
+        let registry = ProviderAccountProfileRegistry::open(&path).unwrap();
+        registry
+            .set_default("local", "claude", &third_profile.profile_id)
+            .unwrap();
+        let listed = registry.list("local", Some("claude")).unwrap();
+        assert!(listed.iter().any(|p| p.label == "Work"));
+        assert!(listed.iter().all(|p| p.label != "Personal"));
+    }
+
+    fn same_account_pair(
+        name: &str,
+        explicit_is_default: bool,
+    ) -> (
+        crate::test_support::TestWorktree,
+        std::path::PathBuf,
+        ProviderAccountProfile,
+        ProviderAccountProfile,
+    ) {
+        let root = crate::test_support::TestWorktree::new(name);
+        let path = root.path().join("accounts.json");
+        let registry = ProviderAccountProfileRegistry::open(&path).unwrap();
+        let first = root.path().join("first");
+        let second = root.path().join("second");
+        for dir in [&first, &second] {
+            fs::create_dir_all(dir).unwrap();
+            set_private_dir_permissions(dir).unwrap();
+        }
+        // The identity is learned after both were registered.
+        let automatic = registry
+            .link_existing("local", "claude", "", &first)
+            .unwrap();
+        let explicit = registry
+            .link_existing("local", "claude", "Work", &second)
+            .unwrap();
+        let default = if explicit_is_default {
+            &explicit
+        } else {
+            &automatic
+        };
+        registry
+            .set_default("local", "claude", &default.profile_id)
+            .unwrap();
+        drop(registry);
+        let account = "879d9f26-dd4a-40f5-9aa1-e9ebc8ffc16a";
+        native_login(&first, "installation-a", account);
+        native_login(&second, "installation-b", account);
+        (root, path, automatic, explicit)
+    }
+
+    #[test]
+    fn expired_explicit_binding_keeps_its_name_but_not_the_account_row() {
+        crate::test_support::isolated_env_test!();
+        let (root, path, automatic, explicit) =
+            same_account_pair("claude-account-mixed-auth", false);
+        let registry = ProviderAccountProfileRegistry::open(&path).unwrap();
+        for (profile, state) in [
+            (&automatic, ProviderAccountAuthState::Authenticated),
+            (&explicit, ProviderAccountAuthState::Expired),
+        ] {
+            registry
+                .update_observation(
+                    "local",
+                    "claude",
+                    &profile.profile_id,
+                    state,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap();
+        }
+        let listed = registry.list("local", Some("claude")).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].profile_id, automatic.profile_id);
+        assert_eq!(listed[0].label, "Work");
+        assert_eq!(
+            listed[0].auth_state,
+            ProviderAccountAuthState::Authenticated
+        );
+        assert!(listed[0].is_default);
+        let usage = registry.usage_accounts("local", "machine-a").unwrap();
+        assert_eq!(usage.len(), 1);
+        assert_eq!(usage[0].profile_id, automatic.profile_id);
+        assert_eq!(usage[0].auth_state, ProviderAccountAuthState::Authenticated);
+        // The displayed name and the default select the shown account, not the expired binding.
+        for selector in ["Work", "default"] {
+            let selected = registry.get("local", "claude", selector).unwrap();
+            assert_eq!(selected.profile_id, automatic.profile_id, "{selector}");
+            assert_eq!(selected.auth_state, ProviderAccountAuthState::Authenticated);
+            registry
+                .require_authenticated("local", "claude", selector, None, "name drill")
+                .unwrap();
+        }
+        // An agent already bound to the expired binding still resolves it exactly.
+        assert_eq!(
+            registry
+                .resolve_environment("local", "claude", &explicit.profile_id)
+                .unwrap()
+                .get("CLAUDE_CONFIG_DIR")
+                .unwrap(),
+            &root.path().join("second").display().to_string()
+        );
+    }
+
+    #[test]
+    fn renaming_the_shown_account_changes_the_name_it_shows() {
+        crate::test_support::isolated_env_test!();
+        let (_root, path, automatic, explicit) = same_account_pair("claude-account-rename", true);
+        let registry = ProviderAccountProfileRegistry::open(&path).unwrap();
+        for (profile, state) in [
+            (&automatic, ProviderAccountAuthState::Authenticated),
+            (&explicit, ProviderAccountAuthState::Expired),
+        ] {
+            registry
+                .update_observation(
+                    "local",
+                    "claude",
+                    &profile.profile_id,
+                    state,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap();
+        }
+        // The expired explicit default keeps the name; the authenticated binding is shown.
+        let shown = registry.list("local", Some("claude")).unwrap();
+        assert_eq!(shown.len(), 1);
+        assert_eq!(shown[0].profile_id, automatic.profile_id);
+        assert_eq!(shown[0].label, "Work");
+        registry
+            .rename("local", "claude", &automatic.profile_id, "Renamed")
+            .unwrap();
+        let shown = registry.list("local", Some("claude")).unwrap();
+        assert_eq!(shown.len(), 1);
+        assert_eq!(shown[0].label, "Renamed");
+        assert_eq!(
+            registry.usage_accounts("local", "machine-a").unwrap()[0].label,
+            "Renamed"
+        );
+        assert_eq!(
+            registry
+                .get("local", "claude", "Renamed")
+                .unwrap()
+                .profile_id,
+            automatic.profile_id
+        );
+    }
+
+    #[test]
+    fn usage_read_through_a_hidden_binding_reaches_the_account_row() {
+        crate::test_support::isolated_env_test!();
+        let (_root, path, automatic, explicit) =
+            same_account_pair("claude-account-hidden-usage", false);
+        let registry = ProviderAccountProfileRegistry::open(&path).unwrap();
+        for profile in [&automatic, &explicit] {
+            registry
+                .update_observation(
+                    "local",
+                    "claude",
+                    &profile.profile_id,
+                    ProviderAccountAuthState::Authenticated,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap();
+        }
+        let visible = registry.list("local", Some("claude")).unwrap()[0].clone();
+        let hidden = if visible.profile_id == automatic.profile_id {
+            &explicit
+        } else {
+            &automatic
+        };
+        let observed_at_ms = crate::session::unix_epoch_ms();
+        registry
+            .update_usage(
+                "local",
+                "claude",
+                &hidden.profile_id,
+                ProviderAccountUsageSnapshot {
+                    profile_id: hidden.profile_id.clone(),
+                    provider: "claude".into(),
+                    availability: ProviderAccountUsageAvailability::Available,
+                    meters: Vec::new(),
+                    observed_at_ms: Some(observed_at_ms),
+                    source: "event".into(),
+                    management_url: None,
+                },
+            )
+            .unwrap();
+        let listed = registry.list("local", Some("claude")).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].profile_id, visible.profile_id);
+        assert_eq!(listed[0].usage.profile_id, visible.profile_id);
+        assert_eq!(listed[0].usage.observed_at_ms, Some(observed_at_ms));
+        let usage = registry.usage_accounts("local", "machine-a").unwrap();
+        assert_eq!(usage.len(), 1);
+        assert_eq!(usage[0].usage.observed_at_ms, Some(observed_at_ms));
+    }
+
+    #[test]
+    fn native_claude_transfer_carries_only_the_account_id_as_identity_metadata() {
+        crate::test_support::isolated_env_test!();
+        let root = crate::test_support::TestWorktree::new("claude-account-transfer-identity");
+        let source = ProviderAccountProfileRegistry::open(root.path().join("source.json")).unwrap();
+        let target = ProviderAccountProfileRegistry::open(root.path().join("target.json")).unwrap();
+        let native = root.path().join("native");
+        let account = "879d9f26-dd4a-40f5-9aa1-e9ebc8ffc16a";
+        native_login(&native, "installation-a", account);
+        atomic_write_private(
+            &native.join(".credentials.json"),
+            br#"{"claudeAiOauth":{"refreshToken":"synthetic-refresh"}}"#,
+        )
+        .unwrap();
+        let profile = source
+            .link_existing("local", "claude", "Work", &native)
+            .unwrap();
+        source
+            .update_observation(
+                "local",
+                "claude",
+                &profile.profile_id,
+                ProviderAccountAuthState::Authenticated,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        let materialization = source
+            .export_materialization("local", "claude", &profile.profile_id)
+            .unwrap();
+        assert_eq!(
+            materialization.profile.provider_account_id.as_deref(),
+            Some(account)
+        );
+        assert!(!serde_json::to_string(&materialization.profile)
+            .unwrap()
+            .contains("installation-a"));
+        assert!(materialization
+            .files
+            .iter()
+            .all(|file| file.relative_path != ".claude.json"));
+        let imported = target
+            .materialize_replica("local", &materialization)
+            .unwrap();
+        assert_eq!(imported.profile_id, profile.profile_id);
+        let second = root.path().join("same-account");
+        native_login(&second, "installation-b", account);
+        let refusal = target
+            .link_existing("local", "claude", "Duplicate", &second)
+            .unwrap_err();
+        assert!(refusal.to_string().contains("Work"));
     }
 }

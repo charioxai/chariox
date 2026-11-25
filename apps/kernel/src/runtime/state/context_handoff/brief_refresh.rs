@@ -61,6 +61,12 @@ impl Drop for ShortBriefDeadline {
 /// Writes a Codex brief in about 5 s where the default gpt-5.5 took up to 19.
 const CODEX_BRIEF_MODEL: &str = "gpt-6-luna";
 
+/// Test hook: how long reading a Room's brief source stalls, to show that the
+/// read never holds an async worker (the Room, then milliseconds).
+#[cfg(test)]
+pub(in crate::runtime::state) static SOURCE_DELAY: std::sync::Mutex<Option<(String, u64)>> =
+    std::sync::Mutex::new(None);
+
 impl KernelRuntimeOwnedState {
     fn require_brief_source_revision(
         &self,
@@ -87,6 +93,12 @@ impl KernelRuntimeOwnedState {
         prompt_id: &str,
         loaded: Option<&[crate::history::HistoryEvent]>,
     ) -> Result<(Option<AgentHandoffBrief>, Vec<crate::history::HistoryEvent>), DaemonError> {
+        #[cfg(test)]
+        if let Some((room, millis)) = SOURCE_DELAY.lock().unwrap().clone() {
+            if room == session_id {
+                std::thread::sleep(std::time::Duration::from_millis(millis));
+            }
+        }
         let history = &self.operational_history_store;
         let stored = self.protected_stored_handoff_brief(session_id, agent_id)?;
         // Reconstruct an older-format summary from its protected source, rather
@@ -208,7 +220,7 @@ impl KernelRuntimeState {
         prompt_is_current: &(impl Fn() -> bool + Sync),
     ) -> Result<(Option<String>, usize), DaemonError> {
         let history = &owned.operational_history_store;
-        let (source_revision, stored, events) = {
+        let (source_revision, stored, chunks) = {
             let _guard = owned
                 .room_secret_observations
                 .barrier(session_id)?
@@ -216,21 +228,36 @@ impl KernelRuntimeState {
                 .await;
             owned.room_secret_observations.require(session_id, false)?;
             let source_revision = owned.room_secret_observations.revision(session_id)?;
-            let loaded = handoff
-                .conversation
-                .source_events
-                .as_deref()
-                .filter(|_| handoff.room_revision == Some(source_revision));
-            let (stored, events) = owned.handoff_brief_update_history(
-                session_id,
-                agent_id,
-                prompt_id,
-                loaded.map(Vec::as_slice),
-            )?;
-            (source_revision, stored, events)
+            let loaded = handoff.conversation.source_events.clone().filter(|_| {
+                !handoff.conversation.older_history_left_out
+                    && handoff.room_revision == Some(source_revision)
+            });
+            // Reading, protecting and chunking the unfolded history is blocking
+            // work that grows with the history: never on an async worker. The
+            // Room barrier stays held through it.
+            let (prepare, session, agent, prompt) = (
+                owned.clone(),
+                session_id.to_string(),
+                agent_id.to_string(),
+                prompt_id.to_string(),
+            );
+            let (stored, chunks) = tokio::task::spawn_blocking(move || {
+                let (stored, events) = prepare.handoff_brief_update_history(
+                    &session,
+                    &agent,
+                    &prompt,
+                    loaded.as_deref().map(Vec::as_slice),
+                )?;
+                Ok::<_, DaemonError>((stored, transcript_chunks(&events)))
+            })
+            .await
+            .map_err(|_| DaemonError::LocalTransport {
+                operation: "provider.context_handoff",
+                message: "The brief source could not be prepared".into(),
+            })??;
+            (source_revision, stored, chunks)
         };
         let mut brief = stored.map(|stored| stored.brief);
-        let chunks = transcript_chunks(&events);
         if chunks.iter().all(|chunk| chunk.text.is_empty()) {
             return Ok((brief, 0));
         }

@@ -289,11 +289,11 @@ impl KernelRuntimeOwnedState {
 
     /// A kernel exit retires turn-bound responders. Task-owned questions are
     /// reattached by their durable wake driver when the kernel starts again.
+    #[cfg(test)]
     pub(in crate::runtime::state) fn withdraw_agent_interactions_for_shutdown(
         &self,
         session_id: &str,
     ) -> Result<(), DaemonError> {
-        self.mark_turns_waiting_on_native_decisions(session_id)?;
         self.withdraw_agent_interactions_for(
             session_id,
             None,
@@ -353,7 +353,9 @@ impl KernelRuntimeOwnedState {
             }
             let (active_prompt, queued_prompts) =
                 self.prompt_state_owner.state_parts(&session, &agent_id);
-            self.mirror_prompt_owner_agent_state(
+            // The shutdown withdrawal holds the interaction mutation guard, which the ordinary
+            // mirror's stale-interaction sweep would take again.
+            self.mirror_prompt_owner_agent_state_holding_interactions(
                 session_id,
                 &agent_id,
                 active_prompt,
@@ -374,6 +376,18 @@ impl KernelRuntimeOwnedState {
             .mutation
             .lock()
             .map_err(|_| interaction_error("Interaction store is unavailable"))?;
+        self.withdraw_agent_interactions_locked(session_id, agent_id, reason)
+    }
+
+    fn withdraw_agent_interactions_locked(
+        &self,
+        session_id: &str,
+        agent_id: Option<&str>,
+        reason: InteractionWithdrawal,
+    ) -> Result<(), DaemonError> {
+        if matches!(reason, InteractionWithdrawal::KernelShutdown) {
+            self.mark_turns_waiting_on_native_decisions(session_id)?;
+        }
         let candidates = self
             .pending_interactions
             .write()
@@ -499,6 +513,36 @@ impl KernelRuntimeOwnedState {
 }
 
 impl KernelRuntimeState {
+    pub(crate) fn close_provider_decisions_for_shutdown(&self) -> Result<(), DaemonError> {
+        let _mutation = self
+            .owned
+            .pending_interactions
+            .mutation
+            .lock()
+            .map_err(|_| interaction_error("Interaction store is unavailable"))?;
+        let closed = &self.owned.provider_decisions_closed;
+        if *closed.borrow() {
+            return Ok(());
+        }
+        // Keep admission locked until turn interruption is recorded and the old
+        // responders are withdrawn. Then release workers still delivering a card.
+        let sessions = self.owned.session_store.read().list_sessions();
+        let result = sessions.iter().try_for_each(|session| {
+            self.owned.withdraw_agent_interactions_locked(
+                session.id(),
+                None,
+                InteractionWithdrawal::KernelShutdown,
+            )
+        });
+        closed.send_replace(true);
+        result
+    }
+
+    pub(crate) async fn wait_for_provider_decisions_closed(&self) {
+        let mut closed = self.owned.provider_decisions_closed.subscribe();
+        let _ = closed.wait_for(|closed| *closed).await;
+    }
+
     pub(crate) fn capture_native_interaction_origin(
         &self,
         session_id: &str,

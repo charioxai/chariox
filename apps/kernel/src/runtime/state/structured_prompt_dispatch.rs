@@ -1,4 +1,4 @@
-//! Structured prompt submission and the detached handoff preparation continuation.
+//! Structured prompt submission and the background handoff brief fold.
 use super::context_handoff::PendingAgentContextHandoff;
 use super::*;
 
@@ -12,71 +12,41 @@ pub(super) enum SteerReceipt {
 }
 
 impl KernelRuntimeState {
-    pub(super) fn spawn_handoff_brief_dispatch(
+    /// Brings the agent's handoff brief up to date in the background: the
+    /// turn already went out with the stored brief and the newest history, and
+    /// the next handoff carries the folded brief.
+    pub(super) fn spawn_handoff_brief_fold(
         &self,
-        dispatch: crate::app::KernelPromptDispatch,
+        dispatch: &crate::app::KernelPromptDispatch,
         provider_run: crate::provider::RuntimeProviderRun,
         handoff: PendingAgentContextHandoff,
-        hidden_system_context: String,
     ) {
-        self.owned.record_notice(
-            &dispatch.session_id,
-            Some(&dispatch.provider_run_id),
-            self.owned
-                .attachment_store
-                .list_session_attachment_ids(&dispatch.session_id),
-            "Preparing handoff brief…".to_string(),
-        );
+        let handoffs = &self.owned.pending_agent_context_handoffs;
+        if !handoffs.begin_brief_fold(&dispatch.session_id, &dispatch.agent_id) {
+            return;
+        }
         let state = self.clone();
+        let (session_id, agent_id, prompt_id) = (
+            dispatch.session_id.clone(),
+            dispatch.agent_id.clone(),
+            dispatch.prompt_id.clone(),
+        );
         tokio::spawn(async move {
-            if !state.owned.handoff_brief_dispatch_is_current(&dispatch) {
-                return;
-            }
-            let handoff = state
+            state
                 .with_current_handoff_brief(
                     &state.owned,
                     handoff,
-                    &dispatch.session_id,
-                    &dispatch.agent_id,
-                    &dispatch.prompt_id,
+                    &session_id,
+                    &agent_id,
+                    &prompt_id,
                     &provider_run,
-                    || state.owned.handoff_brief_dispatch_is_current(&dispatch),
+                    || true,
                 )
                 .await;
-            // Order the final ownership/cancellation check and Submit with Abort.
-            // No lane is held while the brief utility runs.
-            let permit = state
-                .provider_runtime_lanes
-                .acquire(&dispatch.provider_run_id)
-                .await;
-            if !state.owned.handoff_brief_dispatch_is_current(&dispatch) {
-                drop(permit);
-                state.redispatch_if_brief_outlived_its_run(dispatch).await;
-                return;
-            }
-            let _permit = permit;
-            match state
-                .submit_structured_prompt_with_handoff(
-                    &dispatch,
-                    &provider_run,
-                    Some(handoff),
-                    &hidden_system_context,
-                    SteerReceipt::Ignored,
-                )
-                .await
-            {
-                Ok(true) => state
-                    .owned
-                    .update_metaagent_event_prompt_delivery_for_prompt(
-                    &dispatch.prompt_id,
-                    crate::runtime::metaagent_event::MetaagentEventPromptDeliveryStatus::Delivered,
-                    None,
-                ),
-                Ok(false) => {}
-                Err(error) => {
-                    let _ = state.fail_prompt_dispatch(dispatch, error).await;
-                }
-            }
+            state
+                .owned
+                .pending_agent_context_handoffs
+                .end_brief_fold(&session_id, &agent_id);
         });
     }
 
@@ -218,72 +188,5 @@ impl KernelRuntimeState {
             }
         }
         Ok(true)
-    }
-}
-
-impl KernelRuntimeState {
-    /// The run ended while its brief was prepared (its process exited, or it
-    /// was replaced) but the prompt is still the agent's to answer: dispatch it
-    /// again, which moves it to a fresh run, rather than leave it active with
-    /// nothing to deliver it.
-    async fn redispatch_if_brief_outlived_its_run(
-        &self,
-        dispatch: crate::app::KernelPromptDispatch,
-    ) {
-        let owned = &self.owned;
-        let prompt_still_active = owned
-            .ensure_prompt_dispatch_matches_active_prompt(&dispatch)
-            .unwrap_or(false)
-            && owned
-                .session_store
-                .get_session(&dispatch.session_id)
-                .is_ok_and(|session| {
-                    owned
-                        .prompt_state_owner
-                        .active_prompt_for_agent(&session, &dispatch.agent_id)
-                        .is_some_and(|prompt| {
-                            prompt.status() != crate::session::PromptStatus::Cancelling
-                        })
-                });
-        let run_ended = owned
-            .provider_store
-            .get_run(&dispatch.provider_run_id)
-            .is_ok_and(|run| run.state() == crate::provider::ProviderRunState::Ended);
-        if !(prompt_still_active && run_ended) {
-            return;
-        }
-        if let Err(error) = self
-            .enqueue_prompt_dispatch_after_liveness(&dispatch, owned)
-            .await
-        {
-            let _ = self.fail_prompt_dispatch(dispatch, error).await;
-        }
-    }
-}
-
-impl KernelRuntimeOwnedState {
-    fn handoff_brief_dispatch_is_current(
-        &self,
-        dispatch: &crate::app::KernelPromptDispatch,
-    ) -> bool {
-        self.ensure_prompt_dispatch_matches_active_prompt(dispatch)
-            .unwrap_or(false)
-            && self
-                .session_store
-                .get_session(&dispatch.session_id)
-                .is_ok_and(|session| {
-                    self.prompt_state_owner
-                        .active_prompt_for_agent(&session, &dispatch.agent_id)
-                        .is_some_and(|prompt| {
-                            prompt.status() != crate::session::PromptStatus::Cancelling
-                        })
-                })
-            && self
-                .provider_store
-                .get_run_for_agent(&dispatch.session_id, &dispatch.agent_id)
-                .is_some_and(|run| {
-                    run.id() == dispatch.provider_run_id
-                        && run.state() == crate::provider::ProviderRunState::Running
-                })
     }
 }

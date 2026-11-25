@@ -110,3 +110,114 @@ fn rental_kernel_diagnostics_are_part_of_machine_status() {
         "23b3a48818d406b92d7d9a0971a0c2bbe92415ab5e306bf86664977fad967a2b",
     );
 }
+
+/// Provisional local 1015: an acquire request may carry `timeout_s`, the rental's hard stop in seconds.
+#[test]
+fn machine_hard_stop_1015_shapes_and_hash() {
+    let snapshot = serde_json::json!({
+        "requests": [
+            {"ControlPlane": {"action": "acquire", "capability_revision": "revision", "request_id": "one", "class_id": "small", "region": "auto", "timeout_s": 300}}
+        ]
+    });
+    for shape in snapshot["requests"].as_array().unwrap() {
+        let request: LocalDaemonRequest = serde_json::from_value(shape.clone()).unwrap();
+        assert_eq!(serde_json::to_value(request).unwrap(), *shape);
+    }
+    assert_eq!(
+        format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
+        ),
+        "b26d2c8d980fd7803c9d4521660503546df57478acdae7312b52b62e66b94c49"
+    );
+    for bad in [serde_json::json!(-1), serde_json::json!("300")] {
+        assert!(serde_json::from_value::<LocalDaemonRequest>(
+            serde_json::json!({"ControlPlane":{"action":"acquire","capability_revision":"r","request_id":"i","timeout_s":bad}})
+        )
+        .is_err());
+    }
+}
+
+/// Local 1015 (unreleased with Landing 14): the `runtime_interactions_changed` event carries the machine
+/// approval's receipt in each of its three states.
+#[test]
+fn machine_approval_receipt_event_shape_and_hash() {
+    let receipts = serde_json::json!([
+        {"id": "machine-acquisition-direct-a", "shown_in_agent_id": "agent", "message": "builder in Build Room · Run the build — Acquire small in north at 0.000284 EUR per minute", "state": "approving", "expires_at_ms": null},
+        {"id": "machine-acquisition-direct-b", "shown_in_agent_id": null, "message": "Acquire a machine", "state": "sent", "expires_at_ms": null},
+        {"id": "machine-acquisition-direct-c", "shown_in_agent_id": "agent", "message": "Acquire small", "state": "expired", "expires_at_ms": 300000}
+    ]);
+    let shape = serde_json::json!({"event": "runtime_interactions_changed", "session_id": "room", "active_interactions": [], "machine_approval_receipts": receipts});
+    let event: crate::transport::kernel_protocol::KernelEvent =
+        serde_json::from_value(shape.clone()).unwrap();
+    assert_eq!(serde_json::to_value(event).unwrap(), shape);
+    assert_eq!(
+        format!("{:x}", Sha256::digest(serde_json::to_vec(&shape).unwrap())),
+        "f941a4989240727c5de851ba45dfa9557d45472a54231a019cec6dd9bd77edfb"
+    );
+}
+
+/// The serialized Room session carries the same receipts under `machine_approval_receipts`.
+#[test]
+fn machine_approval_receipts_in_the_session_shape_and_hash() {
+    use crate::session::{MachineApprovalReceipt, MachineApprovalReceiptState as State};
+    let mut session = crate::session::RuntimeSession::new(
+        "s",
+        crate::session::ProjectId::test(),
+        None,
+        "workspace",
+        "worktree",
+        "machine",
+        "daemon",
+    );
+    for (id, agent, message, state, expires) in [
+        (
+            "machine-acquisition-direct-a",
+            Some("agent"),
+            "Acquire small",
+            State::Approving,
+            None,
+        ),
+        (
+            "machine-acquisition-direct-b",
+            None,
+            "Acquire a machine",
+            State::Sent,
+            None,
+        ),
+        (
+            "machine-acquisition-direct-c",
+            Some("agent"),
+            "Acquire small",
+            State::Expired,
+            Some(300000),
+        ),
+    ] {
+        session.upsert_machine_approval_receipt(MachineApprovalReceipt {
+            id: id.into(),
+            shown_in_agent_id: agent.map(str::to_owned),
+            message: message.into(),
+            state,
+            expires_at_ms: expires,
+        });
+    }
+    let shape = serde_json::to_value(&session).unwrap()["machine_approval_receipts"].clone();
+    assert_eq!(
+        shape,
+        serde_json::json!([
+            {"id": "machine-acquisition-direct-a", "shown_in_agent_id": "agent", "message": "Acquire small", "state": "approving", "expires_at_ms": null},
+            {"id": "machine-acquisition-direct-b", "shown_in_agent_id": null, "message": "Acquire a machine", "state": "sent", "expires_at_ms": null},
+            {"id": "machine-acquisition-direct-c", "shown_in_agent_id": "agent", "message": "Acquire small", "state": "expired", "expires_at_ms": 300000}
+        ])
+    );
+    let back: crate::session::RuntimeSession =
+        serde_json::from_value(serde_json::to_value(&session).unwrap()).unwrap();
+    assert_eq!(
+        back.machine_approval_receipts(),
+        session.machine_approval_receipts()
+    );
+    assert_eq!(
+        format!("{:x}", Sha256::digest(serde_json::to_vec(&shape).unwrap())),
+        "94e6a5f1c1c3e7d97ff0d57122df03ce00d2c42ca8b96c376e50fb3604b9d12b"
+    );
+}

@@ -84,7 +84,6 @@ impl KernelRuntimeOwnedState {
         let mut session = self.session_store.get_session(session_id)?;
         let agents = self.agent_store.get_session_agents(session_id);
         session.set_agents(agents);
-        session.name_interaction_askers();
         session.set_agent_tasks(
             self.durable_state_store
                 .visible_agent_tasks(
@@ -94,6 +93,14 @@ impl KernelRuntimeOwnedState {
                 .into_iter()
                 .map(|mut task| {
                     task.reason = crate::terminal::public_task_failure_reason(&task.reason);
+                    // A blocked task a command settles says what unblocks it and the command.
+                    if task.owner_action.is_none()
+                        && self.blocked_task_is_open(&task).unwrap_or(false)
+                    {
+                        if let Ok(agent) = self.agent_store.get_agent(&task.agent_id) {
+                            task.unblock = Some(self.task_unblock(&agent, &task));
+                        }
+                    }
                     task
                 })
                 .collect(),
@@ -114,6 +121,7 @@ impl KernelRuntimeOwnedState {
     ) {
         #[cfg(test)]
         call_counts::RUNTIME_VIEW_PROJECTIONS.with(|count| count.set(count.get() + 1));
+        session.project_room_interactions();
         // MP-08/MP-10/MP-11: every ordinary refresh carries current window state.
         session.set_sudo_windows(self.sudo_windows_for_session(session.id()));
         session.set_room_setup(self.room_setup.state(session.id()));
@@ -499,7 +507,7 @@ impl KernelRuntimeOwnedState {
 
         let removed_agents = self.agent_store.remove_session_agents(session_id);
         for agent in &removed_agents {
-            self.forget_room_computer_access(agent.id());
+            self.forget_leased_computer_grant(agent.id());
         }
         let removed_agent_ids: Vec<_> = removed_agents
             .iter()

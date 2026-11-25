@@ -38,10 +38,10 @@ async fn async_popup_browser_region_preserves_equal_timestamp_card_order() {
         let second = session.remove_active_interaction(second_id).unwrap();
         let mut second = serde_json::to_value(second).unwrap();
         second["requested_at_ms"] = first.requested_at_ms().into();
-        session.add_active_interaction(first.with_view(crate::session::RuntimeInteractionView {
+        session.add_interaction_fixture(first.with_view(crate::session::RuntimeInteractionView {
             browser_region: region.clone(),
         }));
-        session.add_active_interaction(serde_json::from_value(second).unwrap());
+        session.add_interaction_fixture(serde_json::from_value(second).unwrap());
         sessions.restore_session(session);
     }
     let mut moved = region.clone();
@@ -124,7 +124,7 @@ async fn async_popup_browser_region_projects_movement_and_closes_exactly_once_on
         let mut sessions = f.runtime.owned.session_store.write();
         let mut session = sessions.get_session(&f.room).unwrap();
         let card = session.remove_active_interaction(id).unwrap();
-        session.add_active_interaction(card.with_view(crate::session::RuntimeInteractionView {
+        session.add_interaction_fixture(card.with_view(crate::session::RuntimeInteractionView {
             browser_region: initial.clone(),
         }));
         sessions.restore_session(session);
@@ -172,6 +172,126 @@ async fn async_popup_browser_region_projects_movement_and_closes_exactly_once_on
     assert_eq!(told[0]["reply"], "Browser document changed");
 }
 
+/// After a kernel restart the card's Tab is back with a new document: the card keeps its identity
+/// and its Tab and is bound to the new page; it never changes Tab or takes on a proof.
+#[tokio::test]
+async fn a_browser_region_card_is_bound_again_to_the_page_a_restart_brought_back() {
+    let f = fixture("async-popup-region-rebind", true).await;
+    f.begin(&f.prompt_id);
+    let result = ask(&f, serde_json::json!({})).await;
+    let id = result["interaction_id"].as_str().unwrap();
+    let initial = browser_region();
+    {
+        let mut sessions = f.runtime.owned.session_store.write();
+        let mut session = sessions.get_session(&f.room).unwrap();
+        let card = session.remove_active_interaction(id).unwrap();
+        session.add_interaction_fixture(card.with_view(crate::session::RuntimeInteractionView {
+            browser_region: initial.clone(),
+        }));
+        sessions.restore_session(session);
+    }
+    let mut fresh = initial.clone();
+    fresh.generation += 2;
+    fresh.document_id = "document-after-restart".into();
+    fresh.reference = "backend:77".into();
+    fresh.rect.x = 0;
+    fresh.rect.y = 0;
+    let mut other_tab = fresh.clone();
+    other_tab.tab_id = "another-tab".into();
+    assert!(f
+        .runtime
+        .owned
+        .rebind_browser_region_card(&f.room, id, &initial, other_tab)
+        .is_err());
+    f.runtime
+        .owned
+        .rebind_browser_region_card(&f.room, id, &initial, fresh.clone())
+        .unwrap();
+    let session = f.runtime.owned.session_store.get_session(&f.room).unwrap();
+    assert_eq!(session.active_interactions().len(), 1);
+    let card = &session.active_interactions()[0];
+    assert_eq!(card.id(), id, "the same card");
+    assert_eq!(card.view().unwrap().browser_region, fresh);
+    assert!(card.choice("continue").is_some());
+    // The ordinary movement update still refuses a new document.
+    let mut elsewhere = fresh.clone();
+    elsewhere.document_id = "another-document".into();
+    assert!(f
+        .runtime
+        .owned
+        .update_browser_region_card(&f.room, id, &fresh, elsewhere)
+        .is_err());
+}
+
+/// A restarted plain card whose page cannot be shown again is not the person finishing: after the
+/// observation budget the agent is told the card is unavailable, never `condition_met`.
+#[tokio::test]
+async fn a_restarted_browser_card_whose_rebind_keeps_failing_settles_unavailable_not_done() {
+    let f = fixture("async-popup-region-rebind-fails", true).await;
+    f.begin(&f.prompt_id);
+    let result = ask(&f, serde_json::json!({})).await;
+    let id = result["interaction_id"].as_str().unwrap().to_owned();
+    {
+        let mut sessions = f.runtime.owned.session_store.write();
+        let mut session = sessions.get_session(&f.room).unwrap();
+        let card = session.remove_active_interaction(&id).unwrap();
+        session.add_interaction_fixture(card.with_view(crate::session::RuntimeInteractionView {
+            browser_region: browser_region(),
+        }));
+        sessions.restore_session(session);
+    }
+    // The controller answers every poll "Browser restarted" and refuses every rebind.
+    let agent = f.runtime.owned.agent_store.get_agent(&f.agent).unwrap();
+    let user = f
+        .runtime
+        .provider_account_authority_owner_user_id(agent.owner_user_id());
+    let root = std::env::temp_dir().join(format!(
+        "chariox-rebind-fails-{:032x}",
+        rand::random::<u128>()
+    ));
+    std::fs::create_dir(&root).unwrap();
+    f.runtime.install_kernel_browser_fixture(&user, &root);
+    f.runtime.resume_browser_region_cards();
+    let closed = tokio::time::timeout(Duration::from_secs(40), async {
+        loop {
+            let open = f
+                .runtime
+                .owned
+                .session_store
+                .get_session(&f.room)
+                .unwrap()
+                .active_interactions()
+                .iter()
+                .any(|card| card.id() == id);
+            if !open {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    })
+    .await;
+    assert!(
+        closed.is_ok(),
+        "the card is settled once the budget runs out"
+    );
+    let told = answers(&f, &id);
+    assert_eq!(told.len(), 1, "{told:?}");
+    assert_eq!(told[0]["status"], "unavailable", "{told:?}");
+    assert!(
+        told[0]["choice_id"].is_null(),
+        "never condition_met: {told:?}"
+    );
+    assert!(
+        told[0]["reply"]
+            .as_str()
+            .unwrap()
+            .contains("could not be shown again"),
+        "{told:?}"
+    );
+    f.runtime.shutdown_cleanup().await.unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 /// Kept, not a gate: the browser-region card is the person's step (CAPTCHA, consent, one-time
 /// code). The owner answers it, it closes, and no browser-access card ever stands beside it.
 #[tokio::test]
@@ -184,7 +304,7 @@ async fn a_browser_region_card_is_raised_answered_by_the_owner_and_closed() {
         let mut sessions = f.runtime.owned.session_store.write();
         let mut session = sessions.get_session(&f.room).unwrap();
         let card = session.remove_active_interaction(id).unwrap();
-        session.add_active_interaction(card.with_view(crate::session::RuntimeInteractionView {
+        session.add_interaction_fixture(card.with_view(crate::session::RuntimeInteractionView {
             browser_region: browser_region(),
         }));
         sessions.restore_session(session);
@@ -738,7 +858,11 @@ async fn async_popup_keeps_multiple_questions_and_prioritizes_a_blocking_card() 
     );
     let receiver = f
         .runtime
-        .create_runtime_interaction(&f.room, blocking)
+        .create_runtime_interaction(
+            crate::runtime::state::CardKind::NativePermissionInput,
+            &f.room,
+            blocking,
+        )
         .await
         .unwrap();
     let session = f.runtime.owned.session_store.get_session(&f.room).unwrap();
@@ -1493,7 +1617,11 @@ async fn answering_a_card_on_a_managed_kernel_does_not_wait_for_itself() {
     );
     let receiver = f
         .runtime
-        .create_runtime_interaction(&f.room, card)
+        .create_runtime_interaction(
+            crate::runtime::state::CardKind::NativePermissionInput,
+            &f.room,
+            card,
+        )
         .await
         .unwrap();
     let runtime = f.runtime.clone();
@@ -1537,7 +1665,7 @@ async fn async_popup_browser_verification_requires_this_cards_positive_receipt()
         let mut sessions = f.runtime.owned.session_store.write();
         let mut session = sessions.get_session(&f.room).unwrap();
         let card = session.remove_active_interaction(id).unwrap();
-        session.add_active_interaction(card.with_view(crate::session::RuntimeInteractionView {
+        session.add_interaction_fixture(card.with_view(crate::session::RuntimeInteractionView {
             browser_region: region.clone(),
         }));
         sessions.restore_session(session);

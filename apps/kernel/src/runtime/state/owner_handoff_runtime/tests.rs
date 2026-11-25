@@ -698,3 +698,67 @@ async fn sweeping_a_claimed_handoff_after_restart_on_a_managed_kernel_does_not_w
         "the sweep never finished"
     );
 }
+
+#[tokio::test]
+async fn handoff_cold_restart_rearms_once_without_a_saved_card() {
+    let (state, room) = fixture();
+    let handoff = handoff();
+    let id = register(&state, &room, &handoff).await;
+    state.owned.pending_interactions.write().remove(&id);
+
+    let mut restored = state.owned.session_store.get_session(&room).unwrap();
+    restored.reconcile_after_kernel_restart();
+    // Even a checkpoint without a saved presentation must recover the live step.
+    restored.remove_active_interaction(&id);
+    state
+        .owned
+        .session_store
+        .write()
+        .restore_session(restored.clone());
+
+    for _ in 0..2 {
+        state.reconcile_handoff(&restored, &id).await;
+    }
+    let session = state.owned.session_store.get_session(&room).unwrap();
+    assert_eq!(
+        session
+            .active_interactions()
+            .iter()
+            .filter(|card| card.id() == id)
+            .count(),
+        1
+    );
+    assert!(state
+        .pending_handoff_tabs(DEFAULT_LOCAL_USER_ID)
+        .contains(&handoff.target.tab_id));
+    assert!(
+        state.withdraw_handoff(&room, &id),
+        "the recovered card can still be answered"
+    );
+}
+
+#[tokio::test]
+async fn handoff_cold_restart_never_projects_an_answered_card_from_an_older_checkpoint() {
+    let (state, room) = fixture();
+    let id = register(&state, &room, &handoff()).await;
+    let mut before_answer = state.owned.session_store.get_session(&room).unwrap();
+    assert!(state.withdraw_handoff(&room, &id));
+
+    before_answer.reconcile_after_kernel_restart();
+    assert!(before_answer
+        .active_interactions()
+        .iter()
+        .all(|card| card.id() != id));
+    state
+        .owned
+        .session_store
+        .write()
+        .restore_session(before_answer.clone());
+    state.reconcile_handoff(&before_answer, &id).await;
+    let session = state.owned.session_store.get_session(&room).unwrap();
+    assert!(session
+        .active_interactions()
+        .iter()
+        .all(|card| card.id() != id));
+    assert!(state.pending_handoff_tabs(DEFAULT_LOCAL_USER_ID).is_empty());
+}

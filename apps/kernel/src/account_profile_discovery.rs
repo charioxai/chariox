@@ -111,6 +111,7 @@ fn auth_digest(document: &RegistryDocument) -> u64 {
         profile.is_default.hash(&mut hasher);
         format!("{:?}", profile.auth_state).hash(&mut hasher);
         profile.identity_summary.hash(&mut hasher);
+        stored.provider_account_id.hash(&mut hasher);
     }
     hasher.finish()
 }

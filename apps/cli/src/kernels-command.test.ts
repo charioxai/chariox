@@ -2,7 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 import { LocalIpcError } from "@chariox/kernel-client/ipc"
 import { CommandFailure, exitCodeFor } from "./agent-command-table.js"
-import { eventsMcpRoutes, failureOf, lostConnectionFailure, parseRequestBody, runKernelsCommand, sendRequest, watchKernel, withKernel } from "./kernels-command.js"
+import { eventsMcpRoutes, failureOf, lostConnectionFailure, parseRequestBody, runKernelsCommand, sendRequest, watchKernel, withAgentKernel, withKernel } from "./kernels-command.js"
 import { Readable, Writable } from "node:stream"
 import { runExec } from "./exec-command.js"
 import type { WebSocket } from "ws"
@@ -30,7 +30,8 @@ test("kernel errors keep their code and lose the transport wrapper; local connec
 test("a lost connection is definitive only when a fresh probe says the grant ended", () => {
   const ended = lostConnectionFailure(new LocalIpcError("handle kernel response", "Access ended.", "kernel_access_ended"))
   assert.equal(ended.code, "kernel_access_ended")
-  assert.match(ended.message, /the access grant ended while this request was in flight; the request may or may not have run/)
+  assert.match(ended.message, /Access ended while the request was in flight/)
+  assert.match(ended.message, /chariox access request --no-wait/)
   for (const probe of [null, new LocalIpcError("handle kernel response", "no access", "kernel_access_not_covered"), new Error("ECONNREFUSED")]) {
     assert.equal(lostConnectionFailure(probe).code, "kernel_connection_lost")
   }
@@ -365,4 +366,38 @@ test("exec place without a target kernel is a usage error and sends nothing", as
   } finally { process.stderr.write = write; process.exitCode = code; await kernel.close() }
   assert.equal(sent, 0)
   assert.match(written.join(""), /"code":"usage"/)
+})
+
+test("an owner's settings command on the ordinary endpoint sends its command id, so a retry replays the first result", async () => {
+  const kernel = await startFakeKernel((socket, frame) => replyWith(socket, frame, { response: { Pong: {} } }))
+  const previous = process.env.CHARIOX_KERNEL_URL
+  process.env.CHARIOX_KERNEL_URL = kernel.path
+  try {
+    await withAgentKernel({ socket: undefined, commandId: "owner-retry-1" }, send => send({ Ping: {} }))
+    assert.equal(kernel.frames.at(-1)!.command_id, "owner-retry-1")
+  } finally {
+    if (previous === undefined) delete process.env.CHARIOX_KERNEL_URL
+    else process.env.CHARIOX_KERNEL_URL = previous
+    await kernel.close()
+  }
+})
+
+test("kernels restart --browser asks the named kernel to restart its browser, and --browser is required", async () => {
+  const kernel = await startFakeKernel((socket, frame) => {
+    if ("RelayStatus" in frame.request) return replyWith(socket, frame, relayStatus(["kernel_gateway_v1"]))
+    replyWith(socket, frame, { response: { KernelBrowser: { result: { state: "ready", tabs: [{ tab_id: "host-tab-1", opener_tab_id: "host-tab-0" }] } } } })
+  })
+  const printed: string[] = [], log = console.log, written = process.stderr.write.bind(process.stderr), errors: string[] = []
+  console.log = (line: string) => { printed.push(line) }
+  process.stderr.write = ((chunk: string | Uint8Array) => { errors.push(String(chunk)); return true }) as typeof process.stderr.write
+  const exitCode = process.exitCode
+  try {
+    await runKernelsCommand(["kernels", "restart", "--kernel", "b3", "--browser", "--socket", kernel.path])
+    assert.equal(JSON.parse(printed.at(-1)!).tabs[0].opener_tab_id, "host-tab-0")
+    await runKernelsCommand(["kernels", "restart", "--kernel", "b3", "--socket", kernel.path])
+    assert.match(errors.join(""), /usage/, "a restart without --browser is refused before anything is sent")
+  } finally { console.log = log; process.stderr.write = written; process.exitCode = exitCode; await kernel.close() }
+  const sent = kernel.frames.map(frame => frame.request).filter(request => "KernelBrowser" in request)
+  assert.equal(sent.length, 1)
+  assert.deepEqual(sent[0], { KernelBrowser: { command: { op: "restart" } } })
 })

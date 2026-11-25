@@ -171,6 +171,7 @@ impl SessionRuntimeStore {
         caller_user_id: String,
         caller_agent_id: Option<String>,
         connection_class: Option<KernelConnectionClass>,
+        at_turn_end: bool,
     ) -> (
         Result<LocalDaemonResponse, DaemonError>,
         Option<SessionProjectionAction>,
@@ -181,8 +182,9 @@ impl SessionRuntimeStore {
         } else {
             request.effort.map(Some)
         };
-        let context =
+        let mut context =
             settings_context(caller_agent_id.as_deref(), connection_class, request.reason);
+        context.at_turn_end = at_turn_end;
         let result = match self
             .state
             .update_agent_profile_as(
