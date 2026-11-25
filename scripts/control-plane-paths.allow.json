@@ -10,10 +10,19 @@
   {
     "path": "/browser/relay-kernel/bootstrap",
     "callers": [
-      "apps/cli/scripts/live-room-drill-c-setup.mjs"
+      "apps/cli/scripts/live-room-drill-c-setup.mjs",
+      "scripts/localfast-forged/forged-client.mjs"
     ],
     "why": "a live drill bootstraps a relay kernel through a connected-service browser-session route",
     "slice": "B2"
+  },
+  {
+    "path": "/browser/relay-kernel/local-lease",
+    "callers": [
+      "scripts/localfast-forged/forged-client.mjs"
+    ],
+    "why": "the forged-client harness asks the connected service for a local lease with a signed-in browser session, to prove a forged kernel client is refused",
+    "seam": "LOCALFAST forged-client harness (row 353)"
   },
   {
     "path": "/control-plane",
@@ -134,7 +143,8 @@
   {
     "path": "/v1/browser",
     "callers": [
-      "apps/kernel/src/transport/relay_client/local_browser.rs"
+      "apps/kernel/src/transport/relay_client/local_browser.rs",
+      "scripts/localfast-forged/run-cells.mjs"
     ],
     "why": "kernel-local browser attach path on the relay peer, served by the kernel itself",
     "seam": "kernel browser"
@@ -245,6 +255,14 @@
     "seam": "event gateway"
   },
   {
+    "path": "/v1/kernel-device-approvals",
+    "callers": [
+      "apps/kernel/src/runtime/state/kernel_enrollment.rs"
+    ],
+    "why": "an enrolled kernel decides a new kernel device login with its own credential; the connected service owns the approval",
+    "seam": "account kernel enrollment"
+  },
+  {
     "path": "/v1/kernel-enrollment-tickets",
     "callers": [
       "apps/kernel/src/runtime/own_machine_enrollment.rs"
@@ -291,14 +309,6 @@
     ],
     "why": "transfer tickets issued and completed by the owner's control plane",
     "seam": "context transfer ticket authority"
-  },
-  {
-    "path": "/v1/kernels/startup-health",
-    "callers": [
-      "apps/kernel/src/managed_context/startup_health.rs"
-    ],
-    "why": "the enrolled kernel reports the outcome of its local and encrypted peer checks to the connected allocation service",
-    "seam": "managed machine health receipt"
   },
   {
     "path": "/v1/kernels/context/report",
@@ -353,12 +363,28 @@
     "seam": "kernel runtime identity observation"
   },
   {
+    "path": "/v1/kernels/startup-health",
+    "callers": [
+      "apps/kernel/src/managed_context/startup_health.rs"
+    ],
+    "why": "the enrolled kernel reports the outcome of its local and encrypted peer checks to the connected allocation service",
+    "seam": "managed machine health receipt"
+  },
+  {
     "path": "/v1/messages",
     "callers": [
       "scripts/claude-root-yolo-drill.mjs"
     ],
     "why": "a drill mock of an AI provider messages API, not a connected-service call",
     "seam": "AI provider API mock"
+  },
+  {
+    "path": "/v1/other",
+    "callers": [
+      "scripts/localfast-forged/run-cells.mjs"
+    ],
+    "why": "a forged-client cell upgrades to a path the relay peer does not serve, to prove it refuses it; no connected-service call",
+    "seam": "LOCALFAST forged-client harness (row 353)"
   },
   {
     "path": "/v1/owner-managed-context-tickets",

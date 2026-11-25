@@ -252,7 +252,7 @@ async fn spawn_folderless(
     (session_folder, agent_folder)
 }
 
-// Queue row 315 (W1, W3): a machine rented with a custom repository root runs its leased agents
+// Queue row 315 (W1, W3): a machine acquired with a custom repository root runs its leased agents
 // under that root, and every place that shows the agent's folder shows the same one.
 #[tokio::test]
 async fn a_leased_agent_on_a_machine_with_a_custom_root_runs_under_that_root() {
