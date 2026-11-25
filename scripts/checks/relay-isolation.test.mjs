@@ -56,6 +56,8 @@ test('relay code that parses, decodes to text, searches or logs the ciphertext i
     ['text', 'let text = String::from_utf8(ciphertext.clone()).unwrap();'],
     ['search', 'let hit = payload.ciphertext.contains("prompt");'],
     ['log', 'tracing::debug!("forwarding {}", payload.ciphertext);'],
+    ['brace macro', 'tracing::debug! { ciphertext = ?payload.ciphertext };'],
+    ['brace macro in a block', 'if verbose { tracing::debug! { bytes = ?payload.ciphertext } }'],
   ]) {
     const r = makeRepo(files())
     r.write('apps/relay/src/server.rs', `fn forward(payload: &Payload) {\n    ${statement}\n}\n`)

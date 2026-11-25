@@ -1,6 +1,7 @@
 // Rule 3: the relay only carries encrypted traffic. It never reads prompts, outputs or data and never decides session state.
 import { posix } from 'node:path'
 import { productionSource } from '../lib/rust-production-source.mjs'
+import { closing } from '../lib/rust-scan.mjs'
 
 const RELAY = 'apps/relay/'
 // Crates that decrypt or open payloads. The relay authenticates with HMAC and forwards ciphertext, so none of these belongs in it.
@@ -36,6 +37,8 @@ export default {
         const code = productionSource(text, file)
         let start = 0
         for (let i = 0; i < code.length; i++) {
+          // A brace-delimited macro (`tracing::debug! { .. }`) is one statement with its arguments: skip to its closing brace.
+          if (code[i] === '{' && /!\s*$/.test(code.slice(start, i))) { const end = closing(code, i); if (end > 0) i = end; continue }
           if (code[i] !== ';' && code[i] !== '{' && code[i] !== '}') continue
           const statement = code.slice(start, i)
           if (PAYLOAD_FIELD.test(statement) && INSPECTION.test(statement)) {

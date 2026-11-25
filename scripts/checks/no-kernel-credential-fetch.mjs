@@ -9,7 +9,8 @@ const PEER_FILES = /^apps\/kernel\/src\/transport\/relay_peer[\w]*\.rs$/
 const PEER_ENUMS = /\bpub enum (RelayPeer(?:Request|Response|Event)|Peer\w+)\s*\{/g
 // A variant is a candidate when its name says it moves a credential, or a field type is a credential, secret, Vault or token type.
 const NAMED = /(Credential|Secret|Vault)/
-const TYPED = /\b[A-Z]\w*(?:Credential|Secret|Vault|Token)\w*\b/g
+const TYPE_NAME = /\b[A-Z]\w*\b/g
+const MARKER = /Credential|Secret|Vault|Token/
 
 // Install-time transfers: the owner starts them once and the receiving kernel keeps its own copy (docs/PROVIDER_ACCOUNTS.md,
 // docs/CONTROL_PLANE_MACHINE_BOUNDARY.md). They never run again for a launch, a prompt or a tool call.
@@ -55,7 +56,7 @@ export default {
         if (end < 0) continue
         for (const { variant, at, fields } of variants(code, open, end)) {
           if (TRANSFERS.has(variant)) continue
-          const hits = [...new Set([...(NAMED.test(variant) ? [variant] : []), ...(fields.match(TYPED) ?? [])])]
+          const hits = [...new Set([...(NAMED.test(variant) ? [variant] : []), ...(fields.match(TYPE_NAME) ?? []).filter(type => MARKER.test(type))])]
           if (!hits.length) continue
           findings.push({ file, line: code.slice(0, at).split('\n').length, what: `${posix.basename(file)} ${m[1]}::${variant} moves a credential between kernels (${hits.join(', ')})` })
         }

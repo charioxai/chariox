@@ -64,3 +64,11 @@ test('a listed variant passes, an unlisted second one is red', () => {
   assert.match(planted(r, 'second'), /FetchHomeVault/)
   r.dispose()
 })
+
+test('a credential type that starts with the marker is red', () => {
+  for (const type of ['SecretString', 'Token', 'VaultHandle', 'CredentialBlob']) {
+    const r = makeRepo(files(`    Launch { value: Option<${type}> },\n`))
+    assert.match(planted(r, type), new RegExp(`RelayPeerRequest::Launch moves a credential between kernels \\(${type}\\)`), type)
+    r.dispose()
+  }
+})
