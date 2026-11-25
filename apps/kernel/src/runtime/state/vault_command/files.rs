@@ -67,7 +67,7 @@ pub(crate) fn capture_file_spec() -> RuntimeToolSpec {
 pub(crate) fn write_file_spec() -> RuntimeToolSpec {
     RuntimeToolSpec {
         name: VAULT_WRITE_FILE.into(),
-        description: "write a file in your workspace (for example .env) from a template: every {{NAME}} in template is replaced by the Vault value of values[NAME] (a credential_id). You never see the values. Works with credentials whose allowed uses include file, such as those from chariox.vault.capture_command or chariox.vault.capture_file. mode is octal, default \"600\". Returns the path and size.".into(),
+        description: "write a file in your workspace (for example .env) from a template: every {{NAME}} in template is replaced by the Vault value of values[NAME]. You never see the values. Works with credentials whose allowed uses include file, such as those from chariox.vault.capture_command or chariox.vault.capture_file. mode is octal, default \"600\". Returns the path and size.".into(),
         input_schema: serde_json::json!({"type":"object","required":["path","template","values"],"properties":{
             "path":{"type":"string","description":"File inside your workspace, relative to it; replaced if it exists"},
             "template":{"type":"string","maxLength":65536},
