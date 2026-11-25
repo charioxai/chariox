@@ -1807,6 +1807,7 @@ mod agent_assessment_result;
 mod agent_delegation_runtime;
 pub(crate) use agent_assessment_result::PrivateAssessmentDispatch;
 mod agent_deadline_notices;
+mod agent_deadline_cards;
 mod agent_deadline_runtime;
 mod leased_agent_deadline_rearm;
 mod provider_terminal_pane;
