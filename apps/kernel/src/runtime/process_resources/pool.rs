@@ -1134,8 +1134,7 @@ impl Pool {
 /// Memory pressure and pool use of the machine the workloads run on: the
 /// tightest limited cgroup above them when there is one (a small machine is
 /// emulated that way), else the host.
-#[cfg(target_os = "linux")]
-#[cfg_attr(test, allow(dead_code))]
+#[cfg(all(target_os = "linux", not(test)))]
 fn host_gauge() -> Option<exhaustion::Gauge> {
     let total = machine_memory()?;
     let available = host_room(0)?;
@@ -1162,7 +1161,7 @@ fn host_gauge() -> Option<exhaustion::Gauge> {
     })
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(all(not(target_os = "linux"), not(test)))]
 fn host_gauge() -> Option<exhaustion::Gauge> {
     None
 }
