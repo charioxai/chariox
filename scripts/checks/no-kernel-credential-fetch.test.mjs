@@ -38,8 +38,14 @@ test('a response carrying a secret type is red', () => {
 })
 
 test('an install-time transfer the check names passes', () => {
-  const r = makeRepo(files('    InstallProviderAccountCopy { credential: ProviderAccountCopyCredential },\n    PullProjectEnvironmentSecret { name: String },\n'))
+  const r = makeRepo(files('    InstallProviderAccountCopy { credential: ProviderAccountCopyCredential },\n    InstallManagedSliceRelayToken { relay_token: RelayManagedSliceToken },\n'))
   assert.equal(r.run(check.name).status, 0)
+  r.dispose()
+})
+
+test('a Project Environment secret pull is red until row 581 rules on it', () => {
+  const r = makeRepo(files('    PullProjectEnvironmentSecret { project_id: String, name: String },\n'))
+  assert.match(planted(r, 'pull'), /RelayPeerRequest::PullProjectEnvironmentSecret moves a credential between kernels/)
   r.dispose()
 })
 

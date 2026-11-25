@@ -16,8 +16,6 @@ const TYPED = /\b[A-Z]\w*(?:Credential|Secret|Vault|Token)\w*\b/g
 export const TRANSFERS = new Map([
   ['InstallProviderAccountCopy', 'owner-started provider account copy: the credential is copied once and the worker launches from its own copy'],
   ['InstallManagedSliceRelayToken', 'installation of a managed slice: the slice receives its relay token once'],
-  ['PullProjectEnvironmentSecret', 'owner-started Project Environment copy: the value is copied once into this kernel'],
-  ['ProjectEnvironmentSecretPulled', 'answer of the owner-started Project Environment copy'],
 ])
 
 // [{enumName, variant, line, fields}] for the variants of one enum, comments and literals hidden.
