@@ -188,6 +188,10 @@ fn advertises(kernel: &RelayKernelPresence, capability: &str) -> bool {
     kernel.capabilities.iter().any(|value| value == capability)
 }
 
+/// The local protocol that introduced `GetGatewayCommandStatus`. An older target answers the request as an unknown
+/// one, so it is refused here with the update-the-target message. Renumber it with the protocol bump of that request.
+const GATEWAY_COMMAND_STATUS_PROTOCOL: u32 = 1016;
+
 /// Why this request cannot go to this kernel, in words that say what to do, or `None`.
 pub(super) fn incompatibility(
     kernel: &RelayKernelPresence,
@@ -197,9 +201,11 @@ pub(super) fn incompatibility(
     match request {
         LocalDaemonRequest::GetGatewayCommandStatus(_)
             if !is_gateway_ready(kernel)
-                || kernel.local_protocol.is_none_or(|version| version < 1013) =>
+                || kernel
+                    .local_protocol
+                    .is_none_or(|version| version < GATEWAY_COMMAND_STATUS_PROTOCOL) =>
         {
-            Some("it predates command status lookup".into())
+            Some("it predates command status lookup; update the target kernel".into())
         }
         LocalDaemonRequest::RespondToInteraction(_) if !is_gateway_ready(kernel) => Some(format!(
             "it predates the {GATEWAY_CAPABILITY} contract that classifies approvals itself"
@@ -445,6 +451,23 @@ mod tests {
         assert_eq!(incompatibility(&current, &terminal), None);
         let list = LocalDaemonRequest::ListSessions(crate::local::ListSessionsRequest);
         assert_eq!(incompatibility(&older, &list), None);
+    }
+
+    #[test]
+    fn a_kernel_older_than_command_status_is_incompatible_before_the_lookup_is_sent() {
+        use crate::local::{GetGatewayCommandStatusRequest, LocalDaemonRequest};
+        let lookup = LocalDaemonRequest::GetGatewayCommandStatus(GetGatewayCommandStatusRequest {
+            command_id: "c-1".into(),
+        });
+        let mut target = kernel("k-t", None, "t", true);
+        target.local_protocol = Some(GATEWAY_COMMAND_STATUS_PROTOCOL - 1);
+        assert!(incompatibility(&target, &lookup)
+            .unwrap()
+            .contains("command status"));
+        target.local_protocol = Some(GATEWAY_COMMAND_STATUS_PROTOCOL);
+        assert_eq!(incompatibility(&target, &lookup), None);
+        target.local_protocol = None;
+        assert!(incompatibility(&target, &lookup).is_some());
     }
 
     // A kernel without durable receipts is never sent a state-changing request: a retry after

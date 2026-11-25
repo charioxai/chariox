@@ -267,6 +267,39 @@ fn sending_the_same_key_again_as_urgent_promotes_the_queued_message() {
 }
 
 #[test]
+fn an_urgent_resend_of_a_message_already_read_says_it_was_delivered() {
+    run_peer_test("queued-resend-after-read", || async {
+        let rooms = Rooms::new(AgentPermissionLevel::Yolo, AgentPermissionLevel::Yolo);
+        let idle = spawn_idle(&rooms).await;
+        let key = serde_json::json!({"idempotency_key": "notes-2"});
+        let queued = send_to(&rooms, "idle", key).await;
+        // The recipient read and acknowledged it in a turn that gave it no prompt of its own.
+        rooms
+            .router
+            .runtime_state
+            .ack_agent_inbox(
+                &rooms.peer_room,
+                idle.id(),
+                &serde_json::json!({"sequence": queued["sequence"], "handled": true}),
+                1,
+            )
+            .await
+            .expect("the recipient acknowledges it");
+        let resent = send_to(
+            &rooms,
+            "idle",
+            serde_json::json!({"idempotency_key": "notes-2", "urgent": true}),
+        )
+        .await;
+        assert_eq!(
+            resent["status"], "already_delivered",
+            "a consumed message is never reported as still queued: {resent}"
+        );
+        assert_eq!(resent["sequence"], queued["sequence"]);
+    });
+}
+
+#[test]
 fn only_the_sender_promotes_a_queued_message() {
     run_peer_test("queued-promote-sender-only", || async {
         let rooms = Rooms::new(AgentPermissionLevel::Yolo, AgentPermissionLevel::Yolo);

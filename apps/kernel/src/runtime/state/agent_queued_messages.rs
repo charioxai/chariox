@@ -293,7 +293,11 @@ impl KernelRuntimeState {
         target_name: &str,
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
         if urgent && !first.urgent {
-            self.promote_queued_message(first).await?;
+            let promotion = self.promote_queued_message(first).await?;
+            // Read before the repeat, or cancelled: nothing is left to deliver, and a pending answer would be false.
+            if matches!(promotion, Promotion::Delivered | Promotion::Withdrawn) {
+                return Ok(promotion_result(first.sequence, &promotion));
+            }
         }
         let payload = if first.urgent || urgent {
             self.urgent_agent_message_receipt(first)?
