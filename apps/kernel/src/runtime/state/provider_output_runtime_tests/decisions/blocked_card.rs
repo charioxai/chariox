@@ -362,9 +362,10 @@ async fn the_person_resumes_or_cancels_a_blocked_task_and_an_unrelated_agent_can
     )
     .await;
     let task = t.blocked_task_of(&t.c, INVALID_TURN_END);
-    // A sibling room agent is no ancestor of c.
+    // Row 405: a same-owner peer settles it only within its own authority. One whose permission
+    // is below c's is refused by the shared peer control check.
     let outsider = t
-        .agent_at("outsider", None, AgentPermissionLevel::Yolo)
+        .agent_at("outsider", None, AgentPermissionLevel::Required)
         .await;
     let refused = t
         .runtime
@@ -376,11 +377,8 @@ async fn the_person_resumes_or_cancels_a_blocked_task_and_an_unrelated_agent_can
             crate::local::UsageLimitStopAction::Cancel,
         )
         .await
-        .expect_err("only an agent above may settle it");
-    assert!(
-        refused.to_string().contains("only an agent above"),
-        "{refused}"
-    );
+        .expect_err("a peer below c's permission may not settle it");
+    assert!(!refused.to_string().is_empty(), "{refused}");
     assert_eq!(
         t.runtime
             .owned
@@ -413,6 +411,45 @@ async fn the_person_resumes_or_cancels_a_blocked_task_and_an_unrelated_agent_can
         )
         .await;
     assert!(none.is_err(), "no blocked task is left");
+}
+
+// Row 405: another of the owner's agents whose permission covers the target's settles a blocked
+// task through the same peer control check as an agent above it.
+#[tokio::test]
+async fn an_authorized_peer_cancels_a_blocked_task() {
+    let t = tree(
+        "blocked-card-peer",
+        AgentPermissionLevel::Yolo,
+        AgentPermissionLevel::Yolo,
+    )
+    .await;
+    let task = t.blocked_task_of(&t.c, INVALID_TURN_END);
+    let peer = t.agent_at("peer", None, AgentPermissionLevel::Yolo).await;
+    t.runtime
+        .resolve_usage_limit_stop(
+            &t.room,
+            &t.c,
+            "local",
+            Some(&peer),
+            crate::local::UsageLimitStopAction::Cancel,
+        )
+        .await
+        .expect("an authorized peer cancels the blocked task");
+    for _ in 0..100 {
+        let state = t
+            .runtime
+            .owned
+            .durable_state_store
+            .agent_task(&task.task_id)
+            .unwrap()
+            .unwrap()
+            .state;
+        if state == ExecutionState::Cancelled {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    panic!("the peer's cancel did not settle the blocked task");
 }
 
 #[tokio::test]
