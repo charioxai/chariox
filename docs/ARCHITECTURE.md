@@ -267,6 +267,9 @@ Detailed target-kernel implementation model, workflow model, workflow messaging,
 
 ### 3.3.2 Hot reload
 
+Before replacing a kernel binary, run the
+[state replay preflight](KERNEL_BINARY_UPGRADE.md) with the candidate binary.
+
 A hot reload (SIGUSR2) replaces the kernel program in place and keeps its PID. It is a program
 update, not the end of the kernel: **everything that lives "until the kernel stops" survives it.**
 Only a real stop or restart ends it. This covers:
