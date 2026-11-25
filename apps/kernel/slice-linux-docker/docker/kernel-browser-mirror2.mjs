@@ -33,6 +33,9 @@ const TARGET_ATTRIBUTES = new Set(['type', 'contenteditable']);
 const HISTORY_BYTES = 8 * 1024 * 1024;
 // GATE-bytes: sheets from this size (normalized text) are pruned to their used rules for a first paint.
 const FIRST_PAINT_SHEET = 32 * 1024;
+// The observer's own patterns: a sheet's image-set() options (loadViewerOptions) and selectors on a link's or element's value (sheetCss).
+const IMAGE_SET = /image-set\(([^()]*(?:\([^()]*\)[^()]*)*)\)/gi;
+const VALUE_SELECTOR = { href: /\[\s*chariox-href\s*[~|^$*]?=/i, src: /\[\s*chariox-src\s*[~|^$*]?=/i };
 // A font sent as a subset is checked against the document's characters at most this often.
 const FONT_REFRESH_MS = 1000;
 // Y3-C1a: how often, at most, a page whose script changed its DOM is asked again whether it takes the wheel.
@@ -229,6 +232,50 @@ const observerRef = stream => `globalThis.__charioxMirror2.get(${JSON.stringify(
 // source is never published: the label selects the whole-page video (MIRROR-FIDELITY-GUARD).
 const SERIALIZER = String.raw`const lossy=/[;{]\s*(?!--)[a-z][a-z-]*:\s*;/;const sheetOf=text=>{const sheet=new CSSStyleSheet();sheet.replaceSync(text);return sheet};const dump=sheet=>{let out='';for(const rule of sheet.cssRules)out+=rule.cssText+'\n';return out};const rules=text=>dump(sheetOf(text));const scan=(text,visit)=>{let quote='';for(let i=0;i<text.length;i++){const c=text[i];if(quote){if(c==='\\')i++;else if(c===quote)quote=''}else if(c==='\\')i++;else if(c==='"'||c==="'")quote=c;else if(c==='/'&&text[i+1]==='*'){i=text.indexOf('*/',i+2);if(i<0)break;i++}else if(visit(c,i))return i}return -1};const chunks=text=>{const out=[];let depth=0,start=0;scan(text,(c,i)=>{if(c==='{')depth++;else if((c==='}'&&!--depth)||(c===';'&&!depth)){out.push(text.slice(start,i+1));start=i+1}});if(text.slice(start).trim())out.push(text.slice(start));return out};const serialize=(text,sheet)=>{const out=sheet?dump(sheet):rules(text);if(!lossy.test(out))return out;let result='';for(const chunk of chunks(text)){const one=rules(chunk);if(!lossy.test(one)){result+=one;continue}const open=scan(chunk,c=>c==='{');result+=/^\s*@/.test(chunk)?chunk.slice(0,open+1)+serialize(chunk.slice(open+1,chunk.lastIndexOf('}')))+'}\n':chunk+'\n'}return result};const count=text=>{const sheet=new CSSStyleSheet();sheet.replaceSync(text);return sheet.cssRules.length};const parse=text=>{const sheet=sheetOf(text),out=serialize(text,sheet);if(count(out)!==sheet.cssRules.length)throw new Error('mirror2:css_incomplete');return out};`;
 // CSSOM-normalized cross-origin sheet bodies by source (see crossOriginSheet), least recently used first out.
+// Row 342 (b): a cross-origin sheet's rules as the page's usedCss walks them after re-parsing the sanitized text (it is a CSSOM
+// serialization): style rules (selector, text), grouping rules (@media, @supports, @container, @layer blocks: opening, children)
+// and anything else kept whole. Strings, escapes, comments and brackets never end a prelude or a block.
+const GROUPING_RULE = /^@(?:media|supports|container|layer)\b/i;
+export function cssRules(text, from = 0, to = text.length) {
+  const skip = j => {
+    const c = text[j];
+    if (c === '\\') return j + 2;
+    if (c === '"' || c === "'") { for (j++; j < to && text[j] !== c; j++) if (text[j] === '\\') j++; return j + 1; }
+    if (c === '/' && text[j + 1] === '*') { const end = text.indexOf('*/', j + 2); return end < 0 || end >= to ? to : end + 2; }
+    return -1;
+  };
+  const rules = [];
+  for (let i = from; i < to;) {
+    while (i < to && /\s/.test(text[i])) i++;
+    if (i >= to) break;
+    if (text[i] === '/' && text[i + 1] === '*') { i = skip(i); continue; }
+    let j = i, depth = 0;
+    while (j < to) { const next = skip(j); if (next >= 0) { j = next; continue; } const c = text[j]; if (c === '(' || c === '[') depth++; else if (c === ')' || c === ']') depth--; else if (!depth && (c === '{' || c === ';')) break; j++; }
+    if (j >= to) { rules.push({ text: text.slice(i, to) }); break; }
+    if (text[j] === ';') { rules.push({ text: text.slice(i, j + 1) }); i = j + 1; continue; }
+    let end = j, level = 0;
+    while (end < to) { const next = skip(end); if (next >= 0) { end = next; continue; } if (text[end] === '{') level++; else if (text[end] === '}' && --level === 0) break; end++; }
+    if (end >= to) { rules.push({ text: text.slice(i, to) }); break; }
+    const prelude = text.slice(i, j).trim();
+    if (!prelude.startsWith('@')) rules.push({ selector: prelude, text: text.slice(i, end + 1) });
+    else if (GROUPING_RULE.test(prelude)) rules.push({ open: text.slice(i, j + 1), layer: /^@layer\b/i.test(prelude), children: cssRules(text, j + 1, end) });
+    else rules.push({ text: text.slice(i, end + 1) });
+    i = end + 1;
+  }
+  return rules;
+}
+// usedCss's pruned(): a style rule stays if its selector is in use, a grouping rule if any child stays (a layer block always,
+// it keeps its place in the layer order), anything else always.
+export function prunedCss(rules, used) {
+  let out = '';
+  for (const rule of rules) {
+    if (rule.selector !== undefined) { if (used(rule.selector)) out += `${rule.text}\n`; }
+    else if (rule.children) { const inner = prunedCss(rule.children, used); if (inner || rule.layer) out += `${rule.open}${inner}}\n`; }
+    else out += `${rule.text}\n`;
+  }
+  return out;
+}
+const ruleSelectors = (rules, out = new Set()) => { for (const rule of rules) if (rule.selector !== undefined) out.add(rule.selector); else if (rule.children) ruleSelectors(rule.children, out); return out; };
 export class ParsedSheets {
   constructor(entries = 32, chars = 32 * 1024 * 1024) { this.bodies = new Map(); this.entries = entries; this.chars = chars; this.size = 0; }
   take(key) { const body = this.bodies.get(key); if (body !== undefined) { this.bodies.delete(key); this.bodies.set(key, body); } return body; }
@@ -305,6 +352,8 @@ export class Mirror2 {
   async snapshotOnce(world, policy, patience, known = [], options = null) {
     if (world.snapshotPending?.policy !== policy) world.snapshotPending = null;
     const args = options ? `${JSON.stringify(known)},${JSON.stringify(options)}` : known.length ? JSON.stringify(known) : '';
+    // The sheets this snapshot tells the page the viewer retains (its usedCss answers null for them): the kernel skips asking.
+    if (!world.snapshotPending) world.retainedSheets = new Set(known);
     const pending = world.snapshotPending ??= { policy, promise: this.evaluate(world, `${world.ref}.snapshot(${args})`, false, SNAPSHOT_MS, true) };
     pending.promise.catch(() => { if (world.snapshotPending === pending) world.snapshotPending = null; }); // a failed snapshot is not kept
     let timer;
@@ -556,6 +605,8 @@ export class Mirror2 {
         stream.ownScrolls.clear(); stream.frames.clear(); stream.frameSlots.clear(); stream.frameSlot = 0;
         for (const [key, entry] of stream.resources) if (entry.slot) stream.resources.delete(key); else if (!entry.sent || entry.sentAt > (stream.acked ?? 0)) { entry.sent = false; entry.offset = 0; }
         if (world.snapshotPending?.policy !== policy) await this.protectTargets(world, tab, maskPolicy(stream, policy), '', patience);
+        // Row 342 F3: the document's loaded stylesheets start reading now, alongside the snapshot that names them.
+        this.prefetchSheets(world);
         const snapshotAt = timestamp();
         const snap = await this.snapshotOnce(world, policy, patience, stream.knownSheets ?? [], this.snapshotOptions(stream, world));
         this.host.timing?.('mirror2_snapshot', snapshotAt);
@@ -877,6 +928,28 @@ export class Mirror2 {
     }
     return out;
   }
+  // Row 342: a first visit's sheets parse in the kernel's keepalive blank page (the same Chrome and CSSOM, so the same text) instead
+  // of behind the page's own work (GitHub: ~1.1 s of a 1.3 s stage was waiting for its main thread; the parse itself is ~0.2 s).
+  // A bare about:blank is quirks mode: its document is rewritten once in standards mode, its URL stays about:blank, so it stays the
+  // host's reserve. Null (the caller parses in the page as before) when there is no reserve, it became a user tab, or anything fails.
+  async parseAside(sources) {
+    const target = this.host.keepaliveTarget;
+    if (!target || !this.host.browser?.resolvePageTarget) return null;
+    try {
+      const { connection, sessionId } = await this.host.browser.resolvePageTarget(target);
+      const expression = `(sheets=>{if(location.href!=='about:blank')return null;if(document.compatMode!=='CSS1Compat'){document.open();document.write('<!doctype html><title></title>');document.close()}${SERIALIZER}return sheets.map(s=>{let body=parse(s.text);if(s.open)body=parse(s.open+body+s.close);return body})})(${JSON.stringify(sources)})`;
+      const reply = await connection.send('Runtime.evaluate', { expression, returnByValue: true }, sessionId, { timeoutMs: 5000 });
+      const bodies = reply?.exceptionDetails ? null : reply?.result?.value;
+      return Array.isArray(bodies) && bodies.length === sources.length && bodies.every(body => typeof body === 'string') ? bodies : null;
+    } catch { return null; }
+  }
+  // Row 342 F3: reads of the stylesheets a document has loaded, kept on that document's world (a world is one document:
+  // a navigation gets a new one, so no read of the old document's sheets can serve the new one).
+  prefetchSheets(world) {
+    if (world.sheetReads) return;
+    world.sheetReads = new Map();
+    for (const url of this.host.browser?.responseBodies?.stylesheets?.(world) ?? []) world.sheetReads.set(url, this.resourceBody(world, url, 16 * 1024 * 1024).catch(() => null));
+  }
   async resourceBody(world, url, maxBytes = RESOURCE_BYTES) {
     return this.host.browser?.responseBodies?.read(world, url, maxBytes) ?? null;
   }
@@ -1030,7 +1103,9 @@ export class Mirror2 {
       if (sheets.length >= 64) return false;
       // CDP names a request without its fragment; a sheet's `href` keeps it (Amazon's end in `#<revision>`).
       const requested = href.split('#')[0];
-      const body = await this.resourceBody(world, requested, 16 * 1024 * 1024);
+      // A read started with the snapshot (prefetchSheets) is this document's; a sheet it missed (loaded later) reads now.
+      const prefetched = world.sheetReads?.get(requested); world.sheetReads?.delete(requested);
+      const body = await prefetched ?? await this.resourceBody(world, requested, 16 * 1024 * 1024);
       let text = body?.toString('utf8');
       // The network buffer had let go of it: the HTTP cache holds the exact bytes. The frame's own text decodes a response
       // without a charset as Latin-1, on most navigations, so the same sheet differed from page to page and the viewer's
@@ -1056,14 +1131,35 @@ export class Mirror2 {
     if (!await read(url, '', '', 0)) return null;
     // A same-site navigation reads the same sheets again. Their normalized text (a lossy sheet's chunk-by-chunk
     // re-parse is most of a large sheet's cost) comes from the last document that parsed the same source under the
-    // same wrapper, origin and compatibility mode. Sanitizing (per-document resource keys) and pruning still run here.
+    // same wrapper, origin and compatibility mode; only a part not seen before parses in the page.
     world.quirks ??= await this.evaluate(world, "document.compatMode === 'BackCompat'");
     const origin = (() => { try { return new URL(world.frame?.url ?? '').origin; } catch { return ''; } })();
     const keys = sheets.map(sheet => createHash('sha256').update(JSON.stringify([origin, world.quirks, sheet.open, sheet.close, sheet.text])).digest('base64'));
-    const input = sheets.map(({ text, url, open, close }, i) => { const body = this.parsedSheets.take(keys[i]); return body === undefined ? { text, url, open, close } : { body, url }; });
-    const reply = await this.evaluate(world, `(sheets=>{${SERIALIZER}let out='';const parsed=[];for(const s of sheets){let body=s.body;if(body===undefined){body=parse(s.text);if(s.open)body=parse(s.open+body+s.close);parsed.push(body)}else parsed.push(null);out+=${world.ref}.sanitize(body,s.url)}return {css:out,parsed,used:${usedBy === null ? 'null' : `out.length<${FIRST_PAINT_SHEET}?null:${world.ref}.usedCss(${JSON.stringify(usedBy)},out)`}}})(${JSON.stringify(input)})`);
-    reply.parsed.forEach((body, i) => { if (typeof body === 'string') this.parsedSheets.put(keys[i], body); });
-    return reply.used === null ? reply.css : [reply.css, reply.used];
+    const bodies = keys.map(key => this.parsedSheets.take(key));
+    const misses = sheets.flatMap(({ text, open, close }, i) => bodies[i] === undefined ? [{ i, text, open, close }] : []);
+    if (misses.length) {
+      const sources = misses.map(({ text, open, close }) => ({ text, open, close }));
+      const parsed = (!world.quirks && await this.parseAside(sources)) || await this.evaluate(world, `(sheets=>{${SERIALIZER}return sheets.map(s=>{let body=parse(s.text);if(s.open)body=parse(s.open+body+s.close);return body})})(${JSON.stringify(sources)})`);
+      misses.forEach(({ i }, n) => { bodies[i] = parsed[n]; this.parsedSheets.put(keys[i], parsed[n]); });
+    }
+    // Sanitizing runs here on that text (the page's own sanitizer, shared verbatim), not in the page: only each part's url()
+    // occurrences travel there, to take their per-document resource keys in the sanitizer's order (sheetKeys), and the
+    // whole sheet never crosses CDP (a first paint's pruning sends its selectors, and nothing for a sheet the viewer
+    // retains: the page's usedCss would answer null for it). A url() is `mr:r<n>` (its occurrence number, the shape of a key, which the sanitizer's
+    // last pass requires) until its key is known.
+    const drafts = sheets.map((sheet, i) => { const urls = []; return { urls, css: sanitizeMirrorCss(bodies[i], sheet.url, (value, base, kind) => { urls.push([value, base, kind]); return `r${urls.length}`; }) }; });
+    const parts = drafts.map(({ urls, css }) => ({ urls, imageSets: /image-set\(/i.test(css) ? [...css.matchAll(IMAGE_SET)].map(match => match[0]).join(' ') : '', values: ['href', 'src'].filter(name => VALUE_SELECTOR[name].test(css)) }));
+    const resourceKeys = await this.evaluate(world, `${world.ref}.sheetKeys(${JSON.stringify(parts)})`);
+    const css = drafts.map(({ css }, i) => css.replace(/url\("mr:r(\d+)"\)/g, (_, n) => resourceKeys[i][n - 1] ? `url("mr:${resourceKeys[i][n - 1]}")` : 'none')).join('');
+    // A first paint prunes the rules no element uses. The page answers only which selectors are in use (usedSelectors, the
+    // same matcher as usedCss); the kernel keeps the rules, so the page never re-parses the sheet behind its own work.
+    let used = null;
+    if (usedBy !== null && css.length >= FIRST_PAINT_SHEET && !world.retainedSheets?.has(sheetDigest(css))) {
+      const rules = cssRules(css), selectors = [...ruleSelectors(rules)];
+      const flags = selectors.length ? await this.evaluate(world, `${world.ref}.usedSelectors(${JSON.stringify(usedBy)},${JSON.stringify(selectors)})`) : null;
+      if (typeof flags === 'string' && flags.length === selectors.length) { const keep = new Map(selectors.map((selector, n) => [selector, flags[n] === '1'])); used = prunedCss(rules, selector => keep.get(selector)); }
+    }
+    return used === null ? css : [css, used];
   }
   // Opaque regions as lossless stills, refreshed at most once a second until phase 3
   // binds them to video rows: a canvas or video as its own pixels; plugins, closed
