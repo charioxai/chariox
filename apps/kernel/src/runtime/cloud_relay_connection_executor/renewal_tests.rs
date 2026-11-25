@@ -207,8 +207,25 @@ async fn renewal_reaches_the_projection_while_the_app_lock_is_held() {
     assert_eq!(durable.as_deref(), Some(token.as_str()));
 }
 
-#[tokio::test]
-async fn removed_cloud_kernel_keeps_its_owner_identity_on_renewal() {
+/// The body is a long async test: it overflows the default 2 MiB test stack in a debug build, so
+/// it runs on a large-stack thread like the other long relay tests.
+#[test]
+fn removed_cloud_kernel_keeps_its_owner_identity_on_renewal() {
+    std::thread::Builder::new()
+        .stack_size(64 * 1024 * 1024)
+        .spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(removed_cloud_kernel_keeps_its_owner_identity())
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+async fn removed_cloud_kernel_keeps_its_owner_identity() {
     let root = crate::test_support::TestWorktree::new("relay-unlinked-owner");
     let mut config = crate::config::DaemonConfig::for_tests();
     config.user_config.state.path = Some(root.path().join("state.db").display().to_string());
