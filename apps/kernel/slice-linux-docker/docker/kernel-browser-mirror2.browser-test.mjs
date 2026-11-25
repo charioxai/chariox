@@ -2400,6 +2400,57 @@ test('MP-10: review r19 a newly inserted closed host becomes a tile without rese
  }
 ));
 
+// Row 489: Chromium's PDF document is a body whose light DOM is one whitespace text node and whose closed root holds the
+// viewer's iframe. That body is a closed host like an empty one: the viewer gets a region, not an empty page.
+test('Row 489: a body with only whitespace light DOM and a closed root is an opaque region',()=>mirrored(
+ '<head><script>addEventListener("DOMContentLoaded",()=>{document.body.attachShadow({mode:"closed"}).innerHTML="<style>iframe{position:absolute;left:0;top:0;width:600px;height:400px;border:0}</style><iframe src=/viewer></iframe><slot></slot>"})</script><style>body{height:100%;margin:0}</style></head><body>\n    \n  </body>',
+ async ctx=>{
+  let found=null;for(let i=0;i<6&&!found;i++){const p=await ctx.next(i?600:0);if([...p.nodes??[],...p.ops.flatMap(op=>op.op==='children'?op.nodes:[])].some(n=>n[4]?.reason==='closed_shadow'))found=p;}
+  assert(found,'the PDF-shaped body is a closed_shadow tile');
+  // The body's own box is 0 high (the viewer iframe is absolute in the closed root): its region covers what the root paints.
+  const lease=await regionLease(ctx,found.sequence);
+  assert(lease.rect.width>=590&&lease.rect.height>=390,`the body's region covers the viewer iframe: ${JSON.stringify(lease.rect)}`);
+ },{'/viewer':{type:'text/html',body:'<!doctype html><body style="margin:0;background:rgb(82,86,89)"><p style="color:white">page 1 of 15</p></body>'}}
+));
+
+// Row 489 review (#1716): a closed root painting away from its host keeps the host as the region's origin (placement, clicks),
+// and a closed host in normal flow keeps its own layout size (its painted overflow never pushes the content after it).
+test('Row 489: a closed host painting outside its box keeps its origin, and an in-flow 0-high host keeps its height',()=>mirrored(
+ '<head><script>addEventListener("DOMContentLoaded",()=>{for(const id of ["away","flow"])document.getElementById(id).attachShadow({mode:"closed"}).innerHTML=id==="away"?"<div style=position:absolute;left:-50px;top:-50px;width:200px;height:200px;background:rgb(0,90,200)></div>":"<div style=position:absolute;left:0;top:0;width:300px;height:100px;background:rgb(200,90,0)></div>"})</script></head><body style="margin:0"><div id=away style="position:absolute;left:100px;top:100px;width:100px;height:100px"></div><div id=flow style="position:relative;height:0;margin-top:400px"></div><p>after</p></body>',
+ async ctx=>{
+  let packet=null,rows=[];for(let i=0;i<6;i++){const p=await ctx.next(i?600:0);rows.push(...p.nodes??[],...p.ops.flatMap(op=>op.op==='children'?op.nodes:[]));packet=p;if(rows.filter(n=>n[4]?.reason==='closed_shadow').length>=2)break;}
+  const tiles=rows.filter(n=>n[4]?.reason==='closed_shadow');
+  assert.equal(tiles.length,2,'both hosts are closed_shadow tiles');
+  assert(tiles.some(n=>n[4].size?.[1]===0),`the in-flow 0-high host keeps height 0: ${JSON.stringify(tiles.map(n=>n[4].size))}`);
+  const stream=ctx.host.mirror.streams.get(ctx.subscription_id),leases=[];
+  for(const [region_id,r] of stream.regionRecords)if(r.kind==='tile')try{leases.push(await ctx.host.mirror.v2.regions.resolve({mirror_subscription_id:ctx.subscription_id,generation:ctx.generation,document_id:stream.document_id,sequence:packet.sequence,region_id},stream.scope))}catch{}
+  const away=leases.find(l=>l.rect.x===50&&l.rect.y===50);
+  assert(away,`the away host's capture covers its painted ink from (50,50): ${JSON.stringify(leases.map(l=>l.rect))}`);
+  assert.deepEqual({...away.element_offset},{x:-50,y:-50},'placed relative to the host at (100,100)');
+ }));
+
+// Row 489: a real PDF (Chromium's own viewer) reaches the viewer as a region with pixels.
+const minimalPdf = () => {
+  const objects = ['<< /Type /Catalog /Pages 2 0 R >>', '<< /Type /Pages /Kids [3 0 R] /Count 1 >>', '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>', null, '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>'];
+  const text = 'BT /F1 48 Tf 72 700 Td (Row 489 page one) Tj ET'; objects[3] = `<< /Length ${text.length} >>\nstream\n${text}\nendstream`;
+  let out = '%PDF-1.4\n'; const offsets = [];
+  objects.forEach((body, i) => { offsets.push(out.length); out += `${i + 1} 0 obj\n${body}\nendobj\n`; });
+  const xref = out.length; out += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n${offsets.map(o => String(o).padStart(10, '0') + ' 00000 n \n').join('')}trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+  return Buffer.from(out, 'latin1');
+};
+test('Row 489: a PDF document shows Chromium\'s viewer as a region with pixels',()=>mirrored('',async ctx=>{
+  await settle(2500);
+  const seen={closed:false,stills:[],packets:0};let last=null;
+  for(let i=0;i<10;i++){const p=await ctx.next(i?500:0);last=p;seen.packets++;const tile=[...p.nodes??[],...p.ops.flatMap(op=>op.op==='children'?op.nodes:[])].find(n=>n[4]?.reason==='closed_shadow');if(tile){seen.closed=true;seen.tile=tile;}for(const op of p.ops)if(op.op==='size')seen.sizes=(seen.sizes??[]).concat([op.size]);for(const t of p.tiles??[])seen.stills.push([t.width,t.height]);}
+  let lease=null;try{lease=(await regionLease(ctx,last.sequence)).rect}catch(error){lease=String(error.message)}
+  const kinds=[...ctx.host.mirror.streams.get(ctx.subscription_id).regionRecords.values()].map(r=>r.kind);
+  console.log('ROW489-PDF',JSON.stringify({...seen,lease,kinds,url:await ctx.evaluate('location.href'),type:await ctx.evaluate('document.contentType')}));
+  assert(seen.closed,'the PDF body is a closed_shadow tile');
+  const size=seen.tile?.[4]?.size;
+  assert(size?.[0]>=600&&size?.[1]>=400,`the viewer lays the tile out at what the viewer paints, not the body's 0-high box: ${JSON.stringify(size)}`);
+  assert(typeof lease==='object'&&lease.width>=600&&lease.height>=400,`its region covers the viewer: ${JSON.stringify(lease)}`);
+ },{'/':{type:'application/pdf',binary:minimalPdf()}}));
+
 // MP-08/MP-10/MP-11: #941 c956f84c7 review F1/F2. No reset may hide a lost descriptor.
 for (const child of [false, true]) test(`MP-10: closed-host discovery retains a simultaneously loaded image in ${child ? 'an attached child' : 'the parent'}`,()=>mirrored(
  child ? '<iframe src="http://localhost:PORT/child" style="width:300px;height:160px"></iframe>' : '<p>stable</p>',
