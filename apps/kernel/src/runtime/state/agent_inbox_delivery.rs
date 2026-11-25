@@ -157,6 +157,9 @@ impl KernelRuntimeState {
         if self.owned.agent_store.get_agent(agent)?.archived() {
             return Ok(());
         }
+        // Row 554: a queued message waits for a next turn that nothing will start for an idle agent
+        // with nothing armed, so it starts that turn.
+        self.owned.release_queued_for_stranded(room, agent)?;
         let tasks = self
             .owned
             .durable_state_store

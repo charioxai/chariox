@@ -310,6 +310,8 @@ pub(crate) struct KernelRuntimeState {
     /// before this field was set, and the Room terminal service and wake registry hold it weakly,
     /// so dropping the runtime frees the kernel instead of leaving a cycle.
     terminal_wake_driver: Option<Arc<terminal_wake::TerminalWakeDriver>>,
+    /// Keeps the driver of adopted background commands alive; the registry holds it weakly.
+    adopted_process_wake_driver: Option<Arc<dyn wake_driver::WakeDriver>>,
     interaction_wake_driver: Option<Arc<interaction_wake::InteractionWakeDriver>>,
     job_wake_driver: Option<Arc<jobs::JobDriver>>,
     /// MP-08 / MP-09 / MP-10 / MP-11: work services retain this callback weakly
@@ -1278,6 +1280,7 @@ impl KernelRuntimeState {
             terminal_input_grants: agent_grants::AgentGrants::default(),
             watched_process_grants: agent_grants::AgentGrants::default(),
             terminal_wake_driver: None,
+            adopted_process_wake_driver: None,
             interaction_wake_driver: None,
             job_wake_driver: None,
             managed_work_activity: None,
@@ -1491,6 +1494,7 @@ impl KernelRuntimeState {
         };
         runtime.link_work_to_managed_kernel();
         runtime.register_terminal_wake_driver();
+        runtime.register_adopted_process_wake_driver();
         runtime.register_job_wake_driver();
         runtime.register_interaction_wake_driver();
         runtime
@@ -1846,6 +1850,7 @@ mod background_hold;
 mod child_finish_window;
 mod child_finished_event;
 
+mod adopted_process_wake;
 mod agent_blocked_task;
 #[cfg(test)]
 mod agent_delivery_recovery_tests;
@@ -1894,6 +1899,7 @@ mod pump_stall_tests;
 mod resident_room_scan_tests;
 mod room_dispatch_obligation;
 mod slice_auth_inspection;
+mod stranded_agent;
 mod supervision_step;
 mod task_work_flight;
 mod terminal_wake;
