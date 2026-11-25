@@ -300,6 +300,41 @@ fn reader_end_refused_token(reader_end: &mut oneshot::Receiver<socket_thread::Re
     }
 }
 
+/// Why the connection ended when the writer finished. The reader hands over the relay's
+/// closing frame before its exit closes the writer, so both can be ready together and the
+/// writer's end may be chosen first. A queue-full close the reader already holds still names
+/// the reason (and is recorded for the user's explanation); a refusal is returned so the
+/// connection still counts it. Never waits: a reader still reading has nothing to report.
+async fn writer_end_reason(
+    state: &Arc<RwLock<RelayClientState>>,
+    relay_url: &str,
+    reader_end: &mut oneshot::Receiver<socket_thread::ReaderEnd>,
+) -> (&'static str, bool) {
+    match reader_end.try_recv() {
+        Ok(socket_thread::ReaderEnd::SocketClose(frame)) => {
+            let refused = frame
+                .as_ref()
+                .is_some_and(|frame| relay_refused_token(&frame.reason));
+            if frame.as_ref().is_some_and(reply_queue_full_close) {
+                state.write().await.record_reply_queue_closed(relay_url);
+                ("relay reply queue was full", refused)
+            } else {
+                ("relay close frame received", refused)
+            }
+        }
+        Ok(socket_thread::ReaderEnd::RelayClose(reason)) => {
+            ("relay writer ended", relay_refused_token(&reason))
+        }
+        _ => ("relay writer ended", false),
+    }
+}
+
+/// The relay closed the socket because this kernel's reply queue was full.
+fn reply_queue_full_close(frame: &tokio_tungstenite::tungstenite::protocol::CloseFrame) -> bool {
+    frame.code == tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode::Again
+        && frame.reason == chariox_relay::protocol::REPLY_QUEUE_FULL_CLOSE_REASON
+}
+
 /// Drops of links that had just come up. Only a link that stayed up for
 /// `STABLE_RELAY_CONNECTION` starts the backoff over.
 #[derive(Default)]
@@ -1180,10 +1215,7 @@ async fn run_daemon_relay_connector_inner(
                                             &active_relay_token,
                                         ));
                                     }
-                                    if frame.as_ref().is_some_and(|frame| {
-                                        frame.code == tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode::Again
-                                            && frame.reason == chariox_relay::protocol::REPLY_QUEUE_FULL_CLOSE_REASON
-                                    }) {
+                                    if frame.as_ref().is_some_and(reply_queue_full_close) {
                                         state.write().await.record_reply_queue_closed(&relay_url);
                                         "relay reply queue was full"
                                     } else {
@@ -1214,13 +1246,21 @@ async fn run_daemon_relay_connector_inner(
                         }
                         writer_done = &mut writer_done_rx => {
                             let _ = writer_done;
+                            let (reason, refusal) =
+                                writer_end_reason(&state, &relay_url, &mut reader_end).await;
+                            if refusal && refused.is_none() {
+                                refused = Some(RefusedCredentials::new(
+                                    &relay_url,
+                                    &active_relay_token,
+                                ));
+                            }
                             abort_leased_projection_pump_task(&mut leased_projection_pump_task);
                             abort_inventory_refresh_task(&mut inventory_refresh_task);
                             payload_tasks.shutdown().await;
                             abort_subscription_tasks(&router, &subscription_tasks).await;
                             writer_task.abort();
-                            disconnect_relay(&state, "relay writer ended", presence).await;
-                            break Ok("relay writer ended");
+                            disconnect_relay(&state, reason, presence).await;
+                            break Ok(reason);
                         }
                         _ = token_refresh_interval.tick() => {
                             if static_relay.is_some() {
