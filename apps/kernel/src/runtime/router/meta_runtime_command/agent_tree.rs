@@ -227,6 +227,7 @@ impl CommandRouter {
     ) -> Result<(), DaemonError> {
         let mut deadline_ms = crate::session::unix_epoch_ms()
             .saturating_add(u64::try_from(after.as_millis()).unwrap_or(u64::MAX));
+        // A parent whose limit has ended bounds nothing (see `set_agent_deadline`).
         if let LocalDaemonResponse::AgentDeadline {
             deadline: Some(parent_deadline),
         } = self
@@ -236,7 +237,9 @@ impl CommandRouter {
                 agent_id: parent.id().to_string(),
             })?
         {
-            deadline_ms = deadline_ms.min(parent_deadline.deadline_ms);
+            if parent_deadline.state == crate::local::AgentDeadlineState::Armed {
+                deadline_ms = deadline_ms.min(parent_deadline.deadline_ms);
+            }
         }
         // A retried spawn finds its child already bounded; keep the earlier limit on a spawn retry.
         if let LocalDaemonResponse::AgentDeadline {
@@ -524,25 +527,36 @@ impl CommandRouter {
                     Ok(status) => status,
                     Err(error) => return meta_command_failure_result(command, error),
                 };
-                listed.push(serde_json::json!({
+                // One compact row: only what is set is listed; `agent get <agent>` has the rest.
+                let row_activity = activity.get(agent.id());
+                let mut row = serde_json::json!({
                     "id": agent.id(),
-                    "agent_ref": agent.agent_ref(),
                     "alias": agent.alias(),
-                    "parent": parent_id,
-                    "room": agent.session_id(),
-                    "depth": depth,
                     "state": state,
-                    "failure": failure,
-                    "is_processing": agent.is_processing(),
-                    "has_active_prompt": session.active_prompt_for_agent(agent.id()).is_some(),
-                    "liveness": activity.get(agent.id()).map(|activity| &activity.liveness),
-                    "deadline": deadline,
-                    "grants": if self.runtime_state.holds_watched_process_grant(agent.id()) {
-                        vec![WATCHED_PROCESS_GRANT]
-                    } else {
-                        Vec::new()
-                    },
-                }));
+                });
+                if parent_id != root.id() {
+                    row["parent"] = parent_id.clone().into();
+                }
+                if let Some(failure) = failure {
+                    row["failure"] = serde_json::json!(failure);
+                }
+                if row_activity.is_some_and(|activity| activity.busy) {
+                    row["busy"] = true.into();
+                }
+                if let Some(deadline) = deadline {
+                    row["deadline"] = serde_json::json!({
+                        "state": deadline.state,
+                        "ms": deadline.deadline_ms,
+                    });
+                }
+                if let Some(wait) = row_activity.and_then(|activity| activity.liveness.wait_line())
+                {
+                    row["wait"] = wait.into();
+                }
+                if self.runtime_state.holds_watched_process_grant(agent.id()) {
+                    row["grants"] = serde_json::json!([WATCHED_PROCESS_GRANT]);
+                }
+                listed.push(row);
                 frontier.push((agent.id().to_string(), depth + 1));
             }
         }
