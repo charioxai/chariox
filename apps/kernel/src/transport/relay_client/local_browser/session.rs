@@ -12,8 +12,12 @@ const SESSION_QUEUE_LIMIT: usize = 1024;
 const PING_INTERVAL: Duration = Duration::from_secs(10);
 const IDLE_TIMEOUT: Duration = Duration::from_secs(35);
 
-pub(super) async fn run<S, E>(direct: Arc<LocalBrowserDirect>, socket: S, grant: LocalBrowserGrant)
-where
+pub(super) async fn run<S, E>(
+    direct: Arc<LocalBrowserDirect>,
+    socket: S,
+    grant: LocalBrowserGrant,
+    datagram_is_local: Option<Arc<std::sync::atomic::AtomicBool>>,
+) where
     S: Stream<Item = Result<Message, E>> + Sink<Message> + Unpin,
 {
     let mut identity = grant.identity.clone();
@@ -98,7 +102,10 @@ where
                 identity = lease.borrow().identity.clone();
                 match guarded_io(&lease, &mut authority, &mut shutdown, handle_client_frame(
                     &direct,
-                    &identity,
+                    FrameCaller {
+                        identity: &identity,
+                        same_computer: datagram_is_local.as_ref().is_none_or(|local| local.load(std::sync::atomic::Ordering::Relaxed)),
+                    },
                     &outgoing_tx,
                     &subscription_tasks,
                     &input_order,
@@ -177,15 +184,24 @@ fn lease_remaining(lease: &watch::Receiver<LocalBrowserLeaseState>) -> Duration 
     )
 }
 
+struct FrameCaller<'a> {
+    identity: &'a RelayCallerIdentity,
+    same_computer: bool,
+}
+
 async fn handle_client_frame(
     direct: &Arc<LocalBrowserDirect>,
-    identity: &RelayCallerIdentity,
+    caller: FrameCaller<'_>,
     outgoing_tx: &RelayOutgoingSender,
     subscription_tasks: &RelaySubscriptionTasks,
     input_order: &super::super::browser_input_order::BrowserInputOrder,
     requests: &mut JoinSet<()>,
     payload: &str,
 ) -> Result<(), &'static str> {
+    let FrameCaller {
+        identity,
+        same_computer,
+    } = caller;
     let envelope = serde_json::from_str::<RelayEnvelope>(payload)
         .map_err(|_| "local browser sent an invalid frame")?;
     match envelope {
@@ -230,6 +246,7 @@ async fn handle_client_frame(
                         &direct.command_result_cache,
                         &subscription_tasks,
                         None,
+                        same_computer,
                     ).await,
                     Err(outcome) => *outcome,
                 };

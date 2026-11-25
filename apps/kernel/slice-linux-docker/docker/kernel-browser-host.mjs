@@ -70,7 +70,7 @@ export function scheduleHostRequest(request, browser, viewport = hostViewport(),
   // A state poll waits for every page's reconcile: once the viewport is applied
   // it only observes, so input does not queue behind it.
   // Ending a person's parked input never waits behind a browser operation: its authority is already gone.
-  return ['browser.app.calls','browser.app.respond','browser.app.agent','host.browser.retire_input','host.browser.retire_observer'].includes(request.method) || request.method === 'host.browser' && request.params?.op === 'dialog' ||
+  return ['browser.app.calls','browser.app.respond','browser.app.agent','host.browser.retire_input','host.browser.retire_observer','host.downloads.wait'].includes(request.method) || request.method === 'host.browser' && request.params?.op === 'dialog' ||
     ['host.browser','host.computer'].includes(request.method) && (request.params?.op === 'screenshot' &&
     typeof request.params.display_subscription_id === 'string' || request.params?.op === 'mirror_next' && typeof request.params.subscription_id === 'string' ||
     (request.params?.op === 'state' || request.params?.op === 'display_subscribe' && (request.params.target || nativeDesktop && request.method === 'host.browser')) && browser?.canReconcileConcurrently?.(viewport) === true ||
@@ -182,7 +182,10 @@ export class KernelBrowserHost {
     this.cardAnchors = new Map();
     this.displayDocuments = new DisplayDocuments((stage, started, ended) => this.timing?.(stage, started, ended));
     this.stateSignal = new StateSignal();
-    this.downloads = new HostDownloads({ ownerRoot: root, notify: () => this.stateSignal.notify() });
+    this.downloadSignal = new StateSignal();
+    this.downloads = new HostDownloads({
+      ownerRoot: root, notify: () => this.stateSignal.notify(), completed: () => this.downloadSignal.notify(),
+    });
     this.header = new BrowserHeaderState(() => this.stateSignal.notify());
     this.mirror = new MirrorService(this);
     this.protection = { values: [], targets: [], unknown: false };
@@ -1469,7 +1472,7 @@ export class KernelBrowserHost {
   // Every request but a parked state read or an unwatched park is a use: it wakes the shown Tab before it runs, and
   // the linger starts again when the last one ends.
   async handle(request, options) {
-    const use = request.method !== 'health' && !(request.method === 'host.browser' && (request.params?.op === 'state_signal'
+    const use = request.method !== 'health' && request.method !== 'host.downloads.wait' && !(request.method === 'host.browser' && (request.params?.op === 'state_signal'
       || request.params?.op === 'display_park' && request.params.parked === true));
     if (!use) return this.handleNow(request, options);
     this.running++;
@@ -1477,6 +1480,17 @@ export class KernelBrowserHost {
     finally { this.running--; this.usedAt = Date.now(); }
   }
   async handleNow(request, { signal } = {}) {
+    if (request.method === "host.downloads.wait") {
+      const { session_id, after, wait_ms } = request.params;
+      const cursor = this.downloadSignal.count;
+      let downloads = this.downloads.completedFor(session_id);
+      const revision = () => downloads.map(download => download.download_id).join(',');
+      if (after === revision() && wait_ms > 0) {
+        await this.downloadSignal.wait(cursor, wait_ms, signal);
+        downloads = this.downloads.completedFor(session_id);
+      }
+      return { id: request.id, ok: true, result: { downloads, revision: revision() } };
+    }
     if (request.method === "host.downloads.cleanup") {
       if (!this.browser) await this.downloads.close();
       else await this.downloads.cleanupSession(request.params.session_id);
