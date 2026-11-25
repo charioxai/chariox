@@ -72,7 +72,7 @@ pub(crate) fn write_file_spec() -> RuntimeToolSpec {
             "path":{"type":"string","description":"File inside your workspace, relative to it; replaced if it exists"},
             "template":{"type":"string","maxLength":65536},
             "values":{"type":"object","additionalProperties":{"type":"string"},"maxProperties":MAX_PLACEHOLDERS,
-                "description":"Placeholder NAME -> credential_id"},
+                "description":"Placeholder NAME -> credential_id or unique description"},
             "mode":{"type":"string","pattern":"^0?[0-7]{3}$","default":"600"}},
             "additionalProperties":false}),
     }

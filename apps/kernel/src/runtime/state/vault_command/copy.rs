@@ -30,7 +30,7 @@ pub(crate) fn copy_for_use_spec() -> RuntimeToolSpec {
         description: "Copy a Vault entry's value into a NEW entry for one other declared use, inside the Vault: the model sees only the new credential_id, never the value. `from` is the credential_id to copy. use_binding declares the one destination of the copy: a site origin (an HTTPS API; the entry then sends `Authorization: Bearer <value>` to exactly that origin, for chariox.http_request_with_credential and App accounts), a command environment name and origin, a command stdin origin, or an absolute workspace file path. Payment cards, TOTP seeds and backup codes cannot be copied. Retrying with the same request_id returns the same credential.".into(),
         input_schema: serde_json::json!({"type":"object","required":["request_id","from","use_binding"],"properties":{
             "request_id":{"type":"string","minLength":1,"maxLength":128},
-            "from":{"type":"string","minLength":1,"maxLength":128,"description":"credential_id of the entry to copy"},
+            "from":{"type":"string","minLength":1,"maxLength":128,"description":"credential_id or unique description of the entry to copy"},
             "use_binding": copy_binding_schema(),
             "label":{"type":"string","maxLength":200}},
             "additionalProperties":false}),

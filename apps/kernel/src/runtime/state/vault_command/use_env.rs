@@ -30,13 +30,13 @@ struct UseArgs {
 pub(crate) fn use_env_spec() -> RuntimeToolSpec {
     RuntimeToolSpec {
         name: VAULT_USE_ENV.into(),
-        description: "Run one command (argv, no shell) in your workspace with Vault values injected for the declared service origin: env maps variable names to credential_ids, stdin sends one credential's value to standard input. You never see the values; they appear as [vault:<credential_id>] in the returned exit_code, stdout and stderr. Works with credentials whose allowed uses include env, such as those from chariox.vault.capture_command.".into(),
+        description: "Run one command (argv, no shell) in your workspace with Vault values injected for the declared service origin: env maps variable names to credential_ids, stdin sends one credential's value to standard input. You never see the values; they appear as [vault:<credential_id>] in the returned exit_code, stdout and stderr. Entries must allow env (see chariox.vault.capture_command).".into(),
         input_schema: serde_json::json!({"type":"object","required":["argv","origin"],"properties":{
             "origin":{"type":"string","description":"Exact service origin this command uses, such as https://api.example.com"},
             "argv":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":64},
             "cwd":{"type":"string","description":"Directory inside your workspace, relative to it"},
             "env":{"type":"object","additionalProperties":{"type":"string"},"maxProperties":MAX_VARIABLES,
-                "description":"Environment variable name -> credential_id"},
+                "description":"Environment variable name -> credential_id or unique description"},
             "stdin":{"type":"string","description":"credential_id whose value is written to stdin"},
             "timeout_seconds":{"type":"integer","minimum":1,"maximum":MAX_TIMEOUT_SECONDS,"default":DEFAULT_TIMEOUT_SECONDS}},
             "additionalProperties":false}),
