@@ -11,6 +11,8 @@ use std::path::{Path, PathBuf};
 
 #[path = "account_copy_codex.rs"]
 mod codex;
+#[path = "account_copy_opencode.rs"]
+mod opencode;
 
 struct Environment(Vec<(&'static str, Option<std::ffi::OsString>)>);
 impl Drop for Environment {
@@ -1437,6 +1439,13 @@ printf '%s\n' '{{"type":"result","subtype":"success","is_error":false,"num_turns
                 &target,
                 &source_router,
                 &target_router,
+                &source_profiles,
+                &target_profiles,
+            )
+            .await;
+            opencode::check_native_copy(
+                &target,
+                &source_router,
                 &source_profiles,
                 &target_profiles,
             )
