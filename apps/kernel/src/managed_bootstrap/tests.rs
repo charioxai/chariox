@@ -28,6 +28,7 @@ use super::{
 use crate::config::{DaemonConfig, ManagedRuntimeIdentity, PersistedCloudRelayProfile};
 use crate::error::DaemonError;
 
+mod all_providers;
 mod disposable_worker;
 mod lease_worker;
 
