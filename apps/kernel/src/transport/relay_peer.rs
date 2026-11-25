@@ -251,6 +251,7 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// Peer 452 (provisional, local 1015) follows the local workflow archive shapes.
 /// Peer 452 (local 1015) carries Room-scoped browser commands, the Room download wait and the download reveal.
 /// Peer 452 carries the non-secret provider account ID in native account transfer metadata.
+/// Peer 452 carries the local 1015 task card choice descriptions.
 pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 452;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.

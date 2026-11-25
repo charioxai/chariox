@@ -657,4 +657,6 @@ pub use workspace::*;
 /// 1015 (provisional, relay peer 452): `ListWorkflows` takes `include_archived`; a workflow definition
 /// carries `archived_at_ms` and `WorkflowDesignOp::WorkflowArchive` archives or unarchives it.
 /// Local 1015: an agent's kernel access request can carry a reason for the owner's card (`RequestKernelAccess.reason`).
+/// Local 1015 (relay peer 452): a Room decision's choices and reply carry an optional `description`; Dismiss on a task
+/// card hides it from the Room while the task keeps waiting, and Stop ends the task.
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1015;
