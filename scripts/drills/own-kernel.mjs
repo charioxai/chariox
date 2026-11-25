@@ -2,7 +2,7 @@
 // state under /root/.chariox/dev/, a linked product Claude profile, and a notes file next to the evidence.
 import { spawn } from "node:child_process"
 import { once } from "node:events"
-import { closeSync, mkdirSync, mkdtempSync, openSync, realpathSync, rmSync, writeFileSync } from "node:fs"
+import { closeSync, cpSync, mkdirSync, mkdtempSync, openSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { createServer } from "node:net"
 import { join, resolve } from "node:path"
 import { setTimeout as delay } from "node:timers/promises"
@@ -69,6 +69,8 @@ export async function startDrillKernel({ label, binary, stateRoot, evidence, pro
       }
     }
     if (socketDir) rmSync(socketDir, { recursive: true, force: true })
+    // The kernel's own log is the evidence of why a wake was not delivered: keep it next to the notes.
+    try { cpSync(join(dir, "logs"), join(evidence, "kernel-logs"), { recursive: true }) } catch {}
     rmSync(dir, { recursive: true, force: true })
     note("kernel-exit", { code: child?.exitCode, signal: child?.signalCode })
   }

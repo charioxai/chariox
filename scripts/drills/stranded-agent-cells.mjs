@@ -21,6 +21,9 @@ const evidence = need("--evidence-dir")
 const model = flags.get("--model") ?? "claude-haiku-5-5"
 const tokenFile = need("--token-file")
 const skipBackstopWait = flags.get("--skip-backstop-wait") === "1"
+// A pre-reload timer longer than the provider process's idle limit (5 min) is the case under test; shorter keeps a diagnostic run brief.
+const longMs = Number(flags.get("--long-ms") ?? 1800000)
+const onlyLong = flags.get("--only-long") === "1"
 const k = await startDrillKernel({ label: "nowake554", binary: need("--kernel-binary"), stateRoot: need("--state-root"), evidence, extraEnv: { CHARIOX_ROOM_AGENT_TOOLS: "1" } })
 const results = []
 let exitCode = 0
@@ -141,9 +144,9 @@ try {
   let longTimer = null
   await attempt("5b", async () => {
     const r = await room("c5b")
-    await prompt(r, r.agent, 'Call the chariox events_timer tool once with delay_ms 1800000 and label "NW554-LONG". Do NOT call events_yield and do not wait. End your turn at once with the single word ARMED. If a wake for NW554-LONG arrives later, reply with the single word LONG-WOKE.')
+    await prompt(r, r.agent, `Call the chariox events_timer tool once with delay_ms ${longMs} and label "NW554-LONG". Do NOT call events_yield and do not wait. End your turn at once with the single word ARMED. If a wake for NW554-LONG arrives later, reply with the single word LONG-WOKE.`)
     await until(async () => done(await turnsOf(r.R, r.agent)).length >= 1, "the arming turn completes", 240000)
-    longTimer = { r, wake: { next_due_ms: Date.now() + 1800000 } }
+    longTimer = { r, wake: { next_due_ms: Date.now() + longMs } }
   })
   // An agent that is idle with nothing armed, before the reload: it must start a turn after it.
   let idleAgent = null
@@ -199,8 +202,8 @@ try {
     cell(id, ok, { late_s: Math.round((Date.now() - due) / 1000) })
   }
   if (!skipBackstopWait) {
-    await woken(afterReload && afterReload.wake ? { ...afterReload } : null, "2-backstop-armed-after-the-reload-wakes-the-agent")
-    await woken(backstop, "2-backstop-armed-before-the-reload-wakes-the-agent")
+    if (!onlyLong) await woken(afterReload && afterReload.wake ? { ...afterReload } : null, "2-backstop-armed-after-the-reload-wakes-the-agent")
+    if (!onlyLong) await woken(backstop, "2-backstop-armed-before-the-reload-wakes-the-agent")
     await woken(longTimer, "5b-30-minute-timer-armed-before-the-reload-wakes-the-agent")
     if (results.some(c => c.id.startsWith("2-backstop-armed-after") && c.status === "FAIL")) exitCode = 1
   }
