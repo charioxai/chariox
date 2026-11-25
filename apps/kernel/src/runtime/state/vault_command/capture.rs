@@ -78,6 +78,12 @@ pub(super) struct CaptureArgs {
     #[serde(default)]
     cwd: Option<String>,
     host: String,
+    /// The service origin the command uses the `env` entries for, as in `chariox.vault.use_env`.
+    #[serde(default)]
+    origin: Option<String>,
+    /// Existing Vault entries the command runs with: variable name -> credential_id.
+    #[serde(default)]
+    env: BTreeMap<String, String>,
     use_binding: crate::config::VaultUseBinding,
     #[serde(default)]
     label: Option<String>,
@@ -111,7 +117,7 @@ fn first_group() -> usize {
 pub(crate) fn capture_command_spec() -> RuntimeToolSpec {
     RuntimeToolSpec {
         name: VAULT_CAPTURE_COMMAND.into(),
-        description: "run one command (argv, no shell) in your workspace and store a secret it prints on stdout in the owner's Vault. You never see the value or the command's output: the result is an opaque credential_id with your label. extract picks the value: {\"kind\":\"stdout\"} (whole stdout, the default), {\"kind\":\"json\",\"pointer\":\"/data/api_key\"} (JSON Pointer into stdout), or {\"kind\":\"regex\",\"pattern\":\"token: (\\\\S+)\",\"group\":1}. host names the source service. use_binding declares the one destination: a command environment name and origin, command stdin origin, or absolute workspace file path. Use it only at that destination with chariox.vault.use_env or chariox.vault.write_file. Retrying with the same request_id returns the same credential without running the command again.".into(),
+        description: "run one command (argv, no shell) in your workspace and store a secret it prints on stdout in the owner's Vault. You never see the value or the command's output: the result is an opaque credential_id with your label. extract picks the value: {\"kind\":\"stdout\"} (whole stdout, the default), {\"kind\":\"json\",\"pointer\":\"/data/api_key\"} (JSON Pointer into stdout), or {\"kind\":\"regex\",\"pattern\":\"token: (\\\\S+)\",\"group\":1}. host names the source service. use_binding declares the one destination: a command environment name and origin, command stdin origin, or absolute workspace file path. Use it only at that destination with chariox.vault.use_env or chariox.vault.write_file. To run it with existing Vault entries, pass origin and env (variable name -> credential_id) as in chariox.vault.use_env; the output goes straight into the new entry. Retrying with the same request_id returns the same credential without running the command again.".into(),
         input_schema: serde_json::json!({"type":"object","required":["request_id","argv","host","use_binding"],"properties":{
             "use_binding": capture_binding_schema(),
             "request_id":{"type":"string","minLength":1,"maxLength":128},
@@ -119,6 +125,8 @@ pub(crate) fn capture_command_spec() -> RuntimeToolSpec {
             "cwd":{"type":"string","description":"Directory inside your workspace, relative to it"},
             "host":{"type":"string","description":"Host of the service the secret is for, such as api.example.com"},
             "label":{"type":"string","maxLength":200},
+            "origin":{"type":"string"},
+            "env":{"type":"object","additionalProperties":{"type":"string"},"maxProperties":super::use_env::MAX_VARIABLES},
             "extract":{"type":"object","required":["kind"],"properties":{
                 "kind":{"type":"string","enum":["stdout","json","regex"]},
                 "pointer":{"type":"string"},
@@ -141,6 +149,51 @@ pub(in crate::runtime::state) fn capture_binding_schema() -> serde_json::Value {
                 "kind":{"const":"file"},"path":{"type":"string","description":"One absolute canonical file path inside this workspace"}}}
         ]}
     }})
+}
+
+fn env_target(
+    name: &str,
+    origin: Option<&str>,
+) -> Result<crate::config::VaultUseTarget, DaemonError> {
+    let origin =
+        origin.ok_or_else(|| error("name the origin the command uses the env entries for"))?;
+    Ok(crate::config::VaultUseTarget::CommandEnvironment {
+        name: name.into(),
+        origin: crate::config::vault_use::vault_origin(origin)?,
+    })
+}
+
+/// The existing Vault entries the command runs with, checked before anything runs.
+fn bound_env_uses(
+    args: &CaptureArgs,
+) -> Result<Vec<(String, crate::config::VaultUseTarget)>, DaemonError> {
+    if args.env.is_empty() {
+        return match args.origin {
+            None => Ok(Vec::new()),
+            Some(_) => Err(error(
+                "origin is for the env entries; name them in env or drop it",
+            )),
+        };
+    }
+    if args.env.len() > super::use_env::MAX_VARIABLES {
+        return Err(error(format!(
+            "at most {} environment variables",
+            super::use_env::MAX_VARIABLES
+        )));
+    }
+    if let Some(name) = args
+        .env
+        .keys()
+        .find(|name| !super::use_env::variable_name(name))
+    {
+        return Err(error(format!(
+            "`{name}` is not an environment variable name"
+        )));
+    }
+    args.env
+        .iter()
+        .map(|(name, id)| Ok((id.clone(), env_target(name, args.origin.as_deref())?)))
+        .collect()
 }
 
 /// What the capture tools refuse alike on the worker and at the home.
@@ -185,6 +238,7 @@ impl KernelRuntimeState {
         let argv = super::super::agent_process_watch::command_argv(&args.argv, false)?;
         let pattern = extract_pattern(&args.extract)?;
         let timeout = command_timeout(args.timeout_seconds)?;
+        let env_uses = bound_env_uses(&args)?;
         let actor = context.actor();
         let handle = captured_handle(&actor, &args.request_id);
         let _claim = self.owned.vault_capture_claims.claim(&handle).await?;
@@ -208,19 +262,36 @@ impl KernelRuntimeState {
                     return committed(&existing, &actor, &host, &args.use_binding);
                 }
                 validate_capture_binding(&context.run, &args.use_binding)?;
+                // Refused before anything is unlocked or run: an unknown entry or one not made for this origin.
+                for (id, target) in &env_uses {
+                    self.preflight_workspace_vault_use(&context.agent_id, id, target)?;
+                }
                 Some(self.capture_unlock(&actor).await?)
             }
         };
         let cwd =
             super::super::agent_process_watch::workspace_cwd(&context.run, args.cwd.as_deref())?;
         recheck()?;
+        let mut env = Vec::new();
+        let mut masks = Vec::new();
+        for (name, id) in &args.env {
+            let target = env_target(name, args.origin.as_deref())?;
+            let value = self
+                .read_workspace_vault_value(&context, id, &target)
+                .await?;
+            masks.push((id.clone(), value.clone()));
+            env.push((name.clone(), value));
+        }
+        recheck()?;
+        // Longest first, so a value containing another is masked whole.
+        masks.sort_by_key(|(_, value)| std::cmp::Reverse(value.len()));
         let output = run_command(
             self,
             context.clone(),
             super::super::agent_process_watch::KernelCommand {
                 argv,
                 cwd,
-                env: Vec::new(),
+                env,
                 stdin: None,
                 timeout,
             },
@@ -232,7 +303,7 @@ impl KernelRuntimeState {
             KernelCommandExit::Exited(code) => {
                 return Err(error(format!(
                     "the command exited with code {code}; nothing was stored{}",
-                    stderr_excerpt(&output.stderr)
+                    stderr_excerpt(super::use_env::masked(&output.stderr, &masks).0.as_bytes())
                 )))
             }
             KernelCommandExit::TimedOut => {
@@ -591,6 +662,43 @@ fn stderr_excerpt(stderr: &[u8]) -> String {
 #[cfg(test)]
 mod unit_tests {
     use super::*;
+
+    fn args(origin: Option<&str>, env: &[(&str, &str)]) -> CaptureArgs {
+        CaptureArgs {
+            request_id: "r".into(),
+            argv: serde_json::json!(["/bin/true"]),
+            cwd: None,
+            host: "api.example.com".into(),
+            origin: origin.map(str::to_owned),
+            env: env
+                .iter()
+                .map(|(name, id)| ((*name).to_owned(), (*id).to_owned()))
+                .collect(),
+            use_binding: serde_json::from_value(serde_json::json!({"target":
+                {"kind":"command_environment","name":"NEW","origin":"https://api.example.com"}}))
+            .unwrap(),
+            label: None,
+            extract: Extract::Stdout,
+            timeout_seconds: None,
+        }
+    }
+
+    #[test]
+    fn bound_env_entries_need_an_origin_and_a_variable_name() {
+        assert!(bound_env_uses(&args(None, &[])).unwrap().is_empty());
+        let uses =
+            bound_env_uses(&args(Some("https://api.example.com"), &[("KEY", "cap-1")])).unwrap();
+        assert_eq!(uses.len(), 1);
+        assert_eq!(uses[0].0, "cap-1");
+        for refused in [
+            args(None, &[("KEY", "cap-1")]),
+            args(Some("https://api.example.com"), &[]),
+            args(Some("https://api.example.com"), &[("BAD-NAME", "cap-1")]),
+            args(Some("not an origin"), &[("KEY", "cap-1")]),
+        ] {
+            assert!(bound_env_uses(&refused).is_err());
+        }
+    }
 
     #[test]
     fn capture_extracts_without_echoing_and_hosts_are_bare() {
