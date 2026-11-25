@@ -1,7 +1,8 @@
 //! Reads the owner's machines from the connected service while one of them can still report an
 //! event, and raises each event in the person's Inbox (`person_inbox::cloud_machine`). The service
 //! never pushes to an idle kernel, so the kernel reads. With nothing that can report an event the
-//! loop waits for a machine request through this kernel instead of reading.
+//! loop waits for a machine request through this kernel or a change of Cloud enrollment instead of
+//! reading.
 use std::time::Duration;
 
 use tokio::sync::Notify;
@@ -16,7 +17,13 @@ const READ_INTERVAL: Duration = Duration::from_secs(30);
 /// A failed read waits twice as long each time, up to this.
 const MAX_FAILURE_DELAY: Duration = Duration::from_secs(300);
 
-static MACHINE_REQUESTS: Notify = Notify::const_new();
+static WAKE: Notify = Notify::const_new();
+
+/// The kernel's Cloud enrollment changed (linked, re-linked, unlinked): the owner's machines are
+/// read again, or the watcher goes back to waiting when there is no enrollment.
+pub(crate) fn enrollment_changed() {
+    WAKE.notify_one();
+}
 
 /// A request through this kernel that can change the owner's machines. Held for the length of the
 /// request; the owner's machines are read after it ends.
@@ -40,7 +47,7 @@ pub(crate) fn after(request: &ControlPlaneRequest) -> Option<MachinesMayHaveChan
 
 impl Drop for MachinesMayHaveChanged {
     fn drop(&mut self) {
-        MACHINE_REQUESTS.notify_one();
+        WAKE.notify_one();
     }
 }
 
@@ -61,7 +68,7 @@ impl KernelRuntimeState {
                 }
                 Ok(Watch::Idle) => {
                     failures = 0;
-                    MACHINE_REQUESTS.notified().await;
+                    WAKE.notified().await;
                 }
                 Err(error) => {
                     failures = failures.saturating_add(1);
@@ -81,7 +88,7 @@ impl KernelRuntimeState {
     async fn wait_or_machine_request(&self, delay: Duration) {
         tokio::select! {
             _ = tokio::time::sleep(delay) => {}
-            _ = MACHINE_REQUESTS.notified() => {}
+            _ = WAKE.notified() => {}
         }
     }
 

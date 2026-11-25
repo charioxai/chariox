@@ -63,8 +63,8 @@ fn sentence(reason: MachineEventReason, name: &str) -> (String, String) {
             format!("Chariox stopped {name} at the limit set when it was rented. Open Machines to start it again."),
         ),
         MachineEventReason::RentalFailed => (
-            format!("{name} could not be started"),
-            format!("The rental of {name} failed. Open Machines to try again or delete it."),
+            format!("{name} failed"),
+            format!("{name} is not usable. Open Machines to see why, try again or delete it."),
         ),
     }
 }
@@ -197,10 +197,7 @@ mod tests {
                 MachineEventReason::HardStop,
                 "Build box was stopped at its time limit",
             ),
-            (
-                MachineEventReason::RentalFailed,
-                "Build box could not be started",
-            ),
+            (MachineEventReason::RentalFailed, "Build box failed"),
         ] {
             let plan = plan(
                 "owner",
