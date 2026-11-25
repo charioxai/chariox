@@ -87,6 +87,14 @@ pub(super) fn read_terminal(
     reply.read(prompt_id, bytes)
 }
 
+/// A block was completed without the reader (its transcript text arrived for a row the reader no longer knew): what was
+/// kept for the run changed, and the reader, if there is one, takes it in again on its next read.
+pub(super) fn refresh_taken(provider_run_id: &str) {
+    if let Some(reply) = replies().get_mut(provider_run_id) {
+        reply.recalled = false;
+    }
+}
+
 /// Whether the run's reader has streamed nothing yet (it was just created, or the run has none): only such a reader
 /// can be the one that replaced a reader lost in the middle of a block.
 pub(super) fn is_fresh(provider_run_id: &str) -> bool {
@@ -149,6 +157,8 @@ struct Block {
     text: String,
     /// How much of `text` clients already hold, from the row an earlier reader began: only what is beyond it is sent.
     shown: usize,
+    /// How many of `rows` are kept next to the context file (see `reader_state`).
+    kept: usize,
 }
 
 struct Streamed {
@@ -192,11 +202,16 @@ impl LiveReply {
             return;
         };
         let taken = super::reader_state::recall(context_file);
-        for block in taken.iter().filter(|block| block.prompt_id == prompt_id) {
-            if self.finished.len() >= KEPT_BLOCKS {
-                self.finished.pop_front();
+        for block in taken
+            .iter()
+            .filter(|block| block.done && block.prompt_id == prompt_id)
+        {
+            if !self.finished.contains(&block.rows) {
+                if self.finished.len() >= KEPT_BLOCKS {
+                    self.finished.pop_front();
+                }
+                self.finished.push_back(block.rows.clone());
             }
-            self.finished.push_back(block.rows.clone());
         }
         if self.left_over.is_none() {
             self.left_over = taken
@@ -206,6 +221,30 @@ impl LiveReply {
                 .map(|block| block.rows.clone());
             // A block's rows are the ones before the last, which was still being written: the screen shows one more.
             self.left_over_slack = usize::from(self.left_over.is_some());
+        }
+    }
+
+    /// The rows the current block has taken are kept, and it is marked done when it was handed over.
+    fn keep_block(&mut self, done: bool) {
+        let (Some(context_file), Some(prompt_id), Some(block)) = (
+            self.context_file.as_deref(),
+            self.prompt_id.as_deref(),
+            self.block.as_mut(),
+        ) else {
+            return;
+        };
+        if !done && block.rows.len() == block.kept {
+            return;
+        }
+        block.kept = block.rows.len();
+        if !block.rows.is_empty() {
+            super::reader_state::note_block(
+                context_file,
+                &block.merge_key_suffix,
+                prompt_id,
+                &block.rows,
+                done,
+            );
         }
     }
 
@@ -251,7 +290,9 @@ impl LiveReply {
         if prompt_id.is_none() {
             return Vec::new();
         }
-        self.extract().into_iter().collect()
+        let delta = self.extract();
+        self.keep_block(false);
+        delta.into_iter().collect()
     }
 
     fn extract(&mut self) -> Option<LiveDelta> {
@@ -299,6 +340,7 @@ impl LiveReply {
                     last_width: 0,
                     text: String::new(),
                     shown: 0,
+                    kept: 0,
                 });
             }
         }
@@ -385,7 +427,13 @@ impl LiveReply {
             if let (Some(context_file), Some(prompt_id)) =
                 (self.context_file.as_deref(), self.prompt_id.as_deref())
             {
-                super::reader_state::note_taken(context_file, prompt_id, &block.rows);
+                super::reader_state::note_block(
+                    context_file,
+                    &block.merge_key_suffix,
+                    prompt_id,
+                    &block.rows,
+                    true,
+                );
             }
             self.finished.push_back(block.rows.clone());
             if self.finished.len() > KEPT_BLOCKS {

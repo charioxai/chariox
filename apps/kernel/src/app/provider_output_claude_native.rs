@@ -1431,7 +1431,14 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                         provider_run.pty_env().get("CHARIOX_CLAUDE_NATIVE_CONTEXT")
                     {
                         awaiting_rows::note_replaced(context_file, &merge_key);
+                        // Whoever completed it, a redraw of this block must not stream it again.
+                        if let Some(key) =
+                            merge_key.strip_prefix(&format!("claude-transcript:{provider_run_id}:"))
+                        {
+                            reader_state::mark_done(context_file, key);
+                        }
                     }
+                    live_reply::refresh_taken(provider_run_id);
                     fanout.fan_out_live_reply_replacement(
                         session_id,
                         provider_run_id,
