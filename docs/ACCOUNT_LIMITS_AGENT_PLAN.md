@@ -40,6 +40,19 @@ Effective no-ask limit = min(the person's no-ask value, the account limit), per 
 | C7 | no Cloud-only control or Cloud import in OSS | oss-boundary-guard green |
 | P | local `/sudo raise limits to 4 machines` text parsing rejects look-alikes ("lower", "raise limits to four", extra words, two numbers) | Rust grammar tests |
 
+## Tests
+**Written now, green** (`runtime/state/sudo/limit_grant.rs`, self-contained; the code PR adds `mod limit_grant;` and `KernelSudoTurn.limit_grant`): the grammar and the cover rule (cell P and the cover half of C5s): the named machines, spend, both in either order, 20 look-alikes and longer sentences that grant nothing, and `covers` (the named value and below pass; beyond it, an unnamed field, another currency and a partly covered raise do not).
+
+**Drop in as RED tests when L14 merges** (names fixed here; each fails on the L14 head and passes with the code):
+- `machine_limits_tool_reads_account_and_no_ask_limits` (C2): fake port answers `limits`; the tool returns both sets and the effective no-ask value; a service without `limits` in its actions yields "no account limits here".
+- `agent_lower_is_sent_without_approval` (C3): a lower of each limit reaches the port with no `approval`; no card is opened; the no-ask lower changes the config only.
+- `agent_raise_opens_a_card_with_exact_values` (C4/C5): a raise opens one interaction whose text and payload carry old and new; the requester and a sub-agent cannot answer; Approve sends `approval{kind:"card", ref: interaction id, from, to}` equal to the card's values; Deny sends nothing and the tool answer carries the reason.
+- `agent_raise_card_goes_stale_when_the_limit_moves` (C4): the port answers a refusal after the card; the tool answer says to read again; nothing is applied.
+- `sudo_grant_raises_without_a_card_exactly_as_named` (C5s): a live window with `limit_grant{machines:4}` lets 3 -> 4 through with `approval{kind:"sudo"}` and no card; 3 -> 5 and the spend cap open a card; an ended window, another agent's window, and a grant parsed from the agent's own text cover nothing.
+- `no_ask_limits_clamp_to_the_account_limit` (C6): effective = min per field; an acquire above it is refused with the account reason; a failed `limits` read refuses the no-ask path and leaves the ordinary card; the Cloud refusal still applies.
+- `set_limits_shapes_round_trip` and the protocol shape files for `limits`/`set_limits` (bump 1016/453, last commit).
+- Web (`packages/kernel-client`, Settings): the clamped label and the account bound read through the port (C6).
+
 ## Drill (local Cloud dev stack + drill kernel)
 1. Start the Cloud dev stack on c#852's head and a drill kernel enrolled to the owner's account; give the drill kernel its Claude account with the setup-token route; run a real agent in a Room.
 2. Owner sets 4 machines / 10 EUR on `/account/limits`. The agent runs `chariox machines limits`: same values (C2).
