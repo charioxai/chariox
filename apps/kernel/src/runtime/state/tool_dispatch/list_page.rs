@@ -2,14 +2,7 @@
 use super::*;
 use serde_json::Value;
 
-pub(super) const LIST_BYTES: usize = 28 * 1024;
 pub(super) const LIST_ROWS: u32 = 64;
-
-pub(super) fn page<K>(
-    rows: impl IntoIterator<Item = (K, Value)>,
-) -> Result<(Vec<Value>, Option<K>), DaemonError> {
-    page_with_budget(rows, LIST_BYTES)
-}
 
 pub(super) fn page_with_budget<K>(
     rows: impl IntoIterator<Item = (K, Value)>,
