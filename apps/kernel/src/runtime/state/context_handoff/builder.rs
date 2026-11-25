@@ -8,6 +8,10 @@ use super::facts::{KernelFacts, ToolCall};
 /// The handoff size the tests render at: the old fixed budget.
 #[cfg(test)]
 pub(super) const MAX_HANDOFF_BYTES: usize = 24_000;
+/// The newest stored history a rebuilt handoff reads: four packets' worth,
+/// enough for the packet's turns and their tool output, the same for any
+/// history length. Older work reaches the new session through the brief.
+pub(super) const MAX_HANDOFF_SOURCE_BYTES: usize = 4 * super::MAX_PROMPT_HANDOFF_BYTES as usize;
 const MAX_LATEST_TURN_BYTES: usize = 6_500;
 const MAX_LATEST_ITEM_BYTES: usize = 1_500;
 const MAX_PRIOR_USER_BYTES: usize = 1_000;
@@ -39,6 +43,8 @@ pub(super) struct AgentConversation {
     /// revision the handoff records: the brief update reads its unfolded
     /// source from them instead of reading the history again.
     pub(super) source_events: Option<std::sync::Arc<Vec<HistoryEvent>>>,
+    /// The read left the agent's older history out: only a brief carries it.
+    pub(super) older_history_left_out: bool,
     pub(super) facts: KernelFacts,
     pub(super) brief: Option<String>,
 }
@@ -50,9 +56,10 @@ pub(super) fn load_agent_conversation(
     dispatching_prompt_id: Option<&str>,
     protection: &super::super::room_secret_observation::RoomSecretObservations,
 ) -> Result<AgentConversation, DaemonError> {
-    let events = history_store.load_session_events(session_id, Some(agent_id))?;
+    let (events, older_left_out) =
+        history_store.load_newest_agent_events(session_id, agent_id, MAX_HANDOFF_SOURCE_BYTES)?;
     let events = protection.protect_history_events(events);
-    let mut conversation = AgentConversation::from_events(&events);
+    let mut conversation = AgentConversation::from_events_window(&events, older_left_out);
     conversation.history_source = Some((
         agent_id.into(),
         events.iter().map(|event| event.sequence).max().unwrap_or(0),
@@ -87,12 +94,19 @@ impl AgentConversation {
     }
 
     pub(super) fn from_events(events: &[HistoryEvent]) -> Self {
+        Self::from_events_window(events, false)
+    }
+
+    /// `older_left_out`: the events are only the newest ones, so the first
+    /// turn's work can begin after its opening prompt was left out.
+    pub(super) fn from_events_window(events: &[HistoryEvent], older_left_out: bool) -> Self {
         let mut sorted = events.to_vec();
         sorted.sort_by_key(|event| event.sequence);
         Self {
-            turns: collect_turns(&sorted),
+            turns: collect_turns(&sorted, older_left_out),
             history_source: None,
             source_events: None,
+            older_history_left_out: older_left_out,
             facts: KernelFacts::from_events(&sorted),
             brief: None,
         }
@@ -343,9 +357,32 @@ impl HandoffTurn {
     }
 }
 
-fn collect_turns(sorted: &[HistoryEvent]) -> Vec<HandoffTurn> {
+/// The turns of `sorted`. With `leading_partial` (the read left older history
+/// out), provider work that comes before any prompt belongs to a turn whose
+/// opening prompt was left out: it is kept as a turn with no prompt text, by its
+/// prompt id, so its work is not lost with the prompt.
+fn collect_turns(sorted: &[HistoryEvent], leading_partial: bool) -> Vec<HandoffTurn> {
     let mut turns: Vec<HandoffTurn> = Vec::new();
     for event in sorted {
+        if leading_partial
+            && turns.is_empty()
+            && matches!(
+                event.kind,
+                HistoryEventKind::ProviderOutput
+                    | HistoryEventKind::ProviderTool
+                    | HistoryEventKind::ProviderError
+                    | HistoryEventKind::ProviderStatus
+            )
+        {
+            turns.push(HandoffTurn {
+                prompt_id: event.prompt_id.clone(),
+                user_prompt: String::new(),
+                assistant_outputs: Vec::new(),
+                output_item: None,
+                latest_details: Vec::new(),
+                has_provider_attempt: false,
+            });
+        }
         match event.kind {
             HistoryEventKind::UserPrompt => {
                 if let Some(content) = non_empty_content(event) {
@@ -414,6 +451,15 @@ fn collect_turns(sorted: &[HistoryEvent]) -> Vec<HandoffTurn> {
 /// every prior turn keeps its prompt before any keeps its answer; answers fill the rest from the
 /// newest turn back. Turns that do not fit stay reachable through recall. Every
 /// line is charged with its newline, and the omitted-turns line up front.
+/// A turn's prompt as prior history shows it; a turn whose opening prompt was
+/// left out of the read says so.
+fn prompt_text(turn: &HandoffTurn, max_bytes: usize) -> String {
+    if turn.user_prompt.is_empty() {
+        return "(its opening prompt is older than the history kept)".into();
+    }
+    truncate_bytes(&transcript_text(&turn.user_prompt), max_bytes)
+}
+
 fn format_prior_turns(turns: &[HandoffTurn], budget: usize, include_details: bool) -> String {
     // MP-08 / MP-10 / MP-11: shortening is a budget fallback. A generous
     // target window must not replace a remembered filename or result with a
@@ -422,7 +468,7 @@ fn format_prior_turns(turns: &[HandoffTurn], budget: usize, include_details: boo
         turns
             .iter()
             .flat_map(move |turn| {
-                let user = format!("- User: {}", transcript_text(&turn.user_prompt));
+                let user = format!("- User: {}", prompt_text(turn, usize::MAX));
                 let answer = transcript_text(&turn.answer());
                 std::iter::once(user)
                     .chain((!answer.is_empty()).then(|| format!("  Assistant: {answer}")))
@@ -466,10 +512,7 @@ fn format_prior_turns(turns: &[HandoffTurn], budget: usize, include_details: boo
     let users = turns
         .iter()
         .map(|turn| {
-            format!(
-                "- User: {}",
-                truncate_bytes(&transcript_text(&turn.user_prompt), MAX_PRIOR_USER_BYTES)
-            )
+            format!("- User: {}", prompt_text(turn, MAX_PRIOR_USER_BYTES))
         })
         .collect::<Vec<_>>();
     let recent_from = turns.len().saturating_sub(RECENT_TAIL_TURNS);
