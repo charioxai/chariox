@@ -1456,20 +1456,33 @@ impl ProviderAccountProfileRegistry {
         let Some(provider) = crate::provider::canonical_provider_family(agent.provider()) else {
             return Ok(());
         };
-        // OpenCode runs its free models with no account, as plain `opencode`
-        // does. The running server's connected catalog refuses a model that
-        // needs an account and names the models that are available.
-        if provider == "opencode" && !is_opencode_go_model(agent.model()) {
-            self.get(owner_user_id, provider, agent.provider_account_profile())?;
-            return Ok(());
-        }
-        self.require_authenticated(
+        self.require_account_for_model(
             owner_user_id,
             provider,
             agent.provider_account_profile(),
             agent.model(),
             operation,
-        )?;
+        )
+    }
+
+    /// The one policy for whether `model` may run on the account: an account that is signed in
+    /// and usable, except that OpenCode runs its free models with no account, as plain
+    /// `opencode` does. The running server's connected catalog refuses a model that needs an
+    /// account and names the models that are available. A configured profile and a substitute
+    /// are both admitted by it.
+    pub(crate) fn require_account_for_model(
+        &self,
+        owner_user_id: &str,
+        provider: &str,
+        profile_id: &str,
+        model: Option<&str>,
+        operation: &'static str,
+    ) -> Result<(), DaemonError> {
+        if provider == "opencode" && !is_opencode_go_model(model) {
+            self.get(owner_user_id, provider, profile_id)?;
+            return Ok(());
+        }
+        self.require_authenticated(owner_user_id, provider, profile_id, model, operation)?;
         Ok(())
     }
 

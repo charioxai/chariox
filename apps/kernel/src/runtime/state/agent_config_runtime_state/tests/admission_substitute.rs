@@ -610,3 +610,81 @@ async fn a_queued_successor_of_a_cancelled_turn_on_a_refused_primary_runs_on_the
     let dispatch = cancellation.dispatch.expect("turn B is dispatched");
     fixture.dispatch_then_expect_the_substitute(dispatch).await;
 }
+
+/// The OpenCode `default` account of the test owner, signed in nowhere.
+fn opencode_account_without_login(fixture: &RefusedPrimary) {
+    let registry = &fixture.runtime.owned.provider_account_profiles;
+    if registry
+        .find(OWNER, "opencode", "default")
+        .unwrap()
+        .is_none()
+    {
+        let created = registry
+            .create_managed(OWNER, "opencode", "Free models")
+            .unwrap();
+        registry
+            .set_default(OWNER, "opencode", &created.profile_id)
+            .unwrap();
+    }
+}
+
+// OpenCode's free models run with no account, as in normal admission: such a substitute is
+// usable without a login, and a Go model is not.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_free_opencode_substitute_runs_without_a_login_and_a_go_one_does_not() {
+    crate::test_support::isolated_env_test!();
+    let fixture = refused_primary(&[]).await;
+    opencode_account_without_login(&fixture);
+    let choose = |model: &str| {
+        let candidate = crate::agent::AgentSubstituteProfile::new("opencode", model, None);
+        crate::substitute_admission::unusable_reason(
+            &fixture.runtime.owned.provider_account_profiles,
+            OWNER,
+            &fixture.runtime.owned.config_projection.snapshot().daemon_id,
+            &candidate,
+        )
+        .unwrap()
+    };
+
+    assert_eq!(
+        choose("opencode/free-model"),
+        None,
+        "a free model needs no login"
+    );
+    assert!(
+        choose("opencode-go/paid-model").is_some(),
+        "a Go model needs its credential"
+    );
+}
+
+// The Go preflight of a plain submission reaches the substitute: an unauthenticated Go primary
+// with a usable substitute runs the turn there instead of refusing it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_unauthenticated_go_primary_runs_a_plain_turn_on_the_substitute() {
+    crate::test_support::isolated_env_test!();
+    let fixture = healthy_primary(&[SUBSTITUTE_A]).await;
+    opencode_account_without_login(&fixture);
+    fixture
+        .runtime
+        .owned
+        .agent_store
+        .set_agent_runtime_profile_with_account_profile(
+            &fixture.agent_id,
+            "opencode",
+            Some("opencode-go/primary-model".to_string()),
+            None,
+            Some("default".to_string()),
+            crate::provider::ProviderResumeState::default(),
+        )
+        .unwrap();
+
+    fixture
+        .runtime
+        .submit_prepared_prompt(fixture.prepared("go-preflight"))
+        .await
+        .expect("an unauthenticated Go primary with a usable substitute admits the turn");
+
+    let run = fixture.wait_for_live_run().await;
+    assert_eq!(run.model(), SUBSTITUTE_A);
+    assert!(run.turn_substitute().is_some());
+}

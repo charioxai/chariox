@@ -240,8 +240,17 @@ impl KernelRuntimeState {
                 )
                 .is_err()
             {
-                self.verify_opencode_go_account(&owner, &profile.profile_id)
-                    .await?;
+                match self
+                    .verify_opencode_go_account(&owner, &profile.profile_id)
+                    .await
+                {
+                    // The credential is not usable, and a substitute can run the turn: the
+                    // substitute-aware admission that follows decides, not this preflight.
+                    Err(refusal)
+                        if crate::substitute_admission::substitute_can_answer(&refusal)
+                            && self.owned.has_usable_substitute(&agent, &owner)? => {}
+                    verified => verified?,
+                }
             }
             return Ok(());
         }

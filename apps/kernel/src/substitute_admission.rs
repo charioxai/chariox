@@ -49,14 +49,14 @@ pub(crate) fn unusable_reason(
             candidate.provider
         )));
     }
-    match registry.require_authenticated(
+    match registry.require_account_for_model(
         owner_user_id,
         provider,
         profile_id,
         Some(&candidate.model),
         "substitute admission",
     ) {
-        Ok(_) => Ok(None),
+        Ok(()) => Ok(None),
         Err(DaemonError::ProviderProfileRefused {
             reason,
             account_name,
