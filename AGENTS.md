@@ -32,12 +32,13 @@ Backward compatibility with older kernels, clients and stored data is not a goal
 4. Cloud signs users in, issues relay tokens and picks relay targets with fresh heartbeats. It never carries runtime traffic and never changes kernel behaviour.
 5. Provider permission prompts resolve through one kernel-owned interaction shown to every client in the session.
 7. OSS boundary (`scripts/oss-boundary-guard.mjs`, part of `pnpm lint`): add no compute-provider or Cloud-only business logic to OSS. Its lists only shrink: a change that adds an entry is rejected, move the logic to Cloud. Full wording: `docs/AGENT_RULE_DETAILS.md`.
+8. No kernel depends on another kernel after installation. A credential or config reaches a kernel once, through an owner-started transfer, and the kernel then runs from its own copy. No peer message carries a credential per launch, prompt or tool call, and none asks another kernel for one (`no-kernel-credential-fetch`).
 
-Rules 3 (the relay only carries encrypted traffic) and 6 (hosted connections use `wss://` behind Caddy) are checks, not prose.
+Rules 2 (no provider SDKs), 3 (the relay only carries encrypted traffic and never inspects a payload), 4 (Cloud never carries runtime traffic: its own `pnpm lint` in `chariox-cloud`), 6 (hosted connections use `wss://` behind Caddy), 7 (OSS boundary) and 8 are checks, not prose. The table `Architecture rules` in `scripts/checks/README.md` names the check of each.
 
 ## Enforced by `pnpm lint`
 
-`pnpm lint:rules` (`scripts/checks/`) fails with the file, the line and the root fix for: provider SDKs, relay isolation, a protocol shape change without its version bump, retired names, a slice image missing a module it imports, plain `ws://` in deploy config, tracked state or logs, and a performance budget raised without a `budget raised:` line. Each check's allow list holds today's violations and only shrinks (`node scripts/checks/run.mjs --shrink`). Each check, its rule and its root fix: `scripts/checks/README.md`.
+`pnpm lint:rules` (`scripts/checks/`) fails with the file, the line and the root fix for: provider SDKs, relay isolation, a credential carried between kernels, a protocol shape change without its version bump, retired names, a slice image missing a module it imports, plain `ws://` in deploy config, tracked state or logs, and a performance budget raised without a `budget raised:` line. Each check's allow list holds today's violations and only shrinks (`node scripts/checks/run.mjs --shrink`). Each check, its rule and its root fix: `scripts/checks/README.md`.
 
 ## Writing clean code
 

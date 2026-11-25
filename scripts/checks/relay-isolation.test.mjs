@@ -42,3 +42,31 @@ test('relay code using a kernel module is red, a test using one is not', () => {
   assert.match(planted(r, 'use'), /apps\/relay\/src\/server\.rs:2: relay code uses chariox_kernel/)
   r.dispose()
 })
+
+test('relay code that moves, measures and encodes ciphertext passes', () => {
+  const r = makeRepo(files())
+  r.write('apps/relay/src/server.rs', 'fn forward(payload: &Payload) -> Vec<u8> {\n    if payload.ciphertext.len() < 16 { return Vec::new() }\n    STANDARD.decode(&payload.ciphertext).unwrap()\n}\n')
+  assert.equal(r.run(check.name).status, 0)
+  r.dispose()
+})
+
+test('relay code that parses, decodes to text, searches or logs the ciphertext is red', () => {
+  for (const [label, statement] of [
+    ['parse', 'let value: serde_json::Value = serde_json::from_slice(&ciphertext).unwrap();'],
+    ['text', 'let text = String::from_utf8(ciphertext.clone()).unwrap();'],
+    ['search', 'let hit = payload.ciphertext.contains("prompt");'],
+    ['log', 'tracing::debug!("forwarding {}", payload.ciphertext);'],
+  ]) {
+    const r = makeRepo(files())
+    r.write('apps/relay/src/server.rs', `fn forward(payload: &Payload) {\n    ${statement}\n}\n`)
+    assert.match(planted(r, label), /apps\/relay\/src\/server\.rs:2: relay code inspects the payload field ciphertext/, label)
+    r.dispose()
+  }
+})
+
+test('a test module that reads the ciphertext does not count', () => {
+  const r = makeRepo(files())
+  r.write('apps/relay/src/server.rs', '#[cfg(test)]\nmod tests {\n    fn t(p: &Payload) { let v = serde_json::from_slice(&p.ciphertext); }\n}\n')
+  assert.equal(r.run(check.name).status, 0)
+  r.dispose()
+})

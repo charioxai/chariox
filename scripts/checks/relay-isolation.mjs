@@ -1,9 +1,14 @@
 // Rule 3: the relay only carries encrypted traffic. It never reads prompts, outputs or data and never decides session state.
 import { posix } from 'node:path'
+import { productionSource } from '../lib/rust-production-source.mjs'
 
 const RELAY = 'apps/relay/'
 // Crates that decrypt or open payloads. The relay authenticates with HMAC and forwards ciphertext, so none of these belongs in it.
 const PAYLOAD_CRATES = /^(chacha20poly1305|aes-gcm|aes-gcm-siv|aead|xsalsa20poly1305|crypto_box|age|ring|openssl|snow|hpke|orion)$/
+// The relay's payload field is `ciphertext` (apps/relay/src/protocol.rs). It is moved, cloned, base64-coded and measured with `.len()`,
+// and never parsed, decoded to text, searched, formatted or logged. A statement that does either is a payload inspection.
+const PAYLOAD_FIELD = /\bciphertext\b(?!\s*\.len\(\))/
+const INSPECTION = /serde_json::from_|\bfrom_utf8\w*|to_string_lossy|\bformat!|\b(?:e?print(?:ln)?|write(?:ln)?|panic|debug|info|warn|error|trace)!|(?:tracing|log|logging)::|\.(?:contains|starts_with|ends_with|find|trim|parse|as_str)\s*(?:::<[^>]*>)?\(/
 const isTest = file => /(^|\/)(tests?|benches)\//.test(file) || /(^|\/)[\w-]*tests?\.rs$/.test(file)
 
 export default {
@@ -28,6 +33,17 @@ export default {
           }
         }
       } else if (file.endsWith('.rs') && !isTest(file)) {
+        const code = productionSource(text, file)
+        let start = 0
+        for (let i = 0; i < code.length; i++) {
+          if (code[i] !== ';' && code[i] !== '{' && code[i] !== '}') continue
+          const statement = code.slice(start, i)
+          if (PAYLOAD_FIELD.test(statement) && INSPECTION.test(statement)) {
+            const lead = statement.match(/^\s*/)[0]
+            findings.push({ file, line: code.slice(0, start + lead.length).split('\n').length, what: `relay code inspects the payload field ciphertext: ${statement.trim().replace(/\s+/g, ' ').slice(0, 80)}` })
+          }
+          start = i + 1
+        }
         text.split('\n').forEach((row, i) => {
           if (/^\s*\/\//.test(row)) return
           const use = /\b(?:use|extern crate)\s+(chariox_(?!relay)\w+)/.exec(row) ?? /\b(chariox_(?!relay)\w+)::/.exec(row)

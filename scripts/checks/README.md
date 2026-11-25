@@ -11,7 +11,8 @@ node --test scripts/checks/*.test.mjs   # each check plants a violation in a thr
 | Check | Rule | Root fix |
 |---|---|---|
 | `no-provider-sdk` | Runtime rule 2: providers run only through their official tools | drive the provider through its CLI, local server or documented hook and delete the SDK dependency |
-| `relay-isolation` | Runtime rule 3: the relay only carries encrypted traffic | keep payload parsing, decryption and session logic in the kernel or shared protocol |
+| `relay-isolation` | Runtime rule 3: the relay only carries encrypted traffic and never inspects a payload | keep payload parsing, decryption and session logic in the kernel or shared protocol |
+| `no-kernel-credential-fetch` | Runtime rule 8: no kernel depends on another kernel after installation | transfer the credential once as an owner-started copy and let the receiving kernel use its own; then delete the peer message, or name an install-time transfer in `TRANSFERS` |
 | `hosted-wss` | Runtime rule 6: hosted connections use `wss://` behind Caddy | put the endpoint behind Caddy and configure the `wss://` URL (`ws://` is for loopback only) |
 | `protocol-shape-needs-version` | Protocol changes: a changed serialized shape needs the version bump and the snapshot | raise the constant, run `pnpm protocol:generate`, update the snapshot under `protocol_shapes/` |
 | `retired-names` | Names the owner retired are never written | use the current name; rename in files you touch |
@@ -26,6 +27,18 @@ node --test scripts/checks/*.test.mjs   # each check plants a violation in a thr
 | `no-full-snapshot-on-read-path` | `docs/PERFORMANCE_BUDGETS.md`, Kernel: a read request does not build a full Room snapshot | read the stored Room with `session_with_agents` (or a narrower store read) |
 | `no-spawn-in-periodic-loop` | `docs/PERFORMANCE_BUDGETS.md`, Kernel: a periodic loop does not start a subprocess on its ticks | read the value from the kernel itself (/proc, a subscription, a cached value), or start the child once outside the loop |
 | `no-polling-where-subscription` | `docs/PERFORMANCE_BUDGETS.md`, Kernel: no fixed-interval polling of a read the kernel pushes | react to the kernel event that carries the change and read once on it |
+
+## Architecture rules
+
+Each core rule of `AGENTS.md` has one check that fails the build with the file, the line and the root fix:
+
+| Rule | Check | Where it runs |
+|---|---|---|
+| Rule 8: no runtime credential or config fetch from another kernel | `no-kernel-credential-fetch` | `pnpm lint:rules` |
+| Rule 3: the relay never inspects payloads | `relay-isolation` | `pnpm lint:rules` |
+| Rule 4: Cloud never proxies runtime traffic | `scripts/check-no-runtime-proxy.mjs` | `pnpm lint` in `chariox-cloud` |
+| Rule 2: no provider SDKs | `no-provider-sdk` | `pnpm lint:rules` |
+| Rule 7: no Cloud-only features in OSS | `scripts/oss-boundary-guard.mjs` | `pnpm lint` (before `lint:rules`) |
 
 ## Allow lists
 
@@ -46,6 +59,8 @@ Add `<name>.mjs` exporting `{name, why, rule, rootFix, scan(ctx)}` (`scan` retur
 ## Limits
 
 - `protocol-shape-needs-version` reads public fields, enum variants, the fields inside variants and `#[serde(` lines of `apps/kernel/src/local/api/types*` and `transport/relay_peer*`. A moved field nets to nothing, also between modules of the same protocol. The constant must be higher at the head than at the merge base, not just touched. It requires the snapshot update for the local protocol only.
+- `no-kernel-credential-fetch` reads the variants of `RelayPeerRequest`, `RelayPeerResponse`, `RelayPeerEvent` and the `Peer*` enums in `apps/kernel/src/transport/relay_peer*.rs` (comments, literals and test items hidden). A variant is red when its name has `Credential`, `Secret` or `Vault`, or a field type has `Credential`, `Secret`, `Vault` or `Token` in its name. A credential that crosses on another wire (a local API, a file, a type that hides its name) is not seen. `TRANSFERS` in the check names the install-time transfers (provider account copy, managed slice token install, Project Environment secret copy); adding a name there is a code change the reviewer reads, and a variant that is not an owner-started copy does not belong in it.
+- `relay-isolation` reads relay Cargo manifests and relay production Rust. Besides the dependency rules, a statement that names `ciphertext` (the relay's payload field) next to a parser, text decoder, search or log call is red; `ciphertext.len()`, base64 and moves are fine. Other payload field names (`payload` of a transport chunk) are not matched: a JWT `payload` shares the name.
 - `slice-image-closure` counts only the last (runtime) stage of the Dockerfile, with `COPY --from` transfers followed through the stage they read from. A relative import is looked up from where its importer is installed in the image, so a module installed elsewhere does not count.
 - `tracked-state` checks file kinds and sizes, not contents: a secret in a tracked source file is not found (test canaries make a token-prefix scan too noisy today).
 - `retired-names` counts lines per file; a retired name in a file name counts once more.
