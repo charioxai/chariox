@@ -11,7 +11,14 @@ pub struct RoomWorkflowInventory {
     pub home_kernel_id: String,
     pub revision: String,
     pub workflow_count: usize,
+    /// Archived workflows are left out of `workflows`; the count says how many.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub archived_count: usize,
     pub workflows: Vec<RoomWorkflowSummary>,
+}
+
+fn is_zero(count: &usize) -> bool {
+    *count == 0
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -70,7 +77,11 @@ impl RoomWorkflowInventory {
         history: Option<&crate::durable_state::DurableKernelStateStore>,
     ) -> Result<Self, crate::error::DaemonError> {
         let visible_runs = session.visible_workflow_runs_for_user(caller_user_id, history)?;
-        let mut definitions = session.workflows().iter().collect::<Vec<_>>();
+        let (archived, mut definitions): (Vec<_>, Vec<_>) = session
+            .workflows()
+            .iter()
+            .partition(|workflow| workflow.is_archived());
+        let archived_count = archived.len();
         definitions.sort_by(|a, b| (a.created_at_ms(), a.id()).cmp(&(b.created_at_ms(), b.id())));
         let workflows = definitions
             .into_iter()
@@ -149,6 +160,7 @@ impl RoomWorkflowInventory {
             home_kernel_id: session.host_daemon_id().into(),
             revision: String::new(),
             workflow_count: workflows.len(),
+            archived_count,
             workflows,
         };
         // A content revision changes only for this read model, never transcript tokens.
@@ -210,6 +222,22 @@ mod tests {
             RoomWorkflowInventory::project(&room, "local").workflow_count,
             0
         );
+    }
+
+    #[test]
+    fn room_inventory_leaves_archived_workflows_out_and_counts_them() {
+        let mut room = room();
+        room.create_workflow(WorkflowDefinition::new("kept", None));
+        room.create_workflow(WorkflowDefinition::new("archived", None));
+        room.workflow_mut("archived").unwrap().set_archived(true);
+        let inventory = RoomWorkflowInventory::project(&room, "local");
+        assert_eq!(inventory.workflow_count, 1);
+        assert_eq!(inventory.archived_count, 1);
+        assert_eq!(inventory.workflows[0].workflow_id, "kept");
+        room.workflow_mut("archived").unwrap().set_archived(false);
+        let restored = RoomWorkflowInventory::project(&room, "local");
+        assert_eq!(restored.workflow_count, 2);
+        assert_eq!(restored.archived_count, 0);
     }
 
     #[test]

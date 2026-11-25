@@ -433,6 +433,7 @@ async fn session_inspection_reads_use_warmed_projection_without_app_lock() {
         "cmd-inspection-workflows",
         LocalDaemonRequest::ListWorkflows(ListWorkflowsRequest {
             session_id: session_id.clone(),
+            include_archived: false,
         }),
     );
     let resolve_workflow_task = spawn_session_inspection_request(

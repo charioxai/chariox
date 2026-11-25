@@ -36,6 +36,7 @@ pub(super) fn summarize_meta_workflow(
         "responsible": workflow.responsible(),
         "responsible_notice": workflow.responsible_notice(),
         "revision": workflow.revision(),
+        "archived_at_ms": workflow.archived_at_ms(),
         "nodes": workflow
             .nodes()
             .iter()

@@ -108,6 +108,43 @@ test("executeShellCommand deletes workflows through the shared design-op path", 
   assert.match((requests[1] as { ApplyWorkflowDesignOp: { op_id: string } }).ApplyWorkflowDesignOp.op_id, /^shell-/)
 })
 
+test("executeShellCommand archives and unarchives workflows through the design-op path and lists archived ones on request", async () => {
+  const workflow = makeWorkflow()
+  const session = makeSession({ workflows: [] })
+  const requests: Record<string, unknown>[] = []
+  const client = {
+    send: async (request: Record<string, unknown>) => {
+      requests.push(request)
+      if ("ResolveWorkflow" in request) {
+        return { WorkflowResolved: { workflow } }
+      }
+      if ("ListWorkflows" in request) {
+        return { WorkflowsListed: { workflows: [{ ...workflow, archived_at_ms: 5 }] } }
+      }
+      return { WorkflowDesignOpAccepted: { event: { op: { kind: "workflow_archive" } }, session } }
+    },
+  }
+  const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo", sessionId: "session-1" })
+  const deps = { client, clientId: "tui-client-1" }
+
+  const archived = await executeShellCommand(parseShellCommand("workflow archive workflow-1"), context, deps)
+  assert.equal(archived.ok, true)
+  assert.match(archived.message ?? "", /archived workflow workflow-1 \(qa\)/)
+  const unarchived = await executeShellCommand(parseShellCommand("workflow unarchive workflow-1"), context, deps)
+  assert.match(unarchived.message ?? "", /unarchived workflow workflow-1 \(qa\)/)
+  const ops = requests
+    .filter((request) => "ApplyWorkflowDesignOp" in request)
+    .map((request) => (request as { ApplyWorkflowDesignOp: { op: unknown } }).ApplyWorkflowDesignOp.op)
+  assert.deepEqual(ops, [
+    { kind: "workflow_archive", workflow_id: "workflow-1", archived: true },
+    { kind: "workflow_archive", workflow_id: "workflow-1", archived: false },
+  ])
+
+  const listed = await executeShellCommand(parseShellCommand("workflow list --archived"), context, deps)
+  assert.match(listed.message ?? "", /workflow-1 \(qa\).* archived$/)
+  assert.deepEqual(requests.at(-1), { ListWorkflows: { session_id: "session-1", include_archived: true } })
+})
+
 test("executeShellCommand manages workflow registry entries", async () => {
   const root = await mkdtemp(join(tmpdir(), "chariox-workflow-registry-shell-"))
   try {
