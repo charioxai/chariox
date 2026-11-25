@@ -22,7 +22,9 @@ A login held in the Vault (a Claude setup token) is carried too, with no step on
 
 Existing effective default roots migrate once into the durable registry with stable profile IDs and public labels. `default` resolves the currently selected default; it is not a replacement for a stored profile ID. Static provider-profile configuration is not a second source of truth.
 
-Linking a provider directory already registered under the same owner and provider returns an error identifying the existing profile. Duplicate authenticated identities across separate directories remain rejected by refresh.
+Linking a provider directory already registered under the same owner and provider returns an error identifying the existing profile. Claude directory links also compare the provider's OAuth account UUID when it is available. A second directory for the same account returns the existing name. Native account transfer carries this non-secret identifier separately from the provider data.
+
+An upgrade groups saved Claude profiles with the same known account UUID into one account and one Usage row. The default profile's explicit name wins when it has one. Otherwise the first explicitly named registration supplies the name. The registry records the names that were merged. Existing profiles keep their execution directories and lookups so agents can still resume in their original Claude session. A profile whose login exposes no account UUID is kept separate.
 
 Profiles created without a label follow the authenticated account email's local part. A rename makes the label user-owned, even when the chosen label equals the current automatic name. Colliding automatic labels receive a numeric suffix; reserved or invalid email names leave the last label unchanged. Legacy profiles without naming metadata treat provider-number aliases and names matching the last observed email local part as automatic; other labels are preserved.
 

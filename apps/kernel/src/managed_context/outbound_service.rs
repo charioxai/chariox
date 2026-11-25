@@ -2882,6 +2882,7 @@ mod tests {
         fn materialization(profile_id: &str) -> ProviderAccountMaterialization {
             ProviderAccountMaterialization {
                 profile: ProviderAccountReplicaMetadata {
+                    provider_account_id: None,
                     owner_user_id: "owner-a".to_string(),
                     provider: "codex".to_string(),
                     profile_id: profile_id.to_string(),

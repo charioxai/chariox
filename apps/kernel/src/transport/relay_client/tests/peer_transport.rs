@@ -191,6 +191,7 @@ fn provider_account_materialization_peer_shape_is_versioned_and_debug_redacted()
     );
     let mut materialization = crate::account_profile::ProviderAccountMaterialization {
         profile: crate::account_profile::ProviderAccountReplicaMetadata {
+            provider_account_id: None,
             owner_user_id: "user-1".to_string(),
             provider: "codex".to_string(),
             profile_id: "work".to_string(),
