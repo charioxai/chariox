@@ -429,6 +429,9 @@ impl PreparedDomain {
         let mut last_resident = (0u64, std::collections::BTreeMap::<u32, u64>::new());
         let mut write_growth_cache =
             std::collections::BTreeMap::<u32, disk_use::WriteGrowth>::new();
+        // Per command: its written bytes over the last two seconds.
+        let mut write_windows =
+            std::collections::BTreeMap::<u32, std::collections::VecDeque<(u64, u64)>>::new();
         // Per command: its growth over the last minute while it ran.
         let mut windows = std::collections::BTreeMap::<u32, growth_window::Window>::new();
         let worker = std::thread::Builder::new()
@@ -514,11 +517,13 @@ impl PreparedDomain {
                         let measured_growth = measured.unwrap_or_else(|| {
                             previous.get(&pid).map_or(0, |before| before.measured_growth)
                         });
+                        let write_rate = write_rate(write_windows.entry(pid).or_default(), sampled_at, writes);
+                        // Only a writing command's descriptors are worth reading; its
+                        // cache, with the volume it last sent output to, lives as
+                        // long as the command.
                         if write_growth >= admission::GROWING {
                             let volumes = write_growth_cache.entry(pid).or_default().sample(&pids, sampled_at);
                             disk_writes.insert(pid, volumes);
-                        } else {
-                            write_growth_cache.remove(&pid);
                         }
                         pool::CommandUse {
                             pid,
@@ -533,12 +538,14 @@ impl PreparedDomain {
                             measured_growth,
                             writes,
                             write_growth,
+                            write_rate,
                             effective,
                             root: tree.in_harness(pid),
                         }
                     })
                     .collect::<Vec<_>>();
-                write_growth_cache.retain(|pid, _| disk_writes.contains_key(pid));
+                write_growth_cache.retain(|pid, _| commands.iter().any(|command| command.pid == *pid));
+                write_windows.retain(|pid, _| commands.iter().any(|command| command.pid == *pid));
                 windows.retain(|pid, _| commands.iter().any(|command| command.effective == *pid));
                 last_resident = (
                     sampled_at,
@@ -651,7 +658,7 @@ impl PreparedDomain {
                             }
                         } else {
                             announce(pid, &notice);
-                            tell_stopped(&watched, pid, notice);
+                            tell_stopped(&watched, pid, notice, WaitReason::Memory);
                         }
                         tree.kill(pid);
                     }
@@ -659,7 +666,7 @@ impl PreparedDomain {
                         let protection = self.pool.protection();
                         if !protection.disk { continue; }
                         announce(pid, &notice);
-                        tell_stopped(&watched, pid, notice);
+                        tell_stopped(&watched, pid, notice, WaitReason::Disk);
                         tree.kill(pid);
                     }
                     Ok(WatchCommand::Stop { process_id, reply }) => {
@@ -738,6 +745,31 @@ struct Rates {
     measured_growth: u64,
     writes: u64,
     write_growth: u64,
+}
+
+/// Bytes per second a command wrote over the last two seconds (`at` in ms),
+/// from its running total of written bytes. A command younger than that
+/// counts the time before it as idle: one early burst of a writer that writes
+/// in bursts is not a rate, while a runaway's estimate doubles every sample.
+fn write_rate(window: &mut std::collections::VecDeque<(u64, u64)>, at: u64, writes: u64) -> u64 {
+    const WINDOW_MS: u64 = 2000;
+    if window.back().is_none_or(|(last, _)| at > *last) {
+        window.push_back((at, writes));
+    }
+    // Keep one sample at or before the window's start to measure from.
+    while window.len() > 2
+        && window
+            .get(1)
+            .is_some_and(|(seen, _)| at.saturating_sub(*seen) >= WINDOW_MS)
+    {
+        window.pop_front();
+    }
+    match (window.front(), window.back()) {
+        (Some((from, before)), Some((to, now))) if to > from => {
+            now.saturating_sub(*before).saturating_mul(1000) / (to - from).max(WINDOW_MS)
+        }
+        _ => 0,
+    }
 }
 
 /// Growth per second of a command seen for the first time. Its processes
@@ -863,18 +895,20 @@ fn oom_kills_since(watched: &Arc<Mutex<Observation>>, seen: &mut u64) -> Option<
 }
 
 /// The room hears that the pool ended the command at `pid`, and why.
-fn tell_stopped(watched: &Arc<Mutex<Observation>>, pid: u32, notice: String) {
-    let (process_id, state) = {
+fn tell_stopped(watched: &Arc<Mutex<Observation>>, pid: u32, notice: String, resource: WaitReason) {
+    let (process_id, state, command) = {
         let observation = watched.lock().unwrap_or_else(|e| e.into_inner());
         let Some(sample) = observation.samples.iter().find(|sample| sample.pid == pid) else {
             return;
         };
+        let entry = observation.admission.get(&pid);
         (
             sample.process_id.clone(),
-            observation
-                .admission
-                .get(&pid)
-                .map_or(SessionProcessState::Running, projection::state_of),
+            entry.map_or(SessionProcessState::Running, projection::state_of),
+            entry
+                .and_then(|entry| entry.seen.as_ref())
+                .map(|seen| seen.line.clone())
+                .unwrap_or_default(),
         )
     };
     waits::push(waits::WaitEvent {
@@ -882,6 +916,8 @@ fn tell_stopped(watched: &Arc<Mutex<Observation>>, pid: u32, notice: String) {
         process_id,
         change: waits::WaitChange::Stopped {
             reason: notice.trim_end().to_string(),
+            resource,
+            command,
         },
         state,
     });
@@ -933,18 +969,57 @@ fn announce(pid: u32, notice: &str) {
                 .and_then(|flags| u32::from_str_radix(flags.trim(), 8).ok())
                 .is_some_and(|flags| flags & libc::O_ACCMODE as u32 != libc::O_RDONLY as u32)
         });
-        if writable {
-            if let Ok(mut file) = std::fs::OpenOptions::new()
-                .append(true)
-                .custom_flags(libc::O_NONBLOCK | libc::O_NOCTTY)
-                .open(format!("/proc/{pid}/fd/2"))
-            {
+        if !writable {
+            return;
+        }
+        match std::fs::OpenOptions::new()
+            .append(true)
+            .custom_flags(libc::O_NONBLOCK | libc::O_NOCTTY)
+            .open(format!("/proc/{pid}/fd/2"))
+        {
+            Ok(mut file) => {
                 let _ = file.write_all(notice.as_bytes());
             }
+            // A socket cannot be reopened by path (provider tools such as
+            // OpenCode give commands socket streams): send on its own copy.
+            Err(_) => send_on_stream(pid, notice),
         }
     }
     #[cfg(not(target_os = "linux"))]
     let _ = (pid, notice);
+}
+
+/// Sends `notice` on the socket that is `pid`'s error stream, through a copy
+/// of its descriptor. The copy shares the command's open file, so its flags
+/// stay as they are: the send alone does not wait, and a full or closed
+/// socket drops the line rather than holding the monitor.
+#[cfg(target_os = "linux")]
+fn send_on_stream(pid: u32, notice: &str) {
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    // SAFETY: pidfd_open takes a pid and flags and returns a new descriptor or -1.
+    let pidfd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid as libc::pid_t, 0) };
+    if pidfd < 0 {
+        return;
+    }
+    // SAFETY: pidfd_open returned this fresh descriptor.
+    let pidfd = unsafe { OwnedFd::from_raw_fd(pidfd as libc::c_int) };
+    // SAFETY: pidfd_getfd takes a pidfd, a target descriptor number and flags.
+    let stream = unsafe { libc::syscall(libc::SYS_pidfd_getfd, pidfd.as_raw_fd(), 2, 0) };
+    if stream < 0 {
+        return;
+    }
+    // SAFETY: pidfd_getfd returned this fresh close-on-exec descriptor.
+    let stream = unsafe { OwnedFd::from_raw_fd(stream as libc::c_int) };
+    // SAFETY: the buffer is the notice's bytes; MSG_NOSIGNAL keeps a closed
+    // peer from raising SIGPIPE in the kernel.
+    let _ = unsafe {
+        libc::send(
+            stream.as_raw_fd(),
+            notice.as_ptr().cast(),
+            notice.len(),
+            libc::MSG_DONTWAIT | libc::MSG_NOSIGNAL,
+        )
+    };
 }
 
 /// Why the workload's own process was stopped for memory.

@@ -22,9 +22,11 @@ pressure on a healthy machine. Accounting cgroups impose no memory maximum,
 memory throttle, swap prohibition or CPU weighting.
 
 Disk admission requires the receiving volume to have less than its reserve:
-1% of volume size, bounded to 64–512 MiB. Stopping a writer requires less than
-half that reserve and observed writes to that exact volume. A prediction alone
-does not stop a writer while gigabytes remain free.
+1% of volume size, bounded to 64–512 MiB. Stopping a writer requires observed
+writes to that exact volume and either less than half that reserve free or
+writes that would fill the volume within the fill horizon (5 s, see
+[Process memory and session ownership](PROCESS_RESOURCES.md)). A prediction
+alone does not stop a writer while gigabytes remain free.
 
 When memory or disk protection is off, the kernel releases existing waits for
 that resource and issues no new proactive pause or stop for it. Memory off also

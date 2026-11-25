@@ -90,9 +90,35 @@ impl WaitNotices {
                 }
                 None
             }
-            WaitChange::Stopped { .. } => {
+            WaitChange::Stopped {
+                reason,
+                resource,
+                command,
+            } => {
                 let tracked = self.tracked.remove(&event.process_id);
-                let row = row?;
+                let Some(row) = row else {
+                    // A running command the pool ended: its agent reads why
+                    // in its inbox too, not only in the command's output.
+                    let command = tracked.map_or_else(|| short(command), |t| t.command);
+                    let named = if command.is_empty() {
+                        "A command".to_string()
+                    } else {
+                        format!("`{command}`")
+                    };
+                    let why = reason.trim_end();
+                    let why = why
+                        .strip_prefix("chariox: stopped this command: ")
+                        .unwrap_or(why);
+                    return Some(Notice {
+                        session_id: session_id.into(),
+                        agent_id: agent_id.into(),
+                        process_id: event.process_id.clone(),
+                        resource: noun(*resource),
+                        state: "ended",
+                        message: format!("{named} was stopped: {why}"),
+                        command,
+                    });
+                };
                 let held = matches!(event.state, SessionProcessState::Held(_));
                 let command = tracked.map_or_else(|| short(&row.command_line), |t| t.command);
                 let waited = crate::session::unix_epoch_ms().saturating_sub(row.since_ms);
@@ -327,6 +353,8 @@ mod tests {
                 &event(
                     WaitChange::Stopped {
                         reason: "chariox: stopped this command".into(),
+                        resource: WaitReason::Memory,
+                        command: "cargo test".into(),
                     },
                     SessionProcessState::Paused(row("cargo test", since)),
                 ),
@@ -341,6 +369,32 @@ mod tests {
             notices.due(secs(t0, 60)).is_empty(),
             "the pause was told after its end"
         );
+    }
+
+    #[test]
+    fn a_running_command_the_pool_ended_is_told_at_once_with_its_reason() {
+        let (mut notices, t0) = (WaitNotices::default(), Instant::now());
+        let ended = notices
+            .record(
+                "room",
+                "agent",
+                &event(
+                    WaitChange::Stopped {
+                        reason: "chariox: stopped this command: the disk has 2 GB free and this command was filling it.\n".into(),
+                        resource: WaitReason::Disk,
+                        command: "cp -r src /data/copy".into(),
+                    },
+                    SessionProcessState::Running,
+                ),
+                t0,
+            )
+            .expect("a running command's end is told at once");
+        assert_eq!(
+            ended.message,
+            "`cp -r src /data/copy` was stopped: the disk has 2 GB free and this command was filling it."
+        );
+        assert_eq!((ended.state, ended.resource), ("ended", "disk space"));
+        assert!(notices.due(secs(t0, 10)).is_empty(), "told twice");
     }
 
     #[test]
