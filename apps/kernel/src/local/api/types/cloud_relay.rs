@@ -213,4 +213,9 @@ pub const RUNTIME_CONTROL_CAPABILITIES: &[&str] = &[
     "framed_plaintext_v1",
     crate::provider_account_copy::PROVIDER_ACCOUNT_COPY_CAPABILITY,
     crate::provider_account_copy::PROVIDER_ACCOUNT_COPY_PULL_CAPABILITY,
+    VIEWER_DENSITY_STILLS_CAPABILITY,
 ];
+
+/// MP-08/MP-11 (row 341): `display_subscribe` accepts `viewer_density_stills`. Viewers ask for it only of a kernel that
+/// advertises this: a protocol number alone can also name another change's allocation.
+pub const VIEWER_DENSITY_STILLS_CAPABILITY: &str = "viewer_density_stills_v1";

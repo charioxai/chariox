@@ -398,6 +398,8 @@ pub use workspace::*;
 /// Protocol 641 adds `CoverKernelAccessProcess`: a grant covers a named background process by identity.
 /// Recipient account offers and kernel-owned copy consent.
 /// MP-08 / MP-09 / MP-10 / MP-11: 780 persists semantic session activity; public snapshot schema 14.
+/// MP-08/MP-11: allocated 1015 adds display_subscribe `viewer_density_stills` (row 341: the whole-page video at rest is
+/// sharp for a viewer above the page's density).
 /// MP-08/MP-10/MP-11: 720 adds the Tab display (display_subscribe tab_display, display_park; P1 of
 /// docs/BROWSER_LATENCY_GAP_PLAN.md).
 /// MP-08/MP-09/MP-10/MP-11: allocated 811 adds structured provider login retry feedback.
