@@ -7,7 +7,7 @@ fn job_held_machine_1012_snapshot_and_hash() {
     let bytes = include_bytes!("job-held-machine-1012.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "94f4d7db992ddfc37384da1c769305a4076ddb49b199ea43e61bbe4ed598b271"
+        "a9ef0d1e54a8de14c1b4c61e251610aabfecf320f0d3ff3411c48842b6049367"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(fixture["local"], LOCAL_DAEMON_PROTOCOL_VERSION);

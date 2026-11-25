@@ -264,7 +264,7 @@ fn owner_agent_cancellation_987_snapshot_and_hash() {
     let bytes = include_bytes!("owner-agent-cancellation-987.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "8d9303a9e11a4b7ebadb60807699bd12f66950bf36a1c01c2f59693732791607"
+        "8ae733a6d47959e74419da45c9a9fd3eaf1b7e52fdf096a6d48fa6206b8f1e3a"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(fixture["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);

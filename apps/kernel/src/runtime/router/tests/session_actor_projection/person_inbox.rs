@@ -319,3 +319,150 @@ async fn a_failed_run_of_a_workflow_the_person_answers_for_is_a_card_until_the_r
         "the opened run leaves the Inbox"
     );
 }
+
+#[tokio::test]
+async fn a_machine_event_from_the_connected_service_is_one_card_that_stays_one_after_a_read() {
+    use crate::local::{
+        ControlPlaneMachineRow, InboxCardChange, MachineEventReason, PersonInboxCardBody,
+        SetInboxCardStateRequest,
+    };
+    let app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1);
+    let failed = ControlPlaneMachineRow {
+        allocation_ref: "machine-1".into(),
+        name: "Build box".into(),
+        state: "failed".into(),
+        revision: 4,
+        since: chrono::Utc::now().to_rfc3339(),
+        kernel_id: None,
+        machine_id: None,
+        available_actions: vec![],
+        reason: Some(MachineEventReason::CopyFailed),
+    };
+    router
+        .runtime_state
+        .reconcile_cloud_machine_notices(std::slice::from_ref(&failed))
+        .unwrap();
+    let cards = inbox(&router).await;
+    assert_eq!(cards.len(), 1, "the person's Inbox shows the event");
+    let card_id = cards[0].card_id.clone();
+    let PersonInboxCardBody::Notice(notice) = &cards[0].body else {
+        panic!("a notice")
+    };
+    assert_eq!(notice.title, "Copying to Build box failed");
+
+    let request = LocalDaemonRequest::SetInboxCardState(SetInboxCardStateRequest {
+        card_ids: vec![card_id.clone()],
+        change: InboxCardChange::Read { read: true },
+    });
+    let command = KernelCommand::from_local_request("read", None, None, &request);
+    router.dispatch(command, request).await.unwrap();
+    router
+        .runtime_state
+        .reconcile_cloud_machine_notices(std::slice::from_ref(&failed))
+        .unwrap();
+    let cards = inbox(&router).await;
+    assert_eq!(card_ids(&cards), [("", card_id.as_str())]);
+    let PersonInboxCardBody::Notice(notice) = &cards[0].body else {
+        panic!("a notice")
+    };
+    assert!(
+        notice.read,
+        "reading it is kept, and no second card arrives"
+    );
+
+    let started = ControlPlaneMachineRow {
+        state: "ready".into(),
+        reason: None,
+        ..failed
+    };
+    router
+        .runtime_state
+        .reconcile_cloud_machine_notices(&[started])
+        .unwrap();
+    assert!(
+        inbox(&router).await.is_empty(),
+        "the card leaves with the event"
+    );
+}
+
+/// A Cloud that answers every machine list with one failed copy, on a real socket.
+fn cloud_with_a_failed_copy() -> String {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let api_url = format!("http://{}", listener.local_addr().unwrap());
+    let body = serde_json::json!({
+        "kind": "machines",
+        "machines": [{
+            "allocation_ref": "machine-1", "name": "Build box", "state": "failed", "revision": 4,
+            "since": chrono::Utc::now().to_rfc3339(), "kernel_id": null, "machine_id": null,
+            "available_actions": [], "reason": "copy_failed"
+        }],
+        "saved_states": []
+    })
+    .to_string();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { return };
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 4096];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                match stream.read(&mut buffer) {
+                    Ok(0) | Err(_) => break,
+                    Ok(read) => request.extend_from_slice(&buffer[..read]),
+                }
+            }
+            // The body follows the headers: read what the length says so the client is not reset.
+            let _ = write!(
+                stream,
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+        }
+    });
+    api_url
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn linking_cloud_after_the_kernel_started_raises_its_machine_events_without_a_machine_request(
+) {
+    let api_url = cloud_with_a_failed_copy();
+    let app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
+    let router = Arc::new(CommandRouter::with_interactive_capacity(
+        Arc::new(Mutex::new(app)),
+        1,
+    ));
+    let watcher = router.runtime_state.clone();
+    let task = tokio::spawn(async move { watcher.run_cloud_machine_notices().await });
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert!(
+        inbox(&router).await.is_empty(),
+        "an unlinked kernel has no machines to read"
+    );
+
+    router
+        .runtime_state
+        .persist_cloud_relay_profile(Some(crate::config::PersistedCloudRelayProfile {
+            api_url,
+            account_id: "account-1".into(),
+            kernel_credential: Some("synthetic-kernel-credential".into()),
+            ..Default::default()
+        }))
+        .await
+        .unwrap();
+
+    let mut cards = Vec::new();
+    for _ in 0..50 {
+        cards = inbox(&router).await;
+        if !cards.is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    task.abort();
+    assert_eq!(
+        cards.len(),
+        1,
+        "linking an account with a failed copy raises its card within 5 s, with no machine request"
+    );
+}
