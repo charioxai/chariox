@@ -160,7 +160,7 @@ impl KernelRuntimeState {
     async fn checked_app_grant(
         &self,
         agent_ref: &str,
-        mut grant: ExtensionGrant,
+        grant: ExtensionGrant,
         caller_user_id: &str,
         wait_for_slot: bool,
         binding_permit: Option<AppBindingPermit>,
@@ -534,7 +534,7 @@ impl KernelRuntimeState {
             agent.owner_user_id(),
             "request agent App binding",
         )?;
-        let mut permit = AppBindingPermit {
+        let permit = AppBindingPermit {
             actor: agent.clone(),
             target_id: target.id().into(),
             target_binding: target.remote_execution().cloned(),

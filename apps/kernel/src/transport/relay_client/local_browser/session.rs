@@ -197,6 +197,7 @@ struct FrameCaller<'a> {
     same_computer: bool,
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_client_frame(
     direct: &Arc<LocalBrowserDirect>,
     caller: FrameCaller<'_>,

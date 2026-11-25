@@ -452,7 +452,7 @@ mod claude_account_identity_tests {
     #[test]
     fn usage_read_through_a_hidden_binding_reaches_the_account_row() {
         crate::test_support::isolated_env_test!();
-        let (root, path, automatic, explicit) =
+        let (_root, path, automatic, explicit) =
             same_account_pair("claude-account-hidden-usage", false);
         let registry = ProviderAccountProfileRegistry::open(&path).unwrap();
         for profile in [&automatic, &explicit] {

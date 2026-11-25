@@ -624,7 +624,6 @@ impl KernelBrowserHost {
                 .stopped_by_request
                 .remove(user);
         }
-        let mut params = params;
         // Host-side intent only: the controller never sees it.
         if let Some(request) = params.as_object_mut() {
             request.remove("unless_stopped");

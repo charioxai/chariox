@@ -1135,6 +1135,7 @@ impl Pool {
 /// tightest limited cgroup above them when there is one (a small machine is
 /// emulated that way), else the host.
 #[cfg(target_os = "linux")]
+#[cfg_attr(test, allow(dead_code))]
 fn host_gauge() -> Option<exhaustion::Gauge> {
     let total = machine_memory()?;
     let available = host_room(0)?;

@@ -9,6 +9,37 @@ pub(super) struct AppGrantEpochs {
         std::sync::Mutex<BTreeMap<(String, String), Arc<std::sync::atomic::AtomicU64>>>,
 }
 
+pub(crate) struct AppBindingPermit {
+    pub(super) actor: crate::agent::AgentInstance,
+    pub(super) target_id: String,
+    pub(super) target_binding: Option<crate::agent::RemoteAgentBinding>,
+    pub(super) installation: String,
+    pub(super) target_revision: u64,
+    pub(super) provider_run_id: Option<String>,
+}
+
+impl KernelRuntimeState {
+    pub(super) fn app_binding_epoch(
+        &self,
+        agent: &str,
+        installation: &str,
+    ) -> Arc<std::sync::atomic::AtomicU64> {
+        self.owned
+            .app_grant_epochs
+            .revisions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry((agent.into(), installation.into()))
+            .or_default()
+            .clone()
+    }
+
+    pub(super) fn app_binding_revision(&self, agent: &str, installation: &str) -> u64 {
+        self.app_binding_epoch(agent, installation)
+            .load(Ordering::Acquire)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -95,36 +126,5 @@ mod tests {
             .unwrap()
             .active_interactions()
             .is_empty());
-    }
-}
-
-pub(crate) struct AppBindingPermit {
-    pub(super) actor: crate::agent::AgentInstance,
-    pub(super) target_id: String,
-    pub(super) target_binding: Option<crate::agent::RemoteAgentBinding>,
-    pub(super) installation: String,
-    pub(super) target_revision: u64,
-    pub(super) provider_run_id: Option<String>,
-}
-
-impl KernelRuntimeState {
-    pub(super) fn app_binding_epoch(
-        &self,
-        agent: &str,
-        installation: &str,
-    ) -> Arc<std::sync::atomic::AtomicU64> {
-        self.owned
-            .app_grant_epochs
-            .revisions
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .entry((agent.into(), installation.into()))
-            .or_default()
-            .clone()
-    }
-
-    pub(super) fn app_binding_revision(&self, agent: &str, installation: &str) -> u64 {
-        self.app_binding_epoch(agent, installation)
-            .load(Ordering::Acquire)
     }
 }

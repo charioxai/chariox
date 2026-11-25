@@ -33,6 +33,7 @@ where
 
 /// With `uploads`, a frame above one chunk is handed to its lane to go out in
 /// chunks instead of being written whole.
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn send_relay_envelope_frame<S>(
     writer: &mut S,
     envelope: RelayEnvelope,
