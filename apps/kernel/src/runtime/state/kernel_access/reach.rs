@@ -104,6 +104,7 @@ pub(crate) fn reach_need(request: &LocalDaemonRequest) -> ReachNeed {
             | LocalDaemonRequest::EditFile(_)
             | LocalDaemonRequest::ListRemoteMachines(_)
             | LocalDaemonRequest::ControlPlane(_)
+            | LocalDaemonRequest::MachineAcquisition(_)
     ) {
         return ReachNeed::Room;
     }

@@ -65,6 +65,16 @@ export const COMMANDS: readonly CommandSpec[] = [
   { name: "notifications list", brief: "List notification subscriptions", flags: [KERNEL, SOCKET, { name: "--kernel-url", value: "URL" }], summary: "list notifications subscribed to on this kernel, with subscription IDs and pause state" },
   { name: "notifications pause", brief: "Pause a notification subscription", flags: [KERNEL, SOCKET, { name: "--kernel-url", value: "URL" }, { name: "--command-id", value: "ID" }], args: ["SUBSCRIPTION_ID"], summary: "pause delivery for a notification subscription" },
   { name: "notifications resume", brief: "Resume a notification subscription", flags: [KERNEL, SOCKET, { name: "--kernel-url", value: "URL" }, { name: "--command-id", value: "ID" }], args: ["SUBSCRIPTION_ID"], summary: "resume delivery for a paused notification subscription" },
+  { name: "machine options", brief: "List the machines you can acquire", flags: [KERNEL, TIMEOUT, SOCKET], summary: "the machines you can acquire now: class, region, size, rate per minute and whether each is in stock; one row per class and region" },
+  {
+    name: "machine acquire", brief: "Acquire a machine",
+    flags: [{ name: "--region", value: "auto|REGION" }, { name: "--request-id", value: "ID" }, KERNEL, TIMEOUT, SOCKET],
+    args: ["CLASS"],
+    summary: "acquire a machine of CLASS (and REGION when the class is offered in several); prints the allocation with its state. Reuse --request-id to retry after a lost answer or a refusal: it returns the machine the first try got and never acquires twice; use a new one only when the answer says the old one was closed. When the person asked to approve agent acquisitions, their card is raised and this waits for the answer",
+    note: "Charges continue until the machine is deleted: run machine release when finished.",
+  },
+  { name: "machine status", brief: "Read an acquired machine", flags: [KERNEL, TIMEOUT, SOCKET], args: ["ALLOCATION_REF"], summary: "the allocation's state and its verified kernel target; release it before it is no longer needed to stop charges" },
+  { name: "machine release", brief: "Release an acquired machine", flags: [KERNEL, TIMEOUT, SOCKET], args: ["ALLOCATION_REF"], summary: "delete an acquired machine; read machine status until its state is deleted" },
   { name: "secret status", brief: "Check a pending secret request", flags: [SOCKET], args: ["INTERACTION_ID"], summary: "pending, stored, cancelled or timed_out for a secret request you made" },
   { name: "kernels", brief: "List reachable kernels", flags: [SOCKET], summary: "list the kernels this kernel can reach" },
   { name: "kernels restart", brief: "Restart a kernel's browser", flags: [{ name: "--browser" }, KERNEL, TIMEOUT, SOCKET], summary: "restart the browser of this kernel, or of --kernel NAME: Chrome and its display start again and every Tab comes back at its URL with its opener. Answers with the browser state once it is up. Needs --browser" },
@@ -193,7 +203,7 @@ export const REQUEST_EXAMPLES: readonly { body: object; note: string }[] = [
   { body: respondToInteractionRequest("SESSION_ID", "INTERACTION_ID", "CHOICE_ID"), note: "InteractionResponded; set custom_reply to the person's text when question.text_reply is present" },
 ]
 
-const REFUSED = ["events_refused", "secret_link_unavailable", "kernel_sudo_refused", "kernel_sudo_room_owner_local", "kernel_access_human_only", "kernel_access_ended", "kernel_access_not_covered", "kernel_access_already_granted", "kernel_access_cover_gone", "kernel_access_cover_identity_changed", "kernel_access_cover_kernel_process", "kernel_access_cover_outside", "kernel_access_cover_limit", "kernel_access_agent_unavailable", "kernel_access_request_denied", "command_id_required", "duplicate_command_conflict"]
+const REFUSED = ["events_refused", "acquisition_denied", "approval_required", "secret_link_unavailable", "kernel_sudo_refused", "kernel_sudo_room_owner_local", "kernel_access_human_only", "kernel_access_ended", "kernel_access_not_covered", "kernel_access_already_granted", "kernel_access_cover_gone", "kernel_access_cover_identity_changed", "kernel_access_cover_kernel_process", "kernel_access_cover_outside", "kernel_access_cover_limit", "kernel_access_agent_unavailable", "kernel_access_request_denied", "command_id_required", "duplicate_command_conflict"]
 const KERNEL_UNAVAILABLE = ["kernel_unknown", "kernel_ambiguous", "kernel_offline", "kernel_unreachable", "kernel_unpaired", "kernel_incompatible", "kernel_update_needed", "kernel_not_available"]
 const TIMEOUT_OR_UNKNOWN = ["kernel_sudo_expired", "kernel_access_request_expired", "kernel_request_timeout", "kernel_connection_lost", "kernel_outcome_unknown", "kernel_access_unconfirmed", "steer_unconfirmed"]
 
