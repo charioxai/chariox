@@ -306,6 +306,8 @@ async fn agent_kernel(
     // These tests are about which option an acquire takes, not about the owner's limits: every
     // class the stand-in service lists is allowed.
     config.user_config.agents.offload_classes = Some(vec!["small".into(), "big".into()]);
+    // One test acquires more machines than the default maximum allows without asking.
+    config.user_config.agents.offload_max_machines = Some(100);
     let mut app = crate::DaemonApp::bootstrap(config).unwrap();
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
         .create_session(worktree.session_request())

@@ -155,9 +155,10 @@ async fn answer(
                     create(request_id);
                     (200, "{\"kind\":".into())
                 }
+                // A refusal main's `acquire_failure` classifies as one: nothing is held under the id.
                 AcquireReply::Refused => (
-                    403,
-                    serde_json::json!({"error":{"code":"authorization_denied","message":"not allowed now"}}).to_string(),
+                    400,
+                    serde_json::json!({"error":{"code":"invalid_request","message":"not allowed now"}}).to_string(),
                 ),
                 AcquireReply::Held { gate, refuse } => {
                     gate.notified().await;
@@ -866,7 +867,7 @@ async fn a_refused_retry_of_a_lost_answer_keeps_the_machine_counted() {
         .await
         .unwrap_err()
         .to_string();
-    assert!(refused.contains("authorization_denied"), "{refused}");
+    assert!(refused.contains("invalid_request"), "{refused}");
     let acquired = state
         .owned
         .durable_state_store
