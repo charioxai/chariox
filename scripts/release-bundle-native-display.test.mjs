@@ -29,7 +29,8 @@ test('the Linux release job executes the bundled kernel on minimal Ubuntu', () =
 // MP-08/MP-09: a release kernel opens the WASM App worker only beside itself, so each platform's kernel build also
 // builds the worker, in the same cargo invocation so both get one profile, one feature set and one tokio.
 test('the release build compiles the WASM App worker with the kernel and ships it in bin/', () => {
-  const build = workflow.match(/- name: Build the kernel, relay and helpers\n\s+run: \|\n((?:\s{10}.*\n)+)/)?.[1] ?? '';
+  // The step may carry an env: block (the release version, #1611) before its run script; the script is what is checked.
+  const build = workflow.match(/- name: Build the kernel, relay and helpers\n(?:\s{8}env:\n(?:\s{10}.*\n)+)?\s+run: \|\n((?:\s{10}.*\n)+)/)?.[1] ?? '';
   assert.match(build, /bins=\(chariox-kernel chariox-relay chariox-app-package chariox-app-wasm-worker\)/);
   assert.match(build, /cargo build --release --locked \$\{\{ matrix\.kernel_features \}\} -p chariox-kernel .*-p chariox-app-wasm-worker /);
   assert.match(build, /cp target\/release\/\{chariox-kernel,chariox-relay,chariox-app-package,chariox-app-wasm-worker\} unsigned\/bin\//);
