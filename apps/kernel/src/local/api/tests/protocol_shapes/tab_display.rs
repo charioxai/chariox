@@ -48,3 +48,32 @@ fn mp08_mp10_mp11_tab_display_720_snapshot_hash() {
         "caller identity must come from transport admission"
     );
 }
+
+#[test]
+fn row487_display_resize_rebind_1015_shape_is_pinned() {
+    // Row 487 (local 1015, relay peer unchanged): a default visible-page subscription may ask `resize_rebind` of a kernel
+    // that advertises `display_resize_rebind_v1`; the kernel keeps it across a Browser window resize and its frames name the
+    // new window epoch (`binding_sequence`).
+    let bytes = include_bytes!("browser-display-resize-rebind-1015.json");
+    assert_eq!(
+        format!("{:x}", Sha256::digest(bytes)),
+        "daf86abf26a27b768a02779b96aa2de17da52557db00ab46d50884407d12001e"
+    );
+    let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    assert_eq!(fixture["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
+    assert_eq!(
+        fixture["peer_protocol"],
+        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION
+    );
+    let subscribe: LocalDaemonRequest =
+        serde_json::from_value(fixture["subscribe"].clone()).unwrap();
+    assert_eq!(
+        serde_json::to_value(subscribe).unwrap(),
+        fixture["subscribe"]
+    );
+    let wire = serde_json::json!({"KernelBrowser": {"result": fixture["subscribed"]}});
+    let typed: LocalDaemonResponse = serde_json::from_value(wire.clone()).unwrap();
+    assert_eq!(serde_json::to_value(typed).unwrap(), wire);
+    assert_eq!(fixture["rebound_frame"]["binding_sequence"], 3);
+    assert!(crate::local::RUNTIME_CONTROL_CAPABILITIES.contains(&"display_resize_rebind_v1"));
+}

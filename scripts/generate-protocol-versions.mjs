@@ -20,6 +20,7 @@ const currentSnapshots = [
   "apps/kernel/src/local/api/tests/protocol_shapes/browser-mirror2-page-wheel-1014.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/browser-mirror2-media-playing-1015.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/browser-mirror2-layout-delta-1015.json",
+  "apps/kernel/src/local/api/tests/protocol_shapes/browser-display-resize-rebind-1015.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/agent-release-notes.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/agent-kernel-access.json",
   "apps/kernel/src/local/api/tests/protocol_shapes/program-stdin-1014.json",

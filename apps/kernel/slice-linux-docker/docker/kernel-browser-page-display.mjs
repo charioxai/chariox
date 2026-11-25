@@ -136,7 +136,7 @@ async function visiblePageBinding(host,command,scope,signal,Capture,rebind){
    }
    const result=await createRegionDisplay({host,command,scope,signal,target:{kind:'visible_page'},lease,args,window,tab,policy,generation,Capture});
    const stream=host.displays.get(result.subscription_id);
-   // Row 487 (provisional local 1016): a viewer that asked keeps this subscription across a resize of the Browser window.
+   // Row 487 (local 1015): a viewer that asked keeps this subscription across a resize of the Browser window.
    if(command.resize_rebind===true&&stream){stream.resizeRebind=true;stream.subscribeCommand={...command};stream.rebindSource=signal=>rebindVisiblePage(host,stream,signal,{Capture});}
    const rebindable=stream?.resizeRebind===true?{resize_rebind:true}:{};
    if(!follows)return {...result,...rebindable};
