@@ -19,6 +19,22 @@ export const TRANSFERS = new Map([
   ['InstallManagedSliceRelayToken', 'installation of a managed slice: the slice receives its relay token once'],
 ])
 
+// Named exceptions (row 581, Miguel 11-25): a leased agent is an agent of the home kernel that operates in a worker kernel. It sees
+// and uses what a local agent of the home uses, including the home Vault and Project Environment at run time (fill by handle through
+// the home). If the home is down the leased agent cannot work anyway. Provider logins still transfer at install (rows 577, 582).
+const LEASED_AGENT_USES_HOME = 'row 581: a leased agent is the home kernel\'s agent and uses the home Vault and Environment at run time'
+export const NAMED_EXCEPTIONS = new Map([
+  ['ResolveHomeCredentialSecret', LEASED_AGENT_USES_HOME],
+  ['HomeCredentialSecretResolved', LEASED_AGENT_USES_HOME],
+  ['InvokeHomeCredentialTool', LEASED_AGENT_USES_HOME],
+  ['HomeCredentialToolHandled', LEASED_AGENT_USES_HOME],
+  ['CaptureForHomeVault', LEASED_AGENT_USES_HOME],
+  ['HomeVaultCapturePrepared', LEASED_AGENT_USES_HOME],
+  ['PullProjectEnvironmentSecret', LEASED_AGENT_USES_HOME],
+  ['ProjectEnvironmentSecretPulled', LEASED_AGENT_USES_HOME],
+  ['ManagedSliceRelayTokenRefreshed', 'row 581: a managed slice keeps its relay token fresh through its home while it runs'],
+])
+
 // [{enumName, variant, line, fields}] for the variants of one enum, comments and literals hidden.
 function variants(code, open, end) {
   const body = code.slice(open + 1, end)
@@ -43,7 +59,7 @@ export default {
   name: 'no-kernel-credential-fetch',
   why: 'present before this check existed',
   rule: 'AGENTS.md runtime rule 8: no kernel depends on another kernel after installation, so credentials and config are transferred once and never fetched or shipped per launch',
-  rootFix: 'transfer the credential once as an owner-started copy (docs/PROVIDER_ACCOUNTS.md) and let the receiving kernel use its own copy; then delete the variant, or name an install-time transfer in TRANSFERS of scripts/checks/no-kernel-credential-fetch.mjs',
+  rootFix: 'transfer the credential once as an owner-started copy (docs/PROVIDER_ACCOUNTS.md) and let the receiving kernel use its own copy; then delete the variant, or name an install-time transfer in TRANSFERS of scripts/checks/no-kernel-credential-fetch.mjs (NAMED_EXCEPTIONS holds only what the owner decided, row 581)',
   scan(ctx) {
     const findings = []
     for (const file of ctx.files.filter(f => PEER_FILES.test(f))) {
@@ -55,7 +71,7 @@ export default {
         const end = closing(code, open)
         if (end < 0) continue
         for (const { variant, at, fields } of variants(code, open, end)) {
-          if (TRANSFERS.has(variant)) continue
+          if (TRANSFERS.has(variant) || NAMED_EXCEPTIONS.has(variant)) continue
           const hits = [...new Set([...(NAMED.test(variant) ? [variant] : []), ...(fields.match(TYPE_NAME) ?? []).filter(type => MARKER.test(type))])]
           if (!hits.length) continue
           findings.push({ file, line: code.slice(0, at).split('\n').length, what: `${posix.basename(file)} ${m[1]}::${variant} moves a credential between kernels (${hits.join(', ')})` })

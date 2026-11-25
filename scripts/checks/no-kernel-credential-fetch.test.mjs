@@ -26,8 +26,8 @@ test('a launch variant that carries a provider credential is red, with the line'
 })
 
 test('a request that asks another kernel for a Vault value is red', () => {
-  const r = makeRepo(files('    ResolveHomeCredentialSecret { credential_id: String },\n'))
-  assert.match(planted(r, 'resolve'), /RelayPeerRequest::ResolveHomeCredentialSecret moves a credential/)
+  const r = makeRepo(files('    ResolveWorkerCredentialSecret { credential_id: String },\n'))
+  assert.match(planted(r, 'resolve'), /RelayPeerRequest::ResolveWorkerCredentialSecret moves a credential/)
   r.dispose()
 })
 
@@ -43,9 +43,15 @@ test('an install-time transfer the check names passes', () => {
   r.dispose()
 })
 
-test('a Project Environment secret pull is red until row 581 rules on it', () => {
-  const r = makeRepo(files('    PullProjectEnvironmentSecret { project_id: String, name: String },\n'))
-  assert.match(planted(r, 'pull'), /RelayPeerRequest::PullProjectEnvironmentSecret moves a credential between kernels/)
+test('the run-time home Vault and Environment uses row 581 names as exceptions pass', () => {
+  const r = makeRepo(files('    ResolveHomeCredentialSecret { credential_id: String },\n    InvokeHomeCredentialTool { credential_id: String },\n    CaptureForHomeVault { capture: CredentialCapture },\n    PullProjectEnvironmentSecret { project_id: String, name: String },\n    ManagedSliceRelayTokenRefreshed { relay_token: RelayManagedSliceToken },\n'))
+  assert.equal(r.run(check.name).status, 0)
+  r.dispose()
+})
+
+test('a credential request outside the named exceptions is still red', () => {
+  const r = makeRepo(files('    FetchHomeVaultSecret { credential_id: String },\n'))
+  assert.match(planted(r, 'fetch'), /RelayPeerRequest::FetchHomeVaultSecret moves a credential between kernels/)
   r.dispose()
 })
 
