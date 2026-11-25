@@ -122,17 +122,23 @@ test('a plain card is bound again to the whole page after the browser restarted,
   }
   await assert.rejects(region({ card_id: undefined, ref: undefined, rebind: true }), { code: 'user_domain_stale_reference' });
 }));
-test('a verification card whose controller state was lost to a restart is retired, never reported as finished', () => withHost(async ({ host, snapshot, region }) => {
-  await snapshot();
+test('a verification card whose proof was lost with the restart settles unavailable, never as a completed card', () => withHost(async ({ host, snapshot, region }) => {
   const verification = { challenge_id: 'challenge-one', url: 'https://example.com/verify', accepted_json_pointer: '/accepted' };
-  const first = await region({ card_id: 'proof-card', verification });
+  await snapshot();
+  const first = await region({ card_id: 'verification', verification });
   assert.equal(first.state, 'present');
-  // The kernel restarted: the controller lost its anchors and remembered references, the card still names its proof.
-  host.generation = 2; host.cardReferences.clear(); host.cardAnchors.clear();
-  const lost = await region({ card_id: 'proof-card', verification, generation: 1, document_id: 'doc' });
-  assert.equal(lost.state, 'unavailable', 'a proof belongs to one document: no receipt, no completion');
-  const waiting = await region({ card_id: 'text-card', done_text: 'Connected', generation: 1, document_id: 'doc' });
-  assert.equal(waiting.state, 'unavailable');
+  assert.ok(host.cardAnchors.get('agent:a\0verification').verification, 'the card is watching for its proof');
+  // The kernel restarted: a new controller generation that remembers no anchor and no snapshot reference.
+  host.generation = 2;
+  host.cardReferences.clear(); host.cardAnchors.clear();
+  // The recovered card polls with the old generation and its verification condition.
+  const lost = await region({ card_id: 'verification', verification, generation: 1, document_id: 'doc' });
+  assert.equal(lost.state, 'unavailable', 'a lost proof is reported to the waiting agent, not settled as success');
+  assert.equal(lost.reason, 'Browser restarted');
+  // The same poll for a plain card is still the restart notice the kernel rebinds from.
+  const plain = await region({ card_id: 'plain', generation: 1, document_id: 'doc' });
+  assert.equal(plain.state, 'condition_met');
+  assert.equal(plain.reason, 'Browser restarted');
 }));
 
 test('MP-08/MP-10 card geometry follows scrolling, movement and viewport resize without another snapshot', () => withHost(async ({ snapshot, region, state }) => {
