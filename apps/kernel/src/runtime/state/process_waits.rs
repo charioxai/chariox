@@ -37,7 +37,7 @@ impl KernelRuntimeState {
             }
             let (change, state) = (&event.change, &event.state);
             let (summary, waited_ms, ended) = match (change, state) {
-                (WaitChange::Stopped { reason }, _) => {
+                (WaitChange::Stopped { reason, .. }, _) => {
                     ("stopped".to_string(), None, Some(reason.clone()))
                 }
                 (WaitChange::Resumed { waited_ms }, _) => {

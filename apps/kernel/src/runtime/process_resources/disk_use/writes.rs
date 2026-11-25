@@ -9,6 +9,12 @@ use std::path::PathBuf;
 pub(in crate::runtime::process_resources) struct WriteGrowth {
     #[cfg(target_os = "linux")]
     files: BTreeMap<(u64, u64), FileGrowth>,
+    /// The one volume it last sent output to: its id and a directory on it.
+    /// A command that writes one short-lived file after another is seen with
+    /// a file open in few samples; the volume stands until it is seen sending
+    /// output elsewhere.
+    #[cfg(target_os = "linux")]
+    last: Option<(u64, PathBuf)>,
 }
 
 #[cfg(target_os = "linux")]
@@ -32,6 +38,8 @@ impl WriteGrowth {
         // Partial attribution cannot justify a stop; bound each monitor tick.
         let mut budget = 16_384usize;
         let mut volumes = BTreeMap::<u64, VolumeWrites>::new();
+        // A descriptor (other than a standard stream) per receiving volume.
+        let mut outputs = BTreeMap::<u64, PathBuf>::new();
         for pid in pids {
             let base = PathBuf::from(format!("/proc/{pid}"));
             let Ok(fds) = std::fs::read_dir(base.join("fd")) else {
@@ -98,7 +106,19 @@ impl WriteGrowth {
                     written: 0,
                     rate: 0,
                     files: Default::default(),
+                    open: Default::default(),
+                    receiving: false,
                 });
+                volume.open.insert(key.1);
+                let stream = fd
+                    .file_name()
+                    .to_str()
+                    .and_then(|fd| fd.parse::<u32>().ok())
+                    .is_some_and(|fd| fd <= 2);
+                if !stream {
+                    volume.receiving = true;
+                    outputs.entry(key.0).or_insert_with(|| fd.path());
+                }
                 if rate > 0 {
                     volume.files.insert(key.1);
                 }
@@ -107,7 +127,47 @@ impl WriteGrowth {
             }
         }
         self.files = files;
+        self.remember(&mut volumes, &outputs);
         volumes.into_values().collect()
+    }
+
+    /// A many-file copy is between two files at most samples. While it
+    /// holds no output open, the one volume it last sent output to still
+    /// receives it.
+    #[cfg(target_os = "linux")]
+    fn remember(
+        &mut self,
+        volumes: &mut BTreeMap<u64, VolumeWrites>,
+        outputs: &BTreeMap<u64, PathBuf>,
+    ) {
+        match outputs.iter().next() {
+            None => {
+                let Some((id, dir)) = self.last.as_ref() else {
+                    return;
+                };
+                let volume = volumes.entry(*id).or_insert_with(|| VolumeWrites {
+                    id: *id,
+                    path: dir.clone(),
+                    written: 0,
+                    rate: 0,
+                    files: Default::default(),
+                    open: Default::default(),
+                    receiving: false,
+                });
+                volume.path = dir.clone();
+                volume.receiving = true;
+            }
+            Some((id, output)) if outputs.len() == 1 => {
+                // The descriptor closes soon; its directory stays measurable.
+                let dir = std::fs::canonicalize(output)
+                    .ok()
+                    .and_then(|file| file.parent().map(PathBuf::from));
+                if let Some(dir) = dir {
+                    self.last = Some((*id, dir));
+                }
+            }
+            Some(_) => self.last = None,
+        }
     }
 
     #[cfg(not(target_os = "linux"))]
@@ -178,5 +238,66 @@ mod tests {
         drop(file);
         growth.sample(&pids, 5000);
         assert!(!growth.files.contains_key(&(id, inode)));
+    }
+
+    #[test]
+    fn a_closed_output_leaves_its_volume_known_while_the_command_lives() {
+        use std::io::{BufRead, BufReader};
+        let dir = std::env::temp_dir().join(format!("volume-last-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("copy-0");
+        // A writer of its own: the test process may hold other files open.
+        let mut child = std::process::Command::new("python3")
+            .args([
+                "-c",
+                "import sys\nf=open(sys.argv[1],'wb'); f.write(bytes(4096)); f.flush(); print('open',flush=True)\nsys.stdin.readline(); f.close(); print('closed',flush=True)\nsys.stdin.readline()",
+            ])
+            .arg(&path)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            // A log on the same volume through a standard stream.
+            .stderr(std::fs::File::create(dir.join("err.log")).unwrap())
+            .spawn()
+            .unwrap();
+        let mut input = child.stdin.take().unwrap();
+        let mut output = BufReader::new(child.stdout.take().unwrap());
+        let mut line = String::new();
+        output.read_line(&mut line).unwrap();
+        let meta = std::fs::metadata(&path).unwrap();
+        let mut growth = WriteGrowth::default();
+        let pids = [child.id()];
+        let open = growth.sample(&pids, 1000);
+        assert_eq!(open.len(), 1, "{open:?}");
+        assert_eq!(open[0].id, meta.dev());
+        assert!(
+            open[0].open.contains(&meta.ino()),
+            "an open output is not held"
+        );
+        input.write_all(b"close\n").unwrap();
+        line.clear();
+        output.read_line(&mut line).unwrap();
+        let between = growth.sample(&pids, 2500);
+        assert_eq!(
+            between.len(),
+            1,
+            "the volume was forgotten between two files"
+        );
+        assert_eq!(between[0].id, meta.dev());
+        assert_eq!(between[0].path, std::fs::canonicalize(&dir).unwrap());
+        assert!(between[0].receiving && between[0].files.is_empty());
+        assert!(
+            !between[0].open.contains(&meta.ino()),
+            "a closed output is held"
+        );
+        assert!(
+            growth
+                .sample(&pids, 60_000)
+                .iter()
+                .any(|volume| volume.receiving && volume.id == meta.dev()),
+            "the volume was forgotten while the command still lives"
+        );
+        drop(input);
+        child.wait().unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

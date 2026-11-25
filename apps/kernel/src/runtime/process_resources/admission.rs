@@ -8,7 +8,7 @@ use super::*;
 #[cfg(target_os = "macos")]
 use crate::runtime::bounded_process::BoundedCommandExt as _;
 use crate::runtime::kernel_access::process::{inspect, ProcessIdentity};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -30,6 +30,18 @@ const AHEAD: u64 = 2;
 /// A stopped filler needs a moment to give its space back before the next
 /// one is judged.
 const FILLER_SETTLE: Duration = Duration::from_secs(2);
+/// Miguel 11-24: 5 s to full. A volume that its free space says is within this many seconds
+/// of full at the rate it is losing room is short of room now, whatever its floor: a
+/// runaway copy fills gigabytes in seconds (docs/PROCESS_RESOURCES.md).
+const FILL_HORIZON_SECONDS: u64 = 5;
+/// Miguel 11-24: 128 MiB/s. An agent command writing this fast is a runaway (the memory
+/// runaway rate): within the fill horizon the fastest of them is stopped, and no slower
+/// writer is.
+const RUNAWAY_WRITE: u64 = 128 * MIB;
+/// A volume's free space is compared over this long to tell how fast it is
+/// being used up, and over at least `FREE_LOSS_MIN`.
+const FREE_WINDOW: Duration = Duration::from_secs(2);
+const FREE_LOSS_MIN: Duration = Duration::from_millis(100);
 const REMEMBERED: usize = 4096;
 /// Paused commands keep their memory. When memory stays short this long
 /// without the pool gaining room, the largest paused command ends.
@@ -131,6 +143,9 @@ pub(super) struct Filling {
     pub rate: u64,
     pub written: u64,
     pub deleted_open: u64,
+    /// Seconds until the volume is full at the rate it fills, when that
+    /// rather than the floor made it short.
+    pub full_in: Option<u64>,
 }
 impl Entry {
     /// It waits from now on, for the reason `wait` names.
@@ -346,6 +361,9 @@ pub(super) struct Ledger {
     resumed_at: BTreeMap<u8, Instant>,
     /// When a command was last stopped for filling the disk.
     filler_at: Option<Instant>,
+    /// The free bytes of each volume a command works in or sends output to, over the
+    /// last seconds: how fast the volume is really being filled.
+    free_seen: BTreeMap<u64, VecDeque<(Instant, u64)>>,
     /// The owner whose command started last for each reason: the next one in
     /// line is the following owner's.
     served: BTreeMap<u8, String>,
@@ -456,6 +474,7 @@ impl Ledger {
             arrivals: 0,
             resumed_at: BTreeMap::new(),
             filler_at: None,
+            free_seen: BTreeMap::new(),
             served: BTreeMap::new(),
             stall: None,
             stall_window: STALL,
@@ -746,9 +765,11 @@ impl Ledger {
         true
     }
 
-    /// Marks the command filling a nearly full volume: the agent's writer
-    /// that wrote the most among those still writing there. A person's own
-    /// command is never chosen.
+    /// Marks the command filling a volume that is short: below half its
+    /// floor, or full within the fill horizon at the rate the kernel's
+    /// commands write to it. A runaway writer goes first, the fastest of
+    /// them; otherwise the writer that wrote the most among those still
+    /// writing there. A person's own command is never chosen.
     fn stop_filler(
         &mut self,
         members: &[Arc<Mutex<Observation>>],
@@ -760,79 +781,115 @@ impl Ledger {
         {
             return None;
         }
-        // A shared writable file can grow because of either holder. Neither
-        // command supplies destructive evidence for that receiving volume.
-        let mut holders = BTreeMap::<(u64, u64), usize>::new();
-        for member in members {
-            let observation = member.lock().unwrap_or_else(|e| e.into_inner());
-            for command in &observation.commands {
-                for output in observation
-                    .disk_writes
-                    .get(&command.pid)
-                    .into_iter()
-                    .flatten()
-                {
-                    for inode in &output.files {
-                        *holders.entry((output.id, *inode)).or_default() += 1;
-                    }
-                }
+        let lost = self.free_loss(members, room);
+        let writers = writers(members);
+        let mut chosen: Option<((bool, u64), &Writer, Filling)> = None;
+        for writer in &writers {
+            // A descriptor can close or be reused between samples.
+            let Some(disk) =
+                disk_room(room.volume, &writer.path).filter(|disk| disk.id == writer.volume)
+            else {
+                continue;
+            };
+            // The rate the volume is really being filled at: what its free space lost.
+            let observed = lost.get(&writer.volume).copied().unwrap_or_default();
+            let below = disk.free < disk.floor / 2;
+            let near_full = observed > 0 && disk.free < observed.saturating_mul(FILL_HORIZON_SECONDS);
+            // Within the fill horizon only a runaway is stopped, the fastest of them: any
+            // agent command writing this fast to that volume, an overwriter too (an accepted
+            // cost in a real emergency, Miguel 11-24).
+            // Below half the floor, as before this rule: only a writer with evidence that it
+            // uses the room (its open files growing, or the volume visibly losing room) is a
+            // candidate; a writer that rewrites what it holds on a steady volume frees nothing.
+            let consuming = writer.grown >= GROWING || observed >= GROWING;
+            if !((below && consuming) || (near_full && writer.rate >= RUNAWAY_WRITE)) {
+                continue;
             }
-        }
-        let mut largest: Option<(u64, u32, Filling, &Arc<Mutex<Observation>>)> = None;
-        for member in members {
-            let observation = member.lock().unwrap_or_else(|e| e.into_inner());
-            for command in &observation.commands {
-                let Some(entry) = observation.admission.get(&command.pid) else {
-                    continue;
-                };
-                if !entry.holdable || command.write_growth < GROWING {
-                    continue;
-                }
-                for output in observation
-                    .disk_writes
-                    .get(&command.pid)
-                    .into_iter()
-                    .flatten()
-                {
-                    if output.rate < GROWING
-                        || output.files.is_empty()
-                        || output.files.iter().any(|inode| {
-                            holders
-                                .get(&(output.id, *inode))
-                                .is_none_or(|count| *count != 1)
-                        })
-                        || largest
-                            .as_ref()
-                            .is_some_and(|(written, ..)| output.written <= *written)
-                    {
-                        continue;
-                    }
-                    // A descriptor can close or be reused between samples.
-                    let Some(disk) = disk_room(room.volume, &output.path)
-                        .filter(|disk| disk.id == output.id && disk.free < disk.floor / 2)
-                    else {
-                        continue;
-                    };
-                    largest = Some((
-                        output.written,
-                        command.pid,
-                        Filling {
-                            free: disk.free,
-                            floor: disk.floor,
-                            rate: output.rate,
-                            written: output.written,
-                            deleted_open: command.deleted_open,
-                        },
-                        member,
-                    ));
-                }
+            let rank = if writer.rate >= RUNAWAY_WRITE {
+                (true, writer.rate)
+            } else {
+                (false, writer.written)
+            };
+            if chosen.as_ref().is_some_and(|(best, ..)| *best >= rank) {
+                continue;
             }
+            chosen = Some((
+                rank,
+                writer,
+                Filling {
+                    free: disk.free,
+                    floor: disk.floor,
+                    rate: writer.rate,
+                    written: writer.written,
+                    deleted_open: writer.deleted_open,
+                    full_in: (!below).then(|| disk.free / observed.max(1)),
+                },
+            ));
         }
-        let (_, pid, filling, member) = largest?;
-        let mut observation = member.lock().unwrap_or_else(|e| e.into_inner());
-        observation.admission.get_mut(&pid)?.filling = Some(filling);
+        let (_, writer, filling) = chosen?;
+        let mut observation = writer.member.lock().unwrap_or_else(|e| e.into_inner());
+        observation.admission.get_mut(&writer.pid)?.filling = Some(filling);
         self.filler_at = Some(Instant::now());
-        Some(member.clone())
+        Some(writer.member.clone())
+    }
+
+    /// How fast each volume a command sends output to is losing free space,
+    /// bytes a second over the last seconds. A volume seen for the first time
+    /// has lost nothing yet.
+    fn free_loss(
+        &mut self,
+        members: &[Arc<Mutex<Observation>>],
+        room: &Room,
+    ) -> BTreeMap<u64, u64> {
+        let now = Instant::now();
+        let mut seen = BTreeMap::<u64, u64>::new();
+        for member in members {
+            let observation = member.lock().unwrap_or_else(|e| e.into_inner());
+            for output in observation.disk_writes.values().flatten() {
+                if seen.contains_key(&output.id) {
+                    continue;
+                }
+                if let Some(disk) =
+                    disk_room(room.volume, &output.path).filter(|disk| disk.id == output.id)
+                {
+                    seen.insert(output.id, disk.free);
+                }
+            }
+            // The volume each command works in is watched from the moment the command is
+            // known, so a copy's first sample already has the free space from before it began.
+            for cwd in observation
+                .admission
+                .values()
+                .filter_map(|entry| entry.seen.as_ref()?.cwd.as_deref())
+            {
+                if let Some(disk) = disk_room(room.volume, cwd) {
+                    seen.entry(disk.id).or_insert(disk.free);
+                }
+            }
+        }
+        self.free_seen.retain(|id, _| seen.contains_key(id));
+        let mut lost = BTreeMap::new();
+        for (id, free) in seen {
+            let history = self.free_seen.entry(id).or_default();
+            history.push_back((now, free));
+            while history
+                .front()
+                .is_some_and(|(at, _)| now.duration_since(*at) > FREE_WINDOW)
+            {
+                history.pop_front();
+            }
+            let Some(&(first_at, first_free)) = history.front() else {
+                continue;
+            };
+            let elapsed = now.duration_since(first_at);
+            let rate = if elapsed >= FREE_LOSS_MIN {
+                (first_free.saturating_sub(free) as u128 * 1000 / elapsed.as_millis().max(1)) as u64
+            } else {
+                0
+            };
+            lost.insert(id, rate);
+        }
+        lost
     }
 
     /// The commands of `current` marked as filling the disk; each is reported
@@ -1405,6 +1462,115 @@ pub(super) fn growth_room(ceiling: u64) -> u64 {
     MAX_GROWTH_ROOM.min(ceiling / 8)
 }
 
+/// An agent's command writing to one volume, as far as the samples can tell.
+struct Writer<'a> {
+    member: &'a Arc<Mutex<Observation>>,
+    pid: u32,
+    volume: u64,
+    path: PathBuf,
+    /// What it writes to the volume: all it writes when it sends output to this
+    /// volume only, otherwise the growth of its open files there.
+    rate: u64,
+    /// What its open files there grew by: allocation seen.
+    grown: u64,
+    written: u64,
+    deleted_open: u64,
+}
+
+/// The agents' commands writing now, each with the volume it writes to.
+fn writers<'a>(members: &'a [Arc<Mutex<Observation>>]) -> Vec<Writer<'a>> {
+    // A shared writable file can grow because of either holder. Neither
+    // command supplies destructive evidence for that receiving volume.
+    let mut holders = BTreeMap::<(u64, u64), usize>::new();
+    for member in members {
+        let observation = member.lock().unwrap_or_else(|e| e.into_inner());
+        for command in &observation.commands {
+            for output in observation
+                .disk_writes
+                .get(&command.pid)
+                .into_iter()
+                .flatten()
+            {
+                for inode in output.open.union(&output.files) {
+                    *holders.entry((output.id, *inode)).or_default() += 1;
+                }
+            }
+        }
+    }
+    let mut writers = Vec::new();
+    for member in members {
+        let observation = member.lock().unwrap_or_else(|e| e.into_inner());
+        for command in &observation.commands {
+            let Some(entry) = observation.admission.get(&command.pid) else {
+                continue;
+            };
+            if !entry.holdable || command.write_growth < GROWING {
+                continue;
+            }
+            let outputs = observation
+                .disk_writes
+                .get(&command.pid)
+                .map(Vec::as_slice)
+                .unwrap_or_default();
+            let shared = |output: &disk_use::VolumeWrites| {
+                output.open.union(&output.files).any(|inode| {
+                    holders
+                        .get(&(output.id, *inode))
+                        .is_none_or(|count| *count != 1)
+                })
+            };
+            // A command sending output to one volume only, through files
+            // nobody else holds, writes all it writes there: a copy of many
+            // files shows no file growing from one sample to the next.
+            let receiving = outputs
+                .iter()
+                .filter(|output| output.receiving)
+                .collect::<Vec<_>>();
+            // Standard streams may go to another volume: their writes are in
+            // the command's rate too, so the rate then says nothing about this one.
+            let only = match receiving.as_slice() {
+                [output]
+                    if !shared(output) && outputs.iter().all(|other| other.id == output.id) =>
+                {
+                    Some(output.id)
+                }
+                _ => None,
+            };
+            for output in outputs {
+                // A command sending output to one volume only writes all it writes
+                // there: a copy of many short-lived files shows no file growing
+                // from one sample to the next. Otherwise only the growth of its
+                // open files counts for the volume.
+                let only_here = only == Some(output.id);
+                let grown = if output.files.is_empty() {
+                    0
+                } else {
+                    output.rate.min(command.write_rate)
+                };
+                let (rate, written) = if only_here {
+                    (command.write_rate, output.written.max(command.writes))
+                } else {
+                    (output.rate.min(command.write_rate), output.written)
+                };
+                if rate < GROWING || shared(output) || (!only_here && output.files.is_empty()) {
+                    continue;
+                }
+                writers.push(Writer {
+                    member,
+                    pid: command.pid,
+                    volume: output.id,
+                    path: output.path.clone(),
+                    rate,
+                    grown,
+                    written,
+                    deleted_open: command.deleted_open,
+                });
+            }
+        }
+    }
+    writers
+}
+
 /// A volume's free bytes against its floor.
 #[derive(Clone, Copy)]
 pub(super) struct Disk {
@@ -1838,6 +2004,7 @@ mod launcher_pause_tests {
                 steady_growth: 0,
                 writes: 0,
                 write_growth: 0,
+                write_rate: 0,
             })
             .collect();
         let mut admission = Ledger::new(None);

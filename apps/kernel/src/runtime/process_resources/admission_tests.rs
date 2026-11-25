@@ -140,6 +140,31 @@ fn volume_with(free: u64) -> Arc<pool::Pool> {
     ))
 }
 
+/// A volume of `total` bytes whose free space starts at `free` and falls by
+/// `per_second` from its first reading: the files a copy removes between two
+/// samples in these tests would have stayed, as in the 11-22 runaway.
+#[cfg(target_os = "linux")]
+fn losing_volume(free: u64, per_second: u64, total: u64) -> Arc<pool::Pool> {
+    let started = Arc::new(std::sync::OnceLock::<std::time::Instant>::new());
+    Arc::new(pool::Pool::with_volume(
+        1 << 40,
+        Box::new(move |path| {
+            use std::os::unix::fs::MetadataExt;
+            let lost = started
+                .get_or_init(std::time::Instant::now)
+                .elapsed()
+                .as_millis() as u64
+                * per_second
+                / 1000;
+            Some(admission::Space {
+                id: std::fs::metadata(path).ok()?.dev(),
+                free: free.saturating_sub(lost),
+                total,
+            })
+        }),
+    ))
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn a_command_filling_the_disk_is_stopped_with_its_reason_never_paused() {
@@ -158,7 +183,7 @@ fn a_command_filling_the_disk_is_stopped_with_its_reason_never_paused() {
     assert!(
         events.iter().any(|event| matches!(
             &event.change,
-            WaitChange::Stopped { reason } if reason.contains("was filling it")
+            WaitChange::Stopped { reason, .. } if reason.contains("was filling it")
         )),
         "the room was not told why the writer ended: {events:?}"
     );
@@ -168,6 +193,128 @@ fn a_command_filling_the_disk_is_stopped_with_its_reason_never_paused() {
             .all(|event| !matches!(event.change, WaitChange::Began)),
         "the writer was paused first: {events:?}"
     );
+}
+
+/// A copy of many files (the 11-22 runaway's shape): 8 MiB files, each
+/// written, closed and removed between two samples, at about 200 MiB/s for
+/// at most 8 s. No single file is ever seen growing.
+fn many_file_writer() -> String {
+    format!(
+        "python3 -c '{DIE_WITH_PARENT}import os,sys,time\nchunk=bytes(8388608)\nend=time.time()+8\ni=0\nwhile time.time()<end and os.path.isdir(sys.argv[1]):\n p=os.path.join(sys.argv[1],\"copy-%d\" % i); i+=1\n with open(p,\"wb\") as f: f.write(chunk)\n os.unlink(p); time.sleep(0.04)' \"$0\""
+    )
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_fast_many_file_copy_is_stopped_while_the_disk_still_has_room() {
+    take_wait_events();
+    // 512 MiB free is above half the floor: only the rate says the disk is
+    // seconds from full: the copy's 200 MiB/s is what the volume really loses.
+    let pool = losing_volume(512 * MIB, 200 * MIB, 100 * GIB);
+    let mut writer = Workload::run(
+        domain(&pool, "copy", false),
+        &[("copy", many_file_writer())],
+    );
+    settle(4);
+    assert!(
+        !writer.alive("copy"),
+        "a copy filling the disk in seconds kept writing"
+    );
+    writer.assert_told("copy", "was filling it");
+    assert!(
+        take_wait_events().iter().any(|event| matches!(
+            &event.change,
+            WaitChange::Stopped { reason, .. } if reason.contains("was filling it")
+        )),
+        "the room was not told why the copy ended"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_fast_writer_on_a_roomy_disk_and_a_slow_one_near_the_floor_keep_running() {
+    take_wait_events();
+    let roomy = volume_with(50 * GIB);
+    let mut fast = Workload::run(
+        domain(&roomy, "fast", false),
+        &[("copy", many_file_writer())],
+    );
+    let tight = volume_with(512 * MIB);
+    let mut slow = Workload::run(
+        domain(&tight, "slow", false),
+        &[("write", writer_command())],
+    );
+    settle(4);
+    assert!(fast.alive("copy"), "a fast writer with room was stopped");
+    assert!(slow.alive("write"), "a slow writer with room was stopped");
+    assert!(
+        take_wait_events()
+            .iter()
+            .all(|event| !matches!(event.change, WaitChange::Stopped { .. })),
+        "a writer was stopped without pressure"
+    );
+}
+
+/// A 3 GiB volume (floor 64 MiB) with `free` bytes left.
+#[cfg(target_os = "linux")]
+fn small_volume_with(free: u64) -> Arc<pool::Pool> {
+    Arc::new(pool::Pool::with_volume(
+        1 << 40,
+        Box::new(move |path| {
+            use std::os::unix::fs::MetadataExt;
+            Some(admission::Space {
+                id: std::fs::metadata(path).ok()?.dev(),
+                free,
+                total: 3 * GIB,
+            })
+        }),
+    ))
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_writer_in_bursts_with_room_for_its_average_keeps_running() {
+    take_wait_events();
+    // 8 MiB at once every 0.8 s: one sample reads 32 MiB/s, five seconds of
+    // which would not fit in 120 MiB; its 10 MiB/s average does.
+    let pool = small_volume_with(120 * MIB);
+    let command = format!(
+        "python3 -c '{DIE_WITH_PARENT}import os,sys,time\nf=open(sys.argv[1],\"wb\")\nfor i in range(8):\n f.write(bytes(8388608)); f.flush(); os.fsync(f.fileno()); time.sleep(0.8)\n if i % 2: f.seek(0); f.truncate()' \"$0/out\""
+    );
+    let mut writer = Workload::run(domain(&pool, "bursts", false), &[("write", command)]);
+    settle(5);
+    assert!(
+        writer.alive("write"),
+        "a writer with room for its average was stopped: {}",
+        writer.told("write")
+    );
+    assert!(
+        take_wait_events()
+            .iter()
+            .all(|event| !matches!(event.change, WaitChange::Stopped { .. })),
+        "a bursty writer was stopped without pressure"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_writer_of_short_lived_files_is_stopped_on_the_volume_it_was_last_seen_on() {
+    take_wait_events();
+    // One output held open long enough to be seen, a pause, then 8 MiB files
+    // each open for a few milliseconds, twice a second: almost no sample
+    // sees one open, and 40 MiB lasts less than five seconds at that pace
+    // (16 MiB/s, which the volume really loses).
+    let pool = losing_volume(40 * MIB, 16 * MIB, 3 * GIB);
+    let command = format!(
+        "python3 -c '{DIE_WITH_PARENT}import os,sys,time\nd=sys.argv[1]\nf=open(os.path.join(d,\"first\"),\"wb\")\nfor _ in range(8):\n f.write(bytes(1048576)); f.flush(); time.sleep(0.1)\nf.close(); time.sleep(3)\nend=time.time()+10\ni=0\nwhile time.time()<end and os.path.isdir(d):\n p=os.path.join(d,\"part-%d\" % i); i+=1\n with open(p,\"wb\") as g: g.write(bytes(8388608))\n os.unlink(p); time.sleep(0.5)' \"$0\""
+    );
+    let mut writer = Workload::run(domain(&pool, "parts", false), &[("parts", command)]);
+    settle(9);
+    assert!(
+        !writer.alive("parts"),
+        "a writer filling a nearly full volume through short-lived files kept writing"
+    );
+    writer.assert_told("parts", "was filling it");
 }
 
 #[cfg(target_os = "linux")]

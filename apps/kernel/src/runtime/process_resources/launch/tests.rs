@@ -180,6 +180,7 @@ fn descendant(unit: &str, pid: u32, admitted: bool) -> Arc<Mutex<Observation>> {
             measured_growth: 0,
             writes: 0,
             write_growth: 0,
+            write_rate: 0,
             effective: pid,
             root: false,
 
