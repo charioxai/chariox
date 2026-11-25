@@ -293,7 +293,7 @@ async fn respond(mut socket: tokio::net::TcpStream, status: &str, response: serd
 }
 
 /// A kernel whose owner allows automatic allocation, one running agent, and its tool token.
-async fn agent_kernel(
+pub(in crate::runtime::state) async fn agent_kernel(
     api_url: String,
 ) -> (
     KernelRuntimeState,

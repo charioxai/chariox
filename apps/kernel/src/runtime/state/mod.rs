@@ -125,6 +125,7 @@ mod job_compute;
 pub(super) use job_compute::stand_in_kernel;
 mod jobs;
 mod leased_agent_file_serve;
+mod kernel_enrollment;
 mod machine_acquisition;
 pub(crate) use machine_acquisition::Approval;
 mod machine_files_runtime;
