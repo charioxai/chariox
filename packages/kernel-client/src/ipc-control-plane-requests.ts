@@ -38,7 +38,10 @@ export function controlPlaneRequest(request: ControlPlaneRequest) { return { Con
 export type ControlPlaneMachineRow = {
   allocation_ref: string; name: string; state: string; revision: number; since: string;
   kernel_id: string | null; machine_id: string | null; available_actions: string[]
+  /** Set when the service stopped or failed the machine without the owner asking; absent for an owner's own stop. */
+  reason?: MachineEventReason
 }
+export type MachineEventReason = "copy_failed" | "hard_stop" | "rental_failed"
 export type ControlPlaneSavedStateRow = {
   saved_state_ref: string; allocation_ref: string; name: string; state: string;
   revision: number; since: string; available_actions: string[]

@@ -47,6 +47,7 @@ pub(crate) async fn execute(
     gateway: &crate::runtime::kernel_gateway::KernelGateway,
     request: &ControlPlaneRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
+    let _machines_read_after = crate::runtime::cloud_machine_notices::after(request);
     let capabilities = matches!(request, ControlPlaneRequest::Capabilities {});
     // People use their authenticated owner connection; agents use the same process-bound
     // grant as Rooms, exec and the gateway. A Room bearer alone spends no enrollment.

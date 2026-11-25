@@ -63,7 +63,8 @@ mod owner_view;
 mod person_inbox;
 pub(crate) use decision_holders::StoredDecisionHolder;
 pub(crate) use person_inbox::{
-    PersonInboxState, StoredNotice, WORKFLOW_RELINK_ORIGIN, WORKFLOW_START_NOTICE_PREFIX,
+    PersonInboxState, StoredNotice, CLOUD_MACHINE_NOTICE_PREFIX, RETENTION_MS,
+    WORKFLOW_RELINK_ORIGIN, WORKFLOW_START_NOTICE_PREFIX,
 };
 mod event_connection_imports;
 pub(crate) use event_connection_imports::{

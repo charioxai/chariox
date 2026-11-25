@@ -86,6 +86,7 @@ pub(crate) mod command_latency;
 pub(crate) mod command_response_refresh;
 pub(crate) mod computer_input_action;
 pub(crate) mod computer_input_execution;
+pub(crate) mod cloud_machine_notices;
 pub(crate) mod control_plane;
 pub(crate) mod credential_enrollment_control;
 pub(crate) mod daemon_health_projection;
