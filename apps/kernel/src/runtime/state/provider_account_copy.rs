@@ -316,3 +316,54 @@ impl KernelRuntimeState {
         Ok(receipt)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The Vault state a client shows for a kernel is the state the kernel's copy
+    /// admission sees: both read the same status of the configured path.
+    #[test]
+    fn copy_admission_sees_the_vault_state_the_status_reports() {
+        let root = crate::test_support::TestWorktree::new("copy-admission-vault-state");
+        let vault = root.path().join("vault.json");
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.user_config.credential_vault.backend =
+            crate::config::CredentialVaultBackend::CharioxEncrypted;
+        config.user_config.credential_vault.path = vault.to_string_lossy().into_owned();
+        let status = || {
+            crate::secret::chariox_encrypted_vault_status(&config.user_config.credential_vault.path)
+                .unwrap()
+        };
+        let admission = || match unlocked(&config) {
+            Ok(()) => true,
+            Err(DaemonError::ProviderAccountCopy {
+                code: "provider_account_copy_vault_locked",
+                ..
+            }) => false,
+            Err(other) => panic!("a readable Vault must not fail otherwise: {other}"),
+        };
+
+        // No Vault yet: waiting for a passphrase, never shown or treated as open.
+        assert!(status().awaiting_passphrase);
+        assert!(!status().unlocked);
+        assert!(!admission());
+
+        crate::secret::create_chariox_encrypted_vault_for_test(&vault, "fixture-pass").unwrap();
+        assert!(!status().unlocked);
+        assert!(!admission());
+
+        crate::secret::unlock_chariox_encrypted_vault(
+            &vault,
+            "fixture-pass",
+            crate::secret::VaultUnlockLease::KernelShutdown,
+        )
+        .unwrap();
+        assert!(status().unlocked);
+        assert!(admission());
+
+        crate::secret::lock_chariox_encrypted_vault(&vault).unwrap();
+        assert!(!status().unlocked);
+        assert!(!admission());
+    }
+}

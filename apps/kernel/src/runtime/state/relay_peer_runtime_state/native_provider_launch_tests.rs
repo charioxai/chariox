@@ -373,10 +373,11 @@ async fn cold_claude_credential_preflight_does_not_fence_the_home_prompt() {
     );
 }
 
-// MP-08 / MP-10 / MP-11: delaying the retryable preflight must not
-// remove the durable fence for a genuinely unavailable selected profile.
+// A selected profile the worker does not hold answers with its own code and
+// leaves the prompt unfenced: the home hands the account over again and submits
+// the same prompt, which a durable rejection receipt would block.
 #[tokio::test]
-async fn unavailable_claude_profile_keeps_a_definitive_rejection_receipt() {
+async fn unavailable_claude_profile_leaves_the_prompt_open_for_a_fresh_handover() {
     let fixture = native_lease_fixture();
     let home_prompt_id = "home-unavailable-profile";
     let context = crate::transport::relay_peer::RemoteGitTurnContext {
@@ -418,20 +419,16 @@ async fn unavailable_claude_profile_keeps_a_definitive_rejection_receipt() {
     assert!(matches!(
         error,
         DaemonError::LocalTransport {
-            operation: "update leased agent profile",
+            operation: crate::transport::relay_peer::REMOTE_PROVIDER_ACCOUNT_MISSING_OPERATION,
             ..
         }
     ));
-    let receipt = fixture
+    assert!(fixture
         .state
         .query_relay_leased_prompt_receipt(&fixture.leased_agent_id, home_prompt_id)
         .await
         .unwrap()
-        .expect("permanent rejection must remain durable");
-    assert_eq!(
-        receipt.phase,
-        crate::transport::relay_peer::LeasedPromptReceiptPhase::SteerRejected
-    );
+        .is_none());
 }
 
 #[tokio::test]

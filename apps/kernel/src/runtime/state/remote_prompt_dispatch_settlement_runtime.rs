@@ -263,11 +263,12 @@ impl KernelRuntimeState {
                         crate::runtime::metaagent_event::MetaagentEventPromptDeliveryStatus::Failed,
                         Some(error.to_string()),
                     );
-                    owned.record_cancelled_prompt_settlement(
+                    owned.record_failed_prompt_settlement(
                         &dispatch.session_id,
                         &dispatch.agent_id,
                         &settled_prompt,
                         settled_prompt.durable_delivery_provider_run_id(),
+                        remote_dispatch_failure_outcome(&error, &dispatch.worker_kernel_id),
                     );
                     if let (Some(workflow_run_id), Some(workflow_node_run_id)) = (
                         settled_prompt.workflow_run_id(),
@@ -323,4 +324,52 @@ impl KernelRuntimeState {
         }
         Ok(())
     }
+}
+
+/// Why a remote prompt could not start, in words for the person looking at the
+/// agent: the card and the turn carry this instead of a bare Error.
+pub(super) fn remote_dispatch_failure_outcome(
+    error: &DaemonError,
+    worker_kernel_id: &str,
+) -> crate::provider::TurnOutcome {
+    use crate::provider::TurnOutcomeKind;
+    let text = error.to_string();
+    let missing_account_code = matches!(
+        error,
+        DaemonError::RelayTransport { code, .. }
+            if code == crate::transport::relay_peer::REMOTE_PROVIDER_ACCOUNT_MISSING_CODE
+    );
+    let (kind, retryable, reason) = if missing_account_code
+        || text.contains("account is unavailable on the worker")
+    {
+        (
+            TurnOutcomeKind::Other,
+            false,
+            format!(
+                "Worker kernel {worker_kernel_id} does not hold the selected account and could not be given it. Copy the account to that kernel or choose another account."
+            ),
+        )
+    } else if text.contains("could not resolve executable") {
+        (
+            TurnOutcomeKind::Other,
+            false,
+            format!(
+                "The provider's program is not installed on worker kernel {worker_kernel_id}. Install it there."
+            ),
+        )
+    } else if text.contains("target_not_connected") || text.contains("not connected") {
+        (
+            TurnOutcomeKind::Network,
+            true,
+            format!("Worker kernel {worker_kernel_id} is not connected."),
+        )
+    } else {
+        let detail: String = text.chars().take(240).collect();
+        (
+            TurnOutcomeKind::Other,
+            false,
+            format!("Worker kernel {worker_kernel_id} could not start the provider: {detail}"),
+        )
+    };
+    crate::provider::TurnOutcome::new(kind, retryable, &reason)
 }

@@ -110,4 +110,53 @@ impl KernelRuntimeState {
         status?;
         Ok(confirmed)
     }
+
+    /// The worker answered that it no longer holds the account the home recorded
+    /// as installed there. Hand it over again under the same lease, so the same
+    /// prompt can be submitted once more.
+    pub(super) async fn reinstall_remote_prompt_account(
+        &self,
+        dispatch: &crate::app::KernelRemotePromptDispatch,
+    ) -> Result<(), DaemonError> {
+        let agent = self.owned.agent_store.get_agent(&dispatch.agent_id)?;
+        let binding =
+            agent
+                .remote_execution()
+                .cloned()
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "reinstall remote provider account",
+                    message: "the agent no longer runs on a worker".into(),
+                })?;
+        let config = self.config_snapshot().await;
+        let update = owned::OwnedRemoteAgentProfileUpdate {
+            worker_kernel_id: binding.worker_kernel_id.clone(),
+            execution_lease_id: binding.execution_lease_id.clone(),
+            leased_agent_id: binding.leased_agent_id.clone(),
+            relay_url: binding.relay_url.clone(),
+            relay_token: binding.relay_token.clone(),
+            provider: agent.provider().to_string(),
+            account_profile: agent.provider_account_profile().to_string(),
+            model: None,
+            effort: None,
+        };
+        let mut config = config;
+        if let (Some(url), Some(token)) = (update.relay_url.clone(), update.relay_token.clone()) {
+            config.apply_remote_relay_override(url, token);
+        }
+        let installed = self
+            .ensure_remote_profile_account(&dispatch.agent_id, &update, &config)
+            .await?;
+        if installed != update.account_profile {
+            // The worker keeps its own login for this account; the leased agent
+            // still names the profile it was placed with.
+            return Err(DaemonError::LocalTransport {
+                operation: "reinstall remote provider account",
+                message: format!(
+                    "the worker holds this account as `{installed}`, not `{}`; place the agent again",
+                    update.account_profile
+                ),
+            });
+        }
+        Ok(())
+    }
 }
