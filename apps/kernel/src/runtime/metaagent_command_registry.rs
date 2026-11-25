@@ -333,9 +333,9 @@ fn routed_family_policy(first: &str, tokens: &[String]) -> Option<MetaCommandExe
             }),
         },
         "room" => match tokens.get(1).map(String::as_str) {
-            Some("list" | "agents" | "cards" | "create" | "delete") => Some(MetaCommandExecutionPolicy::Routed),
+            Some("list" | "agents" | "cards" | "card" | "create" | "delete") => Some(MetaCommandExecutionPolicy::Routed),
             _ => Some(MetaCommandExecutionPolicy::NotRouted {
-                message: "routed room commands: `room list`, `room agents <room-id>`, `room cards [room-id]`, `room create` and `room delete <room-id>`".to_string(),
+                message: "routed room commands: `room list`, `room agents <room-id>`, `room cards [room-id]`, `room card <card-id> [room-id]`, `room create` and `room delete <room-id>`".to_string(),
             }),
         },
         "slice" => match tokens.get(1).map(String::as_str) {

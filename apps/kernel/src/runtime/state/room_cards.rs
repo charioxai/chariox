@@ -229,6 +229,71 @@ impl KernelRuntimeState {
         Ok(serde_json::json!({"room_id": target.id(), "cards": cards, "next_after": next_after}))
     }
 
+    /// Why a card is not taking the person's input, for the agent that raised it (or any agent of
+    /// the owner's rooms): the Tab, generation and document it is bound to, what the browser shows
+    /// now, who holds the Tab's input, and the last input taken and refused. Names and times only.
+    pub(crate) fn owner_room_card(
+        &self,
+        caller_id: &str,
+        card_id: &str,
+        room: Option<&str>,
+    ) -> Result<serde_json::Value, DaemonError> {
+        let caller = self.owned.agent_store.get_agent(caller_id)?;
+        let source = self.owned.session_store.get_session(caller.session_id())?;
+        let target = match room {
+            Some(room) => self.owned.session_snapshot(room)?,
+            None => source.clone(),
+        };
+        self.owned.authorize_owner_room(&source, &caller, &target)?;
+        let interaction = target
+            .active_interactions()
+            .iter()
+            .find(|interaction| interaction.id() == card_id)
+            .ok_or_else(|| {
+                denied("no pending card with that id in the room; list them with `room cards`")
+            })?;
+        let browser = interaction.view().map(|view| {
+            let bound = &view.browser_region;
+            let user = self.provider_account_authority_owner_user_id(caller.owner_user_id());
+            let tab = self
+                .owned
+                .kernel_browser_host
+                .card_tab_state(&user, &bound.tab_id);
+            let (taken, refused) = self.browser_input_log.read(&bound.tab_id);
+            let now_ms = crate::session::unix_epoch_ms();
+            let outcome = |outcome: Option<super::browser_input_log::InputOutcome>| {
+                outcome.map(|outcome| {
+                    let mut row = serde_json::to_value(&outcome).unwrap_or_default();
+                    row["age_ms"] = now_ms.saturating_sub(outcome.at_ms).into();
+                    row
+                })
+            };
+            let findings = card_findings(bound, tab.as_ref().ok(), taken.as_ref(), refused.as_ref());
+            serde_json::json!({
+                "bound": {
+                    "tab_id": bound.tab_id,
+                    "ref": bound.reference,
+                    "generation": bound.generation,
+                    "document_id": bound.document_id,
+                    "origin": bound.origin,
+                },
+                "tab": match &tab {
+                    Ok(state) => state.clone(),
+                    Err(reason) => serde_json::json!({"unavailable": reason}),
+                },
+                "input": {"last_taken": outcome(taken), "last_refused": outcome(refused)},
+                "findings": findings,
+            })
+        });
+        Ok(serde_json::json!({
+            "id": interaction.id(),
+            "room_id": target.id(),
+            "agent_id": interaction.agent_id().or_else(|| interaction.related_agent_id()),
+            "kind": interaction.kind(),
+            "browser": browser,
+        }))
+    }
+
     pub(crate) fn owner_room_agents(
         &self,
         caller_id: &str,
@@ -315,5 +380,121 @@ impl KernelRuntimeState {
         );
         self.schedule_question_answer_delivery(interaction_id)?;
         Ok(ChildDecisionStatus::Answered)
+    }
+}
+
+/// What the numbers say, in words: each finding names what is wrong and what it means for the
+/// card, so the agent need not compare generations and documents itself.
+fn card_findings(
+    bound: &crate::session::RuntimeInteractionBrowserRegion,
+    tab: Option<&serde_json::Value>,
+    taken: Option<&super::browser_input_log::InputOutcome>,
+    refused: Option<&super::browser_input_log::InputOutcome>,
+) -> Vec<serde_json::Value> {
+    let finding = |code: &str, text: String| serde_json::json!({"code": code, "text": text});
+    let mut findings = Vec::new();
+    match tab {
+        None => findings.push(finding(
+            "browser_unreadable",
+            "the kernel could not read this Tab's state; the browser may be starting or gone".into(),
+        )),
+        Some(state) if state["tab_known"] == false => findings.push(finding(
+            "tab_gone",
+            format!(
+                "the browser no longer has Tab {}: the page this card shows is gone, so no input can reach it; raise the card again on a current Tab",
+                bound.tab_id
+            ),
+        )),
+        Some(state) => {
+            if state["generation"].as_u64().is_some_and(|now| now != bound.generation) {
+                findings.push(finding(
+                    "generation_changed",
+                    format!(
+                        "the card is bound to browser generation {} and the browser is at {}: it restarted since the card was raised, so input bound to the old generation is refused; raise the card again",
+                        bound.generation, state["generation"]
+                    ),
+                ));
+            }
+            if state["document_id"].as_str().is_some_and(|now| now != bound.document_id) {
+                findings.push(finding(
+                    "document_changed",
+                    format!(
+                        "the card is bound to document {} and the Tab now shows {}: the page navigated or reloaded after the card was raised, so input bound to the old document is refused; raise the card again",
+                        bound.document_id, state["document_id"]
+                    ),
+                ));
+            }
+            for holder in state["input_held_by"].as_array().into_iter().flatten() {
+                findings.push(finding(
+                    "input_held",
+                    format!(
+                        "this Tab's input is held by {} ({})",
+                        holder["label"].as_str().unwrap_or("an actor"),
+                        holder["kind"].as_str().unwrap_or("unknown kind")
+                    ),
+                ));
+            }
+        }
+    }
+    if let Some(refused) = refused {
+        findings.push(finding(
+            "last_input_refused",
+            format!(
+                "the last refused {} input said: {}",
+                refused.kind,
+                refused.reason.as_deref().unwrap_or("no reason recorded")
+            ),
+        ));
+    }
+    if taken.is_none() && refused.is_none() {
+        findings.push(finding(
+            "no_input_seen",
+            "no input has reached the kernel for this Tab since it started: if the person clicked, the client did not send it".into(),
+        ));
+    }
+    findings
+}
+
+#[cfg(test)]
+mod card_findings_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn bound() -> crate::session::RuntimeInteractionBrowserRegion {
+        serde_json::from_value(json!({
+            "tab_id":"t","ref":"r","generation":9,"document_id":"DOC-A","origin":"https://x",
+            "rect":{"x":0,"y":0,"width":1,"height":1},"viewport_width":1,"viewport_height":1
+        }))
+        .unwrap()
+    }
+    fn codes(findings: &[serde_json::Value]) -> Vec<&str> {
+        findings.iter().filter_map(|f| f["code"].as_str()).collect()
+    }
+
+    #[test]
+    fn a_card_bound_to_an_old_generation_or_document_says_which() {
+        let now = json!({"tab_known":true,"generation":10,"document_id":"DOC-B","input_held_by":[]});
+        let found = card_findings(&bound(), Some(&now), None, None);
+        assert_eq!(
+            codes(&found),
+            ["generation_changed", "document_changed", "no_input_seen"]
+        );
+        assert!(found[0]["text"].as_str().unwrap().contains("restarted"));
+        assert!(found[1]["text"].as_str().unwrap().contains("navigated"));
+    }
+
+    #[test]
+    fn a_current_card_whose_input_is_held_names_the_holder() {
+        let now = json!({"tab_known":true,"generation":9,"document_id":"DOC-A",
+            "input_held_by":[{"actor_id":"agent:a","kind":"agent","label":"Agent"}]});
+        let found = card_findings(&bound(), Some(&now), None, None);
+        assert_eq!(codes(&found), ["input_held", "no_input_seen"]);
+        assert!(found[0]["text"].as_str().unwrap().contains("Agent (agent)"));
+    }
+
+    #[test]
+    fn an_unreadable_browser_is_said_not_guessed() {
+        let found = card_findings(&bound(), None, None, None);
+        assert_eq!(codes(&found), ["browser_unreadable", "no_input_seen"]);
     }
 }

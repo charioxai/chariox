@@ -1164,6 +1164,13 @@ impl KernelBrowserHost {
         Ok(model.snapshot())
     }
 
+    /// What a card bound to `host_tab` meets now, from the user's actor model.
+    pub(crate) fn card_tab_state(&self, user: &str, host_tab: &str) -> Result<Value, String> {
+        let model = self.actor_model(user)?;
+        let model = model.lock().map_err(|_| "MD-3: actor lock poisoned")?;
+        Ok(model.card_tab_state(host_tab))
+    }
+
     /// Ends every Tab takeover whose person went quiet, whichever viewer is open. True when one ended.
     pub(crate) fn reclaim_idle_takeovers(&self) -> bool {
         self.reclaim_idle_takeovers_at(std::time::Instant::now())

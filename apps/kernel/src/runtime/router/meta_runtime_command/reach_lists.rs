@@ -51,6 +51,19 @@ impl CommandRouter {
                     }
                 }
             }
+            [first, second, card] | [first, second, card, _]
+                if first == "room" && second == "card" =>
+            {
+                match self
+                    .runtime_state
+                    .owner_room_card(caller.id(), card, tokens.get(3).map(String::as_str))
+                {
+                    Ok(response) => response,
+                    Err(error) => {
+                        return Some(super::result::meta_command_failure_result(command, error))
+                    }
+                }
+            }
             [first, second]
                 if room_surface && first == "slice" && matches!(second.as_str(), "list" | "ls") =>
             {

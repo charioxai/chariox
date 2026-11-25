@@ -333,4 +333,5 @@ mod room_workflow_archive;
 mod self_settings;
 mod subtree;
 
+mod card_state;
 mod cross_room_cards;
