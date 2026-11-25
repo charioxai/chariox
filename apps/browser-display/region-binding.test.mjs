@@ -70,3 +70,18 @@ test('row 341: a whole-page still at the viewer\'s density is admitted only as a
  const plain=new BrowserDisplayPresenter(canvas(),page);
  try{assert.throws(()=>plain.validate(still,0),/geometry\/binding/,'a binding that did not ask keeps one density')}finally{plain.close()}
 });
+test('Row 487: a resize_rebind frame rebinds the crop to a later window epoch at its new size, nothing else does',async()=>{
+ const {reboundBinding,regionInputBinding}=await import('./region-binding.mjs');
+ const binding={source_kind:'region',binding_id:'r',document_id:'d',sequence:3,device_scale_factor:1,css_width:1032,css_height:526,resize_rebind:true};
+ const frame={binding_sequence:4,css_width:1672,css_height:846,device_scale_factor:1};
+ const next=reboundBinding(binding,frame);
+ assert.deepEqual([next.sequence,next.css_width,next.css_height,next.binding_id],[4,1672,846,'r']);
+ assert.deepEqual(regionInputBinding(next),{binding_id:'r',sequence:4},'input names the new window epoch');
+ assert.equal(reboundBinding({...binding,resize_rebind:undefined},frame),null,'a subscription that did not ask');
+ assert.equal(reboundBinding(binding,{...frame,binding_sequence:3}),null,'not a later epoch');
+ assert.equal(reboundBinding(binding,{...frame,device_scale_factor:2}),null,'another density');
+ assert.equal(reboundBinding({...binding,viewer_scale:2},{...frame,device_scale_factor:2}),null,'video stays at the page density');
+ assert.equal(reboundBinding({...binding,viewer_scale:2},{...frame,kind:'png',device_scale_factor:2})?.sequence,4,'a still at the viewer density it asked for (row 341)');
+ assert.equal(reboundBinding(binding,{...frame,css_width:1671}),null,'an odd crop');
+ assert.equal(reboundBinding(binding,{...frame,css_width:4000}),null,'over the region bound');
+});

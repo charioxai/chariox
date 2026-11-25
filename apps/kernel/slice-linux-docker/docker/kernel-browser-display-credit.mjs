@@ -35,7 +35,23 @@ export async function displayCreditViewerStill(host,tab,stream,binding){
  stream.viewerStill={source:binding.source,document:binding.document,pixels:binding.pixels,epoch:binding.epoch,policy:binding.policy,still};
  return still;
 }
+// Row 487: a resize_rebind visible page waits while the kernel admits it on the resized window (bounded by its hold), also
+// when the resize lands while a credit is already under way (#1723 review): that credit, which emitted nothing, starts again
+// against the rebound source. A refused rebind ends the pump as a retired region does.
 export async function displayCredit(host, stream, command, signal) {
+  // A credit retries only while a rebind is pending or after one replaced the lease it started with (#1723 review: a
+  // rebind can complete while the credit waits for pixels); never more than a few times for one credit.
+  for (let attempt = 0; ; attempt++) {
+    if (stream.rebinding && !await stream.rebinding.done) throw new UserDomainRefusal('stale_reference', 'region_retired');
+    const lease = stream.regionLease;
+    try { return await displayCreditOnce(host, stream, command, signal); }
+    catch (error) {
+      const rebound = stream.rebinding || (lease && stream.regionLease !== lease);
+      if (!(rebound && error?.code === 'user_domain_stale_reference' && attempt < 3)) throw error;
+    }
+  }
+}
+async function displayCreditOnce(host, stream, command, signal) {
   const geometry=host.pageSize?.(stream.tab_id)??canonicalGeometry;
   const leased=stream.adoptLease?.(command.after_sequence);
   if(leased)host.timing.event?.('native_lease_ended',{frames:leased});
@@ -225,6 +241,8 @@ const nextSourceFrame = (source, ms, signal) => new Promise(resolve => {
 // encoder/refiner/source readiness, nothing. The kernel pump re-issues it.
 export async function displayPushCredit(host, stream, command, signal, { budgetMs = 100, now = () => performance.now() } = {}) {
   if (command.push.reset) stream.resetForDelivery();
+  // Row 487: the pump's credit waits for a pending resize rebind like an ordinary credit does.
+  if (stream.rebinding && !await stream.rebinding.done) throw new UserDomainRefusal('stale_reference', 'region_retired');
   const deadline = now() + budgetMs;
   // P1: a parked Tab display holds the pump's credit until the Tab's next commit unparks it (or the budget ends).
   // A retired binding still ends the pump at once, so the viewer learns it before its next navigation.
