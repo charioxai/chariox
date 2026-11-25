@@ -583,10 +583,12 @@ export class Mirror2 {
     // while small credits are answered): a second reset only queues behind it (r47: a 420 KB reset storm).
     // `behind` counts only packets issued before this credit arrived: the ones issued while it queued (up to seconds on a quiet
     // page with the viewer's eight credits in flight) answered earlier credits and say nothing about this viewer (row 426 F3).
-    const layoutKey = this.layoutKey(tab.tab_id);
+    // Row 527: credits can arrive out of order (one sent before others reaches the kernel after them), so a viewer is
+    // behind only when the newest base it acknowledged in any credit is: a late credit's older base resets nothing.
+    const layoutKey = this.layoutKey(tab.tab_id), base = Math.max(after, stream.acked ?? 0);
     // Protocol 1015 (`layout_delta`): the viewer re-lays out its own copy at the new size at once, so a complete snapshot
     // follows a new page size by an ordinary delta (the size in its header, the page's own reaction as ops), not a reset.
-    const resetReason = after === 0 ? 'client' : after > stream.issued ? 'ahead' : after < (command[ARRIVAL_ISSUED] ?? stream.issued) - 8 && after >= stream.resetAt ? 'behind' : stream.document_id !== tab.document_id ? 'document' : stream.policy !== policy ? 'policy' : (stream.layoutKey ?? layoutKey) !== layoutKey && !this.followsLayout(stream) ? 'layout' : stream.resetAt > stream.issued ? 'snapshot' : stream.fallback !== null ? 'fallback' : null;
+    const resetReason = after === 0 ? 'client' : after > stream.issued ? 'ahead' : base < (command[ARRIVAL_ISSUED] ?? stream.issued) - 8 && base >= stream.resetAt ? 'behind' : stream.document_id !== tab.document_id ? 'document' : stream.policy !== policy ? 'policy' : (stream.layoutKey ?? layoutKey) !== layoutKey && !this.followsLayout(stream) ? 'layout' : stream.resetAt > stream.issued ? 'snapshot' : stream.fallback !== null ? 'fallback' : null;
     let reset = resetReason !== null;
     // A snapshot waits for a busy renderer in every call it makes (the viewer's reset has 30 s). Any other credit waits
     // somewhat longer than the default, but answers before the viewer's own 8 s request timeout.

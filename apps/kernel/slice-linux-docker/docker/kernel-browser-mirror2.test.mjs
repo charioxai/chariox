@@ -1250,6 +1250,29 @@ test('MP-08/MP-10 r47 GitHub storm: credits based before a reset still in flight
  assert.equal((await credit(reset.sequence)).reset,true,'a viewer that applied the reset and is still far behind resets');
 });
 
+test('Row 527: a credit that arrives after newer ones (its older base) does not reset a viewer that is not behind', async () => {
+ const policy={targets:[],values:[]},tab={tab_id:'t',target_id:'T',document_id:'D1'};
+ const connection={isOpen:()=>true,send:async()=>({})};
+ const world={connection,sessionId:'S',frame:{loaderId:'D1'},ref:'m'};
+ const stream={id:'s',wire:2,chain:Promise.resolve(),tab_id:'t',world,issued:0,resetAt:0,document_id:null,policy:null,fallback:null,header:{},resources:new Map(),attrSequence:new Map(),ownScrolls:new Map(),frames:new Map(),frameSlots:new Map(),frameSlot:0,tileKeys:''};
+ const host={protection:policy,generation:1,pageSize,scales:new Map(),tabs:new Map([['t',tab]]),displayTarget:async()=>tab,mirrorTarget:async()=>tab,browser:{connection,documentIdsByTarget:new Map([['T','D1']]),sessionsByTarget:new Map([['T','S']])}};
+ const mirror=new Mirror2({host,streams:new Map([['s',stream]]),require:()=>stream});let snapshots=0;
+ mirror.evaluate=async(_,expression)=>{if(expression==='m.snapshot()'){snapshots++;return{root:'n1',nodes:[{id:'n1',parent:null,kind:'element',tag:'main'}],sheets:[],resources:[],scroll:[0,0],focused:null,selection:null,fragment:null,snapshot_complete:true};}return {ops:[],changed:[],resources:[],sheets:[],scroll:[0,0]};};
+ mirror.frames={attach:async()=>({records:[],ops:[],opaque:[]}),drain:async()=>({ops:[],resources:[],changed:[]}),project:(_,source)=>source,opaqueBoxes:async()=>[]};mirror.materialize=async()=>[];mirror.sheetOps=async()=>[];mirror.tiles=async()=>[];mirror.markClosedHosts=async()=>{};
+ const credit=after=>mirror.next(stream,{subscription_id:'s',generation:1,after_sequence:after,wait_ms:0},'scope');
+ let last=(await credit(0)).sequence;assert.equal(snapshots,1);
+ // A pipelined viewer keeps up: each credit names a base a few packets back (the NYT trace: a3374/i3380).
+ for(let i=0;i<20;i++){const packet=await credit(Math.max(1,stream.issued-5));assert.notEqual(packet.reset,true);last=packet.sequence;}
+ // Then a credit sent earlier arrives late, naming an older base (the trace: a3365/i3381, after a3374).
+ const late=await credit(stream.issued-15);
+ assert.notEqual(late.reset,true,'a late credit does not rebuild the page of a viewer that acknowledged a newer base');
+ assert.equal(snapshots,1,'no snapshot');
+ // A viewer that really fell behind (its newest acknowledged base is far back) still resets.
+ const stuck=stream.acked;let reset=false;
+ for(let i=0;i<12&&!reset;i++)reset=(await credit(stuck)).reset===true;
+ assert.ok(reset,'a viewer whose newest base stays far behind still resets');assert.equal(snapshots,2);
+});
+
 test('MP-08/MP-10 mirrorregion: full-viewport media stays a DOM copy without lossless stills', async () => {
  const policy={targets:[],values:[]},tab={tab_id:'t',target_id:'T',document_id:'D1'};
  const connection={isOpen:()=>true,send:async()=>({})};
