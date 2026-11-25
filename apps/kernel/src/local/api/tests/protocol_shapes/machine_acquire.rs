@@ -23,12 +23,10 @@ fn machine_acquire_snapshot_and_hash() {
         let response: LocalDaemonResponse = serde_json::from_value(shape.clone()).unwrap();
         assert_eq!(serde_json::to_value(response).unwrap(), *shape);
     }
-    assert!(
-        serde_json::from_value::<LocalDaemonRequest>(
-            serde_json::json!({"MachineAcquisition":{"action":"options","token":"must-not-travel"}})
-        )
-        .is_err()
-    );
+    assert!(serde_json::from_value::<LocalDaemonRequest>(
+        serde_json::json!({"MachineAcquisition":{"action":"options","token":"must-not-travel"}})
+    )
+    .is_err());
 }
 
 /// A response carries exactly one of `option` (a named choice) and `offer` (the service's default);
