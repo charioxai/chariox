@@ -126,6 +126,9 @@ struct LiveReply {
     streamed: VecDeque<Streamed>,
     /// Rows taken of the blocks handed over: the terminal may draw them again.
     finished: VecDeque<Vec<String>>,
+    /// The transcript text of blocks completed while no reader had them in memory: a redraw of such a block shows
+    /// more rows than the reader had taken when it was lost, and is recognized by its text instead.
+    completed: VecDeque<String>,
     /// Which reader this is. Block identities are persisted (they are merge keys), and a reader lost to a restart or to
     /// the run registry's eviction counts its blocks from 1 again: the reader's own number keeps its keys from ever
     /// being the earlier reader's.
@@ -140,6 +143,8 @@ struct LiveReply {
     left_over: Option<Vec<String>>,
     /// Rows the screen may show beyond `left_over`: one when it was recalled from the blocks a lost reader had taken.
     left_over_slack: usize,
+    /// The completing text of the block `left_over` was recalled from, when there is one.
+    left_over_text: Option<String>,
     /// The unfinished block of an earlier reader, which the first block this reader streams may go on in.
     unfinished: Option<Unfinished>,
     /// The run's context file: what the reader must not forget when it is lost is kept next to it.
@@ -212,13 +217,22 @@ impl LiveReply {
                 }
                 self.finished.push_back(block.rows.clone());
             }
+            if let Some(text) = &block.completed {
+                if !self.completed.contains(text) {
+                    if self.completed.len() >= KEPT_BLOCKS {
+                        self.completed.pop_front();
+                    }
+                    self.completed.push_back(text.clone());
+                }
+            }
         }
         if self.left_over.is_none() {
-            self.left_over = taken
+            let previous = taken
                 .iter()
                 .rev()
-                .find(|block| block.prompt_id != prompt_id && !block.rows.is_empty())
-                .map(|block| block.rows.clone());
+                .find(|block| block.prompt_id != prompt_id && !block.rows.is_empty());
+            self.left_over = previous.map(|block| block.rows.clone());
+            self.left_over_text = previous.and_then(|block| block.completed.clone());
             // A block's rows are the ones before the last, which was still being written: the screen shows one more.
             self.left_over_slack = usize::from(self.left_over.is_some());
         }
@@ -257,11 +271,13 @@ impl LiveReply {
             block: None,
             streamed: VecDeque::new(),
             finished: VecDeque::new(),
+            completed: VecDeque::new(),
             reader: next_reader(),
             blocks_started: 0,
             previous_rows: HashMap::new(),
             left_over: None,
             left_over_slack: 0,
+            left_over_text: None,
             unfinished: None,
             context_file: None,
             recalled: false,
@@ -276,6 +292,8 @@ impl LiveReply {
             self.left_over =
                 (!showing.is_empty()).then(|| showing.into_iter().map(|row| row.text).collect());
             self.left_over_slack = 0;
+            self.left_over_text = None;
+            self.completed.clear();
             self.block = None;
             self.streamed.clear();
             self.finished.clear();
@@ -304,11 +322,17 @@ impl LiveReply {
         }
         let confirmed = std::mem::replace(&mut self.previous_rows, shown);
         if let Some(left_over) = &self.left_over {
-            if repeats(&rows, left_over, self.left_over_slack) {
+            if repeats(&rows, left_over, self.left_over_slack)
+                || self
+                    .left_over_text
+                    .as_deref()
+                    .is_some_and(|text| drawn_from(&drawn_text(&rows), text))
+            {
                 return None;
             }
             self.left_over = None;
             self.left_over_slack = 0;
+            self.left_over_text = None;
         }
         if rows.is_empty() {
             return None;
@@ -329,6 +353,10 @@ impl LiveReply {
                         .finished
                         .iter()
                         .any(|rows_taken| repeats(&rows, rows_taken, 1))
+                    || (!self.completed.is_empty() && {
+                        let drawn = drawn_text(&rows);
+                        self.completed.iter().any(|text| drawn_from(&drawn, text))
+                    })
                     || !confirmed_row(&confirmed, &rows, 0)
                 {
                     return None;
@@ -519,6 +547,14 @@ fn repeats(rows: &[Row], earlier: &[String], slack: usize) -> bool {
             .iter()
             .zip(earlier)
             .all(|(row, earlier)| row.text == *earlier)
+}
+
+/// The rows of the block on the screen as one text, a row to a line.
+fn drawn_text(rows: &[Row]) -> String {
+    rows.iter()
+        .map(|row| row.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Whether the previous read showed row `index` too: a row repeated on the
