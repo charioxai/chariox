@@ -337,12 +337,14 @@ pub(crate) fn cloud_error_code(error: &DaemonError) -> Option<&str> {
     Some(code.split(':').next().unwrap_or(code))
 }
 
-/// Whether the service answered with its own refusal (a client error naming its reason), so the
-/// request changed nothing there.
+/// Whether the service said nothing is held under the request: it closed the request, or refused
+/// it for stock, budget or an invalid request. Any other failure may have committed the allocation
+/// (`acquire_failure` is the one classification), so the request keeps its place.
 pub(crate) fn cloud_error_is_refusal(error: &DaemonError) -> bool {
-    matches!(error, DaemonError::LocalTransport { message, .. }
-        if message.starts_with("cloud relay request failed with 4"))
-        && cloud_error_code(error).is_some()
+    matches!(
+        acquire_failure(error),
+        AcquireFailure::Closed { .. } | AcquireFailure::Refused { .. }
+    )
 }
 
 /// The reason Cloud gave with its code, as `cloud_status_error` keeps it for a client error.

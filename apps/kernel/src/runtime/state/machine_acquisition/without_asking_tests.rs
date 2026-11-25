@@ -1086,7 +1086,8 @@ async fn a_lost_answer_names_the_generated_request_id_and_a_retry_with_it_settle
         )
         .await
         .unwrap_err();
-    let generated = service.acquires.lock().unwrap()[0]["request_id"]
+    // The service sees the id the kernel derives; the agent is told, and retries with, its own.
+    let derived = service.acquires.lock().unwrap()[0]["request_id"]
         .as_str()
         .unwrap()
         .to_owned();
@@ -1094,13 +1095,22 @@ async fn a_lost_answer_names_the_generated_request_id_and_a_retry_with_it_settle
         panic!("{error}");
     };
     assert_eq!(code, "acquisition_uncertain");
-    assert!(
-        message.contains(&format!("request_id \"{generated}\"")),
-        "{message}"
-    );
+    let generated = message
+        .split("request_id \"")
+        .nth(1)
+        .and_then(|rest| rest.split('"').next())
+        .unwrap_or_else(|| panic!("the answer names the request_id to retry with: {message}"))
+        .to_owned();
+    assert_ne!(generated, derived, "{message}");
+    assert!(!message.contains(&derived), "{message}");
     service.script.lock().unwrap().acquire = AcquireReply::Machine;
     let replayed = acquire(&state, &token, &generated, "small").await.unwrap();
     assert_eq!(replayed["allocation"]["allocation_ref"], "alloc-1");
+    assert_eq!(
+        service.acquires.lock().unwrap().last().unwrap()["request_id"],
+        derived,
+        "the retry reaches the service under the id the lost try used"
+    );
     ledger_reaches(&state, |acquired| {
         acquired.len() == 1 && running(&acquired[0], "alloc-1")
     })
