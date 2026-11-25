@@ -233,6 +233,23 @@ pub struct ControlPlaneMachineRow {
     pub kernel_id: Option<String>,
     pub machine_id: Option<String>,
     pub available_actions: Vec<String>,
+    /// Why the service stopped or failed this machine without the owner asking. Absent for a
+    /// machine the owner stopped. The service sends a code, never text; the kernel writes the
+    /// sentence the person reads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<MachineEventReason>,
+}
+
+/// The closed set of machine events the connected service reports to the owner's kernels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MachineEventReason {
+    /// A managed copy of the owner's context to the machine failed.
+    CopyFailed,
+    /// The service stopped the machine at the owner's spend or machine limit.
+    HardStop,
+    /// The rental, or the machine's first start, failed.
+    RentalFailed,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

@@ -16,11 +16,13 @@ const WORKFLOW_START_REFUSED: &str = "person_inbox.workflow_start_refused";
 const WORKFLOW_STARTED: &str = "person_inbox.workflow_started";
 pub(crate) const WORKFLOW_START_NOTICE_PREFIX: &str = "workflow-start:";
 pub(crate) const WORKFLOW_RELINK_ORIGIN: &str = "kernel";
+/// Origin prefix of the notices the kernel raises from the connected service's machine events.
+pub(crate) const CLOUD_MACHINE_NOTICE_PREFIX: &str = "cloud-machine:";
 const WORKFLOW_START_NOTICE_PATTERN: &str = "workflow-start:*";
 const CARD_STATE: &str = "person_inbox.card_state";
 const MUTE: &str = "person_inbox.mute";
 /// The kernel's existing retention for finished records.
-const RETENTION_MS: u64 = 7 * 24 * 60 * 60 * 1_000;
+pub(crate) const RETENTION_MS: u64 = 7 * 24 * 60 * 60 * 1_000;
 /// Per owner; past it the oldest read notice goes first, then the oldest.
 const NOTICES_PER_OWNER: i64 = 1_024;
 /// An origin may send this many notices in `NOTICE_WINDOW_MS`; the further ones fold into one
@@ -48,6 +50,10 @@ pub(crate) struct StoredNotice {
 impl StoredNotice {
     pub(crate) fn is_workflow_start_refusal(&self) -> bool {
         self.card_id.starts_with(WORKFLOW_START_NOTICE_PREFIX)
+    }
+
+    pub(crate) fn is_cloud_machine(&self) -> bool {
+        self.session_id.is_empty() && self.agent_id.starts_with(CLOUD_MACHINE_NOTICE_PREFIX)
     }
 
     pub(crate) fn is_workflow_relink(&self) -> bool {

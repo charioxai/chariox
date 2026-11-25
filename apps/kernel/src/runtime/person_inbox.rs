@@ -21,6 +21,7 @@ use crate::session::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 
+pub(crate) mod cloud_machine;
 mod provider_account;
 
 /// What an agent sends with `chariox.notify_person`.
@@ -206,7 +207,9 @@ impl OwnedInbox {
                 .extend(owned.notices.into_iter().filter(|notice| {
                     let room_owner = room_owners.get(notice.session_id.as_str());
                     room_owner == Some(&owner)
-                        || (owner == account_owner && provider_account::action(notice).is_some())
+                        || (owner == account_owner
+                            && (provider_account::action(notice).is_some()
+                                || notice.is_cloud_machine()))
                         || (notice.is_workflow_relink() && (show_relink || room_owner.is_some()))
                 }));
             state.snoozes.extend(owned.snoozes);
