@@ -189,6 +189,74 @@ async fn cell_2_a_stated_wait_with_nothing_armed_gets_a_backstop_timer() {
     );
 }
 
+/// Cell 2, review P2: the backstop covers an idle interval. When another turn resumes the agent
+/// and finishes before the deadline, the wait was satisfied: the timer's firing wakes nobody.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cell_2_a_backstop_does_not_wake_an_agent_another_turn_already_resumed() {
+    let team = team_with("nowake-backstop-superseded", None, false).await;
+    say(&team, "Pushed the PR. Waiting for the review.").await;
+    end_turn(&team).await.expect("the turn end is accepted");
+    let store = &team.runtime.owned.durable_state_store;
+    let backstop = wakes(&team)
+        .into_iter()
+        .find(|w| w.kind == "timer")
+        .expect("the backstop is armed");
+
+    // The review arrives as a person's prompt five minutes later; the agent finishes it.
+    let later = "later-turn";
+    store
+        .agent_lifecycle(Operation::Begin {
+            owner: "local".into(),
+            room: team.room.clone(),
+            agent: team.child.clone(),
+            prompt: later.into(),
+            run: Some(team.child_run.clone()),
+            now: crate::session::unix_epoch_ms(),
+        })
+        .unwrap();
+    store
+        .agent_lifecycle(Operation::Settle {
+            room: team.room.clone(),
+            agent: team.child.clone(),
+            prompt: later.into(),
+            run: team.child_run.clone(),
+            has_answer: true,
+            cancelled: false,
+            now: crate::session::unix_epoch_ms(),
+        })
+        .unwrap();
+    let tasks_before = store
+        .agent_tasks(Some(&team.room), Some(&team.child))
+        .unwrap()
+        .len();
+
+    // The deadline passes.
+    store
+        .agent_lifecycle(Operation::FireWakes {
+            now: backstop.next_due_ms.unwrap() + 1_000,
+        })
+        .unwrap();
+    Box::pin(team.runtime.deliver_agent_inbox(&team.room, &team.child))
+        .await
+        .unwrap();
+
+    let woken = store
+        .agent_inbox(&team.room, &team.child, 0)
+        .unwrap()
+        .into_iter()
+        .filter(|event| event.source_id == backstop.id && event.prompt_id.is_some())
+        .count();
+    assert_eq!(woken, 0, "cell 2: the satisfied wait woke the agent again");
+    assert_eq!(
+        store
+            .agent_tasks(Some(&team.room), Some(&team.child))
+            .unwrap()
+            .len(),
+        tasks_before,
+        "cell 2: no turn started for the backstop"
+    );
+}
+
 /// Cell 3: no turn end is refused, with unwatched work running or a wait stated. Holds on main.
 #[tokio::test]
 async fn cell_3_no_turn_end_is_refused() {
