@@ -143,7 +143,7 @@ async fn the_table_lists_a_subscription_with_its_pick_and_counters_and_pause_hol
         "resume delivers the next event: {queued:?}"
     );
     assert!(
-        queued[0].contains("2 new messages:"),
+        queued[0].contains("2 notifications arrived while you were busy:"),
         "resume delivers the next event: {}",
         queued[0]
     );
