@@ -212,9 +212,11 @@ impl SessionRuntimeCommandExecutor {
         idempotency_key: Option<String>,
     ) -> StoreRequestFuture<'_> {
         match request {
-            LocalDaemonRequest::CreateSession(request) => {
-                Box::pin(async move { self.store.create_session(request, caller_user_id).await })
-            }
+            LocalDaemonRequest::CreateSession(request) => Box::pin(async move {
+                self.store
+                    .create_session(request, caller_user_id, caller_metaagent_id)
+                    .await
+            }),
             LocalDaemonRequest::ListProjects(request) => {
                 Box::pin(async move { self.store.list_projects(request, caller_user_id).await })
             }

@@ -5,8 +5,8 @@ use crate::local::{
     AddWorkflowEdgeRequest, AddWorkflowNodeRequest, AliasAgentRequest,
     AliasWorkflowEndpointRequest, AliasWorkflowRequest, AttachToSessionRequest,
     CancelWorkflowRunRequest, CreateSliceRequest, CreateWorkflowEndpointRequest,
-    CreateWorkflowRequest, DestroyAgentRequest, ExtensionKind, FocusAgentRequest,
-    GetCredentialRequest, GetCredentialVaultStatusRequest, GetMcpServerRequest,
+    CreateWorkflowRequest, DeleteSessionRequest, DestroyAgentRequest, ExtensionKind,
+    FocusAgentRequest, GetCredentialRequest, GetCredentialVaultStatusRequest, GetMcpServerRequest,
     GetWorkflowRunRequest, GrantAgentExtensionRequest, ImportMcpServersRequest,
     ImportProviderCapabilitiesRequest, InstallMcpServerRequest, InvokeWorkflowEndpointRequest,
     ListAgentsRequest, ListCredentialsRequest, ListMcpServersRequest, ListWorkflowRunsRequest,
@@ -34,6 +34,7 @@ mod reach_lists;
 mod request;
 mod result;
 mod resume_args;
+mod room_lifecycle;
 mod settings_args;
 mod spawn_args;
 mod summary;

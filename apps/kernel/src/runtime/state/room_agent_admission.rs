@@ -1,6 +1,6 @@
 //! Shared mutation fence below clients/provider bridges. MP-08 / MP-11, A01.
 use super::*;
-use crate::runtime::room_tool_admission::{denied, in_subtree};
+use crate::runtime::room_tool_admission::{denied, in_subtree, owns_object_across_rooms};
 
 impl KernelRuntimeState {
     /// MP-08 / MP-11: retain the admitted typed operation across asynchronous waits.
@@ -78,17 +78,24 @@ impl KernelRuntimeState {
         if matches!(request, LocalDaemonRequest::SetAgentParent(_)) {
             return Err(denied("only the user can change an agent's parent"));
         }
+        let rooms_made_by_agents = self.room_agent_tools_enabled();
+        if let (LocalDaemonRequest::DeleteSession(r), true) = (request, rooms_made_by_agents) {
+            return self.authorize_created_room_delete(actor_id, &r.session_ref);
+        }
         if super::sudo::teardown_request(request) {
             return Err(denied(
                 "room agents cannot tear down sessions, projects or kernels",
             ));
         }
-        if !self.room_agent_tools_enabled() {
+        if !rooms_made_by_agents {
             return Ok(());
         }
         let actor = self.owned.agent_store.get_agent(actor_id)?;
         if actor.archived() {
             return Err(denied("unarchive this agent before using Room tools"));
+        }
+        if matches!(request, LocalDaemonRequest::CreateSession(_)) {
+            return self.authorize_room_create(&actor);
         }
         if let LocalDaemonRequest::SpawnAgent(r) = request {
             if r.session_id != actor.session_id() {
@@ -322,6 +329,57 @@ fn rooms_named(request: &LocalDaemonRequest) -> Vec<String> {
 }
 
 impl KernelRuntimeState {
+    /// Only an agent of the kernel's owner makes Rooms; a guest's agent and an agent of another
+    /// owner ask the owner.
+    fn authorize_room_create(
+        &self,
+        actor: &crate::agent::AgentInstance,
+    ) -> Result<(), DaemonError> {
+        let home = self.owned.session_store.get_session(actor.session_id())?;
+        if self.drives_as_room_guest(&home, actor)
+            || !self.acts_for_kernel_owner(actor.owner_user_id())
+        {
+            return Err(denied(
+                "only the kernel owner's agents can create Rooms; ask the owner to create it",
+            ));
+        }
+        Ok(())
+    }
+
+    /// An agent deletes a Room only when it, or an agent below it, created it with `room create`.
+    /// The Room it runs in and every other Room stay the owner's to delete.
+    fn authorize_created_room_delete(
+        &self,
+        actor_id: &str,
+        room_id: &str,
+    ) -> Result<(), DaemonError> {
+        let actor = self.owned.agent_store.get_agent(actor_id)?;
+        if actor.archived() {
+            return Err(denied("unarchive this agent before using Room tools"));
+        }
+        let owner_only = || {
+            denied("only the agent that created a Room, or an agent above it, can delete it; ask the owner to delete this one")
+        };
+        let room = self
+            .owned
+            .session_store
+            .get_session(room_id)
+            .map_err(|_| denied("room is unavailable; pass a room id from `room list`"))?;
+        let home = self.owned.session_store.get_session(actor.session_id())?;
+        if room.id() == actor.session_id()
+            || self.drives_as_room_guest(&home, &actor)
+            || !self.same_owner(room.owner_user_id(), actor.owner_user_id())
+        {
+            return Err(owner_only());
+        }
+        let agents = self.list_agents();
+        if owns_object_across_rooms(&actor, room.created_by_agent_id(), &agents) {
+            Ok(())
+        } else {
+            Err(owner_only())
+        }
+    }
+
     /// A child may start in another Room of the same owner.
     fn authorize_cross_room_spawn(
         &self,
