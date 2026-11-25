@@ -139,16 +139,17 @@ async fn open_shell(
         .expect("the client opens a kernel terminal");
 }
 
+/// The grants the kernel made for owners' shells, read from its table: a sweep would also look at
+/// processes, and other tests in this binary inject process faults.
 fn shell_grants(state: &crate::runtime::state::KernelRuntimeState) -> usize {
-    let owner = state.owned.config_projection.local_owner_user_id();
     state
-        .list_kernel_access(&owner)
-        .iter()
-        .filter(|grant| {
-            grant
-                .grant_id
-                .starts_with(crate::runtime::kernel_access::OWNER_SHELL_GRANT_PREFIX)
-        })
+        .owned
+        .kernel_access
+        .lock()
+        .unwrap()
+        .grants
+        .keys()
+        .filter(|id| id.starts_with(crate::runtime::kernel_access::OWNER_SHELL_GRANT_PREFIX))
         .count()
 }
 
