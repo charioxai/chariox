@@ -24,9 +24,6 @@ impl KernelRuntimeOwnedState {
         {
             return Err(interaction_error("Invalid unattached kernel decision"));
         }
-        self.ensure_kernel_decision_capacity(owner, &interaction, &|id| {
-            self.session_store.get_session(id).ok()
-        })?;
         let mut pending = self.pending_interactions.write();
         if pending.contains_key(interaction.id())
             || pending.values().any(|p| {
@@ -212,7 +209,7 @@ mod tests {
         )
     }
     #[tokio::test]
-    async fn detached_decisions_share_owner_authority_limits_and_cleanup() {
+    async fn detached_decisions_share_owner_authority_and_cleanup() {
         let state = fixture();
         let mut receivers = Vec::new();
         for number in 0..8 {
@@ -229,10 +226,6 @@ mod tests {
         }
         assert_eq!(state.owned.user_domain_interactions("alice").len(), 8);
         assert!(state.owned.user_domain_interactions("bob").is_empty());
-        assert!(state
-            .create_kernel_operation_interaction("", "alice", interaction("over-limit"))
-            .await
-            .is_err());
         assert!(state
             .resolve_terminal_runtime_interaction("", "detached-0", "deny", None, Some("bob"))
             .await

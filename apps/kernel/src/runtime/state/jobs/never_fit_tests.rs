@@ -132,26 +132,8 @@ async fn run(
 }
 
 #[tokio::test]
-async fn offload_job_larger_than_the_machine_with_remote_jobs_off_is_refused_with_its_reason() {
-    let fixture = super::tests::fixture().await;
-    let value = run(&fixture, job(serde_json::json!({"memory_gib": u32::MAX}))).await;
-    assert_refused(
-        &value,
-        "4294967295 GB of memory",
-        "remote jobs are switched off",
-    );
-}
-
-#[tokio::test]
-async fn offload_job_with_more_cpus_than_the_machine_is_refused_with_its_reason() {
-    let fixture = super::tests::fixture().await;
-    let value = run(&fixture, job(serde_json::json!({"cpus": u32::MAX}))).await;
-    assert_refused(&value, "4294967295 CPUs", "remote jobs are switched off");
-}
-
-#[tokio::test]
 async fn offload_job_larger_than_the_machine_is_refused_after_the_service_has_no_machine_for_it() {
-    let fixture = super::tests::remote_fixture().await;
+    let fixture = super::tests::fixture().await;
     let (server, seen) = machine_service(&fixture.0, no_machines(), "deleted").await;
     let value = run(&fixture, job(serde_json::json!({"memory_gib": u32::MAX}))).await;
     server.abort();
@@ -165,7 +147,7 @@ async fn offload_job_larger_than_the_machine_is_refused_after_the_service_has_no
 
 #[tokio::test]
 async fn offload_job_larger_than_the_machine_asks_for_a_machine_even_with_offloading_off() {
-    let fixture = super::tests::remote_fixture().await;
+    let fixture = super::tests::fixture().await;
     let task = &fixture.2;
     fixture
         .0
@@ -190,7 +172,7 @@ async fn offload_job_larger_than_the_machine_asks_for_a_machine_even_with_offloa
 
 #[tokio::test]
 async fn offload_job_larger_than_the_machine_is_refused_when_the_service_cannot_be_reached() {
-    let fixture = super::tests::remote_fixture().await;
+    let fixture = super::tests::fixture().await;
     let (server, _) = machine_service(&fixture.0, no_machines(), "deleted").await;
     server.abort();
     let _ = server.await;
@@ -204,7 +186,7 @@ async fn offload_job_larger_than_the_machine_is_refused_when_the_service_cannot_
 
 #[tokio::test]
 async fn offload_job_larger_than_the_machine_goes_to_a_machine_that_can_take_it() {
-    let fixture = super::tests::remote_fixture().await;
+    let fixture = super::tests::fixture().await;
     let (state, _, task, _) = &fixture;
     let gib = 100_000;
     let capabilities = serde_json::json!({"kind":"capabilities","machine_allocation":{
@@ -316,7 +298,7 @@ async fn refused_with_unconfirmed_cleanup(fixture: &super::tests::Fixture) -> St
 
 #[tokio::test]
 async fn offload_job_refused_with_unconfirmed_cleanup_is_deleted_by_a_later_status() {
-    let fixture = super::tests::remote_fixture().await;
+    let fixture = super::tests::fixture().await;
     let id = refused_with_unconfirmed_cleanup(&fixture).await;
     let (state, run, task, _) = &fixture;
     let server = super::cleanup_tests::service(
@@ -340,7 +322,7 @@ async fn offload_job_refused_with_unconfirmed_cleanup_is_deleted_by_a_later_stat
 
 #[tokio::test]
 async fn offload_job_refused_with_unconfirmed_cleanup_is_deleted_by_a_later_cancel() {
-    let fixture = super::tests::remote_fixture().await;
+    let fixture = super::tests::fixture().await;
     let id = refused_with_unconfirmed_cleanup(&fixture).await;
     let (state, run, task, _) = &fixture;
     let server = super::cleanup_tests::service(

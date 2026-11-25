@@ -149,7 +149,7 @@ impl Fixture {
 }
 
 #[tokio::test]
-async fn foreign_kernel_quotas_and_lexically_earlier_entries_do_not_starve_local_cleanup() {
+async fn foreign_kernel_decisions_and_lexically_earlier_entries_do_not_starve_local_cleanup() {
     let suffix = rand::random::<u64>();
     let foreign = (0..4)
         .map(|index| Fixture::with_session_id(format!("00-foreign-{index}-{suffix:x}")))
@@ -159,7 +159,6 @@ async fn foreign_kernel_quotas_and_lexically_earlier_entries_do_not_starve_local
         for index in 0..8 {
             foreign_receivers.push(fixture.register(&format!("decision-{index}")).unwrap());
         }
-        assert!(fixture.register("over-owner-limit").is_err());
     }
     let local = Fixture::with_session_id(format!("zz-local-{suffix:x}"));
     let mut local_receiver = local.register("local").unwrap();

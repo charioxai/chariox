@@ -6,6 +6,48 @@ use crate::runtime::command::KernelCommand;
 use crate::session::{RuntimeInteraction, RuntimeInteractionChoice, RuntimeInteractionChoiceStyle};
 use sha2::Digest;
 
+/// Every machine acquisition decision's id starts with this; the rest is derived from the request.
+const ACQUISITION_DECISION_PREFIX: &str = "machine-acquisition-";
+
+/// A machine acquisition decision is the one kernel operation an agent may answer for the person: the
+/// holder above the requester (`agent answer`) or an agent of the same owner in another Room
+/// (`agent answer --room`). The requester and its own sub-agents never may: see
+/// `refuse_self_approval`.
+pub(super) fn is_machine_acquisition_decision(id: &str) -> bool {
+    id.starts_with(ACQUISITION_DECISION_PREFIX)
+}
+
+impl KernelRuntimeOwnedState {
+    /// A machine acquisition needs an OK from outside the subtree that asked for it, so an agent cannot
+    /// approve its own request or have a sub-agent do it. Checked by the answering agent's
+    /// authenticated identity at the kernel, never by what the answer claims.
+    pub(super) fn refuse_self_approval(
+        &self,
+        interaction: &RuntimeInteraction,
+        answering: &crate::agent::AgentInstance,
+    ) -> Result<(), DaemonError> {
+        let Some(requester) = interaction
+            .related_agent_id()
+            .filter(|_| is_machine_acquisition_decision(interaction.id()))
+        else {
+            return Ok(());
+        };
+        // The whole agent tree, not the answering agent's Room: a sub-agent spawned into another
+        // Room keeps its spawner as its parent, so the requester can sit in a different Room.
+        let agents = self.agent_store.list_agents();
+        let own_subtree = answering.id() == requester
+            || crate::agent::authority_limit::ancestors(answering, &agents)
+                .iter()
+                .any(|ancestor| ancestor.id() == requester);
+        if own_subtree {
+            return Err(crate::runtime::room_tool_admission::denied(
+                "An agent cannot approve a machine acquisition it or its sub-agents asked for; another agent or the person must answer it",
+            ));
+        }
+        Ok(())
+    }
+}
+
 impl KernelRuntimeState {
     pub(crate) async fn approve_machine_acquisition(
         &self,
@@ -67,7 +109,7 @@ impl KernelRuntimeState {
         )
         .durable_request_fingerprint();
         let id = format!(
-            "machine-acquisition-{:x}",
+            "{ACQUISITION_DECISION_PREFIX}{:x}",
             sha2::Sha256::digest(format!("{digest}:{}", agent.unwrap_or_default()).as_bytes())
         );
         if self
