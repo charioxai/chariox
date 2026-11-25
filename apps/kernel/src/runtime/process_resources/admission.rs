@@ -134,6 +134,17 @@ pub(super) struct Entry {
     refused: Option<u64>,
     /// It is the process filling a nearly full disk: it is ended, not held.
     filling: Option<Filling>,
+    /// Real memory exhaustion paused or stopped it: that policy alone ends
+    /// the wait, and these lines are what the command, its agent and its pane
+    /// are told in place of the generic wait lines.
+    pub exhaustion: Option<ExhaustionNote>,
+}
+
+/// What an exhaustion pause tells, now and when it ends.
+#[derive(Clone, Debug)]
+pub(super) struct ExhaustionNote {
+    pub paused: String,
+    pub resumed: String,
 }
 
 /// What a disk-full stop tells the stopped command and its agent.
@@ -174,6 +185,12 @@ impl Entry {
     /// It runs again.
     fn stop_waiting(&mut self) {
         self.wait = None;
+    }
+
+    /// The exhaustion policy keeps its own pauses: the generic rules neither
+    /// release, number, continue nor end them.
+    fn exhausted(&self) -> bool {
+        self.exhaustion.is_some()
     }
 
     pub(super) fn continued(&mut self) {
@@ -453,10 +470,12 @@ pub(super) fn release_unprotected(
             if !disk {
                 entry.filling = None;
             }
-            if entry.wait.is_some_and(|wait| match wait.reason() {
-                WaitReason::Memory => !memory,
-                WaitReason::Disk => !disk,
-            }) {
+            if !entry.exhausted()
+                && entry.wait.is_some_and(|wait| match wait.reason() {
+                    WaitReason::Memory => !memory,
+                    WaitReason::Disk => !disk,
+                })
+            {
                 entry.stop_waiting();
                 released = true;
             }
@@ -1078,6 +1097,101 @@ impl Ledger {
     }
 }
 
+/// A command exhaustion may act on: its top process, what it holds, where it
+/// runs, and whether it is the workload itself (a job, a provider).
+pub(super) struct Candidate {
+    pub pid: u32,
+    pub resident: u64,
+    pub member: Arc<Mutex<Observation>>,
+    pub root: bool,
+}
+
+/// The commands exhaustion may act on: agent commands the kernel recognised
+/// that are not waiting for another reason, and workloads themselves.
+pub(super) fn exhaustion_candidates(members: &[Arc<Mutex<Observation>>]) -> Vec<Candidate> {
+    let mut found = Vec::new();
+    for member in members {
+        let observation = member.lock().unwrap_or_else(|e| e.into_inner());
+        for command in &observation.commands {
+            if command.root {
+                if observation.exempt.contains(&command.pid) {
+                    continue;
+                }
+                found.push(Candidate {
+                    pid: command.pid,
+                    resident: command.resident,
+                    member: member.clone(),
+                    root: true,
+                });
+                continue;
+            }
+            let Some(entry) = observation.admission.get(&command.pid) else {
+                continue;
+            };
+            // A command its owner started by hand is never held again.
+            if (entry.wait.is_some() && !entry.exhausted()) || entry.forced {
+                continue;
+            }
+            found.push(Candidate {
+                pid: command.pid,
+                resident: command.resident,
+                member: member.clone(),
+                root: false,
+            });
+        }
+    }
+    found
+}
+
+/// The command as its agent typed it, for the lines the policy writes.
+pub(super) fn command_text(observation: &Observation, pid: u32) -> String {
+    observation
+        .admission
+        .get(&pid)
+        .and_then(|entry| entry.seen.as_ref())
+        .map(|seen| seen.line.clone())
+        .or_else(|| {
+            observation
+                .samples
+                .iter()
+                .find(|sample| sample.pid == pid)
+                .map(|sample| sample.command.clone())
+        })
+        .unwrap_or_else(|| format!("pid {pid}"))
+}
+
+/// Pauses the command for exhaustion; whether there was one to pause.
+pub(super) fn exhaustion_pause(
+    member: &Arc<Mutex<Observation>>,
+    pid: u32,
+    note: ExhaustionNote,
+) -> bool {
+    let mut observation = member.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(entry) = observation.admission.get_mut(&pid) else {
+        return false;
+    };
+    entry.wait_for(Wait::Paused(WaitReason::Memory));
+    entry.exhaustion = Some(note);
+    true
+}
+
+/// Marks a command the policy is about to stop, so its stop reads as the policy's.
+pub(super) fn exhaustion_mark(member: &Arc<Mutex<Observation>>, pid: u32, note: ExhaustionNote) {
+    let mut observation = member.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(entry) = observation.admission.get_mut(&pid) {
+        entry.exhaustion = Some(note);
+    }
+}
+
+/// Lets an exhaustion-paused command run again. Its note stays until the
+/// watch has told the resume, so the continue line is the policy's own.
+pub(super) fn exhaustion_release(member: &Arc<Mutex<Observation>>, pid: u32) {
+    let mut observation = member.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(entry) = observation.admission.get_mut(&pid) {
+        entry.stop_waiting();
+    }
+}
+
 /// A command waiting on memory that already started: it holds memory and
 /// makes no progress.
 pub(super) struct PausedCommand {
@@ -1171,7 +1285,8 @@ fn waiting_by<T>(
             let Some(entry) = observation.admission.get(&command.pid) else {
                 continue;
             };
-            if !entry.wait.as_ref().is_some_and(&waits)
+            if entry.exhausted()
+                || !entry.wait.as_ref().is_some_and(&waits)
                 || now.saturating_sub(entry.since_ms) < waited_ms
             {
                 continue;
@@ -1388,7 +1503,7 @@ fn line(
     for member in members {
         let observation = member.lock().unwrap_or_else(|e| e.into_inner());
         for (pid, entry) in &observation.admission {
-            if entry.wait.is_some_and(|wait| wait.reason() == reason) {
+            if !entry.exhausted() && entry.wait.is_some_and(|wait| wait.reason() == reason) {
                 owners.entry(observation.unit.clone()).or_default().push((
                     entry.arrived,
                     member.clone(),

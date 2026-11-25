@@ -200,6 +200,16 @@ impl Domain {
     pub fn terminate(&self) {
         let _ = std::fs::write(self.path.join("cgroup.kill"), "1");
     }
+
+    /// Holds or continues every process of the domain at once; whether the
+    /// host took it.
+    pub fn freeze(&self, freeze: bool) -> bool {
+        std::fs::write(
+            self.path.join("cgroup.freeze"),
+            if freeze { "1" } else { "0" },
+        )
+        .is_ok()
+    }
 }
 impl Drop for Domain {
     fn drop(&mut self) {
