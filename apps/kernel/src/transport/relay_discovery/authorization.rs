@@ -94,11 +94,16 @@ pub(crate) async fn granted_targets(
         }))
 }
 
-/// What the owner's Cloud directory lists: the kernels that are online, and every kernel still
-/// linked to the account, online or not.
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct VisibleDirectory {
     pub(crate) online: std::collections::BTreeSet<String>,
+    /// Every kernel the account links, online or not; the last answer when Cloud does not
+    /// answer now. It grants and filters; only `fresh_membership` is evidence of removal.
+    pub(crate) linked: std::collections::BTreeSet<String>,
+    /// Only a successful fetch provides new evidence of what the account still links.
+    pub(crate) fresh_membership: Option<DirectoryMembership>,
+}
+
+pub(crate) struct DirectoryMembership {
     pub(crate) linked: std::collections::BTreeSet<String>,
     /// The machines of the linked kernels; None when a linked target names no machine, so the
     /// read cannot tell which machines the account still has.
@@ -114,10 +119,14 @@ pub(crate) async fn visible_directory(
     let answer = crate::runtime::cloud_api_client::get_cloud_kernel_directory(profile)
         .await
         .and_then(|directory| {
+            let linked = cloud_directory_linked_targets(&directory);
             Ok(VisibleDirectory {
                 online: cloud_directory_discovery_targets(&directory)?,
-                linked: cloud_directory_linked_targets(&directory),
-                linked_machines: cloud_directory_linked_machines(&directory),
+                linked: linked.clone(),
+                fresh_membership: Some(DirectoryMembership {
+                    linked,
+                    linked_machines: cloud_directory_linked_machines(&directory),
+                }),
             })
         });
     let key = cloud_directory_key(profile);
@@ -126,12 +135,21 @@ pub(crate) async fn visible_directory(
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     match answer {
         Ok(targets) => {
-            last.insert(key, targets.clone());
+            last.insert(key, (targets.online.clone(), targets.linked.clone()));
             Ok(Some(targets))
         }
         // The list only decides which kernels to ask the relay about; a Cloud that does not
         // answer for a moment must not take the kernel list down once it has answered.
-        Err(error) => last.get(&key).cloned().map(Some).ok_or(error),
+        Err(error) => last
+            .get(&key)
+            .map(|(online, linked)| {
+                Some(VisibleDirectory {
+                    online: online.clone(),
+                    linked: linked.clone(),
+                    fresh_membership: None,
+                })
+            })
+            .ok_or(error),
     }
 }
 
@@ -144,10 +162,14 @@ pub(crate) fn cloud_directory_key(profile: &crate::config::PersistedCloudRelayPr
     )
 }
 
+/// The online and the linked kernels of one answer.
+type LastAnswer = (
+    std::collections::BTreeSet<String>,
+    std::collections::BTreeSet<String>,
+);
 /// Cloud's last answer to "which kernels are visible", by account and realm.
-static LAST_VISIBLE_TARGETS: std::sync::Mutex<
-    std::collections::BTreeMap<String, VisibleDirectory>,
-> = std::sync::Mutex::new(std::collections::BTreeMap::new());
+static LAST_VISIBLE_TARGETS: std::sync::Mutex<std::collections::BTreeMap<String, LastAnswer>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
 
 /// Every kernel the account still links, whatever its status: an offline kernel stays; only a
 /// kernel that was removed (absent) or revoked is gone for good.
