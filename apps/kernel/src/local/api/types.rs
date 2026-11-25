@@ -683,4 +683,6 @@ pub use workspace::*;
 /// not), so the viewer never evicts that Tab (row 486); absent means nothing plays.
 /// Local 1015 (relay peer unchanged): a mirror v2 subscription may ask for `layout_delta`; its complete snapshot then
 /// follows a page size change by an ordinary delta whose header carries `css_width`/`css_height`, not a layout reset.
+/// Local 1015 (relay peer 451, provisional until the Landing 14 union renumbers): `ExtensionGrant.app_grant` (the App
+/// binding's lifetime and delegation) is removed.
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1015;
