@@ -2825,11 +2825,7 @@ mod room_terminal_peer_shapes {
         let response: RelayPeerResponse = serde_json::from_value(wire.clone()).unwrap();
         assert_eq!(serde_json::to_value(&response).unwrap(), wire);
         let RelayPeerResponse::RoomTerminal {
-            result:
-                RoomTerminalResult::Listed {
-                    terminals,
-                    unavailable: Vec::new(),
-                },
+            result: RoomTerminalResult::Listed { terminals, .. },
         } = response
         else {
             panic!("a list answers a list");

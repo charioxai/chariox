@@ -382,11 +382,7 @@ impl Reader {
             .await?
         {
             crate::local::LocalDaemonResponse::RoomTerminal {
-                result:
-                    RoomTerminalResult::Listed {
-                        terminals,
-                        unavailable: Vec::new(),
-                    },
+                result: RoomTerminalResult::Listed { terminals, .. },
             } => Ok(terminals),
             other => Err(crate::room_terminal::refusal(format!(
                 "unexpected answer to a Room terminal list: {other:?}"

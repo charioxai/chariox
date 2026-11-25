@@ -680,11 +680,7 @@ mod kernel_terminal_access {
             .await
             .unwrap_err();
         let LocalDaemonResponse::RoomTerminal {
-            result:
-                RoomTerminalResult::Listed {
-                    terminals,
-                    unavailable: Vec::new(),
-                },
+            result: RoomTerminalResult::Listed { terminals, .. },
         } = runtime
             .kernel_terminal_for_client(&owner(), list())
             .await

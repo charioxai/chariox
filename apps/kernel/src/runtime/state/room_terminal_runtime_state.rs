@@ -133,7 +133,9 @@ impl KernelRuntimeState {
                 continue;
             }
             let worker = binding.worker_kernel_id.clone();
-            let RoomTerminalResult::Listed { terminals: remote } = self
+            let RoomTerminalResult::Listed {
+                terminals: remote, ..
+            } = self
                 .forward_room_terminal(binding, actor.clone(), RoomTerminalOperation::List)
                 .await?
                 .hosted_by(agent.id())
