@@ -262,6 +262,7 @@ struct PromptStateOwnerState {
     states: BTreeMap<PromptStateKey, OwnedAgentPromptState>,
     profile_transitions: BTreeMap<PromptStateKey, Arc<()>>,
     agent_move_admission: Option<crate::agent_move::AgentMoveStore>,
+    agent_profiles: Option<crate::agent::AgentServiceStore>,
     room_setup: crate::session::RoomSetupStore,
     queue_promotions: BTreeSet<PromptStateKey>,
 }
@@ -701,6 +702,21 @@ impl PromptStateOwner {
         }
     }
 
+    pub(super) fn rooms_with_running_prompts_before(&self, cutoff_ms: u64) -> BTreeSet<String> {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .states
+            .iter()
+            .filter(|(_, state)| {
+                state.active_prompt.as_ref().is_some_and(|prompt| {
+                    prompt.status() == PromptStatus::Running && prompt.created_at_ms() <= cutoff_ms
+                })
+            })
+            .map(|(key, _)| key.session_id.clone())
+            .collect()
+    }
+
     pub(crate) fn has_any_active_prompt(&self, session: &RuntimeSession) -> bool {
         let owner = self
             .state
@@ -806,8 +822,9 @@ impl PromptStateOwner {
                 return Ok(outcome);
             }
         }
-        let profile_transition_pending =
-            owner.execution_transition_pending(&PromptStateKey::new(session.id(), &agent_id));
+        let profile_transition_pending = owner
+            .execution_transition_pending(&PromptStateKey::new(session.id(), &agent_id))
+            || owner.agent_profile_waiting_for_settlement(&agent_id);
         // A paused task parks its notes on purpose; they resume with the task and
         // must not hold back the owner's own prompt.
         let backlog_parked = session
@@ -1573,7 +1590,9 @@ impl PromptStateOwner {
             .state
             .lock()
             .expect("prompt state owner lock should not be poisoned");
-        if owner.execution_transition_pending(&PromptStateKey::new(session.id(), agent_id)) {
+        if owner.execution_transition_pending(&PromptStateKey::new(session.id(), agent_id))
+            || owner.agent_profile_waiting_for_settlement(agent_id)
+        {
             return Ok(None);
         }
         let state = owner.ensure_agent_state(session, agent_id);
@@ -1596,7 +1615,9 @@ impl PromptStateOwner {
             .state
             .lock()
             .expect("prompt state owner lock should not be poisoned");
-        if owner.execution_transition_pending(&PromptStateKey::new(session.id(), agent_id)) {
+        if owner.execution_transition_pending(&PromptStateKey::new(session.id(), agent_id))
+            || owner.agent_profile_waiting_for_settlement(agent_id)
+        {
             return Ok(None);
         }
         let state = owner.ensure_agent_state(session, agent_id);
@@ -1862,22 +1883,29 @@ impl PromptStateOwner {
             })
     }
 
-    /// Whether the provider's own turn is the agent's running turn.
-    pub(crate) fn provider_turn_running(&self, session: &RuntimeSession, agent_id: &str) -> bool {
+    /// The active prompt when it belongs to this run's adopted provider turn.
+    pub(crate) fn adopted_provider_turn(
+        &self,
+        session: &RuntimeSession,
+        agent_id: &str,
+        run_id: &str,
+    ) -> Option<PromptQueueItem> {
         let owner = self
             .state
             .lock()
             .expect("prompt state owner lock should not be poisoned");
-        owner
+        let state = owner
             .states
-            .get(&PromptStateKey::new(session.id(), agent_id))
-            .is_some_and(|state| match &state.provider_turn {
-                ProviderOwnTurn::Adopted { prompt_id, .. } => state
-                    .active_prompt
-                    .as_ref()
-                    .is_some_and(|active| active.id() == prompt_id),
-                _ => false,
-            })
+            .get(&PromptStateKey::new(session.id(), agent_id))?;
+        let ProviderOwnTurn::Adopted {
+            provider_run_id,
+            prompt_id,
+        } = &state.provider_turn
+        else {
+            return None;
+        };
+        let active = state.active_prompt.as_ref()?;
+        (provider_run_id == run_id && active.id() == prompt_id).then(|| active.clone())
     }
 
     /// Whether a turn the provider started on `provider_run_id` waits for adoption.
@@ -2138,8 +2166,7 @@ impl PromptStateOwner {
         true
     }
 
-    /// Joins one more occurrence of a notification trigger to the agent's queued
-    /// prompt of that trigger, under the queue lock, so several occurrences cost one
+    /// Joins a queue-mode occurrence to the agent's waiting notification prompt, under the queue lock, so several occurrences cost one
     /// turn. Only a prompt that is still waiting joins: never the running prompt, a
     /// prompt being steered, or a person's or agent's prompt. Returns the prompt and
     /// whether it changed; an occurrence it already carries leaves it as it is.
@@ -2147,7 +2174,6 @@ impl PromptStateOwner {
         &self,
         session: &RuntimeSession,
         agent_id: &str,
-        trigger_id: &str,
         notification: crate::session::QueuedNotification,
         deadline_ms: u64,
         render: impl FnOnce(&[crate::session::QueuedNotification]) -> String,
@@ -2159,9 +2185,13 @@ impl PromptStateOwner {
         let state = owner.ensure_agent_state(session, agent_id);
         let queued = state.queued_prompts.iter_mut().find(|queued| {
             queued.prompt_origin() == crate::session::PromptOrigin::Notification
-                && queued.agent_trigger_id() == Some(trigger_id)
                 && queued.status() == PromptStatus::Queued
-                && !queued.queued_notifications().is_empty()
+                && queued
+                    .queued_notifications()
+                    .first()
+                    .is_some_and(|lead| lead.batch_instruction.is_some())
+                // A person's edit of its text stays as written: a later occurrence queues its own turn.
+                && !queued.queued_text_edited()
                 && !queued.remote_steer_reserved()
                 && !queued.local_steer_submitted()
         })?;
@@ -2200,6 +2230,7 @@ impl PromptStateOwner {
             prompt.into(),
             queued.attachments(),
         ));
+        queued.mark_queued_text_edited();
         // MP-08/MP-11 R1: text and acquisition provenance change under one
         // queue lock. An automated edit cannot keep a human owner's request.
         *queued = queued.clone().with_source_attachment(editor);
@@ -3824,6 +3855,13 @@ impl PromptStateOwner {
             .room_setup = store;
     }
 
+    pub(crate) fn set_agent_profile_admission(&self, agents: crate::agent::AgentServiceStore) {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .agent_profiles = Some(agents);
+    }
+
     pub(crate) fn set_agent_move_admission(&self, store: crate::agent_move::AgentMoveStore) {
         self.state
             .lock()
@@ -3832,6 +3870,12 @@ impl PromptStateOwner {
     }
 }
 impl PromptStateOwnerState {
+    fn agent_profile_waiting_for_settlement(&self, agent_id: &str) -> bool {
+        self.agent_profiles
+            .as_ref()
+            .is_some_and(|agents| agents.has_pending_profile(agent_id))
+    }
+
     fn agent_move_pending(&self, key: &PromptStateKey) -> bool {
         self.agent_move_admission
             .as_ref()

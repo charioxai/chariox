@@ -1,6 +1,7 @@
 use crate::error::DaemonError;
 use crate::local::provider_requests::{
-    load_provider_catalog, provider_command_catalogs_response, PROVIDER_CATALOG_CACHE_TTL,
+    load_provider_catalog, load_provider_catalog_for, provider_command_catalogs_response,
+    CatalogLoad, PROVIDER_CATALOG_CACHE_TTL,
 };
 use crate::local::{LocalDaemonRequest, LocalDaemonResponse};
 use crate::runtime::projection::{DaemonConfigProjectionStore, ProviderCatalogProjectionStore};
@@ -178,7 +179,7 @@ pub(super) async fn read_catalog(
     let registry = account_profiles.clone();
     let load_started = Instant::now();
     let load_owner = owner_user_id.clone();
-    let catalog = tokio::task::spawn_blocking(move || {
+    let catalog = crate::shutdown::spawn_blocking("provider catalog load", move || {
         load_provider_catalog(config, registry, load_owner, request)
     })
     .await
@@ -211,6 +212,42 @@ pub(super) async fn read_catalog(
     Ok(CatalogRead::Loaded(catalog))
 }
 
+/// The kernel loads the default catalog before any client asks. It never starts
+/// a provider server for a provider nobody asked about (OpenCode's free models
+/// need one even signed out), so the copy is provisional: clients are answered
+/// from it at once and the first client read revalidates it.
+pub(super) async fn warm_catalog(
+    provider_catalog_projection: &ProviderCatalogProjectionStore,
+    config_projection: &DaemonConfigProjectionStore,
+    account_profiles: &crate::account_profile::ProviderAccountProfileRegistry,
+    owner_user_id: &str,
+    request: crate::local::GetProviderCatalogRequest,
+) -> Result<(), DaemonError> {
+    let cache_key = provider_catalog_cache_key(owner_user_id, &request);
+    let _load_guard = provider_catalog_projection.lock_load(&cache_key).await;
+    if provider_catalog_projection
+        .get_scoped(&cache_key, PROVIDER_CATALOG_CACHE_TTL)
+        .is_some()
+    {
+        return Ok(());
+    }
+    let generation = provider_catalog_projection.invalidation_generation();
+    let config = config_projection.snapshot();
+    let registry = account_profiles.clone();
+    let load_owner = owner_user_id.to_string();
+    let catalog = tokio::task::spawn_blocking(move || {
+        load_provider_catalog_for(config, registry, load_owner, request, CatalogLoad::Warmup)
+    })
+    .await
+    .map_err(|error| DaemonError::LocalTransport {
+        operation: "warm provider catalog",
+        message: error.to_string(),
+    })??;
+    provider_catalog_projection
+        .update_scoped_provisional_if_generation(&cache_key, catalog, generation);
+    Ok(())
+}
+
 fn refresh_provider_catalog_in_background(
     provider_catalog_projection: ProviderCatalogProjectionStore,
     config: crate::config::DaemonConfig,
@@ -232,10 +269,11 @@ fn refresh_provider_catalog_in_background(
             return;
         }
         let load_started = Instant::now();
-        let result = tokio::task::spawn_blocking(move || {
-            load_provider_catalog(config, registry, owner_user_id, request)
-        })
-        .await;
+        let result =
+            crate::shutdown::spawn_blocking("provider catalog background refresh", move || {
+                load_provider_catalog(config, registry, owner_user_id, request)
+            })
+            .await;
         match result {
             Ok(Ok(catalog)) => {
                 crate::logging::info_with_fields(

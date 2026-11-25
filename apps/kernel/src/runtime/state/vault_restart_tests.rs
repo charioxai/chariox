@@ -109,7 +109,7 @@ async fn mp08_vault_restart_or_abandoned_wait_can_retry_before_the_pump() {
             &crate::config::UserCredentialVaultConfig::default(),
         );
         let mut snapshot = state.owned.session_store.get_session(session).unwrap();
-        snapshot.add_active_interaction(orphan.clone());
+        snapshot.add_interaction_fixture(orphan.clone());
         state.owned.session_store.write().restore_session(snapshot);
         let mut call =
             Box::pin(state.ensure_vault_unlocked_for_agent(session, agent, "after restart"));

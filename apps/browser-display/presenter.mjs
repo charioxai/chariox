@@ -1,4 +1,4 @@
-import {displayGeometryMatches,regionBindingCurrent,regionInputBinding,regionMinimumProtocolVersion,tabDisplayMinimumProtocolVersion,visiblePageMinimumProtocolVersion} from './region-binding.mjs';
+import {displayGeometryMatches,reboundBinding,regionBindingCurrent,regionInputBinding,regionMinimumProtocolVersion,resizeRebindCapability,tabDisplayMinimumProtocolVersion,viewerDensityStillsCapability,visiblePageMinimumProtocolVersion} from './region-binding.mjs';
 import {StripePresenter,independentStripeCover} from './stripe-presenter.mjs';
 import {ScrollPrediction} from './scroll-prediction.mjs';
 import {WorkerVideoDecoder} from './decoder-worker.mjs';
@@ -73,6 +73,10 @@ export class BrowserDisplayPresenter {
   getWorkerDecoder(){if(!this.workerDecoder||this.workerDecoder.closed)this.workerDecoder=new WorkerVideoDecoder();return this.workerDecoder;}
   validate(frame,sequence) {
     if (frame.subscription_id !== this.binding.subscription_id || frame.generation !== this.binding.generation || frame.tab_id !== this.binding.tab_id || frame.sequence <= sequence) return false;
+    // Row 487: the kernel rebound this visible page to the resized window: the same binding at a later window epoch and
+    // its new size (validated like a subscribe reply's region). Input names the new epoch from here on.
+    const rebound = reboundBinding(this.binding, frame);
+    if (rebound) this.binding = rebound;
     if (!Number.isSafeInteger(frame.sequence) || ![1, 2].includes(frame.device_scale_factor) || frame.width !== frame.css_width * frame.device_scale_factor || frame.height !== frame.css_height * frame.device_scale_factor || !displayGeometryMatches(this.binding,frame) || typeof frame.document_id !== 'string' || !frame.document_id || frame.document_id.length > 256) throw new Error('MD-DISPLAY: invalid geometry/binding');
     return true;
   }
@@ -274,15 +278,20 @@ export async function attachBrowserDisplay(canvas, transport, tab, options = {})
   // authenticated registration is pending. No pixels or binding enter it yet.
   let warmDecoder;
   if(globalThis.Worker&&globalThis.VideoDecoder){try{warmDecoder=new WorkerVideoDecoder();}catch{/* Normal presenter admission handles unavailable codecs. */}}
+  // Row 341: a whole-page video above the page's density comes to rest as a still at the viewer's density (a resumed
+  // subscription keeps the density it was made with: resume requires the same target and density).
+  const viewerStills=!options.desktop&&!options.target&&offer.device_scale_factor>1&&Array.isArray(transport.kernelCapabilities)&&transport.kernelCapabilities.includes(viewerDensityStillsCapability);
   let subscribed;
   try{subscribed=await request(resume?{op:'display_resume',subscription_id:hint.subscription_id,generation:hint.generation}
     :options.desktop?{op:'computer',command:{op:'display_subscribe',target:tab,...offer}}:{op:'display_subscribe',...tab,...(options.target?{target:options.target}:{}),...offer,
       ...(pushMode&&transport.initialPush===true&&transport.kernelProtocolVersion>=initialPushProtocolVersion?{initial_push:true}:{}),
-      ...(pushMode&&options.tabDisplay===true&&!options.target&&transport.kernelProtocolVersion>=tabDisplayMinimumProtocolVersion?{tab_display:true}:{})});}
+      ...(pushMode&&options.tabDisplay===true&&!options.target&&transport.kernelProtocolVersion>=tabDisplayMinimumProtocolVersion?{tab_display:true}:{}),
+      ...(viewerStills?{viewer_density_stills:true}:{}),
+      ...(!options.target&&Array.isArray(transport.kernelCapabilities)&&transport.kernelCapabilities.includes(resizeRebindCapability)?{resize_rebind:true}:{})});}
   catch(error){warmDecoder?.close();options.onResumeHint?.(null);throw error;}
   // The reply's generation wins: the kernel may restart its browser at the
   // viewer's device scale (protocol 491), rotating the generation.
-  const binding=options.desktop?{...subscribed,tab_id:subscribed.source?.surface_id}:{...tab,...subscribed};
+  const binding=options.desktop?{...subscribed,tab_id:subscribed.source?.surface_id}:{...tab,...subscribed,...(viewerStills?{viewer_scale:offer.device_scale_factor}:{})};
   options.onResumeHint?.(null);
   const releaseDisplay=async preserveFrame=>{
     const suspend=preserveFrame&&transport.kernelProtocolVersion>=resumeProtocolVersion&&typeof options.onResumeHint==='function';

@@ -86,6 +86,23 @@ pub(crate) struct DurableWorkflowHotState {
     pub(crate) workflow_publication_snapshots: BTreeMap<String, WorkflowPublicationSnapshot>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct MachineApprovalReceipt {
+    pub id: String,
+    pub shown_in_agent_id: Option<String>,
+    pub message: String,
+    pub state: MachineApprovalReceiptState,
+    pub expires_at_ms: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum MachineApprovalReceiptState {
+    Approving,
+    Sent,
+    Expired,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeSession {
     id: String,
@@ -115,6 +132,9 @@ pub struct RuntimeSession {
     status: SessionStatus,
     #[serde(default, skip_serializing_if = "crate::session::is_false")]
     hidden: bool,
+    /// The agent that created this Room through its Room tools; only it, and the agents above it, may delete the Room.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    created_by_agent_id: Option<String>,
     #[serde(default)]
     agent_defaults: SessionAgentDefaults,
     active_provider_run_id: Option<String>,
@@ -132,6 +152,8 @@ pub struct RuntimeSession {
     prompt_runtime: PromptRuntimeState,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     active_interactions: Vec<RuntimeInteraction>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    machine_approval_receipts: Vec<MachineApprovalReceipt>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     metaagent_tasks: Vec<MetaagentTask>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -326,6 +348,7 @@ impl RuntimeSession {
             execution_mode: SessionExecutionMode::SingleAgent,
             status: SessionStatus::Created,
             hidden: false,
+            created_by_agent_id: None,
             agent_defaults: SessionAgentDefaults::default(),
             active_provider_run_id: None,
             focused_agent_id: None,
@@ -336,6 +359,7 @@ impl RuntimeSession {
             connected_cli_count: 0,
             prompt_runtime: PromptRuntimeState::default(),
             active_interactions: Vec::new(),
+            machine_approval_receipts: Vec::new(),
             metaagent_tasks: Vec::new(),
             agent_tasks: Vec::new(),
             sudo_windows: Vec::new(),
@@ -684,6 +708,14 @@ impl RuntimeSession {
         self.hidden = hidden;
     }
 
+    pub fn created_by_agent_id(&self) -> Option<&str> {
+        self.created_by_agent_id.as_deref()
+    }
+
+    pub(crate) fn set_created_by_agent_id(&mut self, agent_id: Option<String>) {
+        self.created_by_agent_id = agent_id;
+    }
+
     pub fn agent_defaults(&self) -> &SessionAgentDefaults {
         &self.agent_defaults
     }
@@ -857,6 +889,38 @@ impl RuntimeSession {
 
     pub fn active_interactions(&self) -> &[RuntimeInteraction] {
         &self.active_interactions
+    }
+
+    pub(crate) fn machine_approval_receipts(&self) -> &[MachineApprovalReceipt] {
+        &self.machine_approval_receipts
+    }
+
+    pub(crate) fn upsert_machine_approval_receipt(&mut self, receipt: MachineApprovalReceipt) {
+        const RECENT_RECEIPTS: usize = 32;
+        let receipts = &mut self.machine_approval_receipts;
+        receipts.retain(|prior| prior.id != receipt.id);
+        receipts.push(receipt);
+        receipts.drain(..receipts.len().saturating_sub(RECENT_RECEIPTS));
+    }
+
+    pub(crate) fn mark_machine_approval_sent(&mut self, id: &str) -> bool {
+        let Some(receipt) = self.machine_approval_receipts.iter_mut().find(|receipt| {
+            receipt.id == id && receipt.state == MachineApprovalReceiptState::Approving
+        }) else {
+            return false;
+        };
+        receipt.state = MachineApprovalReceiptState::Sent;
+        true
+    }
+
+    /// The approved try ended before it reached the service: its "Approving" line goes away.
+    pub(crate) fn withdraw_machine_approval(&mut self, id: Option<&str>) -> bool {
+        let before = self.machine_approval_receipts.len();
+        self.machine_approval_receipts.retain(|receipt| {
+            receipt.state != MachineApprovalReceiptState::Approving
+                || id.is_some_and(|id| receipt.id != id)
+        });
+        self.machine_approval_receipts.len() != before
     }
 
     pub fn metaagent_tasks(&self) -> &[MetaagentTask] {
@@ -1104,9 +1168,10 @@ impl RuntimeSession {
             .collect()
     }
 
-    /// Names each agent's card by its asker as the session's agents name it now, so a client
-    /// shows who asks without a lookup.
-    pub(crate) fn name_interaction_askers(&mut self) {
+    /// Names the Room's cards by their askers and leaves dismissed cards in the Inbox.
+    pub(crate) fn project_room_interactions(&mut self) {
+        self.active_interactions
+            .retain(|card| !card.room_dismissed());
         self.active_interactions = self.named_active_interactions();
     }
 
@@ -1146,7 +1211,17 @@ impl RuntimeSession {
         }
     }
 
-    pub fn add_active_interaction(&mut self, interaction: RuntimeInteraction) {
+    /// Insert a card admitted by the kernel registry.
+    pub(crate) fn add_active_interaction(&mut self, card: crate::runtime::state::LiveRoomCard) {
+        self.insert_interaction(card.into_presentation());
+    }
+
+    #[cfg(test)]
+    pub(crate) fn add_interaction_fixture(&mut self, interaction: RuntimeInteraction) {
+        self.insert_interaction(interaction);
+    }
+
+    fn insert_interaction(&mut self, interaction: RuntimeInteraction) {
         self.active_interactions.retain(|existing| {
             existing.id() != interaction.id()
                 && (existing.subject() != interaction.subject()
@@ -1158,16 +1233,27 @@ impl RuntimeSession {
             .sort_by_key(|left| (left.asking_task_id().is_some(), left.requested_at_ms()));
     }
 
-    /// Swaps the content of an open card for a fresh question with the same id, in the same place.
-    pub(crate) fn replace_active_interaction(&mut self, interaction: RuntimeInteraction) -> bool {
+    /// Refresh an existing presentation without changing its admission identity.
+    pub(crate) fn update_active_interaction(
+        &mut self,
+        id: &str,
+        update: impl FnOnce(RuntimeInteraction) -> RuntimeInteraction,
+    ) -> bool {
         let Some(open) = self
             .active_interactions
             .iter_mut()
-            .find(|open| open.id() == interaction.id())
+            .find(|open| open.id() == id)
         else {
             return false;
         };
-        *open = interaction;
+        let refreshed = update(open.clone());
+        if refreshed.id() != open.id()
+            || refreshed.subject() != open.subject()
+            || refreshed.kind() != open.kind()
+        {
+            return false;
+        }
+        *open = refreshed;
         true
     }
 
@@ -1206,6 +1292,17 @@ impl RuntimeSession {
 
     pub fn workflows(&self) -> &[WorkflowDefinition] {
         &self.workflows
+    }
+
+    /// A Room state that was read without its workflow details, completed with the ones read apart.
+    pub(crate) fn with_room_workflow_details(
+        mut self,
+        workflows: Vec<WorkflowDefinition>,
+        workflow_runs: Vec<WorkflowRun>,
+    ) -> Self {
+        self.workflows = workflows;
+        self.workflow_runs = workflow_runs;
+        self
     }
 
     pub(crate) fn without_room_workflow_details(mut self) -> Self {
@@ -1376,9 +1473,9 @@ impl RuntimeSession {
 
     pub fn equivalent_except_runtime_interactions(&self, other: &Self) -> bool {
         let mut left = self.clone();
-        let right = other.clone();
-        left.active_interactions = right.active_interactions.clone();
-        left == right
+        left.active_interactions = other.active_interactions.clone();
+        left.machine_approval_receipts = other.machine_approval_receipts.clone();
+        &left == other
     }
 
     pub fn set_workspace_live_sync_mode(

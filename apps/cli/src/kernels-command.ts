@@ -1,11 +1,13 @@
 import { LocalIpcError } from "@chariox/kernel-client/ipc"
 import { CommandFailure, ONE_OFF_COMMAND_HINT, exitCodeFor, familyUsageOf, guideText, parseArguments, usageOf, wantsHelp } from "./agent-command-table.js"
+import { defaultKernelEndpoint } from "./cli-options.js"
+import { LocalIpcClient } from "./ipc.js"
 import { kernelUnixClient } from "./kernel-unix-client.js"
 import { FILES_VERBS, runFilesVerb, type SendRequest } from "./kernel-files.js"
 import { runTerminalVerb, TERMINAL_ATTACH_USAGE, TERMINAL_VERBS, waitMsOf, type TerminalFlags, type TerminalVerb } from "./terminal-verbs.js"
 
 import { runExec } from "./exec-command.js"
-import { readExecInput, runKernelExec } from "./kernel-exec.js"
+import { LATE_STDIN_NOTICE, lateStdin, ownStdin, readExecInput, runKernelExec, stdinIsRegularFile } from "./kernel-exec.js"
 import { runExecPlace } from "./exec-place-command.js"
 
 import { EVENT_VERBS, eventTimeoutSeconds, runEventsVerb } from "./events-command.js"
@@ -82,6 +84,21 @@ export async function withKernel<T>(
       throw lostConnectionFailure(await probeKernel(options.socket).then(() => null, probeError => probeError))
     }))
   } finally { await client.close() }
+}
+
+export function localAgentClientOptions(commandId: string | undefined) {
+  return { controlRequestRetryDeadlineMs: 0, controlResponseStallMs: 30000, commandId }
+}
+
+/** An owner uses the ordinary local endpoint. An external agent can name its grant socket. */
+export async function withAgentKernel<T>(
+  options: { socket: string | undefined; kernel?: string | undefined; commandId?: string | undefined },
+  use: (send: SendRequest) => Promise<T>,
+): Promise<T> {
+  if (options.socket || options.kernel) return withKernel({ ...options, timeoutSeconds: 30 }, use)
+  // The owner's command id travels with the request, so a retry replays the first result.
+  const client = new LocalIpcClient(defaultKernelEndpoint(), localAgentClientOptions(options.commandId))
+  try { return await use(body => client.send(body)) } finally { await client.close() }
 }
 
 export function sendRequest(
@@ -168,7 +185,7 @@ export async function runKernelsCommand(argv: string[]): Promise<boolean> {
   if (wantsHelp(rest)) {
     const family = command === "events" ? EVENT_VERBS : command === "files" ? FILES_VERBS : undefined
     const verb = family?.find(name => name === rest[0])
-    console.log(family && !verb ? familyUsageOf(command, family) : usageOf(family ? `${command} ${verb}` : terminalVerb ? `terminal ${terminalVerb}` : execPlace ? "exec place" : command))
+    console.log(family && !verb ? familyUsageOf(command, family) : usageOf(command === "kernels" && rest[0] === "restart" ? "kernels restart" : family ? `${command} ${verb}` : terminalVerb ? `terminal ${terminalVerb}` : execPlace ? "exec place" : command))
     return true
   }
   let kernel: string | null = null
@@ -193,7 +210,9 @@ export async function runKernelsCommand(argv: string[]): Promise<boolean> {
     const split = terminalVerb === "open" || (command === "exec" && !execPlace) ? rest.indexOf("--") : -1
     const program = split < 0 ? [] : rest.slice(split + 1)
     const options = split < 0 ? rest : rest.slice(0, split)
-    const { flags, positionals } = parseArguments(verb ? `files ${verb}` : terminalVerb ? `terminal ${terminalVerb}` : execPlace ? "exec place" : command, verb || terminalVerb || execPlace ? options.slice(1) : options)
+    // `chariox kernels restart --browser` restarts the browser of a kernel (row 548); a bare `kernels` still lists them.
+    const kernelsRestart = command === "kernels" && rest[0] === "restart"
+    const { flags, positionals } = parseArguments(kernelsRestart ? "kernels restart" : verb ? `files ${verb}` : terminalVerb ? `terminal ${terminalVerb}` : execPlace ? "exec place" : command, verb || terminalVerb || execPlace || kernelsRestart ? options.slice(1) : options)
     const socket = flags.get("--socket") as string | undefined
     if (execPlace) {
       const session = flags.get("--session") as string | undefined
@@ -210,12 +229,18 @@ export async function runKernelsCommand(argv: string[]): Promise<boolean> {
       kernel = (flags.get("--kernel") as string | undefined) ?? null
       if (!inRoom) {
         const timeoutSeconds = parseTimeout(flags.get("--timeout"))
-        const stdin = await readExecInput(process.stdin, flags.get("--stdin-file") as string | undefined, timeoutSeconds)
-        process.exitCode = await withKernel({ socket, timeoutSeconds, kernel: kernel ?? undefined }, send =>
-          runKernelExec({ command: program, directory: flags.get("--directory") as string | undefined, timeoutSeconds, stdin, signals: process }, send, process.stdout))
+        const late = lateStdin()
+        const stdin = await readExecInput(ownStdin(), { file: flags.get("--stdin-file") as string | undefined, wait: flags.has("--stdin"), regularFile: stdinIsRegularFile(), timeoutSeconds, late })
+        try {
+          process.exitCode = await withKernel({ socket, timeoutSeconds, kernel: kernel ?? undefined }, send =>
+            runKernelExec({ command: program, directory: flags.get("--directory") as string | undefined, timeoutSeconds, stdin, signals: process }, send, process.stdout))
+        } finally {
+          late.stop()
+          if (late.arrived) process.stderr.write(`${LATE_STDIN_NOTICE}\n`)
+        }
         return true
       }
-      if (flags.has("--stdin-file")) throw new CommandFailure("usage", "--stdin-file is for a command on the kernel itself; with --session or --workspace the command's stdin is yours")
+      if (flags.has("--stdin-file") || flags.has("--stdin")) throw new CommandFailure("usage", "--stdin and --stdin-file are for a command on the kernel itself; with --session or --workspace the command's stdin is yours")
       process.exitCode = await withKernel({ socket, timeoutSeconds: DEFAULT_TIMEOUT_SECONDS, kernel: kernel ?? undefined }, send =>
         runExec({ session: flags.get("--session") as string | undefined, workspace: flags.get("--workspace") as string | undefined,
           hostAgent: flags.get("--host-agent") as string | undefined, command: program }, send,
@@ -227,6 +252,13 @@ export async function runKernelsCommand(argv: string[]): Promise<boolean> {
       process.stdout.write(response.AgentReleaseNotes.text)
     } else if (command === "guide") {
       console.log(guideText())
+    } else if (kernelsRestart) {
+      // The browser is the only thing a person can restart here today; `--browser` names it, so a later `--kernel`-wide restart
+      // cannot be started by a missing flag.
+      if (!flags.has("--browser")) throw new CommandFailure("usage", usageOf("kernels restart"))
+      kernel = (flags.get("--kernel") as string | undefined) ?? null
+      const response = await sendRequest({ KernelBrowser: { command: { op: "restart" } } }, { socket, kernel: kernel ?? undefined, timeoutSeconds: parseTimeout(flags.get("--timeout")) + 60 }) as { KernelBrowser?: { result: unknown } }
+      console.log(JSON.stringify(response.KernelBrowser?.result ?? response))
     } else if (command === "kernels") {
       const listed = await sendRequest({ ListGatewayKernels: {} }, { socket, timeoutSeconds: DEFAULT_TIMEOUT_SECONDS }) as { GatewayKernelsListed: unknown }
       console.log(JSON.stringify(listed.GatewayKernelsListed))

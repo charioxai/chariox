@@ -50,6 +50,44 @@ impl KernelRuntimeState {
         id
     }
 
+    /// A grant held by `holder`, which may already have exited.
+    pub(crate) fn insert_access_grant_held_by_for_test(&self, holder: ProcessIdentity) -> String {
+        let id = format!("held-access-{:016x}", rand::random::<u64>());
+        let grant = Grant {
+            covered: Vec::new(),
+            summary: KernelAccessGrant {
+                covered: Vec::new(),
+                grant_id: id.clone(),
+                owner_user_id: "owner".into(),
+                holder_pid: holder.pid,
+                holder_executable: holder.executable.clone(),
+                holder_harness: None,
+                term: KernelAccessTerm::UntilHolderExits,
+                expires_at_ms: None,
+            },
+            holder,
+            clock: None,
+        };
+        self.owned
+            .kernel_access
+            .lock()
+            .unwrap()
+            .grants
+            .insert(id.clone(), grant);
+        id
+    }
+
+    pub(crate) fn access_grant_ids_for_test(&self) -> Vec<String> {
+        self.owned
+            .kernel_access
+            .lock()
+            .unwrap()
+            .grants
+            .keys()
+            .cloned()
+            .collect()
+    }
+
     /// One open choice for `agent_id`, watched by a fresh grant; returns the grant.
     pub(crate) fn open_watched_decision_for_test(
         &self,
@@ -86,7 +124,17 @@ impl KernelRuntimeState {
         );
         let (tx, _rx) = tokio::sync::oneshot::channel();
         self.owned
-            .register_runtime_interaction(session_id, interaction, tx, None, None, None)
+            .register_runtime_interaction(
+                crate::runtime::state::runtime_interaction_owned_state::CardRequest(
+                    crate::runtime::state::CardKind::NativePermissionInput,
+                    interaction,
+                ),
+                session_id,
+                tx,
+                None,
+                None,
+                None,
+            )
             .unwrap();
         grant
     }
@@ -399,7 +447,12 @@ async fn kernel_access_popup_works_before_first_session_and_expires_on_shared_bo
             .with_timeout_sec(60)
         };
         let rx = state
-            .create_kernel_operation_interaction(scope, owner, decision("no-session-access"))
+            .create_kernel_operation_interaction(
+                crate::runtime::state::CardKind::NativePermissionInput,
+                scope,
+                owner,
+                decision("no-session-access"),
+            )
             .await
             .unwrap();
         assert_eq!(state.passkey_prompts_for(owner).len(), 1);
@@ -433,7 +486,12 @@ async fn kernel_access_popup_works_before_first_session_and_expires_on_shared_bo
         assert_eq!(rx.await.unwrap().choice_id.as_deref(), Some("refuse"));
         assert!(state.passkey_prompts_for(owner).is_empty());
         let rx = state
-            .create_kernel_operation_interaction(scope, owner, decision("no-session-expiry"))
+            .create_kernel_operation_interaction(
+                crate::runtime::state::CardKind::NativePermissionInput,
+                scope,
+                owner,
+                decision("no-session-expiry"),
+            )
             .await
             .unwrap();
         state
@@ -1018,8 +1076,11 @@ async fn grant_holder_can_choose_allow_session_on_a_routine_permission() {
         state
             .owned
             .register_runtime_interaction(
+                crate::runtime::state::runtime_interaction_owned_state::CardRequest(
+                    crate::runtime::state::CardKind::NativePermissionInput,
+                    permission(id, agent_id, level),
+                ),
                 session.id(),
-                permission(id, agent_id, level),
                 tx,
                 None,
                 None,
@@ -1062,21 +1123,24 @@ async fn a_holder_answers_kernel_decisions_except_one_that_needs_the_passkey() {
         state
             .owned
             .register_runtime_interaction(
-                session.id(),
-                RuntimeInteraction::for_kernel_operation(
-                    id,
-                    id,
-                    "Agent needs your action",
-                    "The task is blocked",
-                    vec![
-                        RuntimeInteractionChoice::new("cancel", "Cancel", "cancel", None),
-                        if id == "protected-1" {
-                            resume.requiring_passkey()
-                        } else {
-                            resume
-                        },
-                    ],
+                crate::runtime::state::runtime_interaction_owned_state::CardRequest(
+                    crate::runtime::state::CardKind::NativePermissionInput,
+                    RuntimeInteraction::for_kernel_operation(
+                        id,
+                        id,
+                        "Agent needs your action",
+                        "The task is blocked",
+                        vec![
+                            RuntimeInteractionChoice::new("cancel", "Cancel", "cancel", None),
+                            if id == "protected-1" {
+                                resume.requiring_passkey()
+                            } else {
+                                resume
+                            },
+                        ],
+                    ),
                 ),
+                session.id(),
                 tx,
                 Some("local"),
                 None,
@@ -1142,22 +1206,30 @@ async fn a_decision_open_before_the_holder_subscribes_is_delivered_on_subscribe(
         state
             .owned
             .register_runtime_interaction(
-                session.id(),
-                RuntimeInteraction::new(
-                    id,
-                    agent_id,
-                    RuntimeInteractionKind::Permission,
-                    RuntimeInteractionLevel::Warning,
-                    Some("Approve Tool?".to_string()),
-                    "A tool call",
-                    vec![
-                        RuntimeInteractionChoice::new("allow_once", "Allow once", "allow", None),
-                        RuntimeInteractionChoice::new("deny", "Deny", "deny", None),
-                    ],
-                    None,
-                    Some(300),
-                    Some("deny".to_string()),
+                crate::runtime::state::runtime_interaction_owned_state::CardRequest(
+                    crate::runtime::state::CardKind::NativePermissionInput,
+                    RuntimeInteraction::new(
+                        id,
+                        agent_id,
+                        RuntimeInteractionKind::Permission,
+                        RuntimeInteractionLevel::Warning,
+                        Some("Approve Tool?".to_string()),
+                        "A tool call",
+                        vec![
+                            RuntimeInteractionChoice::new(
+                                "allow_once",
+                                "Allow once",
+                                "allow",
+                                None,
+                            ),
+                            RuntimeInteractionChoice::new("deny", "Deny", "deny", None),
+                        ],
+                        None,
+                        Some(300),
+                        Some("deny".to_string()),
+                    ),
                 ),
+                session.id(),
                 tx,
                 None,
                 None,
@@ -1240,13 +1312,14 @@ async fn enrolled_owner_can_manage_grants_approved_before_login() {
     assert_eq!(state.list_kernel_access("local").len(), 1);
     let mut pending = state.access_grant_summary(&id).unwrap();
     pending.grant_id = "pending-before-login".into();
-    state
-        .owned
-        .kernel_access
-        .lock()
-        .unwrap()
-        .pending
-        .insert((42, 1, "request".into()), pending);
+    state.owned.kernel_access.lock().unwrap().pending.insert(
+        (42, 1, "request".into()),
+        PendingGrant {
+            summary: pending,
+            holder: process::inspect(std::process::id()).unwrap().0,
+            deadline_ms: u64::MAX,
+        },
+    );
     let extension_id = format!("{id}-extension");
     let extension = RuntimeInteraction::for_kernel_operation(
         &extension_id,
@@ -1262,6 +1335,7 @@ async fn enrolled_owner_can_manage_grants_approved_before_login() {
     .with_timeout_sec(60);
     let _answer = state
         .create_kernel_operation_interaction(
+            crate::runtime::state::CardKind::NativePermissionInput,
             crate::runtime::kernel_access::ACCESS_INTERACTION_SCOPE,
             "local",
             extension,

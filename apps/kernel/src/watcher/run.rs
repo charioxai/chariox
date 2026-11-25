@@ -28,8 +28,11 @@ pub(crate) struct RunSpec {
 
 #[derive(Debug, PartialEq)]
 pub(crate) enum RunEnd {
-    /// Exited with 0.
-    Finished,
+    /// Exited with 0. `output` is the end of its error output, which a caller that rejects the
+    /// run anyway (a poll that reported no reading) keeps for the agent that repairs the script.
+    Finished {
+        output: String,
+    },
     Failed {
         reason: String,
         output: String,
@@ -141,7 +144,7 @@ pub(crate) async fn run(
         None => String::new(),
     };
     match outcome {
-        Ok(()) => RunEnd::Finished,
+        Ok(()) => RunEnd::Finished { output },
         Err(None) => RunEnd::Stopped,
         Err(Some(reason)) => failed(reason, output),
     }

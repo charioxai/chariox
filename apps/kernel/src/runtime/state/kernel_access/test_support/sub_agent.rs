@@ -1,10 +1,9 @@
-//! A process the kernel launched (a sub-agent) cannot ask for kernel access. Nothing about
-//! the refusal is secret, so it names the way out in plain words.
+//! A kernel child needs a dedicated agent identity to request access.
 use super::*;
 use std::process::{Command, Stdio};
 
 const SUB_AGENT_SENTENCE: &str =
-    "An agent cannot ask for kernel access. Only the person can grant it, in a Chariox terminal.";
+    "This process is outside a dedicated agent run of the kernel owner. Run `chariox access request --no-wait` from that agent’s shell.";
 
 struct Launched(std::process::Child);
 
@@ -17,7 +16,7 @@ impl Drop for Launched {
 
 // The test process stands in for the kernel, so its child is a process the kernel launched.
 #[tokio::test]
-async fn a_launched_agent_is_told_only_the_person_can_grant_access() {
+async fn an_untracked_kernel_child_cannot_request_access() {
     crate::test_support::isolated_env_test!();
     let root = crate::test_support::TestWorktree::new("access-sub-agent");
     let router = reopen_kernel(&root);
@@ -34,6 +33,7 @@ async fn a_launched_agent_is_told_only_the_person_can_grant_access() {
         .request_kernel_access(
             sub_agent,
             RequestKernelAccessRequest {
+                reason: None,
                 holder_pid: None,
                 no_wait: false,
                 term: None,
@@ -42,7 +42,7 @@ async fn a_launched_agent_is_told_only_the_person_can_grant_access() {
         .await
         .unwrap_err();
     let seen = crate::runtime_transport::unix_access::access_transport_error(&refused);
-    assert_eq!(seen.code, "kernel_access_sub_agent", "{refused}");
+    assert_eq!(seen.code, "kernel_access_agent_unavailable", "{refused}");
     assert_eq!(seen.message, SUB_AGENT_SENTENCE);
     assert!(!seen.retryable);
 }

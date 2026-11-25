@@ -34,6 +34,7 @@ pub(super) fn map_relay_error(error: &DaemonError) -> RelayError {
         DaemonError::ProviderAccountNameTaken { .. }
         | DaemonError::ProviderLoginCodeIncomplete
         | DaemonError::ProviderLoginCodeInvalid
+        | DaemonError::ProviderLoginVaultEntryUnavailable
         | DaemonError::ProviderProfileRefused { .. }
         | DaemonError::ProviderDevStubDisabled
         | DaemonError::AgentNotInSession { .. }
@@ -86,6 +87,16 @@ pub(super) fn map_relay_error(error: &DaemonError) -> RelayError {
         {
             relay_error(
                 crate::transport::relay_peer::REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE,
+                &error.to_string(),
+                false,
+            )
+        }
+        DaemonError::LocalTransport { operation, .. }
+            if *operation
+                == crate::transport::relay_peer::REMOTE_PROVIDER_ACCOUNT_MISSING_OPERATION =>
+        {
+            relay_error(
+                crate::transport::relay_peer::REMOTE_PROVIDER_ACCOUNT_MISSING_CODE,
                 &error.to_string(),
                 false,
             )
@@ -303,6 +314,8 @@ pub(super) fn relay_request_kind(request: &LocalDaemonRequest) -> &'static str {
             "workspace.commit_message.generate"
         }
         LocalDaemonRequest::CommitWorkspaceChanges(_) => "workspace.git.commit",
+        // MP-11: renewals of self-hosted relay grants stay visible in relay dispatch logs.
+        LocalDaemonRequest::IssueRelayClientToken(_) => "relay_issuer.client_token.issue",
         _ => "other",
     }
 }
@@ -313,6 +326,18 @@ mod cloud_refusal_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_worker_without_the_account_answers_with_its_own_code() {
+        let mapped = map_relay_error(&DaemonError::LocalTransport {
+            operation: crate::transport::relay_peer::REMOTE_PROVIDER_ACCOUNT_MISSING_OPERATION,
+            message: "the selected codex account is unavailable on the worker".into(),
+        });
+        assert_eq!(
+            mapped.code,
+            crate::transport::relay_peer::REMOTE_PROVIDER_ACCOUNT_MISSING_CODE
+        );
+    }
 
     #[test]
     fn settled_prompt_error_keeps_its_typed_code_across_the_relay() {
@@ -344,6 +369,24 @@ mod tests {
             retryable: false,
         }
         .is_no_active_prompt());
+    }
+
+    #[test]
+    fn a_removed_vault_entry_keeps_its_recovery_message_across_the_relay() {
+        let mapped = map_relay_error(&DaemonError::ProviderLoginVaultEntryUnavailable);
+        assert_eq!(mapped.code, "provider_login_vault_entry_unavailable");
+        assert!(!mapped.retryable);
+        assert!(
+            mapped.message.contains("another entry"),
+            "the recovery text must reach the caller, got: {}",
+            mapped.message
+        );
+        assert!(!mapped.message.contains("without a reason"));
+        // The shared external projection answers the same code with the same text.
+        assert_eq!(
+            crate::error::external_request_failure_message(&mapped.code),
+            mapped.message
+        );
     }
 
     const STALE_ELEMENT: &str =
@@ -812,6 +855,21 @@ mod tests {
             });
 
         assert_eq!(relay_request_kind(&request), "environment.action.cancel");
+    }
+
+    #[test]
+    fn relayed_relay_token_renewals_have_their_own_kind() {
+        let request =
+            LocalDaemonRequest::IssueRelayClientToken(crate::local::IssueRelayClientTokenRequest {
+                client_id: "cli-1".into(),
+                public_key_thumbprint: "a".repeat(64),
+                scope: crate::local::RelayClientTokenScope::Attach,
+                lifetime_ms: None,
+            });
+        assert_eq!(
+            relay_request_kind(&request),
+            "relay_issuer.client_token.issue"
+        );
     }
 
     #[test]

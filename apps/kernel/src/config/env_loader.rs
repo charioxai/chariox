@@ -60,14 +60,7 @@ impl DaemonConfig {
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty());
         let env_relay_configured = env_relay_url.is_some() || env_relay_token.is_some();
-        let daemon_id = if protected_slice_identity_required() {
-            protected_slice_daemon_id(&runtime_identity.daemon_id)
-        } else {
-            env::var("CHARIOX_DAEMON_ID")
-                .ok()
-                .filter(|value| !value.trim().is_empty())
-                .unwrap_or_else(|| runtime_identity.daemon_id.clone())
-        };
+        let daemon_id = daemon_id_override().unwrap_or_else(|| runtime_identity.daemon_id.clone());
         let event_delivery_environment_id = env::var("CHARIOX_EVENT_ENVIRONMENT_ID")
             .ok()
             .map(|value| value.trim().to_string())
@@ -223,7 +216,6 @@ impl DaemonConfig {
                 .filter(|value| *value > 0)
                 .unwrap_or(60_000),
             room_agent_tools: true,
-            remote_jobs: env::var("CHARIOX_REMOTE_JOBS").as_deref() == Ok("1"),
             accept_remote_leases,
             kernel_runtime_role,
             remote_lease_capacity,
@@ -321,14 +313,14 @@ fn parse_event_generator_management_targets(
 /// and the home discovers and routes to the worker by that exact ref. Accept
 /// only that form, for the provisioned owner Machine; any other value keeps
 /// the retained kernel id.
-fn protected_slice_daemon_id(retained_kernel_id: &str) -> String {
-    let owner_machine_id = env::var("CHARIOX_SLICE_OWNER_MACHINE_ID").unwrap_or_default();
-    env::var("CHARIOX_DAEMON_ID")
-        .ok()
-        .filter(|worker_ref| {
-            crate::slice::machine_scoped_slice_worker_ref(worker_ref, owner_machine_id.trim())
-        })
-        .unwrap_or_else(|| retained_kernel_id.to_string())
+pub(super) fn daemon_id_override() -> Option<String> {
+    let daemon_id = env::var("CHARIOX_DAEMON_ID").ok()?;
+    if protected_slice_identity_required() {
+        let owner_machine_id = env::var("CHARIOX_SLICE_OWNER_MACHINE_ID").unwrap_or_default();
+        return crate::slice::machine_scoped_slice_worker_ref(&daemon_id, owner_machine_id.trim())
+            .then_some(daemon_id);
+    }
+    (!daemon_id.trim().is_empty()).then_some(daemon_id)
 }
 
 fn load_env_cloud_relay_profile() -> Option<PersistedCloudRelayProfile> {

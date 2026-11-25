@@ -2,8 +2,8 @@
 //! never allocates or releases a machine: the agent keeps holding it afterwards, so what the job
 //! uploaded there must be removed by the job itself.
 //!
-//! Naming a held machine does not need `CHARIOX_REMOTE_JOBS`: that switch governs placing
-//! jobs on worker machines by the kernel's own offload policy, and the agent chose this machine itself.
+//! Naming a held machine is not an offload policy choice: the policy places jobs on worker machines
+//! the kernel acquires, and the agent chose this machine itself.
 //!
 //! The plan (`return.json`) names the uploaded workspace and is saved, with stage `Planned`, before
 //! the first byte goes up. It is forgotten only once the workspace is removed, so "plan saved" means

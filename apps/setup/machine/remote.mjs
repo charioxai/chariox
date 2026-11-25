@@ -3,6 +3,7 @@ import { spawn } from "node:child_process"
 import { createHash } from "node:crypto"
 import { lstat, mkdir, mkdtemp, readFile, readdir, readlink, realpath, rename, rm, symlink, writeFile } from "node:fs/promises"
 import { createServer } from "node:net"
+import { userInfo } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 
@@ -77,6 +78,19 @@ export async function command(program, args, capture = false, input, env = proce
     return out
   } finally { clearTimeout(timer) }
 }
+// MP-07/MP-08: Setup keeps the kernel as a systemd user service, so the user needs a user manager.
+// A login user has one; an exec/su user on a host without lingering does not. This only looks, before
+// Setup creates, downloads or enables anything, and says in plain words what is missing and how to fix it.
+export async function requireUserManager(invoke = command, uid = process.getuid(), user = userInfo().username, exists = path => lstat(path).then(() => true, () => false)) {
+  if (!Number.isSafeInteger(uid) || uid < 0) fail("cannot identify the user service owner")
+  // Only the exit status matters. The manager's whole environment can be larger than the capture limit, so it is not captured.
+  if (await invoke("systemctl", ["--user", "show-environment"], false).then(() => true, () => false)) return
+  const run = `/run/user/${uid}`
+  const missing = await exists(run)
+    ? `${run} exists, but this shell cannot reach the user manager there (XDG_RUNTIME_DIR is not set to it)`
+    : `${user} has no systemd user session (${run} does not exist) and lingering is off`
+  fail(`Setup cannot install the Chariox service: ${missing}, so a user service could not run or survive logout. Nothing was changed. Log in through a session that has a user manager (for example an ssh or console login), or ask the host administrator to run "loginctl enable-linger ${user}", then run Setup again.`)
+}
 // MP-07/MP-08: an enabled user unit must survive the login session that installs it.
 // logind permits users to enable their own lingering where host policy allows it.
 // Never elevate privileges or claim readiness if that prerequisite is refused.
@@ -117,7 +131,7 @@ function quote(value) {
 export const isolatedKernelEnvironment = ["CHARIOX_MANAGED_PROVIDER_TOPOLOGY", "CHARIOX_MANAGED_BOOTSTRAP_RECEIPT", "CHARIOX_CAPABILITY_ISOLATION_ROOT", "CHARIOX_MANAGED_PROVIDER_ISOLATION", "CHARIOX_MANAGED_PROVIDER_ISOLATION_ACTIVE", "CHARIOX_MANAGED_PROVIDER_BWRAP", "CHARIOX_MANAGED_PROVIDER_HOME", "CHARIOX_SLICE_ROOT", "CHARIOX_SLICE_DOCKER_BROKER_SOCKET", "CHARIOX_SLICE_DOCKER_BROKER_FD", "CHARIOX_SLICE_DOCKER_BROKER_REQUIRED", "CHARIOX_RELAY_TOKEN", "CHARIOX_CLOUD_RELAY_CONFIG_JSON", "CHARIOX_CLOUD_RELAY_CONFIG_PATH", "CHARIOX_DAEMON_ID", "CHARIOX_MACHINE_ID", "CHARIOX_DAEMON_ALIAS", "CHARIOX_MACHINE_ALIAS", "CHARIOX_KERNEL_LOCAL_AUTH_TOKEN", "CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE", "CHARIOX_LOG_DIR", "CHARIOX_PUBLICATION_CONTROL_STATE_DIR", "CHARIOX_DAEMON_SOCKET", "CHARIOX_SESSION_HISTORY_DIR", "CHARIOX_RELAY_URL", "CHARIOX_MANAGED_SLICE_RELAY_OWNER_PUBLIC_KEY", "CHARIOX_KERNEL_RUNTIME_ROLE", "CHARIOX_REMOTE_LEASE_CAPACITY", "CHARIOX_LEASE_WORKER_HOME_CALLER", "CHARIOX_SLICE_OWNER_MACHINE_ID", "CHARIOX_AEDS_URL", "CHARIOX_EVENT_ENVIRONMENT_ID", "CHARIOX_EVENT_REGISTRY_URL", "CHARIOX_AEGS_MANAGEMENT_TARGETS_FILE", "CHARIOX_AEGS_MANAGEMENT_TARGETS_JSON"]
 export function unitFor(home, r, root, kernelPath = "usr/local/bin/chariox-kernel", serviceEnvironment = {}) {
   const additionalEnvironment = Object.entries(serviceEnvironment).map(([key, value]) => `Environment=${quote(`${key}=${value}`)}\n`).join("")
-  return `[Unit]\nDescription=Chariox machine ${r.installId}\n\n[Service]\nType=simple\nEnvironment=${quote(`HOME=${home}`)}\nEnvironment=${quote(`CHARIOX_HOME=${home}/.chariox/dev/machines/${r.installId}`)}\nEnvironment=${quote(`PATH=${process.env.PATH}`)}\nEnvironment=CHARIOX_KERNEL_HOST=127.0.0.1\nEnvironment=CHARIOX_KERNEL_PORT=${r.port}\nEnvironment=CHARIOX_MCP_HOST=127.0.0.1\nEnvironment=CHARIOX_MCP_PORT=${r.port + 1}\n${additionalEnvironment}UnsetEnvironment=${isolatedKernelEnvironment.join(" ")}\nExecStart=${quote(`${root}/current/${kernelPath}`)}\nRestart=on-failure\nRestartSec=3\n\n[Install]\nWantedBy=default.target\n`
+  return `[Unit]\nDescription=Chariox machine ${r.installId}\n\n[Service]\nType=simple\nEnvironment=${quote(`HOME=${home}`)}\nEnvironment=${quote(`CHARIOX_HOME=${home}/.chariox/dev/machines/${r.installId}`)}\nEnvironment=${quote(`PATH=${process.env.PATH}`)}\nEnvironment=CHARIOX_KERNEL_HOST=127.0.0.1\nEnvironment=CHARIOX_KERNEL_PORT=${r.port}\nEnvironment=CHARIOX_MCP_HOST=127.0.0.1\nEnvironment=CHARIOX_MCP_PORT=${r.port + 1}\n${additionalEnvironment}UnsetEnvironment=${isolatedKernelEnvironment.join(" ")}\nExecStart=${quote(`${root}/current/${kernelPath}`)}\nMemoryMin=2G\nRestart=on-failure\nRestartSec=3\n\n[Install]\nWantedBy=default.target\n`
 }
 async function verifyImage(image, digest, pins, stage) {
   await command("node", [join(stage, "verify-rootfs.mjs"), image, digest, join(pins, "release-public-pin"), join(pins, "builder-public-pin")])

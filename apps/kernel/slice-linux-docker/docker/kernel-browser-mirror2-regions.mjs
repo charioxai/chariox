@@ -36,9 +36,18 @@ export class Mirror2Regions {
       add(op.nodes); if(parent)parent.children=retained;
     }
   }
+  // Row 426: a region operation (a lease check runs once per region video frame) must not wait behind the mirror's long polls,
+  // but ending them made each credit answer with an empty packet (~400 a second for a 60 fps region, and the spent sequences
+  // tripped false `behind` resets that retired the regions). While it waits, ordinary credits step aside instead (Mirror2.next):
+  // the page's long poll is woken, no packet is issued, and they queue again behind the operation.
   locked(stream, operation) {
-    this.mirror.hurry(stream);
-    const run = stream.chain.then(operation); stream.chain = run.catch(() => {}); return run;
+    stream.regionWaiting = (stream.regionWaiting ?? 0) + 1;
+    (this.mirror.wake ?? this.mirror.hurry).call(this.mirror, stream);
+    let waiting = true;
+    const run = stream.chain.then(() => { waiting = false; stream.regionWaiting--; return operation(); });
+    stream.chain = run.catch(() => {});
+    if (waiting) run.catch(() => {}).finally(() => { if (waiting) { waiting = false; stream.regionWaiting--; } });
+    return run;
   }
   check(target, scope, expected) {
     const {mirror_subscription_id:sid,generation,document_id,sequence,region_id} = target;

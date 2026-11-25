@@ -68,6 +68,15 @@ pub(crate) fn binary_requests_accepted(handshake: &Response) -> bool {
         .is_some_and(|value| value == chariox_relay::binary_request::OFFER)
 }
 
+/// True when the relay answered the binary peer offer: this kernel's peer requests and replies
+/// then travel as `CXR3` and `CXR2` frames too.
+pub(crate) fn binary_peer_accepted(handshake: &Response) -> bool {
+    handshake
+        .headers()
+        .get(chariox_relay::binary_request::PEER_HEADER)
+        .is_some_and(|value| value == chariox_relay::binary_request::PEER_OFFER)
+}
+
 /// True when the relay answered the upload offer in its handshake.
 pub(crate) fn upload_chunks_accepted(handshake: &Response) -> bool {
     handshake

@@ -95,6 +95,14 @@ class VaapiEncoder:
             child.wait(timeout=2);child.stdin.close();child.stdout.close()
         self.configuration=None
 
+def warm_up():
+    # Row 401 F2: the first request of a fresh helper paid its imports and first-use set-up (~96 ms of a region's first key frame
+    # on b3): one tiny JPEG through the same decode and crop path (numpy) as a screencast region's frames does it ahead.
+    jpeg=av.CodecContext.create('mjpeg','w');jpeg.width=16;jpeg.height=16;jpeg.pix_fmt='yuvj420p';jpeg.time_base=Fraction(1,1)
+    data=bytes(list(jpeg.encode(av.VideoFrame(16,16,'rgb24').reformat(format='yuvj420p')))[0])
+    with av.open(io.BytesIO(data)) as source:frame=next(source.decode(video=0))
+    av.VideoFrame.from_ndarray(frame.to_ndarray(format='rgb24')[0:8,0:8],format='rgb24').reformat(format='yuv420p')
+
 def main():
     stripes = None
     codec = None
@@ -109,6 +117,9 @@ def main():
         mapping = None
         try:
             request = json.loads(line)
+            if request.get('operation')=='warm':
+                warm_up()
+                print(json.dumps({'warm':True}),flush=True);continue
             regions=request.get('protected_regions',[])
             if 'raw' in request:
                 raw=request['raw'];w=raw['width'];h=raw['height'];size=w*h*4
@@ -139,6 +150,16 @@ def main():
                 png = base64.b64decode(request['png'], validate=True)
                 if len(png) > 4 * 1024 * 1024:raise ValueError('frame bound')
                 with av.open(io.BytesIO(png)) as source:frame = next(source.decode(video=0))
+                # R1: a region of a display-less browser sends its Tab's screencast image with the region's crop (device pixels);
+                # odd sides round down, so the encoder sees the shapes the uncropped path can produce. Masks are whole-frame
+                # coordinates: a crop never carries them (a region's raw screencast only runs with no Vault value or target).
+                crop=request.get('crop')
+                if crop is not None:
+                    x,y,cw,ch=(crop.get(k) for k in ('x','y','width','height')) if isinstance(crop,dict) else (None,)*4
+                    if regions or not all(isinstance(v,int) and not isinstance(v,bool) for v in (x,y,cw,ch)) or x<0 or y<0 or cw<2 or ch<2 or x+cw>frame.width or y+ch>frame.height:
+                        raise ValueError('crop bound')
+                    cw-=cw%2;ch-=ch%2
+                    frame=av.VideoFrame.from_ndarray(frame.to_ndarray(format='rgb24')[y:y+ch,x:x+cw],format='rgb24')
             if request.get('operation')!='stripes' and (frame.width > 2560 or frame.height > 2560 or frame.width * frame.height > 2560 * 1600):
                 raise ValueError('geometry bound')
             if request.get('operation')=='stripes':

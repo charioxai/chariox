@@ -14,6 +14,9 @@ pub enum ControlPlaneRequest {
         class_id: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         region: Option<String>,
+        /// The machine's hard stop in seconds; the service stops the machine then. Absent keeps it until released.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        timeout_s: Option<u64>,
     },
     AcquireJob {
         capability_revision: String,
@@ -69,6 +72,40 @@ pub enum ControlPlaneRequest {
         request_id: String,
         expected_revision: u64,
     },
+}
+
+impl ControlPlaneRequest {
+    /// The capability revision a request was made against, when it carries one.
+    pub fn capability_revision(&self) -> Option<&str> {
+        match self {
+            Self::Acquire {
+                capability_revision,
+                ..
+            }
+            | Self::AcquireJob {
+                capability_revision,
+                ..
+            } => Some(capability_revision),
+            _ => None,
+        }
+    }
+
+    /// The same acquire request against another capability revision.
+    pub fn with_capability_revision(&self, revision: &str) -> Self {
+        let mut request = self.clone();
+        if let Self::Acquire {
+            capability_revision,
+            ..
+        }
+        | Self::AcquireJob {
+            capability_revision,
+            ..
+        } = &mut request
+        {
+            *capability_revision = revision.to_owned();
+        }
+        request
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

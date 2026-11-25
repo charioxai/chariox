@@ -1,0 +1,47 @@
+{
+  "items": [
+    "MP-08",
+    "MP-10"
+  ],
+  "local_protocol": 1015,
+  "peer_protocol": 452,
+  "allocation": "Local 1015 (relay peer 452, Landing 14): additive layout_delta (a complete mirror v2 snapshot follows a page size change by a delta whose header carries css_width/css_height, not a layout reset)",
+  "subscribe": {
+    "KernelBrowser": {
+      "command": {
+        "op": "mirror_subscribe",
+        "tab_id": "t",
+        "generation": 1,
+        "device_scale_factor": 1,
+        "wire": 2,
+        "layout_delta": true
+      }
+    }
+  },
+  "subscribed": {
+    "subscription_id": "s",
+    "generation": 1,
+    "tab_id": "t",
+    "device_scale_factor": 1,
+    "wire": 2,
+    "layout_delta": true
+  },
+  "resized_delta": {
+    "wire": 2,
+    "sequence": 7,
+    "css_width": 1672,
+    "css_height": 847
+  },
+  "reaction_delta": {
+    "wire": 2,
+    "sequence": 8,
+    "ops": [
+      {
+        "op": "attr",
+        "id": "n7",
+        "name": "class",
+        "value": "wide"
+      }
+    ]
+  }
+}

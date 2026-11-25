@@ -61,7 +61,7 @@ fn mp11_leased_agent_file_copy_442_is_pinned() {
                 "path": "out/x.bundle", "offset": 4_194_304}),
             serde_json::json!({"kind": "write_leased_agent_file", "leased_agent_id": "leased",
                 "path": "in/base.bundle", "offset": 0, "total_size": 3, "sha256": sha,
-                "overwrite": false, "content": "YWJj"}),
+                "overwrite": false, "data_base64": "YWJj"}),
             serde_json::json!({"kind": "discard_leased_agent_file", "leased_agent_id": "leased",
                 "path": "in/base.bundle"}),
         ]
@@ -73,9 +73,9 @@ fn mp11_leased_agent_file_copy_442_is_pinned() {
             .collect::<Vec<_>>(),
         [
             serde_json::json!({"kind": "file_slice_read", "size_bytes": 3, "sha256": sha,
-                "revision": "2049:17:3:1.5:1.5", "content": "YWJj"}),
+                "revision": "2049:17:3:1.5:1.5", "data_base64": "YWJj"}),
             serde_json::json!({"kind": "file_slice_read", "size_bytes": 3,
-                "revision": "2049:17:3:1.5:1.5", "content": ""}),
+                "revision": "2049:17:3:1.5:1.5", "data_base64": ""}),
             serde_json::json!({"kind": "leased_agent_file_written", "received": 3, "sha256": sha}),
             serde_json::json!({"kind": "leased_agent_file_written", "received": 0}),
             serde_json::json!({"kind": "leased_agent_file_discarded"}),

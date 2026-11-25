@@ -1,5 +1,5 @@
-//! A kernel at its descriptor limit refuses the terminal it cannot open, in
-//! plain words, and the terminals it already runs keep running.
+//! A Room has no terminal limit, so a kernel at its descriptor limit is what refuses the terminal
+//! it cannot open, in plain words that say what to do, and the terminals it already runs keep running.
 #![cfg(unix)]
 
 use std::time::Duration;
@@ -34,16 +34,13 @@ fn a_kernel_out_of_descriptors_refuses_the_next_terminal_and_keeps_the_others() 
                 .unwrap()
                 .to_string();
 
-            // A Room holds 16 terminals: fill Rooms until the kernel runs short.
+            // A Room has no terminal limit: open terminals in the one Room until the kernel
+            // runs short of descriptors, which is the only thing that can refuse one.
             let mut refused = None;
-            let mut room = session_id.clone();
-            for opened_so_far in 0..200 {
-                if opened_so_far % 8 == 0 {
-                    room = create_session(&mut socket, &scratch).await;
-                }
+            for _ in 0..400 {
                 let opened = terminal(
                     &mut socket,
-                    &room,
+                    &session_id,
                     json!({"operation": "open", "cols": 80, "rows": 24,
                         "command": ["/bin/sh", "-c", "sleep 600"]}),
                 )

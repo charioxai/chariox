@@ -112,6 +112,10 @@ impl SessionService {
                 }
                 Ok(workflow.clone())
             }
+            crate::local::WorkflowDesignOp::WorkflowArchive {
+                workflow_id,
+                archived,
+            } => self.set_workflow_archived(session_id, &workflow_id, archived),
             crate::local::WorkflowDesignOp::WorkflowRemove { workflow_id } => {
                 let workflow_id = self
                     .resolve_workflow_ref(session_id, &workflow_id)?
@@ -123,6 +127,21 @@ impl SessionService {
                         .ok_or_else(|| DaemonError::SessionNotFound {
                             session_id: session_id.to_string(),
                         })?;
+                // Refuse before any mutation so a delete never leaves a run
+                // behind without its workflow.
+                if let Some(run) = session
+                    .workflow_runs()
+                    .iter()
+                    .find(|run| run.workflow_id() == workflow_id && !run.status().is_terminal())
+                {
+                    return Err(DaemonError::LocalTransport {
+                        operation: "workflow.delete",
+                        message: format!(
+                            "workflow `{workflow_id}` has run `{}` in flight; cancel it or wait for it to finish, then delete the workflow again",
+                            run.id()
+                        ),
+                    });
+                }
                 let publication_ids = session
                     .workflow_publications()
                     .iter()

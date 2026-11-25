@@ -3,7 +3,10 @@ use super::*;
 use crate::durable_state::agent_lifecycle::AgentTaskExecution;
 
 impl KernelRuntimeOwnedState {
-    fn task_settle_steps(&self, task: &AgentTaskExecution) -> Result<Vec<String>, DaemonError> {
+    pub(super) fn task_settle_steps(
+        &self,
+        task: &AgentTaskExecution,
+    ) -> Result<Vec<String>, DaemonError> {
         if !task.obligations.iter().any(|o| o.requires_resolution()) {
             return Ok(Vec::new());
         }
@@ -141,31 +144,5 @@ impl KernelRuntimeOwnedState {
             "This task was blocked ({reason}) and has now been resumed. {}",
             self.task_correction_text(task)?
         ))
-    }
-
-    pub(super) fn blocked_card_message(
-        &self,
-        alias: Option<&str>,
-        task: &AgentTaskExecution,
-    ) -> String {
-        let reason = crate::terminal::public_task_failure_reason(&task.reason);
-        let mut text = alias.map_or_else(|| reason.clone(), |alias| format!("{alias}: {reason}"));
-        if crate::provider::switch_turn::needs_fresh_agent(&task.reason) {
-            text.push_str(" Start a fresh agent to continue with the brief.");
-            return text;
-        }
-        match self.task_settle_steps(task) {
-            Ok(steps) if !steps.is_empty() => {
-                text.push_str(&format!(" Open: {}.", steps.join("; ")));
-            }
-            Ok(_) => {}
-            Err(error) => {
-                // Damaged registrations must not take away the task's Cancel choice.
-                let reason =
-                    crate::secret_redaction::redact_secrets(&error.to_string()).into_owned();
-                text.push_str(&format!(" Recovery instructions could not be read: {reason}. Cancel this task or restore its authoritative receipts before Resume."));
-            }
-        }
-        text
     }
 }

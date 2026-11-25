@@ -16,7 +16,7 @@ impl DaemonApp {
             .map(|account| {
                 let copyable = account.auth_state
                     == crate::account_profile::ProviderAccountAuthState::Authenticated
-                    && (account.provider == "codex"
+                    && (matches!(account.provider.as_str(), "codex" | "opencode")
                         || (account.provider == "claude"
                             && self
                                 .provider_account_profiles

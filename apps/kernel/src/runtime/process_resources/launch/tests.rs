@@ -180,6 +180,7 @@ fn descendant(unit: &str, pid: u32, admitted: bool) -> Arc<Mutex<Observation>> {
             measured_growth: 0,
             writes: 0,
             write_growth: 0,
+            write_rate: 0,
             effective: pid,
             root: false,
 
@@ -629,4 +630,106 @@ fn declared_job_memory_waits_before_spawn_on_a_healthy_machine() {
     assert!(admission
         .reserve_with_memory("off", &argv, Path::new("/"), false, required)
         .is_ok());
+}
+
+#[cfg(target_os = "linux")]
+fn healthy_total() -> u64 {
+    std::fs::read_to_string("/proc/meminfo")
+        .unwrap()
+        .lines()
+        .find_map(|line| line.strip_prefix("MemTotal:"))
+        .unwrap()
+        .split_whitespace()
+        .next()
+        .unwrap()
+        .parse::<u64>()
+        .unwrap()
+        * 1024
+}
+
+/// Row 541: a command whose last run peaked above the room left waits before
+/// it launches while something heavy runs, on a machine with no emergency;
+/// a light command never waits; with nothing heavy running it starts.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_known_heavy_peak_waits_before_launch_while_something_heavy_runs_and_starts_when_nothing_does()
+{
+    let capture = crate::logging::capture::start();
+    let total = healthy_total();
+    let pool = Arc::new(Pool::new(total, true).with_machine_pressure(Box::new(|| false)));
+    let admission = LaunchAdmission(pool.clone());
+    let cwd = Path::new("/");
+    let heavy: Vec<String> = vec!["frame-analysis-541-launch".into()];
+    learn(&admission, &heavy, cwd, total.saturating_mul(2));
+    // Nothing heavy runs: it starts, whatever its peak (one always progresses).
+    let alone = admission
+        .reserve("alone", &heavy, cwd, false)
+        .expect("with nothing heavy running a command starts");
+    drop(alone);
+    // Something heavy runs (a declared 1 GiB job).
+    let running = admission
+        .reserve_with_memory("running", &["builder".into()], cwd, false, 1024 * MIB)
+        .expect("the declared job fits");
+    let wait = admission
+        .reserve("heavy", &heavy, cwd, false)
+        .err()
+        .expect("a peak above the room left waits while something heavy runs");
+    assert_eq!(wait.reason, admission::WaitReason::Memory);
+    assert!(wait.need_bytes >= total);
+    // Asked again, still waiting, logged once.
+    assert!(admission.reserve("heavy", &heavy, cwd, false).is_err());
+    // A light command with no known peak never waits.
+    assert!(admission
+        .reserve("light", &["echo".into()], cwd, false)
+        .is_ok());
+    // What ran finishes: the held command starts and says so, once.
+    drop(running);
+    assert!(admission.reserve("heavy", &heavy, cwd, false).is_ok());
+    let lines = capture
+        .records()
+        .into_iter()
+        .filter(|line| line.contains("frame-analysis-541-launch"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        lines
+            .iter()
+            .filter(|line| line.contains("admission held (Memory)"))
+            .count(),
+        1,
+        "{lines:?}"
+    );
+    assert_eq!(
+        lines
+            .iter()
+            .filter(|line| line.contains("admission started (Memory)"))
+            .count(),
+        1,
+        "{lines:?}"
+    );
+}
+
+/// Review of #1737 (P2): a terminal command admitted with a heavy predicted peak
+/// that has not grown yet already holds the pool: a known-heavy launch waits.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_known_heavy_launch_waits_for_an_admitted_predicted_heavy_command_before_it_grows() {
+    let total = healthy_total();
+    let pool = Arc::new(Pool::new(total, true).with_machine_pressure(Box::new(|| false)));
+    let admission = LaunchAdmission(pool.clone());
+    let cwd = Path::new("/");
+    let heavy: Vec<String> = vec!["frame-analysis-541-overlap".into()];
+    learn(&admission, &heavy, cwd, total.saturating_mul(2));
+    // The shell's command: admitted, 4 GiB predicted, 16 MiB resident so far.
+    let terminal = descendant("terminal", 42, true);
+    pool.join(&terminal);
+    let wait = admission
+        .reserve("heavy", &heavy, cwd, false)
+        .err()
+        .expect("a heavy launch must wait for the admitted command's reserved peak");
+    assert_eq!(wait.reason, admission::WaitReason::Memory);
+    // Nothing admitted and nothing heavy: the same launch starts.
+    pool.members()
+        .iter()
+        .for_each(|member| member.lock().unwrap().admission.clear());
+    assert!(admission.reserve("heavy", &heavy, cwd, false).is_ok());
 }

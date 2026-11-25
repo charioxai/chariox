@@ -252,6 +252,7 @@ pub(crate) async fn execute_remote_agent_binding_refresh(
                 };
             account_materialization.profile.owner_user_id = plan.agent.owner_user_id().to_string();
             let expected_account = account_materialization.profile.clone();
+            let credentialless = account_materialization.is_credentialless_opencode();
             match send_remote_binding_request_off_lock(
                 &relay_config,
                 &plan.relay_state,
@@ -276,9 +277,10 @@ pub(crate) async fn execute_remote_agent_binding_refresh(
                 {
                     let confirmed = remote_provider_account_confirmed(&response, &expected_account);
                     // The home's own record says "installed" only for the copy it made; a login the worker already held is asked about again.
-                    if confirmed
-                        .as_ref()
-                        .is_some_and(|account| account.profile_id == expected_account.profile_id)
+                    if !credentialless
+                        && confirmed.as_ref().is_some_and(|account| {
+                            account.profile_id == expected_account.profile_id
+                        })
                     {
                         if let Err(error) = update_remote_binding_materialization_status(
                         &plan.provider_account_profiles,
@@ -710,11 +712,8 @@ impl DaemonApp {
         );
         if remote_setup.is_err() {
             let mut sessions = session_store.write();
-            let destroyed = self.agents.destroy_agent(agent.id(), &mut sessions);
+            let _ = self.agents.destroy_agent(agent.id(), &mut sessions);
             drop(sessions);
-            if destroyed.is_ok() {
-                self.forget_room_computer_access(agent.id());
-            }
         }
         remote_setup
     }
@@ -897,6 +896,7 @@ impl DaemonApp {
                 // stamp that identity on the encrypted replica envelope.
                 account_materialization.profile.owner_user_id = agent.owner_user_id().to_string();
                 let expected_account = account_materialization.profile.clone();
+                let credentialless = account_materialization.is_credentialless_opencode();
                 match self.send_remote_binding_request_authorized(
                     &relay_config,
                     target.clone(),
@@ -918,9 +918,11 @@ impl DaemonApp {
                     {
                         let confirmed =
                             remote_provider_account_confirmed(&response, &expected_account);
-                        if confirmed.as_ref().is_some_and(|account| {
-                            account.profile_id == expected_account.profile_id
-                        }) {
+                        if !credentialless
+                            && confirmed.as_ref().is_some_and(|account| {
+                                account.profile_id == expected_account.profile_id
+                            })
+                        {
                             if let Err(error) = self
                             .provider_account_profiles
                             .update_materialization_status(
@@ -1879,6 +1881,7 @@ fn installed_remote_account_metadata(
 ) -> Option<crate::account_profile::ProviderAccountReplicaMetadata> {
     profile.is_installed_at(target_kind, target_ref).then(|| {
         crate::account_profile::ProviderAccountReplicaMetadata {
+            provider_account_id: None,
             owner_user_id: worker_owner_user_id.to_string(),
             provider: profile.provider.clone(),
             profile_id: profile.profile_id.clone(),
@@ -1975,6 +1978,7 @@ mod tests {
                     },
                     materialization: crate::account_profile::ProviderAccountMaterialization {
                         profile: crate::account_profile::ProviderAccountReplicaMetadata {
+                            provider_account_id: None,
                             owner_user_id: "owner".into(),
                             provider: "opencode".into(),
                             profile_id: "go".into(),
@@ -2037,6 +2041,7 @@ mod tests {
             },
             materialization: crate::account_profile::ProviderAccountMaterialization {
                 profile: crate::account_profile::ProviderAccountReplicaMetadata {
+                    provider_account_id: None,
                     owner_user_id: "owner".into(),
                     provider: "opencode".into(),
                     profile_id: "go".into(),
@@ -2077,6 +2082,7 @@ mod tests {
     #[test]
     fn remote_account_receipt_names_the_workers_profile_never_an_alias() {
         let expected = crate::account_profile::ProviderAccountReplicaMetadata {
+            provider_account_id: None,
             owner_user_id: "user-home".to_string(),
             provider: "codex".to_string(),
             profile_id: "codex-1-vfx4dshw".to_string(),
@@ -2125,6 +2131,7 @@ mod tests {
     #[test]
     fn remote_agent_launch_uses_the_materialized_profile_id() {
         let materialized = crate::account_profile::ProviderAccountReplicaMetadata {
+            provider_account_id: None,
             owner_user_id: "user-home".to_string(),
             provider: "codex".to_string(),
             profile_id: "codex-1-vfx4dshw".to_string(),

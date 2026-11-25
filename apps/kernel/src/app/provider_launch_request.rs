@@ -103,6 +103,9 @@ impl DaemonApp {
             .agent_id
             .as_deref()
             .and_then(|agent_id| self.agents.get_agent(agent_id).ok());
+        request.local_access_socket = agent
+            .as_ref()
+            .map(|_| self.config.local_socket_path.clone());
         if let Some(agent) = agent.as_ref() {
             if agent.session_id() != session.id() {
                 return Err(DaemonError::AgentNotInSession {
@@ -167,13 +170,34 @@ impl DaemonApp {
                         },
                     )?;
                 }
-                self.provider_account_profiles.require_authenticated(
+                let admission = self.provider_account_profiles.require_authenticated(
                     &account_owner_user_id,
                     &request.provider,
                     &request.account_profile,
                     Some(&request.model),
                     operation,
-                )?
+                );
+                match admission {
+                    // OpenCode's native catalog validates the selected model on this
+                    // profile before the first prompt. A signed-out profile can
+                    // still offer models. Go requires its own verified login.
+                    Err(DaemonError::ProviderProfileRefused {
+                        reason:
+                            crate::error::ProviderProfileRefusal::Unauthenticated
+                            | crate::error::ProviderProfileRefusal::Unverified,
+                        provider,
+                        ..
+                    }) if provider == "opencode"
+                        && !crate::account_profile::is_opencode_go_model(Some(&request.model)) =>
+                    {
+                        self.provider_account_profiles.get(
+                            &account_owner_user_id,
+                            &request.provider,
+                            &request.account_profile,
+                        )?
+                    }
+                    other => other?,
+                }
             } else {
                 self.provider_account_profiles.get(
                     &account_owner_user_id,

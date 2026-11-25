@@ -19,6 +19,7 @@ mod control;
 mod driver;
 mod enrolled;
 mod execute;
+mod handover;
 mod held;
 #[cfg(test)]
 mod held_tests;
@@ -28,11 +29,11 @@ mod marker_tests;
 mod never_fit;
 #[cfg(test)]
 mod never_fit_tests;
-#[cfg(test)]
-mod off_tests;
 mod pending_return;
 mod placed;
 mod placed_worker;
+#[cfg(test)]
+mod placement_tests;
 mod projection;
 mod query;
 mod record;
@@ -55,14 +56,14 @@ mod tests;
 #[cfg(test)]
 use driver::completion_payload;
 use projection::effective_needs;
-use record::{public_record, save_record, Record};
+use record::{public_record, save_record, CancelCause, Record};
 use requests::validate;
 use stage::{RemoteStage, StageEvent};
 
 pub(super) const KIND: &str = "job";
 const TAIL_BYTES: usize = 64 * 1024;
 
-pub(crate) use local::LocalJobHandover;
+pub(crate) use handover::JobHandover;
 
 struct Pending {
     state: KernelRuntimeState,
@@ -78,9 +79,11 @@ pub(super) struct JobDriver {
     router: std::sync::OnceLock<std::sync::Weak<crate::runtime::router::CommandRouter>>,
     pending: std::sync::Mutex<BTreeMap<String, Pending>>,
     live: Arc<std::sync::Mutex<BTreeMap<String, watch::Sender<bool>>>>,
-    local: Arc<local::LocalJobs>,
+    supervisors: Arc<handover::JobSupervisors>,
     remote_moves: std::sync::Mutex<BTreeMap<String, RemoteMove>>,
     owner_stops: std::sync::Mutex<BTreeSet<String>>,
+    /// What asked for each running job to be cancelled, until the job ends and saves it.
+    cancel_causes: std::sync::Mutex<BTreeMap<String, CancelCause>>,
     remote_samples:
         std::sync::Mutex<BTreeMap<String, Vec<crate::runtime::process_resources::SessionProcess>>>,
     /// Grants to workers that still hold files not yet returned; rebuilt from the saved plan after a restart.

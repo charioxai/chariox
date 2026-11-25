@@ -138,7 +138,7 @@ fn discover_at(
         if !provider_installed(provider) {
             continue;
         }
-        let profiles = match registry.list(owner_user_id, Some(provider)) {
+        let profiles = match registry.list_bindings(owner_user_id, provider) {
             Ok(profiles) => profiles,
             Err(error) => {
                 log_failure(provider, "list profiles", &error);

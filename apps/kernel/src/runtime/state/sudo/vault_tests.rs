@@ -2641,6 +2641,37 @@ async fn vflag_capture_schema_label_preserves_state_and_control_through_mcp() {
     assert_eq!(stopped["tabs"], json!([]));
 }
 
+// Row 548: an agent restarts the browser through the same tool as a stop, and the browser is up again when the tool answers.
+#[tokio::test]
+async fn an_agent_restarts_the_browser_and_gets_its_tabs_back() {
+    crate::test_support::isolated_env_test!();
+    let login = login_room().await;
+    let f = &login.f;
+    let restarted = call(
+        f,
+        "chariox.kernel_browser",
+        json!({"command":{"op":"restart"}}),
+    )
+    .await
+    .unwrap();
+    assert_ne!(restarted["state"], "stopped");
+    assert!(restarted["tabs"]
+        .as_array()
+        .is_some_and(|tabs| !tabs.is_empty()));
+    // A stop would refuse this read until the browser is started; a restart leaves it up.
+    let state = call(
+        f,
+        "chariox.kernel_browser",
+        json!({"command":{"op":"state"}}),
+    )
+    .await
+    .unwrap();
+    assert!(state["tabs"]
+        .as_array()
+        .is_some_and(|tabs| !tabs.is_empty()));
+    f.state.shutdown_cleanup().await.unwrap();
+}
+
 #[tokio::test]
 async fn vflag_capture_inventory_schema_collisions_preserve_outer_runtime_results() {
     crate::test_support::isolated_env_test!();
@@ -3284,6 +3315,7 @@ async fn a_withdrawn_payment_card_closes_the_popup(withdrawal: PaymentWithdrawal
     let _other = f
         .state
         .create_kernel_operation_interaction(
+            crate::runtime::state::CardKind::NativePermissionInput,
             &f.request.session_id,
             "local",
             RuntimeInteraction::for_kernel_operation(

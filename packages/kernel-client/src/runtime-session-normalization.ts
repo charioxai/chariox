@@ -2,6 +2,7 @@ import type {
   AgentPromptState,
   RuntimeSession,
 } from "./kernel-types.js"
+import { machineApprovalReceipts } from "./machine-approval-receipts.js"
 
 export function normalizeAgentPromptState(
   state: Partial<AgentPromptState> | null | undefined,
@@ -35,6 +36,7 @@ export function normalizeRuntimeSession(session: RuntimeSession): RuntimeSession
     ...sessionWithoutLegacyWorkflowWatchdogs,
     queued_prompts: Array.isArray(session.queued_prompts) ? session.queued_prompts : [],
     active_interactions: Array.isArray(session.active_interactions) ? session.active_interactions : [],
+    machine_approval_receipts: machineApprovalReceipts(session.machine_approval_receipts),
     metaagent_tasks: Array.isArray(session.metaagent_tasks) ? session.metaagent_tasks : [],
     queued_metaagent_tasks: Array.isArray(session.queued_metaagent_tasks) ? session.queued_metaagent_tasks : [],
     agent_tasks: Array.isArray(session.agent_tasks) ? session.agent_tasks : [],

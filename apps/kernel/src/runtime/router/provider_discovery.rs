@@ -65,10 +65,13 @@ impl CommandRouter {
             .runtime_state
             .provider_account_authority_owner_user_id(crate::session::DEFAULT_LOCAL_USER_ID);
         let config = self.config_projection.snapshot();
-        let outcome = tokio::task::spawn_blocking(move || {
-            crate::provider_discovery::discover_machine_providers(&registry, &owner, &home, &config)
-        })
-        .await;
+        let outcome =
+            crate::shutdown::spawn_blocking("machine provider account discovery", move || {
+                crate::provider_discovery::discover_machine_providers(
+                    &registry, &owner, &home, &config,
+                )
+            })
+            .await;
         match outcome {
             Ok(outcome) => crate::logging::info_with_fields(
                 "daemon.provider_discovery",
@@ -99,14 +102,12 @@ impl CommandRouter {
         let owner = self
             .runtime_state
             .provider_account_authority_owner_user_id(crate::session::DEFAULT_LOCAL_USER_ID);
-        let read = super::super::provider_catalog_control::read_catalog(
+        let read = super::super::provider_catalog_control::warm_catalog(
             &self.provider_catalog_projection,
             &self.config_projection,
             self.runtime_state.provider_account_profile_registry(),
             &owner,
             crate::local::GetProviderCatalogRequest::default(),
-            true,
-            false,
         )
         .await;
         if let Err(error) = read {

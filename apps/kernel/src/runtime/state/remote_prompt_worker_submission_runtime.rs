@@ -51,6 +51,7 @@ pub(super) async fn submit_remote_prompt_to_worker_with_binding_refresh(
     );
     let mut attempt = 0_u32;
     let mut provider_credential_retry_used = false;
+    let mut account_reinstall_used = false;
     let mut binding_refresh_used = false;
     let transport_retry_started_at = tokio::time::Instant::now();
     #[cfg(test)]
@@ -120,6 +121,14 @@ pub(super) async fn submit_remote_prompt_to_worker_with_binding_refresh(
                         "relaunch remote provider run",
                     )
                     .await?;
+            }
+            RemotePromptSubmissionOutcome::RejectedBeforeAdmission(error)
+                if !account_reinstall_used && remote_prompt_error_is_account_missing(&error) =>
+            {
+                // The worker lost the account the home recorded as installed there.
+                clear_reconciliation_pending_or_defer(state, dispatch)?;
+                account_reinstall_used = true;
+                state.reinstall_remote_prompt_account(dispatch).await?;
             }
             RemotePromptSubmissionOutcome::RejectedBeforeAdmission(error)
                 if !binding_refresh_used && remote_prompt_error_should_refresh_binding(&error) =>
@@ -598,6 +607,15 @@ pub(super) fn remote_prompt_error_is_reconciliation_pending(error: &DaemonError)
     )
 }
 
+fn remote_prompt_error_is_account_missing(error: &DaemonError) -> bool {
+    matches!(
+        error,
+        DaemonError::RelayTransport { operation, code, .. }
+            if matches!(*operation, "read relay peer response" | "read temporary relay peer response")
+                && code == crate::transport::relay_peer::REMOTE_PROVIDER_ACCOUNT_MISSING_CODE
+    )
+}
+
 fn remote_prompt_error_requires_provider_launch_credential(error: &DaemonError) -> bool {
     matches!(
         error,
@@ -732,6 +750,7 @@ pub(super) fn remote_prompt_error_is_known_pre_admission_rejection(error: &Daemo
             code.as_str(),
             crate::transport::relay_peer::REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE
                 | crate::transport::relay_peer::REMOTE_PROVIDER_ACCOUNT_UNUSABLE_CODE
+                | crate::transport::relay_peer::REMOTE_PROVIDER_ACCOUNT_MISSING_CODE
                 | "leased_agent_not_found"
                 | "execution_lease_not_found"
                 | "target_not_connected"

@@ -40,7 +40,7 @@ impl RemoteLeaseRuntime<'_> {
             .get(&account_owner, provider, account_profile)
             .map(|profile| profile.profile_id)
             .map_err(|_| DaemonError::LocalTransport {
-                operation: "update leased agent profile",
+                operation: crate::transport::relay_peer::REMOTE_PROVIDER_ACCOUNT_MISSING_OPERATION,
                 message: format!("the selected {provider} account is unavailable on the worker; connect or select an available account before changing the profile"),
             })
     }
@@ -269,6 +269,7 @@ exit 2
         };
         let materialization = ProviderAccountMaterialization {
             profile: crate::account_profile::ProviderAccountReplicaMetadata {
+                provider_account_id: None,
                 owner_user_id: "owner-a".to_string(),
                 provider: "claude".to_string(),
                 profile_id: "work".to_string(),
@@ -292,6 +293,7 @@ exit 2
 
         let claude_with_refresh_credential = ProviderAccountMaterialization {
             profile: crate::account_profile::ProviderAccountReplicaMetadata {
+                provider_account_id: None,
                 owner_user_id: "owner-a".to_string(),
                 provider: "claude".to_string(),
                 profile_id: "work".to_string(),
@@ -309,10 +311,10 @@ exit 2
             .ensure_remote_provider_account(context.clone(), claude_with_refresh_credential)
             .expect_err("remote Claude refresh credentials must be rejected");
         let refusal = error.to_string();
-        // The account-copy drill proves the advised steps: a native-only login
-        // is refused, and after the setup-token step it is offered and copied.
+        // A native-only login is refused; the one step is on the owner's own computer.
         assert!(refusal.contains("/provider setup-token claude"));
-        assert!(refusal.contains("/provider accounts copy"));
+        assert!(refusal.contains("your own computer"));
+        assert!(!refusal.contains("on that machine run"));
         assert!(!error.to_string().contains("bmV2ZXItbG9nLXRoaXM"));
 
         let mut wrong_owner = materialization;
@@ -321,6 +323,83 @@ exit 2
             .ensure_remote_provider_account(context, wrong_owner)
             .is_err());
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn credentialless_opencode_placement_can_later_receive_a_login() {
+        credentialless_opencode_placement_then_login(vec![], "remote-opencode-credentialless");
+    }
+
+    // An auth store the native tool wrote without any service is the same signed-out profile.
+    #[cfg(unix)]
+    #[test]
+    fn empty_auth_store_opencode_placement_can_later_receive_a_login() {
+        use base64::Engine as _;
+        credentialless_opencode_placement_then_login(
+            vec![crate::account_profile::ProviderAccountMaterializationFile {
+                relative_path: "data/opencode/auth.json".into(),
+                contents_base64: base64::engine::general_purpose::STANDARD.encode(b"{}"),
+            }],
+            "remote-opencode-empty-store",
+        );
+    }
+
+    #[cfg(unix)]
+    fn credentialless_opencode_placement_then_login(
+        signed_out_files: Vec<crate::account_profile::ProviderAccountMaterializationFile>,
+        fixture: &str,
+    ) {
+        crate::test_support::isolated_env_test!();
+        let _env = crate::env_lock::lock();
+        let root = crate::test_support::TestWorktree::new(fixture);
+        let _native = install_opencode_auth_fixture(root.path());
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.accept_remote_leases = true;
+        config.user_config.state.path =
+            Some(root.path().join("kernel/state.db").display().to_string());
+        let mut app = crate::DaemonApp::bootstrap(config).unwrap();
+        let mut worker = RemoteLeaseRuntime::new(&mut app);
+        let lease = worker
+            .create_execution_lease("home-kernel", "room", "agent", false, "owner-a")
+            .unwrap();
+        let context = RemoteProviderAccountSyncContext {
+            home_kernel_id: "home-kernel".into(),
+            home_session_id: "room".into(),
+            home_agent_id: "agent".into(),
+            execution_lease_id: lease.id,
+        };
+        let mut materialization = ProviderAccountMaterialization {
+            profile: crate::account_profile::ProviderAccountReplicaMetadata {
+                provider_account_id: None,
+                owner_user_id: "owner-a".into(),
+                provider: "opencode".into(),
+                profile_id: "work".into(),
+                label: "Work".into(),
+                origin: crate::account_profile::ProviderAccountProfileOrigin::CharioxCreated,
+                is_default: true,
+            },
+            files: signed_out_files,
+            generated_at_ms: 1,
+        };
+        for _ in 0..2 {
+            let profile = worker
+                .ensure_remote_provider_account(context.clone(), materialization.clone())
+                .unwrap();
+            assert_eq!(profile.auth_state, ProviderAccountAuthState::NotConfigured);
+        }
+
+        use base64::Engine as _;
+        materialization.files = vec![crate::account_profile::ProviderAccountMaterializationFile {
+            relative_path: "data/opencode/auth.json".into(),
+            contents_base64: base64::engine::general_purpose::STANDARD
+                .encode(br#"{"opencode":{"type":"api","key":"synthetic-home"}}"#),
+        }];
+        let profile = worker
+            .ensure_remote_provider_account(context, materialization)
+            .unwrap();
+        assert_eq!(profile.auth_state, ProviderAccountAuthState::Authenticated);
+        assert_eq!(profile.profile_id, "work");
     }
 
     #[cfg(unix)]
@@ -355,6 +434,7 @@ exit 2
         };
         let materialization = |synthetic_key: &str| ProviderAccountMaterialization {
             profile: crate::account_profile::ProviderAccountReplicaMetadata {
+                provider_account_id: None,
                 owner_user_id: "owner-a".to_string(),
                 provider: "opencode".to_string(),
                 profile_id: "work".to_string(),
@@ -429,6 +509,7 @@ exit 2
         let registry = app.provider_account_profile_registry();
         let materialization = ProviderAccountMaterialization {
             profile: crate::account_profile::ProviderAccountReplicaMetadata {
+                provider_account_id: None,
                 owner_user_id: "owner-a".to_string(),
                 provider: "opencode".to_string(),
                 profile_id: "home-work".to_string(),
@@ -514,6 +595,7 @@ exit 2
         let registry = app.provider_account_profile_registry();
         let materialization = |owner: &str| ProviderAccountMaterialization {
             profile: crate::account_profile::ProviderAccountReplicaMetadata {
+                provider_account_id: None,
                 owner_user_id: owner.to_string(),
                 provider: "opencode".to_string(),
                 profile_id: "home-work".to_string(),
@@ -651,6 +733,7 @@ exit 2
             .expect("select B");
         let failed_c = ProviderAccountMaterialization {
             profile: crate::account_profile::ProviderAccountReplicaMetadata {
+                provider_account_id: None,
                 owner_user_id: "owner-a".to_string(),
                 provider: "opencode".to_string(),
                 profile_id: "failed-c".to_string(),
@@ -710,6 +793,7 @@ exit 2
         let (mut app, context) = remote_account_fixture(&root);
         let materialization = ProviderAccountMaterialization {
             profile: crate::account_profile::ProviderAccountReplicaMetadata {
+                provider_account_id: None,
                 owner_user_id: "owner-a".into(),
                 provider: "opencode".into(),
                 profile_id: "quiescent-probe".into(),
@@ -748,6 +832,7 @@ exit 2
         let materialization =
             |profile_id: &str, contents_base64: &str| ProviderAccountMaterialization {
                 profile: crate::account_profile::ProviderAccountReplicaMetadata {
+                    provider_account_id: None,
                     owner_user_id: "owner-a".to_string(),
                     provider: "opencode".to_string(),
                     profile_id: profile_id.to_string(),
@@ -861,6 +946,7 @@ exit 2
         let registry_path = config.account_profile_registry_path();
         let old = ProviderAccountMaterialization {
             profile: crate::account_profile::ProviderAccountReplicaMetadata {
+                provider_account_id: None,
                 owner_user_id: "owner-a".to_string(),
                 provider: "opencode".to_string(),
                 profile_id: "old-worker".to_string(),
@@ -1028,6 +1114,7 @@ exit 2
         let registry_path = config.account_profile_registry_path();
         let old = ProviderAccountMaterialization {
             profile: crate::account_profile::ProviderAccountReplicaMetadata {
+                provider_account_id: None,
                 owner_user_id: "owner-a".to_string(),
                 provider: "opencode".to_string(),
                 profile_id: "old-worker".to_string(),
@@ -1122,6 +1209,7 @@ exit 2
         let registry_path = config.account_profile_registry_path();
         let old = ProviderAccountMaterialization {
             profile: crate::account_profile::ProviderAccountReplicaMetadata {
+                provider_account_id: None,
                 owner_user_id: "owner-a".to_string(),
                 provider: "opencode".to_string(),
                 profile_id: "old-worker".to_string(),

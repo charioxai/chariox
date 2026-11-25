@@ -75,15 +75,39 @@ fn end_registration(
 
 pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, DaemonError> {
     let question = matches!(&op, Operation::BlockForQuestion { .. });
+    let question_reply = match &op {
+        Operation::BlockForQuestion { reply, .. } => reply.clone(),
+        _ => None,
+    };
     let interrupted = matches!(&op, Operation::BlockInterrupted { .. });
     match op {
+        Operation::DismissTaskCard {
+            room,
+            task,
+            blocked_revision,
+        } => {
+            let current = load(tx, &task)?;
+            if current.room_id != room
+                || current.state != ExecutionState::Blocked
+                || current.blocked_revision != blocked_revision
+            {
+                return Err(error(
+                    "The task no longer waits on this card. Read the Room again.",
+                ));
+            }
+            tx.execute(
+                "UPDATE agent_tasks SET dismissed_card_revision=?2 WHERE task_id=?1",
+                params![task, sql_integer(blocked_revision)?],
+            )
+            .map_err(sql)?;
+            Ok(Outcome::Saved)
+        }
         Operation::Outside(mutation) => super::outside::apply(tx, mutation),
         Operation::SetDeadline {
             room,
             agent,
             deadline,
-            inherited,
-        } => super::deadlines::set(tx, room, agent, deadline, inherited),
+        } => super::deadlines::set(tx, room, agent, deadline),
         Operation::BeatDeadlineClock { now } => {
             super::deadline_clock::beat(tx, now)?;
             Ok(Outcome::Saved)
@@ -594,6 +618,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             task,
             prompt,
             reason,
+            ..
         }
         | Operation::BlockInterrupted {
             task,
@@ -620,9 +645,13 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             } else {
                 None
             };
+            let question_reply =
+                question_reply.filter(|reply| reply.label.is_some() || reply.placeholder.is_some());
             if t.state == ExecutionState::Blocked
                 && t.reason == reason
                 && t.owner_action == owner_action
+                // A question asked again with another label or hint is a change the card must show.
+                && (!question || t.question_reply == question_reply)
                 && super::supervision::is_interrupted_block(tx, &t)? == interrupted
             {
                 return Ok(Outcome::Task(t));
@@ -634,6 +663,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             }
             t.state = ExecutionState::Blocked;
             t.owner_action = owner_action;
+            t.question_reply = question_reply;
             t.reason = reason;
             t.revision += 1;
             if let Some(goal) = &t.goal {
@@ -756,9 +786,6 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 let by_agent = t.reason == super::supervision::AGENT_CANCELLED_REASON;
                 super::supervision::cancel_intent(tx, &mut t, by_agent)?;
             } else if t.state != ExecutionState::Blocked {
-                if !valid_wait && super::wakes::drop_unwaited_timers(tx, &t, now)? {
-                    t = load(tx, &t.task_id)?;
-                }
                 let open = t
                     .obligations
                     .iter()
@@ -814,6 +841,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             })
         }
         op @ (Operation::Send { .. }
+        | Operation::WithdrawReply { .. }
         | Operation::Occur(_)
         | Operation::Attempt { .. }
         | Operation::Expire { .. }
@@ -823,6 +851,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
         | Operation::CancelQueuedMessage { .. }
         | Operation::BindSubmission { .. }
         | Operation::Receipt { .. }
+        | Operation::StartFailed { .. }
         | Operation::Ack { .. }) => super::delivery::apply(tx, op),
         op @ (Operation::Progress { .. }
         | Operation::WorkerResultReturned { .. }
@@ -834,6 +863,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
         | Operation::CancelTaskByAgent { .. }
         | Operation::NoteTurnCancel { .. }
         | Operation::RetireRestartFailure { .. }
+        | Operation::AnswerTaskQuestion { .. }
         | Operation::OwnerResponse { .. }) => super::supervision::apply(tx, op),
         op @ (Operation::CreateWake { .. }
         | Operation::ArmWake { .. }

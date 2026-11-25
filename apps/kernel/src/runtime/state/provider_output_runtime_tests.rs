@@ -161,10 +161,12 @@ mod child_receipts;
 mod claude_plan;
 mod cleanup_liveness;
 mod completion_settlement;
+mod deadline_notices;
 mod decisions;
 mod detached_jobs_teardown;
 mod detached_provider_run;
 mod diagnostics_timeouts;
+mod ended_run_compaction;
 mod external_queue;
 mod finished_child_cleanup;
 mod focus_recovery_tests;
@@ -186,6 +188,7 @@ mod project_environment_shell;
 mod project_queued_environment;
 mod prompt_cancellation;
 mod prompt_parking;
+mod provider_stall;
 mod provider_turn_adoption;
 mod publication_settlement;
 mod pump_selection;
@@ -194,6 +197,7 @@ mod steered_prompt;
 mod structured_exit_diagnostic;
 mod structured_output;
 mod subtree_cascade;
+mod vault_notice_join;
 #[cfg(unix)]
 mod visual_tools;
 

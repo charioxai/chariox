@@ -181,6 +181,7 @@ pub(crate) async fn handle_connection(
     let mut unsupported_transport = false;
     let mut binary_events = false;
     let mut binary_requests = false;
+    let mut binary_peer = false;
     let mut upload_chunks = false;
     let mut initial_resume_negotiated = false;
     let mut hello = token_refusal::ConnectionHello::default();
@@ -268,6 +269,17 @@ pub(crate) async fn handle_connection(
                     crate::binary_request::OFFER.parse().unwrap(),
                 );
             }
+            binary_peer = binary_requests
+                && request
+                    .headers()
+                    .get(crate::binary_request::PEER_HEADER)
+                    .is_some_and(|value| value == crate::binary_request::PEER_OFFER);
+            if binary_peer {
+                response.headers_mut().insert(
+                    crate::binary_request::PEER_HEADER,
+                    crate::binary_request::PEER_OFFER.parse().unwrap(),
+                );
+            }
             upload_chunks = chunks
                 && request
                     .headers()
@@ -289,7 +301,7 @@ pub(crate) async fn handle_connection(
         Err(_) => return Ok(()),
     };
     hello.transport = format!(
-        "chunks={chunks} binary_events={binary_events} binary_requests={binary_requests} upload_chunks={upload_chunks} display_resume={initial_resume_negotiated}"
+        "chunks={chunks} binary_events={binary_events} binary_requests={binary_requests} binary_peer={binary_peer} upload_chunks={upload_chunks} display_resume={initial_resume_negotiated}"
     );
     if unsupported_transport {
         // MP-08 / MP-10 / MP-11: old TUIs discard HTTP 426 bodies, but surface
@@ -305,6 +317,9 @@ pub(crate) async fn handle_connection(
     let (writer, mut reader) = socket.split();
     let (control_tx, control_rx) = mpsc::channel(8);
     let (outgoing_tx, outgoing_rx) = RelaySender::channel(relay_outgoing_queue_capacity());
+    if binary_peer {
+        outgoing_tx.allow_binary_peer();
+    }
     let routes = registry.read().await.route_index();
     let (receipt_tx, receipt_rx) = mpsc::channel(crate::frame_transport::MAX_UNACKED_FRAMES);
     let usage_routes = routes.clone();
@@ -492,7 +507,12 @@ pub(crate) async fn handle_connection(
                         break;
                     }
                     let envelope = crate::binary_response::into_envelope(&bytes)?;
-                    if !matches!(envelope, RelayEnvelope::DaemonResponse { .. }) {
+                    let route_ok = match &envelope {
+                        RelayEnvelope::DaemonResponse { .. } => true,
+                        RelayEnvelope::DaemonIncomingPeerResponse { .. } => binary_peer,
+                        _ => false,
+                    };
+                    if !route_ok {
                         return Err(std::io::Error::new(std::io::ErrorKind::InvalidData,"invalid daemon response route"));
                     }
                     Message::Text(serde_json::to_string(&envelope).map_err(std::io::Error::other)?.into())
@@ -505,7 +525,12 @@ pub(crate) async fn handle_connection(
                         break;
                     }
                     let envelope = crate::binary_request::into_envelope(&bytes)?;
-                    if !matches!(envelope, RelayEnvelope::ClientRequest { .. }) {
+                    let route_ok = match &envelope {
+                        RelayEnvelope::ClientRequest { .. } => true,
+                        RelayEnvelope::DaemonPeerRequest { .. } => binary_peer,
+                        _ => false,
+                    };
+                    if !route_ok {
                         return Err(std::io::Error::new(std::io::ErrorKind::InvalidData,"invalid client request route"));
                     }
                     Message::Text(serde_json::to_string(&envelope).map_err(std::io::Error::other)?.into())

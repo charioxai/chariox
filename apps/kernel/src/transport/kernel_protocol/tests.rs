@@ -599,7 +599,7 @@ fn sudo_window_changes_cannot_be_hidden_by_projection_deltas() {
         });
         current
             .session
-            .add_active_interaction(RuntimeInteraction::new(
+            .add_interaction_fixture(RuntimeInteraction::new(
                 "owner-decision",
                 "agent-a",
                 RuntimeInteractionKind::Permission,
@@ -627,7 +627,7 @@ fn runtime_interactions_only_changes_can_skip_session_snapshot() {
     let mut current = previous.clone();
     current
         .session
-        .add_active_interaction(RuntimeInteraction::new(
+        .add_interaction_fixture(RuntimeInteraction::new(
             "interaction-a",
             "agent-a",
             RuntimeInteractionKind::Permission,
@@ -660,6 +660,7 @@ fn runtime_interactions_only_changes_can_skip_session_snapshot() {
         KernelEvent::RuntimeInteractionsChanged {
             session_id,
             active_interactions,
+            ..
         } => {
             assert_eq!(session_id, "session-a");
             assert_eq!(active_interactions.len(), 1);
@@ -1081,7 +1082,7 @@ fn review971c_task_and_interaction_keep_session_snapshot() {
     review971c_assert_full_snapshot(|current| {
         current
             .session
-            .add_active_interaction(RuntimeInteraction::new(
+            .add_interaction_fixture(RuntimeInteraction::new(
                 "decision",
                 "agent-a",
                 RuntimeInteractionKind::Permission,

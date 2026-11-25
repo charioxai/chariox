@@ -35,7 +35,8 @@ fn lane(message: &Message, usage: &WriterUsage) -> (Lane, Option<String>, Option
         if matches!(
             crate::binary_response::decode(bytes),
             Ok((
-                crate::binary_response::ResponseHeader::ClientResponse { .. },
+                crate::binary_response::ResponseHeader::ClientResponse { .. }
+                    | crate::binary_response::ResponseHeader::DaemonPeerResponse { .. },
                 _
             ))
         ) {
@@ -118,9 +119,7 @@ impl Transfer {
     /// receiver that takes chunks shorter than a full one (`adaptive`).
     fn next_chunk(&self, limit: usize, adaptive: bool) -> Option<(Message, usize)> {
         if let Some(reply) = &self.peer_reply {
-            return reply
-                .next_chunk(self.id, self.offset, limit)
-                .map(|(frame, end)| (Message::Text(frame.into()), end));
+            return reply.next_chunk(self.id, self.offset, limit, adaptive);
         }
         if let Some(Message::Binary(binary)) = &self.binary {
             if binary.len() > CHUNK_BYTES {
@@ -278,7 +277,26 @@ fn receiver_message(
     message: Message,
     binary_events: bool,
     binary_requests: bool,
+    binary_peer: bool,
 ) -> Option<Message> {
+    if binary_peer {
+        if let Message::Text(text) = &message {
+            let peer_request = text.starts_with("{\"kind\":\"daemon_incoming_peer_request\"");
+            let peer_response = text.starts_with("{\"kind\":\"daemon_peer_response\"");
+            if peer_request || peer_response {
+                if let Ok(envelope) = serde_json::from_str::<crate::protocol::RelayEnvelope>(text) {
+                    let binary = if peer_request {
+                        crate::binary_request::from_envelope(&envelope)
+                    } else {
+                        crate::binary_response::from_envelope(&envelope)
+                    };
+                    if let Ok(Some(bytes)) = binary {
+                        return Some(Message::Binary(bytes.into()));
+                    }
+                }
+            }
+        }
+    }
     if binary_requests {
         if let Message::Text(text) = &message {
             if text.starts_with("{\"kind\":\"daemon_request\"") {
@@ -397,7 +415,12 @@ impl Queued {
         let admitted = message.admitted_len();
         let (message, lane, key, stream) = match message {
             Outgoing::Frame(message) => {
-                let message = receiver_message(message, binary_events, binary_requests)?;
+                let message = receiver_message(
+                    message,
+                    binary_events,
+                    binary_requests,
+                    usage.queue.binary_peer(),
+                )?;
                 let (lane, key, stream) = lane(&message, usage);
                 (Outgoing::Frame(message), lane, key, stream)
             }
@@ -951,7 +974,7 @@ mod tests {
         sender.try_send_peer_reply(second_len, &second).unwrap();
         assert_eq!(queue.queued_bytes(), RECEIVER_BULK_BUDGET);
         assert!(
-            reply.next_chunk(1, written, CHUNK_BYTES).is_some(),
+            reply.next_chunk(1, written, CHUNK_BYTES, false).is_some(),
             "the first reply still has a tail"
         );
     }
@@ -2231,7 +2254,7 @@ mod tests {
         let binary = crate::binary_event::encode(&header, &[7; 100 * 1024]).unwrap();
         assert!(
             matches!(
-                receiver_message(Message::Binary(binary.into()), true, false),
+                receiver_message(Message::Binary(binary.into()), true, false, false),
                 Some(Message::Binary(_))
             ),
             "negotiated binary events must not add a base64 JSON envelope above the chunk boundary"
@@ -2397,7 +2420,7 @@ mod binary_reply_regression {
             error: None,
         })
         .unwrap();
-        let binary = receiver_message(Message::Text(text.into()), true, false).unwrap();
+        let binary = receiver_message(Message::Text(text.into()), true, false, false).unwrap();
         assert!(
             matches!(binary, Message::Binary(_)),
             "negotiated successful replies must not base64 ciphertext"

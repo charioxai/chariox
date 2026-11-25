@@ -123,6 +123,11 @@ async fn an_agent_notifies_the_owner_and_the_card_reaches_the_inbox_unread() {
     assert_eq!(cards.len(), 1);
     assert_eq!(cards[0].card_id, card_id);
     assert_eq!(cards[0].session_id, room.session_id);
+    assert_eq!(
+        notice(&cards[0]).origin,
+        crate::local::PersonInboxNoticeOrigin::Agent,
+        "what an agent sends with notify_person is a requested notification"
+    );
     let sent = notice(&cards[0]);
     assert_eq!(
         (
@@ -166,6 +171,7 @@ async fn read_snooze_and_mute_are_kept_by_the_kernel_and_a_needs_you_card_is_onl
         .router
         .runtime_state
         .create_kernel_operation_interaction(
+            crate::runtime::state::CardKind::NativePermissionInput,
             &room.session_id,
             crate::session::DEFAULT_LOCAL_USER_ID,
             RuntimeInteraction::for_kernel_operation(

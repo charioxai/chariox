@@ -168,6 +168,13 @@ impl CommandRouter {
                 .event_request(&origin, &request, command.terminal_lifetime.as_ref())
                 .await;
         }
+        if let LocalDaemonRequest::CloudAccountKernels(account) = &request {
+            crate::runtime::kernel_runtime_role_policy::ensure_public_request_allowed(
+                &self.config_projection.snapshot(),
+                &request,
+            )?;
+            return self.account_kernels(&command, account).await;
+        }
         if let LocalDaemonRequest::ListGatewayKernels(_) = &request {
             return self.list_gateway_machines(&command).await;
         }

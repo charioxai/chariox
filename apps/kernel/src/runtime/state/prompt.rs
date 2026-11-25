@@ -90,7 +90,9 @@ impl KernelRuntimeOwnedState {
         completed: crate::session::PromptQueueItem,
         settled_at_ms: u64,
     ) -> Result<OwnedPromptCompletion, DaemonError> {
-        // The workflow transition has committed, so the agent's prompt work is over unless more is queued.
+        // Only apply the next profile after the workflow and prompt transitions commit.
+        let session = self.session_store.get_session(session_id)?;
+        self.apply_agent_profile_after_turn(&session, agent_id)?;
         self.unhide_agent_without_prompt_work(session_id, agent_id)?;
         self.record_completed_prompt_settlement(
             session_id,
@@ -575,6 +577,9 @@ impl KernelRuntimeOwnedState {
                 dispatch: None,
             }));
         };
+        let started_next =
+            self.add_pending_wakes_to_notification(&session, agent_id, started_next)?;
+        let waiting = self.waits_before_promotion(session_id, agent_id, &started_next);
         let (active_prompt, queued_prompts) =
             self.prompt_state_owner.state_parts(&session, agent_id);
         self.mirror_prompt_owner_agent_state_with_activity_mutation(
@@ -584,6 +589,7 @@ impl KernelRuntimeOwnedState {
             queued_prompts,
             activity_mutation,
         )?;
+        self.close_waits_after_promotion(session_id, agent_id, &started_next, &waiting)?;
         let source_attachment_id = self.promoted_prompt_source_attachment_id(
             session_id,
             started_next.source_attachment_id(),
@@ -605,12 +611,13 @@ impl KernelRuntimeOwnedState {
             &started_next,
             Some(prompt_sent_at_ms),
         );
-        // A substitute run serves only its own turn; the next one goes through
-        // the dispatcher, which moves it to the agent's configured profile.
+        // A substitute run serves only its own turn. A mixed notification also
+        // uses the dispatcher, which binds its wake receipts before provider I/O.
         if self
             .provider_store
             .run_uses_structured_prompt_io(&provider_run)
             && provider_run.turn_substitute().is_none()
+            && started_next.inbox_wakes().is_empty()
         {
             let prompt_with_handoff = self.prompt_with_pending_context_handoff(
                 session_id,

@@ -56,6 +56,12 @@ test('F17: scripting media tests evaluate as in the kernel page (scripts on), no
   assert.equal(kernelScriptingCss(quoted), '.a::after { content: "@media (scripting: none) {"; }\n[data-q=\'@media (scripting) {\'] { color: red; }\n.b::before { content: "x\\" @media (scripting: none) {"; }\n@media (scripting: enabled) { .c { color: blue; } }')
 })
 
+// Row 486: the header says whether the page plays media (the viewer keeps that Tab warm); only a boolean passes.
+test('Row 486: media_playing is a boolean header field', () => {
+  for (const media_playing of [true, false, undefined]) assert.doesNotThrow(() => validateMirror2Packet(base(tree(), { media_playing } as never), new Map()))
+  for (const media_playing of ['true', 1, null, {}]) assert.throws(() => validateMirror2Packet(base(tree(), { media_playing } as never), new Map()), /unsafe mirror header/, JSON.stringify(media_playing))
+})
+
 test('MP-10: protocol 629 mirror accepts the full shared resize range', () => {
   // BH: up to the largest kernel page bound, 3840 per side and 3840x2400 in area.
   for (const [css_width, css_height] of [[320, 200], [900, 600], [1920, 1080], [2560, 1600], [1452, 1866], [3840, 2400], [1600, 3840]] as const)

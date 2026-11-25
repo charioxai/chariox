@@ -134,9 +134,30 @@ pub(crate) fn tree_for_viewer(
     tree
 }
 
+/// What a node says of its wait: the reasons, and the last provider output only when the turn is
+/// stalled. A plain provider wait is "running" and carries nothing, so a streaming node does not
+/// change its tree every few seconds.
+fn node_liveness(
+    mut liveness: crate::runtime::projection::AgentLiveness,
+) -> Option<crate::runtime::projection::AgentLiveness> {
+    use crate::runtime::projection::AgentWaitKind;
+    if liveness
+        .waiting_on
+        .as_ref()
+        .is_some_and(|on| on.kind == AgentWaitKind::Provider)
+    {
+        liveness.waiting_on = None;
+    }
+    if !liveness.stalled {
+        liveness.last_activity_at_ms = None;
+    }
+    (!liveness.is_quiet()).then_some(liveness)
+}
+
 /// `None` when `root` is not an agent of the session. Nodes are the descendants
 /// of `root` (not `root` itself) in creation order. The revision is the caller's.
 /// `held_by_agent` says whether an ancestor agent, not the user, holds an interaction.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn project_agent_tree(
     session: &RuntimeSession,
     agents: &[AgentInstance],
@@ -144,6 +165,7 @@ pub(crate) fn project_agent_tree(
     held_by_agent: &dyn Fn(&RuntimeSession, &str) -> bool,
     deadline_ms: &dyn Fn(&AgentInstance) -> Option<u64>,
     turn_of: &dyn Fn(&AgentInstance) -> Option<NodeTurn>,
+    liveness_of: &dyn Fn(&AgentInstance) -> Option<crate::runtime::projection::AgentLiveness>,
     find_room: &dyn Fn(&str) -> Option<RuntimeSession>,
 ) -> Option<AgentTree> {
     agents
@@ -190,7 +212,15 @@ pub(crate) fn project_agent_tree(
             .iter()
             .any(|interaction| !held_by_agent(room, interaction.id()));
         let turn = turn_of(agent).unwrap_or_default();
-        let state = node_state(room, agent, !pending.is_empty(), turn);
+        let liveness = liveness_of(agent).and_then(node_liveness);
+        let mut state = node_state(room, agent, !pending.is_empty(), turn);
+        // A live process, job or timer outlives its turn (the task settled, the agent is idle): the node is waiting
+        // on it, and a client that counts live nodes keeps the node.
+        if state == AgentTreeState::Idle
+            && liveness.as_ref().is_some_and(|l| l.waiting_on.is_some())
+        {
+            state = AgentTreeState::Waiting;
+        }
         let find_agent = |id: &str| agents.iter().find(|candidate| candidate.id() == id);
         let effective = effective_agent_execution_config_with_parents(
             room,
@@ -244,6 +274,7 @@ pub(crate) fn project_agent_tree(
             deadline_ms: deadline_ms(agent),
             created_at_ms: agent.created_at_ms(),
             usage_limit_stop: agent.usage_limit_wait().cloned(),
+            liveness,
         });
     }
     let totals = totals_of(&nodes);
@@ -272,6 +303,7 @@ mod tests {
             &|_, interaction| held_by_agent(interaction),
             &|agent| deadline_ms(agent.id()),
             &|agent| turn_of(agent.id()),
+            &|_| None,
             &|_| None,
         )
     }
@@ -481,6 +513,114 @@ mod tests {
         .with_agent_id(agent_id)
     }
 
+    fn liveness_json(value: serde_json::Value) -> crate::runtime::projection::AgentLiveness {
+        serde_json::from_value(value).unwrap()
+    }
+
+    // W3/W6/W7: a node says what it waits on, says "stalled" with the last output, and says nothing
+    // when it is idle or plainly running (a streaming node would republish its tree every few seconds).
+    #[test]
+    fn a_node_carries_its_wait_and_its_stall_and_nothing_when_plainly_running() {
+        let session = session(vec![
+            agent("root", None, 1),
+            agent("waits", Some("root"), 2),
+            agent("stalled", Some("root"), 3),
+            agent("running", Some("root"), 4),
+            agent("idle", Some("root"), 5),
+        ]);
+        let liveness = |id: &str| match id {
+            "waits" => Some(liveness_json(serde_json::json!({
+                "waiting_on": {"kind": "timer", "detail": "check review", "since_ms": 5, "due_at_ms": 99},
+                "waiting_events": [{"id": "w", "kind": "timer", "label": "timer check review", "since_ms": 5,
+                    "due_at_ms": 99, "task_id": "t", "wait_started_at_ms": 5}]
+            }))),
+            "stalled" => Some(liveness_json(serde_json::json!({
+                "last_activity_at_ms": 1000, "stalled": true,
+                "waiting_on": {"kind": "provider", "since_ms": 1000}
+            }))),
+            "running" => Some(liveness_json(serde_json::json!({
+                "last_activity_at_ms": 2000,
+                "waiting_on": {"kind": "provider", "since_ms": 2000}
+            }))),
+            _ => Some(liveness_json(serde_json::json!({}))),
+        };
+        let tree = super::project_agent_tree(
+            &session,
+            session.agents(),
+            "root",
+            &|_, _| false,
+            &|_| None,
+            &|_| None,
+            &|agent| liveness(agent.id()),
+            &|_| None,
+        )
+        .unwrap();
+        let node = |id: &str| tree.nodes.iter().find(|node| node.agent_id == id).unwrap();
+        let waits = node("waits").liveness.clone().unwrap();
+        assert_eq!(waits.waiting_on.unwrap().due_at_ms, Some(99));
+        assert_eq!(waits.waiting_events[0].label, "timer check review");
+        let stalled = node("stalled").liveness.clone().unwrap();
+        assert!(stalled.stalled);
+        assert_eq!(stalled.last_activity_at_ms, Some(1000));
+        assert!(stalled.waiting_on.is_none());
+        assert_eq!(node("running").liveness, None);
+        assert_eq!(node("idle").liveness, None);
+    }
+
+    // W4: a card names its title, never its fields; one an agent holds is named as that agent's.
+    #[test]
+    fn a_pending_card_is_a_wait_named_by_its_title() {
+        use crate::runtime::projection::{annotate_cards, AgentWaitKind};
+        use crate::session::{
+            RuntimeInteraction, RuntimeInteractionChoice, RuntimeInteractionKind,
+            RuntimeInteractionLevel,
+        };
+        let mut session = session(vec![agent("root", None, 1), agent("c1", Some("root"), 2)]);
+        let card = |id: &str, agent_id: &str, title: &str| {
+            RuntimeInteraction::new(
+                id,
+                "room",
+                RuntimeInteractionKind::Permission,
+                RuntimeInteractionLevel::Warning,
+                Some(title.to_owned()),
+                "the secret field content",
+                vec![RuntimeInteractionChoice::new("ok", "OK", "ok", None)],
+                None,
+                None,
+                None,
+            )
+            .with_agent_id(agent_id)
+        };
+        session.add_interaction_fixture(card("i-user", "c1", "Value for the Vault"));
+        session.add_interaction_fixture(card("i-agent", "root", "Run the build?"));
+        let quiet: crate::runtime::projection::AgentRuntimeActivity = serde_json::from_value(
+            serde_json::json!({"status":"idle","prompt_status":"none","busy":false,
+                "active_prompt_count":0,"queued_prompt_count":0}),
+        )
+        .unwrap();
+        let mut activity = std::collections::BTreeMap::from([
+            ("c1".to_owned(), quiet.clone()),
+            ("root".to_owned(), quiet),
+        ]);
+        annotate_cards(
+            &mut activity,
+            &session,
+            &std::collections::HashSet::from(["i-agent".to_owned()]),
+        );
+        let c1 = &activity["c1"].liveness;
+        assert_eq!(c1.waiting_on.as_ref().unwrap().kind, AgentWaitKind::Card);
+        assert_eq!(
+            c1.waiting_events[0].label,
+            "your answer on 'Value for the Vault'"
+        );
+        assert!(!format!("{c1:?}").contains("secret field content"));
+        let root = &activity["root"].liveness;
+        assert_eq!(
+            root.waiting_events[0].label,
+            "the answer of the agent that holds 'Run the build?'"
+        );
+    }
+
     // A node the user holds a decision of says so; the root's own decision is no node's.
     #[test]
     fn needs_user_marks_the_nodes_whose_decision_waits_for_the_user() {
@@ -489,8 +629,8 @@ mod tests {
             agent("c1", Some("root"), 2),
             agent("c2", Some("root"), 3),
         ]);
-        session.add_active_interaction(ask("c1"));
-        session.add_active_interaction(ask("root"));
+        session.add_interaction_fixture(ask("c1"));
+        session.add_interaction_fixture(ask("root"));
         let tree = project_agent_tree(
             &session,
             session.agents(),
@@ -526,8 +666,8 @@ mod tests {
             agent("c1", Some("root"), 2),
             agent("c2", Some("root"), 3),
         ]);
-        session.add_active_interaction(ask("c1"));
-        session.add_active_interaction(ask("c2"));
+        session.add_interaction_fixture(ask("c1"));
+        session.add_interaction_fixture(ask("c2"));
         let tree = project_agent_tree(
             &session,
             session.agents(),

@@ -19,6 +19,11 @@ fn decision_id(agent_id: &str, stop: &UsageLimitStop) -> String {
     )
 }
 
+/// The card at the reset of a stop the person chose to decide ("Ask me"): usage is back.
+fn back_decision_id(agent_id: &str, stop: &UsageLimitStop) -> String {
+    format!("{}-back", decision_id(agent_id, stop))
+}
+
 fn is_usage_limit_decision_of(
     interaction: &crate::session::RuntimeInteraction,
     agent_id: &str,
@@ -31,26 +36,67 @@ impl KernelRuntimeOwnedState {
         &self,
         agent: &crate::agent::AgentInstance,
         stop: &UsageLimitStop,
+        reason: String,
     ) -> Result<(), DaemonError> {
         if stop.state == UsageLimitStopState::Asking {
             let room = self.session_store.get_session(agent.session_id())?;
-            let id = decision_id(agent.id(), stop);
-            if room
-                .active_interactions()
-                .iter()
-                .any(|interaction| interaction.id() == id)
-            {
-                self.timeout_runtime_interaction(room.id(), &id)?;
+            for id in [
+                decision_id(agent.id(), stop),
+                back_decision_id(agent.id(), stop),
+            ] {
+                if room
+                    .active_interactions()
+                    .iter()
+                    .any(|interaction| interaction.id() == id)
+                {
+                    self.settle_card_condition_met(room.id(), &id, reason.clone())?;
+                }
             }
         }
         Ok(())
+    }
+
+    /// A card for a usage stop is the person's only when they have a real choice (an account of the
+    /// provider with room) and no orchestrator above the agent owns the switch. Anything else is
+    /// status on the agent's row, never a card.
+    pub(super) fn usage_limit_card_wanted(
+        &self,
+        agent: &crate::agent::AgentInstance,
+        account_profile: &str,
+    ) -> bool {
+        agent.parent_agent_id().is_none()
+            && !self
+                .usage_limit_alternatives(agent, account_profile)
+                .is_empty()
+    }
+
+    /// The person set the resume policy to "Ask me" themselves: the resume is theirs to decide.
+    pub(super) fn usage_limit_resume_is_asked(&self) -> bool {
+        self.config_projection
+            .snapshot()
+            .user_config
+            .agents
+            .usage_limit_resume
+            == Some(crate::config::UsageLimitResume::Ask)
+    }
+
+    /// A stop the person decides is due its card when usage is back: at the reset the provider
+    /// named, or at the first retry time when it named none. A refused resume is not "back".
+    fn usage_limit_is_back(&self, stop: &UsageLimitStop, now_ms: u64) -> bool {
+        stop.refused == 0
+            && super::usage_limit_stop_transitions::next_resume_at(
+                stop.stopped_at_ms,
+                stop.resumes_at_ms,
+                0,
+            )
+            .is_some_and(|at_ms| at_ms <= now_ms)
     }
 
     /// The accounts of the stopped agent's provider that can go on with its turn right now.
     fn usage_limit_alternatives(
         &self,
         agent: &crate::agent::AgentInstance,
-        stop: &UsageLimitStop,
+        account_profile: &str,
     ) -> Vec<(String, String)> {
         let owner = crate::account_profile::provider_account_authority_owner_user_id(
             &self.config_projection.snapshot(),
@@ -68,8 +114,8 @@ impl KernelRuntimeOwnedState {
             .filter(|profile| {
                 profile.auth_state
                     == crate::account_profile::ProviderAccountAuthState::Authenticated
-                    && profile.profile_id != stop.account_profile
-                    && !(stop.account_profile == "default" && profile.is_default)
+                    && profile.profile_id != account_profile
+                    && !(account_profile == "default" && profile.is_default)
                     && !agent
                         .model()
                         .is_some_and(|model| profile.has_confirmed_exhaustion(model, now))
@@ -89,7 +135,8 @@ impl KernelRuntimeOwnedState {
 
 impl KernelRuntimeState {
     /// Makes the room show the decision its agent's stop asks for and nothing else: a stop that is
-    /// asking has one card, any other state (or no stop) has none.
+    /// asking, with an account to go on with and no orchestrator owning the switch, has one card;
+    /// any other state (or no stop) has none.
     /// The answer to the decision applies the stop again, which syncs it: the boxed type ends that cycle.
     pub(super) fn sync_usage_limit_interaction<'a>(
         &'a self,
@@ -109,10 +156,30 @@ impl KernelRuntimeState {
         let Ok(session) = self.owned.session_store.get_session(room) else {
             return Ok(());
         };
-        let asking = agent
-            .usage_limit_wait()
-            .filter(|stop| stop.state == UsageLimitStopState::Asking);
-        let wanted = asking.map(|stop| decision_id(agent.id(), stop));
+        let now_ms = crate::session::unix_epoch_ms();
+        let back = |stop: &UsageLimitStop| {
+            self.owned.usage_limit_resume_is_asked() && self.owned.usage_limit_is_back(stop, now_ms)
+        };
+        // Nothing before the reset unless the person has a real choice (an account with room, no
+        // orchestrator owning the switch). At the reset of a stop they chose to decide: one card.
+        // A person who set Ask me themselves has no card at the stop, whatever accounts exist: their
+        // one card is at the reset.
+        let asked = self.owned.usage_limit_resume_is_asked();
+        let asking = agent.usage_limit_wait().filter(|stop| {
+            stop.state == UsageLimitStopState::Asking
+                && (back(stop)
+                    || (!asked
+                        && self
+                            .owned
+                            .usage_limit_card_wanted(agent, &stop.account_profile)))
+        });
+        let wanted = asking.map(|stop| {
+            if back(stop) {
+                back_decision_id(agent.id(), stop)
+            } else {
+                decision_id(agent.id(), stop)
+            }
+        });
         for interaction in session
             .active_interactions()
             .iter()
@@ -141,42 +208,68 @@ impl KernelRuntimeState {
             return Ok(());
         };
         let name = agent.alias().unwrap_or(agent.agent_ref());
+        let is_back = back(stop);
         let when = stop
             .resumes_at_ms
             .map(|at_ms| format!(", back at {}", super::usage_limit_runtime::clock(at_ms)))
             .unwrap_or_default();
-        let message = format!(
-            "{name} stopped: {} reached its usage limit{when}.",
-            stop.account_label
-        );
+        let (title, message) = if is_back {
+            ("Usage is back", format!("{name}: usage is back."))
+        } else {
+            (
+                "Usage limit reached",
+                format!(
+                    "{name} stopped: {} reached its usage limit{when}.",
+                    stop.account_label
+                ),
+            )
+        };
         let mut choices = vec![
             crate::session::RuntimeInteractionChoice::new(
                 "resume_when_back",
-                "Resume when it's back",
+                if is_back {
+                    "Resume"
+                } else {
+                    "Resume when it's back"
+                },
                 "resume_when_back",
                 None,
             ),
-            crate::session::RuntimeInteractionChoice::new("not_now", "Not now", "not_now", None),
-        ];
-        for (profile, label) in self.owned.usage_limit_alternatives(agent, stop) {
-            choices.push(crate::session::RuntimeInteractionChoice::new(
-                format!("continue_on:{profile}"),
-                format!("Continue now on {label}"),
-                format!("continue_on:{profile}"),
+            crate::session::RuntimeInteractionChoice::new(
+                "not_now",
+                if is_back { "Leave paused" } else { "Dismiss" },
+                "not_now",
                 None,
-            ));
+            ),
+        ];
+        if self
+            .owned
+            .usage_limit_card_wanted(agent, &stop.account_profile)
+        {
+            for (profile, label) in self
+                .owned
+                .usage_limit_alternatives(agent, &stop.account_profile)
+            {
+                choices.push(crate::session::RuntimeInteractionChoice::new(
+                    format!("continue_on:{profile}"),
+                    format!("Continue now on {label}"),
+                    format!("continue_on:{profile}"),
+                    None,
+                ));
+            }
         }
         let interaction = crate::session::RuntimeInteraction::for_kernel_operation(
-            &id,
-            &id,
-            "Usage limit reached",
-            &message,
-            choices,
+            &id, &id, title, &message, choices,
         )
         .without_timeout()
         .with_related_agent_id(agent.id().to_string());
         let rx = self
-            .create_kernel_operation_interaction(room, session.owner_user_id(), interaction)
+            .create_kernel_operation_interaction(
+                crate::runtime::state::CardKind::OwnerControl,
+                room,
+                session.owner_user_id(),
+                interaction,
+            )
             .await?;
         if self
             .owned

@@ -1,7 +1,9 @@
 //! Optional connected service operations; no catalog, policy or compute vendor lives here.
 use crate::config::DaemonConfig;
 use crate::error::DaemonError;
-use crate::local::{ControlPlaneRequest, ControlPlaneResponse, LocalDaemonResponse};
+use crate::local::{
+    ControlPlaneRequest, ControlPlaneResponse, LocalDaemonResponse, MachineAcquisitionRequest,
+};
 use crate::runtime::command::KernelCommand;
 use crate::runtime::state::KernelRuntimeState;
 
@@ -40,6 +42,31 @@ pub(crate) async fn kernel_was_released(config: &DaemonConfig, kernel_id: &str) 
     .is_ok_and(|status| status.released)
 }
 
+/// Machine acquisition for the kernel owner or an agent acting for them through a grant: the same
+/// acquisition path the agent's `chariox.machines.*` tools take, one control-plane request at a time.
+pub(crate) async fn execute_acquire(
+    config: &DaemonConfig,
+    state: &KernelRuntimeState,
+    command: &KernelCommand,
+    gateway: &crate::runtime::kernel_gateway::KernelGateway,
+    request: &MachineAcquisitionRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    // Owner and grant holders acquire as the owner, so a retry from another process finds its request.
+    let key = format!("owner:{}", state.kernel_owner_user_id());
+    let result = state
+        .machine_acquire(&key, request.clone(), |request, _| async move {
+            match execute(config, state, command, gateway, &request).await? {
+                LocalDaemonResponse::ControlPlane { result } => Ok(result),
+                _ => Err(unavailable(
+                    "control_plane_binding_invalid",
+                    "The connected service returned another response type",
+                )),
+            }
+        })
+        .await?;
+    Ok(LocalDaemonResponse::MachineAcquisition { result })
+}
+
 pub(crate) async fn execute(
     config: &DaemonConfig,
     state: &KernelRuntimeState,
@@ -47,6 +74,8 @@ pub(crate) async fn execute(
     gateway: &crate::runtime::kernel_gateway::KernelGateway,
     request: &ControlPlaneRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
+    let mut request = request;
+    let replayed: ControlPlaneRequest;
     let capabilities = matches!(request, ControlPlaneRequest::Capabilities {});
     // People use their authenticated owner connection; agents use the same process-bound
     // grant as Rooms, exec and the gateway. A Room bearer alone spends no enrollment.
@@ -80,10 +109,31 @@ pub(crate) async fn execute(
             ))
         };
     };
+    let mut acquisition_hold = None;
+    let mut approval_guard = None;
     if matches!(
         request,
         ControlPlaneRequest::Acquire { .. } | ControlPlaneRequest::AcquireJob { .. }
     ) {
+        // A machine acquired without asking that ended elsewhere frees its place before the limits
+        // apply. Only machines accepted before the list is sent are settled by it.
+        let expected = state.acquired_machines_to_reconcile();
+        if !expected.is_empty() {
+            if let ControlPlaneResponse::Machines { machines, .. } =
+                crate::runtime::cloud_api_client::post_cloud_json::<ControlPlaneResponse>(
+                    profile.api_url.clone(),
+                    "/control-plane",
+                    cloud_request_body(
+                        &profile.account_id,
+                        credential,
+                        &ControlPlaneRequest::List {},
+                    ),
+                )
+                .await?
+            {
+                state.reconcile_acquired_machines(&expected, &machines);
+            }
+        }
         let offered = crate::runtime::cloud_api_client::post_cloud_json::<ControlPlaneResponse>(
             profile.api_url.clone(),
             "/control-plane",
@@ -111,38 +161,84 @@ pub(crate) async fn execute(
                 "The connected service did not return its machine offer",
             ));
         };
-        state
+        let approval = state
             .approve_machine_acquisition(command, request, machine_allocation.as_ref())
             .await?;
-        if let Some(grant) = &grant {
-            state.authorize_external_request(grant, &request_shape)?;
-        } else if let Some(reach) = command.reach_caller_id() {
-            state.authorize_gateway_request(&reach, &request_shape)?;
-        }
-        if let (ControlPlaneRequest::AcquireJob { job_ref, .. }, Some(job_id)) =
-            (request, command.caller.caller_id.strip_prefix("job:"))
+        approval_guard = state.machine_approval_guard(command, request);
+        // The approved request goes again as the approved one, and the service refuses it unless
+        // it holds that request.
+        if let crate::runtime::state::Approval::Replay {
+            capability_revision,
+        } = &approval
         {
-            let (room, agent, owner) = state.job_acquisition_subject(job_id)?;
-            if job_ref != job_id
-                || command.session_id.as_deref() != Some(room.as_str())
-                || command.agent_id.as_deref() != Some(agent.as_str())
-                || command.caller.metaagent_id.as_deref() != Some(agent.as_str())
-                || command.caller.user_id.as_deref() != Some(owner.as_str())
-            {
-                return Err(unavailable(
-                    "control_plane_binding_invalid",
-                    "The accepted job no longer matches its Room, agent and owner",
-                ));
-            }
+            replayed = request.with_capability_revision(capability_revision);
+            request = &replayed;
         }
+        let still_allowed = (|| {
+            if let Some(grant) = &grant {
+                state.authorize_external_request(grant, &request_shape)?;
+            } else if let Some(reach) = command.reach_caller_id() {
+                state.authorize_gateway_request(&reach, &request_shape)?;
+            }
+            if let (ControlPlaneRequest::AcquireJob { job_ref, .. }, Some(job_id)) =
+                (request, command.caller.caller_id.strip_prefix("job:"))
+            {
+                let (room, agent, owner) = state.job_acquisition_subject(job_id)?;
+                if job_ref != job_id
+                    || command.session_id.as_deref() != Some(room.as_str())
+                    || command.agent_id.as_deref() != Some(agent.as_str())
+                    || command.caller.metaagent_id.as_deref() != Some(agent.as_str())
+                    || command.caller.user_id.as_deref() != Some(owner.as_str())
+                {
+                    return Err(unavailable(
+                        "control_plane_binding_invalid",
+                        "The accepted job no longer matches its Room, agent and owner",
+                    ));
+                }
+            }
+            Ok(())
+        })();
+        if let crate::runtime::state::Approval::WithoutAsking(hold) = approval {
+            if let Err(error) = still_allowed {
+                state.withdraw_acquisition(hold);
+                return Err(error);
+            }
+            acquisition_hold = Some(hold);
+        }
+        still_allowed?;
     }
-    let mut result = crate::runtime::cloud_api_client::post_cloud_json::<ControlPlaneResponse>(
+    if let Some(guard) = approval_guard.as_mut() {
+        guard.posting();
+    }
+    let send = crate::runtime::cloud_api_client::post_cloud_json::<ControlPlaneResponse>(
         profile.api_url.clone(),
         "/control-plane",
         cloud_request_body(&profile.account_id, credential, request),
-    )
-    .await
-    .map_err(
+    );
+    let sent = match acquisition_hold {
+        // The service's answer settles the admitted request even when its caller is cancelled.
+        Some(hold) => {
+            let state = state.clone();
+            tokio::spawn(async move { state.settle_acquisition(hold, send.await) })
+                .await
+                .map_err(|error| DaemonError::LocalTransport {
+                    operation: "control_plane.acquire",
+                    message: error.to_string(),
+                })?
+        }
+        None => send.await,
+    };
+    // The owner's approved request has reached the service, whatever it answered.
+    state.machine_approval_sent(command, request);
+    if let Ok(ControlPlaneResponse::Machine {
+        allocation_ref,
+        state: machine,
+        ..
+    }) = &sent
+    {
+        state.observe_acquired_machine(allocation_ref, machine, crate::session::unix_epoch_ms());
+    }
+    let mut result = sent.map_err(
         |error| match crate::runtime::cloud_api_client::cloud_error_code(&error) {
             Some(
                 "authorization_denied" | "session_invalid" | "client_revoked" | "identity_revoked",
@@ -324,11 +420,15 @@ mod tests {
             request_id: "one".into(),
             class_id: None,
             region: None,
+            timeout_s: None,
         };
         let error = execute(&config, &state, &command, router.kernel_gateway(), &acquire)
             .await
             .unwrap_err();
-        assert!(error.to_string().contains("control_plane_unavailable"), "the owner reaches the connected-service boundary without a separate agent grant: {error}");
+        assert!(
+            error.to_string().contains("control_plane_unavailable"),
+            "the owner reaches the connected-service boundary without a separate agent grant: {error}"
+        );
         command.source = crate::runtime::command::KernelCommandSource::RelayClient;
         command.caller.caller_kind = crate::runtime::command::KernelCallerKind::RemoteClient;
         command.caller.user_id = Some("another-user".into());
@@ -346,6 +446,7 @@ mod tests {
             request_id: "kernel-acquire-1".into(),
             class_id: None,
             region: None,
+            timeout_s: Some(300),
         };
         let fixture: serde_json::Value = serde_json::from_str(include_str!(
             "../../tests/cloud-contract/agent-acquire-request.json"

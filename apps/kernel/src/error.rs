@@ -23,7 +23,7 @@ pub(crate) fn agent_deadline_refusal(deadline_ms: u64) -> DaemonError {
             || external_request_failure_message(AGENT_DEADLINE_REACHED).into(),
             |deadline| {
                 let time = deadline.format("%Y-%m-%d %H:%M:%S UTC");
-                format!("This agent’s time limit ended at {time}. Start a new agent for new work.")
+                format!("This agent’s time limit ended at {time}. The owner, or its parent, can extend or clear it with `agent deadline <agent> <duration|none>` and then prompt it again; the same agent continues with its context. Or start a new agent for new work.")
             },
         );
     DaemonError::MachineRequest {
@@ -66,6 +66,8 @@ pub enum DaemonError {
     ProviderLoginCodeIncomplete,
     #[error("The code could not be read. Copy the whole code and try again.")]
     ProviderLoginCodeInvalid,
+    #[error("This Vault entry is no longer available. Choose another entry or add one in Vault.")]
+    ProviderLoginVaultEntryUnavailable,
     #[error("{provider} account `{account_name}`: {}", .reason.local_message())]
     ProviderProfileRefused {
         reason: ProviderProfileRefusal,

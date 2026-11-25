@@ -1092,28 +1092,115 @@ idle()
     }
 }
 
-// AO-SA-05: a room agent is launched by the kernel like a sub-agent is, but its request for
-// kernel access goes to the person; only a sub-agent is told to ask its parent.
 #[tokio::test]
-async fn a_room_agents_request_for_kernel_access_goes_to_the_person() {
-    let f = fixture_with_provider(Some("while :; do sleep 1; done"));
-    let _turn = running(&f);
-    let identity = exec_settled(&root(&f)).await;
-    let submission = f
-        .state
-        .submit_kernel_access(
-            &identity,
-            &crate::local::RequestKernelAccessRequest {
-                holder_pid: Some(identity.pid),
-                no_wait: true,
-                term: None,
-            },
-        )
-        .unwrap_or_else(|refused| {
-            panic!("the room agent's request must reach the person: {refused}")
-        });
-    assert!(matches!(
-        submission,
-        crate::runtime::state::kernel_access::AccessSubmission::Pending(_)
-    ));
+async fn a_sub_agent_requests_one_owner_access_card_with_its_own_identity() {
+    use crate::local::{KernelAccessHolderState, KernelAccessTerm, RequestKernelAccessRequest};
+    for (choice, reply, term) in [
+        ("approve", Some("5"), Some(KernelAccessTerm::Minutes(5))),
+        (
+            "approve",
+            Some("until_exit"),
+            Some(KernelAccessTerm::UntilHolderExits),
+        ),
+        ("refuse", None, None),
+    ] {
+        let f = fixture_with_provider(Some("while :; do sleep 1; done"));
+        let identity = exec_settled(&root(&f)).await;
+        let room_id = &f.request.session_id;
+        let child_id = f.run.agent_instance_id().unwrap();
+        let parent = {
+            let mut app = f.app.lock().await;
+            crate::app::KernelSessionService::new(&mut app)
+                .spawn_agent(
+                    crate::agent::CreateAgentRequest::new(room_id, "dev-stub").with_alias("parent"),
+                )
+                .unwrap()
+        };
+        f.state
+            .set_agent_parent(
+                "local",
+                crate::local::SetAgentParentRequest {
+                    session_id: room_id.clone(),
+                    agent_id: child_id.to_owned(),
+                    parent_agent_id: Some(parent.id().to_owned()),
+                },
+            )
+            .await
+            .unwrap();
+        let room = f.state.owned.session_store.get_session(room_id).unwrap();
+        let agent = f.state.owned.agent_store.get_agent(child_id).unwrap();
+        assert!(agent.is_sub_agent());
+        let request = RequestKernelAccessRequest {
+            reason: Some("Check the test kernel".into()),
+            holder_pid: None,
+            no_wait: false,
+            term: None,
+        };
+        let request_access = f
+            .state
+            .request_kernel_access(identity.clone(), request.clone());
+        let answer = async {
+            let card = tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    let cards = f.state.passkey_prompts_for("local");
+                    if let Some(card) = cards.first() {
+                        assert_eq!(cards.len(), 1);
+                        break card.clone();
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            assert!(card
+                .message
+                .contains(agent.alias().unwrap_or_else(|| agent.agent_ref())));
+            assert!(card
+                .message
+                .contains(room.alias().unwrap_or_else(|| room.id())));
+            assert!(card.message.contains("Check the test kernel"));
+            let pending = f.state.kernel_access_status(&identity, None).unwrap();
+            assert_eq!(pending.state, KernelAccessHolderState::Pending);
+            assert!(pending
+                .reason
+                .unwrap()
+                .message
+                .contains("Waiting for the owner"));
+            assert!(f.state.submit_kernel_access(&identity, &request).is_err());
+            assert_eq!(f.state.passkey_prompts_for("local").len(), 1);
+            f.state
+                .answer_terminal_runtime_interaction(
+                    &card.session_id,
+                    &card.interaction_id,
+                    choice,
+                    reply,
+                    Some("local"),
+                    (choice == "approve")
+                        .then(|| crate::local::ApprovalPasskey::new(PASSKEY))
+                        .as_ref(),
+                    None,
+                    Some(crate::local::KernelConnectionClass::Terminal),
+                )
+                .await
+                .unwrap();
+        };
+        let (grant, ()) = tokio::join!(request_access, answer);
+        if let Some(term) = term {
+            let grant = grant.unwrap();
+            assert_eq!(grant.holder_pid, identity.pid);
+            assert_eq!(grant.term, term);
+            let grants = f.state.access_grants_for(&identity).unwrap();
+            assert_eq!(grants.len(), 1);
+            assert_eq!(grants[0].summary.grant_id, grant.grant_id);
+        } else {
+            assert!(grant
+                .unwrap_err()
+                .to_string()
+                .contains("The owner denied kernel access"));
+            let status = f.state.kernel_access_status(&identity, None).unwrap();
+            assert_eq!(status.state, KernelAccessHolderState::Ended);
+            assert_eq!(status.reason.unwrap().code, "kernel_access_request_denied");
+        }
+        assert!(f.state.passkey_prompts_for("local").is_empty());
+    }
 }

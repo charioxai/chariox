@@ -55,9 +55,13 @@ impl KernelRuntimeState {
         } else {
             None
         };
+        let limit = self.limit_cancellation(&record);
         let mut value = public_record(record)?;
         if let Some(tail) = live_output {
             value["output_tail"] = tail.into();
+        }
+        if let Some(limit) = limit {
+            value["cancelled_by"] = limit;
         }
         if let Some(wait) = wait {
             value["waiting"] = serde_json::to_value(wait).expect("launch wait");
@@ -65,5 +69,56 @@ impl KernelRuntimeState {
             value["next_action"] = WAIT_ACTION.into();
         }
         Ok(value)
+    }
+
+    /// TL6: a job cancelled because its agent's time limit ended says so, and when, for the parent
+    /// or successor who finds it later. The cause was saved when the job ended, so a restart or a
+    /// new limit for the agent does not change it.
+    fn limit_cancellation(&self, record: &Record) -> Option<serde_json::Value> {
+        record
+            .result
+            .as_ref()
+            .filter(|result| result.outcome == crate::local::JobOutcome::Cancelled)?;
+        let CancelCause::Limit { deadline_ms } = record.cancel_cause? else {
+            return None;
+        };
+        let agent = self.owned.agent_store.get_agent(&record.agent_id).ok();
+        let name = agent
+            .as_ref()
+            .and_then(|agent| agent.alias())
+            .unwrap_or(&record.agent_id);
+        Some(serde_json::json!({
+            "agent_id": record.agent_id,
+            "reason": "the agent's time limit ended",
+            "at_ms": deadline_ms,
+            "next_step": format!("The job did not finish. The owner, or {name}'s parent, can give {name} a new limit with `agent deadline {name} <duration|none>`; then start the command again."),
+        }))
+    }
+
+    /// A job of a descendant, read by an ancestor of its agent: the same answer its agent gets,
+    /// with the agent named. `None` when the caller is not above the job's agent.
+    pub(super) fn ancestor_job_status(
+        &self,
+        driver: &JobDriver,
+        id: &str,
+        task: &AgentTaskExecution,
+    ) -> Result<Option<serde_json::Value>, DaemonError> {
+        let Ok(record) = driver.read(id) else {
+            return Ok(None);
+        };
+        let Ok(owner) = self.owned.agent_store.get_agent(&record.agent_id) else {
+            return Ok(None);
+        };
+        let agents = self.owned.agent_store.list_agents();
+        if !crate::agent::authority_limit::ancestors(&owner, &agents)
+            .iter()
+            .any(|ancestor| ancestor.id() == task.agent_id)
+        {
+            return Ok(None);
+        }
+        let agent = serde_json::json!({"id": owner.id(), "alias": owner.alias()});
+        let mut value = self.job_response(record)?;
+        value["agent"] = agent;
+        Ok(Some(value))
     }
 }

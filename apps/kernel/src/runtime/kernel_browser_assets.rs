@@ -119,6 +119,10 @@ const ASSETS: &[(&str, &[u8])] = &[
         include_bytes!("../../slice-linux-docker/docker/kernel-browser-display-regions.mjs"),
     ),
     (
+        "kernel-browser-screencast-region.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-screencast-region.mjs"),
+    ),
+    (
         "kernel-browser-window-display.mjs",
         include_bytes!("../../slice-linux-docker/docker/kernel-browser-window-display.mjs"),
     ),
@@ -177,6 +181,10 @@ const ASSETS: &[(&str, &[u8])] = &[
     (
         "kernel-browser-refiner.mjs",
         include_bytes!("../../slice-linux-docker/docker/kernel-browser-refiner.mjs"),
+    ),
+    (
+        "kernel-browser-viewer-still.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-viewer-still.mjs"),
     ),
     (
         "kernel-browser-pixel-worker.mjs",

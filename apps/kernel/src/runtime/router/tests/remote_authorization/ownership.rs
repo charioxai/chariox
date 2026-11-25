@@ -593,6 +593,11 @@ async fn remote_user_cannot_control_other_users_agents_or_endpoint_inner() {
         };
         assert_eq!(notice.agent_id, local_agent_id);
         assert_eq!(notice.read, muted);
+        assert_eq!(
+            notice.origin,
+            crate::local::PersonInboxNoticeOrigin::Kernel,
+            "a refused workflow start is the kernel's own notice, not a requested notification"
+        );
     }
 
     let spawn_user_two = LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {

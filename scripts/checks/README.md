@@ -14,6 +14,7 @@ node --test scripts/checks/*.test.mjs   # each check plants a violation in a thr
 | `relay-isolation` | Runtime rule 3: the relay only carries encrypted traffic | keep payload parsing, decryption and session logic in the kernel or shared protocol |
 | `hosted-wss` | Runtime rule 6: hosted connections use `wss://` behind Caddy | put the endpoint behind Caddy and configure the `wss://` URL (`ws://` is for loopback only) |
 | `protocol-shape-needs-version` | Protocol changes: a changed serialized shape needs the version bump and the snapshot | raise the constant, run `pnpm protocol:generate`, update the snapshot under `protocol_shapes/` |
+| `protocol-hashes-rehashed` | Protocol changes: a bump updates the snapshot and hash tests | run `pnpm protocol:rehash` (through `cargo-slot.sh` like any cargo job) and commit the rewritten tests and `fixtures/protocol-hash-pins.json` |
 | `retired-names` | Names the owner retired are never written | use the current name; rename in files you touch |
 | `slice-image-closure` | A module a slice entrypoint imports must be in the slice image | add the `COPY` line to `apps/kernel/slice-linux-docker/docker/Dockerfile` |
 | `perf-budget-tighten-only` | `docs/PERFORMANCE_BUDGETS.md`: performance budgets only tighten | bring the number back under the budget, or add `budget raised: <id>: <why>` to a commit message and get it approved in review |
@@ -45,6 +46,7 @@ Add `<name>.mjs` exporting `{name, why, rule, rootFix, scan(ctx)}` (`scan` retur
 
 ## Limits
 
+- `protocol-hashes-rehashed` compares `fixtures/protocol-hash-pins.json` with the two protocol constants; it does not recompute a hash, so a hand-edited pins file passes it and the protocol tests are the judge.
 - `protocol-shape-needs-version` reads public fields, enum variants, the fields inside variants and `#[serde(` lines of `apps/kernel/src/local/api/types*` and `transport/relay_peer*`. A moved field nets to nothing, also between modules of the same protocol. The constant must be higher at the head than at the merge base, not just touched. It requires the snapshot update for the local protocol only.
 - `slice-image-closure` counts only the last (runtime) stage of the Dockerfile, with `COPY --from` transfers followed through the stage they read from. A relative import is looked up from where its importer is installed in the image, so a module installed elsewhere does not count.
 - `tracked-state` checks file kinds and sizes, not contents: a secret in a tracked source file is not found (test canaries make a token-prefix scan too noisy today).

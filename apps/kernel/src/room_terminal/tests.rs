@@ -330,6 +330,7 @@ fn the_first_command_ends_the_startup_window_without_a_prompt_mark() {
         user_interacted: false,
         created_at_ms: 0,
         ended: None,
+        ended_at_ms: None,
         scrollback_text: String::new(),
         screen_text: String::new(),
     };

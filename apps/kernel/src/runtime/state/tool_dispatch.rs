@@ -228,7 +228,7 @@ impl KernelRuntimeState {
             });
             specs.push(super::vault_generate::vault_generate_spec());
             specs.extend(super::visual::visual_tool_specs());
-            specs.extend(super::environment_tools::environment_tool_specs());
+            specs.extend(self.environment_tool_specs_for(auth_token));
             specs.push(super::vault_command::capture_command_spec());
             specs.push(super::vault_command::copy_for_use_spec());
             specs.push(super::vault_command::use_env_spec());
@@ -245,6 +245,18 @@ impl KernelRuntimeState {
             specs.push(super::file_copy_tool::file_copy_spec());
             specs.extend(super::machine_files_tools::files_tool_specs());
             specs.extend(super::machine_acquisition::machine_tool_specs());
+            // Enrolling a kernel needs this kernel's Cloud sign-in: the tool appears only when it can work.
+            if crate::runtime::cloud_relay_control::active_cloud_profile(
+                &self.owned.config_projection.snapshot(),
+            )
+            .is_some_and(|profile| {
+                profile
+                    .kernel_credential
+                    .as_deref()
+                    .is_some_and(|credential| !credential.is_empty())
+            }) {
+                specs.extend(super::kernel_enrollment::kernel_enrollment_tool_specs());
+            }
         }
         if matches!(provider_runs.as_slice(), [run] if self.agent_result_available(run)) {
             specs.push(super::agent_result::spec());
@@ -369,6 +381,7 @@ impl KernelRuntimeState {
                         | "cancel_download"
                         | "wait"
                         | "stop"
+                        | "restart"
                 )
             );
         let rooms = self
@@ -422,6 +435,9 @@ impl KernelRuntimeState {
                 | "chariox.machines.release"
         ) {
             return self.machine_tool(auth_token, tool_name, arguments).await;
+        }
+        if tool_name == super::kernel_enrollment::ENROLL_TOOL {
+            return self.kernel_enrollment_tool(auth_token, arguments).await;
         }
 
         for run in self

@@ -147,6 +147,7 @@ impl KernelRuntimeState {
             "large-room" => {
                 let receiver = self
                     .create_kernel_operation_interaction(
+                        crate::runtime::state::CardKind::NativePermissionInput,
                         SESSION,
                         "local",
                         crate::session::RuntimeInteraction::for_kernel_operation(
@@ -169,6 +170,7 @@ impl KernelRuntimeState {
                 let critical = action == "agent-critical-question";
                 let receiver = self
                     .create_runtime_interaction(
+                        crate::runtime::state::CardKind::NativePermissionInput,
                         SESSION,
                         crate::session::RuntimeInteraction::new(
                             if critical {
@@ -208,7 +210,9 @@ impl KernelRuntimeState {
                 .unwrap();
                 let state = self.clone();
                 tokio::spawn(async move {
-                    let result = state.manage_credential_vault_unlock(SESSION, AGENT).await;
+                    let result = state
+                        .manage_credential_vault(SESSION, AGENT, Some("change_passphrase"))
+                        .await;
                     publish_result(
                         &root,
                         "vault-result",

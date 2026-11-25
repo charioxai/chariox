@@ -232,6 +232,21 @@ test("MP-10: a child frame's unreadable cross-origin stylesheet reaches the view
     "/frame.css": { type: "text/css", body: ".mark { color: rgb(1, 2, 3); }" },
   }));
 
+// Row 486 review P1 (#1717): a cross-origin child frame's drains carry media_playing too. They must keep the child attached:
+// its changes arrive as ordinary ops on the same ids, never as a re-mounted document on every credit.
+test("Row 486: a cross-origin child frame stays attached across drains (no re-mount per credit)", () => mirrored(
+  '<p>top</p><iframe src="http://localhost:PORT/ticker" style="width:300px;height:100px"></iframe>', async ({ next }) => {
+    await new Promise(resolve => setTimeout(resolve, 800));
+    const first = await next();
+    assert.equal(first.reset, true);
+    let texts = 0, remounts = 0;
+    for (let i = 0; i < 6; i++) { const p = await next(400); for (const op of p.ops) { if (op.op === "text") texts++; if (op.op === "children") remounts++; } }
+    assert(texts >= 3, `the child's text changes arrive as text ops (${texts})`);
+    assert.equal(remounts, 0, "no child document is re-mounted");
+  }, {
+    "/ticker": { type: "text/html", body: '<!doctype html><p id="t">0</p><script>let i=0;setInterval(()=>{document.getElementById("t").textContent=String(++i)},200)</script>' },
+  }));
+
 // A cross-site navigation moves the page to a new renderer, where execution context ids start over: the new document's
 // mirror world can carry the old one's number. A call the old document's credit made late (its long poll, issued as the
 // page moved) must not reach the new document's observer, or it takes a change (here the main sheet loading) that no
@@ -521,6 +536,59 @@ for (const device_scale_factor of [1, 2]) test(`T3: under a transparent video bo
   const { tiles } = await stackStills(page, device_scale_factor);
   assert.equal(new Set(tiles.map(t => t.node_id)).size, 2, `both stills reach the viewer (${tiles.length} stills)`);
 }, { "/alpha.webm": alphaWebm }, {}, { ...process.env, CHARIOX_KERNEL_BROWSER_HEADLESS: "1" }));
+
+// YM-C1 review: a WebGL canvas's buffer reads clear once composited (preserveDrawingBuffer false, the default), exactly as if
+// the page had cleared it. A transformed WebGL canvas whose pixels read clear after a real still keeps that still (its
+// content may still show natively); a 2D canvas the page cleared reads clear for real and shows the page through it.
+const glCleared = '<style>body{margin:0}canvas{display:block;width:240px;height:120px;transform:rotate(3deg);margin:20px}</style><canvas id="g" width="240" height="120"></canvas><canvas id="k" width="240" height="120"></canvas><script>const g=document.querySelector("#g").getContext("webgl",{preserveDrawingBuffer:true});g.clearColor(1,0,0,1);g.clear(g.COLOR_BUFFER_BIT);const k=document.querySelector("#k").getContext("2d");k.fillStyle="#f00";k.fillRect(0,0,240,120);window.wipe=()=>{g.clearColor(0,0,0,0);g.clear(g.COLOR_BUFFER_BIT);k.clearRect(0,0,240,120);return true}</script>';
+test("YM-C1: a transformed WebGL canvas that read real pixels keeps its still when it reads clear; a cleared 2D canvas goes clear", () => mirrored(glCleared, async ({ subscribe, evaluate }) => {
+  const { next } = await subscribe({ device_scale_factor: 1 });
+  const clearOf = still => decodePng(still.data_base64, 1).pixels.every((v, i) => i % 4 !== 3 || v === 0);
+  const first = new Map();
+  for (let i = 0; i < 8 && first.size < 2; i++) for (const tile of (await next(1100)).tiles) first.set(tile.node_id, tile);
+  assert.equal(first.size, 2, "both canvases' stills reach the viewer");
+  // Document order: the WebGL canvas, then the 2D one.
+  const [gl, flat] = [...first.keys()].sort((a, b) => Number(a.slice(1)) - Number(b.slice(1)));
+  assert(![...first.values()].some(clearOf), "the first stills hold the red pixels");
+  await evaluate("wipe()");
+  const later = new Map();
+  for (let i = 0; i < 4; i++) for (const tile of (await next(1100)).tiles) later.set(tile.node_id, tile);
+  assert(later.has(flat) && clearOf(later.get(flat)), "the cleared 2D canvas shows the page through it");
+  assert(!later.has(gl), "the WebGL canvas keeps its still");
+}, {}, {}, { ...process.env, CHARIOX_KERNEL_BROWSER_HEADLESS: "1" }));
+
+// YM-C1 review 2: a default WebGL canvas (preserveDrawingBuffer false) reads clear from the start; untransformed, its still comes
+// from the rendered page (a real picture). Transformed later, its clear readback must not replace that still with a clear one.
+const glFallback = '<style>body{margin:0;background:#f0f}canvas{display:block;width:240px;height:120px;margin:20px}</style><canvas id="g" width="240" height="120"></canvas><script>const g=document.querySelector("#g").getContext("webgl");const draw=()=>{g.clearColor(1,0,0,1);g.clear(g.COLOR_BUFFER_BIT);requestAnimationFrame(draw)};draw();window.turn=()=>{document.querySelector("#g").style.transform="rotate(3deg)";return true}</script>';
+test("YM-C1: a default WebGL canvas whose still came from the rendered page keeps it once transformed", () => mirrored(glFallback, async ({ subscribe, evaluate }) => {
+  const { next } = await subscribe({ device_scale_factor: 1 });
+  const clearOf = still => decodePng(still.data_base64, 1).pixels.every((v, i) => i % 4 !== 3 || v === 0);
+  let first = null;
+  for (let i = 0; i < 8 && !first; i++) first = (await next(1100)).tiles[0] ?? null;
+  assert(first && !clearOf(first), "the untransformed canvas gets a real still (rendered page)");
+  await evaluate("turn()");
+  const later = [];
+  for (let i = 0; i < 4; i++) later.push(...(await next(1100)).tiles.filter(t => t.node_id === first.node_id));
+  assert(!later.some(clearOf), `the transformed canvas keeps its still (${later.length} later stills, ${later.filter(clearOf).length} clear)`);
+}, {}, {}, { ...process.env, CHARIOX_KERNEL_BROWSER_HEADLESS: "1" }));
+
+// YM-C1 review 3/4: a faded canvas over an authored CSS gradient. Undrawn, and again once a drawn picture is cleared, it travels as
+// the clear still (a 1x1 transparent PNG), which the viewer paints as nothing, so the gradient shows (renderer test); the red
+// still of its drawn state never stays after the clear.
+const fadedGradient = '<style>body{margin:0}canvas{display:block;width:240px;height:120px;margin:20px;opacity:.5;background-image:linear-gradient(red,blue)}</style><canvas id="g" width="240" height="120"></canvas><script>const g=document.getElementById("g").getContext("2d");function paint(){g.fillStyle="#f00";g.fillRect(0,0,240,120)}function wipe(){g.clearRect(0,0,240,120)}</script>';
+test("YM-C1: a faded canvas over an authored gradient travels as the clear still when undrawn and again once cleared", () => mirrored(fadedGradient, async ({ subscribe, evaluate }) => {
+  const { next } = await subscribe({ device_scale_factor: 1 });
+  const isClear = t => t.data_base64 === encodePng(1, 1, Buffer.alloc(4));
+  const lastOf = async (rounds, want) => { let last = null; for (let i = 0; i < rounds && !(last && want(last)); i++) for (const t of (await next(1100)).tiles) last = t; return last; };
+  const undrawn = await lastOf(4, isClear);
+  assert(undrawn && isClear(undrawn), "undrawn: the clear still");
+  await evaluate("paint()");
+  const painted = await lastOf(4, t => !isClear(t));
+  assert(painted && !isClear(painted), "drawn: a real still");
+  await evaluate("wipe()");
+  const cleared = await lastOf(4, isClear);
+  assert(cleared && isClear(cleared), "cleared: the clear still replaces the drawn one");
+}, {}, {}, { ...process.env, CHARIOX_KERNEL_BROWSER_HEADLESS: "1" }));
 
 // browserfidelity r16 (YC sites, three.js): an opaque WebGL canvas (alpha:false, three.js's default) read after
 // compositing is opaque black, not transparent, so its own-pixels still was black. Its still must show what the page
@@ -2347,6 +2415,75 @@ test('MP-10: review r19 a newly inserted closed host becomes a tile without rese
  }
 ));
 
+// Row 489: Chromium's PDF document is a body whose light DOM is one whitespace text node and whose closed root holds the
+// viewer's iframe. That body is a closed host like an empty one: the viewer gets a region, not an empty page.
+test('Row 489: a body with only whitespace light DOM and a closed root is an opaque region',()=>mirrored(
+ '<head><script>addEventListener("DOMContentLoaded",()=>{document.body.attachShadow({mode:"closed"}).innerHTML="<style>iframe{position:absolute;left:0;top:0;width:600px;height:400px;border:0}</style><iframe src=/viewer></iframe><slot></slot>"})</script><style>body{height:100%;margin:0}</style></head><body>\n    \n  </body>',
+ async ctx=>{
+  let found=null;for(let i=0;i<6&&!found;i++){const p=await ctx.next(i?600:0);if([...p.nodes??[],...p.ops.flatMap(op=>op.op==='children'?op.nodes:[])].some(n=>n[4]?.reason==='closed_shadow'))found=p;}
+  assert(found,'the PDF-shaped body is a closed_shadow tile');
+  // The body's own box is 0 high (the viewer iframe is absolute in the closed root): its region covers what the root paints.
+  const lease=await regionLease(ctx,found.sequence);
+  assert(lease.rect.width>=590&&lease.rect.height>=390,`the body's region covers the viewer iframe: ${JSON.stringify(lease.rect)}`);
+ },{'/viewer':{type:'text/html',body:'<!doctype html><body style="margin:0;background:rgb(82,86,89)"><p style="color:white">page 1 of 15</p></body>'}}
+));
+
+// Row 489 review (#1716): a closed root painting away from its host keeps the host as the region's origin (placement, clicks),
+// and a closed host in normal flow keeps its own layout size (its painted overflow never pushes the content after it).
+test('Row 489: a closed host painting outside its box keeps its origin, and an in-flow 0-high host keeps its height',()=>mirrored(
+ '<head><script>addEventListener("DOMContentLoaded",()=>{for(const id of ["away","flow"])document.getElementById(id).attachShadow({mode:"closed"}).innerHTML=id==="away"?"<div style=position:absolute;left:-50px;top:-50px;width:200px;height:200px;background:rgb(0,90,200)></div>":"<div style=position:absolute;left:0;top:0;width:300px;height:100px;background:rgb(200,90,0)></div>"})</script></head><body style="margin:0"><div id=away style="position:absolute;left:100px;top:100px;width:100px;height:100px"></div><div id=flow style="position:relative;height:0;margin-top:400px"></div><p>after</p></body>',
+ async ctx=>{
+  let packet=null,rows=[];for(let i=0;i<6;i++){const p=await ctx.next(i?600:0);rows.push(...p.nodes??[],...p.ops.flatMap(op=>op.op==='children'?op.nodes:[]));packet=p;if(rows.filter(n=>n[4]?.reason==='closed_shadow').length>=2)break;}
+  const tiles=rows.filter(n=>n[4]?.reason==='closed_shadow');
+  assert.equal(tiles.length,2,'both hosts are closed_shadow tiles');
+  assert(tiles.some(n=>n[4].size?.[1]===0),`the in-flow 0-high host keeps height 0: ${JSON.stringify(tiles.map(n=>n[4].size))}`);
+  const stream=ctx.host.mirror.streams.get(ctx.subscription_id),leases=[];
+  for(const [region_id,r] of stream.regionRecords)if(r.kind==='tile')try{leases.push(await ctx.host.mirror.v2.regions.resolve({mirror_subscription_id:ctx.subscription_id,generation:ctx.generation,document_id:stream.document_id,sequence:packet.sequence,region_id},stream.scope))}catch{}
+  const away=leases.find(l=>l.rect.x===50&&l.rect.y===50);
+  assert(away,`the away host's capture covers its painted ink from (50,50): ${JSON.stringify(leases.map(l=>l.rect))}`);
+  assert.deepEqual({...away.element_offset},{x:-50,y:-50},'placed relative to the host at (100,100)');
+ }));
+
+// Row 489: a real PDF (Chromium's own viewer) reaches the viewer as a region with pixels.
+const minimalPdf = () => {
+  const objects = ['<< /Type /Catalog /Pages 2 0 R >>', '<< /Type /Pages /Kids [3 0 R] /Count 1 >>', '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>', null, '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>'];
+  const text = 'BT /F1 48 Tf 72 700 Td (Row 489 page one) Tj ET'; objects[3] = `<< /Length ${text.length} >>\nstream\n${text}\nendstream`;
+  let out = '%PDF-1.4\n'; const offsets = [];
+  objects.forEach((body, i) => { offsets.push(out.length); out += `${i + 1} 0 obj\n${body}\nendobj\n`; });
+  const xref = out.length; out += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n${offsets.map(o => String(o).padStart(10, '0') + ' 00000 n \n').join('')}trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+  return Buffer.from(out, 'latin1');
+};
+test('Row 489: a PDF document shows Chromium\'s viewer as a region with pixels',()=>mirrored('',async ctx=>{
+  await settle(2500);
+  const seen={closed:false,stills:[],packets:0};let last=null;
+  for(let i=0;i<10;i++){const p=await ctx.next(i?500:0);last=p;seen.packets++;const tile=[...p.nodes??[],...p.ops.flatMap(op=>op.op==='children'?op.nodes:[])].find(n=>n[4]?.reason==='closed_shadow');if(tile){seen.closed=true;seen.tile=tile;}for(const op of p.ops)if(op.op==='size')seen.sizes=(seen.sizes??[]).concat([op.size]);for(const t of p.tiles??[])seen.stills.push([t.width,t.height]);}
+  let lease=null;try{lease=(await regionLease(ctx,last.sequence)).rect}catch(error){lease=String(error.message)}
+  const kinds=[...ctx.host.mirror.streams.get(ctx.subscription_id).regionRecords.values()].map(r=>r.kind);
+  console.log('ROW489-PDF',JSON.stringify({...seen,lease,kinds,url:await ctx.evaluate('location.href'),type:await ctx.evaluate('document.contentType')}));
+  assert(seen.closed,'the PDF body is a closed_shadow tile');
+  const size=seen.tile?.[4]?.size;
+  assert(size?.[0]>=600&&size?.[1]>=400,`the viewer lays the tile out at what the viewer paints, not the body's 0-high box: ${JSON.stringify(size)}`);
+  assert(typeof lease==='object'&&lease.width>=600&&lease.height>=400,`its region covers the viewer: ${JSON.stringify(lease)}`);
+ },{'/':{type:'application/pdf',binary:minimalPdf()}}));
+
+// Row 486: the viewer never evicts a Tab that plays video or audio (muted too); the page's mirror header says so.
+test('Row 486: media_playing follows a muted video and an audio-only element as they play and pause',()=>mirrored(
+ '<canvas id=c width=64 height=36></canvas><video id=v muted playsinline style="width:64px;height:36px"></video><audio id=a muted></audio><script>const c=document.getElementById("c"),x=c.getContext("2d");let i=0;setInterval(()=>{x.fillStyle=`hsl(${(i+=7)%360} 80% 50%)`;x.fillRect(0,0,64,36)},30);window.stream=()=>c.captureStream(30)</script>',
+ async({next,evaluate,host,tab_id})=>{
+  // A person's click allows sound: play() runs as a user gesture.
+  const gesture=async expression=>{const {connection,sessionId}=await host.browser.resolvePageTarget(host.tabs.get(tab_id).target_id);const r=await connection.send('Runtime.evaluate',{expression,awaitPromise:true,returnByValue:true,userGesture:true},sessionId);assert(!r.exceptionDetails,r.exceptionDetails?.exception?.description);return r.result.value};
+  const playing=async(want,label)=>{let last;for(let i=0;i<12;i++){const p=await next(400);if(p.media_playing!==undefined)last=p.media_playing;if(last===want)return;}assert.equal(last,want,label)};
+  await playing(false,'nothing plays at first');
+  await gesture('(async()=>{const v=document.getElementById("v");v.srcObject=stream();await v.play();return true})()');
+  await playing(true,'a muted video that plays');
+  await evaluate('document.getElementById("v").pause();true');
+  await playing(false,'paused');
+  await gesture('(async()=>{const a=document.getElementById("a");a.srcObject=stream();await a.play();return true})()');
+  await playing(true,'an audio-only element that plays');
+  await evaluate('document.getElementById("a").pause();true');
+  await playing(false,'paused again');
+ }));
+
 // MP-08/MP-10/MP-11: #941 c956f84c7 review F1/F2. No reset may hide a lost descriptor.
 for (const child of [false, true]) test(`MP-10: closed-host discovery retains a simultaneously loaded image in ${child ? 'an attached child' : 'the parent'}`,()=>mirrored(
  child ? '<iframe src="http://localhost:PORT/child" style="width:300px;height:160px"></iframe>' : '<p>stable</p>',
@@ -2412,19 +2549,121 @@ test('MP-08/MP-10/MP-11: opaque leases remeasure actual canvas bounds, protectio
     for(const proof of (await rotated.attestationState()).media){assert.equal(proof.id,region_id);assert.deepEqual(proof.box,[10,0,200,100],'a composited region is excluded from the native attestation by its on-screen box')}
   }
 ));
-// A headless browser has no window to read a region from: it refused every region display as a stale reference, and the
-// viewer asked again every second for as long as the page was open. It now says once, with a fixed reason, that it never can.
-test("MP-08: a browser with no display of its own refuses a region display with that reason", () => mirrored(
-  '<style>body{margin:0}canvas{width:200px;height:100px}</style><canvas id="c"></canvas>',
+// R1 (proposal R): a browser with no display of its own (headless) gives a page region video from Chrome's own frames: the region
+// display is granted as a crop of the Tab's screencast, and a canvas animating at 60 fps reaches it at >= 25 frames a second.
+// (It used to refuse with region_video_no_display, and the viewer showed one still a second.)
+test("R1a: a browser with no display of its own streams a region as a crop of the Tab's screencast", () => mirrored(
+  '<style>body{margin:0}canvas{width:200px;height:100px}</style><canvas id="c" width="200" height="100"></canvas><script>const g=document.getElementById("c").getContext("2d");let n=0;(function f(){g.fillStyle=`hsl(${(n++*7)%360},80%,50%)`;g.fillRect(0,0,200,100);requestAnimationFrame(f)})()</script>',
   async ({ host, next, subscription_id, generation, tab_id }) => {
     const packet = await next(), stream = host.mirror.streams.get(subscription_id);
     const region_id = [...stream.regionRecords].find(([, r]) => r.kind === "tile")?.[0];
     assert(region_id, "MP-10: the canvas is an opaque region");
     const target = { kind: "region", mirror_subscription_id: subscription_id, document_id: stream.document_id, sequence: packet.sequence, region_id };
-    const refused = await host.request({ op: "display_subscribe", tab_id, generation, target, codecs: ["png", "avc1.420033"], bitrate: 2_000_000, device_scale_factor: 1 }).then(() => null, error => error);
-    assert(refused, "MP-08: no region display without a display");
-    assert.match(hostFailureMessage(refused), /\bregion_video_no_display\b/, `the reply names why: ${hostFailureMessage(refused)}`);
+    const reply = await host.request({ op: "display_subscribe", tab_id, generation, target, codecs: ["png", "avc1.420033"], bitrate: 2_000_000, device_scale_factor: 1 });
+    assert.equal(reply.source_kind, "region", `the region display is granted: ${JSON.stringify(reply)}`);
+    assert.deepEqual([reply.css_width, reply.css_height], [200, 100]);
+    const source = host.displays.get(reply.subscription_id)?.regionSource;
+    assert(source, "the region's source is attached");
+    const serials = new Set(), off = source.subscribe(frame => { if (frame?.crop) serials.add(frame.serial); });
+    await settle(500); serials.clear(); const t0 = Date.now(); await settle(2000);
+    const fps = serials.size / ((Date.now() - t0) / 1000); off();
+    assert(fps >= 25, `the region gets >= 25 frames a second from the screencast (${fps.toFixed(1)})`);
+    const sample = source.sample();
+    assert.deepEqual([sample.width, sample.height, sample.crop.width, sample.crop.height], [200, 100, 200, 100], "frames are named at the crop");
+    // The display's own frame path: the shared screencast image goes to the encoder with the region's crop, and the video is
+    // the crop's size.
+    const display = host.displays.get(reply.subscription_id), calls = [], encode = display.encoder.encode.bind(display.encoder);
+    const encoded = [];
+    display.encoder.encode = async (...args) => { const data = typeof args[0] === "string" ? args[0] : ""; const call = { crop: args[5]?.crop ?? null, jpeg: data.startsWith("/9j/") }; calls.push(call); const result = await encode(...args); encoded.push(Boolean(result?.data_base64)); return result; };
+    for (let i = 0; i < 20 && !encoded.includes(true); i++) { await host.request({ op: "screenshot", generation, display_subscription_id: reply.subscription_id, after_sequence: display.sequence }).catch(() => null); await settle(100); }
+    assert(calls.length >= 1 && calls.every(c => !c.jpeg || c.crop?.width === 200 && c.crop?.height === 100), `a screencast image reaches the encoder only with the region's crop (${JSON.stringify(calls)})`);
+    assert(encoded.includes(true), `the encoder produced video for the crop (${JSON.stringify(encoded)})`);
+    await host.request({ op: "display_unsubscribe", subscription_id: reply.subscription_id }).catch(() => {});
   }, {}, {}, { ...process.env, CHARIOX_KERNEL_BROWSER_HEADLESS: "1" }));
+// R1 review 1 (P1): once a screencast region stops moving, its lossless exact still is the region's own crop at the viewer's
+// density (the presenter accepts only css size x DPR), never the whole viewport.
+for (const dpr of [1, 2]) test(`R1: a screencast region at rest gets its exact still at the region's size (viewer DPR${dpr})`, () => mirrored(
+  '<style>body{margin:0}canvas{position:absolute;left:30px;top:40px;width:200px;height:100px}</style><canvas id="c" width="200" height="100"></canvas><script>const g=document.getElementById("c").getContext("2d");let n=0,run=true;function stop(){run=false}(function f(){g.fillStyle=`hsl(${(n++*7)%360},80%,50%)`;g.fillRect(0,0,200,100);if(run)requestAnimationFrame(f)})()</script>',
+  async ({ host, next, subscription_id, generation, tab_id, evaluate }) => {
+    const packet = await next(), stream = host.mirror.streams.get(subscription_id);
+    const region_id = [...stream.regionRecords].find(([, r]) => r.kind === "tile")?.[0];
+    const target = { kind: "region", mirror_subscription_id: subscription_id, document_id: stream.document_id, sequence: packet.sequence, region_id };
+    const reply = await host.request({ op: "display_subscribe", tab_id, generation, target, codecs: ["png", "avc1.420033"], bitrate: 2_000_000, device_scale_factor: dpr });
+    assert.equal(reply.source_kind, "region", JSON.stringify(reply));
+    const display = host.displays.get(reply.subscription_id), captures = [], frames = [];
+    const screenshot = host.displayScreenshot.bind(host);
+    host.displayScreenshot = async (...args) => { const shot = await screenshot(...args); captures.push([shot.width, shot.height]); return shot; };
+    const source = display.regionSource, own = source.exactCapture?.bind(source);
+    if (own) source.exactCapture = async () => { const shot = await own(); captures.push([shot.width, shot.height]); return shot; };
+    const credit = async () => { const r = await host.request({ op: "screenshot", generation, display_subscription_id: reply.subscription_id, after_sequence: display.sequence }).catch(() => null); if (r?.display_frame) frames.push(r.display_frame); };
+    for (let i = 0; i < 6; i++) { await credit(); await settle(80); }
+    await evaluate("stop()"); await settle(300);
+    for (let i = 0; i < 30 && !captures.length; i++) { await credit(); await settle(120); }
+    assert(captures.length, "an exact still is captured once the region rests");
+    // The display's density is the page's own (observation never changes it): the presenter accepts css size x reply DPR.
+    const k = reply.device_scale_factor;
+    assert(captures.every(([w, h]) => w === 200 * k && h === 100 * k), `every exact capture is the region's crop at the display's DPR ${k} (${JSON.stringify(captures)})`);
+    const exact = frames.filter(f => f.payload?.kind === "png" || f.kind === "png");
+    for (const f of exact) { const png = Buffer.from(f.payload?.data_base64 ?? f.data_base64, "base64"); assert.deepEqual([png.readUInt32BE(16), png.readUInt32BE(20)], [200 * k, 100 * k], "the exact frame is the region's size"); }
+    await host.request({ op: "display_unsubscribe", subscription_id: reply.subscription_id }).catch(() => {});
+  }, {}, { device_scale_factor: dpr }, { ...process.env, CHARIOX_KERNEL_BROWSER_HEADLESS: "1" }));
+// R1 review 2 (P2): a CDP clip is in page coordinates, the lease rect in viewport ones. On a page scrolled to y=500 a canvas seen at
+// viewport y=40 is captured at page y=540: the exact still at rest holds the canvas's own final pixels, not the page elsewhere.
+test("R1: a screencast region's exact still on a scrolled page holds the region's own pixels", () => mirrored(
+  '<style>body{margin:0;height:3000px;background:#f0f}canvas{position:absolute;left:30px;top:540px;width:200px;height:100px}</style><canvas id="c" width="200" height="100"></canvas><script>scrollTo(0,500);const g=document.getElementById("c").getContext("2d");let n=0,run=true;function stop(){run=false;g.fillStyle="rgb(0,128,255)";g.fillRect(0,0,200,100)}(function f(){if(!run)return;g.fillStyle=`hsl(${(n++*7)%360},80%,50%)`;g.fillRect(0,0,200,100);requestAnimationFrame(f)})()</script>',
+  async ({ host, next, subscription_id, generation, tab_id, evaluate }) => {
+    await evaluate("scrollTo(0,500)"); await settle(300);
+    let packet = await next(); for (let i = 0; i < 4 && !(await evaluate("scrollY")); i++) packet = await next();
+    assert.equal(await evaluate("scrollY"), 500, "fixture: the page is scrolled");
+    const stream = host.mirror.streams.get(subscription_id);
+    const region_id = [...stream.regionRecords].find(([, r]) => r.kind === "tile")?.[0];
+    const target = { kind: "region", mirror_subscription_id: subscription_id, document_id: stream.document_id, sequence: packet.sequence, region_id };
+    const reply = await host.request({ op: "display_subscribe", tab_id, generation, target, codecs: ["png", "avc1.420033"], bitrate: 2_000_000, device_scale_factor: 1 });
+    assert.equal(reply.source_kind, "region", JSON.stringify(reply));
+    const display = host.displays.get(reply.subscription_id), shots = [], errors = [];
+    const source = display.regionSource, own = source.exactCapture.bind(source);
+    source.exactCapture = async () => { try { const shot = await own(); shots.push(shot); return shot; } catch (error) { errors.push(String(error?.message ?? error)); throw error; } };
+    const credit = () => host.request({ op: "screenshot", generation, display_subscription_id: reply.subscription_id, after_sequence: display.sequence }).catch(() => null);
+    for (let i = 0; i < 6; i++) { await credit(); await settle(80); }
+    await evaluate("stop()"); await settle(300);
+    for (let i = 0; i < 30 && !shots.length; i++) { await credit(); await settle(120); }
+    assert(shots.length, `an exact still is captured once the region rests (${JSON.stringify(errors)})`);
+    const { pixels, width, height } = decodePng(shots.at(-1).data_base64, 1), at = ((height >> 1) * width + (width >> 1)) * 4;
+    assert.deepEqual([...pixels.subarray(at, at + 3)], [0, 128, 255], "the exact still is the canvas's final picture, not the page beside it");
+    await host.request({ op: "display_unsubscribe", subscription_id: reply.subscription_id }).catch(() => {});
+  }, {}, {}, { ...process.env, CHARIOX_KERNEL_BROWSER_HEADLESS: "1" }));
+// R1 S4/S1 (orch14 decision 11-22 under AGENTS.md "Secrets and agents"): a Vault fill on a page whose region streams raw screencast
+// pixels fences before the value is written (the kernel registers the target, host.protect, then fills): no frame captured at or
+// after that moment reaches the lease, and the region stops. The same when the target is in a child frame.
+const fillPage = child => `<style>body{margin:0}canvas{width:300px;height:120px;display:block}#v{position:absolute;left:20px;top:40px;width:200px;font:20px monospace}</style><canvas id="c" width="300" height="120"></canvas>${child ? '<iframe id="f" srcdoc="<input id=v>" style="position:absolute;left:20px;top:40px;width:220px;height:40px;border:0"></iframe>' : '<input id="v">'}<script>const g=document.getElementById("c").getContext("2d");let n=0;(function f(){g.fillStyle=\`hsl(\${(n++*7)%360},80%,50%)\`;g.fillRect(0,0,300,120);requestAnimationFrame(f)})()</script>`;
+for (const child of [false, true]) test(`R1 S4${child ? "/S1 (target in a child frame)" : ""}: a Vault fill fences the region screencast before the value is written`, () => mirrored(fillPage(child),
+  async ({ host, next, subscription_id, generation, tab_id }) => {
+    await settle(400);
+    const packet = await next(), stream = host.mirror.streams.get(subscription_id);
+    const region_id = [...stream.regionRecords].find(([, r]) => r.kind === "tile")?.[0];
+    const target = { kind: "region", mirror_subscription_id: subscription_id, document_id: stream.document_id, sequence: packet.sequence, region_id };
+    const reply = await host.request({ op: "display_subscribe", tab_id, generation, target, codecs: ["png", "avc1.420033"], bitrate: 2_000_000, device_scale_factor: 1 });
+    const source = host.displays.get(reply.subscription_id).regionSource, frames = [];
+    source.subscribe(frame => frames.push({ at: Date.now(), captured: frame.capturedAt }));
+    await settle(700);
+    assert(frames.length > 5, `frames flow before the fill (${frames.length})`);
+    const tab = [...host.tabs.values()][0], { connection, sessionId } = await host.browser.resolvePageTarget(tab.target_id);
+    const { root } = await connection.send("DOM.getDocument", { depth: -1, pierce: true }, sessionId);
+    const { nodeIds } = await connection.send("DOM.querySelectorAll", { nodeId: root.nodeId, selector: child ? "iframe" : "#v" }, sessionId);
+    let backendNodeId = (await connection.send("DOM.describeNode", { nodeId: nodeIds[0] }, sessionId)).node.backendNodeId;
+    if (child) { const frame = (await connection.send("DOM.describeNode", { nodeId: nodeIds[0], depth: -1, pierce: true }, sessionId)).node; const find = n => n.attributes?.includes("v") && n.nodeName === "INPUT" ? n : (n.children ?? []).concat(n.contentDocument ? [n.contentDocument] : []).map(find).find(Boolean); backendNodeId = find(frame).backendNodeId; }
+    const before = frames.length, fillStart = Date.now();
+    await host.protect({ values: ["SECRET-4242"], targets: [{ kind: "browser", target_id: tab.target_id, document_id: tab.document_id, node_ref: `backend:${backendNodeId}` }] });
+    await evaluate_fill(host, tab, child);
+    await settle(1200);
+    const late = frames.slice(before).filter(f => f.captured >= fillStart);
+    assert.deepEqual(late, [], `no frame captured after the fill started reached the lease (${late.length} of ${frames.length - before} after)`);
+    assert.equal(source.valid(), false, "the region stops"); assert.equal(source.sample(), null);
+  }, {}, {}, { ...process.env, CHARIOX_KERNEL_BROWSER_HEADLESS: "1" }));
+async function evaluate_fill(host, tab, child) {
+  const { connection, sessionId } = await host.browser.resolvePageTarget(tab.target_id);
+  await connection.send("Runtime.evaluate", { expression: child ? `document.getElementById("f").contentDocument.getElementById("v").value="SECRET-4242"` : `document.getElementById("v").value="SECRET-4242"` }, sessionId);
+}
 // The navigation preview asks for a Tab display. A headless browser answered with a CDP display at the viewer's layout
 // size, which the viewer rejects as invalid geometry: every navigation retried it while the new page stayed hidden.
 test("MP-08: a browser with no display of its own refuses a Tab display with that reason", () => mirrored(

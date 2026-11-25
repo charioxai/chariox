@@ -111,7 +111,6 @@ try {
 
    phase=`browser-fill-dpr${dpr}`;
    const handle=(await fixture.send({ListCredentials:null})).CredentialsListed.credentials.find(c=>!initial.some(old=>old.id===c.id)).id;
-   await fixture.send({KernelBrowser:{command:{op:'grant_room_computer',agent_id:agentId}}});
    const title=`GitHub fill ready ${dpr}`;
    await prompt(`Load the kernel browser tools if needed and continue after their automatic reload. Open https://github.com/login in a new tab and take a fresh snapshot. Identify the username text input and the password input, retaining their observed refs and tab/document identity for the next turn. Do not type or submit anything. Then call chariox.request_popup once, wait true, title "${title}", message "The observed GitHub fields are ready.", choices [{"id":"done","label":"Done","reply":"done"}], timeout_sec 60. After Done, finish with Ready.`);
    const ready=await waitFor(async()=>(await cards()).find(c=>c.title===title),'real GitHub fill target observed',180000);

@@ -34,6 +34,8 @@ pub struct KernelCommand {
     pub caller: KernelCaller,
     #[serde(skip)]
     pub(crate) terminal_lifetime: Option<TerminalLifetime>,
+    #[serde(skip)]
+    pub(crate) same_computer: bool,
     pub session_id: Option<String>,
     pub attachment_id: Option<String>,
     pub agent_id: Option<String>,
@@ -144,6 +146,7 @@ impl KernelCommand {
             source,
             caller,
             terminal_lifetime: None,
+            same_computer: false,
             session_id: metadata.session_id,
             attachment_id: metadata.attachment_id,
             agent_id: metadata.agent_id,
@@ -174,7 +177,7 @@ fn local_request_payload(request: &LocalDaemonRequest) -> Value {
             "SetProjectEnvironmentSecret": {
                 "project_id": request.project_id,
                 "name": request.name,
-                "value": "[redacted]"
+                "source": "[redacted]"
             }
         }),
         LocalDaemonRequest::SetCredentialSecret(request) => serde_json::json!({

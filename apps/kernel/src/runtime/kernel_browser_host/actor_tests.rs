@@ -1079,6 +1079,60 @@ done
     }
 }
 
+// A person card with a live page restarts a browser the kernel's restart ended, never one the
+// person stopped on purpose: the card's recovery start leaves an explicit stop in force.
+#[test]
+fn a_card_recovery_start_restarts_after_a_kernel_restart_but_never_after_an_explicit_stop() {
+    let root = std::env::temp_dir().join(format!(
+        "chariox-card-recovery-start-{:032x}",
+        rand::random::<u128>()
+    ));
+    std::fs::create_dir(&root).unwrap();
+    let script = root.join("controller.sh");
+    std::fs::write(&script, r#"set -eu
+printf 'started' > "$1/started"
+while IFS= read -r request; do
+ id=${request#*:}; id=${id%%,*}
+ case "$request" in
+  *'"method":"health"'*) printf '{"id":%s,"ok":true,"result":{"state":"ready","process_id":%s,"diagnostic_code":null}}\n' "$id" "$$" ;;
+  *'"method":"shutdown"'*) printf '{"id":%s,"ok":true,"result":{"state":"stopped","process_id":null,"diagnostic_code":null}}\n' "$id"; exit 0 ;;
+  *) printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
+ esac
+done
+"#).unwrap();
+    let host = KernelBrowserHost::new(root.clone());
+    host.install_fixture_backend("owner", &script, &root);
+    let policy = || json!({"values":[],"targets":[],"unknown":false});
+    let request =
+        |params: Value| host.protected_request("owner", None, "host.browser", params, policy());
+    // A restarted kernel remembers no stop: the recovery start brings the browser back.
+    let after_restart = request(json!({"op":"start","unless_stopped":true}));
+    let restarted = root.join("started").exists();
+    // The person stops the browser on purpose.
+    let stopped = request(json!({"op":"stop"}));
+    std::fs::remove_file(root.join("started")).ok();
+    let refused = request(json!({"op":"start","unless_stopped":true}));
+    let revived = root.join("started").exists();
+    // Only an explicit start of the person's own brings it back.
+    let explicit = request(json!({"op":"start"}));
+    let explicit_started = root.join("started").exists();
+    host.shutdown().unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+    after_restart.unwrap();
+    assert!(restarted, "a restart recovery must start the browser");
+    stopped.unwrap();
+    assert!(
+        refused.unwrap_err().contains("browser_unavailable"),
+        "an explicit stop stays in force for a card"
+    );
+    assert!(
+        !revived,
+        "the card's recovery start reopened a stopped browser"
+    );
+    explicit.unwrap();
+    assert!(explicit_started);
+}
+
 // MP-08/MP-10/MP-11: a client's read-only state poll waits for the busy page's
 // reconcile; an input arriving meanwhile must not queue behind it.
 #[test]

@@ -220,7 +220,12 @@ impl ConnectedWorkerRig {
         .unwrap();
         (
             request_id,
-            serde_json::from_slice(&decoded.plaintext).unwrap(),
+            serde_json::from_slice(
+                &crate::transport::framed_plaintext::open(&decoded.plaintext)
+                    .unwrap()
+                    .0,
+            )
+            .unwrap(),
         )
     }
 

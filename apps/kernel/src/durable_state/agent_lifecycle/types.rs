@@ -18,6 +18,25 @@ pub enum TaskOwnerAction {
     Question,
 }
 
+/// What an agent's own question says about its free-text answer box: the label and the placeholder
+/// the card shows. An agent that gives neither gets a plain box with no text of the kernel's own.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QuestionReply {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placeholder: Option<String>,
+}
+
+/// What unblocks a blocked task and the commands that settle it. Read by clients with the task, so
+/// the agent's row says what to do; the kernel adds it to the projection and never stores it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskUnblock {
+    pub steps: String,
+    pub resume_command: String,
+    pub cancel_command: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentTaskExecution {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -36,6 +55,12 @@ pub struct AgentTaskExecution {
     pub reason: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner_action: Option<TaskOwnerAction>,
+    /// The label and placeholder the agent gave its question's answer box (`chariox.events.blocked`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub question_reply: Option<QuestionReply>,
+    /// Set in the projection of a blocked task that only a command settles; never stored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unblock: Option<TaskUnblock>,
     pub obligations: Vec<AgentObligation>,
     pub wait: Option<AgentWait>,
     pub last_progress_at_ms: u64,
@@ -43,6 +68,18 @@ pub struct AgentTaskExecution {
     pub pending_prompt_id: Option<String>,
 }
 impl AgentTaskExecution {
+    /// A queued notification can give its prompt to a retained task before it starts work.
+    pub(crate) fn is_unstarted_prompt_task(&self) -> bool {
+        self.task_id == self.prompt_id
+            && self.state == ExecutionState::Working
+            && self.revision == 1
+            && self.provider_run_id.is_none()
+            && self.goal.is_none()
+            && self.obligations.is_empty()
+            && self.wait.is_none()
+            && self.pending_prompt_id.is_none()
+    }
+
     /// A goal or an obligation still needing resolution: work a later turn must not abandon. A
     /// settled obligation and a retained wait or wake prompt are only its record.
     pub(crate) fn owns_unfinished_work(&self) -> bool {
@@ -123,13 +160,13 @@ impl AgentObligation {
         self.status == "open"
     }
 
-    /// Work the turn that started it may leave running: a watched process, a job, a terminal watch
-    /// or a delegate stays supervised after the turn ends and wakes the agent when it ends.
+    /// Work the turn that started it may leave running: a watched process, a job, a terminal watch,
+    /// a timer or a delegate stays supervised after the turn ends and wakes the agent when it ends.
     pub(crate) fn outlives_turn(&self) -> bool {
         self.status == "open"
             && matches!(
                 self.kind.as_str(),
-                "process" | "job" | "terminal" | "delegate"
+                "process" | "job" | "terminal" | "delegate" | "timer"
             )
     }
 
@@ -181,6 +218,8 @@ pub(crate) struct InboxEvent {
     pub prompt_id: Option<String>,
     pub target_prompt_id: Option<String>,
     pub provider_run_id: Option<String>,
+    #[serde(default)]
+    pub arrived_at_ms: Option<u64>,
     pub attempted_at_ms: Option<u64>,
     pub submit_epoch: Option<u64>,
     /// When the owner last sent this delivery again; it keeps a leased resend's prompt id fresh.
@@ -285,7 +324,6 @@ pub(crate) enum Operation {
         room: String,
         agent: String,
         deadline: Option<u64>,
-        inherited: Vec<(String, String, Option<u64>)>,
     },
     /// The deadline tick: a kernel that is running counts down its deadlines.
     BeatDeadlineClock {
@@ -460,11 +498,17 @@ pub(crate) enum Operation {
         prompt: String,
         reason: String,
     },
+    DismissTaskCard {
+        room: String,
+        task: String,
+        blocked_revision: u64,
+    },
     /// An agent's own question to the owner: the card carries a reply box, not Resume.
     BlockForQuestion {
         task: String,
         prompt: String,
         reason: String,
+        reply: Option<QuestionReply>,
     },
     /// The kernel blocks a task whose attempt was interrupted (a refused or failed
     /// dispatch, a lost run): a later turn of the agent may supersede it. An owner block
@@ -538,6 +582,12 @@ pub(crate) enum Operation {
     /// An event without a sender turn on this kernel, such as a message from a peer on
     /// another kernel; de-duplicated on (room, agent, source, occurrence).
     Occur(InboxEvent),
+    WithdrawReply {
+        room: String,
+        agent: String,
+        sequence: u64,
+        now: u64,
+    },
     Send {
         task: String,
         prompt: String,
@@ -605,6 +655,18 @@ pub(crate) enum Operation {
         agent: String,
         sequence: u64,
         state: String,
+        now: u64,
+    },
+    /// The agent could not start for this delivery: it is pending again, with the attempt, the
+    /// error and the time of the next try kept.
+    StartFailed {
+        room: String,
+        agent: String,
+        sequence: u64,
+        error: String,
+        /// The start waits on a person (a locked Vault): it is tried again soon and spends no
+        /// attempt, because the person may be away for hours.
+        waits_on_owner: bool,
         now: u64,
     },
     Ack {
@@ -694,6 +756,14 @@ pub(crate) enum Operation {
         task: String,
         revision: u64,
         later_prompt: String,
+        now: u64,
+    },
+    /// Consume the exact task question and enqueue its answer before returning to the owner.
+    AnswerTaskQuestion {
+        room: String,
+        task: String,
+        revision: u64,
+        reply: Option<String>,
         now: u64,
     },
     OwnerResponse {

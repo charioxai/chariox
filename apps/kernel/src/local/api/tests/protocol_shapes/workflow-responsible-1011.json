@@ -1,6 +1,6 @@
 {
-  "local": 1014,
-  "peer": 451,
+  "local": 1015,
+  "peer": 452,
   "workflow": {
     "responsible": {
       "kind": "agent",
@@ -50,7 +50,7 @@
   },
   "peer_set_request": {
     "kind": "set_workflow_responsible",
-    "protocol_version": 451,
+    "protocol_version": 452,
     "sender": {
       "kernel_id": "kernel-b",
       "room_id": "room-b",
@@ -64,7 +64,7 @@
   },
   "peer_apply_request": {
     "kind": "apply_workflow_responsible",
-    "protocol_version": 451,
+    "protocol_version": 452,
     "action": "attach",
     "workflow": {
       "kernel_id": "kernel-a",

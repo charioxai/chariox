@@ -46,6 +46,7 @@ export function RoomWorkflowsPane(props: RoomWorkflowsPaneProps) {
      </box> }}</For>
    </scrollbox>
    <box flexShrink={0} flexDirection="column">
+     <Show when={record()?.inventory.archived_count}><text fg={theme.textMuted}>{`${record()!.inventory.archived_count} archived workflow(s) hidden; list them with workflow list --archived`}</text></Show>
      <text fg={theme.textMuted}>{controller().selected ? `Start ${controller().selected!.workflow.label} / ${controller().selected!.endpoint.label}` : "Select an entry point"}</text>
      <Show when={controller().selected && !controller().selected!.endpoint.can_start}><text fg={theme.textMuted}>{controller().selected!.endpoint.start_disabled_reason ?? "Only the endpoint owner can start"}</text></Show>
      <textarea ref={value => { input = value; value.setText(record()?.draft ?? "") }} minHeight={2} maxHeight={5} textColor={theme.text} focusedTextColor={theme.text} keyBindings={PROMPT_KEYBINDINGS}

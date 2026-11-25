@@ -69,7 +69,12 @@ impl KernelRuntimeState {
             ],
         ).with_timeout_sec(900);
         let receiver = self
-            .create_kernel_operation_interaction(session.id(), session.owner_user_id(), interaction)
+            .create_kernel_operation_interaction(
+                crate::runtime::state::CardKind::OwnerControl,
+                session.id(),
+                session.owner_user_id(),
+                interaction,
+            )
             .await?;
         match tokio::time::timeout(Duration::from_secs(900), receiver).await {
             Ok(Ok(resolution))

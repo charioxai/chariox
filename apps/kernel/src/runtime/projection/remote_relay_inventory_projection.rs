@@ -55,7 +55,7 @@ struct RemoteRelayInventoryProjectionState {
     refresh_requested_at_ms: u64,
     /// Kernels that were absent from the previous inventory and are present now, until taken.
     appeared_kernels: std::collections::BTreeSet<String>,
-    /// The kernels the owner's Cloud directory still linked on its last two reads, oldest first.
+    /// The kernels the owner's Cloud directory still linked on its last two fresh reads, oldest first.
     directory_reads: std::collections::VecDeque<std::collections::BTreeSet<String>>,
     /// The machines those reads linked, with the directory read, same order; None for a read
     /// that could not tell.
@@ -121,7 +121,7 @@ impl RemoteRelayInventoryProjectionStore {
         }
     }
 
-    /// The machines among `machines` that neither of the last two reads of Cloud directory
+    /// The machines among `machines` that neither of the last two fresh reads of Cloud directory
     /// `directory` linked: removed from the account (Remove unlinks them in Cloud), not merely
     /// offline. The same two-read rule as `gone_kernels`; a read of another directory, or one that
     /// could not tell, decides nothing.

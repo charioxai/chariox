@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import test from "node:test"
-import { kernelBrowserAgentTabsMinimumProtocolVersion, kernelBrowserMinimumProtocolVersion, kernelBrowserRequest, kernelDisplayResumeMinimumProtocolVersion, kernelTabDisplayMinimumProtocolVersion, userDomainAccessMinimumProtocolVersion } from "./ipc-kernel-browser-requests.js"
+import { kernelBrowserAgentTabsMinimumProtocolVersion, kernelBrowserRoomDownloadsMinimumProtocolVersion, kernelBrowserMinimumProtocolVersion, kernelBrowserRequest, kernelDisplayResumeMinimumProtocolVersion, kernelTabDisplayMinimumProtocolVersion } from "./ipc-kernel-browser-requests.js"
 import { LOCAL_DAEMON_PROTOCOL_VERSION } from "./kernel-types.js"
 
 test("MD-2: protocol 417 browser requests carry no session or claimed user", () => {
@@ -14,10 +14,20 @@ test("MD-2: protocol 417 browser requests carry no session or claimed user", () 
   })
 })
 
-test("MP-08/MP-11: Room Computer access requests retain protocol 443", () => {
-  assert.equal(userDomainAccessMinimumProtocolVersion, 443)
-  assert.deepEqual(kernelBrowserRequest({ op: "revoke_grants", agent_id: null }), { KernelBrowser: { command: { op: "revoke_grants", agent_id: null } } })
-  assert.deepEqual(kernelBrowserRequest({ op: "subscribe_grants", after: 3, wait_ms: 25000 }), { KernelBrowser: { command: { op: "subscribe_grants", after: 3, wait_ms: 25000 } } })
+test("a Room's browser input, downloads wait and reveal are typed commands", () => {
+  assert.equal(kernelBrowserRoomDownloadsMinimumProtocolVersion, 1015)
+  assert(LOCAL_DAEMON_PROTOCOL_VERSION >= kernelBrowserRoomDownloadsMinimumProtocolVersion)
+  assert.deepEqual(kernelBrowserRequest({ op: "room", session_id: "room-1", command: { op: "navigate", tab_id: "t", generation: 1, url: "https://example.com/a.zip" } }), {
+    KernelBrowser: { command: { op: "room", session_id: "room-1", command: { op: "navigate", tab_id: "t", generation: 1, url: "https://example.com/a.zip" } } },
+  })
+  assert.deepEqual(kernelBrowserRequest({ op: "downloads_wait", session_id: "room-1", wait_ms: 0 }), {
+    KernelBrowser: { command: { op: "downloads_wait", session_id: "room-1", wait_ms: 0 } },
+  })
+  assert.deepEqual(kernelBrowserRequest({ op: "reveal_download", session_id: "room-1", download_id: "d1" }), {
+    KernelBrowser: { command: { op: "reveal_download", session_id: "room-1", download_id: "d1" } },
+  })
+  // @ts-expect-error a Room scope carries navigation or input only
+  kernelBrowserRequest({ op: "room", session_id: "room-1", command: { op: "stop" } })
 })
 
 // MP-08/MP-11: the agent tab projection reaches the merged line at 507.
@@ -52,4 +62,10 @@ test("viewport-first and visited-link subscriptions retain their opt-in fields",
   assert.deepEqual(kernelBrowserRequest({ op: "mirror_subscribe", tab_id: "t", generation: 1, device_scale_factor: 1, wire: 2, viewport_first: true, visited_links: true }), {
     KernelBrowser: { command: { op: "mirror_subscribe", tab_id: "t", generation: 1, device_scale_factor: 1, wire: 2, viewport_first: true, visited_links: true } },
   })
+})
+
+// Row 548 (protocol 1015): a typed client restarts the user's browser without bypassing the contract.
+test("row 548: the shared browser command union carries restart", () => {
+  assert.deepEqual(kernelBrowserRequest({ op: "restart" }), { KernelBrowser: { command: { op: "restart" } } })
+  assert(LOCAL_DAEMON_PROTOCOL_VERSION >= 1015)
 })

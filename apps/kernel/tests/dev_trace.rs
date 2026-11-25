@@ -532,3 +532,60 @@ seedS1({ rpc, sessionId, attachmentId, traces })
     assert_eq!(result["historyEntries"].as_array().unwrap().len(), 22);
     println!("{result}");
 }
+
+#[tokio::test]
+async fn shutdown_drains_a_trace_waiting_on_permission() {
+    let scratch = std::env::temp_dir().join(format!("loadlab-shutdown-{}", std::process::id()));
+    let mut kernel = start(&scratch);
+    std::fs::write(
+        scratch.join("waiting.jsonl"),
+        concat!(
+            r#"{"v":1,"source":"generator","seed":42,"agent":"waiting","notes":"pending permission"}"#, "\n",
+            r#"{"t":0,"kind":"prompt","chars":24}"#, "\n",
+            r#"{"t":0,"kind":"permission","tool":"Bash"}"#, "\n",
+            r#"{"t":0,"kind":"end","outcome":"completed"}"#, "\n",
+        ),
+    ).unwrap();
+    let mut socket = connect(&kernel).await;
+    let room = create_session(&mut socket, &scratch).await;
+    let agent = spawn(&mut socket, &room, "waiting").await;
+    submit(&mut socket, &room, &agent).await.unwrap();
+
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let inbox = request(&mut socket, json!({"GetPersonInbox": null}))
+            .await
+            .unwrap();
+        let cards = inbox["PersonInbox"]["cards"].as_array().unwrap();
+        if cards.iter().any(|card| {
+            let interaction = &card["body"]["needs_you"]["interaction"];
+            interaction["agent_id"] == agent && interaction["kind"] == "permission"
+        }) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the trace never asked for permission"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    kernel.signal_shutdown();
+    loop {
+        if let Some(status) = kernel.try_wait() {
+            assert!(status.success(), "{status}");
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the kernel did not drain its provider in 2 seconds"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let log = std::fs::read_to_string(scratch.join("kernel.log")).unwrap();
+    assert!(
+        log.contains("kernel shutdown complete") && log.contains("abandoned: none"),
+        "{log}"
+    );
+}

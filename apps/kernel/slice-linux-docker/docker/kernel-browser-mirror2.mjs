@@ -16,6 +16,8 @@ import { worldContext } from './browser-focus-world.mjs';
 const OWNER_VIEW = Object.freeze({ unknown: false, values: Object.freeze([]), targets: Object.freeze([]) });
 export const maskPolicy = (stream, policy) => stream.audience === 'owner' ? OWNER_VIEW : policy;
 import { decodePng, encodePng, halvePixels, maskPixels, regionPixels } from './kernel-browser-pixels.mjs';
+// YM-C1: one transparent pixel, stretched over a canvas whose own pixels read clear.
+const CLEAR_STILL = encodePng(1, 1, Buffer.alloc(4));
 import { MirrorFrames, slotOf, localId, rebaseId } from './kernel-browser-mirror2-frames.mjs';
 import { MirrorCssEvents } from './kernel-browser-mirror2-css.mjs';
 import { discoverClosedHosts } from './kernel-browser-mirror2-closed.mjs';
@@ -31,6 +33,9 @@ const TARGET_ATTRIBUTES = new Set(['type', 'contenteditable']);
 const HISTORY_BYTES = 8 * 1024 * 1024;
 // GATE-bytes: sheets from this size (normalized text) are pruned to their used rules for a first paint.
 const FIRST_PAINT_SHEET = 32 * 1024;
+// The observer's own patterns: a sheet's image-set() options (loadViewerOptions) and selectors on a link's or element's value (sheetCss).
+const IMAGE_SET = /image-set\(([^()]*(?:\([^()]*\)[^()]*)*)\)/gi;
+const VALUE_SELECTOR = { href: /\[\s*chariox-href\s*[~|^$*]?=/i, src: /\[\s*chariox-src\s*[~|^$*]?=/i };
 // A font sent as a subset is checked against the document's characters at most this often.
 const FONT_REFRESH_MS = 1000;
 // Y3-C1a: how often, at most, a page whose script changed its DOM is asked again whether it takes the wheel.
@@ -227,6 +232,50 @@ const observerRef = stream => `globalThis.__charioxMirror2.get(${JSON.stringify(
 // source is never published: the label selects the whole-page video (MIRROR-FIDELITY-GUARD).
 const SERIALIZER = String.raw`const lossy=/[;{]\s*(?!--)[a-z][a-z-]*:\s*;/;const sheetOf=text=>{const sheet=new CSSStyleSheet();sheet.replaceSync(text);return sheet};const dump=sheet=>{let out='';for(const rule of sheet.cssRules)out+=rule.cssText+'\n';return out};const rules=text=>dump(sheetOf(text));const scan=(text,visit)=>{let quote='';for(let i=0;i<text.length;i++){const c=text[i];if(quote){if(c==='\\')i++;else if(c===quote)quote=''}else if(c==='\\')i++;else if(c==='"'||c==="'")quote=c;else if(c==='/'&&text[i+1]==='*'){i=text.indexOf('*/',i+2);if(i<0)break;i++}else if(visit(c,i))return i}return -1};const chunks=text=>{const out=[];let depth=0,start=0;scan(text,(c,i)=>{if(c==='{')depth++;else if((c==='}'&&!--depth)||(c===';'&&!depth)){out.push(text.slice(start,i+1));start=i+1}});if(text.slice(start).trim())out.push(text.slice(start));return out};const serialize=(text,sheet)=>{const out=sheet?dump(sheet):rules(text);if(!lossy.test(out))return out;let result='';for(const chunk of chunks(text)){const one=rules(chunk);if(!lossy.test(one)){result+=one;continue}const open=scan(chunk,c=>c==='{');result+=/^\s*@/.test(chunk)?chunk.slice(0,open+1)+serialize(chunk.slice(open+1,chunk.lastIndexOf('}')))+'}\n':chunk+'\n'}return result};const count=text=>{const sheet=new CSSStyleSheet();sheet.replaceSync(text);return sheet.cssRules.length};const parse=text=>{const sheet=sheetOf(text),out=serialize(text,sheet);if(count(out)!==sheet.cssRules.length)throw new Error('mirror2:css_incomplete');return out};`;
 // CSSOM-normalized cross-origin sheet bodies by source (see crossOriginSheet), least recently used first out.
+// Row 342 (b): a cross-origin sheet's rules as the page's usedCss walks them after re-parsing the sanitized text (it is a CSSOM
+// serialization): style rules (selector, text), grouping rules (@media, @supports, @container, @layer blocks: opening, children)
+// and anything else kept whole. Strings, escapes, comments and brackets never end a prelude or a block.
+const GROUPING_RULE = /^@(?:media|supports|container|layer)\b/i;
+export function cssRules(text, from = 0, to = text.length) {
+  const skip = j => {
+    const c = text[j];
+    if (c === '\\') return j + 2;
+    if (c === '"' || c === "'") { for (j++; j < to && text[j] !== c; j++) if (text[j] === '\\') j++; return j + 1; }
+    if (c === '/' && text[j + 1] === '*') { const end = text.indexOf('*/', j + 2); return end < 0 || end >= to ? to : end + 2; }
+    return -1;
+  };
+  const rules = [];
+  for (let i = from; i < to;) {
+    while (i < to && /\s/.test(text[i])) i++;
+    if (i >= to) break;
+    if (text[i] === '/' && text[i + 1] === '*') { i = skip(i); continue; }
+    let j = i, depth = 0;
+    while (j < to) { const next = skip(j); if (next >= 0) { j = next; continue; } const c = text[j]; if (c === '(' || c === '[') depth++; else if (c === ')' || c === ']') depth--; else if (!depth && (c === '{' || c === ';')) break; j++; }
+    if (j >= to) { rules.push({ text: text.slice(i, to) }); break; }
+    if (text[j] === ';') { rules.push({ text: text.slice(i, j + 1) }); i = j + 1; continue; }
+    let end = j, level = 0;
+    while (end < to) { const next = skip(end); if (next >= 0) { end = next; continue; } if (text[end] === '{') level++; else if (text[end] === '}' && --level === 0) break; end++; }
+    if (end >= to) { rules.push({ text: text.slice(i, to) }); break; }
+    const prelude = text.slice(i, j).trim();
+    if (!prelude.startsWith('@')) rules.push({ selector: prelude, text: text.slice(i, end + 1) });
+    else if (GROUPING_RULE.test(prelude)) rules.push({ open: text.slice(i, j + 1), layer: /^@layer\b/i.test(prelude), children: cssRules(text, j + 1, end) });
+    else rules.push({ text: text.slice(i, end + 1) });
+    i = end + 1;
+  }
+  return rules;
+}
+// usedCss's pruned(): a style rule stays if its selector is in use, a grouping rule if any child stays (a layer block always,
+// it keeps its place in the layer order), anything else always.
+export function prunedCss(rules, used) {
+  let out = '';
+  for (const rule of rules) {
+    if (rule.selector !== undefined) { if (used(rule.selector)) out += `${rule.text}\n`; }
+    else if (rule.children) { const inner = prunedCss(rule.children, used); if (inner || rule.layer) out += `${rule.open}${inner}}\n`; }
+    else out += `${rule.text}\n`;
+  }
+  return out;
+}
+const ruleSelectors = (rules, out = new Set()) => { for (const rule of rules) if (rule.selector !== undefined) out.add(rule.selector); else if (rule.children) ruleSelectors(rule.children, out); return out; };
 export class ParsedSheets {
   constructor(entries = 32, chars = 32 * 1024 * 1024) { this.bodies = new Map(); this.entries = entries; this.chars = chars; this.size = 0; }
   take(key) { const body = this.bodies.get(key); if (body !== undefined) { this.bodies.delete(key); this.bodies.set(key, body); } return body; }
@@ -237,6 +286,10 @@ export class ParsedSheets {
     for (const [first, text] of this.bodies) { if (this.bodies.size <= this.entries && this.size <= this.chars) break; this.bodies.delete(first); this.size -= text.length; }
   }
 }
+// Row 426: a credit that steps aside for a region operation (never reaches the viewer; next() queues it again).
+// Row 426 F3: what the kernel had issued when a credit arrived (the credit's after_sequence can only account for those).
+const ARRIVAL_ISSUED = Symbol('mirror credit arrival');
+const MIRROR_YIELD = Object.freeze(Object.assign(new Error('mirror credit yields to a region operation'), { code: 'mirror_yield' }));
 export class Mirror2 {
   constructor(service) { this.service = service; this.host = service.host; this.frames = new MirrorFrames(this); this.css = new MirrorCssEvents(); this.regions = new Mirror2Regions(this); this.parsedSheets = new ParsedSheets(); this.fontSubsets = new FontSubsets(); this.host.visitedLinks?.listeners.add((origin, url) => this.visited(origin, url)); }
   // MP-08/MP-10/MP-11: older v2 viewers never receive an unknown operation.
@@ -303,6 +356,8 @@ export class Mirror2 {
   async snapshotOnce(world, policy, patience, known = [], options = null) {
     if (world.snapshotPending?.policy !== policy) world.snapshotPending = null;
     const args = options ? `${JSON.stringify(known)},${JSON.stringify(options)}` : known.length ? JSON.stringify(known) : '';
+    // The sheets this snapshot tells the page the viewer retains (its usedCss answers null for them): the kernel skips asking.
+    if (!world.snapshotPending) world.retainedSheets = new Set(known);
     const pending = world.snapshotPending ??= { policy, promise: this.evaluate(world, `${world.ref}.snapshot(${args})`, false, SNAPSHOT_MS, true) };
     pending.promise.catch(() => { if (world.snapshotPending === pending) world.snapshotPending = null; }); // a failed snapshot is not kept
     let timer;
@@ -332,6 +387,8 @@ export class Mirror2 {
     this.host.timing?.event?.('mirror2_layout_moved', {});
     throw new Error('MP-11: mirror layout changed during observation');
   }
+  // Row 486: the page or one of its attached child frames plays a video or audio element (muted or not).
+  mediaPlaying(stream, source) { return source?.media_playing === true || [...(stream.frames?.values() ?? [])].some(entry => entry.playing === true); }
   invalidate(stream) { stream.policy = null; stream.early = null; stream.replies = null; stream.history = null; stream.historyBytes = 0; stream.resources.clear(); }
   dispose(stream) {
     this.regions.retireStream(stream);
@@ -411,6 +468,7 @@ export class Mirror2 {
       return run;
     }
     const arrival = Date.now(), wait = command.wait_ms ?? 0;
+    command[ARRIVAL_ISSUED] = stream.issued ?? 0;
     // A reset credit (lost base) must not queue behind a waiting long poll.
     if (command.after_sequence === 0 || resend || command.flush) this.hurry(stream);
     const hurry = stream.hurry;
@@ -427,8 +485,13 @@ export class Mirror2 {
         try { return await build(); } catch (error) { if (!(LAYOUT_MOVED.test(error?.message ?? '') || error?.code === 'stale_document_reference') || signal?.aborted || Date.now() >= hard) throw error; }
       }
     };
-    const run = stream.chain.then(observe);
-    stream.chain = run.catch(() => {});
+    // Row 426: a region operation (a lease check, once per region video frame) waits on this chain. A plain credit with nothing
+    // to send steps aside for it (no packet, no sequence spent) and queues again behind it; the viewer's own urgent credits
+    // (reset, resend, flush) are answered as before.
+    const plain = command.after_sequence > 0 && !resend && !command.flush;
+    const step = () => plain && stream.regionWaiting > 0 && Date.now() < arrival + wait ? Promise.reject(MIRROR_YIELD) : observe();
+    const once = () => { const segment = stream.chain.then(step); stream.chain = segment.catch(() => {}); return segment; };
+    const run = (async () => { for (;;) { try { return await once(); } catch (error) { if (error !== MIRROR_YIELD) throw error; } } })();
     if (replayKey) { const entry = { run, done: false }; run.finally(() => { entry.done = true; }).catch(() => {}); (stream.replies ??= new Map()).set(replayKey, entry); if (stream.replies.size > 8) stream.replies.delete(stream.replies.keys().next().value); }
     return run;
   }
@@ -439,7 +502,9 @@ export class Mirror2 {
     return document === stored.document_id && world.frame?.loaderId === document && browser.sessionsByTarget?.get(stored.target_id) === world.sessionId ? { tab: { ...stored }, world } : null;
   }
   // Credits that arrived before this point stop waiting (their hurry count is older).
-  hurry(stream) { stream.hurry = (stream.hurry ?? 0) + 1; if (stream.world) this.evaluate(stream.world, `${stream.world.ref}.wake()`).catch(() => {}); }
+  hurry(stream) { stream.hurry = (stream.hurry ?? 0) + 1; this.wake(stream); }
+  wake(stream) { if (stream.world) this.evaluate(stream.world, `${stream.world.ref}.wake()`).catch(() => {}); }
+
   // The viewer keeps its native preview of a document until the DOM mirror can be built. This reset only says "still preparing".
   previewPacket(stream, command, scope, tabId, documentId, started) {
     if (this.service.require(command.subscription_id, scope, command.generation) !== stream || this.host.generation !== command.generation) throw new Error('MP-11: stale mirror subscription');
@@ -448,7 +513,7 @@ export class Mirror2 {
     const packet = { wire: 2, subscription_id: command.subscription_id, tab_id: tabId, generation: command.generation,
       document_id: documentId, sequence, base_sequence: null, reset: true, fallback: 'navigation_preview',
       snapshot_complete: false, css_width: this.host.pageSize(tabId).width, css_height: this.host.pageSize(tabId).height, device_scale_factor: this.host.scales.get(tabId) ?? 1,
-      scroll: [0, 0], focused: null, focus_visible: false, selection: null, page_wheel: false, resources: [], tiles: [] };
+      scroll: [0, 0], focused: null, focus_visible: false, selection: null, page_wheel: false, media_playing: false, resources: [], tiles: [] };
     this.remember(stream, sequence, packet, true);
     this.host.timing?.('mirror2_navigation_preview', started);
     return packet;
@@ -516,8 +581,14 @@ export class Mirror2 {
     if (stream.acked > (stream.prunedAt ?? 0)) { stream.prunedAt = stream.acked; for (const entry of stream.resources.values()) if (entry.sent && entry.sentAt <= stream.acked && entry.resource) { entry.resource = entry.preview = null; entry.url = ''; } }
     // A viewer whose base predates the newest reset has that reset on its way (a large one crossing a slow link
     // while small credits are answered): a second reset only queues behind it (r47: a 420 KB reset storm).
-    const layoutKey = this.layoutKey(tab.tab_id);
-    const resetReason = after === 0 ? 'client' : after > stream.issued ? 'ahead' : after < stream.issued - 8 && after >= stream.resetAt ? 'behind' : stream.document_id !== tab.document_id ? 'document' : stream.policy !== policy ? 'policy' : (stream.layoutKey ?? layoutKey) !== layoutKey ? 'layout' : stream.resetAt > stream.issued ? 'snapshot' : stream.fallback !== null ? 'fallback' : null;
+    // `behind` counts only packets issued before this credit arrived: the ones issued while it queued (up to seconds on a quiet
+    // page with the viewer's eight credits in flight) answered earlier credits and say nothing about this viewer (row 426 F3).
+    // Row 527: credits can arrive out of order (one sent before others reaches the kernel after them), so a viewer is
+    // behind only when the newest base it acknowledged in any credit is: a late credit's older base resets nothing.
+    const layoutKey = this.layoutKey(tab.tab_id), base = Math.max(after, stream.acked ?? 0);
+    // Protocol 1015 (`layout_delta`): the viewer re-lays out its own copy at the new size at once, so a complete snapshot
+    // follows a new page size by an ordinary delta (the size in its header, the page's own reaction as ops), not a reset.
+    const resetReason = after === 0 ? 'client' : after > stream.issued ? 'ahead' : base < (command[ARRIVAL_ISSUED] ?? stream.issued) - 8 && base >= stream.resetAt ? 'behind' : stream.document_id !== tab.document_id ? 'document' : stream.policy !== policy ? 'policy' : (stream.layoutKey ?? layoutKey) !== layoutKey && !this.followsLayout(stream) ? 'layout' : stream.resetAt > stream.issued ? 'snapshot' : stream.fallback !== null ? 'fallback' : null;
     let reset = resetReason !== null;
     // A snapshot waits for a busy renderer in every call it makes (the viewer's reset has 30 s). Any other credit waits
     // somewhat longer than the default, but answers before the viewer's own 8 s request timeout.
@@ -534,6 +605,8 @@ export class Mirror2 {
     // Frame slots restart with a snapshot, so rebased child keys are re-learned.
     // A slice in flight may be lost with the base: a partial resource restarts.
     let source, fallback = null;
+    // Row 426: an ordinary credit (not the viewer's reset, resend or flush) can step aside for a waiting region operation.
+    const yieldable = command.after_sequence > 0 && command.resend !== true && !command.flush; let yielded = false;
     const moved = () => { const live = this.host.browser.documentIdsByTarget?.get(tab.target_id); return !!live && live !== tab.document_id; };
     // Ordered navigation events retire this credit before any old-world retry.
     // A renderer query here would queue behind the newly loading document.
@@ -554,6 +627,8 @@ export class Mirror2 {
         stream.ownScrolls.clear(); stream.frames.clear(); stream.frameSlots.clear(); stream.frameSlot = 0;
         for (const [key, entry] of stream.resources) if (entry.slot) stream.resources.delete(key); else if (!entry.sent || entry.sentAt > (stream.acked ?? 0)) { entry.sent = false; entry.offset = 0; }
         if (world.snapshotPending?.policy !== policy) await this.protectTargets(world, tab, maskPolicy(stream, policy), '', patience);
+        // Row 342 F3: the document's loaded stylesheets start reading now, alongside the snapshot that names them.
+        this.prefetchSheets(world);
         const snapshotAt = timestamp();
         const snap = await this.snapshotOnce(world, policy, patience, stream.knownSheets ?? [], this.snapshotOptions(stream, world));
         this.host.timing?.('mirror2_snapshot', snapshotAt);
@@ -628,7 +703,7 @@ export class Mirror2 {
       if (reset) this.host.timing?.('mirror2_fonts', fontsAt);
       // Long poll: nothing to send yet -> wait for the page (or newly loaded bytes).
       // A navigation ends the wait at once (MP-08/MP-10): the next credit resets to the new document.
-      while (!reset && !resources.length && this.empty(stream, source) && !this.sheetsDue(stream) && Date.now() < deadline && stream.hurry === hurry && !moved()) {
+      while (!reset && !resources.length && this.empty(stream, source) && !this.sheetsDue(stream) && Date.now() < deadline && stream.hurry === hurry && !(yieldable && stream.regionWaiting > 0) && !moved()) {
         const settle = stream.movedAt + SETTLE_MS - Date.now(), refine = settle > 0 && this.refinePending(stream) ? settle + 1 : 500;
         await this.syncScriptFonts(world, tab);
         const polled = this.evaluate(world, `${world.ref}.waitDrain(${Math.max(1, Math.min(500, refine, deadline - Date.now()))})`, true);
@@ -642,6 +717,7 @@ export class Mirror2 {
         if (this.empty(stream, source)) { await this.refreshFonts(stream, world); resources = await this.materialize(world, stream, null, more.loaded); }
         if (this.empty(stream, source)) await this.askWheel(stream, world, false);
       }
+      yielded = yieldable && stream.regionWaiting > 0 && !reset && !resources.length && this.empty(stream, source) && !this.sheetsDue(stream) && Date.now() < deadline && stream.hurry === hurry && !moved();
     } catch (error) {
       assertNotCancelled(signal);
       assertDocument();
@@ -654,6 +730,7 @@ export class Mirror2 {
       this.host.timing?.(`mirror2_fallback_${fallback}${error.mirrorDetail ? ' ' + error.mirrorDetail : ''}`, timestamp());
       source = null; reset = true;
     } finally { moveWatch?.cancel(); }
+    if (yielded && !fallback) throw MIRROR_YIELD;
     if (fallback) resources = [];
     mark('observe_resources');
     assertDocument();
@@ -673,10 +750,16 @@ export class Mirror2 {
       sheets = this.sheetsWithinBudget(stream, sheets);
     }
     let tiles = [];
+    // Protocol 1015: a page size the viewer has not been told yet travels in this delta; region stills were taken at the
+    // old size, so they are taken again now. The delta names the size (and layout key) the stills are taken at: a resize
+    // during the capture stays due for the next delta, which takes them again.
+    const follows = !reset && !fallback && this.followsLayout(stream);
+    const capturedKey = follows ? this.layoutKey(tab.tab_id) : layoutKey, capturedSize = follows ? this.host.pageSize(tab.tab_id) : null;
+    const sized = follows && stream.layoutKey !== undefined && stream.layoutKey !== capturedKey;
     // Stills, like image bytes, never ride on a DOM change or follow viewer input
     // within QUIET_MS: an echo must not queue behind a lossless region.
-    const still = reset || (this.emptyDom(stream, source) && !this.recentInput(stream));
-    if (!fallback) tiles = await this.tiles(world, tab, stream, reset, still, source?.opaque === false);
+    const still = reset || sized || (this.emptyDom(stream, source) && !this.recentInput(stream));
+    if (!fallback) tiles = await this.tiles(world, tab, stream, reset || sized, still, source?.opaque === false);
     mark('tiles');
     if (await this.host.browser.appTabs?.flushDrafts(tab.target_id)) await this.host.sampleLane(tab).run('sample', () => this.host.save());
     // The page session's navigation events arrive in order with the replies above: a cached document equal to the
@@ -688,14 +771,16 @@ export class Mirror2 {
     if (this.host.protection !== policy || this.host.generation !== command.generation || this.service.streams.get(command.subscription_id) !== stream) {
       stream.policy = null; throw new Error('MP-11: stale mirror protection policy or subscription');
     }
-    // Another viewer's layout change during the observation: this packet describes the old page size.
-    this.layoutMoved(stream, tab, layoutKey);
+    // Another viewer's layout change during the observation: this packet describes the old page size. A delta that
+    // follows the layout (protocol 1015) names the size its stills were taken at instead; a later change goes in the next one.
+    if (!follows) this.layoutMoved(stream, tab, layoutKey);
+    const packetKey = capturedKey, size = capturedSize ?? this.host.pageSize(tab.tab_id);
     const sequence = stream.issued + 1;
     // Protocol 489 compact delta: the binding, base (sequence - 1) and every
     // header field equal to the base packet's are implied; empty lists omitted.
-    const header = { snapshot_complete: source?.snapshot_complete === true, ...(stream.viewportFirst ? { snapshot_viewport_complete: source?.snapshot_viewport_complete === true } : {}), font_failures: source?.font_failures ?? [], scroll: source?.scroll ?? [0, 0], focused: source?.focused ?? null, focus_visible: source?.focus_visible === true, selection: source?.selection ?? null, fragment: source?.fragment ?? null, page_wheel: stream.pageWheel === true }, sent = Object.fromEntries(Object.entries(header).map(([name, value]) => [name, JSON.stringify(value)]));
+    const header = { snapshot_complete: source?.snapshot_complete === true, ...(stream.viewportFirst ? { snapshot_viewport_complete: source?.snapshot_viewport_complete === true } : {}), font_failures: source?.font_failures ?? [], scroll: source?.scroll ?? [0, 0], focused: source?.focused ?? null, focus_visible: source?.focus_visible === true, selection: source?.selection ?? null, fragment: source?.fragment ?? null, page_wheel: stream.pageWheel === true, media_playing: this.mediaPlaying(stream, source), ...(stream.layoutDelta ? { css_width: size.width, css_height: size.height } : {}) }, sent = Object.fromEntries(Object.entries(header).map(([name, value]) => [name, JSON.stringify(value)]));
     const packet = reset ? { wire: 2, subscription_id: command.subscription_id, tab_id: tab.tab_id, generation: command.generation, document_id: tab.document_id,
-      sequence, base_sequence: null, reset, css_width: this.host.pageSize(tab.tab_id).width, css_height: this.host.pageSize(tab.tab_id).height, device_scale_factor: this.host.scales.get(tab.tab_id) ?? 1, ...header }
+      sequence, base_sequence: null, reset, css_width: size.width, css_height: size.height, device_scale_factor: this.host.scales.get(tab.tab_id) ?? 1, ...header }
       : { wire: 2, sequence, ...Object.fromEntries(Object.entries(header).filter(([name]) => sent[name] !== stream.header?.[name])) };
     if (resources.length) packet.resources = resources;
     this.host.timing?.event?.('mirror2_resource_batch', { reset: Number(reset), font_base64_bytes: resources.filter(r => r.mime_type.startsWith('font/')).reduce((n, r) => n + r.data_base64.length, 0), other_base64_bytes: resources.filter(r => !r.mime_type.startsWith('font/')).reduce((n, r) => n + r.data_base64.length, 0) });
@@ -715,7 +800,7 @@ export class Mirror2 {
     dedupeMirrorSheets(packet, stream.sheetRefs ??= new Set());
     if (packet.nodes) packet.nodes = encodeMirrorRecords(packet.nodes, null);
     if (packet.ops) packet.ops = packet.ops.map(op => op.op === 'children' ? { ...op, nodes: encodeMirrorRecords(op.nodes, op.id) } : op);
-    stream.issued = sequence; stream.document_id = tab.document_id; stream.policy = policy; stream.layoutKey = layoutKey; stream.fallback = fallback;
+    stream.issued = sequence; stream.document_id = tab.document_id; stream.policy = policy; stream.layoutKey = packetKey; stream.fallback = fallback;
     if (reset) { stream.resetAt = sequence; stream.attrSequence.clear(); }
     stream.header = sent; stream.sentScroll = header.scroll;
     // A position the viewer did not set has reached it: echoes count again.
@@ -726,7 +811,7 @@ export class Mirror2 {
     if (this.host.protection !== policy || stream.policy !== policy || this.service.streams.get(command.subscription_id) !== stream) {
       stream.policy = null; throw new Error('MP-11: stale mirror protection policy or subscription');
     }
-    this.layoutMoved(stream, tab, layoutKey);
+    if (!follows) this.layoutMoved(stream, tab, layoutKey);
     this.remember(stream, sequence, wire, reset);
     mark('serialize'); this.host.timing?.('mirror2_total', started);
     return wire;
@@ -779,10 +864,17 @@ export class Mirror2 {
     stream.pageWheel = await pageTakesWheel(world).catch(() => !reset && stream.pageWheel === true);
     return true;
   }
-  empty(stream, source) { return this.emptyDom(stream, source) && !this.tilesDue(stream); }
+  empty(stream, source) { return this.emptyDom(stream, source) && !this.tilesDue(stream) && !(this.followsLayout(stream) && this.sizeDue(stream)); }
+  // Protocol 1015: a stream whose viewer asked for `layout_delta` and holds the whole document (no deferred boxes, which
+  // keep the old layout's geometry) follows page size changes by delta. A packet's size and layout key are read together.
+  followsLayout(stream) { return stream.layoutDelta === true && stream.header?.snapshot_complete === 'true'; }
+  sizeDue(stream) { return stream.layoutKey !== undefined && stream.layoutKey !== this.layoutKey(stream.tab_id); }
+  // The page was laid out at another size: the credit waiting for the page wakes and sends that size (its wait loop
+  // sees sizeDue). Credits queued behind it keep their own wait: `hurry` would answer each of them with an empty packet.
+  layoutChanged(tabId) { for (const stream of this.service.streams.values()) if (stream.wire === 2 && stream.tab_id === tabId && this.followsLayout(stream) && stream.world) this.evaluate(stream.world, `${stream.world.ref}.wake()`).catch(() => {}); }
   emptyDom(stream, source) {
     const scroll = JSON.stringify(source.scroll) === stream.ownScrolls.get(null) ? stream.sentScroll : source.scroll;
-    return !source.ops?.length && !source.sheets?.length && JSON.stringify(source.snapshot_complete === true) === stream.header?.snapshot_complete && (!stream.viewportFirst || JSON.stringify(source.snapshot_viewport_complete === true) === stream.header?.snapshot_viewport_complete) && JSON.stringify(source.font_failures ?? []) === stream.header?.font_failures && JSON.stringify(scroll) === stream.header?.scroll && JSON.stringify(source.focused) === stream.header.focused && JSON.stringify(source.focus_visible === true) === stream.header.focus_visible && JSON.stringify(source.selection) === stream.header.selection && JSON.stringify(source.fragment ?? null) === stream.header.fragment && JSON.stringify(stream.pageWheel === true) === stream.header.page_wheel;
+    return !source.ops?.length && !source.sheets?.length && JSON.stringify(source.snapshot_complete === true) === stream.header?.snapshot_complete && (!stream.viewportFirst || JSON.stringify(source.snapshot_viewport_complete === true) === stream.header?.snapshot_viewport_complete) && JSON.stringify(source.font_failures ?? []) === stream.header?.font_failures && JSON.stringify(scroll) === stream.header?.scroll && JSON.stringify(source.focused) === stream.header.focused && JSON.stringify(source.focus_visible === true) === stream.header.focus_visible && JSON.stringify(source.selection) === stream.header.selection && JSON.stringify(source.fragment ?? null) === stream.header.fragment && JSON.stringify(stream.pageWheel === true) === stream.header.page_wheel && JSON.stringify(this.mediaPlaying(stream, source)) === stream.header.media_playing;
   }
   // A document that keeps streaming never has an empty credit: its font bytes, which fence the viewer's handover, travel with the DOM chunks.
   fontsDue(stream) { if (stream.fontRequirements !== true) return false; for (const entry of stream.resources.values()) if (entry.kind === 'font' && !entry.sent) return true; return false; }
@@ -874,6 +966,28 @@ export class Mirror2 {
      }
     }
     return out;
+  }
+  // Row 342: a first visit's sheets parse in the kernel's keepalive blank page (the same Chrome and CSSOM, so the same text) instead
+  // of behind the page's own work (GitHub: ~1.1 s of a 1.3 s stage was waiting for its main thread; the parse itself is ~0.2 s).
+  // A bare about:blank is quirks mode: its document is rewritten once in standards mode, its URL stays about:blank, so it stays the
+  // host's reserve. Null (the caller parses in the page as before) when there is no reserve, it became a user tab, or anything fails.
+  async parseAside(sources) {
+    const target = this.host.keepaliveTarget;
+    if (!target || !this.host.browser?.resolvePageTarget) return null;
+    try {
+      const { connection, sessionId } = await this.host.browser.resolvePageTarget(target);
+      const expression = `(sheets=>{if(location.href!=='about:blank')return null;if(document.compatMode!=='CSS1Compat'){document.open();document.write('<!doctype html><title></title>');document.close()}${SERIALIZER}return sheets.map(s=>{let body=parse(s.text);if(s.open)body=parse(s.open+body+s.close);return body})})(${JSON.stringify(sources)})`;
+      const reply = await connection.send('Runtime.evaluate', { expression, returnByValue: true }, sessionId, { timeoutMs: 5000 });
+      const bodies = reply?.exceptionDetails ? null : reply?.result?.value;
+      return Array.isArray(bodies) && bodies.length === sources.length && bodies.every(body => typeof body === 'string') ? bodies : null;
+    } catch { return null; }
+  }
+  // Row 342 F3: reads of the stylesheets a document has loaded, kept on that document's world (a world is one document:
+  // a navigation gets a new one, so no read of the old document's sheets can serve the new one).
+  prefetchSheets(world) {
+    if (world.sheetReads) return;
+    world.sheetReads = new Map();
+    for (const url of this.host.browser?.responseBodies?.stylesheets?.(world) ?? []) world.sheetReads.set(url, this.resourceBody(world, url, 16 * 1024 * 1024).catch(() => null));
   }
   async resourceBody(world, url, maxBytes = RESOURCE_BYTES) {
     return this.host.browser?.responseBodies?.read(world, url, maxBytes) ?? null;
@@ -1028,8 +1142,14 @@ export class Mirror2 {
       if (sheets.length >= 64) return false;
       // CDP names a request without its fragment; a sheet's `href` keeps it (Amazon's end in `#<revision>`).
       const requested = href.split('#')[0];
-      const body = await this.resourceBody(world, requested, 16 * 1024 * 1024);
-      let text = body?.toString('utf8');
+      // A read started with the snapshot (prefetchSheets) is this document's; a sheet it missed (loaded later) reads now.
+      // Row 487: a layout reset snapshots the same document again; its sheets' bytes are read once per document (its world).
+      // Only a snapshot reuses them: a sheet update (the page reloaded or re-linked it, maybe with new CSS) always reads the
+      // latest response and refreshes the copy, so a later reset carries the new bytes too.
+      const prefetched = world.sheetReads?.get(requested); world.sheetReads?.delete(requested);
+      const reads = world.sheetSources ??= new Map();
+      let text = usedBy !== null ? reads.get(requested) : undefined;
+      if (text === undefined) text = (await prefetched ?? await this.resourceBody(world, requested, 16 * 1024 * 1024))?.toString('utf8');
       // The network buffer had let go of it: the HTTP cache holds the exact bytes. The frame's own text decodes a response
       // without a charset as Latin-1, on most navigations, so the same sheet differed from page to page and the viewer's
       // retained copy never matched.
@@ -1041,6 +1161,7 @@ export class Mirror2 {
         text = reply.base64Encoded ? Buffer.from(reply.content, 'base64').toString('utf8') : reply.content;
       }
       if (typeof text !== 'string' || (bytes += text.length) > 16 * 1024 * 1024) return false;
+      if (reads.has(requested) || reads.size < 64) reads.set(requested, text);
       const { layers, imports } = cssImports(text);
       // In source order: the sheet's leading layer statements, its imports, then its own rules.
       if (layers) sheets.push({ text: layers, url: href, open, close });
@@ -1054,14 +1175,35 @@ export class Mirror2 {
     if (!await read(url, '', '', 0)) return null;
     // A same-site navigation reads the same sheets again. Their normalized text (a lossy sheet's chunk-by-chunk
     // re-parse is most of a large sheet's cost) comes from the last document that parsed the same source under the
-    // same wrapper, origin and compatibility mode. Sanitizing (per-document resource keys) and pruning still run here.
+    // same wrapper, origin and compatibility mode; only a part not seen before parses in the page.
     world.quirks ??= await this.evaluate(world, "document.compatMode === 'BackCompat'");
     const origin = (() => { try { return new URL(world.frame?.url ?? '').origin; } catch { return ''; } })();
     const keys = sheets.map(sheet => createHash('sha256').update(JSON.stringify([origin, world.quirks, sheet.open, sheet.close, sheet.text])).digest('base64'));
-    const input = sheets.map(({ text, url, open, close }, i) => { const body = this.parsedSheets.take(keys[i]); return body === undefined ? { text, url, open, close } : { body, url }; });
-    const reply = await this.evaluate(world, `(sheets=>{${SERIALIZER}let out='';const parsed=[];for(const s of sheets){let body=s.body;if(body===undefined){body=parse(s.text);if(s.open)body=parse(s.open+body+s.close);parsed.push(body)}else parsed.push(null);out+=${world.ref}.sanitize(body,s.url)}return {css:out,parsed,used:${usedBy === null ? 'null' : `out.length<${FIRST_PAINT_SHEET}?null:${world.ref}.usedCss(${JSON.stringify(usedBy)},out)`}}})(${JSON.stringify(input)})`);
-    reply.parsed.forEach((body, i) => { if (typeof body === 'string') this.parsedSheets.put(keys[i], body); });
-    return reply.used === null ? reply.css : [reply.css, reply.used];
+    const bodies = keys.map(key => this.parsedSheets.take(key));
+    const misses = sheets.flatMap(({ text, open, close }, i) => bodies[i] === undefined ? [{ i, text, open, close }] : []);
+    if (misses.length) {
+      const sources = misses.map(({ text, open, close }) => ({ text, open, close }));
+      const parsed = (!world.quirks && await this.parseAside(sources)) || await this.evaluate(world, `(sheets=>{${SERIALIZER}return sheets.map(s=>{let body=parse(s.text);if(s.open)body=parse(s.open+body+s.close);return body})})(${JSON.stringify(sources)})`);
+      misses.forEach(({ i }, n) => { bodies[i] = parsed[n]; this.parsedSheets.put(keys[i], parsed[n]); });
+    }
+    // Sanitizing runs here on that text (the page's own sanitizer, shared verbatim), not in the page: only each part's url()
+    // occurrences travel there, to take their per-document resource keys in the sanitizer's order (sheetKeys), and the
+    // whole sheet never crosses CDP (a first paint's pruning sends its selectors, and nothing for a sheet the viewer
+    // retains: the page's usedCss would answer null for it). A url() is `mr:r<n>` (its occurrence number, the shape of a key, which the sanitizer's
+    // last pass requires) until its key is known.
+    const drafts = sheets.map((sheet, i) => { const urls = []; return { urls, css: sanitizeMirrorCss(bodies[i], sheet.url, (value, base, kind) => { urls.push([value, base, kind]); return `r${urls.length}`; }) }; });
+    const parts = drafts.map(({ urls, css }) => ({ urls, imageSets: /image-set\(/i.test(css) ? [...css.matchAll(IMAGE_SET)].map(match => match[0]).join(' ') : '', values: ['href', 'src'].filter(name => VALUE_SELECTOR[name].test(css)) }));
+    const resourceKeys = await this.evaluate(world, `${world.ref}.sheetKeys(${JSON.stringify(parts)})`);
+    const css = drafts.map(({ css }, i) => css.replace(/url\("mr:r(\d+)"\)/g, (_, n) => resourceKeys[i][n - 1] ? `url("mr:${resourceKeys[i][n - 1]}")` : 'none')).join('');
+    // A first paint prunes the rules no element uses. The page answers only which selectors are in use (usedSelectors, the
+    // same matcher as usedCss); the kernel keeps the rules, so the page never re-parses the sheet behind its own work.
+    let used = null;
+    if (usedBy !== null && css.length >= FIRST_PAINT_SHEET && !world.retainedSheets?.has(sheetDigest(css))) {
+      const rules = cssRules(css), selectors = [...ruleSelectors(rules)];
+      const flags = selectors.length ? await this.evaluate(world, `${world.ref}.usedSelectors(${JSON.stringify(usedBy)},${JSON.stringify(selectors)})`) : null;
+      if (typeof flags === 'string' && flags.length === selectors.length) { const keep = new Map(selectors.map((selector, n) => [selector, flags[n] === '1'])); used = prunedCss(rules, selector => keep.get(selector)); }
+    }
+    return used === null ? css : [css, used];
   }
   // Opaque regions as lossless stills, refreshed at most once a second until phase 3
   // binds them to video rows: a canvas or video as its own pixels; plugins, closed
@@ -1095,8 +1237,11 @@ export class Mirror2 {
     // lossless stills would be megabytes ahead of the page copy's handover. Media area never retires the page copy.
     // A lease captures the browser's native window: a headless browser (always on macOS) has none, so the still stays.
     const viewport = this.host.pageSize(tab.tab_id);
-    if (!boxes.length || this.host.chromium?.display && regionOverBudget(boxes, viewport) || !still || !reset && Date.now() - stream.tilesAt < TILE_REFRESH_MS) return [];
+    if (!boxes.length || !still || !reset && Date.now() - stream.tilesAt < TILE_REFRESH_MS) return [];
     stream.tilesAt = Date.now();
+    // Row 448: the refresh is done even when its leases carry the pixels. Left due, it ended every long poll at once:
+    // a static full-page canvas answered each credit with an empty packet (~1300 a second) and its leases churned.
+    if (this.host.chromium?.display && regionOverBudget(boxes, viewport)) return [];
     // The viewer keeps a still until replaced: unchanged pixels are not sent again.
     if (reset || !stream.tileHashes) stream.tileHashes = new Map();
     // T3: the regions whose last sent still was proven opaque from its own pixels (elementPixels' `opaque`), never shown.
@@ -1107,7 +1252,9 @@ export class Mirror2 {
     // a hidden video under the canvas that paints it) cannot leave the one on top at a lower density; a share it leaves unused
     // goes to the regions after it.
     let budget = STILL_PACKET_BYTES;
-    const send = (id, { opaque, ...tile }) => { const digest = createHash('sha256').update(`${tile.x},${tile.y},${tile.width},${tile.height},${tile.data_base64}`).digest('hex'); if (stream.tileHashes.get(id) === digest) return; stream.tileHashes.set(id, digest); budget -= tile.data_base64.length; out.push({ node_id: id, ...tile }); if (opaque === true) stream.opaqueStills.add(id); else stream.opaqueStills.delete(id); };
+    // Regions whose viewer still is a real picture (not CLEAR_STILL): a clear readback replaces one only when proven (own.flat).
+    if (reset || !stream.realStills) stream.realStills = new Set();
+    const send = (id, { opaque, ...tile }) => { const digest = createHash('sha256').update(`${tile.x},${tile.y},${tile.width},${tile.height},${tile.data_base64}`).digest('hex'); if (stream.tileHashes.get(id) === digest) return; stream.tileHashes.set(id, digest); budget -= tile.data_base64.length; out.push({ node_id: id, ...tile }); if (opaque === true) stream.opaqueStills.add(id); else stream.opaqueStills.delete(id); if (tile.data_base64 === CLEAR_STILL) stream.realStills.delete(id); else stream.realStills.add(id); };
     // T3: a region an opaque still covers from above (coveredBy) is never seen: the regions on top take the budget first, and a
     // covered one is skipped while its cover's still in the viewer was proven opaque (opaqueStills); otherwise it is captured.
     const main = boxes.filter(b => !b.foreign && !slotOf(b.id)).map(b => b.id);
@@ -1120,7 +1267,10 @@ export class Mirror2 {
       const slot = slotOf(b.id), owner = slot ? stream.frameSlots.get(slot)?.child : world, share = Math.floor(budget / (index < uncovered ? uncovered - index : order.length - index));
       const own = b.foreign || !owner ? null : await this.evaluate(owner, `${owner.ref}.elementPixels(${JSON.stringify(slot ? localId(b.id) : b.id)},${scale},${share})`, true).catch(() => null);
       if (!own) stream.opaqueStills.delete(b.id); // no still of its own this time: it proves nothing
-      if (own) send(b.id, own);
+      // YM-C1: a transformed, faded or stacked canvas whose own pixels read clear shows the page through it: a transparent
+      // still replaces the viewer's placeholder (its screenshot would hold its compositing, applied again by the mirror).
+      if (own?.clear) { if (b.distorted && b.distorted !== 'canvas') { if (own.flat || !stream.realStills.has(b.id)) send(b.id, { x: 0, y: 0, width: b.box[2], height: b.box[3], data_base64: CLEAR_STILL }); } else shots.push(b); }
+      else if (own) send(b.id, own);
       // A distorted region's screenshot already holds its compositing: as the element's background the mirrored DOM
       // would apply the transform/opacity again, so such a region carries no still (its video lease shows it).
       // The canvas marker only selects video placement; its untransformed PNG fallback remains valid.

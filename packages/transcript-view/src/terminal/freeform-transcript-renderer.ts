@@ -1,3 +1,4 @@
+import { parseContextCompaction } from "@chariox/kernel-client/context-compaction"
 import { renderPatchFilesDiffHtml } from "../markdown/diff-render.js"
 import {
   renderTranscriptHtml as renderTranscriptHtmlDefault,
@@ -125,14 +126,34 @@ export function renderFreeformTranscriptEntry(
   if (!terminalOutputEntryShouldRenderInAgentPane(entry)) {
     return ""
   }
-  const role = entry.role === "assistant" ? "agent" : entry.role
   const text = entry.sourceText ?? entry.text
   const renderKey = `entry:${entry.key}`
+  if (entry.role === "compaction") {
+    return renderFreeformCompaction(text, renderKey, options)
+  }
+  const role = entry.role === "assistant" ? "agent" : entry.role
   if (!isCollapsibleTerminalEntry(entry)) {
     return renderFreeformMessage(role, text, entry.attachments ?? [], renderKey, options, entry.promptOrigin)
   }
 
   return renderCollapsibleFreeformMessage(entry, text, renderKey, options)
+}
+
+function renderFreeformCompaction(text: string, renderKey: string, options: FreeformTranscriptRenderOptions): string {
+  const { escapeHtml } = freeformTranscriptRenderContext(options)
+  const compaction = parseContextCompaction(text)
+  const key = escapeHtml(renderKey)
+  const statusClass = "freeform-message freeform-agent-output freeform-status-output"
+  switch (compaction.state) {
+    case "running": {
+      const elapsedSeconds = Math.max(0, Math.floor((Date.now() - compaction.started_at_ms) / 1000))
+      return `<section class="${statusClass}" data-render-key="${key}">Compacting context… <time datetime="PT${elapsedSeconds}S">${elapsedSeconds}s</time></section>`
+    }
+    case "done":
+      return `<details class="${statusClass}" data-render-key="${key}"><summary>Context compacted</summary><p>${escapeHtml(compaction.summary.trim() || "Summary unavailable")}</p></details>`
+    case "failed":
+      return `<section class="freeform-message freeform-agent-output freeform-error-output" data-render-key="${key}"><strong>Context compaction failed</strong><p>${escapeHtml(compaction.reason || "Claude gave no reason.")}</p></section>`
+  }
 }
 
 export function renderPromptAttachmentStrip(
@@ -207,7 +228,7 @@ export function formatAttachmentSize(size: number): string {
 }
 
 export function isCollapsibleTerminalEntry(entry: TerminalOutputEntry): boolean {
-  if (entry.role === "user") {
+  if (entry.role === "user" || entry.role === "compaction") {
     return false
   }
   // Hydrated assistant output is ordinary transcript content. An assistant

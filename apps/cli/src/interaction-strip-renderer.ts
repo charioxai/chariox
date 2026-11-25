@@ -12,7 +12,7 @@ import type {
   RuntimeInteraction,
 } from "./cli-types.js"
 import { providerLoginLines } from "@chariox/kernel-client/provider-login-projection"
-import { renderInteractionCustomChoiceValue } from "./interaction-custom-choice-render.js"
+import { customChoiceLine } from "./interaction-custom-choice-render.js"
 import type { ProviderLoginStripState } from "./provider-login-interaction-controller.js"
 import { renderProviderLoginStrip } from "./provider-login-strip-renderer.js"
 import {
@@ -49,6 +49,8 @@ type InteractionStripRenderOptions = {
   queuedJobsForAgent?: (agentId: string | null | undefined) => readonly QueuedJob[]
   onQueuedJobAction?: (job: QueuedJob, action: "remote" | "stop") => void
   remoteJobLinesForAgent?: (agentId: string | null | undefined) => readonly string[]
+  /** An approved machine request still reaching the service, or one that expired: its card is gone, its status stays. */
+  machineApprovalLinesForAgent?: (agentId: string | null | undefined) => readonly string[]
   selectedQueuedPromptIndexForAgent: (agentId: string | null | undefined) => number
   onQueuedPromptAction: (item: QueuedPromptStripItem, action: "steer" | "cancel") => void
   agentTriggerStripItemsForAgent: (agentId: string | null | undefined) => readonly AgentTriggerStripItem[]
@@ -85,9 +87,10 @@ function renderInteractionStrip(
   const subAgents = options.subAgentStripeForAgent?.(agent?.id ?? null) ?? null
   const queuedJobs = options.queuedJobsForAgent?.(agent?.id ?? null) ?? []
   const remoteJobs = options.remoteJobLinesForAgent?.(agent?.id ?? null) ?? []
+  const machineApprovals = options.machineApprovalLinesForAgent?.(agent?.id ?? null) ?? []
   const triggers = options.agentTriggerStripItemsForAgent(agent?.id ?? null)
   const deliveries = options.unconfirmedTriggerDeliveriesForAgent?.(agent?.id ?? null) ?? []
-  const visible = Boolean(interaction) || subAgents !== null || queuedPrompts.length > 0 || queuedJobs.length > 0 || remoteJobs.length > 0 || triggers.length > 0 || deliveries.length > 0
+  const visible = Boolean(interaction) || subAgents !== null || queuedPrompts.length > 0 || queuedJobs.length > 0 || remoteJobs.length > 0 || machineApprovals.length > 0 || triggers.length > 0 || deliveries.length > 0
   box.visible = visible
   box.flexDirection = "column"
   box.gap = 0
@@ -106,7 +109,7 @@ function renderInteractionStrip(
   const view = providerLogin ? null : JSON.stringify([
     agent?.id, focused, interaction, interaction && options.askingAgentLabel?.(interaction),
     interaction && [options.selectedChoiceIndex(interaction.id), options.customReply(interaction.id), options.customEditing(interaction.id)],
-    queuedPrompts, selectedQueuedPromptIndex, subAgents, queuedJobs, remoteJobs, triggers, deliveries,
+    queuedPrompts, selectedQueuedPromptIndex, subAgents, queuedJobs, remoteJobs, machineApprovals, triggers, deliveries,
   ])
   if (view !== null && stripViews.get(box) === view) return
   for (const child of [...box.getChildren()]) {
@@ -120,6 +123,7 @@ function renderInteractionStrip(
   }
   renderQueuedJobStrip(options, box, queuedJobs)
   for (const line of remoteJobs) box.add(new TextRenderable(options.renderer, { content: line, fg: theme.textMuted, wrapMode: "word" }))
+  for (const line of machineApprovals) box.add(new TextRenderable(options.renderer, { content: line, fg: theme.textMuted, wrapMode: "word" }))
   if (interaction && providerLogin) {
     if (focused && providerLogin.view.takesCode) {
       options.focusCustomChoiceOnce?.(interaction.id, interaction.choices.length, interaction.requested_at_ms)
@@ -395,13 +399,8 @@ function renderInteractionChoices(
     const selected = focused && index === selectedIndex
     const editing = options.customEditing(interaction.id)
     const value = options.customReply(interaction.id)
-    const placeholder = interaction.custom_choice.placeholder ?? "type another option"
-    const renderedValue = renderInteractionCustomChoiceValue(
-      value,
-      placeholder,
-      interaction.custom_choice.input_kind,
-    )
-    text.content = `${selected ? ">" : " "} ${index + 1}.${interaction.custom_choice.label}: ${renderedValue}${editing ? "_" : ""}`
+    // The agent sets the label and the hint; with none the box is plain, with no text of ours.
+    text.content = customChoiceLine(index, interaction.custom_choice, value, selected, editing)
     text.fg = selected ? theme.background : theme.primary
     text.bg = selected ? theme.primary : undefined
     text.attributes = selected ? TextAttributes.BOLD : TextAttributes.NONE

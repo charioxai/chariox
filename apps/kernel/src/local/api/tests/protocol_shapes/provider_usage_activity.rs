@@ -1275,7 +1275,7 @@ fn local_daemon_protocol_provider_termination_categories_shape_is_versioned() {
                 "failure": {
                     "kind": "provider_crashed",
                     "retryable": true,
-                    "reason": "provider process terminated by signal SIGTERM",
+                    "reason": "The provider process stopped unexpectedly.",
                 },
             },
             {
@@ -1315,7 +1315,7 @@ fn local_daemon_protocol_provider_termination_categories_shape_is_versioned() {
                 "failure": {
                     "kind": "provider_crashed",
                     "retryable": true,
-                    "reason": "provider process exited without an available status",
+                    "reason": "The provider process stopped unexpectedly.",
                 },
             },
         ])
@@ -1329,7 +1329,7 @@ fn local_daemon_protocol_provider_termination_categories_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "ed353d2ca0e1e44777e1988e7f337093a0a02a17a65cd5b78c2eaa2aa941627e"
+        "e8469631589f8f8fbf78f5a76d82ce2406e70847086cad3e19c9b8e3225ec94b"
     );
 }
 

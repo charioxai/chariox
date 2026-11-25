@@ -11,6 +11,12 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             sequence,
             ..
         }
+        | Operation::StartFailed {
+            room,
+            agent,
+            sequence,
+            ..
+        }
         | Operation::BindSubmission {
             room,
             agent,
@@ -40,6 +46,21 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 agent,
                 sequence: member,
                 state,
+                now,
+            },
+            Operation::StartFailed {
+                room,
+                agent,
+                error,
+                waits_on_owner,
+                now,
+                ..
+            } => Operation::StartFailed {
+                room,
+                agent,
+                sequence: member,
+                error,
+                waits_on_owner,
                 now,
             },
             Operation::BindSubmission {
@@ -150,7 +171,17 @@ fn apply_row(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, DaemonError
                     save(tx, &t)?;
                 }
             }
+            replies::settle_named_reply(tx, &admitted)?;
             Ok(Outcome::Event(admitted))
+        }
+        Operation::WithdrawReply {
+            room,
+            agent,
+            sequence,
+            now,
+        } => {
+            replies::withdraw(tx, &room, &agent, sequence, now)?;
+            Ok(Outcome::Saved)
         }
         Operation::Occur(e) => Ok(Outcome::Event(event(tx, e)?)),
         Operation::Attempt {
@@ -475,6 +506,32 @@ fn apply_row(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, DaemonError
             }
             Ok(Outcome::Event(e))
         }
+        Operation::StartFailed {
+            room,
+            agent,
+            sequence,
+            error,
+            waits_on_owner,
+            now,
+        } => {
+            let Outcome::Event(e) = apply_row(
+                tx,
+                Operation::Receipt {
+                    room,
+                    agent,
+                    sequence,
+                    state: "rejected".into(),
+                    now,
+                },
+            )?
+            else {
+                unreachable!()
+            };
+            if e.state == "pending" {
+                super::start_failures::record(tx, e.sequence, &error, waits_on_owner, now)?;
+            }
+            Ok(Outcome::Event(e))
+        }
         Operation::Ack {
             room,
             agent,
@@ -645,7 +702,7 @@ fn recipient_events_between(
         .collect()
 }
 
-fn find_event(
+pub(super) fn find_event(
     tx: &Transaction<'_>,
     room: &str,
     agent: &str,
@@ -740,6 +797,49 @@ impl WakeSlot {
         self.waiting.retain(|t| t.task_id != task_id);
         true
     }
+}
+
+pub(super) fn admit_promoted_wakes(
+    tx: &Transaction<'_>,
+    room: &str,
+    agent: &str,
+    prompt: &str,
+    sequences: &[u64],
+) -> Result<(), DaemonError> {
+    let now = crate::session::unix_epoch_ms();
+    let mut slot = WakeSlot::new(live_tasks(tx, room, agent)?);
+    for sequence in sequences {
+        let mut event = get_event(tx, room, agent, *sequence)?;
+        if event.state != "pending"
+            || event.kind == "message"
+            || event.reply_requested
+            || !slot.take(&event)
+        {
+            return Err(error(
+                "inbox event changed before the notification batch was admitted",
+            ));
+        }
+        admit(tx, &mut event, prompt, None, None, now)?;
+    }
+    // Trigger admission already created a task for the queued prompt. If the batch wakes
+    // a retained task, retire that untouched admission in the same transaction. Otherwise
+    // Begin would bind the run to the fresh task and leave the retained task pending forever.
+    if let Some(queued) = for_turn(tx, room, agent, prompt)? {
+        if pending_continuation(tx, room, agent, prompt)?.is_some() {
+            if !queued.is_unstarted_prompt_task() {
+                return Err(error(
+                    "the notification prompt already owns supervised work",
+                ));
+            }
+            transitions::apply(
+                tx,
+                Operation::Withdraw {
+                    task: queued.task_id,
+                },
+            )?;
+        }
+    }
+    Ok(())
 }
 
 /// Admits one pending row to the attempt: it takes the prompt, and the task

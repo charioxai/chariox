@@ -177,6 +177,23 @@ impl KernelRuntimeState {
         DurableRestartRecoveryTask(tokio::spawn(async move {
             state.owned.publication_activation.wait().await;
             tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            for agent in state.owned.agent_store.list_agents() {
+                if agent.pending_profile().is_none() {
+                    continue;
+                }
+                let applied = state
+                    .owned
+                    .session_store
+                    .get_session(agent.session_id())
+                    .and_then(|session| {
+                        state
+                            .owned
+                            .apply_agent_profile_after_turn(&session, agent.id())
+                    });
+                if let Err(error) = applied {
+                    tracing::warn!(agent_id = agent.id(), %error, "restoring pending agent profile failed");
+                }
+            }
             state.resolve_stored_agent_models().await;
             state.resume_idle_agent_trigger_queues(idle_queue_agents);
             for (session_id, agent_id, prompt_id) in uncertain_steer_targets {
@@ -714,6 +731,7 @@ impl KernelRuntimeState {
         if !self.owned.publication_activation.is_active() {
             return summary;
         }
+        self.withdraw_interrupted_machine_approvals();
         summary.failed_reconciliations += self.recover_agent_moves_after_restart().await;
         let sessions = self.owned.session_store.list_all_sessions();
         // Queued workflow work (published, or started by a user) was durably admitted but never
@@ -3453,7 +3471,11 @@ mod tests {
         )
         .with_native_origin(Some(origin));
         let _pending = runtime
-            .create_runtime_interaction(&session_id, popup)
+            .create_runtime_interaction(
+                crate::runtime::state::CardKind::NativePermissionInput,
+                &session_id,
+                popup,
+            )
             .await
             .expect("the popup is pending when the kernel stops");
         runtime
@@ -3569,6 +3591,52 @@ mod tests {
         );
         assert_recovery_ends_the_turn_as_interrupted(&runtime, &session_id, &agent_id, &prompt_id)
             .await;
+    }
+
+    /// The shutdown path holds the interaction store's admission guard while it records the
+    /// interruption and withdraws the cards: marking a turn must not take that guard again.
+    async fn assert_closing_provider_decisions_does_not_hang(
+        kind: crate::session::RuntimeInteractionKind,
+    ) {
+        let (runtime, session_id, agent_id, prompt_id) =
+            runtime_blocked_on_native_interaction(kind).await;
+        let (done, finished) = std::sync::mpsc::channel();
+        let closing = runtime.as_kernel();
+        std::thread::spawn(move || {
+            let _ = done.send(closing.close_provider_decisions_for_shutdown());
+        });
+        finished
+            .recv_timeout(std::time::Duration::from_secs(20))
+            .expect("closing the provider decisions at shutdown must not hang")
+            .expect("shutdown withdraws the pending decision");
+        assert!(
+            runtime
+                .owned
+                .session_store
+                .get_session(&session_id)
+                .expect("session")
+                .active_interaction_for_agent(&agent_id)
+                .is_none(),
+            "the pending decision is withdrawn"
+        );
+        assert_recovery_ends_the_turn_as_interrupted(&runtime, &session_id, &agent_id, &prompt_id)
+            .await;
+    }
+
+    #[tokio::test]
+    async fn shutdown_closing_a_pending_native_question_does_not_hang() {
+        assert_closing_provider_decisions_does_not_hang(
+            crate::session::RuntimeInteractionKind::Choice,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn shutdown_closing_a_pending_startup_permission_does_not_hang() {
+        assert_closing_provider_decisions_does_not_hang(
+            crate::session::RuntimeInteractionKind::Permission,
+        )
+        .await;
     }
 
     #[tokio::test]
@@ -3793,13 +3861,20 @@ mod tests {
             started.outcome,
             crate::session::PromptSubmissionOutcome::Queued { .. }
         ));
+        // The interrupted attempt is status on the row, not a card, until the turn replaces it.
         assert!(started
             .session
             .active_interactions()
             .iter()
-            .any(|interaction| interaction
-                .id()
-                .starts_with(&format!("task-blocked-{}-", old_task.task_id))));
+            .all(|interaction| !interaction.id().starts_with("task-blocked-")));
+        assert!(
+            runtime
+                .owned
+                .blocked_task_for_command(&session_id, &agent_id)
+                .unwrap()
+                .is_some(),
+            "the owner can still settle the interrupted attempt before the turn replaces it"
+        );
         if detach_source {
             runtime
                 .with_app_side_effect(|app| {

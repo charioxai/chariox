@@ -3878,3 +3878,85 @@ test("row 559/553 review P2: a snapshot reply names the tab's own page size, res
   host.layouts.set(tab.tab_id, {width: 1280, height: 1324, subscriptionId: 'resize'});
   assert.deepEqual((await read()).page_size, {css_width: 1280, css_height: 1324});
 }));
+
+// Row 548 (2026-11-24): an OAuth popup that redirects while a person or agent clicks in it retired its document under the
+// input. The refusal reset the whole browser (every Tab, the Chrome process, its X server) as if the input had left a key held.
+test('row 548: a stale document at input is a refusal for that Tab, never a browser reset', () => using(async ({ host, connection, pages }) => {
+  const opened = await host.request({ op: 'open', url: 'about:blank' });
+  const target = host.tabs.get(opened.tab_id).target_id;
+  let reads = 0;
+  connection.beforeSend = async method => { if (method === 'Page.getFrameTree' && ++reads === 2) pages.set(target, { url: 'about:blank', document_id: 'replacement' }); };
+  let stops = 0; const stop = host.chromium.stop.bind(host.chromium); host.chromium.stop = async (...args) => { stops++; return stop(...args); };
+  const logged = [], write = process.stderr.write; process.stderr.write = chunk => { logged.push(String(chunk)); return true; };
+  try {
+    await assert.rejects(host.request({ op: 'input', tab_id: opened.tab_id, generation: opened.generation,
+      document_id: opened.tabs[0].document_id, input: { kind: 'text', text: 'synthetic' } }), error => error.code === 'stale_document_reference');
+  } finally { process.stderr.write = write; }
+  connection.beforeSend = null;
+  assert.equal(stops, 0, 'the Chrome process was stopped for a document that merely changed');
+  assert.ok(!logged.some(line => /browser_reset|browser_stop/.test(line)), `no reset in the controller log: ${logged}`);
+  assert.equal((await host.request({ op: 'state' })).tabs.length, opened.tabs.length, 'the Tabs are still there');
+}));
+
+test('row 548: a reset keeps the opener link of a popup Tab', () => using(async ({ host, pages }) => {
+  const opened = await host.request({ op: 'open', url: 'https://en.wikipedia.org' });
+  const opener = host.tabs.get(opened.tab_id).target_id;
+  pages.set('popup', { url: 'https://www.wikipedia.org', opener_target_id: opener });
+  const before = await host.request({ op: 'state' });
+  const popup = before.tabs.find(tab => tab.url === 'https://www.wikipedia.org');
+  assert.equal(popup.opener_tab_id, opened.tab_id);
+  await host.save();
+  pages.delete('popup');
+  await host.stop({ recovering: true });
+  for (let n = 0; n < 100; n++) { try { await host.request({ op: 'state' }); break; } catch { await new Promise(r => setTimeout(r, 50)); } }
+  const after = await host.request({ op: 'state' });
+  const restored = after.tabs.find(tab => tab.tab_id === popup.tab_id);
+  assert.ok(restored, 'the popup Tab came back');
+  assert.equal(restored.opener_tab_id, opened.tab_id, 'it still names the Tab whose page opened it');
+}));
+
+test('row 548: a stop and a start never overlap, so a reset cannot take the new browser down', () => using(async ({ host, chromium }) => {
+  await host.request({ op: 'open', url: 'about:blank' });
+  const events = []; const stop = chromium.stop, start = chromium.start;
+  // The old browser's pipe closes at the start of the stop: from then on a request sees a browser that is not live and starts one.
+  chromium.stop = async (...args) => { events.push('stop:begin'); chromium.child = null; await new Promise(r => setTimeout(r, 120)); try { return await stop(...args); } finally { events.push('stop:end'); } };
+  chromium.start = async (...args) => { events.push('start:begin'); try { return await start(...args); } finally { events.push('start:end'); } };
+  const reset = host.stop({ recovering: true });
+  await new Promise(r => setTimeout(r, 20));
+  let state; for (let n = 0; n < 200 && !state; n++) { try { state = await host.request({ op: 'state' }); } catch { await new Promise(r => setTimeout(r, 20)); } }
+  await reset;
+  assert.ok(state, 'the browser came back');
+  assert.ok(events.indexOf('start:begin') > events.indexOf('stop:end'), `the new browser starts after the old one is gone: ${events}`);
+}));
+
+// Row 548 (2026-11-24): a Google sign-in popup whose page answered `Page.getFrameTree` with an error made every state read fail for 21 minutes.
+test('row 548: a popup whose page keeps erroring never fails the state of the other Tabs, and is closed after five reads', () => using(async ({ host, pages, connection }) => {
+  const opened = await host.request({ op: 'open', url: 'https://claude.ai/login' });
+  const opener = host.tabs.get(opened.tab_id).target_id;
+  pages.set('popup', { url: 'https://accounts.google.com/v3/signin/challenge/dp', openerId: opener });
+  await host.request({ op: 'state' });
+  connection.beforeSend = async (method, params, session) => { if (method === 'Page.getFrameTree' && session === 'session-popup') throw Object.assign(new Error('Page.getFrameTree: Internal error'), { code: 'browser_cdp_command_failed' }); };
+  for (let read = 1; read <= 4; read++) {
+    const state = await host.request({ op: 'state' });
+    assert.ok(state.tabs.some(tab => tab.tab_id === opened.tab_id), `read ${read}: the opener Tab is still listed`);
+    assert.ok(pages.has('popup'), `read ${read}: the popup is kept while it may recover`);
+  }
+  const last = await host.request({ op: 'state' });
+  assert.ok(last.tabs.some(tab => tab.tab_id === opened.tab_id));
+  assert.equal(pages.has('popup'), false, 'the fifth failed read closes that popup, and only it');
+  assert.equal(pages.has(opener), true);
+}, { realCdp: true }));
+
+test('row 548: three launches in a row that fail continue on a new Chromium object, and a launch that works starts the count again', () => using(async ({ host, chromium }) => {
+  const start = chromium.start;
+  const replacement = { child: null, start: async () => { replacement.child = { exitCode: null, signalCode: null }; return 'http://127.0.0.1:1'; }, stop: async () => { replacement.child = null; } };
+  host.chromiumFactory = () => replacement;
+  chromium.start = async () => { throw Object.assign(new Error('MD-2: host Chromium launch failed'), { code: 'browser_display_unavailable' }); };
+  for (let n = 0; n < 2; n++) await assert.rejects(host.start());
+  assert.equal(host.chromium, chromium, 'two failures are retried by the same browser object');
+  await assert.rejects(host.start());
+  await host.lifecycle;
+  assert.equal(host.chromium, replacement, 'the third failure builds a new Chromium object, as a restarted controller would have');
+  await host.start(); assert.equal(host.launchFailures, 0);
+  chromium.start = start;
+}));

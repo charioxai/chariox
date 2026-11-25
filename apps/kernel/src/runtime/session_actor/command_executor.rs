@@ -211,10 +211,13 @@ impl SessionRuntimeCommandExecutor {
         connection_class: Option<KernelConnectionClass>,
         idempotency_key: Option<String>,
     ) -> StoreRequestFuture<'_> {
+        let at_turn_end = matches!(&request, LocalDaemonRequest::UpdateAgentProfileAtTurnEnd(_));
         match request {
-            LocalDaemonRequest::CreateSession(request) => {
-                Box::pin(async move { self.store.create_session(request, caller_user_id).await })
-            }
+            LocalDaemonRequest::CreateSession(request) => Box::pin(async move {
+                self.store
+                    .create_session(request, caller_user_id, caller_metaagent_id)
+                    .await
+            }),
             LocalDaemonRequest::ListProjects(request) => {
                 Box::pin(async move { self.store.list_projects(request, caller_user_id).await })
             }
@@ -384,13 +387,15 @@ impl SessionRuntimeCommandExecutor {
                     )
                     .await
             }),
-            LocalDaemonRequest::UpdateAgentProfile(request) => Box::pin(async move {
+            LocalDaemonRequest::UpdateAgentProfile(request)
+            | LocalDaemonRequest::UpdateAgentProfileAtTurnEnd(request) => Box::pin(async move {
                 self.store
                     .update_agent_profile(
                         request,
                         caller_user_id,
                         caller_metaagent_id,
                         connection_class,
+                        at_turn_end,
                     )
                     .await
             }),

@@ -19,15 +19,20 @@ pub(crate) const CLAUDE_NATIVE_MAX_HIDDEN_CONTEXT_BYTES: usize =
 /// The timeout of the kernel interaction a Claude permission request raises.
 pub(crate) const CLAUDE_NATIVE_PERMISSION_TIMEOUT_SECS: u64 = 300;
 /// How long the hook waits for the kernel's decision (`deadline` in the
-/// handler): past the interaction timeout plus a forwarded interaction's relay
-/// buffer, so the deny a timed-out interaction resolves to finds it waiting.
+/// handler): past the longest a provider terminal holds a card, the interaction
+/// timeout and a forwarded interaction's relay buffer, so whatever the kernel
+/// settles the card with finds it waiting. The kernel always settles first.
 #[allow(
     dead_code,
     reason = "Retains the compile-time ordering check against the native hook timeout"
 )]
-pub(crate) const CLAUDE_NATIVE_PERMISSION_HOOK_WAIT_SECS: u64 = 330;
+pub(crate) const CLAUDE_NATIVE_PERMISSION_HOOK_WAIT_SECS: u64 =
+    crate::runtime::native_interaction_bridge::PROVIDER_TERMINAL_HOLD_LIMIT_SECS
+        + CLAUDE_NATIVE_PERMISSION_TIMEOUT_SECS
+        + 60;
 /// Claude's timeout for the permission hook, past the hook's own wait.
-const CLAUDE_NATIVE_PERMISSION_HOOK_TIMEOUT_SECS: u64 = 360;
+const CLAUDE_NATIVE_PERMISSION_HOOK_TIMEOUT_SECS: u64 =
+    CLAUDE_NATIVE_PERMISSION_HOOK_WAIT_SECS + 30;
 const _: () =
     assert!(CLAUDE_NATIVE_PERMISSION_HOOK_TIMEOUT_SECS > CLAUDE_NATIVE_PERMISSION_HOOK_WAIT_SECS);
 
@@ -234,6 +239,8 @@ pub(super) fn prepare_claude_native_tui_files(
         "hooks": {
             "SessionStart": [{ "hooks": [{ "type": "command", "command": hook_command }] }],
             "UserPromptSubmit": [{ "hooks": prompt_hooks }],
+            "PreCompact": [{ "hooks": [{ "type": "command", "command": hook_command }] }],
+            "PostCompact": [{ "hooks": [{ "type": "command", "command": hook_command }] }],
             "Stop": [{ "hooks": [{ "type": "command", "command": hook_command }] }],
             "StopFailure": [{ "hooks": [{ "type": "command", "command": hook_command }] }],
             "SessionEnd": [{ "hooks": [{ "type": "command", "command": hook_command }] }],
@@ -375,12 +382,12 @@ mod tests {
         claude_native_hidden_context_room, claude_native_hook_handler, claude_native_tui_args,
         ensure_claude_native_hidden_context_fits, prepare_claude_native_tui_files,
         CLAUDE_NATIVE_CONTEXT_CHUNK_BYTES, CLAUDE_NATIVE_CONTEXT_HOOK_CHUNKS,
-        CLAUDE_NATIVE_MAX_HIDDEN_CONTEXT_BYTES,
+        CLAUDE_NATIVE_MAX_HIDDEN_CONTEXT_BYTES, CLAUDE_NATIVE_PERMISSION_HOOK_TIMEOUT_SECS,
     };
     use crate::error::DaemonError;
 
     #[test]
-    fn claude_stop_failure_hook_preserves_error_fields() {
+    fn claude_native_compaction_hooks_preserve_prompt_ids_and_payload_fields() {
         let request = LaunchProviderRequest::new(
             "session-1",
             "claude",
@@ -389,50 +396,55 @@ mod tests {
             "sonnet",
         );
         let native = prepare_claude_native_tui_files(&request).unwrap();
-        let input = serde_json::json!({
-            "hook_event_name": "StopFailure",
-            "error": "rate_limit",
-            "error_details": "429 Too Many Requests",
-            "last_assistant_message": "You've hit your session limit · resets 4am (Europe/Madrid)"
-        });
-        let mut child = crate::process_spawn::command("node")
-            .arg(
-                native
-                    .events_file
-                    .parent()
-                    .unwrap()
-                    .join("hook-handler.mjs"),
-            )
-            .env("CHARIOX_CLAUDE_NATIVE_EVENTS", &native.events_file)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap();
-        child
-            .stdin
-            .take()
-            .unwrap()
-            .write_all(input.to_string().as_bytes())
-            .unwrap();
-        let output = child.wait_with_output().unwrap();
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let recorded: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&native.events_file).unwrap()).unwrap();
-        for key in [
-            "hook_event_name",
-            "error",
-            "error_details",
-            "last_assistant_message",
-        ] {
-            assert_eq!(
-                recorded[key], input[key],
-                "{key} must reach the native failure bridge"
+        let settings: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&native.settings_file).unwrap()).unwrap();
+        let inputs = [
+            serde_json::json!({"hook_event_name": "PreCompact", "prompt_id": "claude-first"}),
+            serde_json::json!({
+                "hook_event_name": "PostCompact",
+                "prompt_id": "claude-first",
+                "compact_summary": "Summary from Claude."
+            }),
+            serde_json::json!({
+                "hook_event_name": "StopFailure",
+                "prompt_id": "claude-next",
+                "error": "rate_limit",
+                "error_details": "429 Too Many Requests",
+                "last_assistant_message": "You've hit your session limit · resets 4am (Europe/Madrid)"
+            }),
+        ];
+        for input in &inputs {
+            let event_name = input["hook_event_name"].as_str().unwrap();
+            let command = settings["hooks"][event_name][0]["hooks"][0]["command"]
+                .as_str()
+                .unwrap();
+            let mut child = crate::process_spawn::command("sh")
+                .args(["-c", command])
+                .stdin(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap();
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(input.to_string().as_bytes())
+                .unwrap();
+            let output = child.wait_with_output().unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
             );
+        }
+        let raw = fs::read_to_string(&native.events_file).unwrap();
+        let records = raw.lines().collect::<Vec<_>>();
+        assert_eq!(records.len(), inputs.len());
+        for (record, input) in records.into_iter().zip(inputs) {
+            let record: serde_json::Value = serde_json::from_str(record).unwrap();
+            for (key, value) in input.as_object().unwrap() {
+                assert_eq!(&record[key], value, "{key} must reach the native bridge");
+            }
         }
     }
 
@@ -968,7 +980,13 @@ mod tests {
             .unwrap()
             .join("hook-handler.mjs");
         let large = format!("{}🦀END", "exact-record\n".repeat(3000));
-        for wanted in [Some(large.as_str()), Some(""), Some("next response"), None] {
+        for (wanted, notification) in [
+            (Some(large.as_str()), false),
+            (Some(""), false),
+            (Some("next response"), false),
+            (None, false),
+            (Some("current notification context"), true),
+        ] {
             fs::write(&native.context_file, "STALE PREVIOUS TURN").unwrap();
             fs::write(&native.events_file, "").unwrap();
             let children = (0..CLAUDE_NATIVE_CONTEXT_HOOK_CHUNKS).rev().map(|index| {
@@ -978,13 +996,19 @@ mod tests {
                     .env("CHARIOX_CLAUDE_NATIVE_CONTEXT_RESPONSES", &native.context_response_dir)
                     .env("CHARIOX_CLAUDE_NATIVE_CONTEXT_CHUNK", index.to_string())
                     .env("CHARIOX_CLAUDE_NATIVE_CONTEXT_RECEIPTS", "1")
-                    // A Chariox-run Claude worker exports "dispatched"; this test needs the fresh-response path.
-                    .env_remove("CHARIOX_CLAUDE_PROMPT_CONTEXT_SOURCE")
+                    .env("CHARIOX_CLAUDE_PROMPT_CONTEXT_SOURCE", if notification { "dispatched" } else { "" })
                     .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped())
                     .spawn().expect("official hook should start");
-                child.stdin.take().unwrap().write_all(
-                    br#"{"hook_event_name":"UserPromptSubmit","session_id":"native","prompt":"same prompt"}"#,
-                ).unwrap();
+                let input = serde_json::json!({
+                    "hook_event_name": "UserPromptSubmit",
+                    "session_id": "native",
+                    "prompt": if notification {
+                        "<task-notification><task-id>bg1</task-id><status>completed</status></task-notification>"
+                    } else {
+                        "same prompt"
+                    },
+                });
+                serde_json::to_writer(child.stdin.take().unwrap(), &input).unwrap();
                 (index, child)
             }).collect::<Vec<_>>();
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
@@ -1348,7 +1372,8 @@ mod tests {
         );
         assert_eq!(
             yolo_settings["hooks"]["PermissionRequest"][0]["hooks"][0]["timeout"],
-            360
+            CLAUDE_NATIVE_PERMISSION_HOOK_TIMEOUT_SECS,
+            "Claude keeps the hook past every card the kernel may hold"
         );
     }
 }

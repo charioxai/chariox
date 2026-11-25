@@ -213,4 +213,15 @@ pub const RUNTIME_CONTROL_CAPABILITIES: &[&str] = &[
     "framed_plaintext_v1",
     crate::provider_account_copy::PROVIDER_ACCOUNT_COPY_CAPABILITY,
     crate::provider_account_copy::PROVIDER_ACCOUNT_COPY_PULL_CAPABILITY,
+    crate::provider_account_copy::PROVIDER_ACCOUNT_COPY_OPENCODE_CAPABILITY,
+    VIEWER_DENSITY_STILLS_CAPABILITY,
+    DISPLAY_RESIZE_REBIND_CAPABILITY,
 ];
+
+/// MP-08/MP-11 (row 341): `display_subscribe` accepts `viewer_density_stills`. Viewers ask for it only of a kernel that
+/// advertises this: a protocol number alone can also name another change's allocation.
+pub const VIEWER_DENSITY_STILLS_CAPABILITY: &str = "viewer_density_stills_v1";
+
+/// Row 487: `display_subscribe` accepts `resize_rebind` (a visible-page video keeps its subscription across a resize of the
+/// Browser window). Viewers ask for it only of a kernel that advertises this, as for `viewer_density_stills`.
+pub const DISPLAY_RESIZE_REBIND_CAPABILITY: &str = "display_resize_rebind_v1";

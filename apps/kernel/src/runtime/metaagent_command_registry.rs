@@ -213,7 +213,7 @@ pub(crate) fn execution_policy(tokens: &[String]) -> MetaCommandExecutionPolicy 
     };
     match command.policy {
         MetaCommandPolicy::Deny => MetaCommandExecutionPolicy::Denied {
-            message: "agents in Meta mode cannot create, attach to, switch, or delete sessions",
+            message: "agents cannot attach to, switch, or delete sessions; use `room create` for a new Room and `room delete <room-id>` for one you created, and ask the owner for anything else",
         },
         MetaCommandPolicy::Approval if !command.routed => MetaCommandExecutionPolicy::NotRouted {
             message: format!(
@@ -236,17 +236,17 @@ fn routed_family_policy(first: &str, tokens: &[String]) -> Option<MetaCommandExe
         "agent" => match tokens.get(1).map(String::as_str) {
             Some(
                 "list" | "ls" | "spawn" | "focus" | "alias" | "name" | "delete" | "destroy"
-                | "remove" | "cancel" | "steer" | "message" | "promote" | "deadline" | "children" | "revoke" | "answer" | "pass" | "usage" | "profiles" | "settings" | "resume",
+                | "remove" | "cancel" | "steer" | "message" | "promote" | "withdraw-reply" | "deadline" | "children" | "revoke" | "answer" | "pass" | "usage" | "profiles" | "settings" | "resume",
             ) => Some(MetaCommandExecutionPolicy::Routed),
             _ => Some(MetaCommandExecutionPolicy::NotRouted {
-                message: "only `agent list|spawn|focus|alias|delete|cancel|steer|message|promote|deadline|children|revoke|answer|pass|usage|profiles|settings|resume` are routed for metaagent command execution yet".to_string(),
+                message: "only `agent list|spawn|focus|alias|delete|cancel|steer|message|promote|withdraw-reply|deadline|children|revoke|answer|pass|usage|profiles|settings|resume` are routed for metaagent command execution yet".to_string(),
             }),
         },
         "workflow" => match tokens.get(1).map(String::as_str) {
             None
             | Some(
                 "list" | "ls" | "new" | "create" | "resolve" | "show" | "get" | "alias"
-                | "name" | "run" | "start" | "runs" | "get-run" | "run-status" | "cancel"
+                | "archive" | "unarchive" | "delete" | "remove" | "name" | "run" | "start" | "runs" | "get-run" | "run-status" | "cancel"
                 | "resume",
             ) => Some(MetaCommandExecutionPolicy::Routed),
             Some("node")
@@ -292,7 +292,7 @@ fn routed_family_policy(first: &str, tokens: &[String]) -> Option<MetaCommandExe
                     Some(policy_for_documented_command(documented))
                 } else {
                     Some(MetaCommandExecutionPolicy::NotRouted {
-                        message: "routed workflow commands: `workflow list`, `workflow new`, `workflow resolve`, `workflow alias`, `workflow node add/remove/instructions/can-complete/intermediate-output/wait-for-all-inputs/max-turns`, `workflow endpoint new/alias`, `workflow edge add/remove`, `workflow run`, `workflow runs`, `workflow get-run`, `workflow cancel`, and `workflow resume`".to_string(),
+                        message: "routed workflow commands: `workflow list`, `workflow new`, `workflow resolve`, `workflow alias`, `workflow archive`, `workflow unarchive`, `workflow delete`, `workflow node add/remove/instructions/can-complete/intermediate-output/wait-for-all-inputs/max-turns`, `workflow endpoint new/alias`, `workflow edge add/remove`, `workflow run`, `workflow runs`, `workflow get-run`, `workflow cancel`, and `workflow resume`".to_string(),
                     })
                 }
             }
@@ -333,9 +333,9 @@ fn routed_family_policy(first: &str, tokens: &[String]) -> Option<MetaCommandExe
             }),
         },
         "room" => match tokens.get(1).map(String::as_str) {
-            Some("list" | "agents" | "cards") => Some(MetaCommandExecutionPolicy::Routed),
+            Some("list" | "agents" | "cards" | "create" | "delete") => Some(MetaCommandExecutionPolicy::Routed),
             _ => Some(MetaCommandExecutionPolicy::NotRouted {
-                message: "routed room commands: `room list`, `room agents <room-id>` and `room cards [room-id]`".to_string(),
+                message: "routed room commands: `room list`, `room agents <room-id>`, `room cards [room-id]`, `room create` and `room delete <room-id>`".to_string(),
             }),
         },
         "slice" => match tokens.get(1).map(String::as_str) {

@@ -3,6 +3,9 @@
 //! running agent turn continues in the same provider process.
 #![cfg(unix)]
 
+#[path = "hot_reload/held_jobs.rs"]
+mod held_jobs;
+
 #[path = "hot_reload/local_jobs.rs"]
 mod local_jobs;
 
@@ -123,6 +126,7 @@ impl Drop for Kernel {
         }
         let _ = self.child.kill();
         let _ = self.child.wait();
+        let _ = std::fs::remove_dir_all(short_socket_path(self.port).parent().unwrap());
         if std::env::var_os("CHARIOX_HOT_RELOAD_KEEP").is_none() {
             let _ = std::fs::remove_dir_all(&self.scratch);
         }
@@ -155,6 +159,13 @@ fn start_kernel_inheriting(scratch: &Path, env: &[(&str, PathBuf)], inherited: &
 /// as terminals, which may focus agents (as the browser does).
 fn start_laptop_kernel(scratch: &Path, env: &[(&str, PathBuf)]) -> Kernel {
     launch_kernel(scratch, env, &[], false)
+}
+
+/// A Unix socket path holds at most 107 bytes, and a build host's temp directory can be long
+/// (the farm's is): the kernel's socket lives in a short directory named by its port.
+fn short_socket_path(port: u16) -> PathBuf {
+    // The kernel owns its socket's directory (it sets it to 0700), so it is a directory of its own.
+    PathBuf::from(format!("/tmp/hrk-{}-{port}/k.sock", std::process::id()))
 }
 
 fn launch_kernel(
@@ -227,7 +238,7 @@ fn launch_kernel(
         .env("CHARIOX_KERNEL_HOST", "127.0.0.1")
         .env("CHARIOX_KERNEL_PORT", port.to_string())
         .env("CHARIOX_MCP_PORT", free_port().to_string())
-        .env("CHARIOX_DAEMON_SOCKET", scratch.join("k.sock"))
+        .env("CHARIOX_DAEMON_SOCKET", short_socket_path(port))
         .envs(env.iter().map(|(name, value)| (*name, value)))
         .stdin(Stdio::null())
         .stdout(log.try_clone().unwrap())
@@ -289,6 +300,13 @@ async fn request<S>(socket: &mut WebSocketStream<S>, body: Value) -> Value
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
+    request_result(socket, body).await.unwrap()
+}
+
+async fn request_result<S>(socket: &mut WebSocketStream<S>, body: Value) -> Result<Value, Value>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
     let id = format!("hot-reload-{:016x}", rand::random::<u64>());
     let frame = json!({"type": "request", "request_id": id, "command_id": id, "request": body});
     socket
@@ -301,8 +319,11 @@ where
                 Some(Ok(Message::Text(text))) => {
                     let frame: Value = serde_json::from_str(&text).unwrap();
                     if frame["type"] == "response" && frame["request_id"] == id.as_str() {
-                        assert!(frame["error"].is_null(), "{frame}");
-                        return frame["response"].clone();
+                        return if frame["error"].is_null() {
+                            Ok(frame["response"].clone())
+                        } else {
+                            Err(frame["error"].clone())
+                        };
                     }
                 }
                 Some(Ok(Message::Ping(data))) => socket.send(Message::Pong(data)).await.unwrap(),
@@ -670,6 +691,54 @@ fn a_kernel_whose_token_came_from_a_file_keeps_it_across_a_hot_reload() {
     assert!(!token_file.exists(), "no token is left on disk");
     #[cfg(target_os = "linux")]
     assert_runs(kernel.child.id(), &scratch.join("bin/chariox-kernel"));
+}
+
+// O3 (queue row 372): the kernel itself names the running kernel in its pid file.
+#[test]
+fn the_pid_file_names_the_running_kernel_after_start_and_after_a_hot_reload() {
+    let scratch = std::env::temp_dir().join(format!("hr-pid-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(&scratch).unwrap();
+    let mut kernel = start_kernel(&scratch);
+    let pid_file = scratch
+        .join("home/.chariox/state/kernel-pid")
+        .join(format!("{}.pid", kernel.port));
+    let pid = kernel.child.id();
+    let named = |what: &str| {
+        std::fs::read_to_string(&pid_file)
+            .unwrap_or_else(|error| panic!("{what}: no pid file: {error}"))
+            .trim()
+            .to_string()
+    };
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let socket = connect(&kernel, Duration::from_secs(60)).await;
+        assert_eq!(named("after start"), pid.to_string());
+        // A reload replaces the program in place; the new program writes it again.
+        std::fs::remove_file(&pid_file).unwrap();
+        let installed = scratch.join("bin/chariox-kernel");
+        install(
+            |staged| {
+                std::fs::copy(&installed, staged).unwrap();
+            },
+            &installed,
+        );
+        unsafe { libc::kill(pid as i32, libc::SIGUSR2) };
+        closed_by_the_old_program(socket).await;
+        connect(&kernel, Duration::from_secs(60)).await;
+        assert_eq!(named("after the hot reload"), pid.to_string());
+        // A planned stop leaves no file naming a kernel that is gone.
+        unsafe { libc::kill(pid as i32, libc::SIGTERM) };
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while kernel.child.try_wait().unwrap().is_none() {
+            assert!(Instant::now() < deadline, "the kernel stopped");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    });
+    assert!(!pid_file.exists(), "a stopped kernel leaves no pid file");
 }
 
 /// A client resumes its subscription on the attachment it had: a browser whose

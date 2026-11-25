@@ -108,6 +108,10 @@ async function main() {
   const explicitBase = process.argv[2]?.trim()
   const base = clippyComparisonBase(explicitBase, process.env)
   const repositoryRoot = runGit(["rev-parse", "--show-toplevel"])
+  const cards = spawnSync(process.execPath, ["scripts/checks/run.mjs", "--only", "runtime-card-registry"], {
+    cwd: repositoryRoot, stdio: "inherit", env: { ...process.env, CHARIOX_BOUNDARY_BASE: base },
+  })
+  if (cards.status !== 0) throw new Error("Kernel card registry check failed")
   const baseCommit = isMainReference(base) || !process.env.GITHUB_EVENT_NAME
     ? requireCurrentOriginMain(repositoryRoot, base)
     : base

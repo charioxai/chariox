@@ -766,10 +766,11 @@ export function clearWorkflowRunAttentionRequest(sessionId: string, runRef: stri
   }
 }
 
-export function listWorkflowsRequest(sessionId: string) {
+export function listWorkflowsRequest(sessionId: string, includeArchived = false) {
   return {
     ListWorkflows: {
       session_id: sessionId,
+      ...(includeArchived ? { include_archived: true } : {}),
     },
   }
 }

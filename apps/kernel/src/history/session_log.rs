@@ -25,6 +25,8 @@ pub enum SessionHistoryEntryKind {
     ProviderTool,
     ProviderError,
     ProviderStatus,
+    /// Claude summarised the conversation to free context; the text is the summary.
+    ContextCompacted,
     Notice,
 }
 
@@ -524,6 +526,7 @@ impl SessionHistoryEntry {
                 TerminalOutputKind::ProviderTool => SessionHistoryEntryKind::ProviderTool,
                 TerminalOutputKind::ProviderError => SessionHistoryEntryKind::ProviderError,
                 TerminalOutputKind::ProviderStatus => SessionHistoryEntryKind::ProviderStatus,
+                TerminalOutputKind::ContextCompacted => SessionHistoryEntryKind::ContextCompacted,
                 TerminalOutputKind::PromptEcho => SessionHistoryEntryKind::UserPrompt,
             },
             notice_reason: None,

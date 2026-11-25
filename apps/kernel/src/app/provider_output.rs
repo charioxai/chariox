@@ -1244,6 +1244,15 @@ impl DaemonApp {
         )
     }
 
+    pub(crate) fn settle_cancelled_claude_compaction_for_runtime(
+        &mut self,
+        provider_run_id: &str,
+        prompt_id: &str,
+    ) -> Result<(), DaemonError> {
+        let run = self.providers.get_run(provider_run_id)?;
+        ProviderOutputClaudeNativeBridge::new(self).cancel_compaction(&run, prompt_id)
+    }
+
     pub(crate) fn drain_claude_native_transcripts_after_stop_for_runtime(
         &mut self,
         session_id: &str,

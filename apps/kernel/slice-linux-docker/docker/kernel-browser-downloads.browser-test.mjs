@@ -11,8 +11,9 @@ const wait=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 async function until(read,label){for(let i=0;i<200;i++){const value=await read();if(value)return value;await wait(50)}throw Error(`timed out: ${label}`)}
 
 test('MP-08/MP-09/MP-10/MP-11 attachment navigation, link click, progress, readable path and cancellation', {timeout:60000},async()=>{
-  await mkdir(root,{recursive:true});
-  const host=new KernelBrowserHost(path.join(root,'browser'));
+  const appStorageRoot=path.join(root,'app-storage');
+  await mkdir(appStorageRoot,{recursive:true,mode:0o700});
+  const host=new KernelBrowserHost(path.join(root,'browser'),{appStorageRoot});
   const server=createServer((request,response)=>{
     if(request.url==='/')return response.end('<!doctype html><a style="display:block;width:300px;height:80px" href="/slow">Download slowly</a>');
     response.writeHead(200,{'Content-Disposition':'attachment; filename="report.bin"','Content-Length':request.url==='/oversize'?300*1024*1024:4*1024*1024,'Content-Type':'application/octet-stream'});
@@ -24,11 +25,19 @@ test('MP-08/MP-09/MP-10/MP-11 attachment navigation, link click, progress, reada
     await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve)); const url=`http://127.0.0.1:${server.address().port}`;
     const initial=await host.request({op:'start'});assert.deepEqual(initial.downloads,[]);
     const opened=await host.request({op:'open',url:`${url}/`,_download_session:'room-a'});let tab=opened.tabs.find(tab=>tab.tab_id===opened.tab_id);
+    const completed=host.handle({id:2,method:'host.downloads.wait',params:{session_id:'room-a',after:'',wait_ms:10000}});
     const navigate=await host.request({op:'navigate',tab_id:tab.tab_id,generation:opened.generation,url:`${url}/attachment`,_download_session:'room-a'});
     assert.ok(Array.isArray(navigate.downloads),'attachment navigation succeeds and retains download state');
     await until(async()=>{const state=await host.request({op:'state'});return state.downloads.find(d=>d.state==='in_progress'&&d.bytes>0)},'observable progress');
     const done=await until(async()=>{const state=await host.request({op:'state'});return state.downloads.find(d=>d.state==='done')},'readable completed file');
     assert.equal((await readFile(done.path)).length,4*1024*1024);
+    assert.deepEqual((await completed).result, {
+      revision: done.download_id,
+      downloads: [{download_id:done.download_id,name:'report.bin',path:done.path}],
+    });
+    assert.equal(path.basename(done.path), 'report.bin');
+    const elsewhere=await host.handle({id:3,method:'host.downloads.wait',params:{session_id:'room-b',after:'',wait_ms:0}});
+    assert.deepEqual(elsewhere.result.downloads,[]);
     tab=(await host.request({op:'state'})).tabs.find(t=>t.tab_id===tab.tab_id);
     await host.request({op:'input',tab_id:tab.tab_id,generation:opened.generation,document_id:tab.document_id,input:{kind:'click',x:60,y:40},_download_session:'room-a'});
     const active=await until(async()=>{const state=await host.request({op:'state'});return state.downloads.find(d=>d.download_id!==done.download_id&&d.state==='in_progress'&&d.bytes>0)},'click download');

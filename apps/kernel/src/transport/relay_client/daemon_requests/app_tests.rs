@@ -102,6 +102,7 @@ async fn dispatch(
         request,
         Some(command_id.into()),
         cache,
+        false,
     )
     .await;
     match result {
@@ -126,6 +127,7 @@ async fn refused(
         request,
         Some(command_id.into()),
         cache,
+        false,
     )
     .await;
     assert!(
@@ -407,6 +409,7 @@ async fn app_worker_and_automation_requests_are_owner_scoped_and_need_no_worker(
         configure("missing-session"),
         Some("configure-missing-session".into()),
         &cache,
+        false,
     )
     .await
     else {
@@ -1067,6 +1070,7 @@ async fn md3_browser_relay_replay_binds_user_and_rechecks_admission() {
             request.clone(),
             Some("browser-retry".into()),
             &cache,
+            false,
         )
     };
     // Same admitted caller gets the original receipt, so an open/input is not repeated.
@@ -1132,7 +1136,8 @@ async fn md5_relay_cached_browser_observations_obey_current_vault_policy() {
                 KernelCaller::from_relay_identity(caller("alice")),
                 request.clone(),
                 Some("MD5-receipt".into()),
-                &cache
+                &cache,
+                false
             )
             .await,
             RelayDispatchOutcome::Response(_)
@@ -1146,7 +1151,8 @@ async fn md5_relay_cached_browser_observations_obey_current_vault_policy() {
                     KernelCaller::from_relay_identity(caller("alice")),
                     request.clone(),
                     Some("MD5-receipt".into()),
-                    &cache
+                    &cache,
+                    false
                 )
                 .await,
                 RelayDispatchOutcome::RelayError(_)
@@ -1162,7 +1168,8 @@ async fn md5_relay_cached_browser_observations_obey_current_vault_policy() {
                     KernelCaller::from_relay_identity(caller("alice")),
                     request,
                     Some("MD5-receipt".into()),
-                    &cache
+                    &cache,
+                    false
                 )
                 .await,
                 RelayDispatchOutcome::RelayError(_)
@@ -1313,7 +1320,9 @@ fn self_host_pairing_admits_encrypted_requests_without_cloud_and_revokes_the_key
                         &pairing.terminal_id,
                     )
                     .unwrap();
-                    assert!(router.admit_self_host_terminal(&sender_public).is_err());
+                    assert!(router
+                        .admit_self_host_terminal(&sender_public, None)
+                        .is_err());
                     let replay =
                         relay_crypto::encrypt_payload_for_peer(&sender, &receiver, &join_bytes)
                             .unwrap();
@@ -1355,6 +1364,8 @@ fn self_host_pairing_admits_encrypted_requests_without_cloud_and_revokes_the_key
         .join()
         .unwrap();
 }
+
+mod terminal_pairing;
 
 #[tokio::test]
 async fn three_megabyte_prompt_attachment_reaches_relay_dispatch() {

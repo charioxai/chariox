@@ -1,64 +1,9 @@
 [
     {
         "KernelBrowser": {
-            "command": {
-                "op": "list_grants"
-            }
-        }
-    },
-    {
-        "KernelBrowser": {
-            "command": {
-                "after": 3,
-                "op": "subscribe_grants",
-                "wait_ms": 25000
-            }
-        }
-    },
-    {
-        "KernelBrowser": {
-            "command": {
-                "agent_id": "a",
-                "op": "revoke_grants"
-            }
-        }
-    },
-    {
-        "KernelBrowser": {
-            "command": {
-                "agent_id": null,
-                "op": "revoke_grants"
-            }
-        }
-    },
-    {
-        "KernelBrowser": {
-            "command": {
-                "op": "grant_room_computer",
-                "agent_id": "a"
-            }
-        }
-    },
-    {
-        "KernelBrowser": {
-            "command": {
-                "agent_id": null,
-                "op": "grant_room_computer"
-            }
-        }
-    },
-    {
-        "KernelBrowser": {
             "result": {
-                "cursor": 4,
-                "event": "user_domain_grants_changed",
-                "room_computer": [
-                    {
-                        "agent_id": "a",
-                        "session_id": "s",
-                        "allowed": false
-                    }
-                ]
+                "agent_id": "a",
+                "leased_computer": true
             }
         }
     },

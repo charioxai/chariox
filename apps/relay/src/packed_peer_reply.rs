@@ -5,8 +5,10 @@ use std::mem::size_of;
 use base64::{engine::general_purpose::STANDARD, Engine};
 
 use crate::frame_transport::{
-    peer_reply_block_size, peer_reply_chunk, peer_reply_ciphertext_chunk,
+    binary_chunk, binary_chunk_payload, peer_reply_block_size, peer_reply_chunk,
+    peer_reply_ciphertext_chunk, BINARY_CHUNK_PAYLOAD_BYTES, MIN_BINARY_PAYLOAD_BYTES,
 };
+use tokio_tungstenite::tungstenite::Message;
 
 pub(crate) struct PackedReplyPlan<'a> {
     envelope: &'a str,
@@ -173,5 +175,187 @@ impl PackedPeerReply {
             offset = end;
         }
         text
+    }
+}
+
+/// A peer reply as one binary message (`CXR2` header, then the ciphertext as bytes) kept as
+/// independently owned blocks of at most one full binary chunk, so a written chunk frees its
+/// block and the reply is never held twice. The header travels in the first block: a receiver
+/// refuses a chunk shorter than `MIN_BINARY_PAYLOAD_BYTES` unless it ends the message.
+pub(crate) struct BinaryPeerReply {
+    blocks: Box<[CiphertextBlock]>,
+    /// The size of the first block; every later block but the last is `BLOCK` bytes.
+    first_len: usize,
+    len: usize,
+    block_index: usize,
+    charge: usize,
+}
+
+const BLOCK: usize = BINARY_CHUNK_PAYLOAD_BYTES / 3 * 3;
+
+impl BinaryPeerReply {
+    /// `head` is the encoded header with no ciphertext yet; `encoded` is canonical base64.
+    pub(crate) fn new(head: Vec<u8>, encoded: &str) -> Option<Self> {
+        let decoded_len = canonical_decoded_len(encoded.as_bytes())?;
+        // A multiple of three bytes of ciphertext after the header keeps every later block on a
+        // Base64 quantum, so each block decodes on its own.
+        let first_cipher = BLOCK.saturating_sub(head.len()) / 3 * 3;
+        let split = (first_cipher / 3 * 4).min(encoded.len());
+        let mut first = head;
+        let head_len = first.len();
+        let mut part = vec![0; split / 4 * 3];
+        let size = STANDARD
+            .decode_slice(&encoded.as_bytes()[..split], &mut part)
+            .ok()?;
+        first.extend_from_slice(&part[..size]);
+        let first_len = first.len();
+        let block_encoded = BLOCK / 3 * 4;
+        let mut blocks: Vec<CiphertextBlock> = vec![Some(first.into_boxed_slice())];
+        for piece in encoded.as_bytes()[split..].chunks(block_encoded) {
+            let mut block = vec![0; piece.len() / 4 * 3];
+            let size = STANDARD.decode_slice(piece, &mut block).ok()?;
+            block.truncate(size);
+            blocks.push(Some(block.into_boxed_slice()));
+        }
+        let len = head_len + decoded_len;
+        Some(Self {
+            charge: len + blocks.len() * size_of::<CiphertextBlock>(),
+            blocks: blocks.into_boxed_slice(),
+            first_len,
+            len,
+            block_index: 0,
+        })
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.len
+    }
+
+    pub(crate) fn charge(&self) -> usize {
+        self.charge
+    }
+
+    /// Where block `index` starts in the message.
+    fn block_start(&self, index: usize) -> usize {
+        if index == 0 {
+            0
+        } else {
+            self.first_len + (index - 1) * BLOCK
+        }
+    }
+
+    pub(crate) fn next_chunk(
+        &self,
+        id: u32,
+        offset: usize,
+        limit: usize,
+        adaptive: bool,
+    ) -> Option<(Message, usize)> {
+        let index = if offset < self.first_len {
+            0
+        } else {
+            1 + (offset - self.first_len) / BLOCK
+        };
+        let block = self.blocks.get(index)?.as_deref()?;
+        let start = self.block_start(index);
+        let block_end = start + block.len();
+        let mut end = (offset + binary_chunk_payload(limit, adaptive)).min(block_end);
+        // Never leave a short, non-final tail for the next chunk: the receiver refuses it.
+        if end != block_end && block_end - end < MIN_BINARY_PAYLOAD_BYTES {
+            end = block_end;
+        }
+        if end <= offset {
+            return None;
+        }
+        Some((
+            Message::Binary(
+                binary_chunk(id, offset, self.len, &block[offset - start..end - start]).into(),
+            ),
+            end,
+        ))
+    }
+
+    pub(crate) fn written(&mut self, end: usize) -> Option<usize> {
+        let block = self.blocks.get_mut(self.block_index)?;
+        let block_len = block.as_ref()?.len();
+        let block_end = if self.block_index == 0 {
+            self.first_len
+        } else {
+            self.first_len + (self.block_index - 1) * BLOCK + block_len
+        };
+        if end < block_end {
+            return None;
+        }
+        drop(block.take());
+        self.block_index += 1;
+        Some(block_len)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn into_test_bytes(mut self) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(self.len);
+        let mut offset = 0;
+        while let Some((Message::Binary(frame), end)) =
+            self.next_chunk(1, offset, crate::frame_transport::CHUNK_BYTES, false)
+        {
+            bytes.extend_from_slice(&frame[crate::frame_transport::BINARY_CHUNK_HEADER_BYTES..]);
+            self.written(end);
+            offset = end;
+        }
+        bytes
+    }
+}
+
+#[cfg(test)]
+mod binary_tests {
+    use super::*;
+    use crate::frame_transport::{
+        BINARY_CHUNK_HEADER_BYTES, CHUNK_BYTES, MIN_BINARY_PAYLOAD_BYTES,
+    };
+
+    // Every frame fits a transport chunk, the chunks rebuild head and ciphertext exactly, and
+    // writing them frees exactly the ciphertext bytes (the head and block table stay charged
+    // until the last chunk).
+    #[test]
+    fn a_binary_reply_streams_in_full_chunks_and_frees_its_blocks() {
+        for size in [1usize, 16367, 16368, 16369, 100_000, 3_584_000] {
+            let bytes: Vec<u8> = (0..size).map(|index| (index * 13) as u8).collect();
+            let head = b"CXR2\0\0\0\x02{}".to_vec();
+            for limit in [CHUNK_BYTES, 8192, 4096, 1500] {
+                let mut reply =
+                    BinaryPeerReply::new(head.clone(), &STANDARD.encode(&bytes)).unwrap();
+                assert_eq!(reply.len(), head.len() + size);
+                let mut rebuilt = Vec::new();
+                let mut freed = 0;
+                let mut offset = 0;
+                while let Some((Message::Binary(frame), end)) =
+                    reply.next_chunk(7, offset, limit, true)
+                {
+                    let payload = frame.len() - BINARY_CHUNK_HEADER_BYTES;
+                    assert!(
+                        frame.len() <= CHUNK_BYTES,
+                        "{size}: a {} byte frame",
+                        frame.len()
+                    );
+                    // The receiver refuses a short chunk that does not end the message.
+                    assert!(
+                        payload >= MIN_BINARY_PAYLOAD_BYTES || end == reply.len(),
+                        "{size}/{limit}: a {payload} byte chunk ends at {end} of {}",
+                        reply.len()
+                    );
+                    rebuilt.extend_from_slice(&frame[BINARY_CHUNK_HEADER_BYTES..]);
+                    freed += reply.written(end).unwrap_or(0);
+                    offset = end;
+                }
+                assert_eq!(&rebuilt[..head.len()], head.as_slice());
+                assert_eq!(&rebuilt[head.len()..], bytes.as_slice(), "{size}/{limit}");
+                assert_eq!(freed, head.len() + size, "{size}/{limit}");
+            }
+        }
+    }
+
+    #[test]
+    fn noncanonical_base64_is_not_made_binary() {
+        assert!(BinaryPeerReply::new(vec![0; 8], "AB==").is_none());
     }
 }

@@ -46,7 +46,6 @@ fn agent_deadline_survives_restart_and_retains_reached_without_a_stop_receipt() 
                 room: "room".into(),
                 agent: "parent".into(),
                 deadline: Some(100),
-                inherited: Vec::new(),
             })
             .unwrap();
         store
@@ -83,7 +82,6 @@ fn agent_deadline_can_be_extended_cleared_and_shortened_but_not_fired_early() {
         room: "room".into(),
         agent: "parent".into(),
         deadline: Some(100),
-        inherited: Vec::new(),
     });
     fixture
         .store
@@ -91,7 +89,6 @@ fn agent_deadline_can_be_extended_cleared_and_shortened_but_not_fired_early() {
             room: "room".into(),
             agent: "parent".into(),
             deadline: Some(200),
-            inherited: Vec::new(),
         })
         .unwrap();
     assert!(fixture
@@ -107,7 +104,6 @@ fn agent_deadline_can_be_extended_cleared_and_shortened_but_not_fired_early() {
         room: "room".into(),
         agent: "parent".into(),
         deadline: None,
-        inherited: Vec::new(),
     });
     assert!(fixture
         .store
@@ -118,7 +114,6 @@ fn agent_deadline_can_be_extended_cleared_and_shortened_but_not_fired_early() {
         room: "room".into(),
         agent: "parent".into(),
         deadline: Some(90),
-        inherited: Vec::new(),
     });
     let value = fixture
         .store
@@ -130,7 +125,7 @@ fn agent_deadline_can_be_extended_cleared_and_shortened_but_not_fired_early() {
 }
 
 #[test]
-fn edited_deadlines_and_explicit_child_limits_survive_restart() {
+fn edited_deadlines_survive_restart() {
     let root = crate::test_support::TestWorktree::new("deadline-edit-restart");
     let path = root.path().join("state.sqlite");
     {
@@ -141,7 +136,6 @@ fn edited_deadlines_and_explicit_child_limits_survive_restart() {
                     room: "room".into(),
                     agent: "parent".into(),
                     deadline,
-                    inherited: vec![("room".into(), "child".into(), deadline)],
                 })
                 .unwrap();
         }
@@ -150,7 +144,6 @@ fn edited_deadlines_and_explicit_child_limits_survive_restart() {
                 room: "room".into(),
                 agent: "cleared".into(),
                 deadline: Some(100),
-                inherited: Vec::new(),
             })
             .unwrap();
         store
@@ -158,19 +151,13 @@ fn edited_deadlines_and_explicit_child_limits_survive_restart() {
                 room: "room".into(),
                 agent: "cleared".into(),
                 deadline: None,
-                inherited: Vec::new(),
             })
             .unwrap();
     }
     let store = DurableKernelStateStore::open_owned(path.clone()).unwrap();
-    // The restart gave back the few milliseconds it took, to the deadline and to the owner's limit alike.
+    // The restart gave back the few milliseconds it took.
     let parent = deadline_of(&store, "parent");
     assert!((90..60_000).contains(&parent), "{parent}");
-    assert_eq!(
-        store.agent_deadline_intent("room", "parent").unwrap(),
-        Some(parent)
-    );
-    assert_eq!(store.agent_deadline_intent("room", "child").unwrap(), None);
     assert!(store.agent_deadline("room", "cleared").unwrap().is_none());
     store
         .agent_lifecycle(Operation::ReachDeadline {
@@ -186,24 +173,17 @@ fn edited_deadlines_and_explicit_child_limits_survive_restart() {
                 room: "room".into(),
                 agent: "parent".into(),
                 deadline,
-                inherited: Vec::new()
             })
             .is_err());
     }
 }
 
-fn set(
-    store: &DurableKernelStateStore,
-    agent: &str,
-    deadline: u64,
-    inherited: Vec<(String, String, Option<u64>)>,
-) {
+fn set(store: &DurableKernelStateStore, agent: &str, deadline: u64) {
     store
         .agent_lifecycle(Operation::SetDeadline {
             room: "room".into(),
             agent: agent.into(),
             deadline: Some(deadline),
-            inherited,
         })
         .unwrap();
 }
@@ -219,12 +199,8 @@ fn deadline_of(store: &DurableKernelStateStore, agent: &str) -> u64 {
 fn a_kernel_start_gives_back_the_time_the_kernel_was_stopped() {
     let fixture = tests::Fixture::new();
     let store = &fixture.store;
-    set(
-        store,
-        "parent",
-        1_000_000,
-        vec![("room".into(), "child".into(), Some(900_000))],
-    );
+    set(store, "parent", 1_000_000);
+    set(store, "child", 900_000);
     store
         .agent_lifecycle(Operation::BeatDeadlineClock { now: 50_000 })
         .unwrap();
@@ -233,11 +209,6 @@ fn a_kernel_start_gives_back_the_time_the_kernel_was_stopped() {
         .unwrap();
     assert_eq!(deadline_of(store, "parent"), 1_120_000);
     assert_eq!(deadline_of(store, "child"), 1_020_000);
-    assert_eq!(
-        store.agent_deadline_intent("room", "parent").unwrap(),
-        Some(1_120_000),
-        "a later edit starts from the paused limit"
-    );
     // The next start counts only the time since the beat the first one left.
     store
         .agent_lifecycle(Operation::ResumeDeadlines { now: 175_000 })
@@ -251,7 +222,7 @@ fn opening_the_owned_store_resumes_the_deadlines() {
     let path = root.path().join("state.sqlite");
     {
         let store = DurableKernelStateStore::open_owned(path.clone()).unwrap();
-        set(&store, "parent", 1_000, Vec::new());
+        set(&store, "parent", 1_000);
         store
             .agent_lifecycle(Operation::BeatDeadlineClock { now: 1 })
             .unwrap();
@@ -265,7 +236,7 @@ fn opening_the_owned_store_resumes_the_deadlines() {
 fn a_reached_deadline_and_a_deadline_without_a_beat_stay_where_they_are() {
     let fixture = tests::Fixture::new();
     let store = &fixture.store;
-    set(store, "parent", 100, Vec::new());
+    set(store, "parent", 100);
     store
         .agent_lifecycle(Operation::ReachDeadline {
             room: "room".into(),
@@ -291,7 +262,7 @@ fn a_reached_deadline_and_a_deadline_without_a_beat_stay_where_they_are() {
 fn arming_leaves_the_beat_a_kernel_stopped_right_after_resumes_from() {
     let fixture = tests::Fixture::new();
     let armed_at = crate::session::unix_epoch_ms();
-    set(&fixture.store, "parent", armed_at + 60_000, Vec::new());
+    set(&fixture.store, "parent", armed_at + 60_000);
     fixture
         .store
         .agent_lifecycle(Operation::ResumeDeadlines {
@@ -305,7 +276,7 @@ fn arming_leaves_the_beat_a_kernel_stopped_right_after_resumes_from() {
 #[test]
 fn a_shift_past_the_largest_time_is_refused_and_changes_nothing() {
     let fixture = tests::Fixture::new();
-    set(&fixture.store, "parent", i64::MAX as u64 - 10, Vec::new());
+    set(&fixture.store, "parent", i64::MAX as u64 - 10);
     fixture
         .store
         .agent_lifecycle(Operation::BeatDeadlineClock { now: 1 })

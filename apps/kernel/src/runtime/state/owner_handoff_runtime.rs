@@ -42,21 +42,13 @@ impl KernelRuntimeState {
     /// every model mutation. Observation and authenticated owner input stay live.
     pub(super) fn handoff_model_write_blocked(&self, user: &str, tab: Option<&str>) -> bool {
         let matches = |h: &RuntimeHandoff| tab.is_none_or(|tab| h.target.tab_id == tab);
-        if self
-            .owned
-            .session_store
-            .list_all_sessions()
-            .iter()
-            .any(|session| {
-                self.provider_account_authority_owner_user_id(session.owner_user_id()) == user
-                    && session
-                        .active_interactions()
-                        .iter()
-                        .filter_map(RuntimeInteraction::handoff)
-                        .any(&matches)
-            })
-        {
-            return true;
+        match self.pending_handoffs_for_owner(user) {
+            Ok(handoffs) if handoffs.iter().any(matches) => return true,
+            Err(error) => {
+                tracing::error!(%error, "could not verify the owner hand-off tab reservation");
+                return true;
+            }
+            _ => {}
         }
         let claims = self
             .owned
@@ -91,23 +83,35 @@ impl KernelRuntimeState {
 
     /// The tabs this owner's open hand-off cards bind: the person is asked to act in each.
     pub(super) fn pending_handoff_tabs(&self, user: &str) -> std::collections::BTreeSet<String> {
-        self.owned
-            .session_store
-            .list_all_sessions()
-            .iter()
-            .filter(|session| {
-                self.provider_account_authority_owner_user_id(session.owner_user_id()) == user
-            })
-            .flat_map(|session| {
-                session
-                    .active_interactions()
-                    .iter()
-                    .filter_map(|interaction| {
-                        interaction.handoff().map(|h| h.target.tab_id.clone())
+        match self.pending_handoffs_for_owner(user) {
+            Ok(handoffs) => handoffs
+                .into_iter()
+                .map(|handoff| handoff.target.tab_id)
+                .collect(),
+            Err(error) => {
+                tracing::error!(%error, "could not read the owner hand-offs");
+                BTreeSet::new()
+            }
+        }
+    }
+
+    fn pending_handoffs_for_owner(&self, user: &str) -> Result<Vec<RuntimeHandoff>, DaemonError> {
+        Ok(self
+            .owned
+            .durable_state_store
+            .pending_owner_handoffs(crate::session::unix_epoch_ms())?
+            .into_iter()
+            .filter(|record| {
+                self.owned
+                    .session_store
+                    .get_session(&record.room)
+                    .is_ok_and(|session| {
+                        self.provider_account_authority_owner_user_id(session.owner_user_id())
+                            == user
                     })
-                    .collect::<Vec<_>>()
             })
-            .collect()
+            .map(|record| record.handoff)
+            .collect())
     }
 
     pub(super) fn owner_handoff_tool_spec(&self) -> Option<RuntimeToolSpec> {
@@ -265,6 +269,33 @@ impl KernelRuntimeState {
         handoff: RuntimeHandoff,
         timeout_sec: u64,
     ) -> Result<(), DaemonError> {
+        self.owned
+            .durable_state_store
+            .record_open_owner_handoff(session_id, &handoff)?;
+        if let Err(error) = self
+            .open_handoff_card(session_id, owner, handoff.clone(), timeout_sec)
+            .await
+        {
+            let id = RuntimeHandoff::interaction_id(&handoff.obligation_id);
+            let result = outcome(
+                &id,
+                HandoffStatus::Cancelled,
+                "withdrawn",
+                Some("registration_failed"),
+            );
+            self.finish_handoff(session_id, &handoff, &result, "kernel");
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    async fn open_handoff_card(
+        &self,
+        session_id: &str,
+        owner: &str,
+        handoff: RuntimeHandoff,
+        timeout_sec: u64,
+    ) -> Result<(), DaemonError> {
         let id = RuntimeHandoff::interaction_id(&handoff.obligation_id);
         let action = match handoff.kind {
             HandoffKind::Click => format!("Click \u{201c}{}\u{201d}", handoff.target.label),
@@ -308,7 +339,12 @@ impl KernelRuntimeState {
         .with_timeout_sec(timeout_sec)
         .with_handoff(handoff.clone());
         let receiver = self
-            .create_kernel_operation_interaction(session_id, owner, interaction)
+            .create_kernel_operation_interaction(
+                crate::runtime::state::CardKind::OwnerControl,
+                session_id,
+                owner,
+                interaction,
+            )
             .await?;
         let state = self.clone();
         let room = session_id.to_owned();

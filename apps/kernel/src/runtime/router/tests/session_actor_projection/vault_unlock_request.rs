@@ -294,6 +294,38 @@ async fn an_unlock_from_the_vault_window_closes_the_open_card_and_the_agent_goes
     }
 }
 
+// A management action asked of a locked Vault goes on after the unlock: the extension applies, also
+// after a single-use unlock, which must not lock the Vault again under the new lease.
+#[tokio::test]
+async fn an_extension_asked_of_a_locked_vault_applies_after_the_unlock() {
+    for duration in [
+        VaultUnlockDuration::Minutes { minutes: 10 },
+        VaultUnlockDuration::Once,
+    ] {
+        let f = Fixture::locked();
+        let runtime = f.router.runtime_state.clone();
+        let (session, agent) = (f.session.clone(), f.agent.clone());
+        let operation = tokio::spawn(async move {
+            runtime
+                .manage_credential_vault(&session, &agent, Some("extend"))
+                .await
+        });
+        f.the_open_unlock_prompt().await;
+        f.unlock_for(PASSPHRASE, duration).await.unwrap();
+        let managed = tokio::time::timeout(std::time::Duration::from_secs(30), operation)
+            .await
+            .expect("the agent's operation is woken by the unlock")
+            .unwrap()
+            .unwrap_or_else(|error| panic!("{duration:?}: the extension must apply: {error}"));
+        assert_eq!(managed.action, "extended_30m", "{duration:?}");
+        assert!(managed.status.unlocked, "{duration:?}");
+        assert!(
+            f.status().await.unlocked,
+            "{duration:?}: the Vault stays open under the extension"
+        );
+    }
+}
+
 #[tokio::test]
 async fn an_unlock_request_cannot_claim_to_come_from_a_card() {
     let f = Fixture::locked();
@@ -936,14 +968,14 @@ async fn only_the_owner_or_its_agents_may_open_the_vault_menu() {
 }
 
 #[tokio::test]
-async fn a_member_cannot_answer_the_vault_menu() {
+async fn a_member_cannot_answer_the_passphrase_change_prompt() {
     let f = Fixture::locked();
     f.unlock(PASSPHRASE).await.unwrap();
     let runtime = f.router.runtime_state.clone();
     let (session, agent) = (f.session.clone(), f.agent.clone());
     let menu = tokio::spawn(async move {
         runtime
-            .manage_credential_vault_unlock(&session, &agent)
+            .manage_credential_vault(&session, &agent, Some("change_passphrase"))
             .await
     });
     let prompt = tokio::time::timeout(std::time::Duration::from_secs(30), async {
@@ -960,12 +992,12 @@ async fn a_member_cannot_answer_the_vault_menu() {
         }
     })
     .await
-    .expect("the Vault menu should appear");
-    let lock_now =
+    .expect("the passphrase prompt should appear");
+    let cancel =
         LocalDaemonRequest::RespondToInteraction(crate::local::RespondToInteractionRequest {
             session_id: f.session.clone(),
             interaction_id: prompt,
-            choice_id: "lock_now".into(),
+            choice_id: "cancel".into(),
             custom_reply: None,
             passkey: None,
             passkey_remember_minutes: None,
@@ -974,10 +1006,10 @@ async fn a_member_cannot_answer_the_vault_menu() {
         Some(KernelConnectionClass::Terminal),
         Some("session-member"),
     );
-    assert!(f.send_as(member, lock_now).await.is_err());
+    assert!(f.send_as(member, cancel).await.is_err());
     assert!(
         f.status().await.unlocked,
-        "the member did not lock the Vault"
+        "the member did not touch the Vault"
     );
     menu.abort();
 }

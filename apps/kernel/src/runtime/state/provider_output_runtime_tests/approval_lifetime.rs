@@ -62,6 +62,7 @@ impl Fixture {
     async fn approval(&self) -> tokio::sync::oneshot::Receiver<PendingInteractionResolution> {
         self.runtime
             .create_runtime_interaction(
+                crate::runtime::state::CardKind::NativePermissionInput,
                 &self.session,
                 RuntimeInteraction::new(
                     self.id(),
@@ -265,7 +266,11 @@ async fn approval_lifetime_long_running_turn_survives_65_seconds() {
         .capture_native_interaction_origin(&f.session, &f.agent, &f.run);
     let mut receiver = f
         .runtime
-        .create_runtime_interaction(&f.session, native_approval(&f, origin))
+        .create_runtime_interaction(
+            crate::runtime::state::CardKind::NativePermissionInput,
+            &f.session,
+            native_approval(&f, origin),
+        )
         .await
         .unwrap();
     tokio::time::sleep(std::time::Duration::from_secs(66)).await;
@@ -611,7 +616,11 @@ async fn approval_lifetime_explicit_startup_scope_survives_until_provider_exit()
     );
     let mut receiver = f
         .runtime
-        .create_runtime_interaction(&f.session, interaction)
+        .create_runtime_interaction(
+            crate::runtime::state::CardKind::NativePermissionInput,
+            &f.session,
+            interaction,
+        )
         .await
         .unwrap();
     assert!(matches!(

@@ -34,7 +34,7 @@ async function freePort() {
 }
 
 /** Start with fresh private state and keep only the evidence when the drill stops. */
-export async function startDrillKernel({ label, binary, stateRoot, evidence, profilePath, enableFaults = false, readyTimeoutMs = 60000 }) {
+export async function startDrillKernel({ label, binary, stateRoot, evidence, profilePath, enableFaults = false, extraEnv = {}, readyTimeoutMs = 60000 }) {
   const devRoot = "/root/.chariox/dev/"
   stateRoot = resolve(stateRoot)
   if (!stateRoot.startsWith(devRoot)) throw new Error("state must be lane-owned")
@@ -98,6 +98,7 @@ export async function startDrillKernel({ label, binary, stateRoot, evidence, pro
       CHARIOX_DAEMON_SOCKET: join(socketDir, "kernel.sock"), CHARIOX_DAEMON_ALIAS: label, CHARIOX_MACHINE_ALIAS: `${label}-machine`,
       CHARIOX_KERNEL_PORT: String(ports[0]), CHARIOX_MCP_PORT: String(ports[1]), CHARIOX_OPENCODE_PORT: String(ports[2]), CHARIOX_CODEX_PORT: String(ports[3]),
     }
+    Object.assign(env, extraEnv)
     if (enableFaults) {
       env.CHARIOX_AGENT_FAULT_DIR = join(dir, "faults")
       mkdirSync(env.CHARIOX_AGENT_FAULT_DIR, { mode: 0o700 })

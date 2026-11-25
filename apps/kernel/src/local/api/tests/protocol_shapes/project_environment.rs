@@ -120,9 +120,17 @@ fn environment_requests_have_the_camel_case_wire_of_protocol_972() {
             LocalDaemonRequest::SetProjectEnvironmentSecret(SetProjectEnvironmentSecretRequest {
                 project_id: "p".into(),
                 name: "T".into(),
-                value: VaultPassphrase::new("synthetic"),
+                source: ProjectEnvironmentSecretSource::Value(VaultPassphrase::new("synthetic")),
             }),
-            json!({"SetProjectEnvironmentSecret": {"projectId": "p", "name": "T", "value": "synthetic"}}),
+            json!({"SetProjectEnvironmentSecret": {"projectId": "p", "name": "T", "source": {"value": "synthetic"}}}),
+        ),
+        (
+            LocalDaemonRequest::SetProjectEnvironmentSecret(SetProjectEnvironmentSecretRequest {
+                project_id: "p".into(),
+                name: "GH_TOKEN".into(),
+                source: ProjectEnvironmentSecretSource::VaultEntry("cap-1".into()),
+            }),
+            json!({"SetProjectEnvironmentSecret": {"projectId": "p", "name": "GH_TOKEN", "source": {"vaultEntry": "cap-1"}}}),
         ),
         (
             LocalDaemonRequest::RunProjectEnvironmentSetup(RunProjectEnvironmentSetupRequest {
@@ -449,7 +457,7 @@ fn project_environment_peer_wire_and_redaction() {
     );
     assert_eq!(
         serde_json::to_value(&file).unwrap(),
-        json!({"kind": "project_environment_file_pulled", "size_bytes": 14, "sha256": "0f", "content": "c3ludGhldGljLWZpbGU="})
+        json!({"kind": "project_environment_file_pulled", "size_bytes": 14, "sha256": "0f", "data_base64": "c3ludGhldGljLWZpbGU="})
     );
     let registration = RelayPeerResponse::ProjectEnvironmentRegistrationPulled {
         registration: Some(crate::transport::relay_peer::RemoteProjectRegistration(

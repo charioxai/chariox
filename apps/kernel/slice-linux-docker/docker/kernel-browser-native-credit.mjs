@@ -1,6 +1,7 @@
 // MP-08/MP-10/MP-11: negative-only readiness; never authorize or emit pixels.
 // The caller already checked scope/generation and renewed the admitted stream.
 import {displayMaskRegions} from './kernel-browser-pixels.mjs';
+import {viewerStillPending} from './kernel-browser-viewer-still.mjs';
 export function nativeRegionPending(stream,source,document,policy){
  return Boolean(source?.attested&&typeof source.valid==='function'&&source.valid()&&source.policy===policy&&source.allowed(policy)&&
   source.tab?.tab_id===stream.tab_id&&source.tab.document_id===document&&!source.sample());
@@ -39,7 +40,9 @@ export function nativeCreditEmpty(stream,source,policy,epoch,changedAt,after,now
  if(now-Math.max(source.changedAt,changedAt)<quiet)return true;
  // MP-08/MP-10/MP-11: complete exact bytes remain exact after every
  // admitted contiguous native tile patch. No lossy-source equality inference.
- return Boolean(stream.exact&&!refiner.active&&stream.compositorRegionRevision===source.regionRevision);
+ // Row 341 (A): a page-density exact canvas still owes a viewer above that density its still.
+ return Boolean(stream.exact&&!refiner.active&&stream.compositorRegionRevision===source.regionRevision&&
+  !viewerStillPending(stream,{source,document:stream.document_id,epoch,policy,sample}));
 }
 // MP-08/MP-10/MP-11: a native exact plan (patch, shift or repair) is cut against its session at its revision, which
 // counts encodes no frame took (an armed auto-encode of a readback the stream patched). Only a hand-off after the plan

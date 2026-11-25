@@ -155,6 +155,25 @@ impl ProviderRunRuntimeRegistry {
         );
     }
 
+    /// What a terminated Claude run still owes the history (see `take_closing_compaction_chunks`).
+    pub(super) fn take_claude_closing_chunks(
+        &self,
+        run_id: &str,
+    ) -> Vec<crate::provider::ProviderPromptChunk> {
+        let Ok(slot) = claude_slot(&self.claude_runs, run_id) else {
+            return Vec::new();
+        };
+        let mut guard = slot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        guard
+            .as_mut()
+            .map(|state| {
+                crate::provider::claude_runtime::take_closing_compaction_chunks(run_id, state)
+            })
+            .unwrap_or_default()
+    }
+
     pub(super) fn take_claude_runtime(
         &self,
         run_id: &str,

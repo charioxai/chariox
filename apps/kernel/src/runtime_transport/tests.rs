@@ -302,6 +302,7 @@ async fn connection_closing_for_backpressure_admits_no_more_requests() {
             runtime: &runtime,
             router: &router,
             connection_state: &Arc::new(Mutex::new(ConnectionState {
+                same_computer: false,
                 local_terminal_id: "amint-closing-connection".into(),
                 terminal_lifetime: Default::default(),
                 browser_terminal_contexts: Default::default(),
@@ -2230,6 +2231,7 @@ async fn dispatch_transport_test_request(
         request,
         receive_response,
         Arc::new(Mutex::new(ConnectionState {
+            same_computer: false,
             local_terminal_id: "MD-3-test-connection".into(),
             terminal_lifetime: Default::default(),
             browser_terminal_contexts: Default::default(),
@@ -2628,6 +2630,8 @@ mod kernel_access_grants;
 
 mod ka_validation;
 
+mod holder_exit_wake;
+
 #[cfg(unix)]
 #[tokio::test]
 async fn md5_local_cached_browser_observations_obey_current_vault_policy() {
@@ -2756,6 +2760,7 @@ async fn md3_transport_disconnect_fences_input_queued_behind_vault_barrier() {
         .write_owned()
         .await;
     let connection = Arc::new(Mutex::new(ConnectionState {
+        same_computer: false,
         local_terminal_id: "MD-3-test-connection".into(),
         terminal_lifetime: Default::default(),
         browser_terminal_contexts: Default::default(),

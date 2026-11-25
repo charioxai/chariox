@@ -2,9 +2,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { sanitizeMirrorCss } from './kernel-browser-mirror2-observer.mjs';
+import { BrowserResponseBodies } from './browser-controller-response-bodies.mjs';
 import { inflateRawSync, constants as zlib } from 'node:zlib';
 import { createHash } from 'node:crypto';
-import { Mirror2, ParsedSheets, BUSY_RENDERER_MS, KERNEL_CONTROLLER_DEADLINE_MS, mirrorResourceType, encodeMirrorRecords, dedupeMirrorSheets, regionArea, regionOverBudget, cssImports, svgTargetPinned } from './kernel-browser-mirror2.mjs';
+import { Mirror2, ParsedSheets, sheetDigest, cssRules, prunedCss, BUSY_RENDERER_MS, KERNEL_CONTROLLER_DEADLINE_MS, mirrorResourceType, encodeMirrorRecords, dedupeMirrorSheets, regionArea, regionOverBudget, cssImports, svgTargetPinned } from './kernel-browser-mirror2.mjs';
 const pageSize=()=>({width:1280,height:800});
 
 const keys = () => { const seen = []; return { seen, resource: (url, base, kind) => { const href = new URL(url, base).href; if (!/^(https?|data):/.test(href)) return null; seen.push([href, kind]); return `r${seen.length}`; } }; };
@@ -481,6 +482,21 @@ test('MP-08/MP-10/MP-11: a packet on an unchanged document reuses its world; a n
     assert.deepEqual(await run(changed), ['displayTarget', 'world'], `MP-11: ${JSON.stringify(changed)} resolves afresh`);
 });
 
+// Row 448: on a headed browser, opaque regions over most of the viewport travel only as region video leases. Their
+// still refresh still counts as done, so the long poll waits for the page instead of answering every credit at once.
+test('row 448: a headed page whose opaque regions are over the budget is not due again at every credit', async () => {
+  for (const display of [':1', undefined]) {
+    const mirror = new Mirror2({ host: { pageSize, scales: new Map(), chromium: { display } } }), calls = [];
+    mirror.evaluate = async (_world, expression) => { calls.push(expression); return [{ id: 'n4', box: [0, 0, 1280, 800] }]; };
+    mirror.frames = { opaqueBoxes: async () => [] };
+    const stream = { frames: new Map(), tileKeys: '', tilesAt: 0, inputAt: 0 }, world = { ref: 'm' };
+    if (display) assert.deepEqual(await mirror.tiles(world, { tab_id: 't' }, stream, false, true, false), [], 'its leases carry the pixels');
+    else await mirror.tiles(world, { tab_id: 't' }, stream, false, true, false).catch(() => {});
+    assert.equal(stream.tileKeys, 'n4');
+    assert.equal(mirror.tilesDue(stream), false, `${display ? 'headed' : 'headless'}: the refresh is done until TILE_REFRESH_MS`);
+  }
+});
+
 // MP-08/MP-10: an echo right after viewer input does not wait for the page to measure opaque regions; the next
 // quiet packet measures them (and the 25% budget), even on a page that had none.
 test('MP-08/MP-10: opaque regions are measured by the next quiet packet, not by an echo after input', async () => {
@@ -505,7 +521,7 @@ test('MP-08/MP-10: an empty drain re-arms the long poll without a separate loade
   const calls = [], tab = { tab_id: 't', target_id: 'T', document_id: 'D1' };
   const connection = { isOpen: () => true, send: async () => ({}) };
   const world = { connection, sessionId: 'S', frame: { loaderId: 'D1' }, ref: 'm' };
-  const header = { snapshot_complete: 'false', font_failures:'[]', scroll: '[0,0]', focused: 'null', focus_visible: 'false', selection: 'null', fragment: 'null', page_wheel: 'false' };
+  const header = { snapshot_complete: 'false', font_failures:'[]', scroll: '[0,0]', focused: 'null', focus_visible: 'false', selection: 'null', fragment: 'null', page_wheel: 'false', media_playing: 'false' };
   const stream = { tab_id: 't', world, issued: 1, document_id: 'D1', policy: 'p', fallback: null, header, sentScroll: [0, 0], resources: new Map(), attrSequence: new Map(), ownScrolls: new Map(), frames: new Map(), frameSlots: new Map(), frameSlot: 0, tileKeys: '', movedAt: 0 };
   const host = { protection: 'p', generation: 1, pageSize, scales: new Map(), tabs: new Map([['t', tab]]), displayTarget: async () => tab,
     browser: { connection, documentIdsByTarget: new Map([['T', 'D1']]), sessionsByTarget: new Map([['T', 'S']]) } };
@@ -516,6 +532,32 @@ test('MP-08/MP-10: an empty drain re-arms the long poll without a separate loade
   const packet = await mirror.packet(stream, { subscription_id: 's', generation: 1, after_sequence: 1, wait_ms: 1000 }, 'scope', undefined, Date.now() + 1000);
   assert.deepEqual(packet.ops, [{ op: 'text', id: 'n5', text: 'menu' }]);
   assert.deepEqual(calls, ['m.drain', 'm.waitDrain'], 'MP-08: no loadedCount() between the drain and the long poll');
+});
+
+// Row 486: the viewer keeps a Tab that plays video or audio warm; the page says so in the header (playing, muted or not).
+// A change of it alone is a packet (no long poll on it); the same value again is an empty credit.
+test('Row 486: a page that starts or stops playing media sends media_playing at once', async () => {
+  const run = async (sent, playing) => {
+    const calls = [], tab = { tab_id: 't', target_id: 'T', document_id: 'D1' };
+    const connection = { isOpen: () => true, send: async () => ({}) };
+    const world = { connection, sessionId: 'S', frame: { loaderId: 'D1' }, ref: 'm' };
+    const header = { snapshot_complete: 'false', font_failures:'[]', scroll: '[0,0]', focused: 'null', focus_visible: 'false', selection: 'null', fragment: 'null', page_wheel: 'false', media_playing: JSON.stringify(sent) };
+    const stream = { tab_id: 't', world, issued: 1, document_id: 'D1', policy: 'p', fallback: null, header, sentScroll: [0, 0], resources: new Map(), attrSequence: new Map(), ownScrolls: new Map(), frames: new Map(), frameSlots: new Map(), frameSlot: 0, tileKeys: '', movedAt: 0 };
+    const host = { protection: 'p', generation: 1, pageSize, scales: new Map(), tabs: new Map([['t', tab]]), displayTarget: async () => tab,
+      browser: { connection, documentIdsByTarget: new Map([['T', 'D1']]), sessionsByTarget: new Map([['T', 'S']]) } };
+    const mirror = new Mirror2({ host, require: () => stream, assertWebTab: () => {}, streams: new Map([['s', stream]]) });
+    mirror.evaluate = async (_world, expression) => { calls.push(expression.replace(/\(.*$/, '')); return { ops: [], changed: [], resources: [], sheets: [], scroll: [0, 0], focused: null, selection: null, fragment: null, opaque: false, pressed: 0, loaded: 4, media_playing: playing }; };
+    mirror.frames = { drain: async () => ({ ops: [], resources: [], changed: [] }), project: (_, source) => source };
+    const packet = await mirror.packet(stream, { subscription_id: 's', generation: 1, after_sequence: 1, wait_ms: 50 }, 'scope', undefined, Date.now() + 50);
+    return { packet, calls };
+  };
+  const started = await run(false, true);
+  assert.equal(started.packet.media_playing, true, 'a page that starts playing says so');
+  assert.deepEqual(started.calls, ['m.drain'], 'at once, without a long poll');
+  assert.equal((await run(true, false)).packet.media_playing, false, 'and when it stops');
+  const same = await run(true, true);
+  assert.equal(same.packet.media_playing, undefined, 'an unchanged value is implied (compact delta)');
+  assert.ok(same.calls.includes('m.waitDrain'), 'nothing new: the credit long-polls');
 });
 
 // MP-08/MP-10 (owner A/B 2026-10-14, finding 4/6): a navigated document's first snapshot waits for its first
@@ -555,7 +597,7 @@ test('MP-08/MP-10: a navigation ends a waiting long poll before its deadline', a
   const documents = new Map([['T', 'D1']]);
   const connection = { isOpen: () => true, send: async () => ({ frameTree: { frame: { loaderId: documents.get('T') } } }) };
   const world = { connection, sessionId: 'S', frame: { loaderId: 'D1' }, ref: 'm' };
-  const stream = { tab_id: 't', world, issued: 1, document_id: 'D1', policy, fallback: null, resources: new Map(), attrSequence: new Map(), ownScrolls: new Map(), frames: new Map(), frameSlots: new Map(), frameSlot: 0, tileKeys: '', hurry: 0, header: { scroll: '[0,0]', focused: 'null', focus_visible: 'false', selection: 'null', fragment: 'null', page_wheel: 'false' } };
+  const stream = { tab_id: 't', world, issued: 1, document_id: 'D1', policy, fallback: null, resources: new Map(), attrSequence: new Map(), ownScrolls: new Map(), frames: new Map(), frameSlots: new Map(), frameSlot: 0, tileKeys: '', hurry: 0, header: { scroll: '[0,0]', focused: 'null', focus_visible: 'false', selection: 'null', fragment: 'null', page_wheel: 'false', media_playing: 'false' } };
   const host = { protection: policy, generation: 1, pageSize, scales: new Map(), tabs: new Map([['t', tab]]), displayTarget: async () => tab,
     browser: { connection, documentIdsByTarget: documents, sessionsByTarget: new Map([['T', 'S']]) } };
   const mirror = new Mirror2({ host, require: () => stream, assertWebTab: () => {}, streams: new Map([['s', stream]]) });
@@ -572,11 +614,22 @@ test('MP-08/MP-10: a navigation ends a waiting long poll before its deadline', a
   assert.ok(Date.now() - started < 1000, `the wait ended after the navigation (${Date.now() - started} ms)`);
 });
 
+// Row 342 F2: the page parses a part it has not seen, gives the url() occurrences their keys (sheetKeys) and prunes a
+// first-paint sheet; the kernel sanitizes. This stub answers those three calls; `keyOf` plays the page's registry.
+const pageSheets=(seen=[],keyOf=(value,n)=>`r${n+1}`,parse=text=>text,used=()=>true)=>async(world,expression)=>{
+ if(expression.includes('compatMode'))return world.mode==='BackCompat';
+ seen.push(expression);
+ if(expression.includes('.sheetKeys('))return JSON.parse(expression.slice(expression.indexOf('.sheetKeys(')+11,-1)).map(part=>part.urls.map(([value,base,kind],n)=>keyOf(value,n,base,kind)));
+ if(expression.includes('.usedCss('))return null;
+ if(expression.includes('.usedSelectors(')){const at=expression.indexOf('.usedSelectors(')+15,args=JSON.parse(`[${expression.slice(at,-1)}]`);return args[1].map(selector=>used(selector)?'1':'0').join('')}
+ return JSON.parse(expression.slice(expression.lastIndexOf('})(')+3,-1)).map(sheet=>parse(sheet.text));
+};
+
 test('MP-10 M2: completed stylesheet bodies do not wait for Page resource-content loading',async()=>{
  const body=Buffer.from('body{color:green}'),calls=[];
  const world={connection:{async send(method){calls.push(method);throw Error('unrelated document resources are still loading')}},sessionId:'S',frame:{id:'F',loaderId:'D'},ref:'observer'};
  const mirror=new Mirror2({host:{browser:{responseBodies:{async read(actual,address,limit){assert.equal(actual,world);assert.equal(address,'https://public.example/style.css');assert.equal(limit,16*1024*1024);return body}}}}});
- mirror.evaluate=async(_world,expression)=>{if(expression.includes('compatMode'))return false;assert(expression.includes(body.toString()));return {css:body.toString(),parsed:[body.toString()],used:null}};
+ mirror.evaluate=pageSheets();
  assert.equal(await mirror.crossOriginSheet(world,'https://public.example/style.css'),body.toString());assert.deepEqual(calls,[]);
 });
 
@@ -587,7 +640,7 @@ test('a cross-origin stylesheet missing from the network buffer and the resource
  const body='body{color:green}',asked=[];
  const world={connection:{async send(method,params){asked.push([method,params?.frameId]);if(method==='Network.loadNetworkResource')return {resource:{success:false}};if(method==='Page.getResourceTree')return {frameTree:{frame:{id:'F'},resources:[{url:'https://public.example/other.css'}]}};if(method==='Page.getResourceContent'&&params.frameId==='F'&&params.url==='https://public.example/big.css')return {content:body,base64Encoded:false};throw Error(`unexpected ${method}`)}},sessionId:'S',frame:{id:'F',loaderId:'D'},ref:'observer'};
  const mirror=new Mirror2({host:{browser:{responseBodies:{async read(){return null}}}}});
- mirror.evaluate=async(_world,expression)=>{if(expression.includes('compatMode'))return false;assert(expression.includes(body));return {css:body,parsed:[body],used:null}};
+ mirror.evaluate=pageSheets();
  assert.equal(await mirror.crossOriginSheet(world,'https://public.example/big.css'),body);
  assert.deepEqual(asked,[['Network.loadNetworkResource','F'],['Page.getResourceTree',undefined],['Page.getResourceContent','F']]);
 });
@@ -605,7 +658,7 @@ test('a cross-origin stylesheet that left the network buffer is read as its exac
   if(method==='Page.getResourceContent')return {content:latin1,base64Encoded:false};
   throw Error(`unexpected ${method}`)}},sessionId:'S',frame:{id:'F',loaderId:'D'},ref:'observer'};
  const mirror=new Mirror2({host:{browser:{responseBodies:{async read(){return null}}}}});
- mirror.evaluate=async(_world,expression)=>{if(expression.includes('compatMode'))return false;const sheets=JSON.parse(expression.slice(expression.lastIndexOf('})(')+3,-1));return {css:sheets[0].text,parsed:[sheets[0].text],used:null}};
+ mirror.evaluate=pageSheets();
  assert.equal(await mirror.crossOriginSheet(world,'https://public.example/s.css'),exact);
  assert(!asked.includes('Page.getResourceContent'),'the frame text is only the last resort');
 });
@@ -615,7 +668,7 @@ test('a cross-origin stylesheet whose href has a fragment is read by its request
  const body=Buffer.from('body{color:green}'),asked=[];
  const world={connection:{async send(method){throw Error(`unexpected ${method}`)}},sessionId:'S',frame:{id:'F',loaderId:'D'},ref:'observer'};
  const mirror=new Mirror2({host:{browser:{responseBodies:{async read(_world,address){asked.push(address);return address==='https://public.example/s.css?AUIClients/X'?body:null}}}}});
- mirror.evaluate=async(_world,expression)=>{if(expression.includes('compatMode'))return false;assert(expression.includes(body.toString()));return {css:body.toString(),parsed:[body.toString()],used:null}};
+ mirror.evaluate=pageSheets();
  assert.equal(await mirror.crossOriginSheet(world,'https://public.example/s.css?AUIClients/X#1353983-T1'),body.toString());
  assert.deepEqual(asked,['https://public.example/s.css?AUIClients/X']);
 });
@@ -625,20 +678,164 @@ test('MP-08/MP-10: a same-site navigation reuses the normalized text of a cross-
  const source='.a{border:var(--w) solid;border-color:red}',parsed='.a { border: var(--w) solid; border-color: red; }';
  const mirror=new Mirror2({host:{browser:{responseBodies:{async read(){return Buffer.from(source)}}}}});
  const expressions=[];
- mirror.evaluate=async(world,expression)=>{
-  if(expression.includes('compatMode'))return world.mode==='BackCompat';
-  expressions.push(expression);const sheets=JSON.parse(expression.slice(expression.lastIndexOf('})(')+3,-1));
-  return {css:`sanitized:${sheets[0].body??parsed}`,parsed:sheets.map(sheet=>sheet.body===undefined?parsed:null),used:null};
- };
+ mirror.evaluate=pageSheets(expressions,undefined,()=>parsed);
  const world=(url,mode='CSS1Compat')=>({connection:{async send(method){throw Error(`unexpected ${method}`)}},sessionId:'S',frame:{id:'F',url},mode,ref:'observer'});
+ const parses=()=>expressions.filter(e=>!e.includes('.sheetKeys(')&&!e.includes('.usedCss('));
  const first=await mirror.crossOriginSheet(world('https://en.wikipedia.org/wiki/Linux'),'https://en.wikipedia.org/w/load.php?skin');
  const next=await mirror.crossOriginSheet(world('https://en.wikipedia.org/wiki/Web_browser'),'https://en.wikipedia.org/w/load.php?skin');
- assert(expressions[0].includes(JSON.stringify(source)),'the first document parses the source');
- assert(!expressions[1].includes(JSON.stringify(source))&&expressions[1].includes(JSON.stringify(parsed)),'the next document of the site takes the normalized text');
- assert.equal(first,`sanitized:${parsed}`);assert.equal(next,`sanitized:${parsed}`);
+ assert.equal(parses().length,1,'only the first document parses the source');assert(parses()[0].includes(JSON.stringify(source)));
+ assert(!expressions.some(e=>e.includes(JSON.stringify(parsed))),'the normalized text never travels into the page');
+ assert.equal(first,parsed);assert.equal(next,parsed);
  await mirror.crossOriginSheet(world('https://other.example/'),'https://en.wikipedia.org/w/load.php?skin');
  await mirror.crossOriginSheet(world('https://en.wikipedia.org/quirks','BackCompat'),'https://en.wikipedia.org/w/load.php?skin');
- assert(expressions[2].includes(JSON.stringify(source))&&expressions[3].includes(JSON.stringify(source)),'another origin or compatibility mode parses the source itself');
+ assert.equal(parses().length,3,'another origin or compatibility mode parses the source itself');
+});
+
+// Row 342 F2 (GitHub: 2 MB of sheets crossed CDP into and out of a page busy with its own load on every navigation).
+test('Row 342 F2: a cross-origin sheet sanitized in the kernel equals the in-page sanitize, keys taken in the same order',async()=>{
+ const css=[
+  '@font-face { font-family: "F"; src: url("/f.woff2") format("woff2"), url(data:font/woff2;base64,AAAA) format("woff2"); }\n',
+  '.a { background: url(a.png), url("a.png"), url(\'#frag x\'), url(javascript:alert(1)), url(); }\n',
+  '.b { background-image: image-set("b1.png" 1x, url(b2.png) 2x type("image/webp")); }\n',
+  '.c { background: -webkit-image-set(url(c.png) 1x); --v: u\\72l(esc.png); }\n',
+  'a[href*="cookie" i]:target, :defined > img[src$=".svg"] { color: red; }\n',
+  '@namespace svg url(http://www.w3.org/2000/svg);\n@namespace bad url(https://evil.example/ns);\n',
+  '.d::after { content: "url(\\"inside.png\\")"; }\n'].join('');
+ const base='https://cdn.example/assets/site.css';
+ // The page's registry: a fixed key per URL and kind, refusing one, so 'none' and repeated keys both occur.
+ const registry=new Map(),calls=[];
+ const resource=(value,at,kind)=>{calls.push([value,at,kind]);let url;try{url=new URL(value,at).href}catch{return null}if(url.startsWith('javascript:'))return null;const slot=`${kind}:${url}`;if(!registry.has(slot))registry.set(slot,`r${registry.size+7}`);return registry.get(slot)};
+ const inPage=sanitizeMirrorCss(css,base,resource),pageCalls=calls.splice(0);registry.clear();
+ const mirror=new Mirror2({host:{browser:{responseBodies:{async read(){return Buffer.from(css)}}}}});
+ const seen=[];
+ mirror.evaluate=pageSheets(seen,(value,n,at,kind)=>resource(value,at,kind));
+ const world={connection:{async send(method){throw Error(`unexpected ${method}`)}},sessionId:'S',frame:{id:'F',url:'https://site.example/'},ref:'observer'};
+ assert.equal(await mirror.crossOriginSheet(world,base),inPage,'byte-identical output');
+ assert.deepEqual(calls,pageCalls,'the page registry sees the same occurrences in the same order');
+ const keysCall=seen.find(e=>e.includes('.sheetKeys('));
+ assert(!keysCall.includes('font-family'),'the sheet text does not travel with the keys request');
+ const [part]=JSON.parse(keysCall.slice(keysCall.indexOf('.sheetKeys(')+11,-1));
+ assert.match(part.imageSets,/^image-set\(/);assert.match(part.imageSets,/url\("mr:r6"\) 1x/,'image-set options travel with their occurrence numbers');
+ assert.deepEqual(part.values,['href','src']);
+});
+
+test('Row 342 F2: a first-paint sheet the viewer retains is not sent to the page for pruning; another one is',async()=>{
+ const big=`.r{color:red}\n`.repeat(4000),other=`.o{color:blue}\n`.repeat(4000);
+ const mirror=new Mirror2({host:{browser:{responseBodies:{async read(_world,url){return Buffer.from(url.endsWith('big.css')?big:other)}}}}});
+ const seen=[];mirror.evaluate=pageSheets(seen);
+ const world={connection:{async send(method){throw Error(`unexpected ${method}`)}},sessionId:'S',frame:{id:'F',url:'https://site.example/'},ref:'observer',retainedSheets:new Set([sheetDigest(big)])};
+ assert.equal(await mirror.crossOriginSheet(world,'https://cdn.example/big.css','n1'),big);
+ assert(!seen.some(e=>e.includes('.usedSelectors(')),'a retained sheet is not pruned');
+ await mirror.crossOriginSheet(world,'https://cdn.example/other.css','n1');
+ assert(seen.some(e=>e.includes('.usedSelectors(')),'a sheet the viewer lacks is still pruned, from its selectors');
+ assert(!seen.some(e=>e.includes('.usedCss(')),'no whole-sheet prune call');
+ assert(!seen.find(e=>e.includes('.usedSelectors(')).includes('color:blue'),'the prune call carries selectors, not declarations');
+});
+
+test('Row 342 (b): a sheet prunes from its selector list exactly as usedCss walks its rules',()=>{
+ const css=['@charset "utf-8";','@layer base, theme;','.keep { content: "a { b; } c"; }','.drop { color: red; }',
+  '@media (max-width: 600px) {\n  .keep { color: blue; }\n  .drop { color: green; }\n}',
+  '@media print {\n  .drop { color: black; }\n}',
+  '@supports (display: grid) {\n  @media screen {\n    .keep, .x { display: grid; }\n  }\n}',
+  '@layer theme {\n  .drop { color: pink; }\n}',
+  '@font-face { font-family: "F"; src: url("mr:r1"); }',
+  '.esc\\{x { color: red; }','/* note { */ .keep::after { content: "\\"}" }',
+  '@keyframes spin {\n  from { transform: none; }\n  to { transform: rotate(1turn); }\n}'].join('\n')+'\n';
+ const rules=cssRules(css);
+ const used=new Set(['.keep','.keep, .x','.keep::after']);
+ assert.equal(prunedCss(rules,selector=>used.has(selector)),['@charset "utf-8";','@layer base, theme;','.keep { content: "a { b; } c"; }',
+  '@media (max-width: 600px) {.keep { color: blue; }\n}','@supports (display: grid) {@media screen {.keep, .x { display: grid; }\n}\n}',
+  '@layer theme {}','@font-face { font-family: "F"; src: url("mr:r1"); }','.keep::after { content: "\\"}" }',
+  '@keyframes spin {\n  from { transform: none; }\n  to { transform: rotate(1turn); }\n}'].join('\n')+'\n');
+});
+
+// Row 342: GitHub's first-visit sheets waited ~1.1 s behind the page's own main thread to parse (~0.2 s of actual work).
+test('Row 342 a first-visit sheet parses in the keepalive blank page; quirks pages and a lost reserve parse in the page',async()=>{
+ const source='.a{color:red}',asideCalls=[];let asideReply='ok';
+ const browser={responseBodies:{async read(){return Buffer.from(source)}},async resolvePageTarget(target){asideCalls.push(target);return {sessionId:'KS',connection:{async send(method,params){
+  assert.equal(method,'Runtime.evaluate');assert.match(params.expression,/location\.href!=='about:blank'/);
+  if(asideReply==='throw')throw Error('target gone');if(asideReply==='user tab')return {result:{value:null}};
+  const sheets=JSON.parse(params.expression.slice(params.expression.lastIndexOf('})(')+3,-1));return {result:{value:sheets.map(()=>'.a { color: red; }')}}}}}}};
+ const seen=[];
+ const make=()=>{const mirror=new Mirror2({host:{browser,keepaliveTarget:'K'}});mirror.evaluate=pageSheets(seen);return mirror};
+ const parsesInPage=()=>seen.filter(e=>!e.includes('.sheetKeys(')&&!e.includes('.usedSelectors(')).length;
+ const world=(url,mode='CSS1Compat')=>({connection:{async send(method){throw Error(`unexpected ${method}`)}},sessionId:'S',frame:{id:'F',url},mode,ref:'observer'});
+ assert.equal(await make().crossOriginSheet(world('https://site.example/a'),'https://cdn.example/a.css'),'.a { color: red; }');
+ assert.deepEqual(asideCalls,['K']);assert.equal(parsesInPage(),0,'a standards-mode page never parses its sheet itself');
+ await make().crossOriginSheet(world('https://site.example/q','BackCompat'),'https://cdn.example/a.css');
+ assert.equal(asideCalls.length,1,'a quirks page does not use the standards-mode reserve');assert.equal(parsesInPage(),1);
+ asideReply='user tab';await make().crossOriginSheet(world('https://site.example/b'),'https://cdn.example/a.css');
+ assert.equal(parsesInPage(),2,'a reserve that became a user tab: the page parses as before');
+ asideReply='throw';await make().crossOriginSheet(world('https://site.example/c'),'https://cdn.example/a.css');
+ assert.equal(parsesInPage(),3,'no reserve: the page parses as before');
+});
+
+// Row 342 F3: the document's loaded stylesheets read alongside the snapshot, never across documents.
+test('Row 342 F3: prefetched stylesheet reads serve only their own document, and a missed one reads as before',async()=>{
+ const bodies=new BrowserResponseBodies(),ev=(method,params)=>bodies.observe({sessionId:'S',method,params});
+ for(const [id,loader,url,type] of [['1','D1','https://cdn.example/a.css','Stylesheet'],['2','D1','https://cdn.example/a.png','Image'],['3','D2','https://cdn.example/b.css','Stylesheet']]){
+  ev('Network.requestWillBeSent',{requestId:id,frameId:'F',loaderId:loader,type,request:{url}});ev('Network.responseReceived',{requestId:id,frameId:'F',loaderId:loader,type,response:{url}});ev('Network.loadingFinished',{requestId:id});
+ }
+ const worldOf=loader=>({sessionId:'S',frame:{id:'F',loaderId:loader,url:'https://site.example/'},ref:'observer',connection:{async send(method,params){if(method==='Network.getResponseBody')return {body:`/*${params.requestId}*/.x{color:red}`,base64Encoded:false};if(method==='Network.loadNetworkResource')return {resource:{success:false}};if(method==='Page.getResourceTree')return {frameTree:{frame:{id:'F'},resources:[]}};if(method==='Page.getResourceContent')throw Error('no such resource');throw Error(`unexpected ${method}`)}}});
+ const d1=worldOf('D1'),d2=worldOf('D2');
+ assert.deepEqual(bodies.stylesheets(d1),['https://cdn.example/a.css'],'only this document\'s loaded stylesheets');
+ assert.deepEqual(bodies.stylesheets(d2),['https://cdn.example/b.css']);
+ const reads=[];
+ const mirror=new Mirror2({host:{browser:{responseBodies:{stylesheets:world=>bodies.stylesheets(world),async read(world,url,limit){reads.push([world.frame.loaderId,url]);return bodies.read(world,url,limit)}}}}});
+ mirror.evaluate=pageSheets();
+ mirror.prefetchSheets(d1);assert.deepEqual(reads,[['D1','https://cdn.example/a.css']],'the read starts before any sheet is asked for');
+ assert.equal(await mirror.crossOriginSheet(d1,'https://cdn.example/a.css'),'/*1*/.x{color:red}');
+ assert.equal(reads.length,1,'the prefetched read served it');
+ // The navigation's new document has its own world: the old document's reads never serve it.
+ mirror.prefetchSheets(d2);
+ await assert.rejects(mirror.crossOriginSheet(d2,'https://cdn.example/a.css'),/no such resource/,'a sheet of the old document is not this document\'s (unreadable here, as before)');
+ assert.equal(await mirror.crossOriginSheet(d2,'https://cdn.example/b.css'),'/*3*/.x{color:red}');
+ assert(!reads.slice(1).some(([loader])=>loader==='D1'),'no read of the old document after the navigation');
+ // A sheet that finished loading after the prefetch (null then) reads as before.
+ const late=worldOf('D3');late.sheetReads=new Map([['https://cdn.example/c.css',Promise.resolve(null)]]);
+ mirror.resourceBody=async()=>Buffer.from('.late{color:blue}');
+ assert.equal(await mirror.crossOriginSheet(late,'https://cdn.example/c.css'),'.late{color:blue}');
+});
+
+// Row 487: a layout reset (the person resized the window) snapshots the same document again; its sheets' bytes are the
+// same, so they are read once per document (github.com: 8 sheet reads of ~85 ms per resize), never from another document.
+// Row 487 on #1678's sheet path (union14): the page answers its compatibility mode, parses the sheets the kernel's
+// parsed-sheet cache misses (each source's text, recorded), and keys each part's url() occurrences (none here).
+const sheetPage = parses => async (_world, expression) => {
+ if (expression.includes('compatMode')) return false;
+ if (expression.includes('return sheets.map(s=>{let body=parse')) { const sources = JSON.parse(expression.slice(expression.lastIndexOf('})(') + 3, -1)); parses.push(...sources.map(s => s.text)); return sources.map(s => s.text); }
+ if (expression.includes('.sheetKeys(')) return JSON.parse(expression.slice(expression.indexOf('.sheetKeys(') + 11, -1)).map(part => part.urls.map(() => null));
+ throw Error(`unexpected page call ${expression.slice(0, 80)}`);
+};
+test('Row 487: a reset of the same document reuses its raw sheet reads; a new document reads again',async()=>{
+ const reads=[];
+ const mirror=new Mirror2({host:{browser:{responseBodies:{async read(_world,address){reads.push(address);return Buffer.from('.a{color:red}')}}}}});
+ const parses=[];mirror.evaluate=sheetPage(parses);
+ const world=url=>({connection:{async send(method){throw Error(`unexpected ${method}`)}},sessionId:'S',frame:{id:'F',url},ref:'observer'});
+ const page=world('https://github.com/a');
+ assert.equal(await mirror.crossOriginSheet(page,'https://github.githubassets.com/x.css','n9'),'.a{color:red}');
+ assert.equal(await mirror.crossOriginSheet(page,'https://github.githubassets.com/x.css','n9'),'.a{color:red}');
+ assert.deepEqual(reads,['https://github.githubassets.com/x.css'],'the second snapshot of the document reads nothing again');
+ assert.deepEqual(parses,['.a{color:red}'],'and parses nothing again (the parsed-sheet cache)');
+ await mirror.crossOriginSheet(world('https://github.com/b'),'https://github.githubassets.com/x.css','n9');
+ assert.equal(reads.length,2,'another document reads its own bytes');
+ assert.equal(parses.length,1,'the same text from the same origin is not parsed again');
+});
+
+// Review P2 on #1719: the page can reload a sheet at the same URL with new CSS (re-linked, no-cache). The update reads the
+// latest response, and the next reset snapshot carries the new bytes, not the first ones.
+test('Row 487: a sheet update reads the new response, and the next reset snapshot carries it', async () => {
+ let body = '.a{color:red}'; const reads = [];
+ const mirror = new Mirror2({ host: { browser: { responseBodies: { async read(_world, address) { reads.push(address); return Buffer.from(body); } } } } });
+ const parses = []; mirror.evaluate = sheetPage(parses);
+ const page = { connection: { async send(method) { throw Error(`unexpected ${method}`); } }, sessionId: 'S', frame: { id: 'F', url: 'https://example.com/' }, ref: 'observer' };
+ const url = 'https://cdn.example.com/live.css';
+ assert.equal(await mirror.crossOriginSheet(page, url, 'n4'), '.a{color:red}');
+ body = '.a{color:green}';
+ assert.equal(await mirror.crossOriginSheet(page, url), '.a{color:green}', 'the update reads the latest response');
+ assert.equal(await mirror.crossOriginSheet(page, url, 'n4'), '.a{color:green}', 'a later reset snapshot carries the new bytes');
+ assert.equal(reads.length, 2, 'the reset still reads nothing again');
+ assert.deepEqual(parses, ['.a{color:red}', '.a{color:green}'], 'each distinct text parses once');
 });
 
 test('MP-08/MP-10: the normalized sheet cache stays within its entry and size bounds',()=>{
@@ -948,6 +1145,83 @@ test('F-5 a page resize during an observation re-snapshots the stream without re
  assert.equal(next.reset,true,'the stream still re-snapshots at the new size');
 });
 
+test('Row 487 protocol 1015: a layout_delta stream follows a page resize by a delta that carries the new size, never a reset', async () => {
+ const policy={targets:[],values:[]},tab={tab_id:'t',target_id:'T',document_id:'D1'};
+ const connection={isOpen:()=>true,send:async()=>({})};
+ const world={connection,sessionId:'S',frame:{loaderId:'D1'},ref:'m'};
+ const make=(extra)=>({id:'s',wire:2,chain:Promise.resolve(),tab_id:'t',world,issued:0,document_id:null,policy:null,fallback:null,header:{},resources:new Map(),attrSequence:new Map(),ownScrolls:new Map(),frames:new Map(),frameSlots:new Map(),frameSlot:0,tileKeys:'',...extra});
+ const run=async(extra,{complete=true}={})=>{
+  let size={width:1032,height:527},revision=0,snapshots=0,stills=0,mutate=null;
+  const stream=make(extra);
+  const host={protection:policy,generation:1,pageSize:()=>({...size}),layoutRevision:()=>revision,scales:new Map(),tabs:new Map([['t',tab]]),displayTarget:async()=>tab,mirrorTarget:async()=>tab,browser:{connection,documentIdsByTarget:new Map([['T','D1']]),sessionsByTarget:new Map([['T','S']])}};
+  const service={host,streams:new Map([['s',stream]]),require:()=>stream};
+  const mirror=new Mirror2(service);
+  const empty={ops:[],changed:[],resources:[],sheets:[],scroll:[0,0],focused:null,selection:null,snapshot_complete:complete};
+  mirror.evaluate=async(_,expression)=>{
+   if(expression==='m.snapshot()'){snapshots++;return {root:'n1',nodes:[{id:'n1',parent:null,kind:'element',tag:'div',attrs:{}}],sheets:[],resources:[],scroll:[0,0],focused:null,selection:null,fragment:null,snapshot_complete:complete};}
+   // The page's own resize handler changes its DOM once the page is laid out at the new size.
+   if(/waitDrain/.test(expression)){await new Promise(resolve=>setTimeout(resolve,20));if(mutate){const ops=mutate;mutate=null;return {...empty,ops};}return empty;}
+   return empty;
+  };
+  mirror.frames={attach:async()=>({records:[],ops:[],opaque:[]}),drain:async()=>({ops:[],resources:[],changed:[]}),project:(_,source)=>source,opaqueBoxes:async()=>[]};mirror.materialize=async()=>[];mirror.sheetOps=async()=>[];mirror.markClosedHosts=async()=>{};
+  mirror.tiles=async(_w,_t,_s,refresh)=>{if(refresh)stills++;return [];};
+  const credit=(command_id,after,wait_ms=0)=>mirror.next(stream,{subscription_id:'s',generation:1,command_id,after_sequence:after,wait_ms},'scope');
+  const first=await credit('c1',0);stills=0;
+  // A credit waiting for the page when the viewer's resize lays the page out at another size.
+  const waiting=credit('c2',first.sequence,1500),started=Date.now();
+  // A second credit already queued behind it (the viewer keeps several in flight) still waits for the page.
+  const queued=credit('c3',first.sequence+1,1500);let early=null;queued.then(()=>{early??=Date.now()-started;});
+  await new Promise(resolve=>setTimeout(resolve,60));
+  size={width:1672,height:847};revision++;mirror.layoutChanged?.('t');
+  const second=await waiting,answered=Date.now()-started;
+  await new Promise(resolve=>setTimeout(resolve,150));
+  const quiet=early===null;
+  mutate=[{op:'attr',id:'n1',name:'class',value:'wide'}];
+  const third=await queued;
+  return {first,second,third,answered,snapshots,stills,quiet};
+ };
+ const opted=await run({layoutDelta:true});
+ assert.equal(opted.first.reset,true);assert.equal(opted.first.css_width,1032);
+ assert.notEqual(opted.second.reset,true,'the resize is followed by a delta, not a reset');
+ assert.deepEqual([opted.second.css_width,opted.second.css_height],[1672,847],'the delta names the new page size');
+ assert(opted.answered<600,`a credit waiting for the page answers at the resize (${opted.answered} ms)`);
+ assert.equal(opted.stills,1,'region stills are taken again at the new size');
+ assert.equal(opted.snapshots,1,'no second snapshot');
+ assert.notEqual(opted.third.reset,true);assert.deepEqual(opted.third.ops,[{op:'attr',id:'n1',name:'class',value:'wide'}],'the page\'s own reaction follows as ordinary ops');
+ assert.equal(opted.third.css_width,undefined,'an unchanged size is implied by the base');
+ assert.equal(opted.quiet,true,'a credit queued behind the resized one is not answered with an empty packet');
+ // A viewer that did not ask, or a snapshot that still holds deferred boxes at the old geometry, re-snapshots as before.
+ for(const [extra,options] of [[{},{}],[{layoutDelta:true},{complete:false}]]){
+  const old=await run(extra,options);
+  const resized=[old.second,old.third].find(packet=>packet.css_width===1672);
+  assert.equal(resized?.reset,true,'the new size arrives with a reset');
+  assert.equal(old.snapshots,2);
+ }
+});
+
+test('Row 487 #1718 review P2: a resize during the region still capture stays due, so the next delta takes the stills again', async () => {
+ const policy={targets:[],values:[]},tab={tab_id:'t',target_id:'T',document_id:'D1'};
+ const connection={isOpen:()=>true,send:async()=>({})};
+ const world={connection,sessionId:'S',frame:{loaderId:'D1'},ref:'m'};
+ const stream={id:'s',wire:2,chain:Promise.resolve(),tab_id:'t',world,issued:0,document_id:null,policy:null,fallback:null,header:{},resources:new Map(),attrSequence:new Map(),ownScrolls:new Map(),frames:new Map(),frameSlots:new Map(),frameSlot:0,tileKeys:'',layoutDelta:true};
+ let size={width:1032,height:527},revision=0;const captured=[];let during=null;
+ const host={protection:policy,generation:1,pageSize:()=>({...size}),layoutRevision:()=>revision,scales:new Map(),tabs:new Map([['t',tab]]),displayTarget:async()=>tab,mirrorTarget:async()=>tab,browser:{connection,documentIdsByTarget:new Map([['T','D1']]),sessionsByTarget:new Map([['T','S']])}};
+ const mirror=new Mirror2({host,streams:new Map([['s',stream]]),require:()=>stream});
+ const empty={ops:[],changed:[],resources:[],sheets:[],scroll:[0,0],focused:null,selection:null,snapshot_complete:true};
+ mirror.evaluate=async(_,expression)=>expression==='m.snapshot()'?{root:'n1',nodes:[{id:'n1',parent:null,kind:'element',tag:'div',attrs:{}}],sheets:[],resources:[],scroll:[0,0],focused:null,selection:null,fragment:null,snapshot_complete:true}:empty;
+ mirror.frames={attach:async()=>({records:[],ops:[],opaque:[]}),drain:async()=>({ops:[],resources:[],changed:[]}),project:(_,source)=>source,opaqueBoxes:async()=>[]};mirror.materialize=async()=>[];mirror.sheetOps=async()=>[];mirror.markClosedHosts=async()=>{};
+ // The stills are taken at the size the page had when the capture started; a second resize lands while they are taken.
+ mirror.tiles=async(_w,_t,_s,refresh)=>{if(refresh)captured.push(size.width);if(during){const next=during;during=null;size=next;revision++;}return [];};
+ const credit=(command_id,after)=>mirror.next(stream,{subscription_id:'s',generation:1,command_id,after_sequence:after,wait_ms:0},'scope');
+ const first=await credit('c1',0);captured.length=0;
+ size={width:1672,height:847};revision++;during={width:1920,height:1000};
+ const second=await credit('c2',first.sequence);
+ assert.deepEqual([second.css_width,second.css_height],[1672,847],'the delta names the size its stills were taken at');
+ const third=await credit('c3',second.sequence);
+ assert.deepEqual([third.css_width,third.css_height],[1920,1000],'the later resize is still due and follows in the next delta');
+ assert.deepEqual(captured,[1672,1920],'the stills are taken again at the later size');
+});
+
 test('MP-11 #1016 @3a955d73c review 1: a packet still encoding when protection changes is retired, never returned or remembered', async () => {
  const policy={targets:[],values:[]},tab={tab_id:'t',target_id:'T',document_id:'D1'};
  const connection={isOpen:()=>true,send:async()=>({})};
@@ -985,6 +1259,29 @@ test('MP-08/MP-10 r47 GitHub storm: credits based before a reset still in flight
  for(let i=0;i<12;i++)assert.notEqual((await credit(reset.sequence-1)).reset,true,`credit ${i} rebuilt the page while its reset was in flight`);
  assert.equal(snapshots,2,'no reset storm');
  assert.equal((await credit(reset.sequence)).reset,true,'a viewer that applied the reset and is still far behind resets');
+});
+
+test('Row 527: a credit that arrives after newer ones (its older base) does not reset a viewer that is not behind', async () => {
+ const policy={targets:[],values:[]},tab={tab_id:'t',target_id:'T',document_id:'D1'};
+ const connection={isOpen:()=>true,send:async()=>({})};
+ const world={connection,sessionId:'S',frame:{loaderId:'D1'},ref:'m'};
+ const stream={id:'s',wire:2,chain:Promise.resolve(),tab_id:'t',world,issued:0,resetAt:0,document_id:null,policy:null,fallback:null,header:{},resources:new Map(),attrSequence:new Map(),ownScrolls:new Map(),frames:new Map(),frameSlots:new Map(),frameSlot:0,tileKeys:''};
+ const host={protection:policy,generation:1,pageSize,scales:new Map(),tabs:new Map([['t',tab]]),displayTarget:async()=>tab,mirrorTarget:async()=>tab,browser:{connection,documentIdsByTarget:new Map([['T','D1']]),sessionsByTarget:new Map([['T','S']])}};
+ const mirror=new Mirror2({host,streams:new Map([['s',stream]]),require:()=>stream});let snapshots=0;
+ mirror.evaluate=async(_,expression)=>{if(expression==='m.snapshot()'){snapshots++;return{root:'n1',nodes:[{id:'n1',parent:null,kind:'element',tag:'main'}],sheets:[],resources:[],scroll:[0,0],focused:null,selection:null,fragment:null,snapshot_complete:true};}return {ops:[],changed:[],resources:[],sheets:[],scroll:[0,0]};};
+ mirror.frames={attach:async()=>({records:[],ops:[],opaque:[]}),drain:async()=>({ops:[],resources:[],changed:[]}),project:(_,source)=>source,opaqueBoxes:async()=>[]};mirror.materialize=async()=>[];mirror.sheetOps=async()=>[];mirror.tiles=async()=>[];mirror.markClosedHosts=async()=>{};
+ const credit=after=>mirror.next(stream,{subscription_id:'s',generation:1,after_sequence:after,wait_ms:0},'scope');
+ let last=(await credit(0)).sequence;assert.equal(snapshots,1);
+ // A pipelined viewer keeps up: each credit names a base a few packets back (the NYT trace: a3374/i3380).
+ for(let i=0;i<20;i++){const packet=await credit(Math.max(1,stream.issued-5));assert.notEqual(packet.reset,true);last=packet.sequence;}
+ // Then a credit sent earlier arrives late, naming an older base (the trace: a3365/i3381, after a3374).
+ const late=await credit(stream.issued-15);
+ assert.notEqual(late.reset,true,'a late credit does not rebuild the page of a viewer that acknowledged a newer base');
+ assert.equal(snapshots,1,'no snapshot');
+ // A viewer that really fell behind (its newest acknowledged base is far back) still resets.
+ const stuck=stream.acked;let reset=false;
+ for(let i=0;i<12&&!reset;i++)reset=(await credit(stuck)).reset===true;
+ assert.ok(reset,'a viewer whose newest base stays far behind still resets');assert.equal(snapshots,2);
 });
 
 test('MP-08/MP-10 mirrorregion: full-viewport media stays a DOM copy without lossless stills', async () => {
@@ -1284,6 +1581,21 @@ for (const display of [undefined, {}]) test(`MP-08/MP-10: an over-budget canvas 
   assert.equal(tiles.length,display?0:1);
 });
 
+// YM-C1 (riften.ai): a transformed, faded or stacked canvas the page never drew showed the viewer's black placeholder: its
+// own pixels read clear, and a distorted region gets no screenshot still (a headless kernel has no video lease either).
+for (const own of [{clear:true}, null]) test(`YM-C1: a distorted canvas whose pixels read ${own ? 'clear gets a transparent still' : 'unreadable keeps none'} (no screenshot)`, async () => {
+  const size={width:1192,height:666}, boxes=[{id:'n3',box:[48,99,98,98],distorted:'transform'}];
+  const {decodePng}=await import('./kernel-browser-pixels.mjs');
+  const shots=[], host={pageSize:()=>size,scales:new Map(),async screenshot(tab,clip){shots.push(clip);throw new Error('no screenshot expected');}};
+  const mirror=new Mirror2({host}); mirror.opaqueBoxes=async()=>boxes; mirror.evaluate=async()=>own;
+  const tiles=await mirror.tiles({ref:'world'}, {tab_id:'tab'}, {frames:new Map()},true,true);
+  assert.deepEqual(shots,[]);
+  if (!own) { assert.equal(tiles.length,0); return; }
+  assert.equal(tiles.length,1);
+  assert.deepEqual([tiles[0].x,tiles[0].y,tiles[0].width,tiles[0].height],[0,0,98,98]);
+  const png=decodePng(tiles[0].data_base64,1); assert.ok(png.pixels.length>0 && png.pixels.every((v,i)=>i%4!==3||v===0),'every pixel is transparent');
+});
+
 for (const kind of ['click', 'scroll']) test(`MP-08/MP-10 resized iframe region ${kind} uses the real mirror input resolver`, async () => {
   const policy = {}, tab = {tab_id:'t',target_id:'target',document_id:'doc'};
   let viewport = {width:1610,height:900};
@@ -1357,6 +1669,31 @@ test('MP-10: a child frame whose delta keeps failing is re-mounted once per cred
   assert.equal(mounts, 2, 'the next credit tries the re-mounted child again');
 });
 
+// Row 486 review P1 (#1717): every observer drain carries media_playing, a child frame's too. The strict child delta
+// schema must never see it (a refused delta re-mounts the frame with fresh ids on every credit); the frame's playing joins the page.
+test('Row 486: a child frame\'s media_playing is taken before the rebase: no re-mount, and its playing counts for the page', async () => {
+  const { MirrorFrames } = await import('./kernel-browser-mirror2-frames.mjs');
+  const stream = { frames: new Map(), frameSlots: new Map() };
+  let playing = true;
+  const drained = () => ({ ops: [], changed: [], resources: [], sheets: [], scroll: [0, 0], focused: null, selection: null, fragment: null, opaque: false, pressed: 0, loaded: 0, media_playing: playing });
+  const frames = new MirrorFrames({ parentWorld: () => ({ ref: 'top' }), evaluate: async () => drained(), sheetOps: async () => [] });
+  frames.sheetOps = async () => [];
+  const entry = { owner: 'n5', slot: 1, hostSlot: 0, depth: 1, child: { ref: 'child' }, loaderId: 'L', scroll: '[0,0]', fragment: null };
+  stream.frames.set('n5', entry); stream.frameSlots.set(1, entry);
+  let mounts = 0;
+  frames.loaderId = async () => 'L';
+  frames.owners = async () => new Map([['n5', { id: 'f' }]]);
+  frames.mount = async () => { mounts++; return { records: [], ops: [], resources: [] }; };
+  await frames.drain(stream, null, null); await frames.drain(stream, null, null);
+  assert.equal(mounts, 0, 'consecutive drains keep the child (its ids, focus and inputs)');
+  assert.equal(stream.frames.get('n5'), entry);
+  assert.equal(entry.playing, true);
+  const mirror = new Mirror2({ host: {} });
+  assert.equal(mirror.mediaPlaying(stream, { media_playing: false }), true, 'a playing child frame plays for its page');
+  playing = false; await frames.drain(stream, null, null);
+  assert.equal(mirror.mediaPlaying(stream, { media_playing: false }), false);
+});
+
 // A native region measures live geometry repeatedly during admission. Its known
 // document owner must not wait behind a busy renderer's frame-tree response.
 for(const change of [null,'navigation','detach','connection'])test(`region bounds retain the known document owner through ${change??'a busy renderer'}`,async()=>{
@@ -1417,4 +1754,161 @@ test('T3: a cover skips the region under it only while its sent still is proven 
   stream.tilesAt = 0; packet = 3; const third = await mirror.tiles({ref: 'world'}, {tab_id: 'tab'}, stream, false, true);
   assert(third.some(t => t.node_id === 'n3'), 'a cover with no still of its own this time covers nothing');
   assert(![...first, ...second, ...third].some(t => 'opaque' in t), 'the opacity proof stays in the kernel');
+});
+
+// YM-C1 review 4: the viewer recognises the kernel's clear still by its exact bytes and paints nothing for it (the author's
+// background shows): the kernel-client's literal is the kernel's CLEAR_STILL.
+test('YM-C1: the kernel-client knows the kernel clear still by its exact bytes', async () => {
+  const {encodePng} = await import('./kernel-browser-pixels.mjs'), {readFileSync} = await import('node:fs');
+  assert.match(readFileSync(new URL('./kernel-browser-mirror2.mjs', import.meta.url), 'utf8'), /^const CLEAR_STILL = encodePng\(1, 1, Buffer\.alloc\(4\)\);$/m);
+  const viewer = readFileSync(new URL('../../../../packages/kernel-client/src/browser-mirror2.ts', import.meta.url), 'utf8');
+  assert.equal(/^const CLEAR_STILL = '([^']+)'$/m.exec(viewer)?.[1], encodePng(1, 1, Buffer.alloc(4)));
+});
+// Row 426: a region operation (a lease check, once per region video frame) ends the mirror's long polls so it is not held
+// behind them, but a credit with nothing to send must not answer with an empty packet: each one spends a sequence, and at
+// 60 checks a second the viewer's eight credits came back empty ~400 times a second and outran the `behind` margin (false resets
+// that also retired the regions). The credit waits again; the region operation still runs at once; the next real change answers.
+test('Row 426: a region operation during a waiting credit runs at once and does not make the credit issue an empty packet', async () => {
+  const policy = { targets: [] }, tab = { tab_id: 't', target_id: 'T', document_id: 'D1' };
+  const documents = new Map([['T', 'D1']]);
+  const connection = { isOpen: () => true, send: async () => ({ frameTree: { frame: { loaderId: 'D1' } } }) };
+  const world = { connection, sessionId: 'S', frame: { loaderId: 'D1' }, ref: 'm' };
+  const stream = { tab_id: 't', world, issued: 1, resetAt: 1, document_id: 'D1', policy, fallback: null, resources: new Map(), attrSequence: new Map(), ownScrolls: new Map(), frames: new Map(), frameSlots: new Map(), frameSlot: 0, tileKeys: '', hurry: 0, chain: Promise.resolve(), header: { snapshot_complete: 'false', font_failures: '[]', scroll: '[0,0]', focused: 'null', focus_visible: 'false', selection: 'null', fragment: 'null', page_wheel: 'false', media_playing: 'false' } };
+  const host = { protection: policy, generation: 1, pageSize, scales: new Map(), tabs: new Map([['t', tab]]), displayTarget: async () => tab,
+    browser: { connection, documentIdsByTarget: documents, sessionsByTarget: new Map([['T', 'S']]) } };
+  const mirror = new Mirror2({ host, require: () => stream, assertWebTab: () => {}, streams: new Map([['s', stream]]) });
+  mirror.world = async () => world;
+  const started = Date.now(), quiet = { ops: [], changed: [], resources: [], sheets: [], scroll: [0, 0], focused: null, selection: null, fragment: null, opaque: false, pressed: 0 };
+  let woken = null;
+  mirror.evaluate = async (_world, expression) => {
+    if (expression.endsWith('.wake()')) { woken?.(); return null; }
+    if (expression.includes('waitDrain')) {
+      // The page answers its long poll on a wake or at its bound; a real change arrives 300 ms in.
+      const at = Date.now() - started, ms = Number(/waitDrain\((\d+)/.exec(expression)?.[1] ?? 500);
+      await new Promise(resolve => { woken = resolve; setTimeout(resolve, Math.min(ms, Math.max(1, 300 - at))); });
+      woken = null;
+      return Date.now() - started >= 300 ? { ...quiet, ops: [{ op: 'text', id: 'n2', value: 'clicks 1' }] } : quiet;
+    }
+    return quiet;
+  };
+  mirror.frames = { drain: async () => ({ ops: [], resources: [], changed: [] }), project: (_, source) => source };
+  mirror.materialize = async () => [];
+  mirror.encode = async (_stream, packet) => packet;
+  const credit = mirror.next(stream, { subscription_id: 's', generation: 1, after_sequence: 1, wait_ms: 2000 }, 'scope');
+  await new Promise(resolve => setTimeout(resolve, 50));
+  let ranAt = null;
+  await mirror.regions.locked(stream, async () => { ranAt = Date.now() - started; });
+  assert.ok(ranAt !== null && ranAt < 200, `the region operation ran at once (${ranAt} ms), not behind the 2 s long poll`);
+  const packet = await credit;
+  assert.deepEqual(packet.ops, [{ op: 'text', id: 'n2', value: 'clicks 1' }], 'the credit answered the real change, not an empty packet at the region operation');
+  assert.equal(stream.issued, 2, 'one sequence for one change');
+});
+
+// Row 426: the viewer keeps several credits in flight; the ones queued behind the waiting one step aside too (before any page
+// call), so the region operation never waits behind their long polls, and none of them answers empty.
+test('Row 426: credits queued behind a waiting one neither delay a region operation nor answer it with empty packets', async () => {
+  const policy = { targets: [] }, tab = { tab_id: 't', target_id: 'T', document_id: 'D1' };
+  const documents = new Map([['T', 'D1']]);
+  const connection = { isOpen: () => true, send: async () => ({ frameTree: { frame: { loaderId: 'D1' } } }) };
+  const world = { connection, sessionId: 'S', frame: { loaderId: 'D1' }, ref: 'm' };
+  const stream = { tab_id: 't', world, issued: 1, resetAt: 1, document_id: 'D1', policy, fallback: null, resources: new Map(), attrSequence: new Map(), ownScrolls: new Map(), frames: new Map(), frameSlots: new Map(), frameSlot: 0, tileKeys: '', hurry: 0, chain: Promise.resolve(), header: { snapshot_complete: 'false', font_failures: '[]', scroll: '[0,0]', focused: 'null', focus_visible: 'false', selection: 'null', fragment: 'null', page_wheel: 'false', media_playing: 'false' } };
+  const host = { protection: policy, generation: 1, pageSize, scales: new Map(), tabs: new Map([['t', tab]]), displayTarget: async () => tab,
+    browser: { connection, documentIdsByTarget: documents, sessionsByTarget: new Map([['T', 'S']]) } };
+  const mirror = new Mirror2({ host, require: () => stream, assertWebTab: () => {}, streams: new Map([['s', stream]]) });
+  mirror.world = async () => world;
+  const started = Date.now(), quiet = { ops: [], changed: [], resources: [], sheets: [], scroll: [0, 0], focused: null, selection: null, fragment: null, opaque: false, pressed: 0 };
+  let woken = null, changes = 0;
+  mirror.evaluate = async (_world, expression) => {
+    if (expression.endsWith('.wake()')) { woken?.(); return null; }
+    if (expression.includes('waitDrain')) {
+      const ms = Number(/waitDrain\((\d+)/.exec(expression)?.[1] ?? 500);
+      await new Promise(resolve => { woken = resolve; setTimeout(resolve, Math.min(ms, Math.max(1, 300 - (Date.now() - started)))); });
+      woken = null;
+      return Date.now() - started >= 300 && changes++ === 0 ? { ...quiet, ops: [{ op: 'text', id: 'n2', value: 'clicks 1' }] } : quiet;
+    }
+    return quiet;
+  };
+  mirror.frames = { drain: async () => ({ ops: [], resources: [], changed: [] }), project: (_, source) => source };
+  mirror.materialize = async () => [];
+  mirror.encode = async (_stream, packet) => packet;
+  const answered = [];
+  const credits = [1, 2, 3].map(() => mirror.next(stream, { subscription_id: 's', generation: 1, after_sequence: 1, wait_ms: 600 }, 'scope').then(packet => { answered.push([Date.now() - started, packet.ops]); return packet; }));
+  await new Promise(resolve => setTimeout(resolve, 50));
+  const times = [];
+  for (let i = 0; i < 3; i++) { await mirror.regions.locked(stream, async () => { times.push(Date.now() - started); }); await new Promise(resolve => setTimeout(resolve, 16)); }
+  assert.ok(times.every(t => t < 250), `every region operation ran at once (${times} ms)`);
+  assert.ok(answered.every(([at, ops]) => ops.length || at >= 290), `no credit answered empty at a region operation (${JSON.stringify(answered)})`);
+  await Promise.all(credits);
+  assert.deepEqual(answered[0][1], [{ op: 'text', id: 'n2', value: 'clicks 1' }], 'the first answer is the real change');
+  assert.equal(stream.issued, 4, 'three credits, three sequences: the change, then two answers at their own wait');
+});
+
+// Row 426 F3: a credit names what the viewer had applied when it sent it; packets the kernel issued after the credit arrived
+// (answering earlier credits while this one queued, up to 6 s on a quiet page with eight in flight) are not the viewer falling
+// behind. Judged at build time they read as `behind` and reset the page (and retire its regions) for nothing.
+test('Row 426: packets issued while a credit queued do not make it a `behind` reset', async () => {
+  const policy = { targets: [] }, tab = { tab_id: 't', target_id: 'T', document_id: 'D1' };
+  const documents = new Map([['T', 'D1']]);
+  const connection = { isOpen: () => true, send: async () => ({ frameTree: { frame: { loaderId: 'D1' } } }) };
+  const world = { connection, sessionId: 'S', frame: { loaderId: 'D1' }, ref: 'm' };
+  let release;
+  const stream = { tab_id: 't', world, issued: 12, resetAt: 1, document_id: 'D1', policy, fallback: null, resources: new Map(), attrSequence: new Map(), ownScrolls: new Map(), frames: new Map(), frameSlots: new Map(), frameSlot: 0, tileKeys: '', hurry: 0, chain: new Promise(resolve => { release = resolve; }), header: { snapshot_complete: 'false', font_failures: '[]', scroll: '[0,0]', focused: 'null', focus_visible: 'false', selection: 'null', fragment: 'null', page_wheel: 'false', media_playing: 'false' } };
+  const host = { protection: policy, generation: 1, pageSize, scales: new Map(), tabs: new Map([['t', tab]]), displayTarget: async () => tab,
+    browser: { connection, documentIdsByTarget: documents, sessionsByTarget: new Map([['T', 'S']]) } };
+  const mirror = new Mirror2({ host, require: () => stream, assertWebTab: () => {}, streams: new Map([['s', stream]]) });
+  mirror.world = async () => world;
+  const quiet = { ops: [], changed: [], resources: [], sheets: [], scroll: [0, 0], focused: null, selection: null, fragment: null, opaque: false, pressed: 0 };
+  mirror.evaluate = async (_world, expression) => expression.includes('waitDrain') ? { ...quiet, ops: [{ op: 'text', id: 'n2', value: 'clicks 2' }] } : quiet;
+  mirror.frames = { drain: async () => ({ ops: [], resources: [], changed: [] }), project: (_, source) => source };
+  mirror.materialize = async () => [];
+  mirror.encode = async (_stream, packet) => packet;
+  const resets = []; host.timing = name => { if (String(name).startsWith('mirror2_reset')) resets.push(name); };
+  // The viewer had applied 10 of the 12 issued (two in flight) when it sent this credit; earlier credits then take issued to 20.
+  const credit = mirror.next(stream, { subscription_id: 's', generation: 1, after_sequence: 10, wait_ms: 500 }, 'scope');
+  stream.issued = 20; release();
+  const packet = await credit;
+  assert.deepEqual(resets, [], 'no reset for packets issued after the credit arrived');
+  assert.ok(!packet.reset, 'an ordinary delta, not a snapshot');
+  // A viewer that really is behind (it names a base older than what had been issued when it asked, past the margin) still resets.
+  const lost = await mirror.next(stream, { subscription_id: 's', generation: 1, after_sequence: 5, wait_ms: 500 }, 'scope');
+  assert.deepEqual(resets, ['mirror2_reset behind'], 'a lost viewer still resets');
+  assert.equal(lost.reset, true);
+});
+
+
+// Row 497 on #1690's design (union14): a playing region checks its lease for every frame. Five checks 60 ms apart during one
+// quiet credit's long poll each run at once, never hurry it, and spend no sequence: the credit answers once, at its own wait.
+test('Row 497 on Row 426: repeated region lease checks during one long poll run at once and spend no sequence', async () => {
+  const policy = { targets: [] }, tab = { tab_id: 't', target_id: 'T', document_id: 'D1' };
+  const documents = new Map([['T', 'D1']]);
+  const connection = { isOpen: () => true, send: async () => ({ frameTree: { frame: { loaderId: 'D1' } } }) };
+  const world = { connection, sessionId: 'S', frame: { loaderId: 'D1' }, ref: 'm' };
+  const stream = { tab_id: 't', world, issued: 1, resetAt: 1, document_id: 'D1', policy, fallback: null, resources: new Map(), attrSequence: new Map(), ownScrolls: new Map(), frames: new Map(), frameSlots: new Map(), frameSlot: 0, tileKeys: '', hurry: 0, chain: Promise.resolve(), header: { snapshot_complete: 'false', font_failures: '[]', scroll: '[0,0]', focused: 'null', focus_visible: 'false', selection: 'null', fragment: 'null', page_wheel: 'false', media_playing: 'false' } };
+  const host = { protection: policy, generation: 1, pageSize, scales: new Map(), tabs: new Map([['t', tab]]), displayTarget: async () => tab,
+    browser: { connection, documentIdsByTarget: documents, sessionsByTarget: new Map([['T', 'S']]) } };
+  const mirror = new Mirror2({ host, require: () => stream, assertWebTab: () => {}, streams: new Map([['s', stream]]) });
+  mirror.world = async () => world;
+  const quiet = { ops: [], changed: [], resources: [], sheets: [], scroll: [0, 0], focused: null, selection: null, fragment: null, opaque: false, pressed: 0 };
+  let woken = null;
+  mirror.evaluate = async (_world, expression) => {
+    if (expression.endsWith('.wake()')) { woken?.(); return null; }
+    if (expression.includes('waitDrain')) { const ms = Number(/waitDrain\((\d+)/.exec(expression)?.[1] ?? 500); await new Promise(resolve => { woken = resolve; setTimeout(resolve, ms); }); woken = null; }
+    return quiet;
+  };
+  mirror.frames = { drain: async () => ({ ops: [], resources: [], changed: [] }), project: (_, source) => source };
+  mirror.materialize = async () => [];
+  mirror.encode = async (_stream, packet) => packet;
+  const started = Date.now(); let answered = null;
+  const credit = mirror.next(stream, { subscription_id: 's', generation: 1, after_sequence: 1, wait_ms: 900 }, 'scope').then(packet => { answered = Date.now() - started; return packet; });
+  const checks = [];
+  for (let i = 0; i < 5; i++) { await new Promise(resolve => setTimeout(resolve, 60)); const asked = Date.now(); await mirror.regions.locked(stream, async () => { checks.push(Date.now() - asked); return true; }); }
+  assert.equal(answered, null, 'the credit is still waiting after five lease checks');
+  assert.equal(stream.hurry, 0, 'no check hurried the long poll');
+  assert.equal(stream.issued, 1, 'no sequence spent for the checks');
+  assert.ok(Math.max(...checks) < 100, `each check ran at once (${checks} ms)`);
+  const packet = await credit;
+  assert.ok(answered >= 850, `the credit answered at its own wait (${answered} ms)`);
+  assert.equal(stream.issued, 2, 'one answer, one sequence');
+  assert.ok(!packet.reset && !packet.ops?.length, 'an ordinary empty answer at the wait, not a reset');
+  assert.equal(stream.regionWaiting, 0, 'nothing left waiting');
 });

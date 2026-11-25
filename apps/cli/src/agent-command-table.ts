@@ -17,9 +17,19 @@ const TERMINAL: Flag = { name: "--terminal", value: "TERMINAL_ID" }
 const HOST_AGENT: Flag = { name: "--host-agent", value: "AGENT_ID" }
 
 export const COMMANDS: readonly CommandSpec[] = [
+  { name: "agent settings", flags: [KERNEL, SESSION, SOCKET], args: ["AGENT"], summary: "read an agent's current settings and pending profile", brief: "Read an agent's settings" },
+  {
+    name: "agent settings set",
+    flags: [KERNEL, SESSION, SOCKET, { name: "--command-id", value: "ID" }, { name: "--provider", value: "PROVIDER" }, { name: "--account-profile", value: "PROFILE" }, { name: "--model", value: "MODEL" }, { name: "--effort", value: "EFFORT" }, { name: "--clear-effort" }, { name: "--reason", value: "TEXT" }, { name: "--at-turn-end" }],
+    args: ["AGENT"],
+    summary: "change an agent's provider profile; --at-turn-end waits for a running turn to finish",
+    brief: "Change an agent's provider profile",
+  },
+  { name: "agent delete", brief: "Delete an agent and its sub-agents", flags: [KERNEL, SESSION, { name: "--dry-run" }, SOCKET], args: ["AGENT"], summary: "delete an agent of the owner's Room, as the owner's own Delete does: the agent and every agent below it, running or not. Prints the list of what goes (running ones marked) and the result; --dry-run prints the list and deletes nothing" },
   { name: "agent deadline", brief: "Change or clear an agent deadline", flags: [KERNEL, SESSION, SOCKET], args: ["AGENT", "DURATION|none"], summary: "extend, shorten or clear an agent deadline; duration starts now (90s, 30m, 2h, 1d)" },
-  { name: "exec", brief: "Run a command on this kernel, another kernel, or in a Room", flags: [KERNEL, SESSION, { name: "--workspace", value: "PATH" }, DIRECTORY, HOST_AGENT, TIMEOUT, { name: "--stdin-file", value: "KERNEL_PATH" }, SOCKET],
-    summary: "run argv after --. With no --session and no --workspace it runs on the kernel itself, in no Room, in a terminal of the kernel (stdout and stderr in one stream; --directory PATH, default the kernel user's home; --timeout SECONDS to wait). Its stdin is yours up to 64 KiB (chariox exec -- bash -s < script.sh), or with --stdin-file KERNEL_PATH a file already on that kernel (chariox files put it first), so a long script goes in one call; an argument is at most 4096 bytes; with --session it runs in that Room and with --workspace in a temporary Room, without a PTY, streaming binary stdin/stdout/stderr live. Returns the command exit code" },
+  { name: "agent resume", brief: "Resume an agent a usage limit or a blocked task stopped", flags: [KERNEL, SESSION, SOCKET], args: ["AGENT"], summary: "go on with an agent paused by a usage limit or whose task is blocked (its row says which, and what unblocks it); `agent resume cancel AGENT` instead leaves it paused or cancels the blocked task" },
+  { name: "exec", brief: "Run a command on this kernel, another kernel, or in a Room", flags: [KERNEL, SESSION, { name: "--workspace", value: "PATH" }, DIRECTORY, HOST_AGENT, TIMEOUT, { name: "--stdin-file", value: "KERNEL_PATH" }, { name: "--stdin" }, SOCKET],
+    summary: "run argv after --. With no --session and no --workspace it runs on the kernel itself, in no Room, in a terminal of the kernel (stdout and stderr in one stream; --directory PATH, default the kernel user's home; --timeout SECONDS to wait). Its stdin is yours up to 64 KiB when it is a file (chariox exec -- bash -s < script.sh) or a pipe that has data at once (echo hi | chariox exec -- cat); a stdin that stays open and idle is ignored, and --stdin waits for a slow pipe to end. --stdin-file KERNEL_PATH gives a file already on that kernel (chariox files put it first), so a long script goes in one call; an argument is at most 4096 bytes; with --session it runs in that Room and with --workspace in a temporary Room, without a PTY, streaming binary stdin/stdout/stderr live. Returns the command exit code" },
   {
     name: "exec place", brief: "Move a queued command to another kernel",
     flags: [SESSION, { name: "--kernel", value: "NAME", required: true }, { name: "--directory", value: "PATH" }, SOCKET],
@@ -30,8 +40,8 @@ export const COMMANDS: readonly CommandSpec[] = [
   { name: "guide", brief: "Read the full agent command guide", flags: [], summary: "print this guide" },
   {
     name: "access request", brief: "Request permission to use the kernel",
-    flags: [{ name: "--until-exit" }, { name: "--minutes", value: "N" }, { name: "--no-wait" }, HOLDER, SOCKET],
-    summary: "ask the user to approve access for you; prints the grant. In a shell with a command timeout use --no-wait, then poll access status until granted. The kernel picks your harness as holder (--holder-pid takes a host pid); in a sandbox, make the kernel socket's directory writable",
+    flags: [{ name: "--reason", value: "TEXT" }, { name: "--until-exit" }, { name: "--minutes", value: "N" }, { name: "--no-wait" }, HOLDER, SOCKET],
+    summary: "ask the owner to approve access and show --reason on the approval card; prints the grant. In a shell with a command timeout use --no-wait, then poll access status until granted. The kernel picks your harness as holder (--holder-pid takes a host pid); in a sandbox, make the kernel socket's directory writable",
   },
   { name: "access status", brief: "Check whether your kernel access is active", flags: [HOLDER, SOCKET], summary: "granted, pending, ended (with the reason) or not_requested" },
   {
@@ -56,8 +66,19 @@ export const COMMANDS: readonly CommandSpec[] = [
   { name: "notifications list", brief: "List notification subscriptions", flags: [KERNEL, SOCKET, { name: "--kernel-url", value: "URL" }], summary: "list notifications subscribed to on this kernel, with subscription IDs and pause state" },
   { name: "notifications pause", brief: "Pause a notification subscription", flags: [KERNEL, SOCKET, { name: "--kernel-url", value: "URL" }, { name: "--command-id", value: "ID" }], args: ["SUBSCRIPTION_ID"], summary: "pause delivery for a notification subscription" },
   { name: "notifications resume", brief: "Resume a notification subscription", flags: [KERNEL, SOCKET, { name: "--kernel-url", value: "URL" }, { name: "--command-id", value: "ID" }], args: ["SUBSCRIPTION_ID"], summary: "resume delivery for a paused notification subscription" },
+  { name: "machine options", brief: "List the machines you can acquire", flags: [KERNEL, TIMEOUT, SOCKET], summary: "the machines you can acquire now: class, region, size, rate per minute and whether each is in stock; one row per class and region" },
+  {
+    name: "machine acquire", brief: "Acquire a machine",
+    flags: [{ name: "--region", value: "auto|REGION" }, { name: "--request-id", value: "ID" }, KERNEL, TIMEOUT, SOCKET],
+    args: ["CLASS"],
+    summary: "acquire a machine of CLASS (and REGION when the class is offered in several); prints the allocation with its state. Reuse --request-id to retry after a lost answer or a refusal: it returns the machine the first try got and never acquires twice; use a new one only when the answer says the old one was closed. When the person asked to approve agent acquisitions, their card is raised and this waits for the answer",
+    note: "Charges continue until the machine is deleted: run machine release when finished.",
+  },
+  { name: "machine status", brief: "Read an acquired machine", flags: [KERNEL, TIMEOUT, SOCKET], args: ["ALLOCATION_REF"], summary: "the allocation's state and its verified kernel target; release it before it is no longer needed to stop charges" },
+  { name: "machine release", brief: "Release an acquired machine", flags: [KERNEL, TIMEOUT, SOCKET], args: ["ALLOCATION_REF"], summary: "delete an acquired machine; read machine status until its state is deleted" },
   { name: "secret status", brief: "Check a pending secret request", flags: [SOCKET], args: ["INTERACTION_ID"], summary: "pending, stored, cancelled or timed_out for a secret request you made" },
   { name: "kernels", brief: "List reachable kernels", flags: [SOCKET], summary: "list the kernels this kernel can reach" },
+  { name: "kernels restart", brief: "Restart a kernel's browser", flags: [{ name: "--browser" }, KERNEL, TIMEOUT, SOCKET], summary: "restart the browser of this kernel, or of --kernel NAME: Chrome and its display start again and every Tab comes back at its URL with its opener. Answers with the browser state once it is up. Needs --browser" },
   {
     name: "request", brief: "Send a JSON request to a kernel",
     flags: [KERNEL, { name: "--command-id", value: "ID" }, { name: "--no-subscribe" }, TIMEOUT, SOCKET],
@@ -170,7 +191,7 @@ export const REQUEST_EXAMPLES: readonly { body: object; note: string }[] = [
   { body: { SpawnAgent: { ...spawnAgentRequest("SESSION_ID", "codex").SpawnAgent, account_profile: "PROFILE_ID" } }, note: "provider is claude, codex or opencode; use the chosen profile_id from ListProviderAccountProfiles, and set model and effort; AgentSpawned.agent.id" },
   { body: submitPromptRequest("SESSION_ID", "ATTACHMENT_ID", null, "PROMPT", []), note: "target_agent_id is an agent id, or null for the default agent" },
   { body: cancelActivePromptRequest("SESSION_ID", "ATTACHMENT_ID", null), note: "stops the running prompt" },
-  { body: destroyAgentRequest("SESSION_ID", "AGENT_ID"), note: "removes that agent from the Room; AgentDestroyed" },
+  { body: destroyAgentRequest("SESSION_ID", "AGENT_ID"), note: "removes that agent and EVERY agent below it, running or not (the owner's Delete); AgentDestroyed. `chariox agent delete` lists the subtree first and sends it" },
   {
     body: { RunShellCommand: { session_id: "SESSION_ID", attachment_id: "ATTACHMENT_ID", command: "ls", args: ["-la"], working_directory: "/PATH", timeout_ms: 60000 } },
     note: "runs on that machine; ShellCommandCompleted.result has exit_code, stdout, stderr",
@@ -183,9 +204,9 @@ export const REQUEST_EXAMPLES: readonly { body: object; note: string }[] = [
   { body: respondToInteractionRequest("SESSION_ID", "INTERACTION_ID", "CHOICE_ID"), note: "InteractionResponded; set custom_reply to the person's text when question.text_reply is present" },
 ]
 
-const REFUSED = ["events_refused", "secret_link_unavailable", "kernel_sudo_refused", "kernel_sudo_room_owner_local", "kernel_access_human_only", "kernel_access_ended", "kernel_access_not_covered", "kernel_access_already_granted", "kernel_access_cover_gone", "kernel_access_cover_identity_changed", "kernel_access_cover_kernel_process", "kernel_access_cover_outside", "kernel_access_cover_limit", "kernel_access_sub_agent", "command_id_required", "duplicate_command_conflict"]
+const REFUSED = ["events_refused", "acquisition_denied", "approval_required", "secret_link_unavailable", "kernel_sudo_refused", "kernel_sudo_room_owner_local", "kernel_access_human_only", "kernel_access_ended", "kernel_access_not_covered", "kernel_access_already_granted", "kernel_access_cover_gone", "kernel_access_cover_identity_changed", "kernel_access_cover_kernel_process", "kernel_access_cover_outside", "kernel_access_cover_limit", "kernel_access_agent_unavailable", "kernel_access_request_denied", "command_id_required", "duplicate_command_conflict"]
 const KERNEL_UNAVAILABLE = ["kernel_unknown", "kernel_ambiguous", "kernel_offline", "kernel_unreachable", "kernel_unpaired", "kernel_incompatible", "kernel_update_needed", "kernel_not_available"]
-const TIMEOUT_OR_UNKNOWN = ["kernel_sudo_expired", "kernel_request_timeout", "kernel_connection_lost", "kernel_outcome_unknown", "kernel_access_unconfirmed", "steer_unconfirmed"]
+const TIMEOUT_OR_UNKNOWN = ["kernel_sudo_expired", "kernel_access_request_expired", "kernel_request_timeout", "kernel_connection_lost", "kernel_outcome_unknown", "kernel_access_unconfirmed", "steer_unconfirmed"]
 
 export const EXIT_CODES: readonly { exit: number; meaning: string; codes: readonly string[] }[] = [
   { exit: 0, meaning: "ok", codes: [] },

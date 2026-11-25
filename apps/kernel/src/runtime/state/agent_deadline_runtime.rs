@@ -29,6 +29,18 @@ impl KernelRuntimeState {
         caller_user_id: &str,
         request: SetAgentDeadlineRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        self.set_agent_deadline_inner(caller_user_id, request, None)
+            .await
+    }
+
+    /// `expected_expired_limit`: the limit a recovery card was raised for; the edit is refused when
+    /// the agent's limit is no longer that one, so a late answer cannot overwrite a newer limit.
+    pub(super) async fn set_agent_deadline_inner(
+        &self,
+        caller_user_id: &str,
+        request: SetAgentDeadlineRequest,
+        expected_expired_limit: Option<u64>,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
         let _rearm = self.owned.agent_deadline_rearm.lock().await;
         let _deadline_edit = self.owned.agent_deadline_edit.lock().await;
         self.authorize_current_external_command()?;
@@ -44,24 +56,19 @@ impl KernelRuntimeState {
                 agent_id: request.agent_id,
             });
         }
-        // A deadline is never later than an ancestor's: the parent's deadline ends its team.
-        let agents = self.owned.agent_store.list_agents();
-        for ancestor in crate::agent::authority_limit::ancestors(&agent, &agents) {
-            if self
-                .owned
-                .durable_state_store
-                .agent_deadline(ancestor.session_id(), ancestor.id())?
-                .is_some_and(|parent| {
-                    request
-                        .deadline_ms
-                        .is_none_or(|time| time > parent.deadline_ms)
-                })
-            {
-                return Err(refusal(
-                    "agent_deadline_after_parent",
-                    "an agent deadline cannot be later than its parent's; use a shorter time or clear the ancestor deadline first",
-                ));
-            }
+        let previous = self
+            .owned
+            .durable_state_store
+            .agent_deadline(&request.session_id, &request.agent_id)?;
+        if expected_expired_limit.is_some_and(|expected| {
+            previous
+                .as_ref()
+                .is_none_or(|deadline| deadline.deadline_ms != expected)
+        }) {
+            return Err(refusal(
+                "agent_deadline_changed",
+                "The agent’s time limit already changed.",
+            ));
         }
         self.owned
             .durable_state_store
@@ -70,52 +77,9 @@ impl KernelRuntimeState {
                 &request.agent_id,
                 request.deadline_ms,
             )?;
-        // Keep explicit child limits separately: removing or extending an inherited limit
-        // must not erase a child's earlier limit or leave a stale parent limit behind.
-        let mut inherited = Vec::new();
-        for descendant in crate::agent::authority_limit::descendants(&request.agent_id, &agents) {
-            if self
-                .owned
-                .durable_state_store
-                .agent_deadline(descendant.session_id(), descendant.id())?
-                .is_some_and(|own| own.state == AgentDeadlineState::Reached)
-            {
-                continue;
-            }
-            let mut effective = self
-                .owned
-                .durable_state_store
-                .agent_deadline_intent(descendant.session_id(), descendant.id())?;
-            for ancestor in crate::agent::authority_limit::ancestors(descendant, &agents) {
-                let limit = if ancestor.id() == agent.id() {
-                    request.deadline_ms
-                } else {
-                    self.owned
-                        .durable_state_store
-                        .agent_deadline_intent(ancestor.session_id(), ancestor.id())?
-                };
-                effective = match (effective, limit) {
-                    (Some(a), Some(b)) => Some(a.min(b)),
-                    (a, b) => a.or(b),
-                };
-            }
-            inherited.push((
-                descendant.session_id().to_string(),
-                descendant.id().to_string(),
-                effective,
-            ));
-        }
-        // The executor confirms every changed limit before the local transaction commits.
+        // The executor confirms the changed limit before the local transaction commits.
         self.arm_leased_agent_deadline(&agent, request.deadline_ms)
             .await?;
-        for (_, id, effective) in &inherited {
-            let descendant = agents
-                .iter()
-                .find(|agent| agent.id() == id)
-                .expect("descendant in tree");
-            self.arm_leased_agent_deadline(descendant, *effective)
-                .await?;
-        }
         self.authorize_current_external_command()?;
         let Outcome::Deadline(deadline) =
             self.owned
@@ -124,11 +88,21 @@ impl KernelRuntimeState {
                     room: request.session_id,
                     agent: request.agent_id,
                     deadline: request.deadline_ms,
-                    inherited,
                 })?
         else {
             unreachable!()
         };
+        // An extension of an ended limit, by the card or independently, resolves the open card.
+        if let Some(previous) = previous.filter(|previous| {
+            (previous.state == AgentDeadlineState::Reached
+                || previous.deadline_ms <= crate::session::unix_epoch_ms())
+                && deadline.as_ref().is_none_or(|current| {
+                    current.state == AgentDeadlineState::Armed
+                        && current.deadline_ms > crate::session::unix_epoch_ms()
+                })
+        }) {
+            self.owned.close_deadline_card(&previous)?;
+        }
         self.publish_changed_agent_trees();
         Ok(LocalDaemonResponse::AgentDeadline { deadline })
     }
@@ -227,15 +201,22 @@ impl KernelRuntimeState {
                 .durable_state_store
                 .agent_lifecycle(Operation::BeatDeadlineClock { now })?;
         }
+        self.warn_of_deadlines(&deadlines, now);
+        self.forget_deadline_work(&deadlines);
         for deadline in deadlines {
             if deadline.deadline_ms > now {
                 continue;
             }
             if deadline.stopped_at_ms.is_some()
-                && !self.deadline_work_remains(&deadline.session_id, &deadline.agent_id)?
+                && !self.agent_work_remains(&deadline.session_id, &deadline.agent_id)?
             {
                 continue;
             }
+            // What the limit stops is read before the cleanup removes it, and kept across retries.
+            let work = self.deadline_work_at_reach(&deadline);
+            // Messages the limit retires were never refused by a delivery; the owner is told once.
+            let retires_messages = deadline.reached_at_ms.is_none()
+                && self.has_pending_agent_message(&deadline.session_id, &deadline.agent_id);
             // Fence every due agent before awaiting any physical cleanup.
             self.owned
                 .durable_state_store
@@ -245,55 +226,54 @@ impl KernelRuntimeState {
                     now,
                     stopped: false,
                 })?;
-            due.push(deadline);
-        }
-        let outcomes = futures_util::future::join_all(due.iter().map(|deadline| async move {
-            let room = &deadline.session_id;
-            let agent = &deadline.agent_id;
-            match tokio::time::timeout(
-                Duration::from_secs(5),
-                self.stop_deadline_agent(room, agent),
-            )
-            .await
-            {
-                Ok(Ok(())) => self
-                    .owned
-                    .durable_state_store
-                    .agent_lifecycle(Operation::ReachDeadline {
-                        room: room.clone(),
-                        agent: agent.clone(),
-                        now: crate::session::unix_epoch_ms(),
-                        stopped: true,
-                    })
-                    .map(|_| ()),
-                Ok(Err(error)) => Err(error),
-                Err(_) => Err(refusal(
-                    "agent_deadline_cleanup_pending",
-                    "deadline reached; physical cleanup is pending and will retry",
-                )),
+            if retires_messages {
+                self.show_deadline_refusal(&deadline.session_id, &deadline.agent_id)
+                    .await;
             }
-        }))
-        .await;
+            due.push((deadline, work));
+        }
+        let outcomes =
+            futures_util::future::join_all(due.iter().map(|(deadline, work)| async move {
+                let room = &deadline.session_id;
+                let agent = &deadline.agent_id;
+                match tokio::time::timeout(
+                    Duration::from_secs(5),
+                    self.stop_deadline_agent(room, agent),
+                )
+                .await
+                {
+                    Ok(Ok(())) => {
+                        let stopped = self
+                            .owned
+                            .durable_state_store
+                            .agent_lifecycle(Operation::ReachDeadline {
+                                room: room.clone(),
+                                agent: agent.clone(),
+                                now: crate::session::unix_epoch_ms(),
+                                stopped: true,
+                            })
+                            .map(|_| ());
+                        // The Room hears of it once: when the first cleanup finishes.
+                        if stopped.is_ok() && deadline.stopped_at_ms.is_none() {
+                            self.announce_deadline_stop(deadline, work);
+                        }
+                        stopped
+                    }
+                    Ok(Err(error)) => Err(error),
+                    Err(_) => Err(refusal(
+                        "agent_deadline_cleanup_pending",
+                        "deadline reached; physical cleanup is pending and will retry",
+                    )),
+                }
+            }))
+            .await;
         outcomes
             .into_iter()
             .collect::<Result<Vec<_>, _>>()
             .map(|_| ())
     }
 
-    /// The agent's own work, or work of any sub-agent below it (A4).
-    fn deadline_work_remains(&self, room: &str, agent: &str) -> Result<bool, DaemonError> {
-        if self.agent_work_remains(room, agent)? {
-            return Ok(true);
-        }
-        for descendant in self.descendants_depth_first(agent) {
-            if self.agent_work_remains(room, descendant.id())? {
-                return Ok(true);
-            }
-        }
-        Ok(false)
-    }
-
-    fn agent_work_remains(&self, room: &str, agent: &str) -> Result<bool, DaemonError> {
+    pub(super) fn agent_work_remains(&self, room: &str, agent: &str) -> Result<bool, DaemonError> {
         let session = match self.owned.session_store.get_session(room) {
             Ok(session) => session,
             Err(DaemonError::SessionNotFound { .. }) => return Ok(false),
@@ -310,19 +290,17 @@ impl KernelRuntimeState {
             || !self.owned.unsettled_agent_wakes(room, agent)?.is_empty())
     }
 
-    /// A deadline ends the agent and every sub-agent below it, depth-first.
-    /// A sub-agent whose cleanup is pending does not keep the others running.
+    /// A deadline ends the agent that carries it. Its sub-agents keep their own work: a limit
+    /// bounds one agent, and the Room notice names the children that go on.
     async fn stop_deadline_agent(&self, room: &str, agent: &str) -> Result<(), DaemonError> {
-        let mut first_error = self.stop_one_deadline_agent(room, agent).await.err();
-        for descendant in self.descendants_depth_first(agent) {
-            if let Err(error) = self.stop_one_deadline_agent(room, descendant.id()).await {
-                first_error.get_or_insert(error);
-            }
-        }
-        first_error.map_or(Ok(()), Err)
+        self.stop_one_deadline_agent(room, agent).await
     }
 
-    async fn stop_one_deadline_agent(&self, room: &str, agent: &str) -> Result<(), DaemonError> {
+    pub(super) async fn stop_one_deadline_agent(
+        &self,
+        room: &str,
+        agent: &str,
+    ) -> Result<(), DaemonError> {
         let owned = &self.owned;
         let session = match owned.session_store.get_session(room) {
             Ok(session) => session,
@@ -385,6 +363,9 @@ impl KernelRuntimeState {
             })
             .map(|task| task.task_id)
             .collect::<Vec<_>>();
+        if let Some(deadline) = owned.durable_state_store.agent_deadline(room, agent)? {
+            self.mark_jobs_cancelled_by_limit(room, agent, deadline.deadline_ms);
+        }
         owned.cancel_owned_agent_wakes(room, Some(agent));
         for task in owned
             .durable_state_store

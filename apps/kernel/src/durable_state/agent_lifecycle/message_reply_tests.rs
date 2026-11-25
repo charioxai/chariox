@@ -356,3 +356,64 @@ fn a_question_read_but_not_acknowledged_stays_deliverable_after_its_task_ends() 
         "an unacknowledged question is still owed its own turn"
     );
 }
+
+#[test]
+fn a_message_naming_the_request_delivers_its_answer_to_the_waiting_sender() {
+    let f = Fixture::new();
+    let question = ask(&f);
+    read(&f, &question);
+    ack_question(&f, &question, true);
+    let response = format!("Reply to message {}: Yes, both.", question.sequence);
+
+    f.apply(Operation::Send {
+        task: "pt".into(),
+        prompt: "pt".into(),
+        event: message("peer", "parent", "answer", &response, false),
+    });
+
+    assert_ne!(reply_obligation(&f).status, "open");
+    let inbox = f.store.agent_inbox("room", "parent", 0).unwrap();
+    let completion = inbox
+        .iter()
+        .find(|event| event.kind == "source_completed")
+        .expect("the sender task receives the requested result");
+    assert_eq!(completion.payload["public_answer"]["excerpt"], "Yes, both.");
+    assert!(inbox
+        .iter()
+        .any(|event| event.payload["message"] == response));
+}
+
+#[test]
+fn only_the_sender_can_withdraw_a_reply_request_and_retries_leave_it_settled() {
+    let f = Fixture::new();
+    let question = ask(&f);
+    let withdraw = |agent: &str| Operation::WithdrawReply {
+        room: "room".into(),
+        agent: agent.into(),
+        sequence: question.sequence,
+        now: 10,
+    };
+    assert!(f.store.agent_lifecycle(withdraw("peer")).is_err());
+    assert_eq!(reply_obligation(&f).status, "open");
+    f.apply(withdraw("parent"));
+    f.apply(withdraw("parent"));
+
+    assert_ne!(reply_obligation(&f).status, "open");
+    assert_eq!(
+        f.store
+            .agent_inbox_event(question.sequence)
+            .unwrap()
+            .unwrap()
+            .0
+            .state,
+        "expired"
+    );
+    let inbox = f.store.agent_inbox("room", "parent", 0).unwrap();
+    assert_eq!(
+        inbox
+            .iter()
+            .filter(|event| event.payload["public_answer"]["kind"] == "reply_withdrawn")
+            .count(),
+        1
+    );
+}

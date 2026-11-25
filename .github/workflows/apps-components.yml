@@ -101,7 +101,8 @@ jobs:
             },
             include: ['app-developer.ts', 'app-developer.test.ts', 'app-command.ts', 'app-command.test.ts',
               'app-install-file.test.ts', 'app-command-handler.test.ts', 'commands.test.ts',
-              'cli-exit-controller.test.ts', 'prompt-input-history-controller.test.ts']
+              'cli-exit-controller.test.ts', 'prompt-input-history-controller.test.ts',
+              'qrcode-terminal.d.ts']
               .map(name => join(root, 'apps/cli/src', name)),
           }));
           NODE

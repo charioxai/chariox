@@ -3,18 +3,91 @@ use super::*;
 use crate::durable_state::agent_lifecycle::{AgentTaskExecution, ExecutionState};
 
 pub(super) use crate::session::{is_blocked_task_decision, BLOCKED_TASK_DECISION_PREFIX};
+use crate::session::{RuntimeInteractionChoice, RuntimeInteractionChoiceStyle};
+
+// Existing question cards called the Dismiss answer "cancel".
+pub(super) const DISMISS_BLOCKED_TASK_CARD: &str = "cancel";
+const STOP_BLOCKED_TASK: &str = "stop";
+
+fn blocked_card_task(interaction_id: &str) -> Option<(&str, u64)> {
+    let (task, revision) = interaction_id
+        .strip_prefix(BLOCKED_TASK_DECISION_PREFIX)?
+        .rsplit_once('-')?;
+    Some((task, revision.parse().ok()?))
+}
 
 impl KernelRuntimeOwnedState {
-    /// A task-owner card needs a current blocker the owner can act on.
+    pub(super) fn record_task_question_answer(
+        &self,
+        room: &str,
+        interaction: &crate::session::RuntimeInteraction,
+        choice: &str,
+        reply: &str,
+    ) -> Result<(), DaemonError> {
+        if interaction.kind() != crate::session::RuntimeInteractionKind::Choice
+            || !is_blocked_task_decision(interaction.id())
+        {
+            return Ok(());
+        }
+        let (task, revision) = blocked_card_task(interaction.id()).ok_or_else(|| {
+            crate::durable_state::agent_lifecycle::error("invalid task question binding")
+        })?;
+        self.durable_state_store.agent_lifecycle(
+            crate::durable_state::agent_lifecycle::Operation::AnswerTaskQuestion {
+                room: room.into(),
+                task: task.into(),
+                revision,
+                reply: (choice == "reply").then(|| reply.into()),
+                now: crate::session::unix_epoch_ms(),
+            },
+        )?;
+        Ok(())
+    }
+
+    pub(super) fn dismiss_blocked_task_card(
+        &self,
+        room: &str,
+        interaction_id: &str,
+    ) -> Result<(), DaemonError> {
+        use crate::durable_state::agent_lifecycle::Operation;
+        let (task, blocked_revision) =
+            blocked_card_task(interaction_id).ok_or_else(|| DaemonError::LocalTransport {
+                operation: "dismiss blocked task card",
+                message: "Invalid card ID. Read the Room again.".into(),
+            })?;
+        self.durable_state_store
+            .agent_lifecycle(Operation::DismissTaskCard {
+                room: room.into(),
+                task: task.into(),
+                blocked_revision,
+            })?;
+        Ok(())
+    }
+
+    /// Only the agent's own question is a card here: it asks the person for something only they can
+    /// give. Any other blocked task is status on the agent's row and an event to its parent
+    /// (`agent_blocked_task.rs`), settled by `agent resume`.
     fn task_needs_owner_interaction(&self, task: &AgentTaskExecution) -> Result<bool, DaemonError> {
+        Ok(task.owner_action
+            == Some(crate::durable_state::agent_lifecycle::TaskOwnerAction::Question)
+            && self.blocked_task_is_open(task)?)
+    }
+
+    /// A blocked task is open while a blocker is current: the task is blocked, not a paused goal,
+    /// not a usage-limit stop (a stop of any state is the agent's own status and resumes at its
+    /// reset, or by the decision on its stop: a person's "Not now" ends no stop's status), and its
+    /// agent is not deleted.
+    pub(super) fn blocked_task_is_open(
+        &self,
+        task: &AgentTaskExecution,
+    ) -> Result<bool, DaemonError> {
         if task.state != ExecutionState::Blocked
             || task.goal.as_ref().is_some_and(|goal| goal.paused)
-            // A usage-limit stop has its own stripe and its own resume.
+            // A usage-limit stop has its own status and its own resume, whatever its state.
             || self.agent_store.get_agent(&task.agent_id).is_ok_and(|agent| {
-                agent.usage_limit_stop().is_some_and(|stop| {
-                    stop.prompt_id == task.prompt_id
-                        && !matches!(stop.state, crate::agent::UsageLimitStopState::Declined)
-                })
+                agent
+                    .usage_limit_stop()
+                    .is_some_and(|stop| stop.prompt_id == task.prompt_id)
             })
             || self.durable_state_store.agent_deletion_recorded(&task.agent_id)?
         {
@@ -71,13 +144,10 @@ impl KernelRuntimeOwnedState {
         // Each decision names its task; only those are read, not the Room's finished turns.
         let mut stale = Vec::new();
         for id in session.active_interactions().iter().map(|i| i.id()) {
-            let Some(rest) = id.strip_prefix(BLOCKED_TASK_DECISION_PREFIX) else {
+            if !is_blocked_task_decision(id) {
                 continue;
-            };
-            let current = match rest
-                .rsplit_once('-')
-                .and_then(|(task, revision)| Some((task, revision.parse::<u64>().ok()?)))
-            {
+            }
+            let current = match blocked_card_task(id) {
                 Some((task, revision)) => match self.durable_state_store.agent_task(task)? {
                     Some(task) if task.room_id == room && revision == task.blocked_revision => {
                         self.task_needs_owner_interaction(&task)?
@@ -154,6 +224,9 @@ impl KernelRuntimeState {
         if !self.owned.task_needs_owner_interaction(&task)? {
             self.retract_stale_task_owner_interactions(&task.room_id)
                 .await;
+            if self.owned.blocked_task_is_open(&task)? {
+                Box::pin(self.announce_blocked_task(&task)).await?;
+            }
             return Ok(());
         }
         let id = format!(
@@ -161,28 +234,31 @@ impl KernelRuntimeState {
             task.task_id, task.blocked_revision
         );
         let session = self.owned.session_store.get_session(&task.room_id)?;
-        let question = task.owner_action
-            == Some(crate::durable_state::agent_lifecycle::TaskOwnerAction::Question);
-        let message = if question {
-            // The agent's own words: the recovery steps below are for the agent, not the person.
-            let agent = self.owned.agent_store.get_agent(&task.agent_id).ok();
-            let reason = crate::terminal::public_task_failure_reason(&task.reason);
-            match agent
-                .as_ref()
-                .map(|agent| agent.alias().unwrap_or(agent.agent_ref()))
-            {
-                Some(alias) => format!("{alias}: {reason}"),
-                None => reason,
-            }
-        } else {
-            // The card shows in the room agent's pane, so it says which agent needs the person.
-            let agent = self.owned.agent_store.get_agent(&task.agent_id).ok();
-            self.owned.blocked_card_message(
-                agent
+        let agent = self.owned.agent_store.get_agent(&task.agent_id).ok();
+        let name = agent
+            .as_ref()
+            .map(|agent| agent.alias().unwrap_or(agent.agent_ref()));
+        // The agent's own words: the person answers them, so the recovery steps are not shown.
+        let reason = crate::terminal::public_task_failure_reason(&task.reason);
+        let message = match name {
+            Some(name) => format!("{name}: {reason}"),
+            None => reason,
+        };
+        // The agent sets the box's label and placeholder; with none the card has a plain box.
+        let reply_choice = {
+            crate::session::RuntimeInteractionCustomChoice::new(
+                "reply",
+                task.question_reply
                     .as_ref()
-                    .map(|agent| agent.alias().unwrap_or(agent.agent_ref())),
-                &task,
+                    .and_then(|reply| reply.label.clone())
+                    .unwrap_or_default(),
+                task.question_reply
+                    .as_ref()
+                    .and_then(|reply| reply.placeholder.clone()),
+                Some(1),
+                None,
             )
+            .with_description("Send your reply and continue the waiting task.")
         };
         if let Some(existing) = session.active_interactions().iter().find(|i| i.id() == id) {
             let live = self
@@ -202,16 +278,17 @@ impl KernelRuntimeState {
             if live {
                 if existing.message() != message
                     || existing.related_agent_id() != Some(task.agent_id.as_str())
+                    || existing.custom_choice() != Some(&reply_choice)
                 {
                     let mutation = self.owned.begin_managed_activity_mutation();
                     let mut sessions = self.owned.session_store.write();
                     let mut latest = sessions.get_session(&task.room_id)?;
-                    if let Some(current) = latest.remove_active_interaction(&id) {
-                        latest.add_active_interaction(
-                            current
-                                .with_message(message)
-                                .with_related_agent_id(task.agent_id.clone()),
-                        );
+                    if latest.update_active_interaction(&id, |current| {
+                        current
+                            .with_message(message)
+                            .with_related_agent_id(task.agent_id.clone())
+                            .with_question_reply(reply_choice.clone())
+                    }) {
                         sessions.restore_session(latest);
                     }
                     drop(sessions);
@@ -227,49 +304,42 @@ impl KernelRuntimeState {
             // Hot reload retains the task's decision, but an in-memory reply channel must be reattached.
             self.owned.timeout_runtime_interaction(&task.room_id, &id)?;
         }
-        let mut choices = vec![crate::session::RuntimeInteractionChoice::new(
-            "cancel",
-            if question { "Dismiss" } else { "Cancel" },
-            "cancel",
+        let mut choices = vec![RuntimeInteractionChoice::new(
+            DISMISS_BLOCKED_TASK_CARD,
+            "Dismiss",
+            DISMISS_BLOCKED_TASK_CARD,
             None,
+        )
+        .with_description(
+            "Hide this card from the Room. The task keeps waiting and you can answer in the Inbox.",
         )];
-        if !question {
-            let (id, label) = if crate::provider::switch_turn::needs_fresh_agent(&task.reason) {
-                ("start_fresh_agent", "Start a fresh agent")
-            } else {
-                ("resume", "Resume")
-            };
-            choices.push(crate::session::RuntimeInteractionChoice::new(
-                id, label, id, None,
-            ));
-        }
-        let mut interaction = crate::session::RuntimeInteraction::for_kernel_operation(
-            &id,
-            &id,
-            if question {
-                "Question"
-            } else {
-                "Agent needs your action"
-            },
-            &message,
-            choices,
+        choices.push(
+            RuntimeInteractionChoice::new(
+                STOP_BLOCKED_TASK,
+                name.map_or_else(
+                    || "Stop task".to_owned(),
+                    |name| format!("Stop {name}'s task"),
+                ),
+                STOP_BLOCKED_TASK,
+                Some(RuntimeInteractionChoiceStyle::Danger),
+            )
+            .with_description("End the waiting task."),
+        );
+        let dismissed = self
+            .owned
+            .durable_state_store
+            .task_card_is_dismissed(&task.task_id, task.blocked_revision)?;
+        let interaction = crate::session::RuntimeInteraction::for_kernel_operation(
+            &id, &id, "Question", &message, choices,
         )
         .without_timeout()
-        .with_related_agent_id(task.agent_id.clone());
-        if question {
-            interaction = interaction.with_question_reply(
-                crate::session::RuntimeInteractionCustomChoice::new(
-                    "reply",
-                    "Reply",
-                    None,
-                    Some(1),
-                    None,
-                ),
-            );
-        }
+        .with_related_agent_id(task.agent_id.clone())
+        .with_room_dismissed(dismissed)
+        .with_question_reply(reply_choice);
 
         let rx = self
             .create_kernel_operation_interaction(
+                crate::runtime::state::CardKind::Task,
                 &task.room_id,
                 session.owner_user_id(),
                 interaction,
@@ -284,14 +354,7 @@ impl KernelRuntimeState {
                 if answer.status == "timed_out" {
                     return;
                 }
-                use super::agent_task_owner_resolution::OwnerTaskAction;
-                let action = match answer.choice_id.as_deref() {
-                    Some("resume") => OwnerTaskAction::Resume,
-                    Some("start_fresh_agent") => OwnerTaskAction::StartFreshAgent,
-                    Some("reply") => OwnerTaskAction::Reply(answer.reply.unwrap_or_default()),
-                    _ => OwnerTaskAction::Cancel,
-                };
-                state.resolve_agent_task_owner_action(&task, action).await;
+                state.schedule_agent_lifecycle_sweep();
             }
         });
         notification?;

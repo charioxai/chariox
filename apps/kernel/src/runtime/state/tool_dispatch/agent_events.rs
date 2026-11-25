@@ -387,6 +387,16 @@ impl KernelRuntimeState {
                         task: task_id.into(),
                         prompt: prompt.id().into(),
                         reason: args["reason"].as_str().unwrap_or_default().into(),
+                        reply: Some(ledger::QuestionReply {
+                            label: args["reply_label"]
+                                .as_str()
+                                .map(|text| text.trim().to_owned())
+                                .filter(|text| !text.is_empty()),
+                            placeholder: args["reply_placeholder"]
+                                .as_str()
+                                .map(|text| text.trim().to_owned())
+                                .filter(|text| !text.is_empty()),
+                        }),
                     },
                 )?;
                 if let Outcome::Task(task) = result {

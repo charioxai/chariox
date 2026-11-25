@@ -1,5 +1,6 @@
 use super::*;
 
+const MAINTENANCE_STALL_THRESHOLD: Duration = Duration::from_secs(1);
 const STALE_TERMINAL_ATTACHMENT_TIMEOUT_MS: u64 = 30_000;
 const MAX_PROVIDER_PROCESS_GC_INTERVAL_MS: u64 = 30_000;
 const MIN_PROVIDER_PROCESS_GC_INTERVAL_MS: u64 = 250;
@@ -37,14 +38,35 @@ impl KernelRuntimeState {
                     agents: self.owned.agent_store.clone(),
                     slices: self.owned.slice_store.clone(),
                     metaagent_events: self.owned.metaagent_events.clone(),
-                    room_computer_revoked: self.owned.room_computer_revoked.clone(),
                 },
                 policy,
             ),
         )
     }
 
+    #[cfg(test)]
+    pub(crate) fn count_transport_pump_iteration(&self) {
+        self.owned
+            .transport_pump_iterations
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn transport_pump_iterations_for_test(&self) -> u64 {
+        self.owned
+            .transport_pump_iterations
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
     pub(crate) async fn pump_transport_runtime(&self) {
+        let progress = crate::runtime::stall_watchdog::progress_watch(
+            "kernel.runtime",
+            "transport_maintenance",
+            MAINTENANCE_STALL_THRESHOLD,
+        );
+        progress.stage("kernel access", MAINTENANCE_STALL_THRESHOLD);
+        self.pump_kernel_access();
+        progress.stage("schedule runtime services", MAINTENANCE_STALL_THRESHOLD);
         self.owned.announce_durable_writer_condition();
         self.refresh_user_domain_grants();
         self.schedule_room_browser_health();
@@ -91,9 +113,12 @@ impl KernelRuntimeState {
         self.owned.withdraw_stale_agent_interactions();
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
         self.resume_app_view_pumps();
+        progress.stage("publish Apps", MAINTENANCE_STALL_THRESHOLD);
         self.app_control().publishers().pump(self).await;
+        progress.stage("install Apps", MAINTENANCE_STALL_THRESHOLD);
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
         self.app_control().installs().pump(self).await;
+        progress.stage("sync development App bindings", MAINTENANCE_STALL_THRESHOLD);
         if let Err(error) = self.sync_dev_app_bindings().await {
             tracing::warn!(%error, "MP-08/MP-10/MP-11: dev App binding failed; retrying after the next maintenance pass");
         }
@@ -102,12 +127,25 @@ impl KernelRuntimeState {
             .lifecycle()
             .schedule_recovery(tokio::runtime::Handle::current());
         let now_ms = crate::session::unix_epoch_ms();
+        progress.stage(
+            "sweep stale terminal attachments",
+            MAINTENANCE_STALL_THRESHOLD,
+        );
         self.sweep_stale_terminal_attachments(now_ms).await;
+        progress.stage(
+            "reconcile agent trigger gateways",
+            MAINTENANCE_STALL_THRESHOLD,
+        );
         self.reconcile_agent_trigger_gateways().await;
+        progress.stage(
+            "reconcile workflow publication runtimes",
+            MAINTENANCE_STALL_THRESHOLD,
+        );
         super::workflow_publication_runtime_lifecycle::reconcile_bound_workflow_publication_runtimes(
             self,
         )
         .await;
+        progress.stage("provider process maintenance", MAINTENANCE_STALL_THRESHOLD);
         self.schedule_due_provider_launch_failure_retries(now_ms);
         if self.claim_provider_process_gc(now_ms) {
             if let Err(error) = self.reap_idle_provider_processes(now_ms).await {
@@ -124,6 +162,10 @@ impl KernelRuntimeState {
         // MP-08 / MP-10: only the independent output scheduler consumes ready
         // run IDs. A serial maintenance pass must not strand ready siblings
         // behind one run's history acknowledgement or provider lane.
+        progress.stage(
+            "dispatch workflow and agent triggers",
+            MAINTENANCE_STALL_THRESHOLD,
+        );
         let watchdog_dispatches = self
             .owned
             .workflow_collect_due_watchdog_dispatches(crate::session::unix_epoch_ms());
@@ -221,7 +263,9 @@ impl KernelRuntimeState {
         let idle_ttl_ms = config.provider_process_idle_ttl_ms;
         self.owned.end_runs_whose_idle_process_exited(None);
         let summary = self
-            .with_app_side_effect(move |app| app.reap_idle_provider_processes(now_ms, idle_ttl_ms))
+            .with_app_side_effect_blocking(move |app| {
+                app.reap_idle_provider_processes(now_ms, idle_ttl_ms)
+            })
             .await?;
         if summary.tracked_processes_reaped > 0 || summary.orphan_processes_reaped > 0 {
             crate::logging::warn_with_fields(
@@ -467,8 +511,7 @@ impl KernelRuntimeState {
         let files = self.file_transfers.clone();
         let files_shutdown = tokio::spawn(async move { files.shutdown().await });
         crate::shutdown::stage("room execs");
-        self.shutdown_local_jobs(crate::hot_reload::handing_over())
-            .await;
+        self.shutdown_jobs(crate::hot_reload::handing_over()).await;
         self.owned.room_execs.shutdown();
         crate::shutdown::stage("room terminals");
         self.owned.room_terminals.shutdown();
@@ -484,7 +527,6 @@ impl KernelRuntimeState {
                 message: error.to_string(),
             })?;
         }
-        self.stop_app_grant_wakes();
         for id in self.app_control().user_views().shutdown() {
             self.app_control().views().forget_session(&id);
             self.app_control().views().keep_pumping(&id);
@@ -516,11 +558,7 @@ impl KernelRuntimeState {
             let _ = tokio::task::spawn_blocking(move || wakes.processes.shutdown()).await;
         }
         crate::shutdown::stage("session interactions");
-        let sessions = self.owned.session_store.read().list_sessions();
-        for session in sessions {
-            self.owned
-                .withdraw_agent_interactions_for_shutdown(session.id())?;
-        }
+        self.close_provider_decisions_for_shutdown()?;
         {
             crate::shutdown::stage("App publishers");
             let publishers = self.app_control().publishers().clone();

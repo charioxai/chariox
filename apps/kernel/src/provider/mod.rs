@@ -16,6 +16,7 @@ pub(crate) use utility_stop::UtilityStop;
 mod account_credential;
 mod account_endpoints;
 mod claude;
+mod claude_compaction;
 mod claude_runtime;
 pub(crate) use claude_runtime::claude_rate_limit_snapshot;
 pub(crate) use claude_runtime::failed_to_start_before_prompt;
@@ -99,6 +100,9 @@ pub(crate) use claude::{
     probe_claude_skill_version, read_claude_rate_limits, verify_claude_account_credential,
     verify_claude_setup_token, ClaudeCredentialCheckError,
 };
+pub(crate) use claude_compaction::{
+    claude_compaction, read_summary_from_transcript, ClaudeCompaction, ContextCompaction,
+};
 #[cfg(test)]
 pub(crate) use claude_runtime::claude_runtime_tool_wait_pending;
 pub(crate) use claude_runtime::ClaudeRuntimeState;
@@ -172,6 +176,7 @@ pub(crate) use mcp_proxy::{
     dispatch_provider_mcp_proxy_request, dispatch_provider_mcp_proxy_request_with_environment,
     shutdown_provider_mcp_proxy_session,
 };
+pub(crate) use opencode::OPENCODE_CATALOG_START;
 pub(crate) use opencode::{
     apply_opencode_discovery_environment, ensure_opencode_account_endpoint,
     invalidate_opencode_account_endpoint, isolate_opencode_discovery_configuration,
@@ -192,7 +197,7 @@ pub(crate) use prompt_signals::{
     classify_provider_terminal_failure_output_text, classify_provider_terminal_failure_text,
     claude_native_stop_failure, find_provider_terminal_failure_output, provider_coded_failure_text,
     provider_error_frame, provider_exit_error_message, provider_retry_status,
-    text_reports_resource_limit, PROVIDER_CONNECTION_RETRY_MERGE_KEY,
+    text_reports_resource_limit, ClaudeNotificationContext, PROVIDER_CONNECTION_RETRY_MERGE_KEY,
 };
 pub use prompt_signals::{
     ProviderAssistantCompletion, ProviderBackgroundNotification, ProviderOwnTurnSignal,

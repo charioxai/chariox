@@ -205,9 +205,7 @@ uses the existing linked profile (`VFLAG_PROFILE_ID`, default
 service account. Every agent has the kernel browser: no card asks the owner
 for browser access.
 
-Set `VFLAG_RECOVER_BROWSER=1` to revoke access after the first card and require
-the agent to load the browser again by itself, with no card, and raise a fresh
-card on the same tab before the wrong-code/retry loop. `encoding-red` records the old accepted-but-still-waiting URLencoded path.
+`encoding-red` records the old accepted-but-still-waiting URLencoded path.
 Green checks include plain card text, no automatic card expiry, and at least an
 hour on an active person wait. This focused drill supplements AU-03; it does not
 claim a real Vercel token was created.

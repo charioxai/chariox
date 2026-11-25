@@ -65,16 +65,16 @@ fn retain_finished(tx: &Transaction<'_>, room: &str, agent: &str) -> Result<(), 
 }
 
 impl DurableKernelStateStore {
-    /// Liveness needs only live sources of waiting tasks. Finished commands can
-    /// carry large arguments and stay retained after their agents have left.
-    pub(crate) fn agent_waiting_wakes(&self, room: &str) -> Result<Vec<AgentWake>, DaemonError> {
+    /// Liveness needs only the live sources of a room, whether their task still waits or has
+    /// settled (a process, job or timer outlives its turn). Finished commands can carry large
+    /// arguments and stay retained after their agents have left.
+    pub(crate) fn agent_live_wakes(&self, room: &str) -> Result<Vec<AgentWake>, DaemonError> {
         let payloads = {
             let db = self.lock_connection("agent.lifecycle.waiting_wakes")?;
-            // Choosing the room index scans retained payloads before the task join.
+            // The room's armed-wake index reads live payloads only, not the retained history.
             let mut q = db.prepare_cached(
-                "SELECT payload FROM agent_wakes INDEXED BY agent_wakes_live_task \
-                 WHERE task_id IN (SELECT task_id FROM agent_tasks WHERE room_id=?1 AND state='waiting') \
-                 AND room_id=?1 AND json_extract(payload,'$.state') IN ('scheduled','starting','running') \
+                "SELECT payload FROM agent_wakes INDEXED BY agent_wakes_room_armed \
+                 WHERE room_id=?1 AND json_extract(payload,'$.state') IN ('scheduled','starting','running','cancelling') \
                  ORDER BY rowid",
             ).map_err(sql)?;
             let rows = q
@@ -464,38 +464,6 @@ fn handle_cancel_receipt(tx: &Transaction<'_>, wake: &AgentWake) -> Result<(), D
     Ok(())
 }
 
-/// A turn that ends without waiting leaves no use for the timers it armed: they are dropped
-/// without a receipt to read. Waiting on a timer is how an agent keeps it. Returns
-/// whether any timer was dropped, so the caller reloads the task.
-pub(super) fn drop_unwaited_timers(
-    tx: &Transaction<'_>,
-    task: &AgentTaskExecution,
-    now: u64,
-) -> Result<bool, DaemonError> {
-    let mut dropped = false;
-    for id in task
-        .obligations
-        .iter()
-        .filter(|o| o.kind == "timer" && o.needs_live_source())
-        .map(|o| &o.id)
-    {
-        let mut wake = load_wake(tx, id)?;
-        if wake.task_id != task.task_id || wake.state != "scheduled" {
-            continue;
-        }
-        let mut t = load(tx, &task.task_id)?;
-        if let Some(o) = t.obligations.iter_mut().find(|o| &o.id == id) {
-            o.status = "cancelled".into();
-        }
-        t.revision += 1;
-        save(tx, &t)?;
-        cancel_settle(tx, &mut wake, now)?;
-        handle_cancel_receipt(tx, &wake)?;
-        dropped = true;
-    }
-    Ok(dropped)
-}
-
 fn cancel_settle(tx: &Transaction<'_>, wake: &mut AgentWake, now: u64) -> Result<(), DaemonError> {
     cancel_settle_because(tx, wake, now, None)
 }
@@ -531,7 +499,13 @@ fn fire_one(
     now: u64,
 ) -> Result<Option<AgentWake>, DaemonError> {
     let t = load(tx, &wake.task_id)?;
-    if matches!(t.state, ExecutionState::Done | ExecutionState::Cancelled) {
+    // A timer armed in a turn that ended without waiting outlives it (`outlives_turn`): its firing
+    // is the one occurrence that wakes the agent, so a recurring one ends with it.
+    let outlived = t.state == ExecutionState::Done
+        && t.obligations
+            .iter()
+            .any(|o| o.id == wake.id && o.outlives_turn());
+    if t.state == ExecutionState::Cancelled || (t.state == ExecutionState::Done && !outlived) {
         cancel_settle(tx, &mut wake, now)?;
         return Ok(None);
     }
@@ -541,6 +515,9 @@ fn fire_one(
         let reason = format!("its task is blocked: {}", t.reason);
         cancel_settle_because(tx, &mut wake, now, Some(&reason))?;
         return Ok(Some(wake));
+    }
+    if outlived {
+        wake.interval_ms = None;
     }
     if wake.interval_ms.is_some() {
         let pending: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND source_id=?3 AND json_extract(payload,'$.state') NOT IN ('handled','expired','failed'))", params![wake.room_id,wake.agent_id,wake.id], |r| r.get(0)).map_err(sql)?;

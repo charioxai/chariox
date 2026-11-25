@@ -3,7 +3,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { constants, readFileSync } from 'node:fs';
-import { mkdir, open, realpath } from 'node:fs/promises';
+import { lstat, mkdir, open, readdir, readlink, realpath, rename } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { browserUserMessages } from './kernel-browser-error-label.mjs';
@@ -24,7 +24,7 @@ export function browserConfinementFailure(capability) {
   return browserUserFailure('host');
 }
 
-let account;
+let account, reclaimed;
 export async function ensureBrowserAccount(run = execute) {
   const lookup = async () => {
     const {stdout} = await run('/usr/bin/getent', ['passwd', browserAccount], {timeout:5000});
@@ -52,15 +52,72 @@ export async function ownedBrowserDirectory(directory, uid, gid, mode) {
   } finally { await file.close(); }
   return directory;
 }
+// Row 61: each kernel's browser dir carries a record of the kernel root it
+// belongs to, so a later kernel start can reclaim it once that root is gone.
+const ownerRecord='owner.json';
+const browserDirectoryName=/^[0-9a-f]{64}$/;
+const reclaimPrefix='.reclaim-';
+const rootDigest=root=>createHash('sha256').update(root).digest('hex');
+// Written by root inside the root-owned 0711 dir: the browser account can't create or replace it.
+async function writeOwnerRecord(directory, root) {
+  const file=path.join(directory,ownerRecord), temporary=`${file}.${process.pid}.tmp`;
+  const handle=await open(temporary,constants.O_WRONLY|constants.O_CREAT|constants.O_TRUNC|constants.O_NOFOLLOW,0o600);
+  try { await handle.chmod(0o600); await handle.writeFile(JSON.stringify({version:1,root})); } finally { await handle.close(); }
+  await rename(temporary,file);
+}
+// A record counts only if it is a regular file of the kernel's account, not a
+// link, and names a root that hashes to this very dir.
+async function recordedRoot(directory, owner) {
+  let handle;
+  try { handle=await open(path.join(directory,ownerRecord),constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK); } catch { return null; }
+  try {
+    const info=await handle.stat();
+    if(!info.isFile()||info.uid!==owner||(info.mode&0o022)||info.size>4096)return null;
+    const record=JSON.parse(await handle.readFile('utf8'));
+    return record?.version===1&&typeof record.root==='string'&&path.isAbsolute(record.root)&&rootDigest(record.root)===path.basename(directory)?record.root:null;
+  } catch { return null; } finally { await handle.close(); }
+}
+async function profileInUse(directory) {
+  const lock=await readlink(path.join(directory,'profile','SingletonLock')).catch(()=>'');
+  const pid=Number(lock.slice(lock.lastIndexOf('-')+1));
+  if(!lock||!Number.isSafeInteger(pid)||pid<=1)return false;
+  try { process.kill(pid,0); return true; } catch (error) { return error.code==='EPERM'; }
+}
+// The browser account owns the profile trees (and every kernel's Chromium runs
+// as it), so removal must never walk them by path: GNU rm descends with openat
+// and never follows a symlink; --one-file-system keeps it off other mounts.
+const removeBrowserTree=directory=>execute('/bin/rm',['-rf','--one-file-system','--',directory],{timeout:120000});
+export async function sweepBrowserHomes(base, {owner=0, removeTree=removeBrowserTree}={}) {
+  const removed=[];
+  const baseInfo=await lstat(base).catch(()=>null);
+  if(!baseInfo?.isDirectory()||baseInfo.uid!==owner)return {removed};
+  for(const name of await readdir(base).catch(()=>[])){
+    const entry=path.join(base,name);
+    const info=await lstat(entry).catch(()=>null);
+    if(!info?.isDirectory()||info.uid!==owner)continue;
+    // An earlier start renamed it for removal and stopped before finishing.
+    if(name.startsWith(reclaimPrefix)&&browserDirectoryName.test(name.slice(reclaimPrefix.length))){await removeTree(entry).catch(()=>{});continue;}
+    if(!browserDirectoryName.test(name))continue;
+    const root=await recordedRoot(entry,owner);
+    if(!root||!await lstat(root).then(()=>false,error=>error.code==='ENOENT')||await profileInUse(entry))continue;
+    const doomed=path.join(base,reclaimPrefix+name);
+    try { await rename(entry,doomed); } catch { continue; }
+    removed.push(name);
+    await removeTree(doomed).catch(()=>{});
+  }
+  return {removed};
+}
 export class LinuxBrowserUser {
-  constructor(root, identity, base = '/var/lib/chariox-browser') {
-    this.uid=identity.uid; this.gid=identity.gid; this.base=base;
-    this.root=path.join(base,createHash('sha256').update(root).digest('hex'));
+  constructor(root, identity, base = '/var/lib/chariox-browser', {owner=0, group=owner}={}) {
+    this.uid=identity.uid; this.gid=identity.gid; this.base=base; this.owner=owner; this.group=group;
+    this.kernelRoot=root;
+    this.root=path.join(base,rootDigest(root));
   }
   async prepare() {
     try {
-      await ownedBrowserDirectory(this.base,0,0,0o711);
-      await ownedBrowserDirectory(this.root,0,0,0o711);
+      await ownedBrowserDirectory(this.base,this.owner,this.group,0o711);
+      await ownedBrowserDirectory(this.root,this.owner,this.group,0o711);
+      await writeOwnerRecord(this.root,this.kernelRoot);
       this.home=await this.directory('home');
       return this;
     } catch (error) {
@@ -86,5 +143,10 @@ export class LinuxBrowserUser {
 export async function rootBrowserUser(root) {
   if(process.platform!=='linux'||process.geteuid()!==0)return null;
   account ??= ensureBrowserAccount().catch(error=>{account=null;throw error;});
-  return new LinuxBrowserUser(root,await account).prepare();
+  const user=await new LinuxBrowserUser(root,await account).prepare();
+  // Once per kernel run, in the background: browser start never waits for it.
+  reclaimed ??= sweepBrowserHomes(user.base).then(({removed})=>{
+    if(removed.length)console.error(`[browser] reclaimed ${removed.length} browser dir(s) of deleted kernel homes`);
+  },()=>{});
+  return user;
 }

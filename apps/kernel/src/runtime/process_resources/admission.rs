@@ -8,7 +8,7 @@ use super::*;
 #[cfg(target_os = "macos")]
 use crate::runtime::bounded_process::BoundedCommandExt as _;
 use crate::runtime::kernel_access::process::{inspect, ProcessIdentity};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -30,6 +30,18 @@ const AHEAD: u64 = 2;
 /// A stopped filler needs a moment to give its space back before the next
 /// one is judged.
 const FILLER_SETTLE: Duration = Duration::from_secs(2);
+/// Miguel 11-24: 5 s to full. A volume that its free space says is within this many seconds
+/// of full at the rate it is losing room is short of room now, whatever its floor: a
+/// runaway copy fills gigabytes in seconds (docs/PROCESS_RESOURCES.md).
+const FILL_HORIZON_SECONDS: u64 = 5;
+/// Miguel 11-24: 128 MiB/s. An agent command writing this fast is a runaway (the memory
+/// runaway rate): within the fill horizon the fastest of them is stopped, and no slower
+/// writer is.
+const RUNAWAY_WRITE: u64 = 128 * MIB;
+/// A volume's free space is compared over this long to tell how fast it is
+/// being used up, and over at least `FREE_LOSS_MIN`.
+const FREE_WINDOW: Duration = Duration::from_secs(2);
+const FREE_LOSS_MIN: Duration = Duration::from_millis(100);
 const REMEMBERED: usize = 4096;
 /// Paused commands keep their memory. When memory stays short this long
 /// without the pool gaining room, the largest paused command ends.
@@ -122,6 +134,17 @@ pub(super) struct Entry {
     refused: Option<u64>,
     /// It is the process filling a nearly full disk: it is ended, not held.
     filling: Option<Filling>,
+    /// Real memory exhaustion paused or stopped it: that policy alone ends
+    /// the wait, and these lines are what the command, its agent and its pane
+    /// are told in place of the generic wait lines.
+    pub exhaustion: Option<ExhaustionNote>,
+}
+
+/// What an exhaustion pause tells, now and when it ends.
+#[derive(Clone, Debug)]
+pub(super) struct ExhaustionNote {
+    pub paused: String,
+    pub resumed: String,
 }
 
 /// What a disk-full stop tells the stopped command and its agent.
@@ -131,6 +154,9 @@ pub(super) struct Filling {
     pub rate: u64,
     pub written: u64,
     pub deleted_open: u64,
+    /// Seconds until the volume is full at the rate it fills, when that
+    /// rather than the floor made it short.
+    pub full_in: Option<u64>,
 }
 impl Entry {
     /// It waits from now on, for the reason `wait` names.
@@ -156,9 +182,48 @@ impl Entry {
         )
     }
 
+    /// One log line for a decision admission took on this command: what it
+    /// did, to which command, and why, with the numbers it judged by.
+    pub(super) fn decision(
+        &self,
+        pid: u32,
+        decision: &str,
+        reason: WaitReason,
+        why: &str,
+        numbers: serde_json::Value,
+    ) {
+        let line = self.seen.as_ref().map_or_else(
+            || format!("pid {pid}"),
+            |seen| seen.line.chars().take(200).collect(),
+        );
+        let mut fields = serde_json::json!({
+            "decision": decision,
+            "reason": reason,
+            "pid": pid,
+            "command": line,
+            "why": why,
+            "resident_bytes": self.resident,
+            "expected_peak_bytes": self.expected.as_ref().map(|peak| peak.memory),
+        });
+        if let (Some(fields), Some(numbers)) = (fields.as_object_mut(), numbers.as_object()) {
+            fields.extend(numbers.clone());
+        }
+        crate::logging::info_with_fields(
+            "process_resources.admission",
+            format!("admission {decision} ({reason:?}): {line}: {why}"),
+            fields,
+        );
+    }
+
     /// It runs again.
     fn stop_waiting(&mut self) {
         self.wait = None;
+    }
+
+    /// The exhaustion policy keeps its own pauses: the generic rules neither
+    /// release, number, continue nor end them.
+    fn exhausted(&self) -> bool {
+        self.exhaustion.is_some()
     }
 
     pub(super) fn continued(&mut self) {
@@ -240,6 +305,15 @@ impl Entry {
     pub(super) fn force(&mut self) -> bool {
         if self.wait.is_none() {
             return false;
+        }
+        if let Some(wait) = self.wait {
+            self.decision(
+                self.seen.as_ref().map_or(0, |seen| seen.pid),
+                "started",
+                wait.reason(),
+                "the person started it now, whatever the room",
+                serde_json::json!({}),
+            );
         }
         self.stop_waiting();
         self.forced = true;
@@ -346,6 +420,9 @@ pub(super) struct Ledger {
     resumed_at: BTreeMap<u8, Instant>,
     /// When a command was last stopped for filling the disk.
     filler_at: Option<Instant>,
+    /// The free bytes of each volume a command works in or sends output to, over the
+    /// last seconds: how fast the volume is really being filled.
+    free_seen: BTreeMap<u64, VecDeque<(Instant, u64)>>,
     /// The owner whose command started last for each reason: the next one in
     /// line is the following owner's.
     served: BTreeMap<u8, String>,
@@ -418,29 +495,53 @@ impl Room<'_> {
 }
 
 /// Release every wait whose resource is disabled or whose memory emergency
-/// ended. Disabling a resource must not leave a stopped command stranded.
+/// ended. Disabling a resource must not leave a stopped command stranded. A
+/// command held before it started for room it does not fit keeps waiting
+/// while memory protection is on, emergency or not: only the line in turn
+/// (`resume`) starts it, when its room is there.
 pub(super) fn release_unprotected(
     members: &[Arc<Mutex<Observation>>],
-    memory: bool,
+    protection: bool,
+    emergency: bool,
     disk: bool,
 ) -> Vec<Arc<Mutex<Observation>>> {
+    let memory = protection && emergency;
     let mut changed = Vec::new();
     for member in members {
         let mut observation = member.lock().unwrap_or_else(|e| e.into_inner());
         let mut released = false;
-        for entry in observation.admission.values_mut() {
+        for (pid, entry) in observation.admission.iter_mut() {
             if !memory {
                 entry.refused = None;
             }
             if !disk {
                 entry.filling = None;
             }
-            if entry.wait.is_some_and(|wait| match wait.reason() {
-                WaitReason::Memory => !memory,
-                WaitReason::Disk => !disk,
-            }) {
+            if !entry.exhausted()
+                && entry.wait.is_some_and(|wait| match wait {
+                    Wait::Held(WaitReason::Memory) => !protection,
+                    Wait::Paused(WaitReason::Memory) => !memory,
+                    Wait::Held(WaitReason::Disk) | Wait::Paused(WaitReason::Disk) => !disk,
+                })
+            {
+                let wait = entry.wait;
                 entry.stop_waiting();
                 released = true;
+                if let Some(wait) = wait {
+                    entry.decision(
+                        *pid,
+                        "released",
+                        wait.reason(),
+                        match wait.reason() {
+                            WaitReason::Memory if !protection => {
+                                "memory protection is off for this machine"
+                            }
+                            WaitReason::Memory => "the memory emergency ended",
+                            WaitReason::Disk => "disk protection is off for this machine",
+                        },
+                        serde_json::json!({}),
+                    );
+                }
             }
         }
         if released {
@@ -456,11 +557,44 @@ impl Ledger {
             arrivals: 0,
             resumed_at: BTreeMap::new(),
             filler_at: None,
+            free_seen: BTreeMap::new(),
             served: BTreeMap::new(),
             stall: None,
             stall_window: STALL,
             peaks: Peaks::load(file),
         }
+    }
+
+    /// Whether a heavy command runs now whose end would free room: a launch
+    /// that holds a heavy reservation, or a command of an observed workload
+    /// holding at least `light` (a job's own process counts while its launch
+    /// is alive; a provider's or a shell's long-lived root never does).
+    pub(super) fn heavy_running(
+        &self,
+        members: &[Arc<Mutex<Observation>>],
+        light: u64,
+        launches: &BTreeMap<String, super::launch::Reservation>,
+    ) -> bool {
+        launches.values().any(|launch| launch.memory >= light)
+            || members.iter().any(|member| {
+                let member = member.lock().unwrap_or_else(|e| e.into_inner());
+                let launched = launches.contains_key(&member.unit);
+                member
+                    .commands
+                    .iter()
+                    .any(|command| (launched || !command.root) && command.resident >= light)
+                    // Admitted with a heavy predicted peak, not grown yet: its
+                    // peak is already reserved, so it counts as running (the
+                    // rule `State::running` applies).
+                    || member.admission.values().any(|entry| {
+                        entry.admitted
+                            && entry.wait.is_none()
+                            && entry
+                                .expected
+                                .as_ref()
+                                .is_some_and(|peak| peak.memory >= light)
+                    })
+            })
     }
 
     /// Growth beyond each domain's already-reserved binary prediction.
@@ -558,19 +692,41 @@ impl Ledger {
             .copied()
             .collect::<Vec<_>>();
         for pid in ended {
-            if let Some(Entry {
-                seen: Some(seen),
-                peak,
-                ..
-            }) = observation.admission.remove(&pid)
-            {
-                self.peaks.record(
-                    &seen.key,
-                    Peak {
-                        exact: seen.exact,
-                        ..peak
+            let Some(entry) = observation.admission.remove(&pid) else {
+                continue;
+            };
+            let heavy = entry.peak.memory >= light;
+            let Some(seen) = entry.seen.as_ref() else {
+                if heavy {
+                    entry.decision(
+                        pid,
+                        "forgot",
+                        WaitReason::Memory,
+                        "it ended without a recognised command line, so its peak is not kept for its next run",
+                        serde_json::json!({"peak_bytes": entry.peak.memory}),
+                    );
+                }
+                continue;
+            };
+            let kept = self.peaks.record(
+                &seen.key,
+                Peak {
+                    exact: seen.exact,
+                    ..entry.peak.clone()
+                },
+                light,
+            );
+            if heavy {
+                entry.decision(
+                    pid,
+                    if kept { "remembered" } else { "forgot" },
+                    WaitReason::Memory,
+                    if kept {
+                        "it ended; its peak is kept, so its next run waits when the pool cannot fit it"
+                    } else {
+                        "it ended; its peak was not kept"
                     },
-                    light,
+                    serde_json::json!({"peak_bytes": entry.peak.memory}),
                 );
             }
         }
@@ -628,6 +784,50 @@ impl Ledger {
                     }
                 }
             };
+            // A shell that ran one command at a time is the entry's command;
+            // when the command it followed has ended and the shell is back
+            // at its prompt, that run is over: its peak is kept for the next
+            // run, and the next one is judged afresh, not as the shell's
+            // growth. (The shell outlives its commands, so the entry would
+            // otherwise never end and nothing would be remembered.)
+            if entry.admitted
+                && entry.wait.is_none()
+                && entry.seen.as_ref().is_some_and(|seen| {
+                    seen.pid != command.pid
+                        && seen.pid != command.effective
+                        && inspect(seen.pid).is_err()
+                })
+            {
+                let kept = entry.seen.as_ref().is_some_and(|seen| {
+                    self.peaks.record(
+                        &seen.key,
+                        Peak {
+                            exact: seen.exact,
+                            ..entry.peak.clone()
+                        },
+                        light,
+                    )
+                });
+                if entry.peak.memory >= light {
+                    entry.decision(
+                        command.pid,
+                        if kept { "remembered" } else { "forgot" },
+                        WaitReason::Memory,
+                        if kept {
+                            "its run ended at the shell's prompt; its peak is kept, so the next run waits when the pool cannot fit it"
+                        } else {
+                            "its run ended at the shell's prompt; its peak was not kept"
+                        },
+                        serde_json::json!({"peak_bytes": entry.peak.memory}),
+                    );
+                }
+                self.arrivals += 1;
+                *entry = Entry {
+                    arrived: self.arrivals,
+                    holdable: entry.holdable,
+                    ..Entry::default()
+                };
+            }
             entry.resident = command.resident;
             entry.writes = command.writes;
             entry.peak.memory = entry.peak.memory.max(command.resident);
@@ -640,6 +840,11 @@ impl Ledger {
             {
                 entry.peak.volume = ReceivingVolume::capture(output);
                 entry.peak.volume_writes = output.written;
+            }
+            // A command line that could not be read when it was admitted (a
+            // process mid-exec shows none) is read again, so its peak is kept.
+            if entry.admitted && entry.wait.is_none() && entry.seen.is_none() {
+                entry.seen = recognise(command.effective);
             }
             // Until it is decided, follow a shell to the command it runs.
             if !entry.admitted
@@ -668,7 +873,8 @@ impl Ledger {
     ) -> bool {
         let mut changed = release_unprotected(
             members,
-            room.memory_protection && room.pressured,
+            room.memory_protection,
+            room.pressured,
             room.disk_protection,
         );
         let mut state = State::read(members, room);
@@ -746,9 +952,11 @@ impl Ledger {
         true
     }
 
-    /// Marks the command filling a nearly full volume: the agent's writer
-    /// that wrote the most among those still writing there. A person's own
-    /// command is never chosen.
+    /// Marks the command filling a volume that is short: below half its
+    /// floor, or full within the fill horizon at the rate the kernel's
+    /// commands write to it. A runaway writer goes first, the fastest of
+    /// them; otherwise the writer that wrote the most among those still
+    /// writing there. A person's own command is never chosen.
     fn stop_filler(
         &mut self,
         members: &[Arc<Mutex<Observation>>],
@@ -760,79 +968,116 @@ impl Ledger {
         {
             return None;
         }
-        // A shared writable file can grow because of either holder. Neither
-        // command supplies destructive evidence for that receiving volume.
-        let mut holders = BTreeMap::<(u64, u64), usize>::new();
-        for member in members {
-            let observation = member.lock().unwrap_or_else(|e| e.into_inner());
-            for command in &observation.commands {
-                for output in observation
-                    .disk_writes
-                    .get(&command.pid)
-                    .into_iter()
-                    .flatten()
-                {
-                    for inode in &output.files {
-                        *holders.entry((output.id, *inode)).or_default() += 1;
-                    }
-                }
+        let lost = self.free_loss(members, room);
+        let writers = writers(members);
+        let mut chosen: Option<((bool, u64), &Writer, Filling)> = None;
+        for writer in &writers {
+            // A descriptor can close or be reused between samples.
+            let Some(disk) =
+                disk_room(room.volume, &writer.path).filter(|disk| disk.id == writer.volume)
+            else {
+                continue;
+            };
+            // The rate the volume is really being filled at: what its free space lost.
+            let observed = lost.get(&writer.volume).copied().unwrap_or_default();
+            let below = disk.free < disk.floor / 2;
+            let near_full =
+                observed > 0 && disk.free < observed.saturating_mul(FILL_HORIZON_SECONDS);
+            // Within the fill horizon only a runaway is stopped, the fastest of them: any
+            // agent command writing this fast to that volume, an overwriter too (an accepted
+            // cost in a real emergency, Miguel 11-24).
+            // Below half the floor, as before this rule: only a writer with evidence that it
+            // uses the room (its open files growing, or the volume visibly losing room) is a
+            // candidate; a writer that rewrites what it holds on a steady volume frees nothing.
+            let consuming = writer.grown >= GROWING || observed >= GROWING;
+            if !((below && consuming) || (near_full && writer.rate >= RUNAWAY_WRITE)) {
+                continue;
             }
-        }
-        let mut largest: Option<(u64, u32, Filling, &Arc<Mutex<Observation>>)> = None;
-        for member in members {
-            let observation = member.lock().unwrap_or_else(|e| e.into_inner());
-            for command in &observation.commands {
-                let Some(entry) = observation.admission.get(&command.pid) else {
-                    continue;
-                };
-                if !entry.holdable || command.write_growth < GROWING {
-                    continue;
-                }
-                for output in observation
-                    .disk_writes
-                    .get(&command.pid)
-                    .into_iter()
-                    .flatten()
-                {
-                    if output.rate < GROWING
-                        || output.files.is_empty()
-                        || output.files.iter().any(|inode| {
-                            holders
-                                .get(&(output.id, *inode))
-                                .is_none_or(|count| *count != 1)
-                        })
-                        || largest
-                            .as_ref()
-                            .is_some_and(|(written, ..)| output.written <= *written)
-                    {
-                        continue;
-                    }
-                    // A descriptor can close or be reused between samples.
-                    let Some(disk) = disk_room(room.volume, &output.path)
-                        .filter(|disk| disk.id == output.id && disk.free < disk.floor / 2)
-                    else {
-                        continue;
-                    };
-                    largest = Some((
-                        output.written,
-                        command.pid,
-                        Filling {
-                            free: disk.free,
-                            floor: disk.floor,
-                            rate: output.rate,
-                            written: output.written,
-                            deleted_open: command.deleted_open,
-                        },
-                        member,
-                    ));
-                }
+            let rank = if writer.rate >= RUNAWAY_WRITE {
+                (true, writer.rate)
+            } else {
+                (false, writer.written)
+            };
+            if chosen.as_ref().is_some_and(|(best, ..)| *best >= rank) {
+                continue;
             }
+            chosen = Some((
+                rank,
+                writer,
+                Filling {
+                    free: disk.free,
+                    floor: disk.floor,
+                    rate: writer.rate,
+                    written: writer.written,
+                    deleted_open: writer.deleted_open,
+                    full_in: (!below).then(|| disk.free / observed.max(1)),
+                },
+            ));
         }
-        let (_, pid, filling, member) = largest?;
-        let mut observation = member.lock().unwrap_or_else(|e| e.into_inner());
-        observation.admission.get_mut(&pid)?.filling = Some(filling);
+        let (_, writer, filling) = chosen?;
+        let mut observation = writer.member.lock().unwrap_or_else(|e| e.into_inner());
+        observation.admission.get_mut(&writer.pid)?.filling = Some(filling);
         self.filler_at = Some(Instant::now());
-        Some(member.clone())
+        Some(writer.member.clone())
+    }
+
+    /// How fast each volume a command sends output to is losing free space,
+    /// bytes a second over the last seconds. A volume seen for the first time
+    /// has lost nothing yet.
+    fn free_loss(
+        &mut self,
+        members: &[Arc<Mutex<Observation>>],
+        room: &Room,
+    ) -> BTreeMap<u64, u64> {
+        let now = Instant::now();
+        let mut seen = BTreeMap::<u64, u64>::new();
+        for member in members {
+            let observation = member.lock().unwrap_or_else(|e| e.into_inner());
+            for output in observation.disk_writes.values().flatten() {
+                if seen.contains_key(&output.id) {
+                    continue;
+                }
+                if let Some(disk) =
+                    disk_room(room.volume, &output.path).filter(|disk| disk.id == output.id)
+                {
+                    seen.insert(output.id, disk.free);
+                }
+            }
+            // The volume each command works in is watched from the moment the command is
+            // known, so a copy's first sample already has the free space from before it began.
+            for cwd in observation
+                .admission
+                .values()
+                .filter_map(|entry| entry.seen.as_ref()?.cwd.as_deref())
+            {
+                if let Some(disk) = disk_room(room.volume, cwd) {
+                    seen.entry(disk.id).or_insert(disk.free);
+                }
+            }
+        }
+        self.free_seen.retain(|id, _| seen.contains_key(id));
+        let mut lost = BTreeMap::new();
+        for (id, free) in seen {
+            let history = self.free_seen.entry(id).or_default();
+            history.push_back((now, free));
+            while history
+                .front()
+                .is_some_and(|(at, _)| now.duration_since(*at) > FREE_WINDOW)
+            {
+                history.pop_front();
+            }
+            let Some(&(first_at, first_free)) = history.front() else {
+                continue;
+            };
+            let elapsed = now.duration_since(first_at);
+            let rate = if elapsed >= FREE_LOSS_MIN {
+                (first_free.saturating_sub(free) as u128 * 1000 / elapsed.as_millis().max(1)) as u64
+            } else {
+                0
+            };
+            lost.insert(id, rate);
+        }
+        lost
     }
 
     /// The commands of `current` marked as filling the disk; each is reported
@@ -865,13 +1110,23 @@ impl Ledger {
     fn hold(&mut self, current: &Arc<Mutex<Observation>>, room: &Room, state: &mut State) {
         let mut observation = current.lock().unwrap_or_else(|e| e.into_inner());
         let unit = observation.unit.clone();
-        for entry in observation.admission.values_mut() {
+        for (pid, entry) in observation.admission.iter_mut() {
+            let pid = *pid;
             if entry.admitted || entry.forced || entry.wait.is_some() {
                 continue;
             }
             let Some(expected) = entry.expected.clone() else {
                 // Unknown: light until it grows.
                 entry.admitted = entry.resident >= room.light;
+                if entry.admitted {
+                    entry.decision(
+                        pid,
+                        "admitted",
+                        WaitReason::Memory,
+                        "no earlier run of it is known, so it can only be paused if it grows into a short pool",
+                        serde_json::json!({"room_bytes": room.memory}),
+                    );
+                }
                 continue;
             };
             if room.memory_protection
@@ -889,6 +1144,13 @@ impl Ledger {
                 {
                     entry.refused = Some(expected.memory);
                     entry.admitted = true;
+                    entry.decision(
+                        pid,
+                        "refused",
+                        WaitReason::Memory,
+                        "its last run needed more than the whole pool, so it can never fit here",
+                        serde_json::json!({"need_bytes": expected.memory, "pool_bytes": room.capacity}),
+                    );
                 } else {
                     entry.expected = None;
                 }
@@ -900,11 +1162,13 @@ impl Ledger {
             let held = if !entry.holdable {
                 None
             } else if room.memory_protection
-                && room.pressured
                 && expected.memory >= room.light
                 && need > state.memory_room(&unit, room)
-                && state.heavy_running
+                && (state.heavy_running || state.heavy_launched)
             {
+                // Before it grows: a command whose known peak does not fit the
+                // room left waits for it, healthy machine or not. Holding
+                // costs nothing; only running work is spared until pressure.
                 Some(Wait::Held(WaitReason::Memory))
             } else if room.disk_protection
                 && disk.is_some_and(|disk| ahead > state.spare(disk, &unit, room))
@@ -915,8 +1179,41 @@ impl Ledger {
             };
             if let Some(held) = held {
                 entry.wait_for(held);
+                let free = match held {
+                    Wait::Held(WaitReason::Memory) => state.memory_room(&unit, room),
+                    Wait::Held(WaitReason::Disk) | Wait::Paused(_) => {
+                        disk.map_or(0, |disk| state.spare(disk, &unit, room))
+                    }
+                };
+                entry.decision(
+                    pid,
+                    "held",
+                    held.reason(),
+                    match held.reason() {
+                        WaitReason::Memory => "its last run peaked above the room left in the pool, so it waits before it grows",
+                        WaitReason::Disk => "its last run wrote more than the space left above the volume's floor, so it waits before it writes",
+                    },
+                    serde_json::json!({
+                        "need_bytes": if held.reason() == WaitReason::Memory { need } else { ahead },
+                        "free_bytes": free,
+                        "peak_bytes": expected.memory,
+                    }),
+                );
             } else {
                 entry.admitted = true;
+                if expected.memory >= room.light || disk.is_some() {
+                    entry.decision(
+                        pid,
+                        "started",
+                        WaitReason::Memory,
+                        "its last peak fits the room left in the pool",
+                        serde_json::json!({
+                            "need_bytes": need,
+                            "free_bytes": state.memory_room(&unit, room),
+                            "peak_bytes": expected.memory,
+                        }),
+                    );
+                }
                 state.reserve_memory(&unit, need, room);
                 if let Some(disk) = disk {
                     state.reserve_disk(disk, ahead, &unit, room);
@@ -971,12 +1268,14 @@ impl Ledger {
         {
             entry.wait_for(Wait::Paused(reason));
             entry.paused_rate = rate;
+            entry.decision(
+                pid,
+                "paused",
+                reason,
+                "it was growing into a pool short of memory; paused instead of stopping one",
+                serde_json::json!({"rate_bytes_per_second": rate}),
+            );
         }
-        crate::logging::info_with_fields(
-            "process_resources.admission_pause",
-            "paused a growing command instead of stopping one",
-            serde_json::json!({"pid": pid, "reason": reason, "rate_bytes_per_second": rate}),
-        );
         PauseDecision::Paused(member.clone())
     }
 
@@ -1008,8 +1307,26 @@ impl Ledger {
             if let Some(volume) = volume {
                 state.reserve_disk(volume, entry.writes_ahead(room), &unit, room);
             }
+            let was = entry.wait;
+            let free = state.memory_room(&unit, room);
+            let needs = need(entry, reason, room);
             entry.stop_waiting();
             entry.admitted = true;
+            entry.decision(
+                pid,
+                if matches!(was, Some(Wait::Paused(_))) {
+                    "resumed"
+                } else {
+                    "started"
+                },
+                reason,
+                if state.heavy_running || state.heavy_launched {
+                    "it is next in line and the room it needs is free"
+                } else {
+                    "nothing heavy runs any more, so the next in line goes on"
+                },
+                serde_json::json!({"need_bytes": needs, "free_bytes": free}),
+            );
             state.running(entry, room);
             let unit = observation.unit.clone();
             drop(observation);
@@ -1018,6 +1335,101 @@ impl Ledger {
             return Some(member);
         }
         None
+    }
+}
+
+/// A command exhaustion may act on: its top process, what it holds, where it
+/// runs, and whether it is the workload itself (a job, a provider).
+pub(super) struct Candidate {
+    pub pid: u32,
+    pub resident: u64,
+    pub member: Arc<Mutex<Observation>>,
+    pub root: bool,
+}
+
+/// The commands exhaustion may act on: agent commands the kernel recognised
+/// that are not waiting for another reason, and workloads themselves.
+pub(super) fn exhaustion_candidates(members: &[Arc<Mutex<Observation>>]) -> Vec<Candidate> {
+    let mut found = Vec::new();
+    for member in members {
+        let observation = member.lock().unwrap_or_else(|e| e.into_inner());
+        for command in &observation.commands {
+            if command.root {
+                if observation.exempt.contains(&command.pid) {
+                    continue;
+                }
+                found.push(Candidate {
+                    pid: command.pid,
+                    resident: command.resident,
+                    member: member.clone(),
+                    root: true,
+                });
+                continue;
+            }
+            let Some(entry) = observation.admission.get(&command.pid) else {
+                continue;
+            };
+            // A command its owner started by hand is never held again.
+            if (entry.wait.is_some() && !entry.exhausted()) || entry.forced {
+                continue;
+            }
+            found.push(Candidate {
+                pid: command.pid,
+                resident: command.resident,
+                member: member.clone(),
+                root: false,
+            });
+        }
+    }
+    found
+}
+
+/// The command as its agent typed it, for the lines the policy writes.
+pub(super) fn command_text(observation: &Observation, pid: u32) -> String {
+    observation
+        .admission
+        .get(&pid)
+        .and_then(|entry| entry.seen.as_ref())
+        .map(|seen| seen.line.clone())
+        .or_else(|| {
+            observation
+                .samples
+                .iter()
+                .find(|sample| sample.pid == pid)
+                .map(|sample| sample.command.clone())
+        })
+        .unwrap_or_else(|| format!("pid {pid}"))
+}
+
+/// Pauses the command for exhaustion; whether there was one to pause.
+pub(super) fn exhaustion_pause(
+    member: &Arc<Mutex<Observation>>,
+    pid: u32,
+    note: ExhaustionNote,
+) -> bool {
+    let mut observation = member.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(entry) = observation.admission.get_mut(&pid) else {
+        return false;
+    };
+    entry.wait_for(Wait::Paused(WaitReason::Memory));
+    entry.exhaustion = Some(note);
+    true
+}
+
+/// Marks a command the policy is about to stop, so its stop reads as the policy's.
+pub(super) fn exhaustion_mark(member: &Arc<Mutex<Observation>>, pid: u32, note: ExhaustionNote) {
+    let mut observation = member.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(entry) = observation.admission.get_mut(&pid) {
+        entry.exhaustion = Some(note);
+    }
+}
+
+/// Lets an exhaustion-paused command run again. Its note stays until the
+/// watch has told the resume, so the continue line is the policy's own.
+pub(super) fn exhaustion_release(member: &Arc<Mutex<Observation>>, pid: u32) {
+    let mut observation = member.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(entry) = observation.admission.get_mut(&pid) {
+        entry.stop_waiting();
     }
 }
 
@@ -1114,7 +1526,8 @@ fn waiting_by<T>(
             let Some(entry) = observation.admission.get(&command.pid) else {
                 continue;
             };
-            if !entry.wait.as_ref().is_some_and(&waits)
+            if entry.exhausted()
+                || !entry.wait.as_ref().is_some_and(&waits)
                 || now.saturating_sub(entry.since_ms) < waited_ms
             {
                 continue;
@@ -1146,6 +1559,9 @@ struct State {
     oldest: Option<u64>,
     /// Something heavy runs, so waiting can make room.
     heavy_running: bool,
+    /// A job or Room command holding at least the light bar runs (its peak may
+    /// be unknown, so it has no entry): a command held for room waits for it too.
+    heavy_launched: bool,
     /// Writes admitted commands still have ahead, by volume.
     disk: BTreeMap<u64, u64>,
     memory_by_unit: BTreeMap<String, u64>,
@@ -1178,7 +1594,12 @@ impl State {
         let left = self.memory_room(unit, room);
         let paused_memory =
             reason == WaitReason::Memory && matches!(entry.wait, Some(Wait::Paused(_)));
-        if room.memory_protection && room.pressured && self.heavy_running && memory > left {
+        // A held command is judged by the room, an emergency or not (the same
+        // test `hold` made); a paused one continues by the emergency's rules.
+        let judged = room.pressured || matches!(entry.wait, Some(Wait::Held(_)));
+        let waits_on_heavy = self.heavy_running
+            || (self.heavy_launched && matches!(entry.wait, Some(Wait::Held(_))));
+        if room.memory_protection && judged && waits_on_heavy && memory > left {
             return Some(Blocked::Memory { left, need: memory });
         }
         if room.memory_protection && room.pressured && self.heavy_running && paused_memory {
@@ -1275,6 +1696,7 @@ impl State {
             disk: BTreeMap::new(),
             memory_by_unit: BTreeMap::new(),
             writes_by_unit: BTreeMap::new(),
+            heavy_launched: false,
         };
         for launch in room.launches.values() {
             let total = state.disk.entry(launch.volume).or_default();
@@ -1282,6 +1704,17 @@ impl State {
         }
         for member in members {
             let observation = member.lock().unwrap_or_else(|e| e.into_inner());
+            let launched = room.launches.contains_key(&observation.unit);
+            if observation.commands.iter().any(|command| {
+                (launched || !command.root)
+                    && command.resident >= room.light
+                    && observation
+                        .admission
+                        .get(&command.pid)
+                        .is_none_or(|entry| entry.wait.is_none())
+            }) {
+                state.heavy_launched = true;
+            }
             for entry in observation.admission.values() {
                 if entry.wait.is_some() {
                     continue;
@@ -1331,7 +1764,7 @@ fn line(
     for member in members {
         let observation = member.lock().unwrap_or_else(|e| e.into_inner());
         for (pid, entry) in &observation.admission {
-            if entry.wait.is_some_and(|wait| wait.reason() == reason) {
+            if !entry.exhausted() && entry.wait.is_some_and(|wait| wait.reason() == reason) {
                 owners.entry(observation.unit.clone()).or_default().push((
                     entry.arrived,
                     member.clone(),
@@ -1403,6 +1836,115 @@ pub(super) fn light(ceiling: u64) -> u64 {
 
 pub(super) fn growth_room(ceiling: u64) -> u64 {
     MAX_GROWTH_ROOM.min(ceiling / 8)
+}
+
+/// An agent's command writing to one volume, as far as the samples can tell.
+struct Writer<'a> {
+    member: &'a Arc<Mutex<Observation>>,
+    pid: u32,
+    volume: u64,
+    path: PathBuf,
+    /// What it writes to the volume: all it writes when it sends output to this
+    /// volume only, otherwise the growth of its open files there.
+    rate: u64,
+    /// What its open files there grew by: allocation seen.
+    grown: u64,
+    written: u64,
+    deleted_open: u64,
+}
+
+/// The agents' commands writing now, each with the volume it writes to.
+fn writers<'a>(members: &'a [Arc<Mutex<Observation>>]) -> Vec<Writer<'a>> {
+    // A shared writable file can grow because of either holder. Neither
+    // command supplies destructive evidence for that receiving volume.
+    let mut holders = BTreeMap::<(u64, u64), usize>::new();
+    for member in members {
+        let observation = member.lock().unwrap_or_else(|e| e.into_inner());
+        for command in &observation.commands {
+            for output in observation
+                .disk_writes
+                .get(&command.pid)
+                .into_iter()
+                .flatten()
+            {
+                for inode in output.open.union(&output.files) {
+                    *holders.entry((output.id, *inode)).or_default() += 1;
+                }
+            }
+        }
+    }
+    let mut writers = Vec::new();
+    for member in members {
+        let observation = member.lock().unwrap_or_else(|e| e.into_inner());
+        for command in &observation.commands {
+            let Some(entry) = observation.admission.get(&command.pid) else {
+                continue;
+            };
+            if !entry.holdable || command.write_growth < GROWING {
+                continue;
+            }
+            let outputs = observation
+                .disk_writes
+                .get(&command.pid)
+                .map(Vec::as_slice)
+                .unwrap_or_default();
+            let shared = |output: &disk_use::VolumeWrites| {
+                output.open.union(&output.files).any(|inode| {
+                    holders
+                        .get(&(output.id, *inode))
+                        .is_none_or(|count| *count != 1)
+                })
+            };
+            // A command sending output to one volume only, through files
+            // nobody else holds, writes all it writes there: a copy of many
+            // files shows no file growing from one sample to the next.
+            let receiving = outputs
+                .iter()
+                .filter(|output| output.receiving)
+                .collect::<Vec<_>>();
+            // Standard streams may go to another volume: their writes are in
+            // the command's rate too, so the rate then says nothing about this one.
+            let only = match receiving.as_slice() {
+                [output]
+                    if !shared(output) && outputs.iter().all(|other| other.id == output.id) =>
+                {
+                    Some(output.id)
+                }
+                _ => None,
+            };
+            for output in outputs {
+                // A command sending output to one volume only writes all it writes
+                // there: a copy of many short-lived files shows no file growing
+                // from one sample to the next. Otherwise only the growth of its
+                // open files counts for the volume.
+                let only_here = only == Some(output.id);
+                let grown = if output.files.is_empty() {
+                    0
+                } else {
+                    output.rate.min(command.write_rate)
+                };
+                let (rate, written) = if only_here {
+                    (command.write_rate, output.written.max(command.writes))
+                } else {
+                    (output.rate.min(command.write_rate), output.written)
+                };
+                if rate < GROWING || shared(output) || (!only_here && output.files.is_empty()) {
+                    continue;
+                }
+                writers.push(Writer {
+                    member,
+                    pid: command.pid,
+                    volume: output.id,
+                    path: output.path.clone(),
+                    rate,
+                    grown,
+                    written,
+                    deleted_open: command.deleted_open,
+                });
+            }
+        }
+    }
+    writers
 }
 
 /// A volume's free bytes against its floor.
@@ -1693,9 +2235,9 @@ impl Peaks {
         true
     }
 
-    pub(super) fn record(&mut self, key: &str, peak: Peak, light: u64) {
+    pub(super) fn record(&mut self, key: &str, peak: Peak, light: u64) -> bool {
         if !self.remember(key, peak, light) {
-            return;
+            return false;
         }
         if let Some(file) = &self.file {
             let written = serde_json::to_vec(&self.known)
@@ -1713,6 +2255,7 @@ impl Peaks {
                 );
             }
         }
+        true
     }
 }
 
@@ -1838,6 +2381,7 @@ mod launcher_pause_tests {
                 steady_growth: 0,
                 writes: 0,
                 write_growth: 0,
+                write_rate: 0,
             })
             .collect();
         let mut admission = Ledger::new(None);

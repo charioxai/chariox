@@ -66,6 +66,10 @@ impl PreparedDaemonRequest {
             .map(|key| (key, false));
         }
         // A mirror subscription binds one tab and viewer; its input and reads share it.
+        let command = match command {
+            C::Room { command, .. } => command.as_ref(),
+            command => command,
+        };
         let (tab, generation, read) = match command {
             C::Input {
                 tab_id, generation, ..

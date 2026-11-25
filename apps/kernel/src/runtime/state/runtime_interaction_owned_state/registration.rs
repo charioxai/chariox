@@ -10,16 +10,16 @@ enum InteractionSource<'a> {
 impl KernelRuntimeOwnedState {
     pub(in crate::runtime::state) fn register_runtime_interaction(
         &self,
+        request: super::card_registry::CardRequest,
         session_id: &str,
-        interaction: crate::session::RuntimeInteraction,
         responder: tokio::sync::oneshot::Sender<super::super::PendingInteractionResolution>,
         kernel_operation_owner: Option<&str>,
         forwarding: Option<&crate::transport::relay_peer::RemoteNativeInteractionContext>,
         terminal_credential_owner: Option<&str>,
     ) -> Result<(), DaemonError> {
         self.register_interaction(
+            request,
             session_id,
-            interaction,
             responder,
             kernel_operation_owner,
             terminal_credential_owner,
@@ -29,25 +29,25 @@ impl KernelRuntimeOwnedState {
 
     pub(in crate::runtime::state) fn register_codex_workspace_approval(
         &self,
+        request: super::card_registry::CardRequest,
         session_id: &str,
-        interaction: crate::session::RuntimeInteraction,
         responder: tokio::sync::oneshot::Sender<super::super::PendingInteractionResolution>,
-        request: &CodexApprovalRequest,
+        approval: &CodexApprovalRequest,
     ) -> Result<(), DaemonError> {
         self.register_interaction(
+            request,
             session_id,
-            interaction,
             responder,
             None,
             None,
-            InteractionSource::CodexWorkspaceApproval(request),
+            InteractionSource::CodexWorkspaceApproval(approval),
         )
     }
 
     fn register_interaction(
         &self,
+        request: super::card_registry::CardRequest,
         session_id: &str,
-        interaction: crate::session::RuntimeInteraction,
         responder: tokio::sync::oneshot::Sender<super::super::PendingInteractionResolution>,
         kernel_operation_owner: Option<&str>,
         terminal_credential_owner: Option<&str>,
@@ -58,6 +58,7 @@ impl KernelRuntimeOwnedState {
             InteractionSource::CodexWorkspaceApproval(request) => (None, Some(request)),
             InteractionSource::Local => (None, None),
         };
+        let super::card_registry::CardRequest(kind, interaction) = request;
         let _admission = self.begin_managed_activity_admission()?;
         self.sweep_stale_task_owner_interactions()?;
         let _mutation = self
@@ -65,6 +66,11 @@ impl KernelRuntimeOwnedState {
             .mutation
             .lock()
             .map_err(|_| interaction_error("Interaction store is unavailable"))?;
+        if interaction.native_origin().is_some() && *self.provider_decisions_closed.borrow() {
+            return Err(interaction_error(
+                "The kernel is stopping. Retry after it starts again.",
+            ));
+        }
         self.pending_interactions.prune_abandoned_kernel_owners();
         if kernel_operation_owner.is_some() {
             self.reclaim_kernel_decisions_locked(false);
@@ -97,6 +103,7 @@ impl KernelRuntimeOwnedState {
                 return Err(interaction_error("Invalid unattached decision authority"));
             }
             return self.register_user_domain_interaction(
+                kind,
                 interaction,
                 responder,
                 kernel_operation_owner,
@@ -108,6 +115,7 @@ impl KernelRuntimeOwnedState {
                 .is_some_and(|id| id.starts_with(crate::runtime::state::VAULT_SECRET_OPERATION))
             {
                 return self.register_kernel_wide_secret_interaction(
+                    kind,
                     interaction,
                     responder,
                     kernel_operation_owner,
@@ -116,6 +124,7 @@ impl KernelRuntimeOwnedState {
                 );
             }
             return self.register_kernel_wide_access_interaction(
+                kind,
                 interaction,
                 responder,
                 kernel_operation_owner,
@@ -217,6 +226,10 @@ impl KernelRuntimeOwnedState {
                                 interaction.id(),
                             ) || super::super::usage_limit_interactions::is_usage_limit_decision(
                                 interaction.id(),
+                            ) || super::super::provider_stall::is_provider_stall_decision(
+                                &interaction,
+                            ) || super::super::agent_deadline_cards::is_deadline_card(
+                                interaction.id(),
                             )) && interaction.kernel_operation_id() == Some(interaction.id()),
                     }
                 {
@@ -288,7 +301,6 @@ impl KernelRuntimeOwnedState {
         // decisions out too, but a registration must not depend on it having
         // run first, and a decision restored after a restart has no pending
         // entry, so no sweep ever sees it and no one can ever resolve it.
-        // Superseding comes before the limits, which count what remains.
         if let Some(owner) = kernel_operation_owner {
             let mut pending = self.pending_interactions.write();
             let superseded = session
@@ -315,20 +327,10 @@ impl KernelRuntimeOwnedState {
                 pending.remove(id);
             }
             if !superseded.is_empty() {
-                // This cleanup is definitive even when the new admission is refused.
+                // This cleanup is definitive even when the new admission is refused below.
                 sessions.restore_session(session.clone());
             }
             drop(pending);
-            if let Err(error) = self.ensure_kernel_decision_capacity(owner, &interaction, &|id| {
-                sessions.get_session(id).ok()
-            }) {
-                drop(sessions);
-                activity_mutation.record();
-                self.session_snapshot(session_id)?;
-                self.terminal_stream
-                    .notify_terminal_projection_change(session_id);
-                return Err(error);
-            }
         }
         // Where the user sees a card is the kernel's: a restored question is the same question
         // whichever panel lists it.
@@ -500,7 +502,8 @@ impl KernelRuntimeOwnedState {
         let worker_live = pending.agent_lifetime.as_ref().is_none_or(|lifetime| {
             self.worker_interaction_binding_is_live(lifetime, remote_binding.as_ref(), &session)
         });
-        if !worker_live || !self.agent_interaction_turn_is_live(&pending, &session) {
+        let Ok(card) = self.admit_room_card(kind, interaction, &pending, &session, worker_live)
+        else {
             if let Some(sender) = pending
                 .responder
                 .lock()
@@ -514,7 +517,8 @@ impl KernelRuntimeOwnedState {
                 });
             }
             return Ok(());
-        }
+        };
+        let interaction = super::card_registry::card_presentation(&card);
         if let Some(adopted) = adopted {
             pending.goal_approval = adopted.goal.clone();
         } else if pending.terminal_credential_owner.is_none()
@@ -522,19 +526,20 @@ impl KernelRuntimeOwnedState {
         {
             pending.goal_approval = self.begin_goal_native_approval(
                 session_id,
-                &interaction,
+                interaction,
                 pending.agent_lifetime.as_ref(),
             )?;
         }
         if let Err(error) = self.publish_outside_interaction(
             session_id,
-            &interaction,
+            interaction,
             InteractionPhase::Pending(&pending),
         ) {
             self.answer_goal_native_approval(pending.goal_approval.as_ref())?;
             return Err(error);
         }
-        session.add_active_interaction(interaction.clone());
+        let interaction = interaction.clone();
+        session.add_active_interaction(card);
         let identity = pending.responder.clone();
         if passkey_prompt.is_some() {
             self.passkey_prompts

@@ -147,6 +147,7 @@ import {
 import { forgetGatewayKernel, joinKernelLink, listGatewayKernels } from "./kernel-gateway-api.js"
 import {
   configureRelay,
+  relayIssuer,
   connectKernelCloudRelay,
   getKernelCloudRelayProfile,
   getRelayStatus,
@@ -658,6 +659,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     sendCredentialEnrollmentKernelRequest: (request) => client.send(request),
     sendDeploymentSetupKernelRequest: (request) => client.send(request),
     configureRelay: (relayUrl, relayToken) => configureRelay(client, relayUrl, relayToken),
+    relayIssuer: step => relayIssuer(client, step),
     ...(deps.cloudClient ? { handleClientCloudCommand: createCloudClientCommands({
       offerSetup: async () => { if (!await hasLocalKernel()) appendCloudNotice("Set up a Chariox kernel on this machine? Run /cloud setup to continue.") },
       setup: profile => startLocalKernelSetup(profile, appendCloudNotice),

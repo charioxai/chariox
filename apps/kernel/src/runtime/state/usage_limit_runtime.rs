@@ -82,8 +82,9 @@ impl KernelRuntimeOwnedState {
             },
         )?;
         if let Some(updated) = changed {
-            self.notice_usage_limit_stop(&updated, &event_notice(&event, None));
-            self.close_usage_limit_decision(&updated, stop)?;
+            let notice = event_notice(&event, None);
+            self.notice_usage_limit_stop(&updated, &notice);
+            self.close_usage_limit_decision(&updated, stop, notice)?;
             let _ = self.session_snapshot(agent.session_id());
         }
         Ok(())
@@ -121,15 +122,23 @@ impl KernelRuntimeState {
         {
             return None;
         }
-        let automatic = self
+        // The person's own word wins: Automatic goes on by itself, an explicit Ask me never does.
+        // Left at its default, the kernel goes on by itself unless the person has a choice to make
+        // (an account with room, and no orchestrator above the agent owning the switch): a stop
+        // with nothing to decide is status on the row, and it resumes at the reset.
+        let automatic = match self
             .owned
             .config_projection
             .snapshot()
             .user_config
             .agents
             .usage_limit_resume
-            .unwrap_or_default()
-            == UsageLimitResume::Automatic;
+        {
+            Some(policy) => policy == UsageLimitResume::Automatic,
+            None => !self
+                .owned
+                .usage_limit_card_wanted(agent, agent.provider_account_profile()),
+        };
         Some(LimitHit {
             reset_at_ms: crate::provider::usage_limit_reset_at_ms(&failure.reason, now),
             automatic,
@@ -237,6 +246,10 @@ impl KernelRuntimeState {
             return Ok(None);
         };
         let notice = event_notice(event, agent.usage_limit_stop());
+        if let StopEvent::Reset { selected, .. } = event {
+            self.owned
+                .close_usage_limit_decision(&agent, selected, notice.clone())?;
+        }
         self.announce_usage_limit_stop(&agent, &notice).await?;
         Ok(Some(AppliedStop { before }))
     }
@@ -265,6 +278,22 @@ impl KernelRuntimeState {
             let Some(stop) = agent.usage_limit_stop().cloned() else {
                 continue;
             };
+            // An explicit "Ask me" stays the person's to decide at the reset: the stop and its
+            // "Usage is back" decision stay until they choose Resume or Leave paused.
+            if stop.state == UsageLimitStopState::Asking
+                && stop.reset_reached(now)
+                && !self.owned.usage_limit_resume_is_asked()
+            {
+                self.apply_stop_event(
+                    agent.id(),
+                    &StopEvent::Reset {
+                        selected: &stop,
+                        now,
+                    },
+                )
+                .await?;
+                continue;
+            }
             // A decision a restart left without its reply channel is raised again. A board that
             // cannot take it (eight decisions pending) must not hold back another agent's resume.
             if let Err(error) = self.sync_usage_limit_interaction(&agent).await {
@@ -635,18 +664,19 @@ impl KernelRuntimeState {
                 agent_id: agent_id.to_string(),
             });
         }
-        let stop = agent
-            .usage_limit_stop()
-            .cloned()
-            .ok_or_else(|| refused("this agent is not stopped by a usage limit"))?;
+        // An agent no usage limit stopped may have a blocked task: the same words settle it.
+        let Some(stop) = agent.usage_limit_stop().cloned() else {
+            Box::pin(self.resolve_blocked_task_command(&agent, caller_agent_id, action)).await?;
+            return owned.agent_store.get_agent(agent_id);
+        };
+        // An agent above may arm unless the person explicitly chose Ask me.
         let automatic = owned
             .config_projection
             .snapshot()
             .user_config
             .agents
             .usage_limit_resume
-            .unwrap_or_default()
-            == UsageLimitResume::Automatic;
+            != Some(UsageLimitResume::Ask);
         let arms = matches!(
             action,
             UsageLimitAction::ResumeWhenBack | UsageLimitAction::ContinueOn { .. }
@@ -749,8 +779,14 @@ pub(super) struct AppliedStop {
 
 /// The line the session gets when `event` moved the stop to `stop`; empty for a move that is not news.
 fn event_notice(event: &StopEvent<'_>, stop: Option<&UsageLimitStop>) -> String {
-    if let StopEvent::Continued { account_label, .. } = event {
-        return format!("Continued on {account_label}.");
+    match event {
+        StopEvent::Continued { account_label, .. } => {
+            return format!("Continued on {account_label}.")
+        }
+        StopEvent::Reset { selected, .. } => {
+            return format!("Usage is back on {}.", selected.account_label)
+        }
+        _ => {}
     }
     let Some(stop) = stop else {
         return String::new();

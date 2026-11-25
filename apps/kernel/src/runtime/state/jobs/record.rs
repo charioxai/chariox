@@ -44,6 +44,19 @@ pub(super) struct Record {
     /// Where the job's worker stands from the saved return plan until its files are home.
     #[serde(default)]
     pub(super) remote: RemoteStage,
+    /// Why a cancelled job was cancelled, saved with its result: a later restart or an edit of
+    /// the agent's limit must not change what status reports.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) cancel_cause: Option<CancelCause>,
+}
+
+/// What asked for a job to be cancelled, the first request that did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(super) enum CancelCause {
+    /// The agent cancelled its own job with `chariox.jobs.cancel`.
+    Agent,
+    /// The agent's time limit, which was set for this time, ended.
+    Limit { deadline_ms: u64 },
 }
 
 impl Record {
@@ -85,7 +98,29 @@ impl Record {
             estimated_minutes: None,
             memory_mib: None,
             remote: RemoteStage::Idle,
+            cancel_cause: None,
         }
+    }
+
+    /// The folder a remote job uploads and returns: its whole workspace, or the absolute
+    /// directory inside it that the request named.
+    pub(super) fn transfer_root(&self) -> &Path {
+        if self
+            .request
+            .cwd
+            .as_deref()
+            .is_some_and(|cwd| Path::new(cwd).is_absolute())
+        {
+            &self.cwd
+        } else {
+            &self.workspace
+        }
+    }
+
+    pub(super) fn transfer_workspace(
+        &self,
+    ) -> Result<crate::jobs::TransferWorkspace<'_>, DaemonError> {
+        crate::jobs::TransferWorkspace::new(&self.workspace, self.transfer_root())
     }
 
     pub(super) fn runs_for_lease(&self, wake: &AgentWake) -> bool {
@@ -118,7 +153,9 @@ impl JobDriver {
     pub(super) fn read(&self, id: &str) -> Result<Record, DaemonError> {
         let bytes = std::fs::read(self.path(id)?).map_err(|error| {
             if error.kind() == std::io::ErrorKind::NotFound {
-                ledger::error("job result is missing")
+                ledger::error(format!(
+                    "no saved result for {id}: the job never started, or its agent's time limit ended before it saved one. chariox.jobs.list shows the jobs of your own agent"
+                ))
             } else {
                 ledger::error("job result cannot be read")
             }

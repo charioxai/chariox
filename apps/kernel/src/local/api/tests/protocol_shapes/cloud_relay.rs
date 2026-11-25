@@ -44,7 +44,10 @@ fn relay_status_control_capabilities_are_versioned_and_hashed() {
             "outside_steer_events_v1",
             "framed_plaintext_v1",
             "provider_account_copy_v1",
-            "provider_account_copy_pull_v1"
+            "provider_account_copy_pull_v1",
+            "provider_account_copy_opencode_v1",
+            "viewer_density_stills_v1",
+            "display_resize_rebind_v1"
         ])
     );
     assert_eq!(
@@ -52,7 +55,7 @@ fn relay_status_control_capabilities_are_versioned_and_hashed() {
             "{:x}",
             Sha256::digest(serde_json::to_string(&response).unwrap().as_bytes())
         ),
-        "992631bf1ec07ab29133df83f6853144cfe394c346e4eee97eb49d4c5500d13d"
+        "d4dc2246576324886b151e06e35e4fe31893e77a4aea732437a07fb3a0c4578e"
     );
 }
 

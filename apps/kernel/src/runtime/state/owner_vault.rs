@@ -274,6 +274,7 @@ impl KernelRuntimeState {
                     BindingChange::Keep,
                 )?;
                 self.forget_vault_payment_grants(&id);
+                self.refill_linked_environment_secrets(&id)?;
                 OwnerVaultResult::Saved { id }
             }
             OwnerVaultRequest::Update {

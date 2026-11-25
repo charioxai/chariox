@@ -49,6 +49,7 @@ fn command(pid: u32, resident: u64, growth: u64) -> pool::CommandUse {
         measured_growth: growth,
         writes: 0,
         write_growth: 0,
+        write_rate: 0,
         effective: pid,
         root: false,
     }
@@ -91,6 +92,8 @@ fn owner(
                         written: command.writes,
                         rate: command.write_growth,
                         files: [u64::from(command.pid)].into(),
+                        open: [u64::from(command.pid)].into(),
+                        receiving: true,
                     }],
                 )
             })
@@ -1548,6 +1551,8 @@ fn the_disk_never_fills_up_while_five_builds_write_and_the_filler_goes() {
                         written: total,
                         rate: STEP,
                         files: [u64::from(pid)].into(),
+                        open: [u64::from(pid)].into(),
+                        receiving: true,
                     }],
                 );
             }
@@ -1596,6 +1601,7 @@ fn writer(pid: u32, writes: u64, write_growth: u64) -> pool::CommandUse {
         measured_growth: 0,
         writes,
         write_growth,
+        write_rate: write_growth,
         effective: pid,
         root: false,
     }
@@ -1804,6 +1810,8 @@ fn a_full_volume_stops_its_own_writer_and_leaves_one_on_a_roomy_volume_alone() {
                 written: 8 * GIB,
                 rate: 50 * MIB,
                 files: [1].into(),
+                open: [1].into(),
+                receiving: true,
             }],
         ),
         (
@@ -1814,6 +1822,8 @@ fn a_full_volume_stops_its_own_writer_and_leaves_one_on_a_roomy_volume_alone() {
                 written: GIB,
                 rate: 50 * MIB,
                 files: [2].into(),
+                open: [2].into(),
+                receiving: true,
             }],
         ),
     ]
@@ -1863,6 +1873,8 @@ fn crossed_volume_writer(cwd: &str, output: &str, id: u64, should_stop: bool) {
         vec![disk_use::VolumeWrites {
             id,
             files: [1].into(),
+            open: [1].into(),
+            receiving: true,
             path: output.into(),
             written: 6 * GIB,
             rate: 50 * MIB,
@@ -1931,6 +1943,391 @@ fn unknown_or_reused_output_descriptors_cannot_justify_a_disk_stop() {
             "missing or changed output volume supplied destructive evidence"
         );
     }
+}
+
+/// The writes of `pid` as the sampler sees a copy of many files: between two
+/// files, only the volume it wrote to a moment ago.
+fn between_files() -> Vec<disk_use::VolumeWrites> {
+    vec![disk_use::VolumeWrites {
+        id: 1,
+        path: "/scratch".into(),
+        written: 0,
+        rate: 0,
+        files: Default::default(),
+        open: Default::default(),
+        receiving: true,
+    }]
+}
+
+fn fillers_after_one_pass(free: u64, current: &Arc<Mutex<Observation>>) -> Vec<(u32, Filling)> {
+    let free = Arc::new(AtomicU64::new(free));
+    let volume = volume(&free);
+    let mut ledger = Ledger::new(None);
+    ledger.pass(
+        std::slice::from_ref(current),
+        current,
+        &room(GIB, false, &*volume),
+    );
+    ledger.take_fillers(current)
+}
+
+/// Two passes a quarter second apart, the volume's free space `drop` lower at
+/// the second: how a monitor sees a volume being used up, or not.
+fn fillers_after_two_passes(
+    free: u64,
+    drop: u64,
+    current: &Arc<Mutex<Observation>>,
+) -> Vec<(u32, Filling)> {
+    let space = Arc::new(AtomicU64::new(free));
+    let volume = volume(&space);
+    let mut ledger = Ledger::new(None);
+    ledger.pass(
+        std::slice::from_ref(current),
+        current,
+        &room(GIB, false, &*volume),
+    );
+    assert!(
+        ledger.take_fillers(current).is_empty(),
+        "stopped on one sample"
+    );
+    std::thread::sleep(Duration::from_millis(250));
+    space.store(free - drop, Ordering::SeqCst);
+    ledger.pass(
+        std::slice::from_ref(current),
+        current,
+        &room(GIB, false, &*volume),
+    );
+    ledger.take_fillers(current)
+}
+
+#[test]
+fn a_many_file_copy_filling_the_disk_in_seconds_is_stopped_while_room_is_left() {
+    // 2 GiB free is far above half the floor; at 1 GiB/s it is 2 s of room.
+    let (_, copy, copy_use) = writing(1, 3 * GIB, GIB);
+    let current = owner("agent", true, vec![copy_use], vec![(1, copy)]);
+    current
+        .lock()
+        .unwrap()
+        .disk_writes
+        .insert(1, between_files());
+    // The volume really loses a quarter of a GiB in the quarter second between
+    // the passes: 1 GiB/s, 2 GiB free before them.
+    let fillers = fillers_after_two_passes(2 * GIB + 256 * MIB, 256 * MIB, &current);
+    assert_eq!(
+        fillers.iter().map(|(pid, _)| *pid).collect::<Vec<_>>(),
+        vec![1],
+        "a copy that fills the disk in two seconds kept writing"
+    );
+    let filling = &fillers[0].1;
+    assert!(
+        (900 * MIB..=GIB).contains(&filling.rate),
+        "the rate is what the volume lost: {}",
+        filling.rate
+    );
+    assert_eq!(filling.written, 3 * GIB);
+    assert!(
+        matches!(filling.full_in, Some(1 | 2)),
+        "{:?}",
+        filling.full_in
+    );
+    let line = super::super::waits::filling_line(filling);
+    assert!(line.contains("free, full in about "), "{line}");
+}
+
+#[test]
+fn a_writer_rewriting_blocks_it_already_holds_is_not_a_filler() {
+    // 200 MiB/s of writes, each over space the file already has: the volume
+    // loses nothing, though 900 MiB at that rate would be under five seconds.
+    let (_, rewriter, rewriter_use) = writing(1, 3 * GIB, 200 * MIB);
+    let current = owner("agent", true, vec![rewriter_use], vec![(1, rewriter)]);
+    {
+        let mut observation = current.lock().unwrap();
+        let outputs = observation.disk_writes.get_mut(&1).unwrap();
+        outputs[0].files.clear();
+        outputs[0].rate = 0;
+        outputs[0].open = [1].into();
+    }
+    assert!(
+        fillers_after_two_passes(900 * MIB, 0, &current).is_empty(),
+        "a writer that only rewrites its own blocks was stopped as a filler"
+    );
+}
+
+#[test]
+fn a_command_logging_to_another_volume_is_not_the_filler_of_its_idle_output_volume() {
+    // The scratch volume is being used up by something else; the command's
+    // 200 MiB/s of writes go to the log its standard output is redirected to.
+    let started = Instant::now();
+    let volume: Box<Volume> = Box::new(move |path: &Path| {
+        Some(if path.starts_with("/log") {
+            Space {
+                id: 2,
+                free: 50 * GIB,
+                total: 100 * GIB,
+            }
+        } else {
+            // Losing 400 MiB/s to someone else's writes, 900 MiB free at the start.
+            let lost = started.elapsed().as_millis() as u64 * 400 * MIB / 1000;
+            Space {
+                id: 1,
+                free: (900 * MIB).saturating_sub(lost),
+                total: 100 * GIB,
+            }
+        })
+    });
+    let (_, command, command_use) = writing(1, 3 * GIB, 200 * MIB);
+    let current = owner("agent", true, vec![command_use], vec![(1, command)]);
+    {
+        let mut observation = current.lock().unwrap();
+        let idle = disk_use::VolumeWrites {
+            id: 1,
+            path: "/scratch/output".into(),
+            written: 0,
+            rate: 0,
+            files: Default::default(),
+            open: [11].into(),
+            receiving: true,
+        };
+        let log = disk_use::VolumeWrites {
+            id: 2,
+            path: "/log/out".into(),
+            written: 0,
+            rate: 0,
+            files: Default::default(),
+            open: [12].into(),
+            receiving: false,
+        };
+        observation.disk_writes.insert(1, vec![idle, log]);
+    }
+    let mut ledger = Ledger::new(None);
+    for _ in 0..2 {
+        ledger.pass(
+            std::slice::from_ref(&current),
+            &current,
+            &room(GIB, false, &*volume),
+        );
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    assert!(
+        ledger.take_fillers(&current).is_empty(),
+        "its log traffic was charged to the idle output volume"
+    );
+}
+
+/// A volume that starts with `free` and loses `per_second` from its first reading.
+fn losing(free: u64, per_second: u64) -> Box<Volume> {
+    let started = Instant::now();
+    Box::new(move |_| {
+        let lost = started.elapsed().as_millis() as u64 * per_second / 1000;
+        Some(Space {
+            id: 1,
+            free: free.saturating_sub(lost),
+            total: 100 * GIB,
+        })
+    })
+}
+
+fn pass_twice(members: &[Arc<Mutex<Observation>>], volume: &Volume) -> Vec<(u32, Filling)> {
+    let mut ledger = Ledger::new(None);
+    for _ in 0..2 {
+        for member in members {
+            ledger.pass(members, member, &room(GIB, false, volume));
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    members
+        .iter()
+        .flat_map(|member| ledger.take_fillers(member))
+        .collect()
+}
+
+// The below-floor stop keeps its evidence: a slow writer that only rewrites a file it holds, on a
+// volume that is not losing room, frees nothing by being stopped (reviewer 11-24, P1).
+#[test]
+fn a_slow_overwriter_on_a_volume_that_is_not_losing_room_is_left_alone_below_the_floor() {
+    // 128 MiB free is below half the 512 MiB floor; the volume is steady.
+    let (_, rewriter, rewriter_use) = writing(1, 3 * GIB, 10 * MIB);
+    let current = owner("agent", true, vec![rewriter_use], vec![(1, rewriter)]);
+    {
+        let mut observation = current.lock().unwrap();
+        let outputs = observation.disk_writes.get_mut(&1).unwrap();
+        outputs[0].files.clear();
+        outputs[0].rate = 0;
+        outputs[0].open = [1].into();
+    }
+    assert!(
+        fillers_after_two_passes(128 * MIB, 0, &current).is_empty(),
+        "a space-neutral writer was stopped below the floor on a volume that loses no room"
+    );
+}
+
+// Miguel 11-24 (row 376): within 5 s of full at the rate the volume is losing room, the fastest
+// agent writer at 128 MiB/s or more is stopped. No proof that it allocates is asked for: an
+// overwriter is stopped too, an accepted cost in a real emergency.
+#[test]
+fn a_runaway_overwriter_is_stopped_when_the_volume_is_within_five_seconds_of_full() {
+    // It rewrites a file it holds open at 200 MiB/s, while another command allocates 400 MiB/s
+    // on the same volume: 1500 MiB free is under four seconds from full.
+    let (_, rewriter, rewriter_use) = writing(1, 3 * GIB, 200 * MIB);
+    let current = owner("agent", true, vec![rewriter_use], vec![(1, rewriter)]);
+    {
+        let mut observation = current.lock().unwrap();
+        let outputs = observation.disk_writes.get_mut(&1).unwrap();
+        outputs[0].files.clear();
+        outputs[0].rate = 0;
+        outputs[0].open = [1].into();
+    }
+    let volume = losing(1500 * MIB, 400 * MIB);
+    let fillers = pass_twice(std::slice::from_ref(&current), &*volume);
+    assert_eq!(
+        fillers.len(),
+        1,
+        "a runaway writer on a volume seconds from full kept writing"
+    );
+    assert_eq!(fillers[0].0, 1);
+}
+
+#[test]
+fn a_writer_below_the_runaway_rate_is_not_stopped_by_the_fill_horizon() {
+    let (_, steady, steady_use) = writing(1, 3 * GIB, 100 * MIB);
+    let current = owner("agent", true, vec![steady_use], vec![(1, steady)]);
+    let volume = losing(900 * MIB, 400 * MIB);
+    assert!(
+        pass_twice(std::slice::from_ref(&current), &*volume).is_empty(),
+        "a 100 MiB/s writer was stopped for a volume seconds from full"
+    );
+}
+
+#[test]
+fn a_volume_that_is_not_losing_room_stops_nobody_within_the_horizon() {
+    let (_, rewriter, rewriter_use) = writing(1, 3 * GIB, 200 * MIB);
+    let current = owner("agent", true, vec![rewriter_use], vec![(1, rewriter)]);
+    let volume = losing(900 * MIB, 0);
+    assert!(
+        pass_twice(std::slice::from_ref(&current), &*volume).is_empty(),
+        "a writer was stopped on a volume that loses no room"
+    );
+}
+
+#[test]
+fn the_fastest_runaway_is_stopped_not_the_one_that_wrote_most() {
+    let (_, old, old_use) = writing(1, 6 * GIB, 150 * MIB);
+    let (_, fast, fast_use) = writing(2, GIB, 400 * MIB);
+    let members = [
+        owner("agent", true, vec![old_use], vec![(1, old)]),
+        owner("agent", true, vec![fast_use], vec![(2, fast)]),
+    ];
+    let volume = losing(2500 * MIB, 550 * MIB);
+    let fillers = pass_twice(&members, &*volume);
+    assert_eq!(
+        fillers.iter().map(|(pid, _)| *pid).collect::<Vec<_>>(),
+        vec![2]
+    );
+}
+
+#[test]
+fn a_copy_is_judged_at_first_sight_from_the_free_space_seen_before_it_began() {
+    // The command's directory volume is watched from the first pass, before the copy writes
+    // anything the sampler can see.
+    let (_, copy, copy_use) = writing(1, 3 * GIB, GIB);
+    let current = owner("agent", true, vec![command(1, 0, 0)], vec![(1, copy)]);
+    let volume = losing(2 * GIB + 256 * MIB, GIB);
+    let mut ledger = Ledger::new(None);
+    ledger.pass(
+        std::slice::from_ref(&current),
+        &current,
+        &room(GIB, false, &*volume),
+    );
+    std::thread::sleep(Duration::from_millis(250));
+    {
+        // Now the sampler sees the copy between two files.
+        let mut observation = current.lock().unwrap();
+        observation.commands = vec![copy_use];
+        observation.disk_writes.insert(1, between_files());
+    }
+    ledger.pass(
+        std::slice::from_ref(&current),
+        &current,
+        &room(GIB, false, &*volume),
+    );
+    assert_eq!(
+        ledger
+            .take_fillers(&current)
+            .iter()
+            .map(|(pid, _)| *pid)
+            .collect::<Vec<_>>(),
+        vec![1],
+        "a copy first seen with the volume already losing room was not judged until a later pass"
+    );
+}
+
+#[test]
+fn a_runaway_writer_is_stopped_before_the_one_that_wrote_most() {
+    // 1 GiB free and losing 220 MiB/s between the passes: under five seconds from full.
+    let (_, build, build_use) = writing(1, 6 * GIB, 20 * MIB);
+    let (_, copy, copy_use) = writing(2, GIB, 200 * MIB);
+    let current = owner(
+        "agent",
+        true,
+        vec![build_use, copy_use],
+        vec![(1, build), (2, copy)],
+    );
+    let fillers = fillers_after_two_passes(GIB + 55 * MIB, 55 * MIB, &current);
+    assert_eq!(
+        fillers.iter().map(|(pid, _)| *pid).collect::<Vec<_>>(),
+        vec![2],
+        "the runaway was not the one stopped"
+    );
+}
+
+#[test]
+fn a_steady_writer_with_room_for_its_rate_is_left_alone() {
+    // 100 MiB/s with 5 GiB free: about 50 s of room.
+    let (_, build, build_use) = writing(1, 6 * GIB, 100 * MIB);
+    let current = owner("agent", true, vec![build_use], vec![(1, build)]);
+    assert!(
+        fillers_after_one_pass(5 * GIB, &current).is_empty(),
+        "a steady writer far from full was stopped"
+    );
+}
+
+#[test]
+fn a_command_rate_is_not_attributed_to_a_volume_it_shares_or_one_of_several() {
+    // Both hold the same open file, which grows between no two samples.
+    let (_, first, first_use) = writing(1, 3 * GIB, GIB);
+    let (_, second, second_use) = writing(2, 3 * GIB, GIB);
+    let current = owner(
+        "agent",
+        true,
+        vec![first_use, second_use],
+        vec![(1, first), (2, second)],
+    );
+    for outputs in current.lock().unwrap().disk_writes.values_mut() {
+        outputs[0].files.clear();
+        outputs[0].rate = 0;
+        outputs[0].open = [42].into();
+    }
+    assert!(
+        fillers_after_one_pass(2 * GIB, &current).is_empty(),
+        "a shared open file gave one command the whole rate"
+    );
+    // One command with outputs open on two volumes: its rate goes to neither.
+    let (_, copy, copy_use) = writing(3, 3 * GIB, GIB);
+    let current = owner("agent", true, vec![copy_use], vec![(3, copy)]);
+    {
+        let mut observation = current.lock().unwrap();
+        let outputs = observation.disk_writes.get_mut(&3).unwrap();
+        outputs[0].files.clear();
+        outputs[0].rate = 0;
+        let mut other = between_files().remove(0);
+        other.id = 2;
+        other.open = [5].into();
+        outputs.push(other);
+    }
+    assert!(
+        fillers_after_one_pass(2 * GIB, &current).is_empty(),
+        "a command writing to two volumes had its whole rate put on one"
+    );
 }
 
 #[test]
@@ -2082,6 +2479,8 @@ fn a_finished_run_remembers_the_volume_that_received_most_of_its_writes() {
             written: 5 * GIB,
             rate: 50 * MIB,
             files: [9].into(),
+            open: [9].into(),
+            receiving: true,
         });
     }
     let mut ledger = Ledger::new(None);
@@ -2283,6 +2682,8 @@ fn unresolved_sampled_destinations_are_not_remembered_as_a_receiving_volume() {
         written: GIB,
         rate: MIB,
         files: Default::default(),
+        open: Default::default(),
+        receiving: true,
     };
     assert_eq!(
         ReceivingVolume::capture(&sample),
@@ -2519,7 +2920,7 @@ fn an_old_allocation_rate_cannot_end_a_command_that_just_paused() {
 }
 
 #[test]
-fn resset_healthy_host_never_holds_or_refuses_predicted_memory() {
+fn resset_healthy_host_never_refuses_predicted_memory_and_holds_only_what_does_not_fit() {
     let volume = volume(&Arc::new(AtomicU64::new(100 * GIB)));
     let current = owner(
         "agent",
@@ -2562,10 +2963,18 @@ fn resset_healthy_host_never_holds_or_refuses_predicted_memory() {
     let mut healthy = room(GIB, false, &*volume);
     healthy.pressured = false;
     ledger.pass(std::slice::from_ref(&current), &current, &healthy);
+    // A prediction never stops work that runs, and never ends a command on a
+    // healthy machine; one that does not fit the room left waits before it
+    // starts (row 541).
     assert_eq!(
-        wait(&current, 2),
+        wait(&current, 1),
         None,
         "predictions must not stop healthy work"
+    );
+    assert_eq!(
+        wait(&current, 2),
+        Some(Wait::Held(WaitReason::Memory)),
+        "a peak above the room left waits before it starts"
     );
     assert!(
         ledger.take_refused(&current).is_empty(),
@@ -2653,4 +3062,415 @@ fn resset_disk_off_releases_waits_and_never_stops_a_filler() {
     }
     assert_eq!(wait(&current, 1), None);
     assert!(ledger.take_fillers(&current).is_empty());
+}
+
+/// D-GOOD3: replays a recorded hour of a machine's real write rates (one JSON
+/// line per second: `free`, `total` and bytes/s per process group) through the
+/// stop decision. Each group is one agent command writing all it writes to the
+/// recorded volume, the harshest attribution the samples allow. A stop is a
+/// false stop: nothing filled that volume. Run with
+/// `DH_REPLAY=<file> cargo test --lib replay_recorded -- --ignored --nocapture`.
+#[test]
+#[ignore = "needs a recorded rates file in DH_REPLAY"]
+fn replay_recorded_write_rates_stops_nothing() {
+    let path = std::env::var("DH_REPLAY").expect("DH_REPLAY names the recorded rates");
+    let text = std::fs::read_to_string(path).unwrap();
+    let space = Arc::new(Mutex::new((0u64, 1u64)));
+    let volume: Box<Volume> = {
+        let space = space.clone();
+        Box::new(move |_| {
+            let (free, total) = *space.lock().unwrap();
+            Some(Space { id: 1, free, total })
+        })
+    };
+    let mut ledger = Ledger::new(None);
+    let mut pids = BTreeMap::<String, u32>::new();
+    let (mut seconds, mut stops, mut busiest, mut tightest) = (0u64, Vec::new(), 0u64, u64::MAX);
+    let mut written = BTreeMap::<String, u64>::new();
+    for line in text.lines().filter(|line| !line.trim().is_empty()) {
+        let sample: serde_json::Value = serde_json::from_str(line).unwrap();
+        let free = sample["free"].as_u64().unwrap();
+        *space.lock().unwrap() = (free, sample["total"].as_u64().unwrap());
+        tightest = tightest.min(free);
+        let groups = sample["groups"].as_object().unwrap();
+        let mut members = Vec::new();
+        let mut all = 0;
+        for (group, rate) in groups {
+            let rate = rate.as_u64().unwrap();
+            all += rate;
+            let next = pids.len() as u32 + 1;
+            let pid = *pids.entry(group.clone()).or_insert(next);
+            let total = written.entry(group.clone()).or_default();
+            *total += rate;
+            let (_, entry, usage) = writing(pid, *total, rate);
+            let member = owner(group, true, vec![usage], vec![(pid, entry)]);
+            member
+                .lock()
+                .unwrap()
+                .disk_writes
+                .insert(pid, between_files());
+            members.push(member);
+        }
+        busiest = busiest.max(all);
+        for member in &members {
+            ledger.pass(&members, member, &room(GIB, false, &*volume));
+            for (pid, filling) in ledger.take_fillers(member) {
+                stops.push((seconds, pid, filling.rate, filling.free));
+            }
+        }
+        seconds += 1;
+    }
+    println!(
+        "replayed {seconds} s: busiest second {} MB/s on the volume, least free {} GB; a stop needs less than {} GB free at that rate",
+        busiest / 1_000_000,
+        tightest / 1_000_000_000,
+        busiest.saturating_mul(FILL_HORIZON_SECONDS) / 1_000_000_000
+    );
+    assert!(seconds >= 60, "too short a recording: {seconds} s");
+    assert!(
+        stops.is_empty(),
+        "false stops (second, pid, rate, free): {stops:?}"
+    );
+}
+
+/// A healthy machine: MemAvailable is above the margin, so no emergency.
+fn healthy<'a>(memory: u64, volume: &'a Volume) -> Room<'a> {
+    let mut room = room(memory, false, volume);
+    room.pressured = false;
+    room
+}
+
+/// A heavy command already running: it is the oldest and holds `resident`.
+fn running(arrived: u64, resident: u64) -> Entry {
+    let mut running = entry(arrived, Peak::default());
+    running.admitted = true;
+    running.resident = resident;
+    running
+}
+
+fn heavy(memory: u64) -> Peak {
+    Peak {
+        memory,
+        ..Peak::default()
+    }
+}
+
+fn pass_after_settle(ledger: &mut Ledger, current: &Arc<Mutex<Observation>>, room: &Room) {
+    unsettle(ledger);
+    ledger.pass(std::slice::from_ref(current), current, room);
+}
+
+#[test]
+fn a_known_peak_that_does_not_fit_waits_before_it_starts_on_a_healthy_machine() {
+    let volume = volume(&Arc::new(AtomicU64::new(100 * GIB)));
+    let current = owner(
+        "agent",
+        true,
+        vec![command(1, 3 * GIB, 0), command(2, 0, 0)],
+        vec![(1, running(1, 3 * GIB)), (2, entry(2, heavy(45 * GIB)))],
+    );
+    let mut ledger = Ledger::new(None);
+    ledger.pass(
+        std::slice::from_ref(&current),
+        &current,
+        &healthy(20 * GIB, &*volume),
+    );
+    assert_eq!(wait(&current, 1), None, "running work is never stopped");
+    assert_eq!(
+        wait(&current, 2),
+        Some(Wait::Held(WaitReason::Memory)),
+        "a 45 GiB peak did not fit 20 GiB of room"
+    );
+    // The room does not come: it stays held, however many passes.
+    for _ in 0..5 {
+        pass_after_settle(&mut ledger, &current, &healthy(20 * GIB, &*volume));
+    }
+    assert_eq!(wait(&current, 2), Some(Wait::Held(WaitReason::Memory)));
+    // The room comes: it starts, and keeps running.
+    pass_after_settle(&mut ledger, &current, &healthy(60 * GIB, &*volume));
+    assert_eq!(wait(&current, 2), None);
+    pass_after_settle(&mut ledger, &current, &healthy(20 * GIB, &*volume));
+    assert_eq!(
+        wait(&current, 2),
+        None,
+        "a started command is not held again"
+    );
+}
+
+#[test]
+fn a_known_peak_that_fits_starts_on_a_healthy_machine() {
+    let volume = volume(&Arc::new(AtomicU64::new(100 * GIB)));
+    let current = owner(
+        "agent",
+        true,
+        vec![command(1, 3 * GIB, 0), command(2, 0, 0)],
+        vec![(1, running(1, 3 * GIB)), (2, entry(2, heavy(45 * GIB)))],
+    );
+    let mut ledger = Ledger::new(None);
+    ledger.pass(
+        std::slice::from_ref(&current),
+        &current,
+        &healthy(60 * GIB, &*volume),
+    );
+    assert_eq!(wait(&current, 2), None);
+}
+
+#[test]
+fn held_commands_start_in_turn_as_the_room_frees_and_a_light_one_never_waits() {
+    let volume = volume(&Arc::new(AtomicU64::new(100 * GIB)));
+    let current = owner(
+        "agent",
+        true,
+        vec![
+            command(1, 3 * GIB, 0),
+            command(2, 0, 0),
+            command(3, 0, 0),
+            command(4, 0, 0),
+            command(5, 0, 0),
+        ],
+        vec![
+            (1, running(1, 3 * GIB)),
+            (2, entry(2, heavy(8 * GIB))),
+            (3, entry(3, heavy(8 * GIB))),
+            (4, entry(4, heavy(8 * GIB))),
+            // The fifth ran light last time: it never waits.
+            (5, entry(5, heavy(100 * MIB))),
+        ],
+    );
+    let mut ledger = Ledger::new(None);
+    ledger.pass(
+        std::slice::from_ref(&current),
+        &current,
+        &healthy(9 * GIB, &*volume),
+    );
+    assert_eq!(wait(&current, 2), None, "the first of three fits");
+    assert_eq!(wait(&current, 3), Some(Wait::Held(WaitReason::Memory)));
+    assert_eq!(wait(&current, 4), Some(Wait::Held(WaitReason::Memory)));
+    assert_eq!(wait(&current, 5), None, "a light command never waits");
+    pass_after_settle(&mut ledger, &current, &healthy(17 * GIB, &*volume));
+    assert_eq!(wait(&current, 3), None, "the next in line starts first");
+    assert_eq!(wait(&current, 4), Some(Wait::Held(WaitReason::Memory)));
+    pass_after_settle(&mut ledger, &current, &healthy(25 * GIB, &*volume));
+    assert_eq!(wait(&current, 4), None);
+}
+
+#[test]
+fn memory_protection_off_starts_a_held_command_on_a_healthy_machine() {
+    let volume = volume(&Arc::new(AtomicU64::new(100 * GIB)));
+    let current = owner(
+        "agent",
+        true,
+        vec![command(1, 3 * GIB, 0), command(2, 0, 0)],
+        vec![(1, running(1, 3 * GIB)), (2, entry(2, heavy(45 * GIB)))],
+    );
+    let mut ledger = Ledger::new(None);
+    ledger.pass(
+        std::slice::from_ref(&current),
+        &current,
+        &healthy(20 * GIB, &*volume),
+    );
+    assert!(wait(&current, 2).is_some());
+    let mut off = healthy(20 * GIB, &*volume);
+    off.memory_protection = false;
+    ledger.pass(std::slice::from_ref(&current), &current, &off);
+    assert_eq!(wait(&current, 2), None);
+}
+
+#[test]
+fn every_hold_start_and_release_is_logged_with_its_reason() {
+    let capture = crate::logging::capture::start();
+    let volume = volume(&Arc::new(AtomicU64::new(100 * GIB)));
+    let mut heldline = entry(2, heavy(45 * GIB));
+    heldline.seen.as_mut().unwrap().line = "frame-analysis-541 --all".into();
+    let current = owner(
+        "agent",
+        true,
+        vec![command(1, 3 * GIB, 0), command(2, 0, 0)],
+        vec![(1, running(1, 3 * GIB)), (2, heldline)],
+    );
+    let mut ledger = Ledger::new(None);
+    ledger.pass(
+        std::slice::from_ref(&current),
+        &current,
+        &healthy(20 * GIB, &*volume),
+    );
+    pass_after_settle(&mut ledger, &current, &healthy(60 * GIB, &*volume));
+    let lines = capture
+        .records()
+        .into_iter()
+        .filter(|line| line.contains("frame-analysis-541"))
+        .collect::<Vec<_>>();
+    assert!(
+        lines.iter().any(
+            |line| line.starts_with("process_resources.admission admission held")
+                && line.contains("its last run peaked above the room left")
+                && line.contains("\"need_bytes\"")
+                && line.contains("\"free_bytes\"")
+        ),
+        "no held line: {lines:?}"
+    );
+    assert!(
+        lines.iter().any(
+            |line| line.starts_with("process_resources.admission admission started")
+                && line.contains("next in line")
+        ),
+        "no started line: {lines:?}"
+    );
+}
+
+/// Row 541, A6: a typed command's peak is kept when its run ends at the
+/// shell's prompt, and the next run of it is held when the pool cannot fit it.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_shells_command_that_ends_leaves_its_peak_and_its_next_run_waits() {
+    let capture = crate::logging::capture::start();
+    let mut ledger = Ledger::new(None);
+    let other = oldest(&mut ledger);
+    let terminal = owner("terminal", true, Vec::new(), Vec::new());
+    let shell = 4_100_500u32;
+    let at = |effective: u32, resident: u64| {
+        let mut command = command(shell, resident, 0);
+        command.effective = effective;
+        command
+    };
+    let show = |commands: Vec<pool::CommandUse>| terminal.lock().unwrap().commands = commands;
+    // The sampler registers every tick: a command line unreadable for a
+    // moment (a process mid-exec) is read on the next one.
+    let register = |ledger: &mut Ledger| {
+        for _ in 0..200 {
+            ledger.register(&terminal, 512 * MIB);
+            if terminal
+                .lock()
+                .unwrap()
+                .admission
+                .get(&shell)
+                .is_some_and(|entry| {
+                    entry
+                        .seen
+                        .as_ref()
+                        .is_some_and(|seen| seen.line.starts_with("sleep"))
+                })
+            {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("the command line was never read");
+    };
+    // The child has exec'd the program once its command line names it.
+    let started = |child: &std::process::Child| {
+        for _ in 0..500 {
+            let line = std::fs::read(format!("/proc/{}/cmdline", child.id())).unwrap_or_default();
+            if line.starts_with(b"sleep") {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("sleep did not start");
+    };
+    let mut first = std::process::Command::new("sleep")
+        .arg("5410")
+        .spawn()
+        .unwrap();
+    started(&first);
+    show(vec![at(first.id(), 3 * GIB)]);
+    register(&mut ledger);
+    let volume = volume(&Arc::new(AtomicU64::new(100 * GIB)));
+    ledger.pass(
+        &[other.clone(), terminal.clone()],
+        &terminal,
+        &healthy(40 * GIB, &*volume),
+    );
+    assert_eq!(wait(&terminal, shell), None, "the first run fits");
+    first.kill().unwrap();
+    first.wait().unwrap();
+    // The shell is back at its prompt.
+    show(vec![at(shell, 10 * MIB)]);
+    ledger.register(&terminal, 512 * MIB);
+    let key = seen_argv(
+        0,
+        &["sleep".to_string(), "5410".to_string()],
+        std::env::current_dir().ok(),
+    )
+    .key;
+    assert_eq!(
+        ledger.peaks.get(&key).map(|peak| peak.memory),
+        Some(3 * GIB),
+        "the ended run's peak was not kept"
+    );
+    // The same command is typed again while the pool has 1 GiB of room.
+    let mut second = std::process::Command::new("sleep")
+        .arg("5410")
+        .spawn()
+        .unwrap();
+    started(&second);
+    show(vec![at(second.id(), 4 * MIB)]);
+    register(&mut ledger);
+    ledger.pass(
+        &[other.clone(), terminal.clone()],
+        &terminal,
+        &healthy(GIB, &*volume),
+    );
+    assert_eq!(
+        wait(&terminal, shell),
+        Some(Wait::Held(WaitReason::Memory)),
+        "the next run of a command that peaked at 3 GiB did not wait"
+    );
+    second.kill().unwrap();
+    second.wait().unwrap();
+    assert!(
+        capture
+            .records()
+            .iter()
+            .any(|line| line.contains("admission remembered") && line.contains("sleep 5410")),
+        "the kept peak is not logged"
+    );
+}
+
+/// Row 541, A6 (terminal): a job whose own peak is unknown holds the pool; a
+/// shell command that peaked heavy before waits for it, though the job has no
+/// admission entry of its own.
+#[test]
+fn a_command_that_peaked_heavy_waits_while_a_job_of_unknown_peak_holds_the_pool() {
+    let volume = volume(&Arc::new(AtomicU64::new(100 * GIB)));
+    let job = owner(
+        "job-1",
+        true,
+        vec![{
+            let mut job = command(7, 9 * GIB, 0);
+            job.root = true;
+            job
+        }],
+        Vec::new(),
+    );
+    let shell = owner(
+        "terminal",
+        true,
+        vec![command(8, 4 * MIB, 0)],
+        vec![(8, entry(8, heavy(6 * GIB)))],
+    );
+    let launches = BTreeMap::from([(
+        "job-1".to_string(),
+        super::super::launch::Reservation {
+            memory: 16 * MIB,
+            writes: 0,
+            volume: 0,
+        },
+    )]);
+    let mut room = healthy(5 * GIB, &*volume);
+    room.launches = &launches;
+    let mut ledger = Ledger::new(None);
+    ledger.pass(&[job.clone(), shell.clone()], &shell, &room);
+    assert_eq!(
+        wait(&shell, 8),
+        Some(Wait::Held(WaitReason::Memory)),
+        "a 6 GiB peak did not wait for the job that holds the pool"
+    );
+    // The job ends: nothing heavy runs and the command starts.
+    job.lock().unwrap().commands.clear();
+    unsettle(&mut ledger);
+    let mut room = healthy(5 * GIB, &*volume);
+    room.launches = &launches;
+    ledger.pass(&[job.clone(), shell.clone()], &shell, &room);
+    assert_eq!(wait(&shell, 8), None);
 }

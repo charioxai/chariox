@@ -5,11 +5,13 @@ use crate::local::{
     TerminalCommandCatalogNodeKind, TerminalCommandCatalogSurface,
 };
 
+mod account_kernels;
 mod agent_deadline;
 mod agent_lifecycle;
 mod agent_liveness;
 mod agent_max_context;
 mod agent_peek;
+mod agent_profile_turn_end;
 mod agent_workflow;
 mod aggregate_agent_model;
 mod app_accounts;
@@ -52,6 +54,7 @@ mod kernel_operation_interactions;
 mod kernel_resources;
 mod kernel_trash;
 mod landing8;
+mod machine_acquire;
 mod machine_presence;
 mod managed_activity;
 mod managed_context;
@@ -73,6 +76,7 @@ mod provider_vault_login;
 mod publication;
 mod queued_agent_messages;
 mod recall_terminal_metaagent;
+mod relay_issuer;
 mod released_provider_run;
 mod remote_jobs;
 mod resource_protection;
@@ -93,6 +97,7 @@ mod slice_logs;
 mod tab_display;
 mod user_app_views;
 mod user_domain_access;
+mod viewer_density;
 mod web_bot_auth;
 mod workflow_code;
 mod workflow_gate;
@@ -171,6 +176,7 @@ mod session_activity;
 
 mod event_follow;
 mod owner_vault;
+mod pane_feed;
 mod person_inbox;
 mod totp;
 mod watcher;
