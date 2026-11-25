@@ -1,7 +1,7 @@
 // Admission drill (row 541): a kernel in a 16 GB systemd unit; commands that peaked heavy before wait before they grow, light ones never wait, a runaway is acted on, the kernel keeps answering. Cells A1-A6 of row 541.
 import assert from 'node:assert/strict';
 import {spawn,execFileSync} from 'node:child_process';
-import {mkdirSync,writeFileSync,openSync,rmSync,readFileSync,readdirSync,cpSync} from 'node:fs';
+import {mkdirSync,writeFileSync,openSync,rmSync,readFileSync,readdirSync,cpSync,existsSync} from 'node:fs';
 import {createServer} from 'node:net';
 
 import {createHash,randomBytes} from 'node:crypto';
@@ -72,7 +72,7 @@ const GiB=2**30, MiB=2**20;
 const budgetHigh=Number(flags.get('--budget-high-gib')??12)*GiB; // workloads thrash above this line: a machine near its limit
 const heavyGiB=Number(flags.get('--heavy-gib')??6), hogGiB=Number(flags.get('--hog-gib')??11);
 // A command that allocates `gib` GiB quickly, holds it, and exits. `name` keeps the three paths' keys apart.
-const alloc=(name,gib,holdMs)=>`/*${name}*/const a=[];let n=0;const t=setInterval(()=>{for(let i=0;i<10&&n<${gib*1024};i++,n++)a.push(Buffer.alloc(1<<20,1));if(n>=${gib*1024}){clearInterval(t);setTimeout(()=>process.exit(0),${holdMs})}},10)`;
+const alloc=(name,gib,holdMs,doneFile)=>`/*${name}*/const a=[];let n=0;const t=setInterval(()=>{for(let i=0;i<10&&n<${gib*1024};i++,n++)a.push(Buffer.alloc(1<<20,1));if(n>=${gib*1024}){clearInterval(t);setTimeout(()=>{${doneFile?`require('fs').writeFileSync('${doneFile}','0');`:''}process.exit(0)},${holdMs})}},10)`;
 const runaway=(name)=>`/*${name}*/const a=[];let n=0;setInterval(()=>{for(let i=0;i<15;i++,n++)a.push(Buffer.alloc(1<<20,1))},50)`;
 const kernelCgroup=()=>{const l=readFileSync(`/proc/${child.pid}/cgroup`,'utf8').trim().replace(/^0::/,'');return '/sys/fs/cgroup'+l};
 const emulateThrash=()=>{const b=join(kernelCgroup(),'..');try{writeFileSync(join(b,'memory.high'),String(budgetHigh))}catch{}};
@@ -110,13 +110,15 @@ try{
  const jobDone=async(id,ms=240000)=>{let st;await until(async()=>{st=await tool('chariox.jobs.status',{job_id:id});return !!st.result},'job '+id+' finished',ms);return st};
  const termOpen=async()=>{const r=await tool('chariox.terminal_open',{title:'admission'},true);out.term_open_raw=JSON.stringify(r).slice(0,400);save();return r.terminal_id??r.terminal?.terminal_id??r.terminal?.id??r.id};
  const termRun=async(tid,code,tag)=>{await tool('chariox.terminal_send',{terminal_id:tid,text:`node -e ${sh(code)}; echo A6RC$?END${tag}`,enter:true},true)};
- const termDone=async(tid,tag,ms=240000)=>{const text=`A6RC0END${tag}`;const waited=await tool('chariox.terminal_wait',{terminal_id:tid,until:[{text}],after_offset:0,timeout_seconds:Math.min(80,Math.floor(ms/1000))},true);const read=await tool('chariox.terminal_read',{terminal_id:tid},true);out['term_'+tag]={waited:JSON.stringify(waited).slice(0,500),read_tail:JSON.stringify(read).slice(-700)};save();assert(waited?.fired?.kind==='output_matched'&&waited.fired.text===text,'the terminal command did not exit 0: no output_matched event for '+text+' ('+JSON.stringify(waited).slice(0,200)+')')};
+ const termFile=join(root,'done-term');
+ const termDone=async(tid,tag,ms=240000)=>{await until(async()=>existsSync(termFile)&&readFileSync(termFile,'utf8')==='0','the typed command ran to its end and exited 0 ('+tag+')',ms);rmSync(termFile,{force:true})};
  const cells=new Set((process.env.CELLS??'A6,A1,A3,A2,A4,A5').split(','));
  const peaks0=peakOf();out.peaks_before=peaks0;save();
  // A6: an unknown command grows and ends: its peak is recorded; its next run waits while a hog holds the room.
  const learn=async(path)=>{
   const start=path==='exec'?execStart:path==='job'?jobStart:null;
-  const code=alloc('path_'+path,heavyGiB,1500);
+  const code=alloc('path_'+path,heavyGiB,1500,path==='term'?termFile:undefined);
+  rmSync(termFile,{force:true});
   const before=(peakOf()??[]).filter(m=>m>=(heavyGiB-1)*GiB).length;
   if(path==='term'){const tid=await termOpen();await termRun(tid,code,'L');await delay(3000);const ps=()=>{const pids=[];const walk=d=>{try{for(const p of readFileSync(join(d,'cgroup.procs'),'utf8').split('\n'))if(p)pids.push(p)}catch{}try{for(const e of readdirSync(d,{withFileTypes:true}))if(e.isDirectory())walk(join(d,e.name))}catch{}};walk(join(kernelCgroup(),'..'));return pids.length?execFileSync('ps',['-o','pid,ppid,pgid,stat,rss,comm','-p',pids.join(',')],{encoding:'utf8'}).slice(0,4000):''};out.ps_term_running=ps();await termDone(tid,'L');await delay(2000);out.ps_term_after=ps();out.term_id=tid;save()}
   else{const id=await start(code);path==='exec'?await execDone(id):await jobDone(id)}
@@ -128,7 +130,8 @@ try{
   // A hog takes most of the pool; the next run of the learned command cannot fit and waits, then starts when the hog ends.
   const hog=await execStart(alloc('hog_'+path,hogGiB,25000));
   await delay(13000);
-  const code=alloc('path_'+path,heavyGiB,1500);
+  const code=alloc('path_'+path,heavyGiB,1500,path==='term'?termFile:undefined);
+  rmSync(termFile,{force:true});
   let id,tid,started=performance.now();
   const states=new Set();
   const heldBefore=decisions('path_'+path,['held']),startedBefore=decisions('path_'+path,['started','resumed']);
