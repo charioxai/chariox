@@ -34,6 +34,7 @@ pub(super) fn map_relay_error(error: &DaemonError) -> RelayError {
         DaemonError::ProviderAccountNameTaken { .. }
         | DaemonError::ProviderLoginCodeIncomplete
         | DaemonError::ProviderLoginCodeInvalid
+        | DaemonError::ProviderLoginVaultEntryUnavailable
         | DaemonError::ProviderProfileRefused { .. }
         | DaemonError::ProviderDevStubDisabled
         | DaemonError::AgentNotInSession { .. }
@@ -368,6 +369,24 @@ mod tests {
             retryable: false,
         }
         .is_no_active_prompt());
+    }
+
+    #[test]
+    fn a_removed_vault_entry_keeps_its_recovery_message_across_the_relay() {
+        let mapped = map_relay_error(&DaemonError::ProviderLoginVaultEntryUnavailable);
+        assert_eq!(mapped.code, "provider_login_vault_entry_unavailable");
+        assert!(!mapped.retryable);
+        assert!(
+            mapped.message.contains("another entry"),
+            "the recovery text must reach the caller, got: {}",
+            mapped.message
+        );
+        assert!(!mapped.message.contains("without a reason"));
+        // The shared external projection answers the same code with the same text.
+        assert_eq!(
+            crate::error::external_request_failure_message(&mapped.code),
+            mapped.message
+        );
     }
 
     const STALE_ELEMENT: &str =
