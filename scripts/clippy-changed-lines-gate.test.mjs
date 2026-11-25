@@ -39,6 +39,10 @@ test("Clippy and lint reject stale origin/main and pass after fetching it", { sk
   git(checkout, "commit", "-q", "--allow-empty", "-m", "Topic change")
   git(origin, "commit", "-q", "--allow-empty", "-m", "Advance main")
 
+  // The gate runs the card-registry check from the repository root first; the fixture repo only needs it to pass.
+  mkdirSync(join(checkout, "scripts", "checks"), { recursive: true })
+  writeFileSync(join(checkout, "scripts", "checks", "run.mjs"), "process.exit(0)\n")
+
   mkdirSync(bin)
   writeFileSync(join(bin, "rustup"), '#!/bin/sh\nprintf "fixture-toolchain\\n"\n', { mode: 0o755 })
   writeFileSync(join(bin, "cargo"), '#!/bin/sh\ngit rev-parse HEAD >> "$CARGO_INVOCATIONS"\n', { mode: 0o755 })
