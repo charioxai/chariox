@@ -91,7 +91,6 @@ async fn assert_run_profile_reconciliation(field: &str, queued_work: Option<bool
             None,
             Vec::new(),
             crate::extension::RemoteExtensionManifest::default(),
-            None,
             Default::default(),
         )
         .await;
@@ -176,7 +175,6 @@ async fn leased_prompt_admission_prevents_interleaved_profile_changes() {
         None,
         Vec::new(),
         crate::extension::RemoteExtensionManifest::default(),
-        None,
         Default::default(),
     );
     tokio::pin!(submission);
@@ -244,7 +242,6 @@ async fn cancelling_leased_prompt_admission_releases_profile_operations() {
         None,
         Vec::new(),
         crate::extension::RemoteExtensionManifest::default(),
-        None,
         Default::default(),
     ));
     poll_fn(|cx| {
@@ -326,7 +323,6 @@ async fn leased_prompt_reconciles_durable_home_profile_after_lost_ack_and_restar
             None,
             Vec::new(),
             crate::extension::RemoteExtensionManifest::default(),
-            None,
             Default::default(),
         )
         .await
@@ -391,7 +387,6 @@ async fn failed_leased_prompt_admission_after_run_assignment_settles_its_receipt
             Some(git_context.clone()),
             Vec::new(),
             crate::extension::RemoteExtensionManifest::default(),
-            None,
             Default::default(),
         )
     };
@@ -489,16 +484,20 @@ async fn assert_leased_claude_home_credential(environment_changed: bool) {
             None,
             Vec::new(),
             crate::extension::RemoteExtensionManifest::default(),
-            None,
             Default::default(),
         )
     };
-    // Without a live run, the worker still requires the home's credential.
-    assert!(submit()
-        .await
-        .unwrap_err()
-        .to_string()
-        .contains(crate::transport::relay_peer::REMOTE_PROVIDER_LAUNCH_CREDENTIAL_REQUIRED_CODE));
+    // Without a live run, the worker launches from its own account and never asks the home
+    // for a credential (row 577).
+    let cold = submit().await;
+    if let Err(error) = &cold {
+        assert!(
+            !error
+                .to_string()
+                .contains("provider_launch_credential_required"),
+            "{error:?}"
+        );
+    }
     assert!(app
         .lock()
         .await
@@ -775,7 +774,6 @@ async fn fresh_leased_prompt_receives_home_resume_state() {
             None,
             Vec::new(),
             crate::extension::RemoteExtensionManifest::default(),
-            None,
             Default::default(),
         )
         .await

@@ -314,6 +314,9 @@ pub enum ProviderAccountUsageMeterState {
 pub enum ProviderAccountMaterializationTargetKind {
     Worker,
     Slice,
+    /// Row 577: a tracked copy of the account's Vault token at an enrolled kernel, made by the
+    /// product account copy. The target kernel owns it from then on.
+    Copy,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
