@@ -24,6 +24,53 @@ pub(super) struct ClaudeTranscriptCursor {
     /// outlive the turn that started them.
     #[serde(default)]
     background_calls: BTreeMap<String, ClaudeBackgroundCall>,
+    #[serde(default)]
+    next_compaction: u64,
+    #[serde(default)]
+    pending_compactions: BTreeMap<String, PendingCompaction>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct PendingCompaction {
+    number: u64,
+    kernel_prompt_id: Option<String>,
+}
+
+impl ClaudeTranscriptCursor {
+    pub(super) fn start_compaction(
+        &mut self,
+        provider_prompt_id: &str,
+        kernel_prompt_id: Option<&str>,
+    ) -> Option<u64> {
+        if self.pending_compactions.contains_key(provider_prompt_id) {
+            return None;
+        }
+        let number = self.next_compaction;
+        self.next_compaction += 1;
+        self.pending_compactions.insert(
+            provider_prompt_id.to_owned(),
+            PendingCompaction {
+                number,
+                kernel_prompt_id: kernel_prompt_id.map(str::to_owned),
+            },
+        );
+        Some(number)
+    }
+
+    pub(super) fn settle_compaction(&mut self, provider_prompt_id: &str) -> Option<u64> {
+        self.pending_compactions
+            .remove(provider_prompt_id)
+            .map(|pending| pending.number)
+    }
+
+    pub(super) fn cancel_compactions(&mut self, prompt_id: &str) -> Vec<u64> {
+        self.pending_compactions
+            .extract_if(.., |_, pending| {
+                pending.kernel_prompt_id.as_deref() == Some(prompt_id)
+            })
+            .map(|(_, pending)| pending.number)
+            .collect()
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -68,6 +115,7 @@ pub(super) struct ClaudeTranscriptDrain {
     pub(super) terminal_assistant_message_ids: Vec<String>,
     pub(super) terminal_failure: Option<String>,
     pub(super) enqueued_prompts: Vec<String>,
+    pub(super) unbound_compaction_summaries: usize,
     pub(super) session_id: Option<String>,
     pub(super) model: Option<String>,
     /// The person answered "No" in Claude's own dialog: Claude records the
@@ -180,6 +228,13 @@ pub(super) fn drain_claude_transcript_raw_since(
         consumed_line_count = index + 1;
         let key = claude_transcript_entry_key(transcript_path, index, &value);
         if !cursor.seen_keys.insert(key) {
+            continue;
+        }
+        // Only PostCompact carries the prompt identity of a live summary.
+        if value.get("type").and_then(Value::as_str) == Some("user")
+            && value.get("isCompactSummary").and_then(Value::as_bool) == Some(true)
+        {
+            drain.unbound_compaction_summaries += 1;
             continue;
         }
         if minimum_timestamp_ms.is_some_and(|minimum_timestamp_ms| {
@@ -309,6 +364,10 @@ fn claude_transcript_entry_key(path: &str, index: usize, value: &Value) -> Strin
         })
         .map(|id| format!("{path}:{id}"))
         .unwrap_or_else(|| format!("{path}:line:{index}"))
+}
+
+pub(super) fn compaction_merge_key_suffix(number: u64) -> String {
+    format!("compaction:{number}")
 }
 
 fn claude_transcript_chunks(

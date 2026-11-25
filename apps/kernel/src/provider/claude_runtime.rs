@@ -144,6 +144,9 @@ pub(crate) fn initialize_claude_runtime_with_credentials(
             last_usage_file_contents: None,
             last_context_tokens: None,
             last_context_window: None,
+            compactions: 0,
+            compaction_started_at_ms: None,
+            unsent_chunks: Vec::new(),
             observed_context_model: None,
             main_stream_has_context: true,
             mcp_config_file,
@@ -327,6 +330,7 @@ pub(crate) fn drain_claude_events(
     state: &mut ClaudeRuntimeState,
 ) -> Result<ProviderPromptSignalBatch, DaemonError> {
     let mut batch = ProviderPromptSignalBatch::default();
+    batch.chunks.append(&mut state.unsent_chunks);
     for _ in 0..CLAUDE_EVENT_DRAIN_MAX_MESSAGES {
         match state.output.receiver.try_recv() {
             Ok(ClaudeRuntimeMessage::Stdout(value)) => {
@@ -433,6 +437,12 @@ pub(crate) fn drain_claude_events(
     } else if batch.provider_own_turn == ProviderOwnTurnSignal::Running {
         // The turn that began in this batch was cut off (process exit, cancel) before its result.
         batch.provider_own_turn = ProviderOwnTurnSignal::StartedAndEnded;
+    }
+    if batch.terminal_failure.is_some() {
+        // The kernel ends the run on a terminal failure and may never poll it again, so the
+        // compaction the failure cut off settles in this batch.
+        settle_running_compaction(run.id(), state);
+        batch.chunks.append(&mut state.unsent_chunks);
     }
 
     Ok(batch)
@@ -699,11 +709,37 @@ fn release_detached_jobs(
     );
 }
 
+/// A restart ends the turn a compaction was running in: its row settles as failed under its own key.
+fn settle_running_compaction(run_id: &str, state: &mut ClaudeRuntimeState) {
+    if state.compaction_started_at_ms.take().is_none() {
+        return;
+    }
+    state.unsent_chunks.push(events::compaction_chunk(
+        run_id,
+        state.compactions,
+        &crate::provider::ContextCompaction::Failed {
+            reason: "The turn ended before the compaction finished.".into(),
+        },
+    ));
+    state.compactions += 1;
+}
+
+/// The rows still owed when a run is terminated: the running compaction fails, and whatever an
+/// earlier restart queued goes out with it, because nothing polls the run again.
+pub(crate) fn take_closing_compaction_chunks(
+    run_id: &str,
+    state: &mut ClaudeRuntimeState,
+) -> Vec<crate::provider::ProviderPromptChunk> {
+    settle_running_compaction(run_id, state);
+    std::mem::take(&mut state.unsent_chunks)
+}
+
 fn restart_claude_runtime(
     run: &RuntimeProviderRun,
     state: &mut ClaudeRuntimeState,
     operation: &'static str,
 ) -> Result<(), DaemonError> {
+    settle_running_compaction(run.id(), state);
     let identity = state
         .process_identity
         .lock()
@@ -919,6 +955,9 @@ mod tests {
                 last_usage_file_contents: None,
                 last_context_tokens: None,
                 last_context_window: None,
+                compactions: 0,
+                compaction_started_at_ms: None,
+                unsent_chunks: Vec::new(),
                 observed_context_model: None,
                 main_stream_has_context: true,
                 mcp_config_file: None,
@@ -2664,6 +2703,247 @@ done
         assert_eq!(usage.meters.len(), 1);
         assert_eq!(usage.meters[0].meter_id, "rate_limit/seven_day");
         assert_eq!(usage.meters[0].resets_at_ms, Some(1_800_014_400_000));
+    }
+
+    #[test]
+    fn a_claude_compaction_is_one_row_from_its_start_to_its_end() {
+        let (mut state, mut batch) = parser_state();
+        let mut apply = |value: serde_json::Value| {
+            apply_claude_message("run-1", &mut state, value, &mut batch);
+        };
+        apply(
+            json!({"type": "system", "subtype": "status", "status": "compacting", "compact_output_chars": 0}),
+        );
+        // The status repeats while the summary streams; the row keeps its start.
+        apply(
+            json!({"type": "system", "subtype": "status", "status": "compacting", "compact_output_chars": 40}),
+        );
+        apply(
+            json!({"type": "system", "subtype": "compact_boundary", "uuid": "b1", "compact_metadata": {"trigger": "auto"}}),
+        );
+        apply(json!({"type": "system", "subtype": "status", "status": "compacting"}));
+        apply(
+            json!({"type": "system", "subtype": "status", "status": null, "compact_result": "failed", "compact_error": "prompt too long"}),
+        );
+
+        let rows = batch
+            .chunks
+            .iter()
+            .filter(|chunk| chunk.kind == crate::terminal::TerminalOutputKind::ContextCompacted)
+            .map(|chunk| {
+                (
+                    chunk.merge_key.clone().unwrap(),
+                    serde_json::from_slice::<crate::provider::ContextCompaction>(&chunk.bytes)
+                        .unwrap(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let keys = rows.iter().map(|row| row.0.as_str()).collect::<Vec<_>>();
+        assert_eq!(
+            keys,
+            [
+                "claude:run-1:compaction:0",
+                "claude:run-1:compaction:0",
+                "claude:run-1:compaction:1",
+                "claude:run-1:compaction:1"
+            ],
+            "start and end of one compaction share one key; the next compaction has its own"
+        );
+        assert!(matches!(
+            rows[0].1,
+            crate::provider::ContextCompaction::Running { .. }
+        ));
+        assert!(matches!(
+            rows[1].1,
+            crate::provider::ContextCompaction::Done { .. }
+        ));
+        assert!(matches!(
+            rows[2].1,
+            crate::provider::ContextCompaction::Running { .. }
+        ));
+        assert_eq!(
+            rows[3].1,
+            crate::provider::ContextCompaction::Failed {
+                reason: "prompt too long".into()
+            }
+        );
+    }
+
+    // A restart (abort, stall, terminal failure) ends the turn a compaction was running in: its row settles
+    // as failed under its own key, and the retry's compaction gets the next one.
+    #[test]
+    fn a_compaction_cut_off_by_a_restart_settles_and_the_retry_has_its_own_row() {
+        let (mut state, mut batch) = parser_state();
+        let status = json!({"type": "system", "subtype": "status", "status": "compacting", "compact_output_chars": 0});
+        apply_claude_message("run-1", &mut state, status.clone(), &mut batch);
+        super::settle_running_compaction("run-1", &mut state);
+        assert_eq!(state.compaction_started_at_ms, None);
+        // The next batch carries the settlement; the retry's start is not suppressed.
+        batch.chunks.append(&mut state.unsent_chunks);
+        apply_claude_message("run-1", &mut state, status, &mut batch);
+        apply_claude_message(
+            "run-1",
+            &mut state,
+            json!({"type": "system", "subtype": "compact_boundary", "uuid": "b9", "compact_metadata": {"trigger": "auto"}}),
+            &mut batch,
+        );
+        let rows = batch
+            .chunks
+            .iter()
+            .filter(|chunk| chunk.kind == crate::terminal::TerminalOutputKind::ContextCompacted)
+            .map(|chunk| {
+                (
+                    chunk.merge_key.clone().unwrap(),
+                    serde_json::from_slice::<crate::provider::ContextCompaction>(&chunk.bytes)
+                        .unwrap(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let keys = rows.iter().map(|row| row.0.as_str()).collect::<Vec<_>>();
+        assert_eq!(
+            keys,
+            [
+                "claude:run-1:compaction:0",
+                "claude:run-1:compaction:0",
+                "claude:run-1:compaction:1",
+                "claude:run-1:compaction:1"
+            ]
+        );
+        assert!(matches!(
+            rows[0].1,
+            crate::provider::ContextCompaction::Running { .. }
+        ));
+        assert!(matches!(
+            rows[1].1,
+            crate::provider::ContextCompaction::Failed { .. }
+        ));
+        assert!(matches!(
+            rows[2].1,
+            crate::provider::ContextCompaction::Running { .. }
+        ));
+        assert!(matches!(
+            rows[3].1,
+            crate::provider::ContextCompaction::Done { .. }
+        ));
+    }
+
+    // A compaction cut off by the process ending (exit, memory limit, a terminal stderr failure)
+    // settles in the batch that reports the failure: the next drain may never come.
+    #[test]
+    fn a_compaction_cut_off_by_the_process_exiting_is_failed_in_the_terminal_batch() {
+        let worktree = crate::test_support::TestWorktree::new("claude-compaction-exit");
+        let run = RuntimeProviderRun::new(
+            "provider-run-compaction-exit",
+            &LaunchProviderRequest::new("room", "claude", "claude", "default", "sonnet"),
+            ProviderLaunchResult {
+                endpoint_mode: AgentEndpointMode::External,
+                process_label: "claude-fixture".to_string(),
+                pty_target: None,
+                pty_program: Some("/bin/sh".to_string()),
+                pty_args: vec![
+                    "-c".to_string(),
+                    r#"printf '{"type":"system","subtype":"status","status":"compacting","compact_output_chars":0}\n'; sleep 1; exit 1"#
+                        .to_string(),
+                    "fixture".to_string(),
+                ],
+                pty_env: BTreeMap::new(),
+                pty_env_remove: Vec::new(),
+                working_directory: Some(worktree.path().to_path_buf()),
+                structured_endpoint: None,
+            },
+        );
+        let mut binding = initialize_claude_runtime(&run).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut rows = Vec::new();
+        let last = loop {
+            let batch = super::drain_claude_events(&run, &mut binding.state).unwrap();
+            rows.extend(
+                batch
+                    .chunks
+                    .iter()
+                    .filter(|chunk| {
+                        chunk.kind == crate::terminal::TerminalOutputKind::ContextCompacted
+                    })
+                    .map(|chunk| {
+                        (
+                            chunk.merge_key.clone().unwrap(),
+                            serde_json::from_slice::<crate::provider::ContextCompaction>(
+                                &chunk.bytes,
+                            )
+                            .unwrap(),
+                        )
+                    }),
+            );
+            if batch.terminal_failure.is_some() {
+                break batch;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the process should end"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        };
+        assert!(
+            last.chunks
+                .iter()
+                .any(|chunk| chunk.kind == crate::terminal::TerminalOutputKind::ContextCompacted),
+            "the batch that reports the failure carries the compaction's settlement"
+        );
+        assert_eq!(rows.len(), 2, "{rows:?}");
+        assert_eq!(
+            rows[0].0,
+            "claude:provider-run-compaction-exit:compaction:0"
+        );
+        assert_eq!(rows[1].0, rows[0].0);
+        assert!(matches!(
+            rows[0].1,
+            crate::provider::ContextCompaction::Running { .. }
+        ));
+        assert!(matches!(
+            rows[1].1,
+            crate::provider::ContextCompaction::Failed { .. }
+        ));
+    }
+
+    #[test]
+    fn a_claude_compaction_row_carries_the_summary_the_transcript_holds() {
+        let temp = crate::test_temp_dir::TestTempDir::new("claude-compaction-row-summary");
+        let project = temp.path().join("projects").join("-repo");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(
+            project.join("session-7.jsonl"),
+            format!(
+                "{}\n",
+                json!({"type": "user", "isCompactSummary": true, "uuid": "anchor-1", "message": {"content": "Condensed by Claude."}})
+            ),
+        )
+        .unwrap();
+        let (mut state, mut batch) = parser_state();
+        state.env.insert(
+            "CLAUDE_CONFIG_DIR".into(),
+            temp.path().display().to_string(),
+        );
+        state.session_id = Some("session-7".into());
+
+        apply_claude_message(
+            "run-1",
+            &mut state,
+            json!({"type": "system", "subtype": "compact_boundary", "uuid": "b1",
+                "compact_metadata": {"trigger": "auto", "preserved_segment": {"anchor_uuid": "anchor-1"}}}),
+            &mut batch,
+        );
+
+        let chunk = batch
+            .chunks
+            .iter()
+            .find(|chunk| chunk.kind == crate::terminal::TerminalOutputKind::ContextCompacted)
+            .expect("the boundary yields the compaction row");
+        assert_eq!(
+            serde_json::from_slice::<crate::provider::ContextCompaction>(&chunk.bytes).unwrap(),
+            crate::provider::ContextCompaction::Done {
+                summary: "Condensed by Claude.".into()
+            }
+        );
     }
 
     fn envelope_with(base: &str, turn: &str) -> PromptEnvelope {
