@@ -294,6 +294,74 @@ async fn kernel_access_grants_allow_local_invites_and_scheduled_prompts() {
         .is_ok());
 }
 
+// `chariox access request --no-wait`, then the owner revokes access while the request waits: the
+// agent that polls `access status` must read `ended` with a reason, not `not_requested`. Status
+// reads the holder's entry in `request_outcomes`; the waiting task finds its request gone and
+// records nothing, so the revocation records it, only for the requests it removed.
+#[tokio::test]
+async fn revoking_a_pending_no_wait_request_records_its_end_for_status() {
+    let app =
+        crate::test_support::bootstrap_authenticated_app(crate::config::DaemonConfig::for_tests())
+            .unwrap();
+    let state = crate::runtime::router::CommandRouter::with_interactive_capacity_from_app(
+        Arc::new(Mutex::new(app)),
+        32,
+    )
+    .runtime_state();
+    let revoked_holder = process::inspect(std::process::id()).unwrap().0;
+    let mut kept_holder = revoked_holder.clone();
+    kept_holder.pid += 1;
+    let pending = |owner: &str, id: &str, holder: &ProcessIdentity| PendingGrant {
+        summary: KernelAccessGrant {
+            covered: Vec::new(),
+            grant_id: id.into(),
+            owner_user_id: owner.into(),
+            holder_pid: holder.pid,
+            holder_executable: "fixture".into(),
+            holder_harness: None,
+            term: crate::local::KernelAccessTerm::UntilHolderExits,
+            expires_at_ms: None,
+        },
+        holder: holder.clone(),
+        deadline_ms: u64::MAX,
+    };
+    {
+        let mut access = state.owned.kernel_access.lock().unwrap();
+        access.pending.insert(
+            (revoked_holder.pid, revoked_holder.start, "a".into()),
+            pending("owner-a", "grant-a", &revoked_holder),
+        );
+        access.pending.insert(
+            (kept_holder.pid, kept_holder.start, "b".into()),
+            pending("owner-b", "grant-b", &kept_holder),
+        );
+    }
+    // `chariox access revoke` for one owner, while both requests wait.
+    state
+        .revoke_kernel_access(Some("owner-a"), None, "owner_revoked")
+        .unwrap();
+    let access = state.owned.kernel_access.lock().unwrap();
+    assert_eq!(
+        access.pending.len(),
+        1,
+        "only owner-a's request was removed"
+    );
+    let outcome = access
+        .request_outcomes
+        .iter()
+        .find(|(holder, _)| holder == &revoked_holder)
+        .map(|(_, reason)| reason)
+        .expect("the polling agent can read how its request ended");
+    assert_eq!(outcome.code, Refusal::EndedRevoked.code());
+    assert!(
+        access
+            .request_outcomes
+            .iter()
+            .all(|(holder, _)| holder != &kept_holder),
+        "a request the revocation did not touch has no outcome"
+    );
+}
+
 #[tokio::test]
 async fn kernel_access_targeted_revocation_preserves_other_owners_pending_requests() {
     let app =
@@ -304,15 +372,19 @@ async fn kernel_access_targeted_revocation_preserves_other_owners_pending_reques
         32,
     )
     .runtime_state();
-    let pending = |owner: &str, id: &str| KernelAccessGrant {
-        covered: Vec::new(),
-        grant_id: id.into(),
-        owner_user_id: owner.into(),
-        holder_pid: 1,
-        holder_executable: "fixture".into(),
-        holder_harness: None,
-        term: crate::local::KernelAccessTerm::Minutes(30),
-        expires_at_ms: None,
+    let pending = |owner: &str, id: &str| PendingGrant {
+        summary: KernelAccessGrant {
+            covered: Vec::new(),
+            grant_id: id.into(),
+            owner_user_id: owner.into(),
+            holder_pid: 1,
+            holder_executable: "fixture".into(),
+            holder_harness: None,
+            term: crate::local::KernelAccessTerm::Minutes(30),
+            expires_at_ms: None,
+        },
+        holder: process::inspect(std::process::id()).unwrap().0,
+        deadline_ms: u64::MAX,
     };
     {
         let mut access = state.owned.kernel_access.lock().unwrap();
@@ -331,7 +403,13 @@ async fn kernel_access_targeted_revocation_preserves_other_owners_pending_reques
     assert_eq!(access.generation, generation);
     assert_eq!(access.pending.len(), 1);
     assert_eq!(
-        access.pending.values().next().unwrap().owner_user_id,
+        access
+            .pending
+            .values()
+            .next()
+            .unwrap()
+            .summary
+            .owner_user_id,
         "owner-b"
     );
     drop(access);

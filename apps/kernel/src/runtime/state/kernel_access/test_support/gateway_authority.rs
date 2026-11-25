@@ -61,6 +61,7 @@ fn refused_shapes() -> Vec<LocalDaemonRequest> {
             },
         ),
         LocalDaemonRequest::RequestKernelAccess(crate::local::RequestKernelAccessRequest {
+            reason: None,
             holder_pid: Some(2),
             no_wait: false,
             term: None,
