@@ -97,7 +97,7 @@ use transitions::apply;
 pub(super) use types::Request;
 pub use types::{
     AgentObligation, AgentTaskExecution, AgentWait, AgentWake, ExecutionState, QuestionReply,
-    TaskOwnerAction,
+    TaskOwnerAction, TaskUnblock,
 };
 mod wake_receipts;
 pub(crate) use types::{
@@ -1721,6 +1721,7 @@ fn new_task(
         reason: String::new(),
         owner_action: None,
         question_reply: None,
+        unblock: None,
         obligations: vec![],
         wait: None,
         last_progress_at_ms: now,

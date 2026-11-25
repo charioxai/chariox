@@ -414,10 +414,11 @@ fn a_question_raised_on_another_kernel_reaches_the_subscribed_agent() {
             })
             .unwrap();
         let Outcome::Task(blocked) = store
-            .agent_lifecycle(Operation::Block {
+            .agent_lifecycle(Operation::BlockForQuestion {
                 task: "question-drill".into(),
                 prompt: "question-drill".into(),
                 reason: "private reason excluded from notifications".into(),
+                reply: None,
             })
             .unwrap()
         else {

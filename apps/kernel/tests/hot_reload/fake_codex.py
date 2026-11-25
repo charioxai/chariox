@@ -106,6 +106,13 @@ def wait_for(name):
 def run_turn():
     notify("turn/started", {"threadId": THREAD, "turn": {"id": TURN, "status": "inProgress", "items": []}})
     notify("item/started", {"threadId": THREAD, "turnId": TURN, "item": {"type": "agentMessage", "id": ITEM, "text": ""}})
+    if os.path.exists(os.path.join(record, "limit")):
+        # The provider's usage limit: the turn fails with it.
+        error = {"message": "You've hit your usage limit. Try again later.", "codexErrorInfo": "usageLimitExceeded"}
+        notify("error", {"threadId": THREAD, "turnId": TURN, "willRetry": False, "error": error})
+        turn["status"] = "failed"
+        notify("turn/completed", {"threadId": THREAD, "turn": {"id": TURN, "status": "failed", "error": error, "items": []}})
+        return
     if usage_fixture:
         for update in usage_fixture["updates"]:
             notify("thread/tokenUsage/updated", update)

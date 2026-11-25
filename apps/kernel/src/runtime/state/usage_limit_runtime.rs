@@ -121,15 +121,23 @@ impl KernelRuntimeState {
         {
             return None;
         }
-        let automatic = self
+        // The person's own word wins: Automatic goes on by itself, an explicit Ask me never does.
+        // Left at its default, the kernel goes on by itself unless the person has a choice to make
+        // (an account with room, and no orchestrator above the agent owning the switch): a stop
+        // with nothing to decide is status on the row, and it resumes at the reset.
+        let automatic = match self
             .owned
             .config_projection
             .snapshot()
             .user_config
             .agents
             .usage_limit_resume
-            .unwrap_or_default()
-            == UsageLimitResume::Automatic;
+        {
+            Some(policy) => policy == UsageLimitResume::Automatic,
+            None => !self
+                .owned
+                .usage_limit_card_wanted(agent, agent.provider_account_profile()),
+        };
         Some(LimitHit {
             reset_at_ms: crate::provider::usage_limit_reset_at_ms(&failure.reason, now),
             automatic,
@@ -635,18 +643,19 @@ impl KernelRuntimeState {
                 agent_id: agent_id.to_string(),
             });
         }
-        let stop = agent
-            .usage_limit_stop()
-            .cloned()
-            .ok_or_else(|| refused("this agent is not stopped by a usage limit"))?;
+        // An agent no usage limit stopped may have a blocked task: the same words settle it.
+        let Some(stop) = agent.usage_limit_stop().cloned() else {
+            Box::pin(self.resolve_blocked_task_command(&agent, caller_agent_id, action)).await?;
+            return owned.agent_store.get_agent(agent_id);
+        };
+        // An agent above may arm unless the person explicitly chose Ask me.
         let automatic = owned
             .config_projection
             .snapshot()
             .user_config
             .agents
             .usage_limit_resume
-            .unwrap_or_default()
-            == UsageLimitResume::Automatic;
+            != Some(UsageLimitResume::Ask);
         let arms = matches!(
             action,
             UsageLimitAction::ResumeWhenBack | UsageLimitAction::ContinueOn { .. }

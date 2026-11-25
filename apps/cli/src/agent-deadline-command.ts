@@ -13,19 +13,39 @@ function deadlineOf(value: string, now: number): number | null {
   return now + duration
 }
 
-export async function runAgentDeadline(reference: string, value: string, room: string | undefined, send: SendRequest, now = Date.now()): Promise<unknown> {
-  const deadlineMs = deadlineOf(value, now)
+/** The one agent `reference` names (id, ref or alias) in `room`, or in every room when none is given. A sub-agent is in no room's
+ * agent list, so the agents below each room agent are read too, and an id given with its room is taken as it is. */
+export async function resolveAgentTarget(reference: string, room: string | undefined, send: SendRequest): Promise<{ room: string; agent: { id: string; agent_ref?: string; alias?: string | null } }> {
   const rooms = room ? [{ id: room }] : ((await send({ ListSessions: null })) as { SessionsListed: { sessions: { id: string }[] } }).SessionsListed.sessions
   type Agent = { id: string; agent_ref?: string; alias?: string | null }
+  const wanted = reference.replace(/^@/, "")
+  const named = (agent: Agent) => [agent.id, agent.agent_ref, agent.alias].includes(wanted)
   const matches: { room: string; agent: Agent }[] = []
+  const roomAgents: { room: string; agent: Agent }[] = []
   for (const session of rooms) {
     const listed = await send({ ListAgents: { session_id: session.id } }) as { AgentsListed: { agents: Agent[] } }
     for (const agent of listed.AgentsListed.agents) {
-      if ([agent.id, agent.agent_ref, agent.alias].includes(reference.replace(/^@/, ""))) matches.push({ room: session.id, agent })
+      roomAgents.push({ room: session.id, agent })
+      if (named(agent)) matches.push({ room: session.id, agent })
     }
   }
-  if (matches.length !== 1) throw new CommandFailure("usage", matches.length ? `multiple agents match '${reference}'; supply --session ROOM` : `agent '${reference}' not found`)
-  const target = matches[0]!
+  // A room agent of one room and a sub-agent of another can share a name: every match counts, so a name that is not one agent is refused.
+  for (const { room: roomId, agent: parent } of roomAgents) {
+    const tree = await send({ ListDescendants: { session_id: roomId, agent_id: parent.id } }).catch(() => null) as { AgentTree?: { tree: { nodes: { agent_id: string; alias?: string | null; room_id?: string | null }[] } } } | null
+    for (const node of tree?.AgentTree?.tree.nodes ?? []) {
+      if ([node.agent_id, node.alias].includes(wanted)) matches.push({ room: node.room_id ?? roomId, agent: { id: node.agent_id, alias: node.alias ?? null } })
+    }
+  }
+  // An agent id with its room is enough: the kernel refuses an id it does not know.
+  if (matches.length === 0 && room && /^agent-/.test(wanted)) matches.push({ room, agent: { id: wanted } })
+  const unique = [...new Map(matches.map(match => [`${match.room}/${match.agent.id}`, match])).values()]
+  if (unique.length !== 1) throw new CommandFailure("usage", unique.length ? `multiple agents match '${reference}'; supply --session ROOM` : `agent '${reference}' not found`)
+  return unique[0]!
+}
+
+export async function runAgentDeadline(reference: string, value: string, room: string | undefined, send: SendRequest, now = Date.now()): Promise<unknown> {
+  const deadlineMs = deadlineOf(value, now)
+  const target = await resolveAgentTarget(reference, room, send)
   return send({ SetAgentDeadline: { session_id: target.room, agent_id: target.agent.id, deadline_ms: deadlineMs } })
 }
 

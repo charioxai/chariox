@@ -20,10 +20,11 @@ async fn blocked_tasks(
             })
             .unwrap();
         let Outcome::Task(task) = store
-            .agent_lifecycle(Operation::Block {
+            .agent_lifecycle(Operation::BlockForQuestion {
                 task: id.clone(),
                 prompt: id,
                 reason: "Owner decision required".into(),
+                reply: None,
             })
             .unwrap()
         else {
@@ -115,10 +116,11 @@ async fn a12_reblocked_task_replaces_its_card_without_cancelling_the_new_revisio
         })
         .unwrap();
     let Outcome::Task(reblocked) = store
-        .agent_lifecycle(Operation::Block {
+        .agent_lifecycle(Operation::BlockForQuestion {
             task: task.task_id.clone(),
             prompt,
             reason: "A different owner decision is required".into(),
+            reply: None,
         })
         .unwrap()
     else {
@@ -351,10 +353,11 @@ async fn a_blocked_task_card_returns_a_hidden_agent_with_retained_queued_work() 
         .set_agent_hidden(&agent, true)
         .unwrap();
     let Outcome::Task(blocked) = store
-        .agent_lifecycle(Operation::Block {
+        .agent_lifecycle(Operation::BlockForQuestion {
             task: prompt.clone(),
             prompt,
             reason: "Owner decision required".into(),
+            reply: None,
         })
         .unwrap()
     else {
