@@ -458,13 +458,15 @@ impl KernelRuntimeState {
             if !crate::provider::managed_provider_isolation_required() {
                 orphans.push_str("; descendants that cleared their environment or have a live parent outside the watched session cannot be attributed and may still be running");
             }
+            let was_stopped = matches!(&stopped, Ok(stopped) if stopped.contains_key(&wake.id));
+            let report = lost_watch_report(&wake, now, was_stopped);
             self.owned.durable_state_store.agent_lifecycle(Operation::ProcessExited {
                 id: wake.id.clone(),
                 exit_code: None,
-                tail: format!("process_lost: the kernel restarted; it is not supervised and is not relaunched{orphans}; {LOST_NEXT_STEP}"),
+                tail: format!("process_lost: {report}{orphans}"),
                 now,
             })?;
-            self.wake_notice(&wake, format!("Wake alert: watched process '{}' was lost when the kernel restarted; it is not relaunched{orphans}; {LOST_NEXT_STEP}", wake.label));
+            self.wake_notice(&wake, format!("Wake alert: {report}{orphans}"));
             self.schedule_wake_delivery(&wake);
         }
         Ok(())
@@ -615,4 +617,31 @@ impl KernelRuntimeState {
                 .notify_terminal_projection_change(room);
         }
     }
+}
+
+/// What a watch lost across a cold restart tells its owner: when the process
+/// was last seen, that it and the job behind it are gone, and what to do.
+fn lost_watch_report(wake: &AgentWake, now: u64, was_stopped: bool) -> String {
+    let seen = wake.verified_at_ms.unwrap_or(wake.created_at_ms);
+    let (secs, clock) = (
+        now.saturating_sub(seen) / 1000,
+        (seen / 1000) % 86_400,
+    );
+    let ago = match secs {
+        0..=89 => format!("{secs} s"),
+        90..=5_399 => format!("{} min", secs / 60),
+        _ => format!("{} h", (secs + 1800) / 3600),
+    };
+    let ended = if was_stopped {
+        "the kernel restarted and stopped it"
+    } else {
+        "it ended while the kernel was down"
+    };
+    format!(
+        "'{}' was last seen running at {:02}:{:02}:{:02} UTC ({ago} ago); {ended}, so it and the job behind it are gone and its exit is unknown: start it again with chariox.events.process and watch the new one",
+        wake.label,
+        clock / 3600,
+        clock % 3600 / 60,
+        clock % 60
+    )
 }
