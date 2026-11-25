@@ -76,7 +76,8 @@ test("browser profile drill runs the image-selected display server with its help
   assert.ok(filter, "the drill declares one runtime copy filter");
   const runtimeFile = new RegExp(filter[1]);
   for (const [, name] of screen.matchAll(/\$ROOT\/([A-Za-z0-9_.-]+)/g)) {
-    if (name !== "logs") assert.ok(helpers.includes(name), `${name} ships from docker/`);
+    // logs/ and private/ are directories the script creates at runtime, not shipped helpers.
+    if (name !== "logs" && name !== "private") assert.ok(helpers.includes(name), `${name} ships from docker/`);
   }
   const named = helpers.filter((name) => name !== "slice-screen.sh" && screen.includes(name));
   for (const name of ["xorg-dummy.conf", "canonical-display.py", "browser-cdp.mjs", "tint2rc"]) {
