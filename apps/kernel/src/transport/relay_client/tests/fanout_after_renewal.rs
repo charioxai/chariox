@@ -81,7 +81,9 @@ fn workspace_live_sync_fanout_uses_the_renewed_relay_token_after_the_first_expir
         worker_config.relay_token = Some("worker".into());
         worker_config.relay_heartbeat_ms = 50;
         let now = crate::session::unix_epoch_ms();
-        let first_token_lifetime_ms = 3_000;
+        // Generous: bootstrap and registration on a loaded build host must finish before it expires.
+        let first_token_lifetime_ms = 15_000;
+        let first_token_expires_at_ms = now + first_token_lifetime_ms;
         let server = RelayServer::with_auth_verifier(
             RelayConfig {
                 host: "127.0.0.1".into(),
@@ -92,7 +94,7 @@ fn workspace_live_sync_fanout_uses_the_renewed_relay_token_after_the_first_expir
                 BTreeMap::from([
                     (
                         "home-first".into(),
-                        kernel_claim(&home_config, "home-first", now + first_token_lifetime_ms),
+                        kernel_claim(&home_config, "home-first", first_token_expires_at_ms),
                     ),
                     (
                         "home-renewed".into(),
@@ -232,7 +234,9 @@ fn workspace_live_sync_fanout_uses_the_renewed_relay_token_after_the_first_expir
             Some("home-first")
         );
         // Wait for the first token to pass its expiry.
-        sleep(Duration::from_millis(first_token_lifetime_ms + 500)).await;
+        while crate::session::unix_epoch_ms() <= first_token_expires_at_ms + 500 {
+            sleep(Duration::from_millis(100)).await;
+        }
 
         let change = crate::git_observer::WorkspaceLiveSyncChange {
             session_id: home_session,
