@@ -217,6 +217,31 @@ async fn delegate_reply_failed_start_settles_without_deletion() {
         .unwrap();
 }
 
+/// Row 449: a start refused because the turn's task already exists ("superseded turn or
+/// conflicting task identity") told the parent "delegate gone: failed_start" about an agent
+/// that was alive on that task. Only a delegate that cannot start is reported gone.
+#[tokio::test]
+async fn a_task_identity_conflict_does_not_report_the_delegate_gone() {
+    let f = Fixture::new();
+    f.request("already-started");
+    f.runtime
+        .owned
+        .settle_failed_delegate_start(
+            &f.room,
+            &f.child,
+            "local transport `agent.lifecycle` failed: superseded turn or conflicting task identity",
+        )
+        .unwrap();
+    f.runtime.sweep_agent_lifecycle().await.unwrap();
+    assert!(
+        f.replies()
+            .iter()
+            .all(|event| event.payload["public_answer"]["reason"] != "failed_start"),
+        "a delegate alive on its task was reported gone: {:?}",
+        f.replies().iter().map(|e| e.payload.to_string()).collect::<Vec<_>>()
+    );
+}
+
 #[tokio::test]
 async fn delegate_failed_start_closes_the_delegate_obligation_so_the_parent_turn_ends() {
     let f = Fixture::new();

@@ -61,6 +61,21 @@ impl KernelRuntimeOwnedState {
         agent: &str,
         diagnostic: &str,
     ) -> Result<(), DaemonError> {
+        // A turn refused because its task already exists means the delegate is alive on that
+        // task (blocked, or resumed by its owner). Telling the parent it is gone ends a wait on
+        // an agent that is still working (row 449).
+        if diagnostic.contains("superseded turn or conflicting task identity") {
+            crate::logging::warn_with_fields(
+                "daemon.agent_task",
+                "delegate start refused: its task already exists; not reported as gone",
+                serde_json::json!({
+                    "session_id": room,
+                    "agent_id": agent,
+                    "reason": crate::provider::sanitize_provider_diagnostic(diagnostic),
+                }),
+            );
+            return Ok(());
+        }
         crate::logging::warn_with_fields(
             "daemon.agent_task",
             "delegate could not start its requested turn",
