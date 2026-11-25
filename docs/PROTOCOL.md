@@ -8883,3 +8883,15 @@ serves all three, so the option choice, request-id handling, refusals and owner 
 
 `machine-acquire-1014.json` and its SHA-256 test pin the shapes. The CLI verbs are `chariox machine options | acquire |
 status | release`.
+
+### Privileged run — Landing 15 (the union sets the local number)
+
+`OwnerVault` takes `{action: "run_privileged", id, argv, machine?, timeout_seconds?}` and answers
+`{result: {action: "privileged_run", id, outcome}}`. The kernel runs `argv` as root with `sudo -S` as its own user,
+outside the agent sandbox, typing the sudo password from the Vault entry `id` on sudo's stdin; the entry must be a
+`command_stdin` entry for this machine (`https://<kernel id>.machine.chariox.invalid`). `outcome` is `{status
+(exited, timed_out, lost), exit_code?, stdout, stderr, machine, ran_as, truncated}` with the password read
+`[vault:<id>]`. Only the owner's own client may send it; an agent uses the runtime tool `chariox.privileged.run`
+with the same fields. Refusals name the next step (`wrong_password`, `not_in_sudoers`, `command_not_allowed`,
+`needs_terminal`, `kernel_cannot_elevate`, `sudo_missing`, `machine_unknown`, `entry_wrong_machine`).
+`fixtures/owner-vault-protocol.json` and its SHA-256 test pin the shapes.
