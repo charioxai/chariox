@@ -1306,7 +1306,7 @@ fn reads_by_this_thread() -> Option<u64> {
 fn a_units_counters_are_read_once_per_interval_however_many_watches_ask() {
     let scratch = std::env::temp_dir().join(format!("chariox-counters-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&scratch);
-    let pool = Pool::new(64 * 1024 * MIB, false);
+    let pool = pool::Pool::new(64 * 1024 * MIB, false);
     let mut members = Vec::new();
     for unit in 0..40 {
         let leaf = scratch.join(format!("unit-{unit}")).join("leaf");
