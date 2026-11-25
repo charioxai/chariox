@@ -4,7 +4,7 @@ import {spawn,execFileSync} from 'node:child_process';
 import {mkdirSync,writeFileSync,openSync,rmSync,readFileSync,readdirSync,cpSync} from 'node:fs';
 import {createServer} from 'node:net';
 
-import {createHash} from 'node:crypto';
+import {createHash,randomBytes} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
 import {join} from 'node:path';
 import {setTimeout as delay} from 'node:timers/promises';
@@ -108,7 +108,7 @@ try{
  const termOpen=async()=>{const r=await tool('chariox.terminal_open',{title:'admission'},true);out.term_open_raw=JSON.stringify(r).slice(0,400);save();return r.terminal_id??r.terminal?.terminal_id??r.terminal?.id??r.id};
  const termRun=async(tid,code,tag)=>{await tool('chariox.terminal_send',{terminal_id:tid,text:`node -e ${sh(code)}; echo ${tag.slice(0,2)}$((1+1))${tag.slice(2)}`,enter:true},true)};
  const termDone=async(tid,tag,ms=240000)=>{await tool('chariox.terminal_wait',{terminal_id:tid,until:[{text:`${tag.slice(0,2)}2${tag.slice(2)}`}],timeout_seconds:Math.floor(ms/1000)},true)};
- const cell=process.env.CELLS??'A6,A1,A3,A2,A4,A5';
+ const cells=new Set((process.env.CELLS??'A6,A1,A3,A2,A4,A5').split(','));
  const peaks0=peakOf();out.peaks_before=peaks0;save();
  // A6: an unknown command grows and ends: its peak is recorded; its next run waits while a hog holds the room.
  const learn=async(path)=>{
@@ -138,7 +138,7 @@ try{
   const startedLines=admissionLog(new RegExp('path_'+path)).filter(r=>r.decision==='started'||r.decision==='resumed').length;
   return {path,held_lines_while_hog_ran:heldLines,started_lines_after:startedLines,exec_state_while_hog_ran:[...states],waited_ms:Math.round(performance.now()-started)};
  };
- if(cell.includes('A6')){
+ if(cells.has('A6')){
   out.cells.A6={learn:[],held:[]};
   for(const path of ['exec','job','term']){
    out.cells.A6.learn.push(await learn(path));save();
@@ -148,9 +148,36 @@ try{
    out.cells.A6.held.push(await heldNext(path,i));save();
   }
  }
+
+ // A6p: a real provider tool call. A real Claude (Haiku, the approved setup-token account) runs one memory-growing Bash command;
+ // the peak is kept; the next run is held while a hog holds the pool, then runs. The token is read from the file and never printed.
+ if(cells.has('A6P')){
+  const tokenFile=process.env.CLAUDE_TOKEN_FILE||'/root/.claude-lanes/oauth-token.chariox', model=process.env.PROVIDER_MODEL||'claude-haiku-5-5';
+  const passphrase=randomBytes(32).toString('hex');
+  await rpc({CreateCredentialVault:{origin:{kind:'passphrase',passphrase}}});
+  await rpc({UnlockCredentialVault:{passphrase,duration:{kind:'until_kernel_stops'},surface:'terminal'}});
+  await rpc({SetProviderAccountCredential:{provider:'claude',account_profile:'default',value:readFileSync(tokenFile,'utf8').trim(),overwrite:true}});
+  const made2=(await rpc({CreateSession:{workspace_id:join(root,'work'),worktree_id:join(root,'work'),alias:'provider',agent_defaults:{provider:'claude',account_profile:'default',model,effort:'low',permission_level:'yolo'}}})).SessionCreated;
+  const room2=made2.session.id,agent2=made2.agent.id;
+  const att2=(await rpc({AttachToSession:{session_id:room2,client_id:'owner-prov',capability_level:'FullTerminal'}})).SessionAttached.attachment.id;
+  held.push({session_id:room2,attachment_id:att2});
+  await rpc({LaunchProviderRun:{session_id:room2,agent_id:agent2,adapter_key:'claude',provider:'claude',account_profile:'default',model,variant:'low',native_tui:false}});
+  const ask=async text=>{const r=await rpc(requests.submitPromptRequest(room2,att2,agent2,text,[]));const o=r.PromptSubmitted?.outcome??{};return (o.Started??o.Queued)?.prompt?.id};
+  const settled=async(promptId,ms)=>{let state;await until(async()=>{const st=(await rpc({GetSessionState:{session_id:room2}})).SessionState;const t=(st.agent_tasks??st.session.agent_tasks??[]).find(t=>t.prompt_id===promptId);state=t?.state;return ['done','cancelled','blocked','failed'].includes(state)},'provider prompt settled',ms);return state};
+  const code=alloc('path_prov',heavyGiB,1500);
+  const command=`node -e ${sh(code)}`;
+  const prompt=`Run exactly this one shell command with your Bash tool, wait for it to finish, then reply with the single word DONE and nothing else. Do not change the command. Command: ${command}`;
+  const p1=await ask(prompt);const s1=await settled(p1,300000);
+  let recorded=false;for(let i=0;i<60&&!recorded;i++){recorded=admissionLog(/path_prov/).some(r=>r.decision==='remembered');if(!recorded)await delay(500)}
+  const hog=await execStart(alloc('hog_prov',hogGiB,40000));await delay(13000);
+  const t0=performance.now();const p2=await ask(prompt);await delay(15000);
+  const heldLines=admissionLog(/path_prov/).filter(r=>r.decision==='held').length;
+  await execDone(hog,120000);const s2=await settled(p2,300000);
+  out.cells.A6p={model,first_state:s1,peak_remembered_logged:recorded,second_state:s2,held_lines:heldLines,started_lines:admissionLog(/path_prov/).filter(r=>r.decision==='started'||r.decision==='resumed').length,waited_ms:Math.round(performance.now()-t0),peaks_gib:(peakOf()??[]).map(m=>+(m/GiB).toFixed(2)).slice(0,6)};save();
+ }
  // A1/A3: four parallel runs of a command that peaked at heavyGiB: two fit, the others wait and start in turn; a light command never waits.
  const sig={done:false},pulse={};const pulsing=relayPulse(sig,pulse);
- if(cell.includes('A1')){
+ if(cells.has('A1')){
   const peaksSeen=[];const ids=[];
   const code=alloc('path_exec',heavyGiB,4000);
   for(let i=0;i<4;i++)ids.push(await execStart(code));
@@ -170,7 +197,7 @@ try{
   save();
  }
  // A2: a runaway started from an agent shell is acted on before the machine runs short; the kernel keeps answering.
- if(cell.includes('A2')){
+ if(cells.has('A2')){
   thrash=setInterval(emulateThrash,200);
   const p2={},sig2={done:false};const pulsing2=relayPulse(sig2,p2);
   const id=await execStart(runaway('runaway_a2'));
@@ -182,7 +209,7 @@ try{
   save();
  }
  // A4: the same after a hot reload (SIGUSR2, same pid).
- if(cell.includes('A4')){
+ if(cells.has('A4')){
   const pid=child.pid;process.kill(pid,'SIGUSR2');
   await until(async()=>{try{return !!(await client.send({RelayStatus:null})).RelayStatus}catch{return false}},'kernel answers after the reload',120000);
   assert.equal(child.pid,pid);await delay(3000);
@@ -193,7 +220,7 @@ try{
   out.cells.A4={same_pid:true,max_running:maxRunning,max_queued:maxQueued,light_ms:lightMs,light_state:execState(light),peaks_after_reload:(peakOf()??[]).slice(0,3).map(m=>+(m/GiB).toFixed(2))};save();
  }
  // A5: with #1725's net present, each decision has one owner: no pid is both held/paused by admission and acted on by exhaustion.
- if(cell.includes('A5')){
+ if(cells.has('A5')){
   const ex=new Set(exhaustionLog().map(r=>r.pid));
   const adm=admissionLog(/./).filter(r=>r.decision==='paused'||r.decision==='held');
   const both=adm.filter(r=>ex.has(r.pid)).map(r=>({pid:r.pid,decision:r.decision}));

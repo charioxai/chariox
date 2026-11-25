@@ -1095,7 +1095,7 @@ impl Ledger {
             } else if room.memory_protection
                 && expected.memory >= room.light
                 && need > state.memory_room(&unit, room)
-                && state.heavy_running
+                && (state.heavy_running || state.heavy_launched)
             {
                 // Before it grows: a command whose known peak does not fit the
                 // room left waits for it, healthy machine or not. Holding
@@ -1251,7 +1251,7 @@ impl Ledger {
                     "started"
                 },
                 reason,
-                if state.heavy_running {
+                if state.heavy_running || state.heavy_launched {
                     "it is next in line and the room it needs is free"
                 } else {
                     "nothing heavy runs any more, so the next in line goes on"
@@ -1490,6 +1490,9 @@ struct State {
     oldest: Option<u64>,
     /// Something heavy runs, so waiting can make room.
     heavy_running: bool,
+    /// A job or Room command holding at least the light bar runs (its peak may
+    /// be unknown, so it has no entry): a command held for room waits for it too.
+    heavy_launched: bool,
     /// Writes admitted commands still have ahead, by volume.
     disk: BTreeMap<u64, u64>,
     memory_by_unit: BTreeMap<String, u64>,
@@ -1525,7 +1528,9 @@ impl State {
         // A held command is judged by the room, an emergency or not (the same
         // test `hold` made); a paused one continues by the emergency's rules.
         let judged = room.pressured || matches!(entry.wait, Some(Wait::Held(_)));
-        if room.memory_protection && judged && self.heavy_running && memory > left {
+        let waits_on_heavy = self.heavy_running
+            || (self.heavy_launched && matches!(entry.wait, Some(Wait::Held(_))));
+        if room.memory_protection && judged && waits_on_heavy && memory > left {
             return Some(Blocked::Memory { left, need: memory });
         }
         if room.memory_protection && room.pressured && self.heavy_running && paused_memory {
@@ -1622,6 +1627,7 @@ impl State {
             disk: BTreeMap::new(),
             memory_by_unit: BTreeMap::new(),
             writes_by_unit: BTreeMap::new(),
+            heavy_launched: false,
         };
         for launch in room.launches.values() {
             let total = state.disk.entry(launch.volume).or_default();
@@ -1629,6 +1635,17 @@ impl State {
         }
         for member in members {
             let observation = member.lock().unwrap_or_else(|e| e.into_inner());
+            let launched = room.launches.contains_key(&observation.unit);
+            if observation.commands.iter().any(|command| {
+                (launched || !command.root)
+                    && command.resident >= room.light
+                    && observation
+                        .admission
+                        .get(&command.pid)
+                        .is_none_or(|entry| entry.wait.is_none())
+            }) {
+                state.heavy_launched = true;
+            }
             for entry in observation.admission.values() {
                 if entry.wait.is_some() {
                     continue;

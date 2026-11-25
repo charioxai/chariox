@@ -2956,3 +2956,51 @@ fn a_shells_command_that_ends_leaves_its_peak_and_its_next_run_waits() {
         "the kept peak is not logged"
     );
 }
+
+/// Row 541, A6 (terminal): a job whose own peak is unknown holds the pool; a
+/// shell command that peaked heavy before waits for it, though the job has no
+/// admission entry of its own.
+#[test]
+fn a_command_that_peaked_heavy_waits_while_a_job_of_unknown_peak_holds_the_pool() {
+    let volume = volume(&Arc::new(AtomicU64::new(100 * GIB)));
+    let job = owner(
+        "job-1",
+        true,
+        vec![{
+            let mut job = command(7, 9 * GIB, 0);
+            job.root = true;
+            job
+        }],
+        Vec::new(),
+    );
+    let shell = owner(
+        "terminal",
+        true,
+        vec![command(8, 4 * MIB, 0)],
+        vec![(8, entry(8, heavy(6 * GIB)))],
+    );
+    let launches = BTreeMap::from([(
+        "job-1".to_string(),
+        super::super::launch::Reservation {
+            memory: 16 * MIB,
+            writes: 0,
+            volume: 0,
+        },
+    )]);
+    let mut room = healthy(5 * GIB, &*volume);
+    room.launches = &launches;
+    let mut ledger = Ledger::new(None);
+    ledger.pass(&[job.clone(), shell.clone()], &shell, &room);
+    assert_eq!(
+        wait(&shell, 8),
+        Some(Wait::Held(WaitReason::Memory)),
+        "a 6 GiB peak did not wait for the job that holds the pool"
+    );
+    // The job ends: nothing heavy runs and the command starts.
+    job.lock().unwrap().commands.clear();
+    unsettle(&mut ledger);
+    let mut room = healthy(5 * GIB, &*volume);
+    room.launches = &launches;
+    ledger.pass(&[job.clone(), shell.clone()], &shell, &room);
+    assert_eq!(wait(&shell, 8), None);
+}
