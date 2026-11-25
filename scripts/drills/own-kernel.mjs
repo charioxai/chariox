@@ -134,7 +134,7 @@ export async function startDrillKernel({ label, binary, stateRoot, evidence, pro
       await rpc({ LaunchProviderRun: { session_id: R, agent_id: agent, adapter_key: "claude", provider: "claude", account_profile: profile, model, variant: "low", native_tui: false } })
       return { R, agent, attached, work }
     }
-    return { dir, env, note, rpc, client, session, room, stop, profile }
+    return { dir, env, note, rpc, client, session, room, stop, profile, pid: child.pid }
   }
 }
 
