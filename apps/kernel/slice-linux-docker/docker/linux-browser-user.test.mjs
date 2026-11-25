@@ -76,3 +76,101 @@ test('MP-11 browser namespace excludes the configured WASM App data root', () =>
  assert.ok(launch.args.includes(storage));
  assert.ok(!launch.args.includes('/var/lib/chariox-app-storage'));
 });
+
+// Row 61: a browser account dir is reclaimed once its kernel's root is gone, never on a guess.
+import {mkdtemp,mkdir as mkdirP,writeFile,readFile,symlink,rm,stat,readdir,chown} from 'node:fs/promises';
+import os from 'node:os';
+import nodePath from 'node:path';
+import {createHash as hash} from 'node:crypto';
+import {sweepBrowserHomes} from './linux-browser-user.mjs';
+const me={uid:process.getuid(),gid:process.getgid()};
+async function reclaimFixture(){
+ const top=await mkdtemp(nodePath.join(os.tmpdir(),'browser-reclaim-'));
+ const base=nodePath.join(top,'chariox-browser');
+ const kernel=async name=>{const root=nodePath.join(top,name,'state','kernel-browser','k');await mkdirP(root,{recursive:true});const user=await new LinuxBrowserUser(root,me,base,{owner:me.uid,group:me.gid}).prepare();return {root,user,dir:user.root};};
+ return {top,base,kernel};
+}
+const exists=file=>stat(file).then(()=>true,()=>false);
+
+test('row 61 U1 a deleted kernel home is reclaimed at the next start; a live one is kept',async()=>{
+ const {top,base,kernel}=await reclaimFixture();
+ try{
+  const a=await kernel('home-a'),b=await kernel('home-b');
+  const record=JSON.parse(await readFile(nodePath.join(a.dir,'owner.json'),'utf8'));
+  assert.equal(record.root,a.root);
+  assert.equal((await stat(nodePath.join(a.dir,'owner.json'))).mode&0o777,0o600);
+  await rm(nodePath.join(top,'home-a'),{recursive:true});
+  const result=await sweepBrowserHomes(base,{owner:me.uid});
+  assert.equal(await exists(a.dir),false);
+  assert.equal(await exists(b.dir),true);
+  assert.deepEqual(result.removed,[nodePath.basename(a.dir)]);
+ }finally{await rm(top,{recursive:true,force:true});}
+});
+
+test('row 61 U2 a live home keeps its profile across stop and start',async()=>{
+ const {top,base,kernel}=await reclaimFixture();
+ try{
+  const a=await kernel('home-a');
+  const profile=await a.user.directory('profile');
+  await writeFile(nodePath.join(profile,'Cookies'),'session');
+  await sweepBrowserHomes(base,{owner:me.uid});
+  const again=await new LinuxBrowserUser(a.root,me,base,{owner:me.uid,group:me.gid}).prepare();
+  assert.equal(again.root,a.dir);
+  assert.equal(await readFile(nodePath.join(await again.directory('profile'),'Cookies'),'utf8'),'session');
+  assert.equal(JSON.parse(await readFile(nodePath.join(a.dir,'owner.json'),'utf8')).root,a.root);
+ }finally{await rm(top,{recursive:true,force:true});}
+});
+
+test('row 61 U3 a missing, forged or foreign record never removes a dir',async t=>{
+ const {top,base,kernel}=await reclaimFixture();
+ try{
+  const live=await kernel('home-live');
+  const gone=nodePath.join(top,'gone','state');
+  const named=root=>nodePath.join(base,hash('sha256').update(root).digest('hex'));
+  // 1. legacy dir without a record
+  const legacy=named(nodePath.join(top,'legacy'));await mkdirP(legacy);
+  // 2. record naming a missing root that does not hash to this dir
+  const forged=named(nodePath.join(top,'forged'));await mkdirP(forged);
+  await writeFile(nodePath.join(forged,'owner.json'),JSON.stringify({version:1,root:gone}),{mode:0o600});
+  // 3. record that is a symlink to a real record of a missing root
+  const linked=named(gone);await mkdirP(linked);
+  await writeFile(nodePath.join(top,'real-record.json'),JSON.stringify({version:1,root:gone}),{mode:0o600});
+  await symlink(nodePath.join(top,'real-record.json'),nodePath.join(linked,'owner.json'));
+  // 4. a valid-looking record owned by another account
+  const goneB=nodePath.join(top,'gone-b','state');const foreign=named(goneB);await mkdirP(foreign);
+  await writeFile(nodePath.join(foreign,'owner.json'),JSON.stringify({version:1,root:goneB}),{mode:0o600});
+  // Needs CAP_CHOWN to hand the record to nobody; without it this case is reported as skipped.
+  const foreignChecked=await chown(nodePath.join(foreign,'owner.json'),65534,65534).then(()=>true,()=>false);
+  if(!foreignChecked){t.diagnostic('foreign-owner case skipped: no CAP_CHOWN');await rm(foreign,{recursive:true});}
+  // 5. an entry that is itself a symlink to a dir holding a valid record of a missing root
+  const goneC=nodePath.join(top,'gone-c','state');const target=nodePath.join(top,'elsewhere');await mkdirP(target);
+  await writeFile(nodePath.join(target,'owner.json'),JSON.stringify({version:1,root:goneC}),{mode:0o600});
+  await symlink(target,named(goneC));
+  // 6. a valid record of a missing root whose browser is still running (moved home)
+  const goneD=nodePath.join(top,'gone-d','state');const running=named(goneD);await mkdirP(nodePath.join(running,'profile'),{recursive:true});
+  await writeFile(nodePath.join(running,'owner.json'),JSON.stringify({version:1,root:goneD}),{mode:0o600});
+  await symlink(`fixture-host-${process.pid}`,nodePath.join(running,'profile','SingletonLock'));
+  const result=await sweepBrowserHomes(base,{owner:me.uid});
+  for(const dir of [live.dir,legacy,forged,linked,...foreignChecked?[foreign]:[],named(goneC),target,running])assert.equal(await exists(dir),true,dir);
+  assert.equal(await exists(nodePath.join(target,'owner.json')),true);
+  assert.deepEqual(result.removed,[]);
+ }finally{await rm(top,{recursive:true,force:true});}
+});
+
+test('row 61 U4 reclaiming never follows a symlink inside the browser dir',async()=>{
+ const {top,base,kernel}=await reclaimFixture();
+ try{
+  const a=await kernel('home-a');
+  const outside=nodePath.join(top,'outside');await mkdirP(nodePath.join(outside,'tree'),{recursive:true});
+  await writeFile(nodePath.join(outside,'keep.txt'),'keep');await writeFile(nodePath.join(outside,'tree','keep.txt'),'keep');
+  const profile=await a.user.directory('profile');
+  await symlink(nodePath.join(outside,'keep.txt'),nodePath.join(profile,'link'));
+  await symlink(nodePath.join(outside,'tree'),nodePath.join(profile,'dirlink'));
+  await rm(nodePath.join(top,'home-a'),{recursive:true});
+  await sweepBrowserHomes(base,{owner:me.uid});
+  assert.equal(await exists(a.dir),false);
+  assert.equal(await readFile(nodePath.join(outside,'keep.txt'),'utf8'),'keep');
+  assert.equal(await readFile(nodePath.join(outside,'tree','keep.txt'),'utf8'),'keep');
+  assert.deepEqual((await readdir(base)).filter(name=>name.startsWith('.')),[]);
+ }finally{await rm(top,{recursive:true,force:true});}
+});
