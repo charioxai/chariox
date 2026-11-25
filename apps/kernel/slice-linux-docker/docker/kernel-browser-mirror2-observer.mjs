@@ -377,6 +377,10 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     const hostBox = node => viewportHost(node) ? [0, 0, 0, 0] : box(node);
     // Layout size (untransformed: the mirrored DOM applies the same transforms); SVG/text boxes use the rendered box.
     const layoutSize = node => node.nodeType === 1 && node.offsetWidth !== undefined ? [node.offsetWidth, node.offsetHeight] : (node.nodeType === 1 ? box(node) : textBox(node)).slice(2);
+    // Row 489: a document's body with no box of its own whose closed root paints (Chromium's PDF document: a 0-high body, its
+    // viewer iframe absolute in the root) is laid out in the viewer at what it paints: a 0-high tile never gets a region there.
+    // Only the body: any other host keeps its layout size (its painted overflow must not push the content after it).
+    const tileSize = node => { const size = layoutSize(node); if (size[0] > 0 && size[1] > 0 || !closedRoots.has(node) || node !== node.ownerDocument.body) return size; const own = box(node), ink = closedInk(node, own); return ink && ink[0] === own[0] && ink[1] === own[1] ? [Math.round(ink[2]), Math.round(ink[3])] : size; };
     const textBox = node => { const range = node.ownerDocument.createRange(); range.selectNodeContents(node); const r = range.getBoundingClientRect(); return [r.x, r.y, r.width, r.height]; };
     // Every non-password input counts, as on the pixel path (a filled month/date shows its value too).
     const plainText = node => node.localName === 'input' ? node.type !== 'password' : node.localName === 'textarea' || node.isContentEditable;
@@ -577,7 +581,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     const densityOp = (id, attrs, ops) => { const value = attrs['chariox-density'] ?? null; if (value === (densityOf.get(id) ?? null)) return; if (value) densityOf.set(id, value); else densityOf.delete(id); ops.push({ op: 'attr', id, name: 'chariox-density', value }); };
     const remember = (record, node) => { if (node.nodeType === 1 && formControl(node)) formNodes.set(record.id, node); if (node.localName === 'img') imageNodes.set(record.id, node); if (node.nodeType === 1 && ['input', 'select'].includes(node.localName)) controlShapes.set(record.id, controlShape(node)); nodes.set(record.id, node); parentOf.set(record.id, record.parent); kindOf.set(record.id, record.kind); if (record.kind === 'tile' || record.foreign) opaque.add(record.id); kids.set(record.id, []); if (record.parent && kids.has(record.parent)) kids.get(record.parent).push(record.id); };
     const opaqueRecord = (node, record, reason) => {
-      const [width, height] = layoutSize(node);
+      const [width, height] = tileSize(node);
       record.kind = 'tile'; record.reason = reason; record.size = [width, height];
       record.tag = node.namespaceURI === HTML && !['object', 'embed', 'applet', 'frame', 'frameset', 'portal', 'fencedframe'].includes(node.localName) ? node.localName : 'div';
       shapes.set(record.id, { size: record.size, display: null });
@@ -765,7 +769,8 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       remember(record, node);
       if (tag.includes('-') && !node.shadowRoot) { pendingHosts.set(id, node); closedTodo.add(node); }
       // A built-in host's closed root leaves its light DOM empty (a consent manager's banner, for one): the kernel checks those once.
-      else if (ns === HTML && SHADOW_HOSTS.has(tag) && !node.firstChild && !node.shadowRoot) closedTodo.add(node);
+      // Row 489: empty includes whitespace text only (Chromium's PDF document is such a body, its viewer iframe in the closed root).
+      else if (ns === HTML && SHADOW_HOSTS.has(tag) && !node.shadowRoot && !node.firstElementChild && !/\S/.test(node.textContent)) closedTodo.add(node);
       if (walk.defer && ns === HTML && node.firstChild && !formControl(node)) { const box = deferredBox(node, walk.defer); if (box) record.deferred = box; }
       walk.then = { node, id, kind: record.kind, depth, root: false, later: !!record.deferred }; return record;
     };
@@ -1214,7 +1219,7 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       // records (a Vault-filled field toggling display, a canvas resized by CSS); a new display re-serializes.
       for (const id of shapes.keys()) {
         const node = nodes.get(id), kind = kindOf.get(id); if (!node?.isConnected) continue;
-        const size = layoutSize(node), display = kind === 'mask' && node.nodeType === 1 ? getComputedStyle(node).display : null, last = shapes.get(id);
+        const size = kind === 'tile' ? tileSize(node) : layoutSize(node), display = kind === 'mask' && node.nodeType === 1 ? getComputedStyle(node).display : null, last = shapes.get(id);
         if (last && display !== last.display) { const parent = nodes.get(parentOf.get(id)); replaceNode(node); if (parent) childList(parent, out, ops); continue; }
         if (last && (last.size[0] !== size[0] || last.size[1] !== size[1])) ops.push({ op: 'size', id, size });
         shapes.set(id, { size, display });
@@ -1296,7 +1301,10 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       const node = live(id), kind = kindOf.get(id);
       if (kind !== 'tile' && !(kind === 'frame' && foreign.has(id))) throw new Error('mirror2 region required');
       const intersect = (a,b) => { const x=Math.max(a[0],b[0]),y=Math.max(a[1],b[1]);return [x,y,Math.max(0,Math.min(a[0]+a[2],b[0]+b[2])-x),Math.max(0,Math.min(a[1]+a[3],b[1]+b[3])-y)]; };
-      let bounds=box(node),clip=intersect(bounds,[0,0,node.ownerDocument.defaultView.innerWidth,node.ownerDocument.defaultView.innerHeight]);
+      // Row 489: a closed root's content can paint outside its host's box (Chromium's PDF body is 0 high, its viewer
+      // iframe absolute in the root): the region covers that ink, as opaqueBoxes reports it.
+      // The host's own box stays the origin (element offset, input); only the captured area grows to the root's ink.
+      let bounds=box(node),clip=intersect(closedInk(node,bounds)??bounds,[0,0,node.ownerDocument.defaultView.innerWidth,node.ownerDocument.defaultView.innerHeight]);
       for(let view=node.ownerDocument.defaultView;view !== window;view=view.parent){
         const owner=view.frameElement;if(!owner)throw new Error('mirror2 frame unavailable');
         // The owner's origin maps the child by translation only: a rotated/scaled owner (or ancestor of it) would misplace the crop.
