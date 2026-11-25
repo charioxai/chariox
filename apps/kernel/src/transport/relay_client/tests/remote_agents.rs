@@ -1177,6 +1177,40 @@ async fn assert_worker_provider_tools_act_as_the_home_agent(
         .credential_vault
         .path
         .clone();
+    // A capture on a leased worker whose env names an entry the home Vault does not hold is
+    // refused by the home before it asks for an unlock: nobody answers a card here, so a capture
+    // that reached the unlock would wait for one.
+    let typo = tokio::time::timeout(
+        Duration::from_secs(20),
+        worker_router
+            .runtime_state()
+            .dispatch_authenticated_runtime_tool_call(
+                &worker_token,
+                "chariox.vault.capture_command",
+                serde_json::json!({
+                    "request_id": "slice-capture-env-typo",
+                    "argv": ["/bin/true"],
+                    "host": "slice.example.com",
+                    "origin": "https://slice.example.com",
+                    "env": {"TOKEN": "not-registered"},
+                    "use_binding": binding,
+                }),
+            ),
+    )
+    .await
+    .expect("an unknown env entry is refused without waiting for an unlock")
+    .expect_err("the home Vault holds no such credential");
+    assert!(
+        typo.to_string()
+            .contains("unknown credential `not-registered`"),
+        "{typo}"
+    );
+    assert!(
+        !crate::secret::chariox_encrypted_vault_status(&home_vault_path)
+            .expect("the home Vault status reads")
+            .unlocked,
+        "the refusal asked for no unlock"
+    );
     // "Just this once": a capture that fails on the worker keeps that unlock, and its retry
     // stores under it; the Vault locks only after the store.
     crate::secret::unlock_chariox_encrypted_vault(
