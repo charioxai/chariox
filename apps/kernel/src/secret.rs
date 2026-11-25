@@ -854,7 +854,9 @@ impl RuntimeSecretService {
         credential_id: &str,
         origin: &str,
     ) -> Result<&UserCredentialConfig, DaemonError> {
-        let credential = self.credential(credential_id)?;
+        let credential = self
+            .credential(credential_id)
+            .map_err(|_| DaemonError::ProviderLoginVaultEntryUnavailable)?;
         let binding = credential
             .metadata
             .as_ref()
@@ -895,7 +897,15 @@ impl RuntimeSecretService {
         origin: &str,
     ) -> Result<Zeroizing<String>, DaemonError> {
         let credential = self.validate_provider_login_secret(credential_id, origin)?;
-        self.resolve_secret(credential).map(Zeroizing::new)
+        let UserCredentialSourceConfig::Vault { key } = &credential.source else {
+            return self.resolve_secret(credential).map(Zeroizing::new);
+        };
+        // An entry can still be listed when its value has been deleted or replaced.
+        validate_vault_key(key)?;
+        self.vault_store
+            .find_secret(self.vault_service_name()?, key.trim())?
+            .map(Zeroizing::new)
+            .ok_or(DaemonError::ProviderLoginVaultEntryUnavailable)
     }
 
     pub(crate) fn credential_vault_key(
