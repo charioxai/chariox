@@ -32,6 +32,18 @@ impl CommandRouter {
             .map(Some);
         }
 
+        if let LocalDaemonRequest::MachineAcquisition(request) = request {
+            return crate::runtime::control_plane::execute_acquire(
+                &self.config_projection.snapshot(),
+                &self.runtime_state,
+                command,
+                &self.kernel_gateway,
+                request,
+            )
+            .await
+            .map(Some);
+        }
+
         if let Some(actor) = command.caller.metaagent_id.as_deref() {
             self.runtime_state
                 .authorize_room_provider_epoch(Some(actor), command.provider_run_id.as_deref())?;

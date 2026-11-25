@@ -7114,7 +7114,7 @@ web). The managed-upgrade list is [629, 636, 923]. Focused checks:
 
 ### OSS boundary: retired Cloud controls removed — local 967 / relay peer 416
 
-The 25 local requests that only forwarded to the connected service's account or machine API are gone, with
+The 25 local requests that only forwarded to the connected service's account or acquisition API are gone, with
 their responses: `PairCloudRelayClient`, `PairCloudRelayMachine`, `CreateCloudSessionInvite`,
 `ShowCloudSessionInvite`, `AcceptCloudSessionInvite`, `RevokeCloudSessionInvite`,
 `ListCloudSessionMembers`, `ListCloudCollaborators`, `ListManagedEnvironmentCatalog`,
@@ -7124,7 +7124,7 @@ their responses: `PairCloudRelayClient`, `PairCloudRelayMachine`, `CreateCloudSe
 `PrepareManagedEnvironmentContextTransfer`, `PrepareManagedEnvironmentGitCredentialEnrollment`,
 `KeepManagedEnvironmentRunning` and the five `*DisposableWorker*` requests. Since protocol 491 the kernel
 refused them with `client_cloud_authority_required`; it now answers an unknown variant like any other. Cloud
-account and machine actions belong to the connected service's own client API, and machine acquisition goes
+account and acquisition actions belong to the connected service's own client API, and machine acquisition goes
 through the generic `ControlPlane` request. Relay peer 416 pairs the embedded local union with local 967.
 Clients carry no minimum: a kernel older than 967 still knows the names and refuses them. The
 managed-upgrade list is [629, 636, 967]. Focused checks: `cargo test -p chariox-kernel --lib protocol_shapes`
@@ -8812,3 +8812,23 @@ A worker under memory pressure records `waiting_for_memory` for the home prompt
 and execution lease before reporting `provider_memory_wait` to the home kernel.
 The receipt carries no worker provider run. The home kernel can recover a lost
 response by querying this receipt, then return the same prompt to its queue.
+
+### Machine acquisition for the owner and their agents — local 1014 / relay peer 451
+
+`MachineAcquisition { action }` is the owner's acquisition request, and the request an agent acting for the owner through an
+access grant sends; an agent in a Room reaches the same operations through `chariox.machines.*`. One kernel path
+serves all three, so the option choice, request-id handling, refusals and owner card are the same:
+
+- `options` answers `{ options, default }`: every machine the connected service offers (class, region, size, rate,
+  stock). A kernel with no connected machine service refuses with `capacity_unavailable`.
+- `acquire { request_id?, class_id?, region? }` acquires the named class and region, else the first option in stock, and
+  answers `{ allocation, option | offer, estimate }`. A repeated `request_id` returns the allocation its first try got and
+  never acquires twice. A refusal names the option and whether the service closed the request (a closed request needs a new
+  one). The owner's own connection needs no card; an agent holding a grant raises the owner's card unless the owner
+  allows automatic acquisitions, outside any Room (answered with `AnswerUserDomainInteraction`), and the call waits for the
+  answer for up to 300 s (`acquisition_denied` when refused or expired).
+- `status { allocation_ref }` and `release { allocation_ref }` answer the allocation's `Machine` state; a release is
+  confirmed when `status` reads `deleted`.
+
+`machine-acquire-1014.json` and its SHA-256 test pin the shapes. The CLI verbs are `chariox machine options | acquire |
+status | release`.
