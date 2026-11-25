@@ -202,6 +202,7 @@ async fn runtime_mcp_advertises_meta_tools_only_to_metaagent_provider_runs() {
                 || spec.name == "chariox.file.copy"
                 || spec.name.starts_with("chariox.files.")
                 || spec.name.starts_with("chariox.machines.")
+                || spec.name == "chariox.kernels.enroll"
                 || matches!(spec.name.as_str(), "chariox.visual.show" | "chariox.visual.preview")
                 || matches!(spec.name.as_str(), "chariox.mandate.record_resource" | "chariox.mandate.list_resources" | "chariox.mandate.revoke_resource" | "chariox.mandate.set_resource_revoke")
                 || spec.name == crate::transport::runtime_tools::LIST_SESSION_AGENTS_TOOL
