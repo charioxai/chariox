@@ -482,6 +482,21 @@ test('MP-08/MP-10/MP-11: a packet on an unchanged document reuses its world; a n
     assert.deepEqual(await run(changed), ['displayTarget', 'world'], `MP-11: ${JSON.stringify(changed)} resolves afresh`);
 });
 
+// Row 448: on a headed browser, opaque regions over most of the viewport travel only as region video leases. Their
+// still refresh still counts as done, so the long poll waits for the page instead of answering every credit at once.
+test('row 448: a headed page whose opaque regions are over the budget is not due again at every credit', async () => {
+  for (const display of [':1', undefined]) {
+    const mirror = new Mirror2({ host: { pageSize, scales: new Map(), chromium: { display } } }), calls = [];
+    mirror.evaluate = async (_world, expression) => { calls.push(expression); return [{ id: 'n4', box: [0, 0, 1280, 800] }]; };
+    mirror.frames = { opaqueBoxes: async () => [] };
+    const stream = { frames: new Map(), tileKeys: '', tilesAt: 0, inputAt: 0 }, world = { ref: 'm' };
+    if (display) assert.deepEqual(await mirror.tiles(world, { tab_id: 't' }, stream, false, true, false), [], 'its leases carry the pixels');
+    else await mirror.tiles(world, { tab_id: 't' }, stream, false, true, false).catch(() => {});
+    assert.equal(stream.tileKeys, 'n4');
+    assert.equal(mirror.tilesDue(stream), false, `${display ? 'headed' : 'headless'}: the refresh is done until TILE_REFRESH_MS`);
+  }
+});
+
 // MP-08/MP-10: an echo right after viewer input does not wait for the page to measure opaque regions; the next
 // quiet packet measures them (and the 25% budget), even on a page that had none.
 test('MP-08/MP-10: opaque regions are measured by the next quiet packet, not by an echo after input', async () => {
