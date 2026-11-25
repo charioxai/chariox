@@ -222,6 +222,15 @@ pub(crate) async fn execute_create_pairing_invite_request(
             message: "scoped kernel credentials cannot be exported in an invite; use an operator-issued transport credential and a terminal pairing link".into(),
         });
     }
+    if request.intent == PairingInviteIntent::Client
+        && super::self_host_terminal_grants::required(&config)
+        && super::relay_issuer::enabled(&config)?
+    {
+        return Err(DaemonError::LocalTransport {
+            operation: "create pairing invite",
+            message: "this kernel issues its own client relay tokens; pair the client with a terminal pairing link".into(),
+        });
+    }
     let issued_at_ms = current_unix_ms();
     let expires_at_ms =
         issued_at_ms.saturating_add(request.expires_in_ms.unwrap_or(15 * 60 * 1000));
@@ -274,7 +283,7 @@ pub(crate) async fn execute_create_terminal_pairing_link_request(
                 .to_string(),
         })?;
     let issued_at_ms = current_unix_ms();
-    let expires_at_ms =
+    let mut expires_at_ms =
         issued_at_ms.saturating_add(request.expires_in_ms.unwrap_or(15 * 60 * 1000));
     let invite_id = random_hex_id();
     let pairing_code = random_pairing_code();
@@ -320,7 +329,17 @@ pub(crate) async fn execute_create_terminal_pairing_link_request(
         )
     };
     let relay_token = if super::self_host_terminal_grants::required(&config) {
-        super::self_host_terminal_grants::pairing_transport_token(relay_token)
+        // With the kernel issuer on, the link carries a pairing-only client
+        // token, never the operator's registration token.
+        match super::relay_issuer::pairing_link_token(&config, &terminal_id, expires_at_ms)? {
+            Some(token) => {
+                // Advertise only the lifetime the relay will actually admit,
+                // including the token cap and JWT whole-second precision.
+                expires_at_ms = token.expires_at_ms;
+                token.relay_token
+            }
+            None => super::self_host_terminal_grants::pairing_transport_token(relay_token),
+        }
     } else {
         relay_token
     };
@@ -513,6 +532,10 @@ pub(crate) async fn execute_join_terminal_pairing_link_request(
                 revoked: false,
             },
         )?;
+        let relay_token = match request.public_key_thumbprint {
+            Some(_) => super::relay_issuer::paired_terminal_token(&config, &grant)?,
+            None => None,
+        };
         return Ok(LocalDaemonResponse::TerminalPairingLinkJoined {
             terminal: terminal_record(grant),
             pairing: PairingJoinRecord {
@@ -524,7 +547,7 @@ pub(crate) async fn execute_join_terminal_pairing_link_request(
                 public_key_thumbprint: joined_thumbprint,
                 paired_at_ms: now_ms,
             },
-            relay_token: None,
+            relay_token,
             kernel_pairing: request.public_key_thumbprint.is_some(),
         });
     }
@@ -650,7 +673,7 @@ mod self_host_invite_tests {
             kernel_credential: Some("synthetic-enrollment".into()),
             ..Default::default()
         });
-        assert!(grants::admit(&config, "unpaired-terminal-key").is_err());
+        assert!(grants::admit(&config, "unpaired-terminal-key", None).is_err());
         let app = crate::app::DaemonApp::bootstrap(config.clone()).unwrap();
         let projection = app.config_projection_store();
         let catalog = app.provider_catalog_projection_store();
@@ -697,7 +720,9 @@ mod self_host_invite_tests {
                 ..
             }
         ));
-        assert!(grants::admit(&config, "terminal-key").unwrap().is_some());
+        assert!(grants::admit(&config, "terminal-key", None)
+            .unwrap()
+            .is_some());
         for request in [
             LocalDaemonRequest::ListTerminals(crate::local::ListTerminalsRequest),
             LocalDaemonRequest::ListPairedClients(crate::local::ListPairedClientsRequest),
@@ -726,7 +751,7 @@ mod self_host_invite_tests {
         )
         .await
         .unwrap();
-        assert!(grants::admit(&config, "terminal-key").is_err());
+        assert!(grants::admit(&config, "terminal-key", None).is_err());
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -761,5 +786,139 @@ mod self_host_invite_tests {
             let result = execute_create_pairing_invite_request(&projection, request).await;
             assert!(result.is_err());
         }
+    }
+
+    #[tokio::test]
+    async fn issuer_on_links_carry_a_kernel_token_and_joins_return_a_key_bound_one() {
+        use chariox_relay::auth::{
+            KernelIssuerKeys, RelayAction, RelayAuthRequest, RelayAuthVerifier, SelfHostedVerifier,
+        };
+        let root = std::env::temp_dir().join(format!(
+            "chariox-pairing-issuer-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.user_config.state.path = Some(root.join("state.db").display().to_string());
+        config.relay_url = Some("ws://operator-relay".into());
+        config.relay_token = Some("operator-test-token".into());
+        config.cloud_relay = None;
+        let projection = DaemonConfigProjectionStore::new(config.clone());
+        let app = crate::app::DaemonApp::bootstrap(config.clone()).unwrap();
+        let router = crate::runtime::router::CommandRouter::with_interactive_capacity(
+            std::sync::Arc::new(tokio::sync::Mutex::new(app)),
+            1,
+        );
+        let runtime = router.runtime_state();
+        let caller = crate::runtime::command::KernelCaller::for_source(
+            &crate::runtime::command::KernelCommandSource::LocalIpc,
+        );
+        let LocalDaemonResponse::RelayIssuer {
+            issuer: Some(issuer),
+        } = super::super::relay_issuer::execute_relay_issuer_request(
+            &config,
+            &caller,
+            LocalDaemonRequest::ConfigureRelayIssuer(crate::local::ConfigureRelayIssuerRequest {
+                step: crate::local::RelayIssuerStep::Enable,
+            }),
+        )
+        .unwrap()
+        else {
+            panic!("issuer enable")
+        };
+        let relay = RelayAuthVerifier::self_hosted(
+            "operator-test-token".into(),
+            KernelIssuerKeys::parse(&issuer.relay_issuer_keys).unwrap(),
+        );
+        let LocalDaemonResponse::TerminalPairingLinkCreated { pairing } =
+            execute_create_terminal_pairing_link_request(
+                &runtime,
+                &projection,
+                CreateTerminalPairingLinkRequest {
+                    terminal_type: None,
+                    alias: None,
+                    expires_in_ms: Some(2 * 60 * 60 * 1000),
+                },
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("link")
+        };
+        let link = decode_pairing_invite_token(&pairing.pairing_link).unwrap();
+        assert_ne!(link.relay_token, "operator-test-token");
+        let admitted = relay
+            .verify(RelayAuthRequest {
+                token: &link.relay_token,
+                action: RelayAction::ClientConnect,
+                target: Some(&config.daemon_id),
+            })
+            .unwrap();
+        assert_eq!(admitted.public_key_thumbprint, None);
+        // The link, pending registration and UI must agree with relay admission,
+        // including the JWT's whole-second expiry and maximum token lifetime.
+        assert_eq!(pairing.expires_at_ms, admitted.expires_at_ms);
+        assert_eq!(link.expires_at_ms, admitted.expires_at_ms);
+        assert!(pairing.expires_at_ms <= current_unix_ms() + 60 * 60 * 1000);
+        let pending: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(
+                config
+                    .private_runtime_state_root()
+                    .join("terminal-grants.json"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            pending["pending"][0]["expires_at_ms"],
+            pairing.expires_at_ms
+        );
+        for (now_ms, accepted) in [
+            (pairing.expires_at_ms - 1, true),
+            (pairing.expires_at_ms, false),
+        ] {
+            let verifier = SelfHostedVerifier::new(
+                "operator-test-token".into(),
+                KernelIssuerKeys::parse(&issuer.relay_issuer_keys).unwrap(),
+                Some(now_ms),
+            );
+            assert_eq!(
+                verifier
+                    .verify(RelayAuthRequest {
+                        token: &link.relay_token,
+                        action: RelayAction::ClientConnect,
+                        target: Some(&config.daemon_id),
+                    })
+                    .is_ok(),
+                accepted
+            );
+        }
+        let thumbprint = public_key_thumbprint("terminal-key");
+        let LocalDaemonResponse::TerminalPairingLinkJoined { relay_token, .. } =
+            execute_join_terminal_pairing_link_request(
+                &runtime,
+                &projection,
+                JoinTerminalPairingLinkRequest {
+                    pairing_link: pairing.pairing_link.clone(),
+                    terminal_id: None,
+                    terminal_type: None,
+                    alias: None,
+                    public_key_thumbprint: Some(thumbprint.clone()),
+                },
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("join")
+        };
+        let bound = relay
+            .verify(RelayAuthRequest {
+                token: relay_token.as_deref().expect("key-bound token"),
+                action: RelayAction::PacketRoute,
+                target: Some(&config.daemon_id),
+            })
+            .unwrap();
+        assert_eq!(bound.public_key_thumbprint, Some(thumbprint));
+        assert_eq!(bound.client_id, Some(pairing.terminal_id));
     }
 }

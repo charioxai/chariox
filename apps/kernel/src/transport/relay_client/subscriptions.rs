@@ -136,8 +136,14 @@ pub(super) async fn handle_relay_subscribe(
     resume_from_event_id: Option<u64>,
     heartbeat_interval_ms: Option<u64>,
 ) -> Result<(), DaemonError> {
-    let paired = match router.admit_relay_stream(&client_public_key) {
-        Ok(grant) => grant.is_some(),
+    let grant = match router.admit_relay_stream(
+        &client_public_key,
+        caller_identity
+            .as_ref()
+            .filter(|identity| identity.public_key_thumbprint.is_some())
+            .map(|identity| identity.subject.as_str()),
+    ) {
+        Ok(grant) => grant,
         Err(error) => {
             send_outgoing_envelope(
                 outgoing_tx,
@@ -150,6 +156,7 @@ pub(super) async fn handle_relay_subscribe(
             return Ok(());
         }
     };
+    let paired = grant.is_some();
     if chariox_relay::frame_transport::is_display_scope(subscription_scope.as_deref()) {
         return super::browser_display::handle_subscribe(
             router,
@@ -232,7 +239,16 @@ pub(super) async fn handle_relay_subscribe(
     }
     let subscriber = RelaySubscriber {
         heartbeat_interval,
-        caller: crate::runtime::command::KernelCaller::for_relay_request(caller_identity.clone()),
+        caller: grant
+            .map(|grant| {
+                crate::runtime::command::KernelCaller::from_paired_terminal(
+                    grant,
+                    router.self_host_terminal_owner_user_id(),
+                )
+            })
+            .unwrap_or_else(|| {
+                crate::runtime::command::KernelCaller::for_relay_request(caller_identity.clone())
+            }),
         user_id: if paired {
             router.self_host_terminal_owner_user_id()
         } else {
@@ -589,7 +605,10 @@ pub(super) async fn run_relay_subscription_loop(
     let event_stream_id = subscription_event_stream_id(&session_id, &attachment_id);
 
     loop {
-        if router.admit_relay_stream(&client_public_key).is_err() {
+        if router
+            .admit_relay_stream(&client_public_key, subscriber.caller.client_id.as_deref())
+            .is_err()
+        {
             break;
         }
         if let Some(event) = passkey_prompts.next_event(&router) {
@@ -1121,7 +1140,10 @@ async fn run_relay_room_list_subscription_loop(
     let mut tick: u64 = 0;
     let mut next_heartbeat_at = Instant::now();
     loop {
-        if router.admit_relay_stream(&client_public_key).is_err() {
+        if router
+            .admit_relay_stream(&client_public_key, subscriber.caller.client_id.as_deref())
+            .is_err()
+        {
             break;
         }
         if let Some(event) = passkey_prompts.next_event(&router) {

@@ -262,10 +262,12 @@ impl CommandRouter {
     pub(crate) fn admit_self_host_terminal(
         &self,
         public_key: &str,
+        client_id: Option<&str>,
     ) -> Result<Option<crate::config::PersistedClientPairing>, DaemonError> {
         crate::runtime::self_host_terminal_grants::admit(
             &self.config_projection.snapshot(),
             public_key,
+            client_id,
         )
     }
     /// Admission of an event stream (and of every event on it): a terminal that is paired
@@ -274,8 +276,9 @@ impl CommandRouter {
     pub(crate) fn admit_relay_stream(
         &self,
         public_key: &str,
+        client_id: Option<&str>,
     ) -> Result<Option<crate::config::PersistedClientPairing>, DaemonError> {
-        let grant = self.admit_self_host_terminal(public_key)?;
+        let grant = self.admit_self_host_terminal(public_key, client_id)?;
         if !self.kernel_gateway.admit_origin(public_key, None)? {
             return Err(DaemonError::GatewayKeyRevoked);
         }

@@ -49,6 +49,7 @@ mod project_environment;
 mod prompt_control;
 mod prompt_settings;
 mod provider_control;
+mod relay_issuer;
 mod remote_access;
 mod remote_jobs;
 mod request;
@@ -109,6 +110,7 @@ pub use project_environment::*;
 pub use prompt_control::*;
 pub use prompt_settings::*;
 pub use provider_control::*;
+pub use relay_issuer::*;
 pub use remote_access::*;
 pub use remote_jobs::*;
 pub use request::*;
@@ -643,4 +645,6 @@ pub use workspace::*;
 /// longer carry `kernel_id`, `kernel_name`, `focused_agent_kernel_id` or `reachable_by_focused_agent`; the loader tools
 /// take no arguments and `chariox.kernel_browser_share` is removed.
 /// 1014 adds revision-based latest Room history outline reads.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1014;
+/// Provisional 1015 (relay peer 452): a kernel issues its own client relay tokens: `RelayIssuerStatus`,
+/// `ConfigureRelayIssuer` and `IssueRelayClientToken`; terminal pairing links carry a pairing-only kernel-signed token.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1015;
