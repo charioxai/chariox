@@ -173,6 +173,13 @@ async function writeManifest(output, header) {
   return manifest;
 }
 
+/** The kernel protocol this source builds. The signed manifest states it, so a deploy can refuse an installer older than the web needs. */
+async function kernelProtocolOf(sourceRoot) {
+  const source = await readFile(join(sourceRoot, 'apps/kernel/src/local/api/types.rs'), 'utf8').catch(() => fail('the source root has no apps/kernel/src/local/api/types.rs'));
+  const match = /^pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = (\d+);$/m.exec(source) ?? fail('the kernel source does not state LOCAL_DAEMON_PROTOCOL_VERSION');
+  return Number(match[1]);
+}
+
 export async function assemble(options) {
   const platform = PLATFORMS[options.platform] ?? fail(`--platform must be one of ${Object.keys(PLATFORMS).join(', ')}`);
   if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(options.version ?? '')) fail('--version must be a semantic version');
@@ -224,6 +231,7 @@ export async function assemble(options) {
     await validateSliceBuildContext(join(output, SLICE_CONTEXT));
     const manifest = await writeManifest(output, {
       name: 'chariox', version: options.version, platform: options.platform, sourceCommit: options.sourceCommit,
+      kernelProtocol: await kernelProtocolOf(sourceRoot),
       macosSigning,
     });
     return { output, version: manifest.version, platform: manifest.platform, files: manifest.files.length,
