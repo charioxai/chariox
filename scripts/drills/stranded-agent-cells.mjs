@@ -39,7 +39,15 @@ try {
   const profile = (await k.rpc({ GetProviderAccountProfile: { provider: "claude", account_profile: "default" } })).ProviderAccountProfile.profile.profile_id
   k.note("account-stored", { profile })
 
-  async function room(alias, nativeTui = false) {
+  // After a hot reload the client replays its earlier subscriptions once and the kernel names a stale attachment.
+  const retrying = async run => {
+    try { return await run() } catch (error) {
+      if (/attachment .* was not found/.test(String(error.message ?? error))) return run()
+      throw error
+    }
+  }
+  const room = (alias, nativeTui = false) => retrying(() => roomOnce(alias, nativeTui))
+  async function roomOnce(alias, nativeTui = false) {
     const work = join(k.dir, "work", alias)
     mkdirSync(work, { recursive: true })
     const made = (await k.rpc({ CreateSession: { workspace_id: work, worktree_id: work, alias, agent_defaults: { provider: "claude", account_profile: profile, model, effort: "low", permission_level: "yolo" } } }))
@@ -96,7 +104,7 @@ try {
   let backstop = null
   const stated = async (alias, nativeTui) => {
     const r = await room(alias, nativeTui)
-    await prompt(r, r.agent, "Reply with exactly this one sentence and nothing else: Pushed the change; waiting for the review.")
+    await prompt(r, r.agent, "You have just finished a change and pushed it. Write the one-line status for the owner that says it is pushed and that you are now waiting for the review. Nothing else.")
     await until(async () => done(await turnsOf(r.R, r.agent)).length >= 1, `${alias} turn completes`, 240000)
     const wake = await until(async () => (await wakesOf(r.R, r.agent)).find(w => w.kind === "timer" && live(w) && String(w.label).startsWith("backstop for a stated wait")), "the backstop is armed", 30000).catch(() => null)
     save(`turns-${alias}.json`, await turnsOf(r.R, r.agent))
