@@ -49,7 +49,11 @@ async fn raised(label: &str, id: &str) -> World {
     world
         .router
         .runtime_state
-        .create_runtime_interaction(&world.room, browser_card(id, &world.ids["a"]))
+        .create_runtime_interaction(
+            crate::runtime::state::CardKind::NativePermissionInput,
+            &world.room,
+            browser_card(id, &world.ids["a"]),
+        )
         .await
         .unwrap();
     world
@@ -166,7 +170,11 @@ async fn plain() {
     world
         .router
         .runtime_state
-        .create_runtime_interaction(&world.room, question)
+        .create_runtime_interaction(
+            crate::runtime::state::CardKind::NativePermissionInput,
+            &world.room,
+            question,
+        )
         .await
         .unwrap();
     let result = room_command(&world, "a", "room card card-plain").await;
