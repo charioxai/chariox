@@ -97,12 +97,11 @@ pub(crate) use provider_output_claude_native::ProviderOutputClaudeNativeBridge;
 pub(crate) use provider_output_claude_native::{
     claude_headless_owner_decision_pending, claude_headless_prompt_queued_behind_running_turn,
     claude_headless_prompt_written, claude_headless_stuck_screen_line,
-    fence_cancelled_claude_turn,
     claude_native_pending_prompt_cancel_input, claude_native_recent_terminal_failure,
     claude_native_trust_dialog_update, claude_native_trust_interaction_id,
     claude_native_trust_keys, claude_permission_title, claude_workspace_trust_declined,
-    format_claude_permission_message, ClaudeNativeDispatchAttempt, ClaudeNativeProcessOutcome,
-    ClaudeTrustDialog, ClaudeTrustKeys, NativePromptHandoffPolicy,
+    fence_cancelled_claude_turn, format_claude_permission_message, ClaudeNativeDispatchAttempt,
+    ClaudeNativeProcessOutcome, ClaudeTrustDialog, ClaudeTrustKeys, NativePromptHandoffPolicy,
     CLAUDE_NATIVE_CONTEXT_REJECTION_MESSAGE,
 };
 pub(crate) use provider_tool_close::{

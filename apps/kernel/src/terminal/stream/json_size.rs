@@ -195,7 +195,12 @@ pub(super) fn terminal_output_record_scoped_json_bytes(
         add_json_field(&mut total, &mut field_count, "replaces", "true".len());
     }
     if record.continues_replacement {
-        add_json_field(&mut total, &mut field_count, "continues_replacement", "true".len());
+        add_json_field(
+            &mut total,
+            &mut field_count,
+            "continues_replacement",
+            "true".len(),
+        );
     }
     total
 }
