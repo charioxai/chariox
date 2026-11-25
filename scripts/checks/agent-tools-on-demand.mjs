@@ -5,9 +5,12 @@ import { messagesSince } from './perf-budget-tighten-only.mjs'
 // The kernel reads that file (tool_loading.rs); nothing else may name a load-upfront tool or the Claude `alwaysLoad` key.
 // Diff-aware: a name added to a list, or "*" where the base had a list, is red unless a commit since the merge base carries
 // `budget raised: agent_upfront_tools.<provider>.<role>: <why>`. Upfront bytes per provider are ceilings in
-// apps/kernel/agent_context_budget.json, held by perf-budget-tighten-only. Cloud has no agent runtime tools: not applicable.
+// apps/kernel/agent_context_budget.json, held by perf-budget-tighten-only. "deferred-by-provider" marks a provider that keeps
+// the catalog out of its start-up context through its own official tool search (Codex 0.170: the request names only the
+// namespace, 92 B for 137 tools); it holds no upfront tools. Cloud has no agent runtime tools: not applicable.
 const LIST = 'apps/kernel/agent_upfront_tools.json'
 const LOADER = 'apps/kernel/src/transport/mcp_server/tool_loading.rs'
+const DEFERRED = 'deferred-by-provider'
 const RAISED = /^budget raised: (agent_upfront_tools\.[\w.-]+?):? /gm
 
 function lists(text) {
@@ -18,9 +21,9 @@ function lists(text) {
   for (const [provider, roles] of Object.entries(parsed ?? {})) {
     for (const [role, names] of Object.entries(roles ?? {})) {
       const id = `agent_upfront_tools.${provider}.${role}`
-      if (names === '*') out.set(id, '*')
+      if (names === '*' || names === DEFERRED) out.set(id, names)
       else if (Array.isArray(names) && names.every(n => typeof n === 'string') && new Set(names).size === names.length) out.set(id, names)
-      else problems.push(`${id} is neither "*" nor a list of distinct tool names`)
+      else problems.push(`${id} is neither "*", "deferred-by-provider" nor a list of distinct tool names`)
     }
   }
   return { out, problems }
@@ -52,8 +55,9 @@ export default {
       const was = atBase.get(id)
       if (was === undefined) { grown.push(`${id} is a new upfront list`); continue }
       if (was === '*') continue
+      if (names === DEFERRED) continue
       if (names === '*') grown.push(`${id} is raised from a list to "*" (every tool)`)
-      else for (const name of names) if (!was.includes(name)) grown.push(`${id} gains ${name}`)
+      else for (const name of names) if (was === DEFERRED || !was.includes(name)) grown.push(`${id} gains ${name}`)
     }
     if (!grown.length) return findings
     const history = messagesSince(ctx.root, ctx.base)

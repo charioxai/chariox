@@ -174,7 +174,17 @@ async fn claude_runtime_catalog_matches_the_committed_context_budget() {
         .iter()
         .filter(|tool| always_load(tool))
         .collect();
+    let (_, codex_tools) = provider_catalog("codex", "gpt-6.2-sol", false).await;
+    let (_, opencode_tools) = provider_catalog("opencode", OPENCODE, false).await;
+    let (_, opencode_worker_tools) = provider_catalog("opencode", OPENCODE, true).await;
+    let bytes = |tools: &[Value]| tools.iter().map(model_visible_bytes).sum::<usize>();
     let measured = serde_json::json!({
+        "codex_tools_listed": codex_tools.len(),
+        "codex_tools_list_json_bytes": bytes(&codex_tools),
+        "opencode_tools_listed": opencode_tools.len(),
+        "opencode_tools_list_json_bytes": bytes(&opencode_tools),
+        "opencode_worker_tools_listed": opencode_worker_tools.len(),
+        "opencode_worker_tools_list_json_bytes": bytes(&opencode_worker_tools),
         "claude_tools_listed": tools.len(),
         "claude_tools_list_json_bytes": tools.iter().map(model_visible_bytes).sum::<usize>(),
         "claude_core_tools": core.len(),
@@ -199,7 +209,11 @@ async fn claude_runtime_catalog_matches_the_committed_context_budget() {
         .as_object()
         .expect("budget file should be an object")
         .iter()
-        .filter(|(key, _)| key.starts_with("claude_"))
+        .filter(|(key, _)| {
+            ["claude_", "codex_", "opencode_"]
+                .iter()
+                .any(|prefix| key.starts_with(prefix))
+        })
         .map(|(key, value)| (key.clone(), value.clone()))
         .collect();
     let budget = Value::Object(budget);
