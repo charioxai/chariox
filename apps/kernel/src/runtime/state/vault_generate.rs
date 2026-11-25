@@ -93,15 +93,15 @@ impl GenerateArgs {
 pub(crate) fn vault_generate_spec() -> RuntimeToolSpec {
     RuntimeToolSpec {
         name: VAULT_GENERATE.into(),
-        description: "Generate a random value and store it only in the owner's Vault, without sudo or approval. Returns an opaque credential_id, never the value. Give exactly one of: origin (a password for one exact site; fill it with chariox.kernel_browser_paste_secret), or use_binding (a random secret for one command environment variable, stdin or workspace file, used at exactly that destination with chariox.vault.use_env or write_file). format hex makes length hex characters (default 64). Command values have no symbols unless symbols is true. The same request_id returns the same credential.".into(),
+        description: "Generate a random value, stored only in the owner's Vault; returns an opaque credential_id, never the value. Give exactly one of origin (a site password for chariox.kernel_browser_paste_secret) or use_binding (a secret for one command environment variable, stdin or file, used there with chariox.vault.use_env or write_file). The same request_id returns the same credential.".into(),
         input_schema: serde_json::json!({"type":"object","required":["request_id"],"properties":{
             "request_id":{"type":"string","minLength":1,"maxLength":128},
-            "origin":{"type":"string","description":"Site origin such as https://example.com"},
-            "use_binding":{"type":"object","description":"As in capture_command: {target:{kind:command_environment,name,origin} | {kind:command_stdin,origin} | {kind:file,path}}"},
-            "format":{"type":"string","enum":["password","hex"],"default":"password"},
+            "origin":{"type":"string"},
+            "use_binding":{"type":"object","description":"as in capture_command"},
+            "format":{"type":"string","enum":["password","hex"]},
             "description":{"type":"string","maxLength":200},
-            "length":{"type":"integer","minimum":16,"maximum":128,"description":"default 24, hex 64"},
-            "symbols":{"type":"boolean","description":"default true for a site, false for a command"}},"additionalProperties":false}),
+            "length":{"type":"integer","minimum":16,"maximum":128},
+            "symbols":{"type":"boolean"}},"additionalProperties":false}),
     }
 }
 
