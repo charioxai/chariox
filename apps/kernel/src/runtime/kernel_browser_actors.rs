@@ -337,7 +337,7 @@ impl KernelBrowserActors {
             } else {
                 EnvironmentMode::Browser
             };
-            if params["op"] == "stop" {
+            if matches!(params["op"].as_str(), Some("stop" | "restart")) {
                 request.targets.extend(
                     self.tabs
                         .snapshot()

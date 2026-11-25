@@ -689,4 +689,6 @@ pub use workspace::*;
 /// notification (a pane card and a badge count); the kernel's own notices are person actions that stay in the center.
 /// 1015 (provisional): an `AgentTreeNode` carries `liveness` (what the node waits on, and a stall), a wait names its
 /// card by title (`AgentWaitKind::card`) and a timer its due time (`due_at_ms`) on `waiting_on` and `waiting_events`.
+/// Local 1015 (relay peer 452): `KernelBrowser { op: "restart" }` restarts the user's browser (its controller process, Chrome and display) and
+/// answers with the restored browser state; Tabs come back with their `opener_tab_id`. `chariox kernels restart --browser` sends it.
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1015;
