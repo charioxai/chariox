@@ -687,4 +687,6 @@ pub use workspace::*;
 /// binding's lifetime and delegation) is removed.
 /// 1015 adds `origin` (`agent` or `kernel`) to an Inbox notice: only an agent's `chariox.notify_person` is a requested
 /// notification (a pane card and a badge count); the kernel's own notices are person actions that stay in the center.
+/// 1015 (provisional): an `AgentTreeNode` carries `liveness` (what the node waits on, and a stall), a wait names its
+/// card by title (`AgentWaitKind::card`) and a timer its due time (`due_at_ms`) on `waiting_on` and `waiting_events`.
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1015;

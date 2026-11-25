@@ -47,14 +47,32 @@ export type AgentRuntimeActivity = {
 export type AgentLiveness = {
   last_activity_at_ms?: number
   waiting_on?: AgentWaitingOn
+  /** Every event the waiting task would wake on, oldest first; `waiting_on` names only the oldest. */
+  waiting_events?: AgentWaitEvent[]
   stalled?: boolean
 }
 
+export type AgentWaitKind = "provider" | "background_command" | "timer" | "source" | "command_paused" | "command_held" | "card"
+
 export type AgentWaitingOn = {
-  kind: "provider" | "background_command" | "timer" | "source" | "command_paused" | "command_held"
+  kind: AgentWaitKind
   detail?: string
   resource?: "memory" | "disk"
   since_ms: number
+  /** A timer's due time. */
+  due_at_ms?: number
+}
+
+export type AgentWaitEvent = {
+  id: string
+  kind: AgentWaitKind
+  /** In plain words: "sub-agent sub-agent-1", "timer check the build", "your answer on 'Value for the Vault'". */
+  label: string
+  since_ms: number
+  due_at_ms?: number
+  task_id: string
+  wait_started_at_ms: number
+  cancel_wake_id?: string
 }
 
 export type AgentQueuedPromptControl = {
@@ -770,6 +788,8 @@ export interface AgentTreeNode {
   needs_user: boolean
   deadline_ms: number | null
   created_at_ms: number
+  /** What the node waits on and its stall; absent when it has nothing to say (idle, or plainly running). */
+  liveness?: AgentLiveness
 }
 
 /** `ListDescendants`: no holder, path or card; read again when an `agent_tree` event arrives. */

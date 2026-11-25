@@ -31,7 +31,7 @@ export function SubAgentsPane(props: SubAgentsPaneProps) {
             panel.startedBy && `Started by ${panel.startedBy}`,
             panel.roomName ?? panel.roomId,
           ].filter(Boolean).join(" · ")}</text>
-          <text fg={panel.dimmed ? theme.textMuted : theme.text} wrapMode="none">{panel.word}</text>
+          <text fg={panel.dimmed ? theme.textMuted : theme.text} wrapMode="none">{panel.status}</text>
         </box>
       }}</For>
     </scrollbox>
