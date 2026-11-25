@@ -49,6 +49,8 @@ async fn a_program_in_the_owners_terminal_shell_is_covered_and_another_kernel_ch
         .spawn()
         .unwrap();
     let inside = read_pid(&dir.join("inside")).expect("the shell started its program");
+    // Let the program finish its exec, or its identity changes between two looks.
+    std::thread::sleep(std::time::Duration::from_millis(300));
     let identity = |pid| process::inspect(pid).unwrap().0;
 
     let covered = |pid| state.access_grants_for(&identity(pid)).unwrap();
@@ -83,4 +85,71 @@ async fn a_program_in_the_owners_terminal_shell_is_covered_and_another_kernel_ch
     elsewhere.kill().unwrap();
     elsewhere.wait().unwrap();
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+async fn state_for_terminals() -> crate::runtime::state::KernelRuntimeState {
+    let app =
+        crate::test_support::bootstrap_authenticated_app(crate::config::DaemonConfig::for_tests())
+            .unwrap();
+    crate::runtime::router::CommandRouter::with_interactive_capacity_from_app(
+        std::sync::Arc::new(tokio::sync::Mutex::new(app)),
+        32,
+    )
+    .runtime_state()
+}
+
+async fn open_shell(
+    state: &crate::runtime::state::KernelRuntimeState,
+    class: crate::local::KernelConnectionClass,
+) {
+    use crate::runtime::command::{KernelCaller, KernelCommandSource};
+    let caller =
+        KernelCaller::for_source(&KernelCommandSource::LocalCli).with_connection_class(class);
+    state
+        .kernel_terminal_for_client(
+            &caller,
+            crate::local::KernelTerminalRequest {
+                directory: Some(std::env::temp_dir().display().to_string()),
+                operation: crate::local::RoomTerminalOperation::Open {
+                    cols: 80,
+                    rows: 24,
+                    title: None,
+                    command: None,
+                    stdin: None,
+                },
+            },
+        )
+        .await
+        .expect("the client opens a kernel terminal");
+}
+
+fn shell_grants(state: &crate::runtime::state::KernelRuntimeState) -> usize {
+    let owner = state.owned.config_projection.local_owner_user_id();
+    state
+        .list_kernel_access(&owner)
+        .iter()
+        .filter(|grant| {
+            grant
+                .grant_id
+                .starts_with(crate::runtime::kernel_access::OWNER_SHELL_GRANT_PREFIX)
+        })
+        .count()
+}
+
+#[tokio::test]
+async fn a_shell_the_owners_own_client_opened_is_covered() {
+    let state = state_for_terminals().await;
+    open_shell(&state, crate::local::KernelConnectionClass::Terminal).await;
+    assert_eq!(shell_grants(&state), 1);
+}
+
+#[tokio::test]
+async fn a_shell_opened_through_an_agents_grant_is_not_the_owners() {
+    let state = state_for_terminals().await;
+    open_shell(&state, crate::local::KernelConnectionClass::ExternalAgent).await;
+    assert_eq!(
+        shell_grants(&state),
+        0,
+        "an agent's processes keep needing their own grant"
+    );
 }
