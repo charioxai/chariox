@@ -196,7 +196,7 @@ async fn a_failure_to_read_a_caller_refuses_that_request_and_keeps_the_grant() {
 #[tokio::test]
 async fn a_caller_whose_grant_ended_is_told_why() {
     let cases = [
-        ("expiry", "time ran out"),
+        ("expiry", "Access expired"),
         ("explicit_revoke", "was revoked"),
         ("passkey_rotation", "passkey changed"),
     ];
@@ -229,7 +229,7 @@ async fn a_caller_whose_grant_ended_is_told_why() {
             .to_string();
         assert!(refused.contains(said), "{reason}: {refused}");
         assert!(
-            refused.contains("Ask for new access"),
+            refused.contains("chariox access request --no-wait"),
             "{reason}: {refused}"
         );
         stop(&other);
