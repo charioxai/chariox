@@ -50,6 +50,12 @@ try {
   input = { hook_event_name: "parse_error", raw, error: String(error) }
 }
 const eventName = input.hook_event_name ?? "unknown"
+const dispatchedContext = process.env.CHARIOX_CLAUDE_PROMPT_CONTEXT_SOURCE === "dispatched"
+const promptText = typeof input.prompt === "string" ? input.prompt.trimStart() : ""
+const notificationContext = dispatchedContext && eventName === "UserPromptSubmit" && (
+  promptText.startsWith("<task-notification>") ||
+  (promptText.startsWith("[SYSTEM NOTIFICATION - NOT USER INPUT]") && promptText.includes("<task-notification>"))
+)
 const parsedContextChunkIndex = Number.parseInt(process.env.CHARIOX_CLAUDE_NATIVE_CONTEXT_CHUNK ?? "", 10)
 const contextChunkIndex = Number.isInteger(parsedContextChunkIndex) && parsedContextChunkIndex >= 0
   ? parsedContextChunkIndex
@@ -80,6 +86,7 @@ if (!contextOnlyHook) {
     session_id: input.session_id ?? null,
     hook_context_request_id: hookContextRequestId,
     ...(eventName === "UserPromptSubmit" ? { hook_context_deadline_ms: hookContextDeadlineMs } : {}),
+    ...(notificationContext ? { notification_context: true } : {}),
     native_prompt_id: nativePromptId,
     ...(["PreCompact", "PostCompact", "StopFailure"].includes(eventName) ? { prompt_id: input.prompt_id ?? null } : {}),
     ...(eventName === "PostCompact" ? { compact_summary: input.compact_summary ?? null } : {}),
@@ -133,7 +140,7 @@ async function processGone(pid, deadline) {
 async function freshContext() {
   // Structured print turns already carry the kernel-dispatched envelope.
   // The primary hook freezes it once for this invocation's chunk delivery.
-  if (process.env.CHARIOX_CLAUDE_PROMPT_CONTEXT_SOURCE === "dispatched") {
+  if (dispatchedContext && !notificationContext) {
     return readFileSync(process.env.CHARIOX_CLAUDE_NATIVE_CONTEXT, "utf8")
   }
   const responseDir = process.env.CHARIOX_CLAUDE_NATIVE_CONTEXT_RESPONSES

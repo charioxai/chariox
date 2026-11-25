@@ -504,6 +504,7 @@ pub(super) fn execute_output_poll_command(
             process_outside_ended: false,
             turn_outcome: None,
             hook_context_delivered: false,
+            claude_notification_context: None,
             native_compactions: Vec::new(),
             skill_tool_delivery_acknowledgements,
             chunks: poll
@@ -610,6 +611,7 @@ pub(super) fn execute_output_poll_command(
         process_outside_ended: false,
         turn_outcome: None,
         hook_context_delivered: false,
+        claude_notification_context: None,
         native_compactions: Vec::new(),
         skill_tool_delivery_acknowledgements,
         chunks: drain
