@@ -166,7 +166,12 @@ mod tests {
 
     const NOW: u64 = 1_800_000_000_000;
 
-    fn row(allocation: &str, state: &str, reason: Option<MachineEventReason>, age_ms: u64) -> ControlPlaneMachineRow {
+    fn row(
+        allocation: &str,
+        state: &str,
+        reason: Option<MachineEventReason>,
+        age_ms: u64,
+    ) -> ControlPlaneMachineRow {
         let since = chrono::DateTime::from_timestamp_millis((NOW - age_ms) as i64).unwrap();
         ControlPlaneMachineRow {
             allocation_ref: allocation.into(),
@@ -184,11 +189,25 @@ mod tests {
     #[test]
     fn each_reason_raises_one_high_card_in_the_kernel_s_words() {
         for (reason, title) in [
-            (MachineEventReason::CopyFailed, "Copying to Build box failed"),
-            (MachineEventReason::HardStop, "Build box was stopped at its time limit"),
-            (MachineEventReason::RentalFailed, "Build box could not be started"),
+            (
+                MachineEventReason::CopyFailed,
+                "Copying to Build box failed",
+            ),
+            (
+                MachineEventReason::HardStop,
+                "Build box was stopped at its time limit",
+            ),
+            (
+                MachineEventReason::RentalFailed,
+                "Build box could not be started",
+            ),
         ] {
-            let plan = plan("owner", &[row("m1", "failed", Some(reason), 1_000)], &BTreeSet::new(), NOW);
+            let plan = plan(
+                "owner",
+                &[row("m1", "failed", Some(reason), 1_000)],
+                &BTreeSet::new(),
+                NOW,
+            );
             assert_eq!(plan.raise.len(), 1);
             let notice = &plan.raise[0];
             assert_eq!(notice.title, title);
@@ -200,23 +219,52 @@ mod tests {
 
     #[test]
     fn a_machine_the_owner_stopped_raises_nothing() {
-        let plan = plan("owner", &[row("m1", "stopped", None, 1_000)], &BTreeSet::new(), NOW);
-        assert_eq!(plan, CloudMachinePlan { raise: vec![], clear: vec![] });
+        let plan = plan(
+            "owner",
+            &[row("m1", "stopped", None, 1_000)],
+            &BTreeSet::new(),
+            NOW,
+        );
+        assert_eq!(
+            plan,
+            CloudMachinePlan {
+                raise: vec![],
+                clear: vec![]
+            }
+        );
     }
 
     #[test]
     fn a_card_already_in_the_inbox_is_not_raised_again() {
-        let machines = [row("m1", "failed", Some(MachineEventReason::CopyFailed), 1_000)];
+        let machines = [row(
+            "m1",
+            "failed",
+            Some(MachineEventReason::CopyFailed),
+            1_000,
+        )];
         let first = plan("owner", &machines, &BTreeSet::new(), NOW);
         let existing = first.raise.iter().map(|n| n.card_id.clone()).collect();
         let again = plan("owner", &machines, &existing, NOW + 60_000);
-        assert_eq!(again, CloudMachinePlan { raise: vec![], clear: vec![] });
+        assert_eq!(
+            again,
+            CloudMachinePlan {
+                raise: vec![],
+                clear: vec![]
+            }
+        );
     }
 
     #[test]
     fn an_event_older_than_the_retention_raises_nothing() {
-        let old = row("m1", "failed", Some(MachineEventReason::CopyFailed), RETENTION_MS + 1);
-        assert!(plan("owner", &[old], &BTreeSet::new(), NOW).raise.is_empty());
+        let old = row(
+            "m1",
+            "failed",
+            Some(MachineEventReason::CopyFailed),
+            RETENTION_MS + 1,
+        );
+        assert!(plan("owner", &[old], &BTreeSet::new(), NOW)
+            .raise
+            .is_empty());
     }
 
     #[test]
@@ -248,14 +296,27 @@ mod tests {
         assert!(!needs_watching(&[row("m1", "stopped", None, 1_000)], NOW));
         assert!(!needs_watching(&[row("m1", "deleted", None, 1_000)], NOW));
         for state in ["provisioning", "awaiting_context", "ready", "stopping"] {
-            assert!(needs_watching(&[row("m1", state, None, 1_000)], NOW), "{state}");
+            assert!(
+                needs_watching(&[row("m1", state, None, 1_000)], NOW),
+                "{state}"
+            );
         }
         assert!(needs_watching(
-            &[row("m1", "failed", Some(MachineEventReason::RentalFailed), 1_000)],
+            &[row(
+                "m1",
+                "failed",
+                Some(MachineEventReason::RentalFailed),
+                1_000
+            )],
             NOW
         ));
         assert!(!needs_watching(
-            &[row("m1", "failed", Some(MachineEventReason::RentalFailed), RETENTION_MS + 1)],
+            &[row(
+                "m1",
+                "failed",
+                Some(MachineEventReason::RentalFailed),
+                RETENTION_MS + 1
+            )],
             NOW
         ));
     }

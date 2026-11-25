@@ -91,7 +91,10 @@ impl KernelRuntimeState {
         else {
             return Ok(Watch::Idle);
         };
-        let Some(credential) = profile.kernel_credential.as_deref().filter(|c| !c.is_empty())
+        let Some(credential) = profile
+            .kernel_credential
+            .as_deref()
+            .filter(|c| !c.is_empty())
         else {
             return Ok(Watch::Idle);
         };
@@ -113,11 +116,13 @@ impl KernelRuntimeState {
             });
         };
         self.reconcile_cloud_machine_notices(&machines)?;
-        Ok(if needs_watching(&machines, crate::session::unix_epoch_ms()) {
-            Watch::Poll
-        } else {
-            Watch::Idle
-        })
+        Ok(
+            if needs_watching(&machines, crate::session::unix_epoch_ms()) {
+                Watch::Poll
+            } else {
+                Watch::Idle
+            },
+        )
     }
 }
 
