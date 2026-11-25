@@ -289,3 +289,25 @@ test('MP-08/MP-10 small damage of a settling page continues the video chain in h
   f.hold();f.offer(12);assert.equal(f.m.holdsVideo,true,'an encode in flight holds video too');f.release();await f.m.active;
  }finally{await stream.close()}
 });
+// TR-06 (row 332): a whole-page video asks for the rate its picture needs, under the negotiated ceiling.
+test('row 332: the whole-page video rate follows its picture area under the ceiling',async()=>{
+ const {areaBitrate}=await import('./kernel-browser-motion.mjs');
+ assert.equal(areaBitrate(8_000_000,1020,622),3_000_000,'a 1020x622 DPR1 pane');
+ assert.equal(areaBitrate(8_000_000,2040,1244),8_000_000,'the same pane at DPR2 reaches the cap');
+ assert.equal(areaBitrate(8_000_000,200,100),500_000,'a tiny picture keeps the 0.5 Mbit/s floor');
+ assert.equal(areaBitrate(1_000_000,1020,622),1_000_000,'credit pressure below the area target wins');
+ assert.equal(areaBitrate(8_000_000,undefined,undefined),8_000_000,'an unknown size keeps the ceiling');
+});
+test('row 332: a resized whole-page video re-targets with its next frame; an element crop keeps the negotiated rate',async()=>{
+ for(const areaRate of [true,false]){
+  let latest,offer;const rates=[];const source={subscribe:f=>{offer=f;return()=>{}},sample:()=>latest};
+  const encoder={async encode(raw,bitrate,key){rates.push(bitrate);return{key,data_base64:'AA=='}}};
+  const m=new MotionEncoder(source,encoder,{codec:'avc1.420033',bitrate:8000000,areaRate});
+  try{
+   for(const [serial,width,height] of [[1,400,300],[2,1020,622],[3,2040,1244],[4,400,300]]){
+    latest={serial,width,height,raw:{width,height,damage:[0,0,width,height],nativeEncode(){}}};offer(latest);await m.active;m.take();
+   }
+   assert.deepEqual(rates,areaRate?[567_430,3_000_000,8_000_000,567_430]:[8_000_000,8_000_000,8_000_000,8_000_000]);
+  }finally{await m.close()}
+ }
+});

@@ -38,7 +38,8 @@ export async function createRegionDisplay({host,command,scope,signal,target,leas
    generation,subscription_id:`host-display-${randomUUID()}`,codec:'avc1.420033',bitrate:command.bitrate,
    device_scale_factor:scale,css_width:source.region.css_width,css_height:source.region.css_height,
    ...(placement?{region_offset:placement}:{})};
-  stream=new DisplayStream({...result,tab_id:tab.tab_id,observed_by:scope,relay_binary:command.codecs.includes('chariox-relay-binary-v96'),
+  // Row 332: the visible page's whole-page video sizes its rate by its picture (areaBitrate); element crops keep theirs.
+  stream=new DisplayStream({...result,...(target.kind==='visible_page'?{whole_page:true}:{}),tab_id:tab.tab_id,observed_by:scope,relay_binary:command.codecs.includes('chariox-relay-binary-v96'),
    // Crops use whole-video dependencies; an eight-row encoder cannot divide
    // every valid even crop (including a two-device-pixel opaque tile).
    dependencies:command.codecs.includes('chariox-video-dependencies-v1'),stripes:false},

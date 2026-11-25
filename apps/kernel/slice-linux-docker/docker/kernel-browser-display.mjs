@@ -11,6 +11,7 @@ import {dirtyTiles, nativeDamageTiles} from './kernel-browser-tiles.mjs';
 import {PixelWorker} from './kernel-browser-pixel-worker.mjs';
 export {dirtyTiles} from './kernel-browser-tiles.mjs';
 import { timestamp } from './kernel-browser-timing.mjs';
+import { areaBitrate } from './kernel-browser-motion.mjs';
 import { cpuContention } from './kernel-browser-contention.mjs';
 import { discardPacket } from './kernel-browser-native-worker.mjs';
 
@@ -398,7 +399,7 @@ export class DisplayStream {
     else if (this.codec === 'png'||source.force_lossless) payload = full();
     else {
       codec.used = true;
-      const encoded = source.encoded ?? await this.encoder.encode(png(), this.bitrate, !this.dependencies || !bound || !this.previous || this.exact || Boolean(this.repair),this.codec,source[displayMaskRegions]??[],source.crop?{crop:source.crop}:{});
+      const encoded = source.encoded ?? await this.encoder.encode(png(), this.whole_page ? areaBitrate(this.bitrate, current.width, current.height) : this.bitrate, !this.dependencies || !bound || !this.previous || this.exact || Boolean(this.repair),this.codec,source[displayMaskRegions]??[],source.crop?{crop:source.crop}:{});
       offer=encoded.lease??null;
       if(encoded.dropped)payload=full();
       else if(encoded.stripes){payload={kind:'stripes',base_sequence:this.sequence,stripes:encoded.stripes,...(encoded.packet?{native_packet:encoded.packet}:{})};}
