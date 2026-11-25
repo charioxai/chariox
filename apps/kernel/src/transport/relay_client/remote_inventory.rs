@@ -182,10 +182,13 @@ pub(crate) async fn refresh_remote_inventory_projection(
             // is forgotten by every kernel that remembers it through that directory, not only
             // the one that was asked. Records of a private relay or a pairing are no directory's.
             if let Some(directory) = &directory {
-                machine_presence::record_directory_of_new_machines(
+                machine_presence::record_directory_of_machines(
                     registry,
                     &seen.listed,
                     directory,
+                    seen.fresh_membership
+                        .as_ref()
+                        .and_then(|membership| membership.linked_machines.as_ref()),
                     &runtime_config.host_machine_id,
                 );
                 if let Some(membership) = seen.fresh_membership {

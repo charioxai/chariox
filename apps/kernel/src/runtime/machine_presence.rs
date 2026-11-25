@@ -169,15 +169,25 @@ pub(crate) fn reconcile(
     }
 }
 
-/// Records the machines Cloud directory `directory` lists that the registry does not know yet as
-/// that directory's: only its reads may forget them (`forget_unlinked`). The host machine is
-/// never tracked.
-pub(crate) fn record_directory_of_new_machines(
+/// Records which machines belong to this directory so its reads can forget them.
+pub(crate) fn record_directory_of_machines(
     registry: &mut Vec<PersistedMachineRegistration>,
     live: &[RemoteMachineRecord],
     directory: &str,
+    linked_machines: Option<&std::collections::BTreeSet<String>>,
     host_machine_id: &str,
 ) {
+    if let Some(linked) = linked_machines {
+        for entry in registry.iter_mut().filter(|entry| {
+            entry.machine_id != host_machine_id
+                && entry.directory.is_none()
+                && entry.public_key_thumbprint.is_none()
+                && entry.paired_at_ms.is_none()
+                && linked.contains(&entry.machine_id)
+        }) {
+            entry.directory = Some(directory.to_string());
+        }
+    }
     for machine in live
         .iter()
         .filter(|machine| machine.machine_id != host_machine_id)
@@ -284,41 +294,79 @@ mod tests {
         );
     }
 
-    // The directory that first lists a machine owns its record; a record that exists already
-    // (paired, approved, or another directory's) and the host machine are left as they are, and
-    // the listed machine says which directory it belongs to.
     #[test]
-    fn a_new_machine_belongs_to_the_directory_that_lists_it_first() {
+    fn a_directory_records_linked_approvals_and_preserves_other_owners() {
         let directory = "https://cloud.test/account-1/realm-1";
-        let mut registry = vec![PersistedMachineRegistration {
-            public_key_thumbprint: Some("thumbprint".into()),
-            ..entry("paired", NOW)
-        }];
-        let live = vec![live("paired"), live("new"), live(HOST)];
-        record_directory_of_new_machines(&mut registry, &live, directory, HOST);
-        let owners = |registry: &[PersistedMachineRegistration]| {
+        let other_directory = "https://cloud.test/account-2/realm-1";
+        let mut registry = vec![
+            entry("approved-early", 0),
+            entry("already-offline", NOW - RECONNECTING_WINDOW_MS),
+            entry("unlinked-private", NOW),
+            PersistedMachineRegistration {
+                public_key_thumbprint: Some("thumbprint".into()),
+                paired_at_ms: Some(1),
+                ..entry("paired", NOW)
+            },
+            PersistedMachineRegistration {
+                directory: Some(other_directory.into()),
+                ..entry("other-account", NOW)
+            },
+            entry(HOST, NOW),
+        ];
+        let live = vec![
+            live("approved-early"),
+            live("paired"),
+            live("new"),
+            live(HOST),
+        ];
+        let linked = [
+            "approved-early",
+            "already-offline",
+            "paired",
+            "other-account",
+            "new",
+            HOST,
+        ]
+        .map(str::to_string)
+        .into();
+        record_directory_of_machines(&mut registry, &live, directory, Some(&linked), HOST);
+        let owner = |id: &str| {
             registry
                 .iter()
-                .map(|entry| (entry.machine_id.clone(), entry.directory.clone()))
-                .collect::<Vec<_>>()
+                .find(|entry| entry.machine_id == id)
+                .unwrap()
+                .directory
+                .as_deref()
         };
-        assert_eq!(
-            owners(&registry),
-            vec![
-                ("paired".to_string(), None),
-                ("new".to_string(), Some(directory.to_string()))
-            ]
-        );
+        assert_eq!(owner("approved-early"), Some(directory));
+        assert_eq!(owner("already-offline"), Some(directory));
+        assert_eq!(owner("unlinked-private"), None);
+        assert_eq!(owner("paired"), None);
+        assert_eq!(owner("other-account"), Some(other_directory));
+        assert_eq!(owner(HOST), None);
+        assert_eq!(owner("new"), Some(directory));
+
         let inventory = reconcile(&mut registry, live, &Default::default(), HOST, NOW);
         let listed = |id: &str| {
             inventory
                 .machines
                 .iter()
                 .find(|machine| machine.machine_id == id)
-                .map(|machine| machine.directory.clone())
+                .unwrap()
+                .directory
+                .as_deref()
         };
-        assert_eq!(listed("new"), Some(Some(directory.to_string())));
-        assert_eq!(listed("paired"), Some(None));
+        assert_eq!(listed("approved-early"), Some(directory));
+        assert_eq!(listed("new"), Some(directory));
+        assert_eq!(listed("paired"), None);
+
+        let unlinked = ["approved-early", "already-offline"]
+            .map(str::to_string)
+            .into();
+        forget_unlinked(&mut registry, directory, &unlinked);
+        assert!(registry
+            .iter()
+            .all(|entry| !unlinked.contains(&entry.machine_id)));
     }
 
     #[test]
