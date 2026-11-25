@@ -45,38 +45,64 @@ pub(super) fn resolve_entry_ref(
 
 /// The names in a `chariox.list_credential_handles` answer.
 pub(super) fn entries_from_listing(payload: &serde_json::Value) -> Vec<EntryName> {
-    let _ = payload;
-    Vec::new()
+    payload["credentials"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|item| {
+            Some(EntryName {
+                id: item["id"].as_str()?.to_string(),
+                description: item["description"].as_str().map(str::to_string),
+            })
+        })
+        .collect()
 }
 
+/// The entries without one id, such as a copy that already carries its source's label.
 pub(super) fn without(entries: &[EntryName], id: &str) -> Vec<EntryName> {
-    let _ = id;
     entries
         .iter()
-        .map(|e| EntryName {
-            id: e.id.clone(),
-            description: e.description.clone(),
+        .filter(|entry| entry.id != id)
+        .map(|entry| EntryName {
+            id: entry.id.clone(),
+            description: entry.description.clone(),
         })
         .collect()
 }
 
 impl KernelRuntimeState {
-    /// Resolve every reference against the owner's Vault entries once, here or at the home.
+    /// Resolve every reference against the owner's Vault entries once. A leased worker asks its
+    /// home kernel, which owns the Vault, for the entry names; the answer is the exact id, so
+    /// masking and the home's own checks see the same id.
     pub(super) async fn resolve_entry_refs<'a>(
         &self,
         home: Option<&crate::transport::relay_peer::RemoteExtensionInvocationContext>,
         references: impl IntoIterator<Item = &'a str>,
         exclude: Option<&str>,
     ) -> Result<Vec<String>, DaemonError> {
-        let _ = (home, exclude);
-        let entries: Vec<EntryName> = crate::credential::CharioxCredentialRegistry::user()?
-            .list()?
-            .into_iter()
-            .map(|c| EntryName {
-                id: c.id,
-                description: c.description,
-            })
-            .collect();
+        let mut entries = match home {
+            Some(home) => {
+                let listed = self
+                    .forward_vault_tool_to_home(
+                        home.clone(),
+                        crate::transport::runtime_tools::LIST_CREDENTIAL_HANDLES_TOOL,
+                        serde_json::json!({}),
+                    )
+                    .await?;
+                entries_from_listing(&listed.payload)
+            }
+            None => crate::credential::CharioxCredentialRegistry::user()?
+                .list()?
+                .into_iter()
+                .map(|entry| EntryName {
+                    id: entry.id,
+                    description: entry.description,
+                })
+                .collect(),
+        };
+        if let Some(id) = exclude {
+            entries = without(&entries, id);
+        }
         references
             .into_iter()
             .map(|reference| resolve_entry_ref(&entries, reference))

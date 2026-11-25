@@ -105,11 +105,6 @@ impl KernelRuntimeState {
         check_binding: BindingCheck<'_>,
         mut args: CopyArgs,
     ) -> Result<RuntimeToolResult, DaemonError> {
-        args.from = self
-            .resolve_entry_refs(None, [args.from.as_str()], None)
-            .await?
-            .pop()
-            .unwrap_or_default();
         args.use_binding.target.validate()?;
         if let VaultUseTarget::Site { origin } = &args.use_binding.target {
             if !origin.starts_with("https://") {
@@ -121,8 +116,19 @@ impl KernelRuntimeState {
         recheck()?;
         let registry = crate::credential::CharioxCredentialRegistry::user()?;
         if let Some(existing) = registry.get(&handle)? {
-            return committed(&existing, actor, &args.from, &args.use_binding);
+            // A retry names its source as before; the copy may now carry the same label.
+            let from = self
+                .resolve_entry_refs(None, [args.from.as_str()], Some(&handle))
+                .await?
+                .pop()
+                .unwrap_or_default();
+            return committed(&existing, actor, &from, &args.use_binding);
         }
+        args.from = self
+            .resolve_entry_refs(None, [args.from.as_str()], None)
+            .await?
+            .pop()
+            .unwrap_or_default();
         check_binding(&args.use_binding)?;
         let source = registry
             .get(&args.from)?
