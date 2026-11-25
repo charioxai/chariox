@@ -987,7 +987,9 @@ mod tests {
         assert_eq!(free["document_id"], "d");
         assert_eq!(free["input_held_by"], json!([]));
         assert_eq!(model.card_tab_state("host-tab-gone")["tab_known"], false);
-        model.takeover(human("terminal:person"), "host-tab-a", 1).unwrap();
+        model
+            .takeover(human("terminal:person"), "host-tab-a", 1)
+            .unwrap();
         let held = model.card_tab_state("host-tab-a");
         assert_eq!(held["input_held_by"][0]["actor_id"], "terminal:person");
         assert_eq!(held["input_held_by"][0]["kind"], "human");

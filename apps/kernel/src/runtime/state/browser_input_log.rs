@@ -39,7 +39,10 @@ pub(super) struct BrowserInputLog(Arc<std::sync::Mutex<BTreeMap<String, TabInput
 
 impl BrowserInputLog {
     pub(super) fn record(&self, tab_id: &str, outcome: InputOutcome) {
-        let mut tabs = self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut tabs = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if !tabs.contains_key(tab_id) && tabs.len() >= TABS {
             if let Some(idle) = tabs
                 .iter()
@@ -59,10 +62,40 @@ impl BrowserInputLog {
 
     /// The last input taken and the last refused for the Tab, each with its time.
     pub(super) fn read(&self, tab_id: &str) -> (Option<InputOutcome>, Option<InputOutcome>) {
-        let tabs = self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let tabs = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         tabs.get(tab_id)
             .map(|input| (input.accepted.clone(), input.refused.clone()))
             .unwrap_or_default()
+    }
+}
+
+/// Why an input was refused, in words for the agent. A policy refusal shows only a generic line to
+/// a client; its stable code and meaning are what the agent needs.
+pub(super) fn refusal_reason(error: &DaemonError) -> String {
+    use crate::error::UserDomainRefusalReason as Reason;
+    match error {
+        DaemonError::UserDomainRefused { reason } => {
+            let meaning = match reason {
+                Reason::ForeignOwner => "the Tab belongs to another user or does not exist",
+                Reason::StaleEpoch => {
+                    "the input is bound to an older browser generation: the browser restarted since the card was raised"
+                }
+                Reason::StaleReference => {
+                    "the input names a document or page reference that is no longer current: the page navigated or reloaded, or the input carried no observed document"
+                }
+                Reason::NotGranted => {
+                    "this input is not allowed here: a person-only step, or a Tab outside the room"
+                }
+                Reason::SensitiveRequiresFocus => {
+                    "the person's own input owner refuses input to this sensitive target"
+                }
+            };
+            format!("{meaning} ({})", reason.code())
+        }
+        other => other.to_string(),
     }
 }
 
@@ -110,6 +143,18 @@ mod tests {
         assert_eq!(log.read("tab-0"), (None, None), "the oldest went");
         assert!(log.read("tab-1").0.is_some());
         assert!(log.read("new").0.is_some());
+    }
+
+    #[test]
+    fn a_policy_refusal_is_given_by_its_code_and_meaning_not_the_generic_line() {
+        let error = crate::error::HostFailure::from("MD-3: observed document required")
+            .into_daemon("kernel_browser");
+        let reason = refusal_reason(&error);
+        assert!(reason.contains("user_domain_stale_reference"), "{reason}");
+        assert!(reason.contains("no longer current"), "{reason}");
+        let other =
+            crate::error::HostFailure::from("a plain host message").into_daemon("kernel_browser");
+        assert!(refusal_reason(&other).contains("a plain host message"));
     }
 
     #[test]

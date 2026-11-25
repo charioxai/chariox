@@ -628,7 +628,10 @@ impl KernelRuntimeState {
                     kind,
                     generation,
                     document_id,
-                    reason: result.as_ref().err().map(ToString::to_string),
+                    reason: result
+                        .as_ref()
+                        .err()
+                        .map(super::browser_input_log::refusal_reason),
                 },
             );
         }

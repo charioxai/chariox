@@ -268,7 +268,8 @@ impl KernelRuntimeState {
                     row
                 })
             };
-            let findings = card_findings(bound, tab.as_ref().ok(), taken.as_ref(), refused.as_ref());
+            let findings =
+                card_findings(bound, tab.as_ref().ok(), taken.as_ref(), refused.as_ref());
             serde_json::json!({
                 "bound": {
                     "tab_id": bound.tab_id,
@@ -473,7 +474,8 @@ mod card_findings_tests {
 
     #[test]
     fn a_card_bound_to_an_old_generation_or_document_says_which() {
-        let now = json!({"tab_known":true,"generation":10,"document_id":"DOC-B","input_held_by":[]});
+        let now =
+            json!({"tab_known":true,"generation":10,"document_id":"DOC-B","input_held_by":[]});
         let found = card_findings(&bound(), Some(&now), None, None);
         assert_eq!(
             codes(&found),

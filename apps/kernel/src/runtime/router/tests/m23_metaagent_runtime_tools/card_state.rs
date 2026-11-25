@@ -124,7 +124,10 @@ async fn refusal() {
             },
         )
         .await;
-    assert!(refused.is_err(), "an input with no observed document is refused");
+    assert!(
+        refused.is_err(),
+        "an input with no observed document is refused"
+    );
     let result = room_command(&world, "a", "room card card-refusal").await;
     assert!(result.ok, "{result:?}");
     let card = &result.payload["response"];
@@ -132,7 +135,10 @@ async fn refusal() {
     assert_eq!(last["kind"], "text");
     assert_eq!(last["generation"], 9);
     assert!(
-        last["reason"].as_str().unwrap().contains("document required"),
+        last["reason"]
+            .as_str()
+            .unwrap()
+            .contains("user_domain_stale_reference"),
         "{last:?}"
     );
     assert!(last["age_ms"].as_u64().is_some());
