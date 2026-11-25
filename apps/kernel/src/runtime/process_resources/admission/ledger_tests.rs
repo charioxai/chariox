@@ -2035,6 +2035,43 @@ fn a_many_file_copy_filling_the_disk_in_seconds_is_stopped_while_room_is_left() 
 }
 
 #[test]
+fn a_generator_closing_each_file_is_stopped_though_no_sample_caught_a_file_open() {
+    // Fresh 64 MiB files at 300 MiB/s, one after another: each is open for a few
+    // milliseconds, so the sampler saw no output of it at all (its first
+    // sight of a new file is a baseline, not growth). A slow log writer and a
+    // moderate one share the volume; only the generator is a runaway.
+    let (_, generator, generator_use) = writing(1, 3 * GIB, 300 * MIB);
+    let (_, slow, slow_use) = writing(2, 30 * MIB, 2 * MIB);
+    let (_, moderate, moderate_use) = writing(3, 100 * MIB, 12 * MIB);
+    let current = owner(
+        "agent",
+        true,
+        vec![generator_use, slow_use, moderate_use],
+        vec![(1, generator), (2, slow), (3, moderate)],
+    );
+    current.lock().unwrap().disk_writes.remove(&1);
+    // 2 GiB free losing 300 MiB/s: under seven seconds, and the volume really
+    // lost 75 MiB in the quarter second between the two passes.
+    let fillers = fillers_after_two_passes(2 * GIB, 75 * MIB, &current);
+    assert_eq!(
+        fillers.iter().map(|(pid, _)| *pid).collect::<Vec<_>>(),
+        vec![1],
+        "a generator filling the disk at 300 MiB/s kept writing"
+    );
+    assert!(fillers[0].1.rate >= 128 * MIB, "{}", fillers[0].1.rate);
+}
+
+#[test]
+fn a_slow_writer_is_not_stopped_for_a_volume_filled_by_something_else() {
+    // The same volume loses 300 MiB/s, but no agent command writes at a
+    // runaway rate: a 12 MiB/s writer whose file was not caught is left alone.
+    let (_, moderate, moderate_use) = writing(3, 100 * MIB, 12 * MIB);
+    let current = owner("agent", true, vec![moderate_use], vec![(3, moderate)]);
+    current.lock().unwrap().disk_writes.remove(&3);
+    assert!(fillers_after_two_passes(2 * GIB, 75 * MIB, &current).is_empty());
+}
+
+#[test]
 fn a_writer_rewriting_blocks_it_already_holds_is_not_a_filler() {
     // 200 MiB/s of writes, each over space the file already has: the volume
     // loses nothing, though 900 MiB at that rate would be under five seconds.
