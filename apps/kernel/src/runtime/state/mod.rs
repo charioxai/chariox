@@ -457,6 +457,7 @@ struct KernelRuntimeOwnedState {
     active_turns: ActiveTurnStore,
     prompt_activity: PromptActivityStore,
     provider_output_deadlines: ProviderOutputDeadlineStore,
+    provider_stalls: Arc<std::sync::Mutex<BTreeMap<String, provider_stall::PublishedStall>>>,
     prompt_workspace_claims: PromptWorkspaceClaimStore,
     structured_output_records: crate::app::provider_output::StructuredOutputRecordStore,
     pty_output_signal: crate::pty::PtyOutputSignal,
@@ -720,6 +721,7 @@ mod provider_auth_recovery;
 mod provider_output_runtime_tests;
 mod provider_prompt_failure_runtime;
 mod provider_prompt_settlement_runtime;
+mod provider_stall;
 mod provider_substitute_runtime;
 mod provider_turn_admission;
 mod relay_peer_runtime_state;
@@ -1396,6 +1398,7 @@ impl KernelRuntimeState {
                 active_turns,
                 prompt_activity,
                 provider_output_deadlines: ProviderOutputDeadlineStore::default(),
+                provider_stalls: Arc::default(),
                 prompt_workspace_claims,
                 structured_output_records,
                 pty_output_signal,
