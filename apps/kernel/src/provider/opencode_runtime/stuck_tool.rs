@@ -51,7 +51,6 @@ pub(super) trait ServerChildren: Send {
 #[derive(Debug)]
 struct RunningTool {
     command: String,
-    input: Value,
     started_ms: u64,
     seen: Instant,
     process: Option<(u32, u64)>,
@@ -149,7 +148,6 @@ impl RunningTools {
             .or_insert_with(|| (self.port, command.clone(), false));
         self.tools.entry(part.id.clone()).or_insert(RunningTool {
             command,
-            input: state.input.clone(),
             started_ms: state
                 .time
                 .as_ref()
