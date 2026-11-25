@@ -245,6 +245,8 @@ pub(crate) struct DurablePromptPrivateState {
     /// The occurrences this queued notification prompt delivers, oldest first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     queued_notifications: Vec<QueuedNotification>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    inbox_wakes: Vec<u64>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -273,6 +275,7 @@ struct PromptPrivateMetadata {
     local_steer_submitted: bool,
     question_wait_stopped: bool,
     queued_notifications: Vec<QueuedNotification>,
+    inbox_wakes: Vec<u64>,
 }
 
 /// One notification occurrence a queued prompt delivers: what happened, where it
@@ -282,6 +285,12 @@ pub(crate) struct QueuedNotification {
     pub(crate) title: String,
     pub(crate) source: String,
     pub(crate) sequence: u64,
+    #[serde(default)]
+    pub(crate) arrived_at_ms: Option<u64>,
+    /// A queue-mode subscription's trusted prompt. A steer or a workflow's
+    /// responsible-agent delivery always keeps its own prompt.
+    #[serde(default)]
+    pub(crate) batch_instruction: Option<String>,
     /// The notification operation whose receipt this prompt delivers; the prompt-state
     /// commit that carries the occurrence binds that receipt in the same transaction.
     pub(crate) operation_id: String,
@@ -336,6 +345,7 @@ impl DurablePromptPrivateState {
             local_steer_submitted: metadata.local_steer_submitted,
             question_wait_stopped: metadata.question_wait_stopped,
             queued_notifications: metadata.queued_notifications,
+            inbox_wakes: metadata.inbox_wakes,
         })
     }
 }
@@ -652,7 +662,7 @@ impl PromptQueueItem {
             .map_or(&[], |metadata| metadata.queued_notifications.as_slice())
     }
 
-    /// Adds one more occurrence of the same subscription to this queued prompt: its text
+    /// Adds one more occurrence to this queued prompt: its text
     /// becomes `text` and it now expires with the newest occurrence.
     pub(crate) fn join_queued_notification(
         &mut self,
@@ -671,6 +681,19 @@ impl PromptQueueItem {
         );
         self.prompt = text;
         self.updated_at_ms = crate::session::unix_epoch_ms();
+    }
+
+    pub(crate) fn with_inbox_wakes(mut self, sequences: Vec<u64>) -> Self {
+        self.private_metadata
+            .get_or_insert_with(|| Box::new(PromptPrivateMetadata::default()))
+            .inbox_wakes = sequences;
+        self
+    }
+
+    pub(crate) fn inbox_wakes(&self) -> &[u64] {
+        self.private_metadata
+            .as_deref()
+            .map_or(&[], |metadata| metadata.inbox_wakes.as_slice())
     }
 
     pub(crate) fn with_durable_operation(
@@ -1182,6 +1205,7 @@ impl PromptQueueItem {
             local_steer_submitted: private.local_steer_submitted,
             question_wait_stopped: private.question_wait_stopped,
             queued_notifications: private.queued_notifications.clone(),
+            inbox_wakes: private.inbox_wakes.clone(),
         }));
         self.restore_remote_steer_outcome_uncertainty(private.remote_steer_uncertainty.clone());
     }

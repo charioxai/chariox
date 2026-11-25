@@ -212,6 +212,8 @@ impl KernelRuntimeOwnedState {
         let Some(started) = started else {
             return Ok(None);
         };
+        let started = self.add_pending_wakes_to_notification(&session, agent_id, started)?;
+        let waiting = self.waiting_before_batch_promotion(session_id, agent_id, &started);
         let _ =
             self.record_started_user_prompt(session_id, started.source_attachment_id(), &started)?;
         let (active_prompt, queued_prompts) =
@@ -223,6 +225,7 @@ impl KernelRuntimeOwnedState {
             queued_prompts,
             activity_mutation,
         )?;
+        self.record_batch_promotion_waits(session_id, agent_id, started.id(), &waiting)?;
         let remote_dispatch = crate::app::KernelRemotePromptDispatch {
             session_id: session_id.to_string(),
             agent_id: agent_id.to_string(),
@@ -547,6 +550,17 @@ impl KernelRuntimeOwnedState {
                             agent_id,
                             Some(expected_next.id()),
                         )?;
+                    let active = active
+                        .map(|prompt| {
+                            self.add_pending_wakes_to_notification(&session, agent_id, prompt)
+                        })
+                        .transpose()?;
+                    let waiting = active
+                        .as_ref()
+                        .map(|prompt| {
+                            self.waiting_before_batch_promotion(session_id, agent_id, prompt)
+                        })
+                        .unwrap_or_default();
                     if active.is_some() {
                         let (active_prompt, queued_prompts) =
                             self.prompt_state_owner.state_parts(&session, agent_id);
@@ -556,6 +570,14 @@ impl KernelRuntimeOwnedState {
                             active_prompt,
                             queued_prompts,
                             activity_mutation,
+                        )?;
+                    }
+                    if let Some(prompt) = active.as_ref() {
+                        self.record_batch_promotion_waits(
+                            session_id,
+                            agent_id,
+                            prompt.id(),
+                            &waiting,
                         )?;
                     }
                     if let Some(active_prompt) = active.as_ref() {
