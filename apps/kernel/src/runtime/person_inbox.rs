@@ -2,16 +2,24 @@
 //! for the owner, from every Room they own here. A needs-you card is the Room's pending
 //! interaction itself, so it closes everywhere when it is answered anywhere; a notice is what an
 //! agent sent with `chariox.notify_person` or a kernel alert about a refused workflow start.
-//! A workflow card is a run of a workflow the person answers for that failed or holds, and a flag
-//! is a subscription that stopped delivering. Read, snooze and mute follow the person to every
-//! client.
+//! A workflow card is a run of a workflow the person answers for that is held on a decision; a
+//! failed run is status on its workflow row and a subscription that stopped delivering is status on
+//! its row, never cards. Read, snooze and mute follow the person to every client.
 use crate::durable_state::workflow_notifications::naming::workflow_name;
 use crate::durable_state::{PersonInboxState, StoredNotice, WORKFLOW_RELINK_ORIGIN};
 use crate::error::DaemonError;
 use crate::local::{
-    InboxCardChange, LocalDaemonResponse, NotificationSubscriptionHealth,
-    NotificationSubscriptionRow, PersonInboxCard, PersonInboxCardBody, PersonInboxFlag,
-    PersonInboxNotice, PersonInboxNoticeOrigin, PersonInboxPriority, PersonInboxWorkflowRun,
+    InboxCardChange,
+    LocalDaemonResponse,
+    NotificationSubscriptionHealth,
+    NotificationSubscriptionRow,
+    PersonInboxCard,
+    PersonInboxCardBody,
+    PersonInboxFlag,
+    PersonInboxNotice,
+    PersonInboxNoticeOrigin,
+    PersonInboxPriority,
+    PersonInboxWorkflowRun,
     SetInboxCardStateRequest,
     SetInboxMuteRequest,
 };
@@ -61,10 +69,7 @@ pub(crate) fn execute_set_inbox_card_state(
         let owner = match (inbox.card_owner(&card_id), &request.change) {
             (Some((owner, CardKind::Notice)), _) => owner,
             (Some((owner, CardKind::NeedsYou)), InboxCardChange::Snooze { .. }) => owner,
-            (
-                Some((owner, CardKind::Workflow | CardKind::Flag)),
-                InboxCardChange::Snooze { .. },
-            ) => owner,
+            (Some((owner, CardKind::Workflow)), InboxCardChange::Snooze { .. }) => owner,
             (Some((_, CardKind::NeedsYou)), InboxCardChange::Read { .. }) => {
                 return Err(refused(
                     "A needs-you card is not marked read: it leaves when it is answered.",
@@ -75,9 +80,6 @@ pub(crate) fn execute_set_inbox_card_state(
                     "A workflow card is not marked read: it leaves when you open the run.",
                 ))
             }
-            (Some((_, CardKind::Flag)), InboxCardChange::Read { .. }) => return Err(refused(
-                "A flag is not marked read: it leaves when the subscription is fixed or removed.",
-            )),
             (None, _) => {
                 return Err(refused(format!(
                     "No card {card_id} in your Inbox. Read the Inbox again and pick a card from it."
@@ -171,15 +173,13 @@ enum CardKind {
     NeedsYou,
     Notice,
     Workflow,
-    Flag,
 }
 
-/// The caller's Rooms on this kernel, the stored Inbox state of their owners and the
-/// subscriptions of those Rooms that stopped delivering.
+/// The caller's Rooms on this kernel and the stored Inbox state of their owners. A subscription
+/// that stopped delivering is status on its row (`health`), not a card.
 struct OwnedInbox {
     sessions: Vec<RuntimeSession>,
     state: PersonInboxState,
-    flags: Vec<NotificationSubscriptionRow>,
 }
 
 impl OwnedInbox {
@@ -228,16 +228,7 @@ impl OwnedInbox {
             );
         }
         state.mutes.sort();
-        let flags = runtime_state
-            .notification_subscription_rows(&user)?
-            .into_iter()
-            .filter(|row| flagged(row.health))
-            .collect();
-        Ok(Self {
-            sessions,
-            state,
-            flags,
-        })
+        Ok(Self { sessions, state })
     }
 
     fn card_owner(&self, card_id: &str) -> Option<(String, CardKind)> {
@@ -248,9 +239,6 @@ impl OwnedInbox {
             .find(|notice| notice.card_id == card_id)
         {
             return Some((notice.owner_user_id.clone(), CardKind::Notice));
-        }
-        if let Some(flag) = self.flags.iter().find(|row| flag_card_id(row) == card_id) {
-            return Some((flag.subscription.owner_user_id.clone(), CardKind::Flag));
         }
         if let Some(session) = self
             .sessions
@@ -361,18 +349,6 @@ impl OwnedInbox {
                 }),
             })
         }));
-        cards.extend(self.flags.iter().map(|row| PersonInboxCard {
-            card_id: flag_card_id(row),
-            session_id: row.subscription.session_id.clone(),
-            snoozed_until_ms: snoozed(&flag_card_id(row)),
-            body: PersonInboxCardBody::Flag(PersonInboxFlag {
-                subscription_id: row.subscription.subscription_id.clone(),
-                subscriber_name: row.subscriber_name.clone(),
-                source_name: row.source.as_ref().map(|source| source.name.clone()),
-                health: row.health,
-                at_ms: row.loop_stopped_at_ms.or(row.last_fired_at_ms),
-            }),
-        }));
         cards.sort_by(|left, right| {
             sort_key(right)
                 .cmp(&sort_key(left))
@@ -413,35 +389,28 @@ fn sort_key(card: &PersonInboxCard) -> (bool, u64) {
             notice.created_at_ms,
         ),
         PersonInboxCardBody::Workflow(run) => (false, run.at_ms),
+        // Never projected any more: a stopped subscription is status on its row.
         PersonInboxCardBody::Flag(flag) => (false, flag.at_ms.unwrap_or_default()),
     }
 }
 
-/// Runs of the Room's workflows that the person answers for and that wait on someone.
+/// Runs of the Room's workflows that the person answers for and that are held on a decision. A
+/// failed run is status on its workflow row (`outcome`), not a card.
 fn person_runs(
     session: &RuntimeSession,
 ) -> impl Iterator<Item = (&WorkflowRun, &WorkflowDefinition, WorkflowRunOutcome)> {
     session.workflow_runs().iter().filter_map(move |run| {
         let workflow = session.workflow(run.workflow_id())?;
         let outcome = run.outcome()?;
-        (run.attention() && workflow.responsible().is_person()).then_some((run, workflow, outcome))
+        (run.attention()
+            && workflow.responsible().is_person()
+            && matches!(outcome, WorkflowRunOutcome::Waiting { .. }))
+        .then_some((run, workflow, outcome))
     })
 }
 
 fn run_card_id(run: &WorkflowRun) -> String {
     format!("run:{}", run.id())
-}
-
-fn flag_card_id(row: &NotificationSubscriptionRow) -> String {
-    format!("flag:{}", row.subscription.subscription_id)
-}
-
-/// A subscription that cannot deliver until the person acts; a pause is the person's own doing.
-fn flagged(health: NotificationSubscriptionHealth) -> bool {
-    !matches!(
-        health,
-        NotificationSubscriptionHealth::Ok | NotificationSubscriptionHealth::Paused
-    )
 }
 
 fn refused(message: impl Into<String>) -> DaemonError {

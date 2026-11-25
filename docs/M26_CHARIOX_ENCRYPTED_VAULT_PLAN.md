@@ -68,11 +68,11 @@ Locked vault popup:
 - Choices for unlock duration: `This operation`, `30 minutes`, `1 hour`, `Until kernel shutdown`, `Cancel`.
 - The response is captured only by the kernel unlock service.
 
-Unlocked vault popup:
+Unlocked vault (11-24, a card is only for an action the agent cannot take itself):
 
-- Title: `Chariox Vault Unlocked`.
-- Choices: `Extend 30 minutes`, `Extend 1 hour`, `Lock now`, `Dismiss`.
-- No passphrase field needed while the vault key is already in memory.
+- No card. `chariox.manage_credential_vault` returns the status ("Vault unlocked until <time>"); `extend` (30 minutes), `extend_60m` and `lock` are the agent's own actions and return the new state.
+- Only `change_passphrase` asks the person, through the secret prompts (current, new, repeat).
+- A locked vault still asks for the passphrase with the unlock card above.
 
 All terminals attached to the session should see the same interaction. A successful response resolves the pending vault operation and wakes the blocked runtime MCP call.
 

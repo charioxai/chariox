@@ -210,7 +210,9 @@ impl KernelRuntimeState {
                 .unwrap();
                 let state = self.clone();
                 tokio::spawn(async move {
-                    let result = state.manage_credential_vault_unlock(SESSION, AGENT).await;
+                    let result = state
+                        .manage_credential_vault(SESSION, AGENT, Some("change_passphrase"))
+                        .await;
                     publish_result(
                         &root,
                         "vault-result",
